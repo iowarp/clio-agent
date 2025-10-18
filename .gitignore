@@ -1,0 +1,314 @@
+# ClaudIO .gitignore
+# Comprehensive ignore patterns for DSPy agent + UV + HPC scientific computing project
+
+# ============================================================================
+# Python & Virtual Environments
+# ============================================================================
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv
+.env
+*.env
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# pytest
+.pytest_cache/
+.coverage
+htmlcov/
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# ============================================================================
+# DSPy & Model Artifacts
+# ============================================================================
+
+# Compiled/optimized DSPy modules
+*.compiled.json
+compiled_*.json
+optimized_*.json
+*_optimized.json
+
+# DSPy cache and logs
+.dspy_cache/
+dspy_logs/
+*.dspy.log
+
+# Language model weights (if stored locally)
+models/
+*.bin
+*.pt
+*.pth
+weights/
+
+# ============================================================================
+# LM Studio & Ollama
+# ============================================================================
+
+# Local LM Studio configuration
+lm_studio/
+.lm_studio/
+
+# Ollama cache
+ollama_cache/
+.ollama/
+
+# ============================================================================
+# Data & Usage Logs
+# ============================================================================
+
+# Usage logs for optimization
+data/usage_logs/
+data/logs/
+*.log
+logs/
+
+# Training data (often large)
+data/training/
+data/examples/
+*.trainset.json
+trainset_*.json
+
+# Results and outputs
+data/results/
+data/output/
+*.results.json
+
+# HDF5, ADIOS, and other large scientific data files
+*.h5
+*.hdf5
+*.adios
+*.adios2
+*.nc
+*.netcdf
+*.h5p
+
+# Parquet and other compressed formats
+*.parquet
+*.parquet.bak
+
+# ============================================================================
+# MCP & Tool Artifacts
+# ============================================================================
+
+# MCP tool outputs
+mcp_output/
+mcp_logs/
+tool_cache/
+
+# Tool-generated files
+tool_output/
+*.tool.log
+mcp_*.log
+
+# ============================================================================
+# Development & Testing
+# ============================================================================
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+.env.local
+.env.*.local
+
+# Testing
+test_output/
+test_*.json
+.pytest_cache/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.bak
+
+# ============================================================================
+# Documentation Build Artifacts
+# ============================================================================
+
+# Sphinx/doc builds
+docs/_build/
+docs/.doctrees/
+
+# Generated documentation
+site/
+.mkdocs.cache/
+
+# ============================================================================
+# MLflow & Experiment Tracking
+# ============================================================================
+
+# MLflow artifacts
+mlruns/
+.mlflow/
+mlartifacts/
+mlexperiments/
+
+# Experiment outputs
+experiments/
+experiment_*.json
+runs/
+
+# ============================================================================
+# Configuration & Secrets
+# ============================================================================
+
+# Environment variables with secrets
+.env
+.env.local
+.env.*.local
+*.env.local
+
+# API keys and credentials (CRITICAL - never commit these)
+secrets/
+.secrets/
+credentials.json
+api_keys.json
+*.key
+*.pem
+*.pfx
+
+# Configuration that varies per environment
+config.local.py
+settings.local.json
+local_config.yaml
+
+# ============================================================================
+# FastAPI/Server Artifacts
+# ============================================================================
+
+# FastAPI/Uvicorn
+.uvicorn_socket
+uvicorn.sock
+
+# Server logs
+server_*.log
+api_*.log
+
+# ============================================================================
+# Build & Packaging
+# ============================================================================
+
+# UV lockfile (optional - include if you want reproducible deps)
+# uv.lock
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+*.whl
+
+# ============================================================================
+# OS Specific
+# ============================================================================
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Linux
+.directory
+
+# ============================================================================
+# Project Specific - ClaudIO
+# ============================================================================
+
+# Compiled expert modules (if saved locally)
+experts/compiled/
+orchestrator/compiled/
+
+# POC outputs (temporary testing)
+poc_output/
+poc_test/
+
+# Phase-specific artifacts
+phase_*/output/
+phase_*/artifacts/
+
+# Optimization runs
+optimization_runs/
+optimization_logs/
+
+# A/B test results
+ab_test_results/
+ab_test_logs/
+
+.claude
+
+# ============================================================================
+# Jupyter & Notebooks
+# ============================================================================
+
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+*.ipynb
+
+# ============================================================================
+# Version Control
+# ============================================================================
+
+# Don't commit merge conflict files
+*.orig
+*.rej
+
+# ============================================================================
+# IMPORTANT: What TO Commit
+# ============================================================================
+
+# DO commit:
+# - Source code (*.py files)
+# - Documentation (*.md files)
+# - Configuration examples (*.example, *.template)
+# - claudio-docs/ directory
+# - poc/ directory with examples
+# - requirements or dependencies files (pyproject.toml, etc.)
+# - .gitignore itself
+
+# DON'T commit:
+# - Secrets, API keys, credentials
+# - Large data files (h5, adios, etc.)
+# - Model weights
+# - Usage logs
+# - Compiled/optimized modules with secrets
+# - Environment-specific configs
+
+# ============================================================================
+# Force Include Patterns (! prefix)
+# ============================================================================
+
+# These files/patterns will be committed even if matched above
+!claudio-docs/
+!poc/
+!*.md
+!pyproject.toml
+!setup.py
+!Makefile
+!.github/
+!.gitignore
+!LICENSE
+!README.md
+!
