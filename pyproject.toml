@@ -1,0 +1,116 @@
+[project]
+name = "claudio"
+version = "0.1.0"
+description = "DSPy multi-agent system for scientific computing - Programming LLMs, not prompting them"
+authors = [
+    { name = "IOWarp Team", email = "team@iowarp.org" }
+]
+readme = "README.md"
+license = { text = "Apache-2.0" }
+requires-python = ">=3.11"
+
+keywords = [
+    "dspy", "multi-agent", "react", "scientific-computing",
+    "hpc", "mcp", "fastmcp", "llm", "agents",
+    "hdf5", "slurm", "data-science"
+]
+
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Framework :: DSPy",
+]
+
+dependencies = [
+    "dspy-ai>=2.6.0",
+    "fastmcp>=0.1.0",
+]
+
+[project.optional-dependencies]
+ui = [
+    "rich>=13.0.0",
+    "prompt-toolkit>=3.0.0",
+]
+
+api = [
+    "fastapi>=0.104.0",
+    "uvicorn>=0.24.0",
+    "sse-starlette>=1.6.0",
+]
+
+tools = [
+    "h5py>=3.10.0",  # For HDF5 MCP server
+]
+
+dev = [
+    "pytest>=7.4.0",
+    "pytest-cov>=4.1.0",
+    "pytest-asyncio>=0.21.0",
+    "ruff>=0.1.0",
+]
+
+all = [
+    "claudio[ui,api,tools,dev]",
+]
+
+[project.urls]
+Homepage = "https://github.com/iowarp/claudio"
+Documentation = "https://github.com/iowarp/claudio/tree/main/ai-docs"
+Repository = "https://github.com/iowarp/claudio"
+Issues = "https://github.com/iowarp/claudio/issues"
+
+[project.scripts]
+claudio = "claudio.ui.cli:run_cli"
+claudio-api = "claudio.ui.api:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["claudio"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = [
+    "--verbose",
+    "--cov=claudio",
+    "--cov-report=term-missing",
+    "--cov-report=html",
+]
+
+[tool.black]
+line-length = 100
+target-version = ["py311"]
+include = '\.pyi?$'
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "B",   # flake8-bugbear
+    "C4",  # flake8-comprehensions
+]
+ignore = [
+    "E501",  # line too long (handled by black)
+]
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false  # Set to true for stricter typing
+ignore_missing_imports = true

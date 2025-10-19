@@ -112,7 +112,7 @@ New repository at `github.com/iowarp/claudio` currently:
 │   └── research
 │       ├── ADVANCED_PATTERNS.md
 │       └── MULTI_AGENT_SYSTEMS.md
-└── IDEA.md
+└── IDEA.md (this file)
 ```
 
 
