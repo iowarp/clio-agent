@@ -1,30 +1,29 @@
 """
 ClaudIO - Cognitive Layer for Adaptive Universal Data & Intelligent Operations
 
-DSPy-powered multi-agent system for scientific computing.
+DSPy-powered system for scientific data I/O optimization.
 
 Core Architecture:
 - Programming Over Prompting: DSPy signatures instead of hand-crafted prompts
-- ReAct Agents: Reasoning + Acting with MCP tools
-- Multi-Agent Coordination: Orchestrator routes to domain experts
+- ReAct Agent: Reasoning + Acting with MCP tools for data I/O
+- Single Expert Focus: DataExpert for HDF5, ADIOS, Parquet optimization
 - UV-Native: Self-contained scripts with inline dependencies
-- Provider-Agnostic: LM Studio, Ollama, OpenAI support
+- LM Studio Provider: Local LLM support
 
 Example:
-    >>> from claudio import ClaudIOOrchestrator, setup_dspy
+    >>> from claudio import ClaudIO, setup_dspy
     >>>
-    >>> # Setup LM (default: LM Studio)
+    >>> # Setup LM (LM Studio)
     >>> lm = setup_dspy()
     >>>
-    >>> # Create multi-agent orchestrator
-    >>> orchestrator = ClaudIOOrchestrator()
+    >>> # Create ClaudIO agent
+    >>> agent = ClaudIO()
     >>>
-    >>> # Ask scientific computing questions
-    >>> result = orchestrator(question="How do I optimize my HDF5 file?")
+    >>> # Ask data I/O questions
+    >>> result = agent(question="How do I optimize my HDF5 file?")
     >>>
     >>> # Inspect results
     >>> print(f"Expert used: {result.selected_expert}")  # "data"
-    >>> print(f"Routing: {result.routing_reasoning}")  # ChainOfThought reasoning
     >>> print(f"Answer: {result.answer}")  # Expert's answer (via ReAct)
 """
 
@@ -32,13 +31,11 @@ __version__ = "0.1.0"
 __author__ = "IOWarp Team"
 
 # Core imports
-from claudio.config import setup_dspy, LMStudioConfig, OllamaConfig, OpenAIConfig
-from claudio.orchestrator import ClaudIOOrchestrator
+from claudio.config import setup_dspy, LMStudioConfig
+from claudio.claudio import ClaudIO
 
 __all__ = [
-    "ClaudIOOrchestrator",
+    "ClaudIO",
     "setup_dspy",
     "LMStudioConfig",
-    "OllamaConfig",
-    "OpenAIConfig",
 ]

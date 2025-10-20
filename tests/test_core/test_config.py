@@ -1,17 +1,14 @@
 """
 Tests for claudio.config module.
 
-Tests LM configuration and provider setup.
+Tests LM Studio configuration and provider setup.
 """
 
 import pytest
 from unittest.mock import patch, MagicMock
 from claudio.config import (
     LMStudioConfig,
-    OpenAIConfig,
-    OllamaConfig,
     configure_dspy_lm_studio,
-    configure_dspy_ollama,
 )
 
 
@@ -22,7 +19,7 @@ class TestLMStudioConfig:
         """Test default LM Studio configuration values."""
         config = LMStudioConfig()
 
-        assert config.base_url == "http://100.127.255.164:1234"
+        assert config.base_url == "http://100.127.255.172:1234"
         assert config.model == "openai/gpt-oss-20b"
         assert config.temperature == 1.0
         assert config.max_tokens == 8000
@@ -40,21 +37,7 @@ class TestLMStudioConfig:
         assert config.temperature == 0.5
 
 
-class TestOllamaConfig:
-    """Test Ollama configuration."""
-
-    def test_default_config(self):
-        """Test default Ollama configuration values."""
-        config = OllamaConfig()
-
-        assert config.base_url == "http://localhost:11434"
-        assert config.model == "llama3.1:8b"
-        assert config.temperature == 0.7
-
-
 # TODO: Add tests for:
 # - configure_dspy_lm_studio()
-# - configure_dspy_openai()
-# - configure_dspy_ollama()
-# - setup_dspy() with different providers
+# - setup_dspy()
 # These require mocking dspy.LM and dspy.configure

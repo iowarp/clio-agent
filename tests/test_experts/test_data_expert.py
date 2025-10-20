@@ -25,7 +25,7 @@ class TestDataExpert:
 
         assert expert is not None
         assert hasattr(expert, 'forward')
-        assert hasattr(expert, 'generate')
+        assert hasattr(expert, 'agent')  # ReAct agent attribute
 
     # TODO: Add tests for:
     # - forward() method with mock DSPy predictions

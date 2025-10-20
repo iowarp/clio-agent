@@ -174,12 +174,12 @@ class DataExpert(dspy.Module):
 
     @staticmethod
     def get_capabilities() -> Dict[str, Any]:
-        """Return expert capabilities for orchestrator routing.
+        """Return expert capabilities for agent routing.
 
         Returns:
             Dictionary with name, description, keywords, priority
 
-        Used by orchestrator to route questions to this expert.
+        Used by ClaudIO agent to route questions to this expert.
         """
         return {
             "name": "Data Expert",

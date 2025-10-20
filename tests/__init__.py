@@ -1,13 +1,20 @@
 """
 ClaudIO Test Suite
 
-Comprehensive tests for all ClaudIO components.
+Tests for ClaudIO components.
 
 Test Structure:
-- test_core/: Core functionality (config, orchestrator)
-- test_experts/: Expert module tests
-- test_tools/: MCP tool wrapper tests
-- test_integration/: End-to-end integration tests
+- test_core/: Core functionality (config, claudio agent)
+- test_experts/: DataExpert tests
+- test_tools/: MCP tool wrapper tests (placeholder)
+- test_integration/: End-to-end integration tests (placeholder)
+
+Current Test Coverage:
+- ✅ Config: LM Studio configuration
+- ✅ ClaudIO: Agent initialization and routing
+- ✅ DataExpert: Capabilities and initialization
+- 🔄 Tools: TODO
+- 🔄 Integration: TODO
 
 Running Tests:
     # All tests
@@ -17,8 +24,11 @@ Running Tests:
     pytest tests/test_core/
 
     # With coverage
-    pytest --cov=claudio tests/
+    pytest tests/ -v --cov=claudio --cov-report=html
 
-    # Verbose
-    pytest -v tests/
+    # Single test
+    pytest tests/test_experts/test_data_expert.py::TestDataExpert::test_capabilities -v
+
+Note: This is a minimal test suite. Tests focus on core functionality.
+More comprehensive testing will be added as the system expands.
 """

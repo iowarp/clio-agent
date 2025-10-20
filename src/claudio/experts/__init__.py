@@ -4,12 +4,8 @@ ClaudIO Experts Module
 Domain-specific expert modules for scientific computing tasks.
 Each expert is a DSPy module specialized for a particular domain.
 
-Production Experts:
+Production Expert:
 - DataExpert: HDF5, ADIOS, Parquet optimization
-- HPCExpert: SLURM, MPI, performance tuning
-- AnalysisExpert: Visualization, statistics, ML workflows
-- ResearchExpert: Paper search, citations, scientific context
-- WorkflowExpert: Automation, pipelines, task orchestration
 
 Usage:
     >>> from claudio.experts import DataExpert, get_all_experts
@@ -20,9 +16,10 @@ Usage:
     >>>
     >>> result = expert(
     ...     question="How do I optimize HDF5 compression?",
-    ...     context="100GB file on 64 cores"
+    ...     file_context="100GB file on 64 cores"
     ... )
-    >>> print(result.answer)
+    >>> print(result.analysis)
+    >>> print(result.recommendations)
 
 Expert Registry:
     >>> experts = get_all_experts()
@@ -43,10 +40,6 @@ if str(_src_root) not in sys.path:
     sys.path.insert(0, str(_src_root))
 
 from claudio.experts.data_expert import DataExpert
-from claudio.experts.hpc_expert import HPCExpert
-from claudio.experts.analysis_expert import AnalysisExpert
-from claudio.experts.research_expert import ResearchExpert
-from claudio.experts.workflow_expert import WorkflowExpert
 
 from typing import Dict, Any
 import dspy
@@ -68,10 +61,6 @@ def get_all_experts() -> Dict[str, dspy.Module]:
     """
     return {
         "data": DataExpert(),
-        "hpc": HPCExpert(),
-        "analysis": AnalysisExpert(),
-        "research": ResearchExpert(),
-        "workflow": WorkflowExpert(),
     }
 
 
@@ -88,19 +77,11 @@ def get_expert_capabilities() -> Dict[str, Dict[str, Any]]:
     """
     return {
         "data": DataExpert.get_capabilities(),
-        "hpc": HPCExpert.get_capabilities(),
-        "analysis": AnalysisExpert.get_capabilities(),
-        "research": ResearchExpert.get_capabilities(),
-        "workflow": WorkflowExpert.get_capabilities(),
     }
 
 
 __all__ = [
     "DataExpert",
-    "HPCExpert",
-    "AnalysisExpert",
-    "ResearchExpert",
-    "WorkflowExpert",
     "get_all_experts",
     "get_expert_capabilities",
 ]

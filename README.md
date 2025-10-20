@@ -12,13 +12,14 @@ DSPy multi-agent system for scientific computing. **Programming LLMs, not prompt
 
 ## What is ClaudIO?
 
-ClaudIO is a **DSPy-powered multi-agent system** for scientific computing that demonstrates:
+ClaudIO is a **DSPy-powered expert system** for scientific data I/O optimization that demonstrates:
 
 - **Declarative LLM Programming**: DSPy signatures instead of prompt engineering
-- **ReAct Agents**: Reasoning + Acting with MCP scientific tools
-- **Multi-Agent Orchestration**: ChainOfThought routes to domain experts
-- **FastMCP Integration**: Standard protocol for HDF5, SLURM, analysis tools
-- **Local LM Support**: LM Studio/Ollama for privacy-preserving HPC
+- **ReAct Agent**: Reasoning + Acting with MCP scientific tools
+- **Data I/O Focus**: HDF5, ADIOS, Parquet optimization
+- **FastMCP Integration**: Standard protocol for data file analysis
+- **Local LM Support**: LM Studio for privacy-preserving HPC
+- **Future-Ready**: Architecture designed for multi-expert expansion
 
 ### Architecture
 
@@ -26,9 +27,9 @@ ClaudIO is a **DSPy-powered multi-agent system** for scientific computing that d
 User Question
     ↓
 Orchestrator (DSPy ChainOfThought)
-    → Analyzes & routes
+    → Routes to DataExpert
     ↓
-Expert (DSPy ReAct)
+DataExpert (DSPy ReAct)
     Thought: "Need to analyze file"
     Action: call hdf5_analyze(filepath)
     Observation: {compression: "none"}
@@ -42,7 +43,7 @@ Expert (DSPy ReAct)
 
 ### Prerequisites
 
-- **LM Studio** running at `http://100.127.255.164:1234` with gpt-oss-20b loaded
+- **LM Studio** running at `http://100.127.255.172:1234` with gpt-oss-20b loaded
 - **UV** installed (`curl -LsSf https://astral.sh/uv/install.sh | sh`)
 - **Python 3.11+**
 
@@ -52,7 +53,7 @@ Expert (DSPy ReAct)
 # 1. Test configuration
 uv run src/claudio/config.py
 
-# 2. Test orchestrator (5 routing tests)
+# 2. Test orchestrator
 uv run src/claudio/orchestrator.py
 
 # 3. Test data expert (ReAct with tools)
@@ -69,7 +70,7 @@ $ uv run src/claudio/ui/cli.py
 
 You: How do I optimize my 100GB HDF5 file?
 
-ClaudIO via data-expert:
+ClaudIO via DataExpert:
 Based on your 100GB HDF5 file, here are optimization recommendations:
 
 1. **Compression**: Apply gzip-6 or blosc compression
@@ -89,29 +90,25 @@ Based on your 100GB HDF5 file, here are optimization recommendations:
 
 ```
 src/claudio/
-├── config.py                 # LM configuration (LM Studio/Ollama/OpenAI)
+├── config.py                 # LM configuration (LM Studio only)
 ├── orchestrator.py           # DSPy ChainOfThought router
 ├── signatures/               # DSPy signature definitions
 │   ├── orchestrator_sig.py   # Routing signature
-│   └── expert_sig.py         # Expert signatures (5 experts)
+│   └── expert_sig.py         # DataExpert signature
 ├── experts/                  # Domain expert agents
-│   ├── data_expert.py        # HDF5, ADIOS (ReAct + tools) ✅
-│   ├── hpc_expert.py         # SLURM, MPI
-│   ├── analysis_expert.py    # Visualization, stats
-│   ├── research_expert.py    # Papers, citations
-│   └── workflow_expert.py    # Automation
+│   └── data_expert.py        # HDF5, ADIOS, Parquet (ReAct + tools) ✅
 ├── tools/                    # FastMCP integration
 │   ├── mcp_wrapper.py        # FastMCP client
 │   ├── servers/
 │   │   └── hdf5_server.py    # HDF5 MCP server ✅
-│   ├── data_tools.py         # Tool wrappers
-│   └── hpc_tools.py          # HPC tools
+│   ├── data_tools.py         # Data tool wrappers
+│   └── hpc_tools.py          # HPC tool wrappers
 └── ui/
     ├── cli.py                # Rich TUI ✅
     └── api.py                # FastAPI server
 ```
 
-**Total**: ~3,700 lines of DSPy agent code
+**Total**: ~3,000 lines of DSPy agent code (simplified from 3,700)
 
 ---
 
@@ -192,9 +189,8 @@ uv run src/claudio/config.py
 uv run src/claudio/signatures/orchestrator_sig.py
 uv run src/claudio/signatures/expert_sig.py
 
-# Experts
+# DataExpert
 uv run src/claudio/experts/data_expert.py
-uv run src/claudio/experts/hpc_expert.py
 
 # Orchestrator
 uv run src/claudio/orchestrator.py
@@ -206,21 +202,14 @@ uv run src/claudio/tools/mcp_wrapper.py
 uv run src/claudio/tools/servers/hdf5_server.py --port 8000
 ```
 
-### CLI Commands
+### CLI Usage
 
 ```bash
-# Default (LM Studio)
+# Run CLI (uses LM Studio)
 uv run src/claudio/ui/cli.py
 
-# With verbose output
+# With verbose output (shows routing details)
 uv run src/claudio/ui/cli.py --verbose
-
-# With Ollama
-uv run src/claudio/ui/cli.py --ollama
-
-# With OpenAI
-export OPENAI_API_KEY=sk-...
-uv run src/claudio/ui/cli.py --openai
 ```
 
 ### CLI Commands
@@ -238,29 +227,16 @@ uv run src/claudio/ui/cli.py --openai
 
 ## LM Configuration
 
-### LM Studio (Default)
+### LM Studio (Only)
 
 ```python
 from claudio.config import setup_dspy
 
-lm = setup_dspy()  # Defaults to LM Studio
-# URL: http://100.127.255.164:1234
+lm = setup_dspy()  # Uses LM Studio
+# URL: http://100.127.255.172:1234
 # Model: openai/gpt-oss-20b
 # Cost: FREE (local)
-```
-
-### Ollama
-
-```python
-lm = setup_dspy(use_ollama=True, use_lm_studio=False, model="llama3.1:8b")
-# Fully local, privacy-preserving
-```
-
-### OpenAI
-
-```python
-lm = setup_dspy(use_openai=True, use_lm_studio=False)
-# Cloud, requires API key
+# Privacy: Data never leaves your machine
 ```
 
 ---
@@ -280,35 +256,30 @@ lm = setup_dspy(use_openai=True, use_lm_studio=False)
 ### ✅ Working
 
 - DSPy orchestrator with ChainOfThought routing
-- 5 domain experts (data, hpc, analysis, research, workflow)
-- DataExpert with ReAct + tool calling
+- DataExpert with ReAct + tool calling (HDF5, ADIOS, Parquet)
 - FastMCP HDF5 server
 - Interactive CLI
-- LM Studio/Ollama/OpenAI support
+- LM Studio support
+- Simplified, focused codebase
 
-### 🔨 In Progress
+### 🔨 Planned
 
-- More ReAct agents (upgrade remaining experts)
-- Additional FastMCP servers (SLURM, Darshan)
+- Additional expert agents (HPC, Analysis, Research, Workflow)
+- Additional FastMCP servers (SLURM, Darshan, Analysis)
 - RAG for scientific context
-- FastAPI server
-
-### 📋 Future
-
+- FastAPI server enhancements
 - Multi-agent coordination (sequential, parallel)
-- Optimization (BootstrapFewShot, MIPROv2) - optional
-- Production deployment guides
-- MLflow integration
+- Optional: Optimization (BootstrapFewShot, MIPROv2)
 
 ---
 
 ## Documentation
 
+- **src/claudio/SYSTEM_IDENTITY.md** - Current system capabilities and architecture
+- **SIMPLIFICATION_SUMMARY.md** - What changed in v0.1.0 simplification
 - **docs/CLAUDIO_ARCHITECTURE.md** - Agent-centric system design
 - **docs/DSPY_FOR_CLAUDIO.md** - DSPy implementation patterns
-- **ai-docs/DSPY/** - Complete DSPy reference (7 guides)
-- **ai-docs/example_poc/** - Original POC code
-- **CLAUDE.md** - Developer quick reference
+- **CLAUDE.md** - Developer quick reference (comprehensive)
 
 ---
 

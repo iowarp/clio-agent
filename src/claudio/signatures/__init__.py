@@ -1,7 +1,7 @@
 """
 ClaudIO Signatures Module
 
-DSPy signature definitions for all ClaudIO components.
+DSPy signature definitions for ClaudIO components.
 
 Signatures define the input/output interface for DSPy modules without
 hand-crafted prompts. Each signature specifies:
@@ -10,12 +10,8 @@ hand-crafted prompts. Each signature specifies:
 - Field descriptions: Guide DSPy's automatic prompt generation
 
 Available Signatures:
-- OrchestratorSignature: Routes questions to experts
+- MainAgentSignature: Routes questions to experts (preserved for future expansion)
 - DataExpertSignature: HDF5, ADIOS, Parquet optimization
-- HPCExpertSignature: SLURM, MPI, performance tuning
-- AnalysisExpertSignature: Visualization, statistics, ML
-- ResearchExpertSignature: Paper search, citations
-- WorkflowExpertSignature: Automation, pipeline orchestration
 
 Example:
     >>> import dspy
@@ -27,24 +23,16 @@ Example:
     >>> # Use it (DSPy generates prompts automatically)
     >>> result = predictor(
     ...     question="How to optimize HDF5?",
-    ...     context="100GB file, 64 cores"
+    ...     file_context="100GB file, 64 cores"
     ... )
 """
 
-from claudio.signatures.orchestrator_sig import OrchestratorSignature
+from claudio.signatures.main_agent_sig import MainAgentSignature
 from claudio.signatures.expert_sig import (
     DataExpertSignature,
-    HPCExpertSignature,
-    AnalysisExpertSignature,
-    ResearchExpertSignature,
-    WorkflowExpertSignature,
 )
 
 __all__ = [
-    "OrchestratorSignature",
+    "MainAgentSignature",
     "DataExpertSignature",
-    "HPCExpertSignature",
-    "AnalysisExpertSignature",
-    "ResearchExpertSignature",
-    "WorkflowExpertSignature",
 ]

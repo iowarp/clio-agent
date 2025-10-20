@@ -11,20 +11,16 @@
 """
 ClaudIO Command-Line Interface
 
-Interactive DSPy-powered TUI for scientific computing assistance.
+Interactive DSPy-powered TUI for scientific data I/O assistance.
 
 Features:
-- Multi-agent orchestration (automatic expert routing)
-- ReAct pattern (reasoning + tool calling)
+- DataExpert agent with ReAct pattern (reasoning + tool calling)
 - Rich TUI with syntax highlighting
 - Conversation history
 
 Example:
-    # Run CLI with LM Studio (default)
+    # Run CLI with LM Studio
     $ uv run src/claudio/ui/cli.py
-
-    # With Ollama
-    $ uv run src/claudio/ui/cli.py --ollama
 
     # Or from Python
     >>> from claudio.ui.cli import run_cli
@@ -49,7 +45,7 @@ if str(_src_root) not in sys.path:
     sys.path.insert(0, str(_src_root))
 
 from claudio.config import setup_dspy
-from claudio.orchestrator import ClaudIOOrchestrator
+from claudio.claudio import ClaudIO
 
 
 # ============================================================================
@@ -57,56 +53,46 @@ from claudio.orchestrator import ClaudIOOrchestrator
 # ============================================================================
 
 class ClaudIOCLI:
-    """Interactive CLI for ClaudIO multi-agent system.
+    """Interactive CLI for ClaudIO data I/O expert system.
 
     Demonstrates:
-    - DSPy orchestrator routing (ChainOfThought)
-    - Expert agents (ReAct with tools)
-    - MCP tool integration
+    - ClaudIO agent with DataExpert
+    - ReAct agent with MCP tools
     - Observable reasoning traces
 
     Attributes:
-        orchestrator: ClaudIOOrchestrator (DSPy multi-agent)
+        agent: ClaudIO (main agent instance)
         console: Rich console for pretty output
         history: Conversation history
     """
 
     def __init__(
         self,
-        use_lm_studio: bool = True,
-        use_ollama: bool = False,
-        use_openai: bool = False,
         verbose: bool = False
     ):
         """Initialize ClaudIO CLI.
 
         Args:
-            use_lm_studio: Use LM Studio (default)
-            use_ollama: Use Ollama
-            use_openai: Use OpenAI
             verbose: Show detailed routing/reasoning
         """
         self.console = Console()
         self.verbose = verbose
         self.history = []
 
-        # Setup LM
+        # Setup LM Studio
         try:
             setup_dspy(
-                use_lm_studio=use_lm_studio,
-                use_ollama=use_ollama,
-                use_openai=use_openai,
                 verbose=False  # Don't spam console during init
             )
         except Exception as e:
             self.console.print(f"\n[red]❌ Error setting up LM: {e}[/red]")
             self.console.print("\n[yellow]Troubleshooting:[/yellow]")
             self.console.print("- Ensure LM Studio is running at http://100.127.255.164:1234")
-            self.console.print("- Or use --ollama / --openai flags")
+            self.console.print("- Ensure LM Studio is running and model is loaded")
             sys.exit(1)
 
-        # Create DSPy orchestrator
-        self.orchestrator = ClaudIOOrchestrator(verbose=False)
+        # Create ClaudIO agent (already fixed above, but keeping for clarity)
+        self.agent = ClaudIO(verbose=False)
 
     def print_banner(self):
         """Print ClaudIO welcome banner."""
@@ -226,10 +212,10 @@ class ClaudIOCLI:
         return False
 
     def ask_question(self, question: str) -> dict:
-        """Ask ClaudIO a question via DSPy orchestrator.
+        """Ask ClaudIO a question via DSPy agent.
 
         Flow:
-            1. Orchestrator (ChainOfThought) → selects expert
+            1. ClaudIO (ChainOfThought) → selects expert
             2. Expert (ReAct) → reasons + calls tools → answer
             3. Display results with reasoning traces
 
@@ -244,7 +230,7 @@ class ClaudIOCLI:
             f"[#00B4FF]Analyzing with ClaudIO agents...[/#00B4FF]",
             spinner="dots"
         ):
-            result = self.orchestrator(question=question)
+            result = self.agent(question=question)
 
         return {
             "question": question,
@@ -286,7 +272,7 @@ class ClaudIOCLI:
                     if self.handle_command(user_input):
                         continue
 
-                # Ask question via DSPy orchestrator
+                # Ask question via ClaudIO agent
                 result = self.ask_question(user_input)
 
                 # Show verbose info (routing details)
@@ -335,27 +321,17 @@ class ClaudIOCLI:
 # ============================================================================
 
 def run_cli(
-    use_lm_studio: bool = True,
-    use_ollama: bool = False,
-    use_openai: bool = False,
     verbose: bool = False
 ):
-    """Run ClaudIO CLI with DSPy multi-agent system.
+    """Run ClaudIO CLI with DSPy agent.
 
     Args:
-        use_lm_studio: Use LM Studio (default - local, free)
-        use_ollama: Use Ollama (local, free)
-        use_openai: Use OpenAI (cloud, paid)
         verbose: Show routing reasoning and tool calls
 
     Example:
-        >>> run_cli()  # Default: LM Studio
-        >>> run_cli(use_ollama=True, use_lm_studio=False)  # Ollama
+        >>> run_cli()  # Uses LM Studio
     """
     cli = ClaudIOCLI(
-        use_lm_studio=use_lm_studio,
-        use_ollama=use_ollama,
-        use_openai=use_openai,
         verbose=verbose
     )
     cli.run()
@@ -365,17 +341,7 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(
-        description="ClaudIO: DSPy Multi-Agent System for Scientific Computing"
-    )
-    parser.add_argument(
-        "--ollama",
-        action="store_true",
-        help="Use Ollama (instead of LM Studio)"
-    )
-    parser.add_argument(
-        "--openai",
-        action="store_true",
-        help="Use OpenAI (cloud)"
+        description="ClaudIO: DSPy Data I/O Expert System for Scientific Computing"
     )
     parser.add_argument(
         "--verbose", "-v",
@@ -385,12 +351,6 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    # Determine which LM to use
-    use_lm_studio = not args.ollama and not args.openai
-
     run_cli(
-        use_lm_studio=use_lm_studio,
-        use_ollama=args.ollama,
-        use_openai=args.openai,
         verbose=args.verbose
     )

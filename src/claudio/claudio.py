@@ -7,45 +7,42 @@
 # ///
 
 """
-ClaudIO Orchestrator Module
+ClaudIO - Main Agent Module
 
-Multi-agent orchestration using DSPy ChainOfThought for expert routing.
+The primary ClaudIO agent that interfaces with users for data I/O optimization.
+Uses DSPy for intelligent routing to expert capabilities.
 
 Architecture:
     User Question
         ↓
-    Orchestrator (DSPy ChainOfThought)
-        ├─ Analyzes question content
-        ├─ Evaluates expert capabilities
-        └─ Selects best-fit expert
+    ClaudIO (DSPy ChainOfThought)
+        └─ Routes to DataExpert
         ↓
-    Expert (DSPy ReAct)
+    DataExpert (DSPy ReAct)
         ├─ Reasons about approach
-        ├─ Calls MCP tools
+        ├─ Calls MCP tools (HDF5, ADIOS, Parquet)
         └─ Returns answer
 
 Key Principles:
 - Program, don't prompt: Uses DSPy signatures
-- Declarative routing: ChainOfThought learns patterns
-- Tool-augmented experts: ReAct with MCP tools
+- Tool-augmented expert: ReAct with MCP tools
 - Observable: Full reasoning traces
 
 Usage:
-    >>> from claudio.orchestrator import ClaudIOOrchestrator
+    >>> from claudio import ClaudIO
     >>> from claudio.config import setup_dspy
     >>>
-    >>> # Setup LM (LM Studio running at http://100.127.255.164:1234)
+    >>> # Setup LM (LM Studio)
     >>> lm = setup_dspy()
     >>>
-    >>> # Create orchestrator
-    >>> orchestrator = ClaudIOOrchestrator()
+    >>> # Create ClaudIO agent
+    >>> agent = ClaudIO()
     >>>
-    >>> # Ask question - automatic expert routing
-    >>> result = orchestrator(question="How do I optimize HDF5 files?")
+    >>> # Ask data I/O questions
+    >>> result = agent(question="How do I optimize HDF5 files?")
     >>>
     >>> # Inspect results
     >>> print(f"Expert: {result.selected_expert}")
-    >>> print(f"Reasoning: {result.routing_reasoning}")
     >>> print(f"Answer: {result.answer}")
 """
 
@@ -62,54 +59,50 @@ if str(_src_root) not in sys.path:
     sys.path.insert(0, str(_src_root))
 
 # Import signatures
-from claudio.signatures.orchestrator_sig import OrchestratorSignature
+from claudio.signatures.main_agent_sig import MainAgentSignature
 
 # Import experts
 from claudio.experts import (
     get_all_experts,
     get_expert_capabilities,
     DataExpert,
-    HPCExpert,
-    AnalysisExpert,
-    ResearchExpert,
-    WorkflowExpert
 )
 
 
 # ============================================================================
-# ORCHESTRATOR MODULE
+# CLAUDIO MAIN AGENT
 # ============================================================================
 
-class ClaudIOOrchestrator(dspy.Module):
-    """Main ClaudIO orchestrator for multi-expert routing.
+class ClaudIO(dspy.Module):
+    """ClaudIO - Main agent for scientific data I/O optimization.
 
-    Routes user questions to the most appropriate domain expert using
-    DSPy ChainOfThought reasoning. Learns optimal routing from usage data
-    via MIPROv2 optimization.
+    The primary interface between users and data I/O expertise.
+    Routes questions to DataExpert using DSPy ChainOfThought reasoning.
 
     Attributes:
         router: DSPy ChainOfThought module for expert selection
-        experts: Dictionary of available expert instances
-        expert_capabilities: Metadata about expert capabilities
+        experts: Dictionary containing DataExpert instance
+        expert_capabilities: Metadata about DataExpert capabilities
 
     Example:
-        >>> orchestrator = ClaudIOOrchestrator()
-        >>> result = orchestrator(question="Optimize my SLURM job")
-        >>> # Routes to HPCExpert automatically
+        >>> agent = ClaudIO()
+        >>> result = agent(question="Optimize my HDF5 file")
+        >>> # Routes to DataExpert and returns optimized answer
     """
 
     def __init__(self, verbose: bool = False):
-        """Initialize ClaudIO orchestrator.
+        """Initialize ClaudIO agent.
 
         Args:
-            verbose: If True, print routing decisions
+            verbose: If True, print routing decisions and expert reasoning
         """
         super().__init__()
 
         # Router uses ChainOfThought for expert selection reasoning
-        self.router = dspy.ChainOfThought(OrchestratorSignature)
+        # (preserved for future multi-expert expansion)
+        self.router = dspy.ChainOfThought(MainAgentSignature)
 
-        # Load all experts
+        # Load data expert only
         self.experts = get_all_experts()
         self.expert_capabilities = get_expert_capabilities()
 
@@ -120,13 +113,11 @@ class ClaudIOOrchestrator(dspy.Module):
         """Format expert capabilities for the router.
 
         Returns:
-            Formatted string describing all experts and their capabilities
+            Formatted string describing DataExpert capabilities
 
         Example output:
             - data: HDF5, ADIOS, Parquet optimization expert
               Keywords: hdf5, adios, parquet, compression, chunking
-            - hpc: SLURM, MPI, HPC performance expert
-              Keywords: slurm, mpi, darshan, performance, cluster
         """
         lines = []
         for expert_id, caps in self.expert_capabilities.items():
@@ -135,10 +126,10 @@ class ClaudIOOrchestrator(dspy.Module):
         return "\n".join(lines)
 
     def _get_expert_context(self, expert_id: str) -> str:
-        """Get relevant context for specific expert.
+        """Get relevant context for data expert.
 
         Args:
-            expert_id: Expert identifier (data, hpc, analysis, research, workflow)
+            expert_id: Expert identifier (data)
 
         Returns:
             Context string for the expert
@@ -165,7 +156,7 @@ class ClaudIOOrchestrator(dspy.Module):
             1. ChainOfThought analyzes question → selects expert
             2. Get expert instance from registry
             3. Expert (ReAct) processes question → calls tools → returns answer
-            4. Orchestrator assembles full response with traces
+            4. ClaudIO assembles full response with traces
 
         Args:
             question: User's question or request
@@ -181,7 +172,8 @@ class ClaudIOOrchestrator(dspy.Module):
                 - [tool_calls]: MCP tools used (if available)
 
         Example:
-            >>> result = orchestrator(
+            >>> agent = ClaudIO()
+            >>> result = agent(
             ...     question="My HDF5 file is 100GB, how do I optimize it?",
             ...     context="Using parallel HDF5 on 64 cores"
             ... )
@@ -199,8 +191,8 @@ class ClaudIOOrchestrator(dspy.Module):
         )
 
         if self.verbose:
-            print(f"\n[Orchestrator] Routing reasoning: {routing.reasoning}")
-            print(f"[Orchestrator] Selected expert: {routing.selected_expert}")
+            print(f"\n[ClaudIO] Routing reasoning: {routing.reasoning}")
+            print(f"\n[ClaudIO] Selected expert: {routing.selected_expert}")
 
         # STEP 2: Normalize and Validate Expert Selection
         # =================================================
@@ -213,7 +205,7 @@ class ClaudIOOrchestrator(dspy.Module):
         # Fallback logic if expert not found
         if expert_id not in self.experts:
             if self.verbose:
-                print(f"[Orchestrator] Unknown expert '{expert_id}', using 'data' as fallback")
+                print(f"[ClaudIO] Unknown expert '{expert_id}', using 'data' as fallback")
             expert_id = "data"
 
         # STEP 3: Get Expert and Prepare Context
@@ -223,38 +215,12 @@ class ClaudIOOrchestrator(dspy.Module):
 
         # STEP 4: Execute Expert with Expert-Specific Fields
         # ====================================================
-        # Each expert has its own input/output structure (POC pattern)
+        # DataExpert has specific input/output structure
         try:
-            # Call expert with appropriate context field name
-            if expert_id == "data":
-                result = expert(question=question, file_context=expert_context)
-                # Data expert returns: analysis + recommendations
-                answer = f"{result.analysis}\n\n**Recommendations:**\n{result.recommendations}"
-
-            elif expert_id == "hpc":
-                result = expert(question=question, cluster_context=expert_context)
-                # HPC expert returns: diagnosis + solution
-                answer = f"**Diagnosis:**\n{result.diagnosis}\n\n**Solution:**\n{result.solution}"
-
-            elif expert_id == "analysis":
-                result = expert(question=question, data_context=expert_context)
-                # Analysis expert returns: approach + code_example
-                answer = f"{result.approach}\n\n**Code Example:**\n```python\n{result.code_example}\n```"
-
-            elif expert_id == "research":
-                result = expert(question=question, research_context=expert_context)
-                # Research expert returns: findings + methodology
-                answer = f"**Findings:**\n{result.findings}\n\n**Methodology:**\n{result.methodology}"
-
-            elif expert_id == "workflow":
-                result = expert(question=question, workflow_context=expert_context)
-                # Workflow expert returns: design + implementation
-                answer = f"**Workflow Design:**\n{result.design}\n\n**Implementation:**\n{result.implementation}"
-
-            else:
-                # Fallback for unknown expert
-                result = expert(question=question, file_context=expert_context)
-                answer = str(result)
+            # Call data expert with appropriate context field name
+            result = expert(question=question, file_context=expert_context)
+            # Data expert returns: analysis + recommendations
+            answer = f"{result.analysis}\n\n**Recommendations:**\n{result.recommendations}"
 
             # Extract additional metadata
             extra_fields = {}
@@ -272,7 +238,7 @@ class ClaudIOOrchestrator(dspy.Module):
         except Exception as e:
             # Graceful error handling
             if self.verbose:
-                print(f"[Orchestrator] Error executing {expert_id}: {e}")
+                print(f"[ClaudIO] Error executing {expert_id}: {e}")
                 import traceback
                 traceback.print_exc()
 
@@ -304,25 +270,25 @@ class ClaudIOOrchestrator(dspy.Module):
 # HELPER FUNCTIONS
 # ============================================================================
 
-def load_optimized_orchestrator(path: str, verbose: bool = False) -> ClaudIOOrchestrator:
-    """Load an optimized orchestrator from disk.
+def load_optimized_claudio(path: str, verbose: bool = False) -> ClaudIO:
+    """Load an optimized ClaudIO agent from disk.
 
     Args:
-        path: Path to saved orchestrator JSON
+        path: Path to saved ClaudIO JSON
         verbose: If True, print loading info
 
     Returns:
-        Optimized ClaudIOOrchestrator instance
+        Optimized ClaudIO instance
 
     Example:
-        >>> orchestrator = load_optimized_orchestrator("data/compiled/orchestrator_v2.json")
+        >>> agent = load_optimized_claudio("data/compiled/claudio_v2.json")
         >>> # Use optimized version with improved routing
-        >>> result = orchestrator(question="...")
+        >>> result = agent(question="...")
     """
     # TODO: Implement loading from compiled DSPy artifacts
-    # orchestrator = ClaudIOOrchestrator(verbose=verbose)
-    # orchestrator.load(path)
-    # return orchestrator
+    # agent = ClaudIO(verbose=verbose)
+    # agent.load(path)
+    # return agent
     raise NotImplementedError("Optimization loading not yet implemented")
 
 
@@ -331,7 +297,7 @@ def load_optimized_orchestrator(path: str, verbose: bool = False) -> ClaudIOOrch
 # ============================================================================
 
 if __name__ == "__main__":
-    print("ClaudIO Orchestrator Test")
+    print("ClaudIO Agent Test")
     print("=" * 60)
 
     # Import config
@@ -339,34 +305,32 @@ if __name__ == "__main__":
 
     try:
         print("\nInitializing with LM Studio...")
-        lm = setup_dspy(use_lm_studio=True)
+        lm = setup_dspy()
 
     except Exception as e:
         print(f"\n❌ Error: {e}")
         print("Make sure LM Studio is running at the configured URL")
         sys.exit(1)
 
-    # Create orchestrator
-    print("\nCreating orchestrator...")
-    orchestrator = ClaudIOOrchestrator(verbose=True)
+    # Create ClaudIO agent
+    print("\nCreating ClaudIO agent...")
+    agent = ClaudIO(verbose=True)
 
-    # Test questions for different experts
+    # Test questions for data expert
     test_questions = [
         ("How do I optimize HDF5 compression?", "data"),
-        ("My SLURM job is running slow, help me debug it", "hpc"),
-        ("Create a visualization of my simulation results", "analysis"),
-        ("Find recent papers on I/O optimization", "research"),
-        ("Automate my data processing pipeline", "workflow"),
+        ("What's the best chunking strategy for my dataset?", "data"),
+        ("How can I improve parallel I/O performance?", "data"),
     ]
 
-    print("\nTesting expert routing...")
+    print("\nTesting ClaudIO agent...")
     print("-" * 60)
 
     for i, (question, expected_expert) in enumerate(test_questions, 1):
         print(f"\n{i}. Question: {question}")
         print(f"   Expected Expert: {expected_expert}")
 
-        result = orchestrator(question=question)
+        result = agent(question=question)
 
         print(f"   Selected Expert: {result.selected_expert}")
         print(f"   Routing: {result.routing_reasoning[:100]}...")
@@ -378,6 +342,6 @@ if __name__ == "__main__":
             print("   ⚠ Different expert selected")
 
     print("\n" + "=" * 60)
-    print("✅ Orchestrator test complete!")
+    print("✅ ClaudIO agent test complete!")
     print("\nNote: This is baseline performance without optimization.")
     print("After collecting usage logs and running MIPROv2, expect 30-50% improvement.")

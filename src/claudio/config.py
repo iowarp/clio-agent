@@ -9,19 +9,12 @@
 """
 ClaudIO Configuration Module
 
-Centralized configuration for LM providers (LM Studio, Ollama, OpenAI).
-Supports both local and cloud LLM providers with automatic fallback.
+Centralized configuration for LM Studio provider.
+Supports local LLM provider for development.
 
 Usage:
-    # Local LM Studio (primary for development)
     >>> from claudio.config import setup_dspy
-    >>> lm = setup_dspy(use_lm_studio=True)
-
-    # Cloud OpenAI (fallback or optimization)
-    >>> lm = setup_dspy(use_openai=True)
-
-    # Local Ollama
-    >>> lm = setup_dspy(use_ollama=True, model="llama3.1:8b")
+    >>> lm = setup_dspy()
 """
 
 import dspy
@@ -40,7 +33,7 @@ class LMStudioConfig:
 
     Default settings optimized for WSL2 → Windows host setup.
     """
-    base_url: str = "http://100.127.255.164:1234"
+    base_url: str = "http://100.127.255.172:1234"
     model: str = "openai/gpt-oss-20b"
     temperature: float = 1.0
     top_p: float = 1.0
@@ -49,27 +42,6 @@ class LMStudioConfig:
     api_key: str = "lm-studio"  # LM Studio doesn't validate, but LiteLLM requires non-empty
 
 
-@dataclass
-class OpenAIConfig:
-    """Configuration for OpenAI API.
-
-    Requires OPENAI_API_KEY environment variable.
-    """
-    model: str = "gpt-4o-mini"
-    temperature: float = 0.7
-    max_tokens: int = 4000
-
-
-@dataclass
-class OllamaConfig:
-    """Configuration for Ollama local models.
-
-    Default settings for local Ollama deployment.
-    """
-    base_url: str = "http://localhost:11434"
-    model: str = "llama3.1:8b"
-    temperature: float = 0.7
-    max_tokens: int = 4000
 
 
 # ============================================================================
@@ -88,7 +60,7 @@ def configure_dspy_lm_studio(config: Optional[LMStudioConfig] = None) -> dspy.LM
     Example:
         >>> lm = configure_dspy_lm_studio()
         >>> # Or with custom config
-        >>> custom_config = LMStudioConfig(base_url="http://localhost:1234")
+        >>> custom_config = LMStudioConfig(base_url="http://100.127.255.172:1234")
         >>> lm = configure_dspy_lm_studio(custom_config)
     """
     cfg = config or LMStudioConfig()
@@ -113,86 +85,15 @@ def configure_dspy_lm_studio(config: Optional[LMStudioConfig] = None) -> dspy.LM
     return lm
 
 
-def configure_dspy_openai(config: Optional[OpenAIConfig] = None) -> dspy.LM:
-    """Configure DSPy to use OpenAI.
-
-    Args:
-        config: OpenAIConfig instance. If None, uses defaults.
-
-    Returns:
-        Configured DSPy LM instance
-
-    Raises:
-        ValueError: If OPENAI_API_KEY environment variable not set
-
-    Example:
-        >>> import os
-        >>> os.environ["OPENAI_API_KEY"] = "sk-..."
-        >>> lm = configure_dspy_openai()
-    """
-    api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        raise ValueError(
-            "OPENAI_API_KEY environment variable not set. "
-            "Set it with: export OPENAI_API_KEY=sk-..."
-        )
-
-    cfg = config or OpenAIConfig()
-
-    lm = dspy.LM(
-        model=f"openai/{cfg.model}",
-        temperature=cfg.temperature,
-        max_tokens=cfg.max_tokens
-    )
-
-    return lm
-
-
-def configure_dspy_ollama(config: Optional[OllamaConfig] = None) -> dspy.LM:
-    """Configure DSPy to use Ollama.
-
-    Args:
-        config: OllamaConfig instance. If None, uses defaults.
-
-    Returns:
-        Configured DSPy LM instance
-
-    Example:
-        >>> lm = configure_dspy_ollama()
-        >>> # Or with custom model
-        >>> cfg = OllamaConfig(model="mistral:7b")
-        >>> lm = configure_dspy_ollama(cfg)
-    """
-    cfg = config or OllamaConfig()
-
-    lm = dspy.LM(
-        model=f"ollama_chat/{cfg.model}",
-        api_base=cfg.base_url,
-        temperature=cfg.temperature,
-        max_tokens=cfg.max_tokens
-    )
-
-    return lm
 
 
 def setup_dspy(
-    use_lm_studio: bool = True,  # Default to LM Studio
-    use_openai: bool = False,
-    use_ollama: bool = False,
     model: Optional[str] = None,
     verbose: bool = True
 ) -> dspy.LM:
-    """Setup DSPy with appropriate LM provider.
-
-    Automatically selects and configures the LM provider. Priority:
-    1. Explicitly enabled provider (lm_studio/openai/ollama)
-    2. Falls back to LM Studio by default
-    3. Auto-detects based on environment variables
+    """Setup DSPy with LM Studio provider.
 
     Args:
-        use_lm_studio: If True, use LM Studio (DEFAULT)
-        use_openai: If True, use OpenAI
-        use_ollama: If True, use Ollama
         model: Optional model override
         verbose: If True, print configuration info
 
@@ -200,76 +101,32 @@ def setup_dspy(
         Configured DSPy LM instance
 
     Example:
-        >>> # Use LM Studio (default)
+        >>> # Use LM Studio with default model
         >>> lm = setup_dspy()
 
-        >>> # Use OpenAI
-        >>> lm = setup_dspy(use_openai=True, use_lm_studio=False)
-
-        >>> # Use Ollama with custom model
-        >>> lm = setup_dspy(use_ollama=True, use_lm_studio=False, model="mistral:7b")
+        >>> # Use LM Studio with custom model
+        >>> lm = setup_dspy(model="mistral:7b")
     """
-    # Count explicitly requested providers
-    providers_requested = sum([use_lm_studio, use_openai, use_ollama])
-
-    # Ensure only one provider
-    if providers_requested > 1:
-        raise ValueError(
-            "Only one LM provider can be enabled at a time. "
-            f"Requested: lm_studio={use_lm_studio}, openai={use_openai}, ollama={use_ollama}"
-        )
-
-    # Configure selected provider with error handling
+    # Configure LM Studio with error handling
     try:
-        if use_lm_studio:
-            config = LMStudioConfig()
-            if model:
-                config.model = model
-            lm = configure_dspy_lm_studio(config)
+        config = LMStudioConfig()
+        if model:
+            config.model = model
+        lm = configure_dspy_lm_studio(config)
 
-            if verbose:
-                print(f"✓ Using LM Studio")
-                print(f"  URL: {config.base_url}/v1")
-                print(f"  Model: {config.model}")
-                print(f"  Temperature: {config.temperature}")
-                print(f"  Max Tokens: {config.max_tokens}")
-
-        elif use_openai:
-            config = OpenAIConfig()
-            if model:
-                config.model = model
-            lm = configure_dspy_openai(config)
-
-            if verbose:
-                print(f"✓ Using OpenAI")
-                print(f"  Model: {config.model}")
-                print(f"  Temperature: {config.temperature}")
-
-        elif use_ollama:
-            config = OllamaConfig()
-            if model:
-                config.model = model
-            lm = configure_dspy_ollama(config)
-
-            if verbose:
-                print(f"✓ Using Ollama")
-                print(f"  URL: {config.base_url}")
-                print(f"  Model: {config.model}")
-                print(f"  Temperature: {config.temperature}")
+        if verbose:
+            print(f"✓ Using LM Studio")
+            print(f"  URL: {config.base_url}/v1")
+            print(f"  Model: {config.model}")
+            print(f"  Temperature: {config.temperature}")
+            print(f"  Max Tokens: {config.max_tokens}")
 
     except Exception as e:
-        print(f"\n❌ Failed to configure LM provider: {e}")
+        print(f"\n❌ Failed to configure LM Studio: {e}")
         print("\nTroubleshooting:")
-        if use_lm_studio:
-            print("  • Ensure LM Studio is running")
-            print(f"  • Check server is accessible at {LMStudioConfig().base_url}")
-            print("  • Verify model is loaded in LM Studio")
-        elif use_openai:
-            print("  • Set OPENAI_API_KEY environment variable")
-            print("  • export OPENAI_API_KEY=sk-...")
-        elif use_ollama:
-            print("  • Ensure Ollama is running: ollama serve")
-            print("  • Pull model: ollama pull llama3.1:8b")
+        print("  • Ensure LM Studio is running")
+        print(f"  • Check server is accessible at {LMStudioConfig().base_url}")
+        print("  • Verify model is loaded in LM Studio")
         raise
 
     # Configure DSPy globally
@@ -289,7 +146,7 @@ if __name__ == "__main__":
     try:
         # Test LM Studio configuration
         print("\n1. Testing LM Studio configuration...")
-        lm = setup_dspy(use_lm_studio=True)
+        lm = setup_dspy()
 
         # Simple test prediction
         print("\n2. Testing simple prediction...")
@@ -304,5 +161,3 @@ if __name__ == "__main__":
         print("\nTroubleshooting:")
         print("- Ensure LM Studio is running at configured URL")
         print("- Check that model is loaded in LM Studio")
-        print("- For OpenAI: export OPENAI_API_KEY=sk-...")
-        print("- For Ollama: ensure ollama service is running")

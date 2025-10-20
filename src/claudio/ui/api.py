@@ -49,7 +49,7 @@ if str(_src_root) not in sys.path:
     sys.path.insert(0, str(_src_root))
 
 from claudio.config import setup_dspy
-from claudio.orchestrator import ClaudIOOrchestrator
+from claudio.claudio import ClaudIO
 from claudio.experts import get_expert_capabilities
 
 
@@ -91,24 +91,15 @@ class HealthResponse(BaseModel):
 # APP INITIALIZATION
 # ============================================================================
 
-def create_app(
-    use_lm_studio: bool = True,
-    use_ollama: bool = False,
-    use_openai: bool = False
-) -> FastAPI:
+def create_app() -> FastAPI:
     """Create FastAPI application.
-
-    Args:
-        use_lm_studio: Use LM Studio (default)
-        use_ollama: Use Ollama
-        use_openai: Use OpenAI
 
     Returns:
         Configured FastAPI app
     """
     app = FastAPI(
         title="ClaudIO API",
-        description="Self-Evolving AI Agent for Scientific Computing",
+        description="DSPy Data I/O Expert System for Scientific Computing",
         version="0.1.0"
     )
 
@@ -121,15 +112,12 @@ def create_app(
         allow_headers=["*"],
     )
 
-    # Initialize ClaudIO
+    # Initialize ClaudIO agent with LM Studio
     try:
         setup_dspy(
-            use_lm_studio=use_lm_studio,
-            use_ollama=use_ollama,
-            use_openai=use_openai,
             verbose=False
         )
-        app.state.orchestrator = ClaudIOOrchestrator()
+        app.state.agent = ClaudIO()
     except Exception as e:
         print(f"Error initializing ClaudIO: {e}")
         print("\nEnsure LM Studio is running at http://100.127.255.164:1234")
@@ -191,10 +179,10 @@ async def ask_question(request: QuestionRequest):
         ```
     """
     try:
-        orchestrator: ClaudIOOrchestrator = app.state.orchestrator
+        agent: ClaudIO = app.state.agent
 
         # Route and get answer
-        result = orchestrator(
+        result = agent(
             question=request.question,
             context=request.context
         )
@@ -236,13 +224,13 @@ async def ask_question_stream(request: QuestionRequest):
     async def event_generator() -> AsyncGenerator[str, None]:
         """Generate SSE events."""
         try:
-            orchestrator: ClaudIOOrchestrator = app.state.orchestrator
+            agent: ClaudIO = app.state.agent
 
             # Send routing event
             yield f"event: routing\\ndata: {{\"status\": \"routing\"}}\\n\\n"
 
             # Get answer
-            result = orchestrator(
+            result = agent(
                 question=request.question,
                 context=request.context
             )
@@ -307,13 +295,13 @@ async def get_version():
     """
     return {
         "version": "0.1.0",
-        "system": "ClaudIO Multi-Agent System",
+        "system": "ClaudIO Data I/O Expert System",
         "experts": list(get_expert_capabilities().keys()),
         "features": [
-            "Multi-agent orchestration",
-            "Expert routing",
-            "Tool-augmented reasoning",
-            "Local LM support"
+            "Data I/O expert agent",
+            "ReAct reasoning pattern",
+            "MCP tool integration",
+            "Local LM Studio support"
         ]
     }
 
@@ -330,17 +318,11 @@ if __name__ == "__main__":
     parser.add_argument("--host", default="0.0.0.0", help="Host to bind to")
     parser.add_argument("--port", type=int, default=8000, help="Port to bind to")
     parser.add_argument("--reload", action="store_true", help="Enable auto-reload")
-    parser.add_argument("--ollama", action="store_true", help="Use Ollama instead of LM Studio")
-    parser.add_argument("--openai", action="store_true", help="Use OpenAI instead of LM Studio")
 
     args = parser.parse_args()
 
-    # Create app with selected LM
-    app = create_app(
-        use_lm_studio=not args.ollama and not args.openai,
-        use_ollama=args.ollama,
-        use_openai=args.openai
-    )
+    # Create app with LM Studio
+    app = create_app()
 
     print(f"\nStarting ClaudIO API server at http://{args.host}:{args.port}")
     print("API docs at: http://localhost:8000/docs\n")
