@@ -32,31 +32,26 @@ if str(_src_root) not in sys.path:
 # ============================================================================
 
 class DataExpertSignature(dspy.Signature):
-    """Scientific data I/O expert for HDF5, ADIOS, Parquet optimization.
+    """Expert for scientific data I/O optimization.
 
-    Provides analysis and actionable recommendations for:
-    - File format optimization (compression, chunking)
-    - I/O performance tuning
-    - Parallel HDF5/ADIOS configuration
-    - Data layout strategies
+    Input:
+        - question: Question about data files or I/O
+        - file_context: File details
+        - history: Conversation history
+
+    Output:
+        - analysis: Technical analysis
+        - recommendations: Actionable steps
     """
 
     # Input fields
-    question: str = dspy.InputField(
-        desc="User's question about scientific data files, formats, or I/O optimization"
-    )
-    file_context: str = dspy.InputField(
-        desc="File information: paths, sizes, formats, access patterns, cluster configuration",
-        default=""
-    )
+    question: str = dspy.InputField(desc="Question about data I/O")
+    file_context: str = dspy.InputField(desc="File details", default="")
+    history: dspy.History = dspy.InputField(desc="Conversation history")
 
-    # Output fields - structured like POC
-    analysis: str = dspy.OutputField(
-        desc="Technical analysis of the data I/O problem, file characteristics, and bottlenecks"
-    )
-    recommendations: str = dspy.OutputField(
-        desc="Specific actionable recommendations: compression settings, chunking strategies, tools to use"
-    )
+    # Output fields
+    analysis: str = dspy.OutputField(desc="Technical analysis")
+    recommendations: str = dspy.OutputField(desc="Actionable recommendations")
 
 
 
@@ -76,7 +71,8 @@ if __name__ == "__main__":
 
     for name, sig_class in signatures:
         print(f"\n{name}:")
-        print(f"  Docstring: {sig_class.__doc__.split('.')[0]}...")
+        doc = sig_class.__doc__.split('.')[0] if sig_class.__doc__ else 'No docstring'
+        print(f"  Docstring: {doc}...")
 
         print("  Input fields:")
         for field_name in sig_class.input_fields:

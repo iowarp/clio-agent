@@ -8,11 +8,11 @@
 
 ## Core Identity
 
-**I AM**: ClaudIO - a DSPy-powered expert system specialized in scientific data I/O optimization (HDF5, ADIOS, Parquet).
+**I AM**: ClaudIO - an expert system specialized in scientific data management and optimization.
 
 **I AM NOT**: A prompt-engineered chatbot, a simple wrapper, or a manual agent framework.
 
-**MY PHILOSOPHY**: Programming LLMs through DSPy signatures, not prompting them. Reasoning + Acting through ReAct agents. Tool-augmented intelligence via FastMCP.
+**MY PHILOSOPHY**: Programming LLMs through DSPy signatures, not prompting them. Reasoning + Acting through ReAct agents. Tool-augmented intelligence via IoWarp-MCPs.
 
 ---
 
@@ -21,14 +21,16 @@
 ```
 User Question
     ↓
-ClaudIO Orchestrator (ChainOfThought)
+ClaudIO Main Agent 
     ├─ Analyzes question content
-    └─ Routes to DataExpert
+    ├─ Applies routing logic or answers directly
+    └─ Routes to one or more Experts
     ↓
 DataExpert (ReAct)
     ├─ Reasons about problem
     ├─ Calls MCP tools
-    └─ Returns structured output
+    ├─ Processes tool results and reasons further
+    ├─ Generates final reponse and returns structured output
     ↓
 Response Assembly
     └─ Formatted answer to user
@@ -42,38 +44,22 @@ Response Assembly
 
 | Expert | Domain | Tools | Output Structure |
 |--------|--------|-------|-----------------|
-| **data** | HDF5, ADIOS, Parquet I/O | hdf5_*, adios_*, parquet_* | analysis + recommendations |
+| **data** | Formats(HDF5, ADIOS, Parquet) | hdf5_*, adios_*, parquet_* | data reading, writing, and handling |
 
 ### Future Expansion (Routing Logic Preserved)
 
-The orchestrator maintains routing capability for future expert additions:
+The main agent maintains routing capability for future expert additions:
 - HPC Expert (SLURM, MPI, Performance)
 - Analysis Expert (Visualization, Statistics)
-- Research Expert (Papers, Citations)
+- Academic Expert (Papers, Citations)
 - Workflow Expert (Automation, Pipelines)
-
----
-
-## DSPy Agent Patterns
-
-**ReAct** (DataExpert):
-- **Thought**: Reason about next step
-- **Action**: Call appropriate tool
-- **Observation**: Process tool result
-- **Iterate**: Continue until solved
-
-**ChainOfThought** (Orchestrator):
-- Step-by-step reasoning for routing
-- Observable thought process
-- Transparent decision-making
 
 ---
 
 ## FastMCP Tool Integration
 
 **Current Tools**:
-- HDF5 Server: analyze, optimize, list datasets
-- (More servers planned: SLURM, Darshan, Analysis)
+- None (IoWarp-mcp servers planned to be added, starting with HDF5)
 
 **Tool Philosophy**:
 - Tools are optional (graceful degradation)
@@ -109,41 +95,6 @@ DataExpert returns **structured outputs** assembled as:
 ```python
 # Data Expert
 result.analysis + "\n\n**Recommendations:**\n" + result.recommendations
-```
-
----
-
-## Scientific Computing Patterns
-
-### Data I/O Optimization (DataExpert Domain)
-
-**HDF5 Best Practices**:
-- Compression: gzip-6 (balanced), blosc (parallel), lzf (speed)
-- Chunking: 100KB-10MB chunks, match access patterns
-- Parallel I/O: MPI-IO collective for large datasets
-
-**ADIOS Best Practices**:
-- BP5 format for modern workflows
-- Compression: SZ, ZFP for scientific data
-- Asynchronous I/O for overlapping compute/IO
-
-**Parquet Best Practices**:
-- Row group size: 100K-1M rows for analytics
-- Compression: snappy (fast), zstd (ratio)
-- Partition by query columns (timestamp, region, etc.)
-
----
-
-## Tool Usage Philosophy
-
-### When to Use Tools
-- **DataExpert**: File analysis, format conversion, optimization
-
-### Graceful Degradation
-```
-MCP Tool Available?
-├─ YES → Use ReAct with tools (optimal)
-└─ NO → Use ChainOfThought reasoning (fallback)
 ```
 
 ---
@@ -201,56 +152,6 @@ Recommendations:
 5. **Local LM Support**: Privacy-preserving for sensitive HPC data (LM Studio)
 6. **Graceful Degradation**: Works without tools, better with tools
 7. **Future-Ready**: Routing logic preserved for additional experts
-
----
-
-## Technical Implementation
-
-### Orchestrator
-- Module: `ClaudIOOrchestrator(dspy.Module)`
-- Pattern: ChainOfThought for routing
-- Signature: question + expert_list → reasoning + selected_expert
-- Current: Always routes to 'data' but preserves multi-expert logic
-
-### Expert (Current State)
-- **DataExpert**: ReAct with HDF5/ADIOS/Parquet tools ✅
-
-### Tools
-- Protocol: FastMCP (Model Context Protocol)
-- Pattern: Async MCP client → Sync wrapper for DSPy
-- Servers: HDF5 (implemented), others (planned)
-
----
-
-## Configuration
-
-### LM Provider
-- **LM Studio**: Local, privacy-preserving (default)
-- **Configuration**: `http://100.127.255.172:1234`
-- **Model**: `openai/gpt-oss-20b`
-
----
-
-## Version 0.1.0 Scope
-
-**Working**:
-- ✅ Orchestrator with routing (currently routes to data expert)
-- ✅ ChainOfThought routing logic (preserved for future)
-- ✅ DataExpert with ReAct + tools
-- ✅ FastMCP HDF5 server
-- ✅ Interactive CLI
-- ✅ LM Studio support
-
-**Simplified**:
-- ✅ Single expert focus (DataExpert only)
-- ✅ Single LM provider (LM Studio only)
-- ✅ Cleaner codebase, easier to understand
-
-**Planned**:
-- Additional ReAct expert agents
-- Additional MCP servers
-- RAG for scientific context
-- Multi-agent coordination patterns
 
 ---
 

@@ -47,7 +47,7 @@ Usage:
 """
 
 import dspy
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 import sys
 import os
 from pathlib import Path
@@ -60,6 +60,7 @@ if str(_src_root) not in sys.path:
 
 # Import signatures
 from claudio.signatures.main_agent_sig import MainAgentSignature
+from claudio.signatures.expert_sig import DataExpertSignature
 
 # Import experts
 from claudio.experts import (
@@ -68,46 +69,122 @@ from claudio.experts import (
     DataExpert,
 )
 
+# Simple conversation manager for history
+class ConversationManager:
+    def __init__(self, max_length=10):
+        self.history = []
+        self.max_length = max_length
+
+    def add_message(self, role, content):
+        self.history.append({"role": role, "content": content})
+        if len(self.history) > self.max_length:
+            self.history = self.history[-self.max_length:]
+
+    def get_history(self):
+        return dspy.History(messages=self.history)
+
+    def summarize(self, question):
+        # Simple summary
+        return dspy.Prediction(
+            summary="Conversation history summary",
+            key_topics=["data", "io"],
+            context_for_response="Previous discussions on data I/O"
+        )
+
+# Import config
+from claudio.config import (
+    configure_dspy_lm_studio,
+    configure_dspy_router_lm_studio,
+    configure_dspy_reasoner_lm_studio,
+    fetch_lm_studio_models,
+    select_models_for_agents,
+    LMStudioConfig,
+    RouterLMConfig,
+    ReasonerLMConfig
+)
+
 
 # ============================================================================
 # CLAUDIO MAIN AGENT
 # ============================================================================
 
 class ClaudIO(dspy.Module):
-    """ClaudIO - Main agent for scientific data I/O optimization.
+    """ClaudIO - Multi-agent system for conversational data I/O optimization.
 
-    The primary interface between users and data I/O expertise.
-    Routes questions to DataExpert using DSPy ChainOfThought reasoning.
+    Complex DSPy module with conversational chat, CoT reasoning, and expert integration.
+    Uses two LM instances: one for main conversational agent, one for expert analysis.
+
+    Architecture:
+        - Main Agent: Conversational, uses CoT for natural flow and routing
+        - DataExpert: ReAct with tools for detailed analysis
+        - Conversation History: Maintains context across turns
 
     Attributes:
-        router: DSPy ChainOfThought module for expert selection
-        experts: Dictionary containing DataExpert instance
-        expert_capabilities: Metadata about DataExpert capabilities
+        main_lm: LM for conversational tasks (lower temp for consistency)
+        expert_lm: LM for expert tasks (higher temp for creativity)
+        router: CoT for routing with history awareness
+        data_expert: ReAct expert with tools
+        expert_capabilities: Metadata for routing
 
     Example:
         >>> agent = ClaudIO()
-        >>> result = agent(question="Optimize my HDF5 file")
-        >>> # Routes to DataExpert and returns optimized answer
+        >>> history = dspy.History([])
+        >>> result = agent(question="Optimize my HDF5 file", history=history)
     """
 
     def __init__(self, verbose: bool = False):
-        """Initialize ClaudIO agent.
+        """Initialize ClaudIO multi-agent system.
 
         Args:
-            verbose: If True, print routing decisions and expert reasoning
+            verbose: If True, print reasoning and decisions
         """
+        self.verbose = verbose
         super().__init__()
 
-        # Router uses ChainOfThought for expert selection reasoning
-        # (preserved for future multi-expert expansion)
-        self.router = dspy.ChainOfThought(MainAgentSignature)
+        # Fetch available models from LM Studio
+        available_models = fetch_lm_studio_models()
+        if self.verbose:
+            print(f"Available models from LM Studio: {available_models}")
 
-        # Load data expert only
+        # Select models for main and expert
+        main_model, expert_model = select_models_for_agents(available_models)
+        if self.verbose:
+            print(f"Selected main model: {main_model}")
+            print(f"Selected expert model: {expert_model}")
+
+        # Configure LM instances for swarm
+        main_config = LMStudioConfig(model=main_model)  # Main agent
+        router_config = RouterLMConfig(model=main_model)  # Deterministic routing (same as main)
+        reasoner_config = ReasonerLMConfig(model=expert_model)  # Creative reasoning
+
+        # Set router LM (deterministic)
+        with dspy.context(lm=configure_dspy_router_lm_studio(router_config)):
+            self.router = dspy.ChainOfThought(MainAgentSignature)
+
+        # Set reasoner LM (creative)
+        with dspy.context(lm=configure_dspy_reasoner_lm_studio(reasoner_config), adapter=dspy.ChatAdapter()):
+            self.data_expert = DataExpert(use_tools=True)  # ReAct with ChatAdapter for Granite
+
+        # Load capabilities for routing
         self.experts = get_all_experts()
         self.expert_capabilities = get_expert_capabilities()
 
+        # Swarm: Parallel executor for multi-agent (reduced to avoid queuing)
+        self.parallel = dspy.Parallel(num_threads=1)
+
+        # Conversation manager for history
+        self.conversation_manager = ConversationManager(max_length=10)
+
         # Configuration
         self.verbose = verbose
+
+    def add_to_history(self, role: str, content: str):
+        """Add message to history."""
+        self.conversation_manager.add_message(role, content)
+
+    def get_history(self) -> dspy.History:
+        """Get history as dspy.History."""
+        return self.conversation_manager.get_history()
 
     def _format_capabilities(self) -> str:
         """Format expert capabilities for the router.
@@ -116,10 +193,14 @@ class ClaudIO(dspy.Module):
             Formatted string describing DataExpert capabilities
 
         Example output:
+            - none: General chat and non-data questions
+              Keywords: hi, hello, who are you, general
             - data: HDF5, ADIOS, Parquet optimization expert
               Keywords: hdf5, adios, parquet, compression, chunking
         """
         lines = []
+        lines.append("- none: General chat and non-data questions")
+        lines.append("  Keywords: hi, hello, who are you, general, introduction")
         for expert_id, caps in self.expert_capabilities.items():
             lines.append(f"- {expert_id}: {caps['description']}")
             lines.append(f"  Keywords: {', '.join(caps['keywords'])}")
@@ -146,7 +227,7 @@ class ClaudIO(dspy.Module):
         # TODO: Integrate with knowledge base
         return ""
 
-    def forward(self, question: str, context: Optional[str] = None) -> dspy.Prediction:
+    def forward(self, question: str, history: Optional[dspy.History] = None, context: Optional[str] = None) -> dspy.Prediction:
         """Route question to appropriate expert and get answer.
 
         This is the main entry point for ClaudIO. It demonstrates DSPy's
@@ -160,35 +241,58 @@ class ClaudIO(dspy.Module):
 
         Args:
             question: User's question or request
+            history: Conversation history for context-aware responses
             context: Optional additional context
 
         Returns:
             dspy.Prediction with fields:
-                - routing_reasoning: Why this expert was selected
-                - selected_expert: Expert ID that was used
-                - answer: Expert's response
-                - [expert_reasoning]: Expert's thought process (if available)
+                - routing_reasoning: Step-by-step why expert was selected
+                - selected_expert: Expert ID ('data' or 'none')
+                - answer: Conversational response with expert analysis
+                - [expert_reasoning]: Expert's CoT (if available)
                 - [recommendations]: Structured recommendations (if available)
-                - [tool_calls]: MCP tools used (if available)
+                - [trajectory]: Tool calls and observations (if available)
 
         Example:
             >>> agent = ClaudIO()
+            >>> history = dspy.History(messages=[])
             >>> result = agent(
             ...     question="My HDF5 file is 100GB, how do I optimize it?",
+            ...     history=history,
             ...     context="Using parallel HDF5 on 64 cores"
             ... )
             >>> print(result.selected_expert)  # "data"
-            >>> print(result.routing_reasoning)  # ChainOfThought reasoning
-            >>> print(result.answer)  # Expert's answer (from ReAct)
+            >>> print(result.routing_reasoning)  # Step-by-step reasoning
+            >>> print(result.answer)  # Conversational response
         """
 
-        # STEP 1: Expert Selection (DSPy ChainOfThought)
-        # ================================================
-        # Uses ChainOfThought to reason about which expert is best suited
-        routing = self.router(
-            question=question,
-            available_experts=self._format_capabilities()
-        )
+        # STEP 1: Swarm Routing and Expert (Parallel Execution with History)
+        # ==================================================================
+        # Use history buffer for context
+        current_history = self.get_history() if not history else history
+
+        # Run routing and expert in parallel for faster processing
+        def route_task():
+            return self.router(
+                question=question,
+                available_experts=self._format_capabilities(),
+                history=current_history
+            )
+
+        def expert_task():
+            try:
+                expert = self.experts.get("data", self.data_expert)
+                return expert(question=question, file_context="", history=current_history)
+            except Exception as e:
+                # Fallback if expert fails
+                return dspy.Prediction(
+                    analysis=f"Error in expert: {str(e)}. Fallback: For data I/O questions, consider HDF5 compression and chunking strategies.",
+                    recommendations="1. Use gzip compression for HDF5.\n2. Choose chunk sizes based on access patterns.\n3. Enable parallel I/O for large datasets."
+                )
+
+        # Parallel execution
+        results = self.parallel([(route_task, {}), (expert_task, {})])
+        routing, expert_result = results
 
         if self.verbose:
             print(f"\n[ClaudIO] Routing reasoning: {routing.reasoning}")
@@ -202,43 +306,47 @@ class ClaudIO(dspy.Module):
         if ' ' in expert_id:
             expert_id = expert_id.split()[0]
 
+        # Handle 'none' for general chat
+        if expert_id == "none":
+            if self.verbose:
+                print(f"[ClaudIO] General chat detected, responding directly")
+            answer = "Hi! I'm ClaudIO, your friendly guide to scientific data I/O optimization. I can help with HDF5, ADIOS, Parquet, and more. What would you like to know?"
+            return dspy.Prediction(
+                routing_reasoning=routing.reasoning,
+                selected_expert="none",
+                answer=answer
+            )
+
         # Fallback logic if expert not found
         if expert_id not in self.experts:
             if self.verbose:
                 print(f"[ClaudIO] Unknown expert '{expert_id}', using 'data' as fallback")
             expert_id = "data"
 
-        # STEP 3: Get Expert and Prepare Context
-        # ========================================
-        expert = self.experts[expert_id]
-        expert_context = context or self._get_expert_context(expert_id)
-
-        # STEP 4: Execute Expert with Expert-Specific Fields
-        # ====================================================
-        # DataExpert has specific input/output structure
+        # STEP 3: Synthesize Response from Parallel Results
+        # ================================================
+        # Expert result from parallel execution
         try:
-            # Call data expert with appropriate context field name
-            result = expert(question=question, file_context=expert_context)
             # Data expert returns: analysis + recommendations
-            answer = f"{result.analysis}\n\n**Recommendations:**\n{result.recommendations}"
+            answer = f"{expert_result.analysis}\n\n**Recommendations:**\n{expert_result.recommendations}"
 
             # Extract additional metadata
             extra_fields = {}
 
             # Reasoning trace (if ChainOfThought used)
-            if hasattr(result, 'reasoning'):
-                extra_fields['expert_reasoning'] = result.reasoning
+            if hasattr(expert_result, 'reasoning'):
+                extra_fields['expert_reasoning'] = expert_result.reasoning
 
             # Tool trajectory (if ReAct used)
-            if hasattr(result, 'trajectory'):
-                extra_fields['trajectory'] = result.trajectory
+            if hasattr(expert_result, 'trajectory'):
+                extra_fields['trajectory'] = expert_result.trajectory
                 # Count tool calls
-                extra_fields['num_tool_calls'] = len(result.trajectory) if result.trajectory else 0
+                extra_fields['num_tool_calls'] = len(expert_result.trajectory) if expert_result.trajectory else 0
 
         except Exception as e:
             # Graceful error handling
             if self.verbose:
-                print(f"[ClaudIO] Error executing {expert_id}: {e}")
+                print(f"[ClaudIO] Error in expert result: {e}")
                 import traceback
                 traceback.print_exc()
 
@@ -256,14 +364,20 @@ class ClaudIO(dspy.Module):
                 'error_type': type(e).__name__
             }
 
-        # STEP 5: Assemble Response
-        # ==========================
-        return dspy.Prediction(
+        # STEP 5: Assemble Response and Update History
+        # ============================================
+        response = dspy.Prediction(
             routing_reasoning=routing.reasoning,
             selected_expert=expert_id,
             answer=answer,
             **extra_fields
         )
+
+        # Update history buffer
+        self.add_to_history("user", question)
+        self.add_to_history("assistant", answer)
+
+        return response
 
 
 # ============================================================================
@@ -330,7 +444,8 @@ if __name__ == "__main__":
         print(f"\n{i}. Question: {question}")
         print(f"   Expected Expert: {expected_expert}")
 
-        result = agent(question=question)
+        history = dspy.History(messages=[])
+        result = agent(question=question, history=history)
 
         print(f"   Selected Expert: {result.selected_expert}")
         print(f"   Routing: {result.routing_reasoning[:100]}...")

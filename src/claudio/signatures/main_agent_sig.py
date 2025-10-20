@@ -34,54 +34,46 @@ if str(_src_root) not in sys.path:
 
 
 class MainAgentSignature(dspy.Signature):
-    """Route user questions to the most appropriate domain expert.
-
-    The ClaudIO main agent analyzes the user's question and selects the best expert.
-    Currently only DataExpert is implemented, but routing logic is preserved
-    for future expansion to additional experts.
+    """Route questions to the appropriate expert for data I/O optimization.
 
     Input:
-        - question: User's question or request
-        - available_experts: List of experts with their capabilities
+        - question: User's question about data files or I/O
+        - available_experts: List of experts and their skills
+        - history: Conversation history for context
 
     Output:
-        - reasoning: Analysis of why a specific expert is best suited
-        - selected_expert: ID of the selected expert (currently only 'data' available)
-
-    Example DSPy Usage:
-        >>> router = dspy.ChainOfThought(MainAgentSignature)
-        >>> result = router(
-        ...     question="How do I optimize HDF5 compression?",
-        ...     available_experts="data: HDF5/ADIOS/Parquet expert\\n..."
-        ... )
-        >>> print(result.selected_expert)  # "data"
-        >>> print(result.reasoning)  # "Question asks about HDF5 optimization..."
+        - reasoning: Why this expert is best
+        - selected_expert: Expert ID or 'none'
     """
 
     # Input fields
-    question: str = dspy.InputField(
-        desc="User's question or request about scientific computing tasks"
-    )
+    question: str = dspy.InputField(desc="User's question about data I/O")
+    available_experts: str = dspy.InputField(desc="Available experts and skills")
+    history: dspy.History = dspy.InputField(desc="Conversation history")
+
+    # Output fields
+    reasoning: str = dspy.OutputField(desc="Why this expert is selected")
+    selected_expert: str = dspy.OutputField(desc="Expert ID or 'none'")
     available_experts: str = dspy.InputField(
         desc=(
-            "List of available experts with their descriptions and keywords. "
-            "Format: 'expert_id: description\\n  Keywords: keyword1, keyword2, ...'"
+            "Our team of expert specialists (currently 'data' for HDF5/ADIOS/Parquet). "
+            "Format: 'expert_id: friendly description of expertise\\n  Keywords: relevant topics they handle' - I'll match based on keywords and history"
         )
+    )
+    history: dspy.History = dspy.InputField(
+        desc="Our ongoing conversation history - step-by-step context of previous questions, answers, and evolving needs for better matching and natural flow"
     )
 
     # Output fields
     reasoning: str = dspy.OutputField(
         desc=(
-            "Detailed analysis of the question content, identifying key topics, "
-            "domains, and why a specific expert is the best match. "
-            "Consider: domain keywords, task complexity, required tools."
+            "Step-by-step analysis: Break down the question, consider history patterns, identify key topics, "
+            "and explain why 'data' expert (or direct response) is best. Make it engaging and contextual."
         )
     )
     selected_expert: str = dspy.OutputField(
         desc=(
-            "ID of the selected expert (currently only 'data' is available, "
-            "but routing logic preserved for future expansion). "
-            "Return ONLY the expert ID, no additional text."
+            "The expert ID ('data' for data I/O tasks, 'none' for general chat). Based on step-by-step reasoning and conversation context."
         )
     )
 
@@ -102,11 +94,13 @@ if __name__ == "__main__":
 
     print("\nInput Fields:")
     for field_name, field in MainAgentSignature.input_fields.items():
-        print(f"  - {field_name}: {field.json_schema_extra.get('desc', 'No description')}")
+        desc = getattr(field, 'json_schema_extra', {}).get('desc', 'No description') if hasattr(field, 'json_schema_extra') else 'No description'
+        print(f"  - {field_name}: {desc}")
 
     print("\nOutput Fields:")
     for field_name, field in MainAgentSignature.output_fields.items():
-        print(f"  - {field_name}: {field.json_schema_extra.get('desc', 'No description')}")
+        desc = getattr(field, 'json_schema_extra', {}).get('desc', 'No description') if hasattr(field, 'json_schema_extra') else 'No description'
+        print(f"  - {field_name}: {desc}")
 
     print("\n" + "=" * 60)
     print("✅ Signature structure valid")

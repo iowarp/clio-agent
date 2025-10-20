@@ -41,7 +41,7 @@ Example:
 """
 
 import dspy
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 import sys
 from pathlib import Path
 
@@ -148,7 +148,7 @@ class DataExpert(dspy.Module):
             # Fallback to pure reasoning
             self.agent = dspy.ChainOfThought(DataExpertSignature)
 
-    def forward(self, question: str, file_context: str = "") -> dspy.Prediction:
+    def forward(self, question: str, file_context: str = "", history = None) -> dspy.Prediction:
         """Generate data I/O analysis and recommendations.
 
         Args:
@@ -170,7 +170,7 @@ class DataExpert(dspy.Module):
             >>> print(result.analysis)
             >>> print(result.recommendations)
         """
-        return self.agent(question=question, file_context=file_context)
+        return self.agent(question=question, file_context=file_context, history=history or dspy.History(messages=[]))
 
     @staticmethod
     def get_capabilities() -> Dict[str, Any]:

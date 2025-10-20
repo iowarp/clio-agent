@@ -19,27 +19,106 @@ Usage:
 
 import dspy
 import os
-from typing import Optional
+import requests
+from typing import Optional, List
 from dataclasses import dataclass
 
 
+# ============================================================================
+# LM STUDIO MODEL FETCHING
+# ============================================================================
+
+def fetch_lm_studio_models(base_url: str = "http://100.127.255.172:1234") -> List[str]:
+    """Fetch available models from LM Studio API.
+
+    Args:
+        base_url: LM Studio base URL
+
+    Returns:
+        List of model IDs
+    """
+    try:
+        response = requests.get(f"{base_url}/v1/models")
+        response.raise_for_status()
+        data = response.json()
+        models = [model['id'] for model in data['data']]
+        return models
+    except Exception as e:
+        print(f"Error fetching models from LM Studio: {e}")
+        return []
+
+
+def select_models_for_agents(models: List[str]) -> tuple[str, str]:
+    """Select main and expert models from available models.
+
+    Args:
+        models: List of available model IDs
+
+    Returns:
+        Tuple of (main_model, expert_model)
+    """
+    main_model = None
+    expert_model = None
+
+    for model in models:
+        if "gpt-oss" in model and main_model is None:
+            main_model = model
+        if "granite" in model and expert_model is None:
+            expert_model = model
+
+    if main_model is None:
+        main_model = models[0] if models else "openai/gpt-oss-20b"
+    if expert_model is None:
+        expert_model = models[1] if len(models) > 1 else main_model
+
+    return main_model, expert_model
+
+
+# ============================================================================
+# CONFIGURATION CLASSES
 # ============================================================================
 # CONFIGURATION CLASSES
 # ============================================================================
 
 @dataclass
 class LMStudioConfig:
-    """Configuration for local LM Studio.
+    """Configuration for local LM Studio main agent.
 
-    Default settings optimized for WSL2 → Windows host setup.
+    Model is dynamically selected from LM Studio API.
+    Per OpenAI/Unsloth recommendations: Temperature 1.0 for optimal reasoning;
+    max_tokens 32000 based on model card (128K context, but set to 32K for responses).
     """
     base_url: str = "http://100.127.255.172:1234"
-    model: str = "openai/gpt-oss-20b"
-    temperature: float = 1.0
+    model: str = "openai/gpt-oss-20b"  # Default, overridden by fetch
+    temperature: float = 1.0  # Recommended for gpt-oss reasoning
+    top_p: float = 1.0  # Default for gpt-oss
+    frequency_penalty: float = 1.1  # Default for gpt-oss
+    max_tokens: int = 32000  # Based on model card (128K context, 32K for responses)
+    api_key: str = "lm-studio"
+
+
+@dataclass
+class RouterLMConfig:
+    """Configuration for router LM (deterministic for accurate routing)."""
+    base_url: str = "http://100.127.255.172:1234"
+    model: str = "openai/gpt-oss-20b"  # Default, overridden by fetch
+    temperature: float = 0.3  # Low for deterministic routing
+    top_p: float = 0.8
+    frequency_penalty: float = 0.5
+    max_tokens: int = 32000
+    api_key: str = "lm-studio"
+
+
+@dataclass
+class ReasonerLMConfig:
+    """Configuration for reasoner/expert LM (dynamically selected from LM Studio)."""
+    base_url: str = "http://100.127.255.172:1234"
+    model: str = "ibm/granite-4-h-tiny"  # Default, overridden by fetch
+    temperature: float = 1.0  # High for creative reasoning
     top_p: float = 1.0
-    frequency_penalty: float = 1.1
-    max_tokens: int = 8000
-    api_key: str = "lm-studio"  # LM Studio doesn't validate, but LiteLLM requires non-empty
+    frequency_penalty: float = 0.5
+    max_tokens: int = 32000
+    api_key: str = "lm-studio"
 
 
 
@@ -49,7 +128,7 @@ class LMStudioConfig:
 # ============================================================================
 
 def configure_dspy_lm_studio(config: Optional[LMStudioConfig] = None) -> dspy.LM:
-    """Configure DSPy to use LM Studio.
+    """Configure DSPy to use LM Studio for main agent.
 
     Args:
         config: LMStudioConfig instance. If None, uses defaults.
@@ -85,6 +164,42 @@ def configure_dspy_lm_studio(config: Optional[LMStudioConfig] = None) -> dspy.LM
     return lm
 
 
+def configure_dspy_router_lm_studio(config: Optional[RouterLMConfig] = None) -> dspy.LM:
+    """Configure DSPy to use LM Studio for router (deterministic)."""
+    cfg = config or RouterLMConfig()
+    model_name = cfg.model if cfg.model.startswith("openai/") else f"openai/{cfg.model}"
+    return dspy.LM(
+        model=model_name,
+        api_base=f"{cfg.base_url}/v1",
+        api_key=cfg.api_key,
+        temperature=cfg.temperature,
+        top_p=cfg.top_p,
+        frequency_penalty=cfg.frequency_penalty,
+        model_type="chat",
+        max_tokens=cfg.max_tokens,
+        supports_response_format=False
+    )
+
+
+def configure_dspy_reasoner_lm_studio(config: Optional[ReasonerLMConfig] = None) -> dspy.LM:
+    """Configure DSPy to use LM Studio for reasoner (creative)."""
+    cfg = config or ReasonerLMConfig()
+    model_name = cfg.model if cfg.model.startswith("openai/") else f"openai/{cfg.model}"
+    return dspy.LM(
+        model=model_name,
+        api_base=f"{cfg.base_url}/v1",
+        api_key=cfg.api_key,
+        temperature=cfg.temperature,
+        top_p=cfg.top_p,
+        frequency_penalty=cfg.frequency_penalty,
+        model_type="chat",
+        max_tokens=cfg.max_tokens,
+        supports_response_format=False
+    )
+
+
+
+
 
 
 def setup_dspy(
@@ -115,11 +230,13 @@ def setup_dspy(
         lm = configure_dspy_lm_studio(config)
 
         if verbose:
-            print(f"✓ Using LM Studio")
+            print(f"✓ Using LM Studio (Main Agent)")
             print(f"  URL: {config.base_url}/v1")
             print(f"  Model: {config.model}")
-            print(f"  Temperature: {config.temperature}")
-            print(f"  Max Tokens: {config.max_tokens}")
+            print(f"  Temperature: {config.temperature} (tuned for consistent chat)")
+            print(f"  Top-P: {config.top_p} (balanced creativity)")
+            print(f"  Frequency Penalty: {config.frequency_penalty} (reduced repetition)")
+            print(f"  Max Tokens: {config.max_tokens} (longer responses)")
 
     except Exception as e:
         print(f"\n❌ Failed to configure LM Studio: {e}")
