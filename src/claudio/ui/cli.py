@@ -132,6 +132,8 @@ class ClaudIOCLI:
             ("/help", "Show this help message"),
             ("/history", "Show conversation history"),
             ("/experts", "List available experts and capabilities"),
+            ("/registry", "Show agent registry status"),
+            ("/memory", "Display ARC memory statistics"),
             ("/verbose", "Toggle verbose mode (show routing details)"),
             ("/clear", "Clear conversation history"),
             ("/quit, /exit", "Exit ClaudIO"),
@@ -162,6 +164,48 @@ class ClaudIOCLI:
             )
 
         self.console.print(experts_table)
+
+    def print_registry(self):
+        """Print agent registry status and statistics."""
+        agent_count = self.agent.registry.get_agent_count()
+        agent_ids = self.agent.registry.list_agents()
+
+        info = f"""[bold]Agent Registry Status[/bold]
+
+Registered Agents: {agent_count}
+Registry Type: Capability-Based Routing
+A2A Protocol: Enabled
+
+[cyan]Registered Agent IDs:[/cyan]
+{', '.join(agent_ids) if agent_ids else 'None'}
+
+[dim]Use /experts to see detailed agent capabilities[/dim]"""
+
+        self.console.print(Panel(info, title="Registry Status", border_style="blue"))
+
+    def print_memory(self):
+        """Display ARC memory statistics."""
+        stats = self.agent.get_arc_stats()
+
+        table = Table(title="ARC Memory Statistics")
+        table.add_column("Metric", style="cyan")
+        table.add_column("Value", style="green")
+
+        table.add_row("Cache Hit Rate", f"{stats['hit_rate']:.2%}")
+        table.add_row("Cache Size", f"{stats['size']}/{stats['capacity']}")
+        table.add_row("Cache Hits", str(stats['hits']))
+        table.add_row("Cache Misses", str(stats['misses']))
+        table.add_row("Disk Reads", str(stats.get('disk_reads', 0)))
+        table.add_row("Disk Writes", str(stats.get('disk_writes', 0)))
+
+        self.console.print(table)
+
+        # Show performance vs targets
+        hit_rate = stats['hit_rate']
+        if hit_rate >= 0.85:
+            self.console.print(f"\n[green]✓ Cache hit rate ({hit_rate:.1%}) exceeds target (85%)[/green]")
+        else:
+            self.console.print(f"\n[yellow]⚠ Cache hit rate ({hit_rate:.1%}) below target (85%)[/yellow]")
 
     def handle_command(self, user_input: str) -> bool:
         """Handle special commands.
@@ -197,6 +241,14 @@ class ClaudIOCLI:
 
         elif cmd == "/experts":
             self.print_experts()
+            return True
+
+        elif cmd == "/registry":
+            self.print_registry()
+            return True
+
+        elif cmd == "/memory":
+            self.print_memory()
             return True
 
         elif cmd == "/verbose":

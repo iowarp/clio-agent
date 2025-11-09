@@ -46,11 +46,14 @@ Usage:
     >>> print(f"Answer: {result.answer}")
 """
 
-import dspy
-from typing import Dict, Any, Optional, List
 import sys
-import os
+import time
+import uuid
+from datetime import datetime
 from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+import dspy
 
 # Add src to path for UV script execution
 _current_file = Path(__file__).resolve()
@@ -59,15 +62,28 @@ if str(_src_root) not in sys.path:
     sys.path.insert(0, str(_src_root))
 
 # Import signatures
-from claudio.signatures.main_agent_sig import MainAgentSignature
-from claudio.signatures.expert_sig import DataExpertSignature
+# Import ARC Memory components
+from claudio.arc.memory import ARCMemory
+from claudio.arc.retrieval import ContextRetriever
+from claudio.arc.schema import (
+    Conversation,
+    Invocation,
+    Message,
+    ToolCall,
+)
+from claudio.arc.schema import (
+    RoutingDecision as ARCRoutingDecision,
+)
 
 # Import experts
 from claudio.experts import (
+    DataExpert,
     get_all_experts,
     get_expert_capabilities,
-    DataExpert,
 )
+from claudio.registry.registry import AgentCapability, AgentRegistry
+from claudio.signatures.main_agent_sig import MainAgentSignature
+
 
 # Simple conversation manager for history
 class ConversationManager:
@@ -93,16 +109,14 @@ class ConversationManager:
 
 # Import config
 from claudio.config import (
-    configure_dspy_lm_studio,
-    configure_dspy_router_lm_studio,
+    LMStudioConfig,
+    ReasonerLMConfig,
+    RouterLMConfig,
     configure_dspy_reasoner_lm_studio,
+    configure_dspy_router_lm_studio,
     fetch_lm_studio_models,
     select_models_for_agents,
-    LMStudioConfig,
-    RouterLMConfig,
-    ReasonerLMConfig
 )
-
 
 # ============================================================================
 # CLAUDIO MAIN AGENT
@@ -132,11 +146,12 @@ class ClaudIO(dspy.Module):
         >>> result = agent(question="Optimize my HDF5 file", history=history)
     """
 
-    def __init__(self, verbose: bool = False):
+    def __init__(self, verbose: bool = False, data_dir: str = ".claudio"):
         """Initialize ClaudIO multi-agent system.
 
         Args:
             verbose: If True, print reasoning and decisions
+            data_dir: Base directory for ClaudIO data storage
         """
         self.verbose = verbose
         super().__init__()
@@ -153,8 +168,7 @@ class ClaudIO(dspy.Module):
             print(f"Selected expert model: {expert_model}")
 
         # Configure LM instances for swarm
-        main_config = LMStudioConfig(model=main_model)  # Main agent
-        router_config = RouterLMConfig(model=main_model)  # Deterministic routing (same as main)
+        router_config = RouterLMConfig(model=main_model)  # Deterministic routing
         reasoner_config = ReasonerLMConfig(model=expert_model)  # Creative reasoning
 
         # Set router LM (deterministic)
@@ -172,7 +186,31 @@ class ClaudIO(dspy.Module):
         # Swarm: Parallel executor for multi-agent (reduced to avoid queuing)
         self.parallel = dspy.Parallel(num_threads=1)
 
-        # Conversation manager for history
+        # Initialize ARC Memory Layer (v0.2.0)
+        self.arc = ARCMemory(data_dir=f"{data_dir}/arc", cache_capacity=1000)
+        self.context_retriever = ContextRetriever(self.arc)
+
+        # Initialize Agent Registry (v0.2.0)
+        self.registry = AgentRegistry()
+
+        # Register existing experts in registry
+        for expert_id, expert_instance in self.experts.items():
+            caps = self.expert_capabilities.get(expert_id)
+            if caps:
+                cap = AgentCapability(
+                    keywords=caps['keywords'],
+                    description=caps['description'],
+                    tools=caps.get('tools', []),
+                    specialization=expert_id,
+                    priority=5
+                )
+                self.registry.register_agent(expert_id, expert_instance, cap)
+
+        if self.verbose:
+            print(f"[ClaudIO] Registered {self.registry.get_agent_count()} experts in registry")
+            print(f"[ClaudIO] ARC Memory initialized at {data_dir}/arc")
+
+        # Conversation manager for history (legacy - kept for backward compatibility)
         self.conversation_manager = ConversationManager(max_length=10)
 
         # Configuration
@@ -185,6 +223,121 @@ class ClaudIO(dspy.Module):
     def get_history(self) -> dspy.History:
         """Get history as dspy.History."""
         return self.conversation_manager.get_history()
+
+    def get_arc_stats(self) -> Dict[str, Any]:
+        """Get ARC memory statistics.
+
+        Returns:
+            Dictionary with cache statistics including:
+                - hit_rate: Cache hit rate (0.0 to 1.0)
+                - size: Current cache size
+                - capacity: Maximum cache capacity
+                - hits: Number of cache hits
+                - misses: Number of cache misses
+                - disk_reads: Number of disk reads
+                - disk_writes: Number of disk writes
+
+        Example:
+            >>> stats = agent.get_arc_stats()
+            >>> print(f"Hit rate: {stats['hit_rate']:.2%}")
+            Hit rate: 87.5%
+        """
+        return self.arc.get_cache_stats()
+
+    def get_session_history(self, session_id: str, limit: int = 10) -> List[Conversation]:
+        """Get conversation history for session from ARC Memory.
+
+        Args:
+            session_id: Session identifier
+            limit: Maximum number of conversations to retrieve
+
+        Returns:
+            List of Conversation objects for the session
+
+        Example:
+            >>> history = agent.get_session_history("session-123", limit=5)
+            >>> for conv in history:
+            ...     print(f"Session: {conv.session_id}, Messages: {len(conv.messages)}")
+        """
+        return self.arc.get_conversation_history(session_id, limit=limit)
+
+    def _create_conversation(
+        self,
+        session_id: str,
+        question: str,
+        answer: str,
+        routing_decision: Any
+    ) -> Conversation:
+        """Create Conversation object from interaction.
+
+        Args:
+            session_id: Session identifier
+            question: User question
+            answer: Assistant answer
+            routing_decision: Routing decision from registry
+
+        Returns:
+            Conversation object ready to store in ARC
+        """
+        current_time = datetime.now().isoformat() + "Z"
+        msg_id_user = str(uuid.uuid4())
+        msg_id_assistant = str(uuid.uuid4())
+
+        # Create messages
+        user_msg = Message(
+            message_id=msg_id_user,
+            role="user",
+            content=question,
+            timestamp=current_time,
+            metadata={"source": "claudio_main"}
+        )
+
+        assistant_msg = Message(
+            message_id=msg_id_assistant,
+            role="assistant",
+            content=answer,
+            timestamp=current_time,
+            metadata={"agent": routing_decision.selected_agent}
+        )
+
+        # Create ARC routing decision
+        arc_routing = ARCRoutingDecision(
+            timestamp=current_time,
+            query=question,
+            capabilities_needed=routing_decision.matched_keywords,
+            selected_agent=routing_decision.selected_agent,
+            reasoning=routing_decision.reasoning if hasattr(routing_decision, 'reasoning') else f"Matched keywords: {routing_decision.matched_keywords}",
+            confidence=routing_decision.confidence,
+            alternatives=[
+                {"agent": fb, "score": 0.0}
+                for fb in routing_decision.fallback_agents
+            ]
+        )
+
+        # Get existing conversation or create new
+        existing_conv = self.arc.get_conversation(session_id)
+
+        if existing_conv:
+            # Append to existing conversation
+            existing_conv.messages.extend([user_msg, assistant_msg])
+            existing_conv.routing_decisions.append(arc_routing)
+            existing_conv.updated_at = current_time
+            existing_conv.last_accessed = current_time
+            return existing_conv
+        else:
+            # Create new conversation
+            return Conversation(
+                session_id=session_id,
+                user_id="default_user",  # TODO: Add user tracking
+                created_at=current_time,
+                updated_at=current_time,
+                last_accessed=current_time,
+                status="active",
+                messages=[user_msg, assistant_msg],
+                routing_decisions=[arc_routing],
+                metadata={"claudio_version": "0.2.0", "arc_enabled": True},
+                storage_tier="warm"
+            )
 
     def _format_capabilities(self) -> str:
         """Format expert capabilities for the router.
@@ -227,21 +380,22 @@ class ClaudIO(dspy.Module):
         # TODO: Integrate with knowledge base
         return ""
 
-    def forward(self, question: str, history: Optional[dspy.History] = None, context: Optional[str] = None) -> dspy.Prediction:
+    def forward(self, question: str, session_id: str = "default", history: Optional[dspy.History] = None, context: Optional[str] = None) -> dspy.Prediction:
         """Route question to appropriate expert and get answer.
 
-        This is the main entry point for ClaudIO. It demonstrates intelligent
-        multi-agent orchestration with declarative patterns.
+        This is the main entry point for ClaudIO with ARC Memory integration.
 
         Flow:
-            1. Chain-of-Thought analyzes question → selects expert
-            2. Get expert instance from registry
+            1. Retrieve context from ARC Memory
+            2. Route query using AgentRegistry (capability-based)
             3. Expert (ReAct pattern) processes question → calls tools → returns answer
-            4. ClaudIO assembles full response with traces
+            4. Store invocation and conversation in ARC
+            5. Return response with ARC stats
 
         Args:
             question: User's question or request
-            history: Conversation history for context-aware responses
+            session_id: Session identifier for conversation tracking (default: "default")
+            history: Conversation history for context-aware responses (legacy, optional)
             context: Optional additional context
 
         Returns:
@@ -249,133 +403,198 @@ class ClaudIO(dspy.Module):
                 - routing_reasoning: Step-by-step why expert was selected
                 - selected_expert: Expert ID ('data' or 'none')
                 - answer: Conversational response with expert analysis
+                - confidence: Routing confidence score
+                - duration_ms: Total execution time in milliseconds
+                - arc_stats: ARC Memory cache statistics
                 - [expert_reasoning]: Expert's CoT (if available)
                 - [recommendations]: Structured recommendations (if available)
                 - [trajectory]: Tool calls and observations (if available)
 
         Example:
             >>> agent = ClaudIO()
-            >>> history = dspy.History(messages=[])
             >>> result = agent(
             ...     question="My HDF5 file is 100GB, how do I optimize it?",
-            ...     history=history,
-            ...     context="Using parallel HDF5 on 64 cores"
+            ...     session_id="session-123"
             ... )
             >>> print(result.selected_expert)  # "data"
             >>> print(result.routing_reasoning)  # Step-by-step reasoning
-            >>> print(result.answer)  # Conversational response
+            >>> print(result.arc_stats['hit_rate'])  # Cache hit rate
         """
+        start_time = time.time()
 
-        # STEP 1: Swarm Routing and Expert (Parallel Execution with History)
-        # ==================================================================
-        # Use history buffer for context
-        current_history = self.get_history() if not history else history
-
-        # Run routing and expert in parallel for faster processing
-        def route_task():
-            return self.router(
-                question=question,
-                available_experts=self._format_capabilities(),
-                history=current_history
-            )
-
-        def expert_task():
-            try:
-                expert = self.experts.get("data", self.data_expert)
-                return expert(question=question, file_context="", history=current_history)
-            except Exception as e:
-                # Fallback if expert fails
-                return dspy.Prediction(
-                    analysis=f"Error in expert: {str(e)}. Fallback: For data I/O questions, consider HDF5 compression and chunking strategies.",
-                    recommendations="1. Use gzip compression for HDF5.\n2. Choose chunk sizes based on access patterns.\n3. Enable parallel I/O for large datasets."
-                )
-
-        # Parallel execution
-        results = self.parallel([(route_task, {}), (expert_task, {})])
-        routing, expert_result = results
-
-        if self.verbose:
-            print(f"\n[ClaudIO] Routing reasoning: {routing.reasoning}")
-            print(f"\n[ClaudIO] Selected expert: {routing.selected_expert}")
-
-        # STEP 2: Normalize and Validate Expert Selection
-        # =================================================
-        expert_id = routing.selected_expert.lower().strip()
-
-        # Handle multi-word expert IDs (e.g., "data expert" → "data")
-        if ' ' in expert_id:
-            expert_id = expert_id.split()[0]
-
-        # Handle 'none' for general chat
-        if expert_id == "none":
-            if self.verbose:
-                print(f"[ClaudIO] General chat detected, responding directly")
-            answer = "Hi! I'm ClaudIO, your friendly guide to scientific data I/O optimization. I can help with HDF5, ADIOS, Parquet, and more. What would you like to know?"
-            return dspy.Prediction(
-                routing_reasoning=routing.reasoning,
-                selected_expert="none",
-                answer=answer
-            )
-
-        # Fallback logic if expert not found
-        if expert_id not in self.experts:
-            if self.verbose:
-                print(f"[ClaudIO] Unknown expert '{expert_id}', using 'data' as fallback")
-            expert_id = "data"
-
-        # STEP 3: Synthesize Response from Parallel Results
-        # ================================================
-        # Expert result from parallel execution
-        try:
-            # Data expert returns: analysis + recommendations
-            answer = f"{expert_result.analysis}\n\n**Recommendations:**\n{expert_result.recommendations}"
-
-            # Extract additional metadata
-            extra_fields = {}
-
-            # Reasoning trace (if ChainOfThought used)
-            if hasattr(expert_result, 'reasoning'):
-                extra_fields['expert_reasoning'] = expert_result.reasoning
-
-            # Tool trajectory (if ReAct used)
-            if hasattr(expert_result, 'trajectory'):
-                extra_fields['trajectory'] = expert_result.trajectory
-                # Count tool calls
-                extra_fields['num_tool_calls'] = len(expert_result.trajectory) if expert_result.trajectory else 0
-
-        except Exception as e:
-            # Graceful error handling
-            if self.verbose:
-                print(f"[ClaudIO] Error in expert result: {e}")
-                import traceback
-                traceback.print_exc()
-
-            answer = (
-                f"I encountered an error while processing your request with the {expert_id} expert.\n\n"
-                f"Error: {str(e)}\n\n"
-                f"This might be due to:\n"
-                f"- MCP tools not being available\n"
-                f"- Expert configuration issues\n"
-                f"- Malformed input\n\n"
-                f"Please check the logs for details."
-            )
-            extra_fields = {
-                'error': str(e),
-                'error_type': type(e).__name__
-            }
-
-        # STEP 5: Assemble Response and Update History
-        # ============================================
-        response = dspy.Prediction(
-            routing_reasoning=routing.reasoning,
-            selected_expert=expert_id,
-            answer=answer,
-            **extra_fields
+        # STEP 1: Retrieve context from ARC Memory
+        # =========================================
+        arc_context = self.context_retriever.retrieve_context_for_query(
+            query=question,
+            session_id=session_id,
+            max_history=5
         )
 
-        # Update history buffer
+        if self.verbose:
+            print(f"\n[ClaudIO] Retrieved {len(arc_context.learned_patterns)} context patterns from ARC")
+
+        # STEP 2: Route using AgentRegistry (capability-based)
+        # ====================================================
+        routing_decision = self.registry.route_query(question)
+        expert_id = routing_decision.selected_agent
+
+        if self.verbose:
+            print(f"[ClaudIO] Routing decision: {expert_id} (confidence: {routing_decision.confidence:.2f})")
+            print(f"[ClaudIO] Matched keywords: {routing_decision.matched_keywords}")
+
+        # STEP 3: Execute expert
+        # ======================
+        # Use history buffer for backward compatibility
+        current_history = self.get_history() if not history else history
+
+        # Handle 'none' or low confidence for general chat
+        if routing_decision.confidence < 0.2:
+            if self.verbose:
+                print(f"[ClaudIO] Low confidence ({routing_decision.confidence:.2f}), responding with general chat")
+            answer = "Hi! I'm ClaudIO, your friendly guide to scientific data I/O optimization. I can help with HDF5, ADIOS, Parquet, and more. What would you like to know?"
+
+            # Store conversation in ARC even for general chat
+            conversation = self._create_conversation(
+                session_id=session_id,
+                question=question,
+                answer=answer,
+                routing_decision=routing_decision
+            )
+            self.arc.store_conversation(conversation)
+
+            # Update legacy history
+            self.add_to_history("user", question)
+            self.add_to_history("assistant", answer)
+
+            total_duration_ms = (time.time() - start_time) * 1000
+            return dspy.Prediction(
+                routing_reasoning=f"Low confidence routing (confidence: {routing_decision.confidence:.2f})",
+                selected_expert="none",
+                answer=answer,
+                confidence=routing_decision.confidence,
+                duration_ms=total_duration_ms,
+                arc_stats=self.arc.get_cache_stats()
+            )
+
+        # Get expert from registry
+        expert = self.registry.get_agent(expert_id)
+        if expert is None:
+            # Fallback to data expert
+            if self.verbose:
+                print(f"[ClaudIO] Expert '{expert_id}' not found in registry, using 'data' as fallback")
+            expert = self.data_expert
+            expert_id = "data"
+
+        # Execute expert
+        expert_start = time.time()
+        try:
+            expert_result = expert(question=question, file_context="", history=current_history)
+            expert_duration_ms = (time.time() - expert_start) * 1000
+            success = True
+            error_msg = None
+        except Exception as e:
+            expert_duration_ms = (time.time() - expert_start) * 1000
+            success = False
+            error_msg = str(e)
+            if self.verbose:
+                print(f"[ClaudIO] Error in expert execution: {e}")
+                import traceback
+                traceback.print_exc()
+            # Fallback response
+            expert_result = dspy.Prediction(
+                analysis=f"Error in expert: {str(e)}. For data I/O questions, consider HDF5 compression and chunking strategies.",
+                recommendations="1. Use gzip compression for HDF5.\n2. Choose chunk sizes based on access patterns.\n3. Enable parallel I/O for large datasets."
+            )
+
+        # STEP 4: Store invocation in ARC
+        # ================================
+        invocation_id = str(uuid.uuid4())
+        tool_calls = []
+
+        # Extract tool calls if available
+        if hasattr(expert_result, 'trajectory') and expert_result.trajectory:
+            for step in expert_result.trajectory:
+                # Parse trajectory step (format varies by ReAct implementation)
+                if isinstance(step, dict):
+                    tool_calls.append(ToolCall(
+                        tool=step.get('tool', 'unknown'),
+                        params=step.get('params', {}),
+                        result=step.get('result', {}),
+                        duration_ms=step.get('duration_ms', 0),
+                        cached=step.get('cached', False)
+                    ))
+
+        invocation = Invocation(
+            trace_id=invocation_id,
+            session_id=session_id,
+            parent_trace_id=None,
+            agent_id=expert_id,
+            tier=2,  # Tier 2 = Expert
+            source="native",
+            started_at=datetime.fromtimestamp(expert_start).isoformat() + "Z",
+            completed_at=datetime.fromtimestamp(time.time()).isoformat() + "Z",
+            duration_ms=expert_duration_ms,
+            status="success" if success else "failure",
+            input={"query": question, "context": context or ""},
+            output={
+                "analysis": expert_result.analysis if hasattr(expert_result, 'analysis') else str(expert_result),
+                "recommendations": expert_result.recommendations if hasattr(expert_result, 'recommendations') else "",
+                "error": error_msg
+            },
+            tools_called=tool_calls,
+            nanoagents_spawned=[],
+            performance={"success": success, "expert_duration_ms": expert_duration_ms},
+            storage_tier="warm"
+        )
+        self.arc.store_invocation(invocation)
+
+        if self.verbose:
+            print(f"[ClaudIO] Stored invocation {invocation_id} in ARC")
+
+        # STEP 5: Store conversation in ARC
+        # ==================================
+        answer = f"{expert_result.analysis}\n\n**Recommendations:**\n{expert_result.recommendations}" if hasattr(expert_result, 'recommendations') else str(expert_result)
+
+        conversation = self._create_conversation(
+            session_id=session_id,
+            question=question,
+            answer=answer,
+            routing_decision=routing_decision
+        )
+        self.arc.store_conversation(conversation)
+
+        if self.verbose:
+            print(f"[ClaudIO] Stored conversation in ARC for session {session_id}")
+
+        # STEP 6: Update legacy history buffer (backward compatibility)
+        # =============================================================
         self.add_to_history("user", question)
         self.add_to_history("assistant", answer)
+
+        # STEP 7: Assemble response
+        # =========================
+        total_duration_ms = (time.time() - start_time) * 1000
+
+        # Extract additional metadata
+        extra_fields = {}
+        if hasattr(expert_result, 'reasoning'):
+            extra_fields['expert_reasoning'] = expert_result.reasoning
+        if hasattr(expert_result, 'trajectory'):
+            extra_fields['trajectory'] = expert_result.trajectory
+            extra_fields['num_tool_calls'] = len(expert_result.trajectory) if expert_result.trajectory else 0
+        if error_msg:
+            extra_fields['error'] = error_msg
+            extra_fields['error_type'] = 'ExpertExecutionError'
+
+        response = dspy.Prediction(
+            routing_reasoning=f"Matched keywords: {routing_decision.matched_keywords}",
+            selected_expert=expert_id,
+            answer=answer,
+            confidence=routing_decision.confidence,
+            duration_ms=total_duration_ms,
+            arc_stats=self.arc.get_cache_stats(),
+            **extra_fields
+        )
 
         return response
 
