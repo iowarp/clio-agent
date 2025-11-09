@@ -10,22 +10,22 @@
 ClaudIO - Main Agent Module
 
 The primary ClaudIO agent that interfaces with users for data I/O optimization.
-Uses DSPy for intelligent routing to expert capabilities.
+Uses intelligent multi-agent orchestration for expert routing.
 
 Architecture:
     User Question
         ↓
-    ClaudIO (DSPy ChainOfThought)
+    ClaudIO Orchestrator (Chain-of-Thought)
         └─ Routes to DataExpert
         ↓
-    DataExpert (DSPy ReAct)
+    DataExpert Agent (ReAct Pattern)
         ├─ Reasons about approach
-        ├─ Calls MCP tools (HDF5, ADIOS, Parquet)
+        ├─ Calls FastMCP tools (HDF5, ADIOS, Parquet)
         └─ Returns answer
 
 Key Principles:
-- Program, don't prompt: Uses DSPy signatures
-- Tool-augmented expert: ReAct with MCP tools
+- Declarative Intelligence: Agent signatures without prompts
+- Tool-augmented agents: ReAct with FastMCP tools
 - Observable: Full reasoning traces
 
 Usage:
@@ -109,14 +109,14 @@ from claudio.config import (
 # ============================================================================
 
 class ClaudIO(dspy.Module):
-    """ClaudIO - Multi-agent system for conversational data I/O optimization.
+    """ClaudIO - Multi-agent orchestration system for conversational data I/O optimization.
 
-    Complex DSPy module with conversational chat, CoT reasoning, and expert integration.
+    Intelligent agent framework with conversational chat, Chain-of-Thought routing, and expert integration.
     Uses two LM instances: one for main conversational agent, one for expert analysis.
 
     Architecture:
-        - Main Agent: Conversational, uses CoT for natural flow and routing
-        - DataExpert: ReAct with tools for detailed analysis
+        - Main Agent: Conversational, uses Chain-of-Thought for natural flow and routing
+        - DataExpert: ReAct pattern with tools for detailed analysis
         - Conversation History: Maintains context across turns
 
     Attributes:
@@ -230,13 +230,13 @@ class ClaudIO(dspy.Module):
     def forward(self, question: str, history: Optional[dspy.History] = None, context: Optional[str] = None) -> dspy.Prediction:
         """Route question to appropriate expert and get answer.
 
-        This is the main entry point for ClaudIO. It demonstrates DSPy's
-        declarative approach to multi-agent systems.
+        This is the main entry point for ClaudIO. It demonstrates intelligent
+        multi-agent orchestration with declarative patterns.
 
         Flow:
-            1. ChainOfThought analyzes question → selects expert
+            1. Chain-of-Thought analyzes question → selects expert
             2. Get expert instance from registry
-            3. Expert (ReAct) processes question → calls tools → returns answer
+            3. Expert (ReAct pattern) processes question → calls tools → returns answer
             4. ClaudIO assembles full response with traces
 
         Args:

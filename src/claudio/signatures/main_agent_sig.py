@@ -13,9 +13,9 @@ Defines the input/output interface for the ClaudIO main agent.
 The agent routes user questions to the most appropriate expert
 based on question analysis and expert capabilities.
 
-This signature uses DSPy's declarative programming approach:
+This signature uses ClaudIO's declarative intelligence approach:
 - Defines WHAT the agent should do (routing)
-- DSPy handles HOW through ChainOfThought reasoning
+- ClaudIO handles HOW through Chain-of-Thought reasoning
 - No manual prompt engineering required
 
 NOTE: Currently only DataExpert is implemented, but the routing logic

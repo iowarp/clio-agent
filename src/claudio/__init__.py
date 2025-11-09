@@ -1,14 +1,14 @@
 """
 ClaudIO - Cognitive Layer for Adaptive Universal Data & Intelligent Operations
 
-DSPy-powered system for scientific data I/O optimization.
+ClaudIO Agent Framework (IOWarp Intelligence Layer) for scientific computing.
 
 Core Architecture:
-- Programming Over Prompting: DSPy signatures instead of hand-crafted prompts
-- ReAct Agent: Reasoning + Acting with MCP tools for data I/O
-- Single Expert Focus: DataExpert for HDF5, ADIOS, Parquet optimization
+- Declarative Intelligence: Agent signatures without prompt engineering
+- ReAct Pattern: Reasoning + Acting with FastMCP tools for data I/O
+- Multi-Agent Orchestration: Intelligent routing to domain experts
 - UV-Native: Self-contained scripts with inline dependencies
-- LM Studio Provider: Local LLM support
+- Local LM Support: Privacy-preserving HPC computing (LM Studio)
 
 Example:
     >>> from claudio import ClaudIO, setup_dspy
@@ -27,7 +27,7 @@ Example:
     >>> print(f"Answer: {result.answer}")  # Expert's answer (via ReAct)
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 __author__ = "IOWarp Team"
 
 # Core imports

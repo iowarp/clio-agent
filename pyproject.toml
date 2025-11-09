@@ -1,18 +1,20 @@
 [project]
 name = "claudio"
 version = "0.1.0"
-description = "DSPy multi-agent system for scientific computing - Programming LLMs, not prompting them"
+description = "Self-Improving Autonomous Agent for Scientific Data Management - IOWarp Intelligence Layer (CEI)"
 authors = [
-    { name = "IOWarp Team", email = "team@iowarp.org" }
+    { name = "IOWarp Team", email = "gra@illinoistech.edu" }
 ]
 readme = "README.md"
 license = { text = "Apache-2.0" }
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 
 keywords = [
-    "dspy", "multi-agent", "react", "scientific-computing",
-    "hpc", "mcp", "fastmcp", "llm", "agents",
-    "hdf5", "slurm", "data-science"
+    "claudio", "iowarp", "autonomous-agent", "self-improving", "multi-agent",
+    "arc-memory", "optimizer-layer", "agent-registry", "a2a-protocol",
+    "scientific-computing", "hpc", "data-io-optimization",
+    "fastmcp", "mcp", "react-pattern", "llm-agents",
+    "hdf5", "adios", "parquet", "slurm", "data-science"
 ]
 
 classifiers = [
@@ -27,14 +29,27 @@ classifiers = [
 ]
 
 dependencies = [
-    "dspy-ai>=2.6.0",
-    "fastmcp>=0.1.0",
+    "dspy-ai>=3.0.3",
+    "fastmcp>=2.13.0",
 ]
 
 [project.optional-dependencies]
 ui = [
-    "rich>=13.0.0",
+    "rich>=14.2.0",
     "prompt-toolkit>=3.0.0",
+]
+
+memory = [
+    # ARC Memory Layer (v0.2.0+)
+    "sortedcontainers>=2.4.0",
+    "lru-dict>=1.3.0",
+    "msgpack>=1.1.0",
+]
+
+optimizers = [
+    # Optimizer Layer (v0.4.0+)
+    "scipy>=1.11.0",
+    "numpy>=1.24.0",
 ]
 
 api = [
@@ -44,7 +59,9 @@ api = [
 ]
 
 tools = [
-    "h5py>=3.10.0",  # For HDF5 MCP server
+    "h5py>=3.10.0",              # HDF5 MCP server
+    "adios2>=2.9.0",             # ADIOS MCP server (v0.3.0+)
+    "pyarrow>=14.0.0",           # Parquet MCP server (v0.3.0+)
 ]
 
 dev = [
@@ -52,10 +69,11 @@ dev = [
     "pytest-cov>=4.1.0",
     "pytest-asyncio>=0.21.0",
     "ruff>=0.1.0",
+    "mypy>=1.7.0",
 ]
 
 all = [
-    "claudio[ui,api,tools,dev]",
+    "claudio[ui,memory,optimizers,api,tools,dev]",
 ]
 
 [project.urls]

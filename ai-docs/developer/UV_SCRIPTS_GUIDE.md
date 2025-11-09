@@ -99,5 +99,3 @@ result = dspy.Predict("input -> output")(input="test")
 ✅ Easy to version and deploy
 
 ---
-
-See [POC examples](../poc/) for working scripts.

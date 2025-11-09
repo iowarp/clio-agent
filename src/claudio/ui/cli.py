@@ -11,7 +11,7 @@
 """
 ClaudIO Command-Line Interface
 
-Interactive DSPy-powered TUI for scientific data I/O assistance.
+Interactive ClaudIO Agent Framework TUI for scientific data I/O assistance.
 
 Features:
 - DataExpert agent with ReAct pattern (reasoning + tool calling)
@@ -212,7 +212,7 @@ class ClaudIOCLI:
         return False
 
     def ask_question(self, question: str) -> dict:
-        """Ask ClaudIO a question via DSPy agent.
+        """Ask ClaudIO a question via intelligent agent orchestration.
 
         Flow:
             1. ClaudIO (ChainOfThought) → selects expert
@@ -323,7 +323,7 @@ class ClaudIOCLI:
 def run_cli(
     verbose: bool = False
 ):
-    """Run ClaudIO CLI with DSPy agent.
+    """Run ClaudIO CLI with agent framework.
 
     Args:
         verbose: Show routing reasoning and tool calls
@@ -341,7 +341,7 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(
-        description="ClaudIO: DSPy Data I/O Expert System for Scientific Computing"
+        description="ClaudIO: Agent Framework for Scientific Computing (IOWarp Intelligence Layer)"
     )
     parser.add_argument(
         "--verbose", "-v",

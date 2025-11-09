@@ -28,24 +28,43 @@ from dataclasses import dataclass
 # LM STUDIO MODEL FETCHING
 # ============================================================================
 
-def fetch_lm_studio_models(base_url: str = "http://100.127.255.172:1234") -> List[str]:
-    """Fetch available models from LM Studio API.
+def fetch_lm_studio_models(base_url: str = "http://127.0.0.1:1234", max_retries: int = 10, retry_delay: float = 2.0) -> List[str]:
+    """Fetch available models from LM Studio API with retry logic.
 
     Args:
         base_url: LM Studio base URL
+        max_retries: Maximum connection attempts
+        retry_delay: Delay between retries in seconds
 
     Returns:
         List of model IDs
     """
-    try:
-        response = requests.get(f"{base_url}/v1/models")
-        response.raise_for_status()
-        data = response.json()
-        models = [model['id'] for model in data['data']]
-        return models
-    except Exception as e:
-        print(f"Error fetching models from LM Studio: {e}")
-        return []
+    import time
+
+    for attempt in range(max_retries):
+        try:
+            response = requests.get(f"{base_url}/v1/models", timeout=10)
+            response.raise_for_status()
+            data = response.json()
+            models = [model['id'] for model in data['data']]
+            if models:
+                return models
+            else:
+                print(f"⏳ Waiting for models to load in LM Studio... (attempt {attempt + 1}/{max_retries})")
+                time.sleep(retry_delay)
+        except requests.exceptions.ConnectionError:
+            if attempt == 0:
+                print(f"⏳ Connecting to LM Studio at {base_url}...")
+            print(f"   Retry {attempt + 1}/{max_retries}... (waiting {retry_delay}s)")
+            time.sleep(retry_delay)
+        except Exception as e:
+            print(f"Error fetching models: {e}")
+            return []
+
+    print(f"❌ Could not connect to LM Studio after {max_retries} attempts")
+    print(f"   Please ensure LM Studio is running at {base_url}")
+    print(f"   and a model is loaded")
+    return []
 
 
 def select_models_for_agents(models: List[str]) -> tuple[str, str]:
@@ -60,16 +79,25 @@ def select_models_for_agents(models: List[str]) -> tuple[str, str]:
     main_model = None
     expert_model = None
 
+    # Look for specific models by full ID
     for model in models:
-        if "gpt-oss" in model and main_model is None:
+        # Main model: prefer openai/gpt-oss-20b or gpt-oss-120b
+        if ("openai/gpt-oss" in model or "gpt-oss" in model) and main_model is None:
             main_model = model
+        # Expert model: prefer granite models
         if "granite" in model and expert_model is None:
             expert_model = model
 
+    # Fallback: use first available model
     if main_model is None:
         main_model = models[0] if models else "openai/gpt-oss-20b"
     if expert_model is None:
+        # Use different model if available, else same as main
         expert_model = models[1] if len(models) > 1 else main_model
+
+    print(f"✓ Selected models:")
+    print(f"  Main/Router: {main_model}")
+    print(f"  Expert/Reasoner: {expert_model}")
 
     return main_model, expert_model
 
@@ -88,7 +116,7 @@ class LMStudioConfig:
     Per OpenAI/Unsloth recommendations: Temperature 1.0 for optimal reasoning;
     max_tokens 32000 based on model card (128K context, but set to 32K for responses).
     """
-    base_url: str = "http://100.127.255.172:1234"
+    base_url: str = "http://127.0.0.1:1234"
     model: str = "openai/gpt-oss-20b"  # Default, overridden by fetch
     temperature: float = 1.0  # Recommended for gpt-oss reasoning
     top_p: float = 1.0  # Default for gpt-oss
@@ -100,7 +128,7 @@ class LMStudioConfig:
 @dataclass
 class RouterLMConfig:
     """Configuration for router LM (deterministic for accurate routing)."""
-    base_url: str = "http://100.127.255.172:1234"
+    base_url: str = "http://127.0.0.1:1234"
     model: str = "openai/gpt-oss-20b"  # Default, overridden by fetch
     temperature: float = 0.3  # Low for deterministic routing
     top_p: float = 0.8
@@ -112,7 +140,7 @@ class RouterLMConfig:
 @dataclass
 class ReasonerLMConfig:
     """Configuration for reasoner/expert LM (dynamically selected from LM Studio)."""
-    base_url: str = "http://100.127.255.172:1234"
+    base_url: str = "http://127.0.0.1:1234"
     model: str = "ibm/granite-4-h-tiny"  # Default, overridden by fetch
     temperature: float = 1.0  # High for creative reasoning
     top_p: float = 1.0

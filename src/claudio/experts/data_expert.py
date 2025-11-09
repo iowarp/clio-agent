@@ -10,7 +10,7 @@
 ClaudIO Data Expert Module
 
 Specializes in scientific data file optimization (HDF5, ADIOS, Parquet).
-Uses DSPy ReAct for tool-augmented reasoning.
+Uses ReAct pattern for tool-augmented reasoning.
 
 Key Capabilities:
 - HDF5 compression and chunking optimization
@@ -108,7 +108,7 @@ def hdf5_optimize(filepath: str, compression: str = "gzip-6", chunking: str = "a
 # ============================================================================
 
 class DataExpert(dspy.Module):
-    """Scientific data file optimization expert using DSPy ReAct.
+    """Scientific data file optimization expert using ReAct pattern.
 
     Uses ReAct (Reasoning + Acting) pattern to:
     1. Reason about the data optimization problem
