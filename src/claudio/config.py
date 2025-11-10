@@ -81,20 +81,18 @@ def select_models_for_agents(models: List[str]) -> tuple[str, str]:
     main_model = None
     expert_model = None
 
-    # Look for specific models by full ID
+    # Look for granite models
     for model in models:
-        # Main model: prefer openai/gpt-oss-20b or gpt-oss-120b
-        if ("openai/gpt-oss" in model or "gpt-oss" in model) and main_model is None:
-            main_model = model
-        # Expert model: prefer granite models
-        if "granite" in model and expert_model is None:
-            expert_model = model
+        if "granite" in model.lower():
+            if main_model is None:
+                main_model = model
+            elif expert_model is None and model != main_model:
+                expert_model = model
 
-    # Fallback: use first available model
+    # Fallback to default granite model
     if main_model is None:
-        main_model = models[0] if models else "openai/gpt-oss-20b"
+        main_model = models[0] if models else "ibm/granite-4-h-tiny"
     if expert_model is None:
-        # Use different model if available, else same as main
         expert_model = models[1] if len(models) > 1 else main_model
 
     print(f"✓ Selected models:")
@@ -112,18 +110,14 @@ def select_models_for_agents(models: List[str]) -> tuple[str, str]:
 
 @dataclass
 class LMStudioConfig:
-    """Configuration for local LM Studio main agent.
+    """Configuration for LM Studio provider.
 
-    Model is dynamically selected from LM Studio API.
-    Per OpenAI/Unsloth recommendations: Temperature 1.0 for optimal reasoning;
-    max_tokens 32000 based on model card (128K context, but set to 32K for responses).
+    Default: IBM Granite model at http://127.0.0.1:1234
     """
     base_url: str = "http://127.0.0.1:1234"
-    model: str = "openai/gpt-oss-20b"  # Default, overridden by fetch
-    temperature: float = 1.0  # Recommended for gpt-oss reasoning
-    top_p: float = 1.0  # Default for gpt-oss
-    frequency_penalty: float = 1.1  # Default for gpt-oss
-    max_tokens: int = 32000  # Based on model card (128K context, 32K for responses)
+    model: str = "ibm/granite-4-h-tiny"
+    temperature: float = 1.0
+    max_tokens: int = 32000
     api_key: str = "lm-studio"
 
 
@@ -131,22 +125,18 @@ class LMStudioConfig:
 class RouterLMConfig:
     """Configuration for router LM (deterministic for accurate routing)."""
     base_url: str = "http://127.0.0.1:1234"
-    model: str = "openai/gpt-oss-20b"  # Default, overridden by fetch
-    temperature: float = 0.3  # Low for deterministic routing
-    top_p: float = 0.8
-    frequency_penalty: float = 0.5
+    model: str = "ibm/granite-4-h-tiny"
+    temperature: float = 0.3
     max_tokens: int = 32000
     api_key: str = "lm-studio"
 
 
 @dataclass
 class ReasonerLMConfig:
-    """Configuration for reasoner/expert LM (dynamically selected from LM Studio)."""
+    """Configuration for reasoner/expert LM."""
     base_url: str = "http://127.0.0.1:1234"
-    model: str = "ibm/granite-4-h-tiny"  # Default, overridden by fetch
-    temperature: float = 1.0  # High for creative reasoning
-    top_p: float = 1.0
-    frequency_penalty: float = 0.5
+    model: str = "ibm/granite-4-h-tiny"
+    temperature: float = 1.0
     max_tokens: int = 32000
     api_key: str = "lm-studio"
 
@@ -174,12 +164,9 @@ def configure_dspy_lm_studio(config: Optional[LMStudioConfig] = None) -> dspy.LM
     """
     cfg = config or LMStudioConfig()
 
-    # Use openai/ prefix with model_type='chat'
-    # LM Studio handles gpt-oss Harmony format translation automatically
-    model_name = cfg.model
-    if "/" in model_name:
-        model_name = model_name.split("/", 1)[1]
-    model_name = f"openai/{model_name}"
+    # Use openai/ prefix - LM Studio is OpenAI-compatible
+    # LiteLLM's lm_studio/ provider has response parsing issues
+    model_name = f"openai/{cfg.model}"
 
     lm = dspy.LM(
         model=model_name,
@@ -196,11 +183,7 @@ def configure_dspy_lm_studio(config: Optional[LMStudioConfig] = None) -> dspy.LM
 def configure_dspy_router_lm_studio(config: Optional[RouterLMConfig] = None) -> dspy.LM:
     """Configure DSPy to use LM Studio for router (deterministic)."""
     cfg = config or RouterLMConfig()
-
-    model_name = cfg.model
-    if "/" in model_name:
-        model_name = model_name.split("/", 1)[1]
-    model_name = f"openai/{model_name}"
+    model_name = f"openai/{cfg.model}"
 
     return dspy.LM(
         model=model_name,
@@ -215,11 +198,7 @@ def configure_dspy_router_lm_studio(config: Optional[RouterLMConfig] = None) -> 
 def configure_dspy_reasoner_lm_studio(config: Optional[ReasonerLMConfig] = None) -> dspy.LM:
     """Configure DSPy to use LM Studio for reasoner (creative)."""
     cfg = config or ReasonerLMConfig()
-
-    model_name = cfg.model
-    if "/" in model_name:
-        model_name = model_name.split("/", 1)[1]
-    model_name = f"openai/{model_name}"
+    model_name = f"openai/{cfg.model}"
 
     return dspy.LM(
         model=model_name,
@@ -263,13 +242,11 @@ def setup_dspy(
         lm = configure_dspy_lm_studio(config)
 
         if verbose:
-            print(f"✓ Using LM Studio (Main Agent)")
-            print(f"  URL: {config.base_url}/v1")
+            print(f"✓ LM Studio configured")
+            print(f"  URL: {config.base_url}")
             print(f"  Model: {config.model}")
-            print(f"  Temperature: {config.temperature} (tuned for consistent chat)")
-            print(f"  Top-P: {config.top_p} (balanced creativity)")
-            print(f"  Frequency Penalty: {config.frequency_penalty} (reduced repetition)")
-            print(f"  Max Tokens: {config.max_tokens} (longer responses)")
+            print(f"  Temperature: {config.temperature}")
+            print(f"  Max Tokens: {config.max_tokens}")
 
     except Exception as e:
         print(f"\n❌ Failed to configure LM Studio: {e}")

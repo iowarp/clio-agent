@@ -244,20 +244,16 @@ class ClaudIO(dspy.Module):
             )
         )
 
-        # Main agent uses ReAct with experts as tools
-        # Uses MainAgentSignature class (not string) for proper field validation
-        # ask_data_expert is module-level tool function for DSPy introspection
+        # Main agent uses ChainOfThought (ReAct incompatible with LM Studio)
+        # Note: ReAct requires JSONAdapter which LM Studio rejects
+        # ChainOfThought works reliably with all local LM providers
         from claudio.config import LMStudioConfig
         main_config = LMStudioConfig(model=main_model)
 
-        # CRITICAL: Use ChatAdapter explicitly to prevent JSONAdapter fallback
-        # LM Studio doesn't support response_format, JSONAdapter will fail
-        # ChatAdapter with text mode works for all local LMs
-        with dspy.context(lm=configure_dspy_lm_studio(main_config), adapter=dspy.ChatAdapter()):
-            self.agent = dspy.ReAct(
-                MainAgentSignature,  # Class-based signature (proper DSPy pattern)
-                tools=[ask_data_expert],  # Add more experts when available
-                max_iters=5
+        with dspy.context(lm=configure_dspy_lm_studio(main_config)):
+            self.agent = dspy.ChainOfThought(
+                MainAgentSignature,
+                n=3  # Multiple reasoning passes
             )
 
         if self.verbose:
