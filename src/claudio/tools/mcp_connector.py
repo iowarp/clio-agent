@@ -296,51 +296,53 @@ class IOWarpMCPConnector:
             ValueError: If server name is unknown
             ConnectionError: If connection fails
         """
-        # Return existing client if already connected
-        if server_name in self._clients:
-            return self._clients[server_name]
+        # Use lock to prevent race conditions during connection check/create
+        with self._client_lock:
+            # Return existing client if already connected
+            if server_name in self._clients:
+                return self._clients[server_name]
 
-        # Get server configuration
-        config = self.servers.get(server_name)
-        if not config:
-            raise ValueError(
-                f"Unknown Agent Toolkit MCP server: {server_name}. "
-                f"Available: {list(self.servers.keys())}"
-            )
-
-        # Create client based on connection type
-        try:
-            if config.url:
-                # HTTP/SSE connection (remote server)
-                client = Client(config.url)
-            elif config.command:
-                # Stdio connection (local command)
-                # Build MCP config format for FastMCP
-                mcp_config = {
-                    "mcpServers": {
-                        config.name: {
-                            "command": config.command,
-                            "args": config.args or [],
-                            "env": config.env or {}
-                        }
-                    }
-                }
-                client = Client(mcp_config)  # type: ignore[assignment]
-            else:
+            # Get server configuration
+            config = self.servers.get(server_name)
+            if not config:
                 raise ValueError(
-                    f"Invalid configuration for server '{server_name}': "
-                    "must specify either 'url' or 'command'"
+                    f"Unknown Agent Toolkit MCP server: {server_name}. "
+                    f"Available: {list(self.servers.keys())}"
                 )
 
-            # CRITICAL: Enter context and keep alive
-            await client.__aenter__()
-            self._clients[server_name] = client
-            return client
+            # Create client based on connection type
+            try:
+                if config.url:
+                    # HTTP/SSE connection (remote server)
+                    client = Client(config.url)
+                elif config.command:
+                    # Stdio connection (local command)
+                    # Build MCP config format for FastMCP
+                    mcp_config = {
+                        "mcpServers": {
+                            config.name: {
+                                "command": config.command,
+                                "args": config.args or [],
+                                "env": config.env or {}
+                            }
+                        }
+                    }
+                    client = Client(mcp_config)  # type: ignore[assignment]
+                else:
+                    raise ValueError(
+                        f"Invalid configuration for server '{server_name}': "
+                        "must specify either 'url' or 'command'"
+                    )
 
-        except Exception as e:
-            raise ConnectionError(
-                f"Failed to connect to Agent Toolkit MCP server '{server_name}': {e}"
-            ) from e
+                # CRITICAL: Enter context and keep alive
+                await client.__aenter__()
+                self._clients[server_name] = client
+                return client
+
+            except Exception as e:
+                raise ConnectionError(
+                    f"Failed to connect to Agent Toolkit MCP server '{server_name}': {e}"
+                ) from e
 
     async def _call_tool_async(
         self,
@@ -701,6 +703,7 @@ class IOWarpMCPTools:
 def create_iowarp_tool_function(
     server_name: str,
     tool_name: str,
+    connector: Optional[IOWarpMCPConnector] = None,
     arc_memory: Optional[Any] = None
 ) -> Callable:
     """Create DSPy-compatible tool function for Agent Toolkit MCP tool.
@@ -708,31 +711,45 @@ def create_iowarp_tool_function(
     Convenience function for creating individual tool functions suitable
     for use with DSPy ReAct agents.
 
+    IMPORTANT: Pass a shared connector when creating multiple tools to avoid
+    event loop thread proliferation. See examples below.
+
     Args:
         server_name: Agent Toolkit server name (e.g., "hdf5")
         tool_name: Tool name (e.g., "analyze_file")
-        arc_memory: Optional ARCMemory for caching
+        connector: Optional shared IOWarpMCPConnector (creates new if not provided)
+        arc_memory: Optional ARCMemory for caching (ignored if connector provided)
 
     Returns:
         Synchronous function suitable for dspy.ReAct
 
     Examples:
-        >>> # Create individual tools
-        >>> analyze_hdf5 = create_iowarp_tool_function("hdf5", "analyze_file")
-        >>> optimize_hdf5 = create_iowarp_tool_function("hdf5", "optimize_layout")
-        >>> submit_job = create_iowarp_tool_function("slurm", "submit_job")
+        >>> # RECOMMENDED: Create single connector, reuse for all tools
+        >>> from claudio.tools.mcp_connector import IOWarpMCPConnector
+        >>> connector = IOWarpMCPConnector()
+        >>> analyze_hdf5 = create_iowarp_tool_function("hdf5", "analyze_file", connector)
+        >>> optimize_hdf5 = create_iowarp_tool_function("hdf5", "optimize_layout", connector)
+        >>> submit_job = create_iowarp_tool_function("slurm", "submit_job", connector)
         >>>
         >>> # Use with DSPy
-        >>> agent = dspy.ReAct(
-        ...     signature,
-        ...     tools=[analyze_hdf5, optimize_hdf5, submit_job]
-        ... )
+        >>> agent = dspy.ReAct(signature, tools=[analyze_hdf5, optimize_hdf5, submit_job])
+        >>> # ... use agent ...
+        >>> connector.shutdown()  # Clean up when done
+        >>>
+        >>> # LEGACY: Create individual tools (NOT RECOMMENDED - creates extra threads)
+        >>> analyze_hdf5 = create_iowarp_tool_function("hdf5", "analyze_file")
     """
-    tools = IOWarpMCPTools(arc_memory)
+    # Use provided connector or create new one
+    if connector is None:
+        tools = IOWarpMCPTools(arc_memory)
+        connector_to_use = tools.connector
+    else:
+        # Use shared connector (reuse existing event loop)
+        connector_to_use = connector
 
     def tool_function(**kwargs):
         """Auto-generated Agent Toolkit tool function."""
-        return tools.call_tool(server_name, tool_name, kwargs)
+        return connector_to_use.call_tool(server_name, tool_name, kwargs)
 
     tool_function.__name__ = f"{server_name}_{tool_name}"
     tool_function.__doc__ = f"Call {tool_name} on {server_name} Agent Toolkit MCP server"

@@ -315,15 +315,15 @@ Target: {stats['target_hit_rate']:.0%}
         """Ask ClaudIO a question via intelligent agent orchestration.
 
         Flow:
-            1. ClaudIO (ChainOfThought) → selects expert
-            2. Expert (ReAct) → reasons + calls tools → answer
-            3. Display results with reasoning traces
+            1. ClaudIO ReAct agent processes question
+            2. Agent reasons and calls expert tools as needed
+            3. Display results with reasoning trajectories
 
         Args:
             question: User's question
 
         Returns:
-            Dictionary with result including expert, answer, reasoning
+            Dictionary with result including answer, trajectory, and stats
         """
         # Show processing spinner
         with self.console.status(
@@ -334,11 +334,11 @@ Target: {stats['target_hit_rate']:.0%}
 
         return {
             "question": question,
-            "expert": result.selected_expert,
+            "expert": "ReAct",  # Main agent uses ReAct pattern
             "answer": result.answer,
-            "routing_reasoning": getattr(result, 'routing_reasoning', ''),
-            "expert_reasoning": getattr(result, 'expert_reasoning', ''),
-            "tool_calls": getattr(result, 'tool_calls', [])
+            "trajectory_steps": len(getattr(result, 'trajectory', [])),
+            "trajectory": getattr(result, 'trajectory', []),
+            "duration_ms": getattr(result, 'duration_ms', 0)
         }
 
     def run(self):
@@ -375,15 +375,13 @@ Target: {stats['target_hit_rate']:.0%}
                 # Ask question via ClaudIO agent
                 result = self.ask_question(user_input)
 
-                # Show verbose info (routing details)
+                # Show verbose info (trajectory details)
                 if self.verbose:
-                    self.console.print(f"\n[#00B4FF]→ Expert Selected:[/#00B4FF] [bold]{result['expert']}[/bold]")
+                    self.console.print(f"\n[#00B4FF]→ Agent:[/#00B4FF] [bold]{result['expert']}[/bold]")
 
-                    if result['routing_reasoning']:
-                        self.console.print(f"[dim]→ Routing: {result['routing_reasoning'][:150]}...[/dim]\n")
-
-                    if result.get('tool_calls'):
-                        self.console.print(f"[#FF8800]→ Tools Used:[/#FF8800] {len(result['tool_calls'])} calls\n")
+                    if result.get('trajectory_steps'):
+                        self.console.print(f"[dim]→ Reasoning steps: {result['trajectory_steps']}[/dim]")
+                        self.console.print(f"[#FF8800]→ Duration:[/#FF8800] {result['duration_ms']:.0f}ms\n")
 
                 # Show answer with POC-style panel
                 expert_label = result['expert'].upper()
@@ -492,10 +490,10 @@ if __name__ == "__main__":
                 # JSON output
                 output = {
                     "question": args.query,
-                    "selected_expert": result.selected_expert,
                     "answer": result.answer,
-                    "confidence": getattr(result, 'confidence', 0.0),
+                    "trajectory_steps": len(getattr(result, 'trajectory', [])),
                     "duration_ms": getattr(result, 'duration_ms', 0.0),
+                    "session_id": getattr(result, 'session_id', args.session),
                     "status": "success"
                 }
                 print(json.dumps(output, indent=2))
@@ -503,8 +501,9 @@ if __name__ == "__main__":
                 # Human-readable output
                 console = Console()
                 console.print(f"\n[bold cyan]Question:[/bold cyan] {args.query}")
-                console.print(f"[bold green]Expert:[/bold green] {result.selected_expert}")
-                console.print(f"[bold yellow]Confidence:[/bold yellow] {getattr(result, 'confidence', 0.0):.2f}\n")
+                console.print(f"[bold green]Agent:[/bold green] ReAct")
+                trajectory_steps = len(getattr(result, 'trajectory', []))
+                console.print(f"[bold yellow]Reasoning Steps:[/bold yellow] {trajectory_steps}\n")
                 console.print(Panel(Markdown(result.answer), title="Answer", border_style="green"))
 
         except Exception as e:

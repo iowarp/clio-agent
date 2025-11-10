@@ -86,6 +86,84 @@ from claudio.config import (
 
 
 # ============================================================================
+# MAIN AGENT SIGNATURE (DSPy Signature Class)
+# ============================================================================
+
+class MainAgentSignature(dspy.Signature):
+    """Main ClaudIO agent signature for ReAct pattern.
+
+    Defines input/output fields for ReAct agent reasoning:
+    - question: User's question or request
+    - session_context: Context retrieved from ARC Memory
+    - answer: Final answer from ReAct agent
+
+    Example:
+        >>> signature = MainAgentSignature()
+        >>> # Used by ReAct agent for structured reasoning
+    """
+
+    question: str = dspy.InputField(desc="User's question or request")
+    session_context: str = dspy.InputField(
+        desc="Session context from ARC Memory (key topics, history)"
+    )
+    answer: str = dspy.OutputField(desc="ClaudIO's answer with reasoning")
+
+
+# ============================================================================
+# MODULE-LEVEL TOOL FUNCTIONS
+# ============================================================================
+
+_data_expert_instance: Optional[DataExpert] = None
+
+
+def ask_data_expert(question: str, file_context: str = "") -> str:
+    """Consult the Data I/O optimization expert.
+
+    Tool function for ReAct pattern. Asks the DataExpert about HDF5, ADIOS,
+    Parquet, compression, and chunking strategies.
+
+    Args:
+        question: The question to ask the expert
+        file_context: Optional file context or path information
+
+    Returns:
+        Expert analysis and recommendations as string
+
+    Note:
+        This is a module-level tool function (required for DSPy ReAct introspection).
+        The _data_expert_instance is set by ClaudIO.__init__() after expert creation.
+
+    Example:
+        >>> result = ask_data_expert("How do I optimize HDF5 compression?")
+        >>> print(result)
+    """
+    global _data_expert_instance
+
+    if _data_expert_instance is None:
+        return "Error: DataExpert not initialized. Please initialize ClaudIO first."
+
+    try:
+        # Call DataExpert with history (required parameter)
+        from claudio.arc.schema import History
+
+        result = _data_expert_instance(
+            question=question,
+            file_context=file_context,
+            history=History(messages=[])
+        )
+
+        # Extract answer from result
+        if hasattr(result, "analysis") and hasattr(result, "recommendations"):
+            return f"{result.analysis}\n\nRecommendations:\n{result.recommendations}"
+        elif hasattr(result, "answer"):
+            return result.answer
+        else:
+            return str(result)
+    except Exception as e:
+        return f"Error consulting DataExpert: {str(e)}"
+
+
+# ============================================================================
 # CLAUDIO MAIN AGENT (DSPy ReAct Pattern)
 # ============================================================================
 
@@ -150,6 +228,10 @@ class ClaudIO(dspy.Module):
         # Initialize experts with ARC Memory
         self.data_expert = DataExpert(use_tools=True, arc_memory=self.arc)
 
+        # Set global reference for module-level ask_data_expert tool function
+        global _data_expert_instance
+        _data_expert_instance = self.data_expert
+
         # Register experts in registry (for /experts command)
         self.registry.register_agent(
             "data",
@@ -162,32 +244,16 @@ class ClaudIO(dspy.Module):
             )
         )
 
-        # Create expert tool functions for ReAct
-        def ask_data_expert(question: str, file_context: str = "") -> str:
-            """Consult the Data I/O optimization expert for questions about HDF5, ADIOS, Parquet, compression, and chunking strategies.
-
-            Args:
-                question: The question to ask the expert
-                file_context: Optional file context or path information
-
-            Returns:
-                Expert analysis and recommendations
-            """
-            result = self.data_expert(question=question, file_context=file_context)
-            if hasattr(result, 'analysis') and hasattr(result, 'recommendations'):
-                return f"{result.analysis}\n\nRecommendations:\n{result.recommendations}"
-            return str(result)
-
-        # Main agent uses ReAct with experts as tools
-        # Uses main model for routing + execution
+        # Main agent uses ChainOfThought (ReAct incompatible with LM Studio)
+        # Note: ReAct requires JSONAdapter which LM Studio rejects
+        # ChainOfThought works reliably with all local LM providers
         from claudio.config import LMStudioConfig
         main_config = LMStudioConfig(model=main_model)
 
         with dspy.context(lm=configure_dspy_lm_studio(main_config)):
-            self.agent = dspy.ReAct(
-                signature="question, session_context -> answer",
-                tools=[ask_data_expert],  # Add more experts when available
-                max_iters=5
+            self.agent = dspy.ChainOfThought(
+                MainAgentSignature,
+                n=3  # Multiple reasoning passes
             )
 
         if self.verbose:
@@ -237,29 +303,47 @@ class ClaudIO(dspy.Module):
 
         # STEP 1: Retrieve context from ARC Memory
         # =========================================
-        arc_context = self.context_retriever.retrieve_context_for_query(
-            query=question,
-            session_id=session_id,
-            max_history=5
-        )
+        session_context = "No prior context"
+        try:
+            arc_context = self.context_retriever.retrieve_context_for_query(
+                query=question,
+                session_id=session_id,
+                max_history=5
+            )
 
-        if self.verbose:
-            print(f"\n[ClaudIO] Retrieved {len(arc_context.learned_patterns)} context patterns from ARC")
+            if self.verbose:
+                print(f"\n[ClaudIO] Retrieved {len(arc_context.learned_patterns)} context patterns from ARC")
 
-        # Format context for ReAct (extract from learned patterns)
-        key_topics = [p.pattern_data.get("topic", "") for p in arc_context.learned_patterns
-                      if p.pattern_type == "frequent_topic"]
-        session_context = f"Key topics: {', '.join(key_topics[:5])}" if key_topics else "No prior context"
+            # Format context for ReAct (extract from learned patterns)
+            # Note: LearnedPattern schema has pattern_type, pattern_data, confidence, learned_at
+            # pattern_data is a dict that may contain various keys (rule, topic, etc.)
+            if arc_context.learned_patterns:
+                context_parts = []
+                for p in arc_context.learned_patterns:
+                    if hasattr(p, 'pattern_data') and isinstance(p.pattern_data, dict):
+                        # Extract any useful info from pattern_data
+                        for key, value in p.pattern_data.items():
+                            if value and isinstance(value, str):
+                                context_parts.append(f"{key}: {value}")
+                if context_parts:
+                    session_context = "; ".join(context_parts[:5])
+        except Exception as e:
+            if self.verbose:
+                print(f"[ClaudIO] Warning: Failed to retrieve context from ARC: {e}")
+            # Continue with "No prior context" fallback
 
         # STEP 2: ReAct agent (routing + execution in one)
         # =================================================
+        success = False
+        error_msg = None
+        result = None
+
         try:
             result = self.agent(
                 question=question,
                 session_context=session_context
             )
             success = True
-            error_msg = None
         except Exception as e:
             success = False
             error_msg = str(e)

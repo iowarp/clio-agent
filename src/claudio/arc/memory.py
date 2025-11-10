@@ -637,9 +637,9 @@ class ARCMemory:
             >>> print(f"Hit rate: {stats['hit_rate']:.2%}")
             >>> print(f"Disk reads: {stats['disk_reads']}")
         """
-        cache_stats = self._cache.stats()
-
         with self._lock:
+            cache_stats = self._cache.stats()
+
             return {
                 "hit_rate": cache_stats["hit_rate"],
                 "hits": cache_stats["hits"],

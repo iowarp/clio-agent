@@ -571,7 +571,11 @@ class IOWarpCTEBackend:
         # Save metadata first
         self._save_access_metadata()
 
-        # Close ZeroMQ if connected
-        if self.iowarp_available and hasattr(self, "zmq_socket"):
-            self.zmq_socket.close()
-            self.zmq_context.term()
+        # Close ZeroMQ if connected (with proper resource cleanup)
+        if self.iowarp_available:
+            try:
+                if hasattr(self, "zmq_socket") and self.zmq_socket:
+                    self.zmq_socket.close()
+            finally:
+                if hasattr(self, "zmq_context") and self.zmq_context:
+                    self.zmq_context.term()

@@ -128,14 +128,21 @@ class LSMTree:
             >>> lsm.write(1704800000.0, {"agent": "DataExpert", "latency_ms": 1500})
             >>> lsm.write(1704800001.0, {"agent": "Main", "latency_ms": 234})
         """
+        old_memtable = None
+
         with self._lock:
             # Add to MemTable (O(log N) insert)
             self._memtable[timestamp] = metric
             self._write_count += 1
 
-            # Flush if MemTable is full
+            # Check if flush needed - use double-buffering to avoid holding lock during I/O
             if len(self._memtable) >= self._memtable_size:
-                self._flush_memtable()
+                old_memtable = self._memtable
+                self._memtable = SortedDict()  # Swap to new MemTable
+
+        # Flush outside lock to avoid blocking writes
+        if old_memtable is not None:
+            self._flush_memtable_to_sstable(old_memtable)
 
     def read(self, timestamp: float) -> Optional[Dict[str, Any]]:
         """Read metric by timestamp.
@@ -216,6 +223,45 @@ class LSMTree:
 
         # Return sorted by timestamp
         return [results[ts] for ts in sorted(results.keys())]
+
+    def _flush_memtable_to_sstable(self, memtable: SortedDict) -> None:
+        """Flush given MemTable to SSTable on disk.
+
+        Creates new immutable SSTable file with MemTable entries.
+        This method should be called without holding self._lock to avoid blocking writes.
+
+        Args:
+            memtable: SortedDict to flush (typically swapped-out old MemTable)
+        """
+        if not memtable:
+            return
+
+        # Generate SSTable filename with timestamp
+        timestamp_ns = time.time_ns()
+        sstable_path = self.data_dir / f"sst_{timestamp_ns}.msgpack"
+
+        # Serialize MemTable to msgpack
+        # Store as list of (timestamp, metric) tuples for efficiency
+        entries = [(ts, metric) for ts, metric in memtable.items()]
+        encoded = msgspec.msgpack.encode(entries)
+        sstable_path.write_bytes(encoded)
+
+        # Create SSTable metadata
+        min_key = memtable.keys()[0]
+        max_key = memtable.keys()[-1]
+        record_count = len(memtable)
+
+        sstable = SSTable(
+            file_path=sstable_path,
+            min_key=min_key,
+            max_key=max_key,
+            record_count=record_count,
+        )
+
+        # Add to SSTables list (newest first for read efficiency)
+        with self._lock:
+            self._sstables.insert(0, sstable)
+            self._flush_count += 1
 
     def _flush_memtable(self) -> None:
         """Flush MemTable to SSTable on disk.

@@ -87,7 +87,8 @@ class LRUCache:
 
             # Update access order for manual LRU
             if not HAS_LRU_DICT:
-                self._access_order.remove(key)
+                if key in self._access_order:
+                    self._access_order.remove(key)
                 self._access_order.append(key)
 
             return value

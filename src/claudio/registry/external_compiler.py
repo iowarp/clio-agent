@@ -4,6 +4,12 @@ Compiles external agents (LangChain, CrewAI, AutoGen) into ClaudIO-compatible fo
 External agents are wrapped with A2A protocol and exposed as DSPy-like modules
 for transparent integration into the AgentRegistry.
 
+NOTE (v0.3.0): A2A Protocol Integration is STUBBED
+    - External agents return simulated responses, not real A2A calls
+    - Designed to test framework compatibility without external dependencies
+    - Full A2A protocol integration planned for v0.4.0
+    - See ExternalAgentWrapper.forward() for details
+
 Example:
     >>> from claudio.registry.external_compiler import ExternalAgentCompiler, ExternalAgentDefinition
     >>>
@@ -19,6 +25,7 @@ Example:
     >>>
     >>> wrapper = compiler.compile_agent(definition)
     >>> response = wrapper.forward("Optimize this SQL query: SELECT * FROM users")
+    >>> # NOTE: response.answer contains simulated text in v0.3.0, not actual external agent result
 """
 
 import time
@@ -68,10 +75,17 @@ class ExternalAgentWrapper:
     Transparently integrates with AgentRegistry - Main Agent doesn't need
     to know whether agent is internal (DSPy) or external (A2A).
 
+    NOTE (v0.3.0 - STUB): A2A Protocol Integration
+        - External agents return SIMULATED responses (not real A2A calls)
+        - Designed for framework compatibility testing without external dependencies
+        - Returns mock responses with format "[Simulated {framework} response]"
+        - Real A2A protocol calls will be implemented in v0.4.0
+        - See forward() method documentation for details
+
     Example:
         >>> wrapper = ExternalAgentWrapper(definition, protocol_handler)
         >>> response = wrapper.forward("Analyze this data")
-        >>> print(response.answer)
+        >>> print(response.answer)  # v0.3.0: "[Simulated langchain response] ..."
     """
 
     def __init__(
@@ -98,17 +112,25 @@ class ExternalAgentWrapper:
     ) -> A2AResponse:
         """DSPy-compatible forward method.
 
+        NOTE (v0.3.0 - STUB): A2A Protocol Integration is Stubbed
+            - Currently returns SIMULATED responses (not real external agent calls)
+            - Response format: "[Simulated {framework} response] Processed: {question}"
+            - Designed to test framework compatibility without external dependencies
+            - TODO(v0.4.0): Replace with actual A2A protocol calls to external agents
+            - When v0.4.0 lands: remove external_response parameter and implement
+              real communication with LangChain, CrewAI, AutoGen agents
+
         Args:
             question: Query/task for the agent
             context: Optional context from previous interactions
             session_id: Session identifier for conversation tracking
 
         Returns:
-            A2AResponse with agent's result
+            A2AResponse with agent's result (v0.3.0: simulated response)
 
         Example:
             >>> response = wrapper.forward("Summarize this document", session_id="user123")
-            >>> print(response.answer)
+            >>> print(response.answer)  # v0.3.0: "[Simulated langchain response] Processed: Summarize this document"
         """
         # Create A2A request using canonical format (query field)
         request = A2ARequest(
@@ -119,6 +141,7 @@ class ExternalAgentWrapper:
         )
 
         # Send via protocol handler with framework metadata
+        # TODO(v0.4.0): Replace external_response parameter with real A2A protocol calls
         start_time = time.time()
         response = self.protocol_handler.send_request(
             framework=self.framework,

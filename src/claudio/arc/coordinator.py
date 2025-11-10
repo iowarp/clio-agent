@@ -18,7 +18,6 @@ See docs/CLAUDIO_ARCHITECTURE.md for architecture details.
 
 import time
 import uuid
-from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from claudio.arc.memory import ARCMemory
@@ -79,14 +78,14 @@ class CoordinationPlan:
         plan_id: Unique plan identifier
         tasks: List of agent tasks
         execution_mode: Execution mode ("sequential" or "parallel")
-        created_at: Plan creation timestamp
+        created_at: Plan creation timestamp (Unix timestamp float)
 
     Example:
         >>> plan = CoordinationPlan(
         ...     plan_id="plan-123",
         ...     tasks=[task1, task2],
         ...     execution_mode="sequential",
-        ...     created_at="2025-01-09T14:30:00Z"
+        ...     created_at=1704067200.0
         ... )
     """
 
@@ -95,7 +94,7 @@ class CoordinationPlan:
         plan_id: str,
         tasks: List[AgentTask],
         execution_mode: str,
-        created_at: str,
+        created_at: float,
     ):
         """Initialize coordination plan.
 
@@ -103,7 +102,7 @@ class CoordinationPlan:
             plan_id: Unique plan identifier
             tasks: List of agent tasks
             execution_mode: "sequential" or "parallel"
-            created_at: Creation timestamp
+            created_at: Creation timestamp (Unix timestamp float)
         """
         self.plan_id = plan_id
         self.tasks = tasks
@@ -123,7 +122,7 @@ class CoordinationResult:
         total_duration_ms: Total execution duration in milliseconds
         success: Whether coordination succeeded
         error: Error message if failed
-        completed_at: Completion timestamp
+        completed_at: Completion timestamp (Unix timestamp float)
 
     Example:
         >>> result = CoordinationResult(
@@ -132,7 +131,7 @@ class CoordinationResult:
         ...     total_duration_ms=1500.0,
         ...     success=True,
         ...     error=None,
-        ...     completed_at="2025-01-09T14:30:01.5Z"
+        ...     completed_at=1704067200.0
         ... )
     """
 
@@ -143,7 +142,7 @@ class CoordinationResult:
         total_duration_ms: float,
         success: bool,
         error: Optional[str] = None,
-        completed_at: Optional[str] = None,
+        completed_at: Optional[float] = None,
     ):
         """Initialize coordination result.
 
@@ -153,14 +152,14 @@ class CoordinationResult:
             total_duration_ms: Total duration in ms
             success: Success flag
             error: Error message if failed
-            completed_at: Completion timestamp
+            completed_at: Completion timestamp (Unix timestamp float)
         """
         self.plan_id = plan_id
         self.task_results = task_results
         self.total_duration_ms = total_duration_ms
         self.success = success
         self.error = error
-        self.completed_at = completed_at or datetime.now().isoformat()
+        self.completed_at = completed_at or time.time()
 
     def __repr__(self) -> str:
         status = "success" if self.success else f"failed: {self.error}"
@@ -305,7 +304,7 @@ class MultiAgentCoordinator:
             plan_id=plan_id,
             tasks=tasks,
             execution_mode=execution_mode,
-            created_at=datetime.now().isoformat(),  # CoordinationPlan uses string timestamp
+            created_at=time.time(),  # Unix timestamp float
         )
 
         return plan
@@ -357,7 +356,7 @@ class MultiAgentCoordinator:
             total_duration_ms=total_duration_ms,
             success=success,
             error=error,
-            completed_at=datetime.now().isoformat(),
+            completed_at=time.time(),  # Unix timestamp float
         )
 
         # Store coordination trace in ARC

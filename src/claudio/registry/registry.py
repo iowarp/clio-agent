@@ -25,6 +25,7 @@ Example:
 from typing import Dict, List, Optional, Any
 from dataclasses import dataclass, field
 import threading
+import copy
 
 
 @dataclass
@@ -289,6 +290,8 @@ class AgentRegistry:
 
                 # Adjust score by priority (lower priority = lower score)
                 if score > 0:
+                    if caps.priority == 0:
+                        continue  # Skip zero-priority agents
                     score = score / caps.priority
                     agent_scores[agent_id] = (score, matched_keywords)
 
@@ -336,7 +339,7 @@ class AgentRegistry:
             ...     print(f"{agent_id}: {caps.description}")
         """
         with self._lock:
-            return self._capabilities.copy()
+            return copy.deepcopy(self._capabilities)
 
     def get_agent_count(self) -> int:
         """Get total number of registered agents.

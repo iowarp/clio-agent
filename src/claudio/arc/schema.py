@@ -9,6 +9,12 @@ Architecture:
     - Metrics: Aggregated performance metrics per agent
     - Context: Cached tools, learned patterns, domain knowledge
 
+Timestamp Consistency:
+    - All timestamp fields use float type (Unix time from time.time())
+    - All timestamp defaults use msgspec.field(default_factory=lambda: time.time())
+    - Examples: updated_at, started_at, completed_at, learned_at, created_at, cached_at
+    - This ensures consistent serialization, temporal ordering, and comparison
+
 See docs/ARC_MEMORY_LAYER.md for detailed schema specifications.
 """
 
@@ -409,16 +415,86 @@ class CachedToolResult(msgspec.Struct):
 class LearnedPattern(msgspec.Struct):
     """Learned pattern from historical data.
 
+    This schema uses generic pattern_type + pattern_data design rather than
+    fixed fields (description, examples_seen, rule) to support extensible
+    pattern types without schema migration. ARC can store any pattern_type
+    with arbitrary data structure, enabling future pattern categories.
+
     Attributes:
-        pattern_type: Type of pattern (e.g., "frequent_topic", "tool_usage", "error_pattern")
-        pattern_data: Pattern-specific data dictionary
-        confidence: Confidence score (0.0-1.0)
-        learned_at: Pattern learning timestamp (Unix timestamp, defaults to current time)
+        pattern_type: Type of pattern (e.g., "frequent_topic", "tool_usage",
+            "error_pattern", "latency_anomaly"). Used as key for pattern-specific
+            handlers and analyzers.
+        pattern_data: Pattern-specific data dictionary. Content depends on
+            pattern_type. Common keys: "frequency", "examples", "rule",
+            "threshold", "conditions", etc. No fixed schema per type.
+        confidence: Confidence score (0.0-1.0). Indicates statistical
+            significance or certainty of pattern detection.
+        learned_at: Pattern learning timestamp (Unix timestamp from time.time(),
+            defaults to current time). Used for temporal ordering and TTL.
+
+    Design Rationale:
+        - Flexible: New pattern types added without schema migration
+        - Efficient: Single msgpack-serializable structure for all patterns
+        - Queryable: pattern_type enables filtering, indexing, retrieval
+        - Extensible: pattern_data grows with discovery needs
+
+    Example - Frequent Topic Pattern:
+        >>> pattern = LearnedPattern(
+        ...     pattern_type="frequent_topic",
+        ...     pattern_data={
+        ...         "topic": "HDF5 optimization",
+        ...         "frequency": 42,
+        ...         "last_occurrence": 1704067200.0,
+        ...         "confidence": 0.94
+        ...     },
+        ...     confidence=0.94
+        ... )
+
+    Example - Tool Usage Pattern:
+        >>> pattern = LearnedPattern(
+        ...     pattern_type="tool_usage",
+        ...     pattern_data={
+        ...         "tool": "hdf5_analyze",
+        ...         "following_tool": "compression_suggest",
+        ...         "co_occurrence_count": 18,
+        ...         "success_rate": 0.89
+        ...     },
+        ...     confidence=0.89
+        ... )
+
+    Example - Error Pattern:
+        >>> pattern = LearnedPattern(
+        ...     pattern_type="error_pattern",
+        ...     pattern_data={
+        ...         "error_type": "timeout",
+        ...         "trigger": "large_file_analysis",
+        ...         "frequency": 7,
+        ...         "suggested_mitigation": "chunk_processing"
+        ...     },
+        ...     confidence=0.76
+        ... )
+
+    Example - Latency Anomaly:
+        >>> pattern = LearnedPattern(
+        ...     pattern_type="latency_anomaly",
+        ...     pattern_data={
+        ...         "agent": "DataExpert",
+        ...         "baseline_ms": 1200.0,
+        ...         "spike_ms": 3500.0,
+        ...         "occurrence_hour": 14,
+        ...         "correlation": "high_concurrency"
+        ...     },
+        ...     confidence=0.82
+        ... )
     """
 
+    # Core fields: pattern_type enables flexible categorization
     pattern_type: str
+    # Flexible pattern_data: structure varies by pattern_type, no fixed schema
     pattern_data: Dict[str, Any]
+    # Statistical confidence in pattern validity
     confidence: float
+    # Timestamp from time.time() for temporal ordering and retrieval
     learned_at: float = msgspec.field(default_factory=lambda: time.time())
 
 
