@@ -38,7 +38,6 @@ class DataExpertSignature(dspy.Signature):
     Input:
         - question: Question about data files or I/O
         - file_context: File details
-        - history: Conversation history
 
     Output:
         - analysis: Technical analysis
@@ -46,13 +45,12 @@ class DataExpertSignature(dspy.Signature):
     """
 
     # Input fields
-    question: str = dspy.InputField(desc="Question about data I/O")
-    file_context: str = dspy.InputField(desc="File details", default="")
-    history: dspy.History = dspy.InputField(desc="Conversation history")
+    question: str = dspy.InputField()
+    file_context: str = dspy.InputField()
 
     # Output fields
-    analysis: str = dspy.OutputField(desc="Technical analysis")
-    recommendations: str = dspy.OutputField(desc="Actionable recommendations")
+    analysis: str = dspy.OutputField()
+    recommendations: str = dspy.OutputField()
 
 
 

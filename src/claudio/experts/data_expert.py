@@ -203,7 +203,7 @@ class DataExpert(dspy.Module):
             # Fallback to pure reasoning
             self.agent = dspy.ChainOfThought(DataExpertSignature)
 
-    def forward(self, question: str, file_context: str = "", history = None) -> dspy.Prediction:
+    def forward(self, question: str, file_context: str = "") -> dspy.Prediction:
         """Generate data I/O analysis and recommendations.
 
         Args:
@@ -225,7 +225,21 @@ class DataExpert(dspy.Module):
             >>> print(result.analysis)
             >>> print(result.recommendations)
         """
-        return self.agent(question=question, file_context=file_context, history=history or dspy.History(messages=[]))
+        return self.agent(question=question, file_context=file_context)
+
+    def shutdown(self) -> None:
+        """Clean up MCP connector resources.
+
+        Closes IOWarpMCPTools instance if it was initialized.
+        Should be called when the expert is no longer needed.
+
+        Example:
+            >>> expert = DataExpert(use_tools=True)
+            >>> result = expert(question="...", file_context="...")
+            >>> expert.shutdown()  # Clean up resources
+        """
+        if hasattr(self, 'mcp_tools') and self.mcp_tools:
+            self.mcp_tools.shutdown()
 
     @staticmethod
     def get_capabilities() -> Dict[str, Any]:
@@ -275,12 +289,12 @@ if __name__ == "__main__":
 
         result = expert_cot(
             question="How should I compress my 100GB HDF5 simulation output?",
-            context="Float64 data, 64 parallel cores, need 2x compression"
+            file_context="Float64 data, 64 parallel cores, need 2x compression"
         )
 
-        print(f"\nAnswer: {result.answer[:400]}...")
-        if hasattr(result, 'reasoning'):
-            print(f"\nReasoning: {result.reasoning[:200]}...")
+        print(f"\nAnalysis: {result.analysis[:400]}...")
+        if hasattr(result, 'recommendations'):
+            print(f"\nRecommendations: {result.recommendations[:200]}...")
 
         # Test 2: ReAct mode (with tool calling)
         print("\n" + "=" * 60)
@@ -291,14 +305,18 @@ if __name__ == "__main__":
 
         result = expert_react(
             question="Analyze /data/simulation.h5 and recommend optimizations",
-            context="File is 100GB, using parallel HDF5"
+            file_context="File is 100GB, using parallel HDF5"
         )
 
-        print(f"\nAnswer: {result.answer[:400]}...")
+        print(f"\nAnalysis: {result.analysis[:400]}...")
 
         if hasattr(result, 'trajectory'):
             print(f"\nReAct Trajectory:")
             print(f"  {result.trajectory}")
+
+        # Clean up resources
+        expert_cot.shutdown()
+        expert_react.shutdown()
 
         print("\n" + "=" * 60)
         print("✅ Data Expert working in both modes!")

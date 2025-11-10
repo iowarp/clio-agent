@@ -139,12 +139,10 @@ class ContextRetriever:
 
         for i, topic in enumerate(key_topics[:10]):  # Top 10 topics
             pattern = LearnedPattern(
-                pattern_id=f"topic_{i}",
-                description=topic,
-                confidence=0.5,  # Default confidence for keyword-based topics
-                examples_seen=1,
-                learned_at=current_time,
-                rule={"type": "keyword", "topic": topic}
+                pattern_type="frequent_topic",
+                pattern_data={"topic": topic, "frequency": i + 1},
+                confidence=min((10 - i) / 10.0, 1.0),  # Higher confidence for higher-ranked topics
+                learned_at=current_time
             )
             context.learned_patterns.append(pattern)
 
