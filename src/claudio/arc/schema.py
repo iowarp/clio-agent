@@ -12,6 +12,7 @@ Architecture:
 See docs/ARC_MEMORY_LAYER.md for detailed schema specifications.
 """
 
+import time
 import uuid
 from typing import Any, Dict, List, Optional
 
@@ -88,27 +89,20 @@ class Conversation(msgspec.Struct):
         session_id: Unique session identifier (UUID v4)
         user_id: User identifier
         created_at: Session creation timestamp (Unix timestamp)
-        updated_at: Last update timestamp (Unix timestamp)
-        last_accessed: Last access timestamp for tier migration (Unix timestamp)
-        status: Session status (active, completed, abandoned)
+        updated_at: Last update timestamp (Unix timestamp, defaults to current time)
+        last_accessed: Last access timestamp for tier migration (Unix timestamp, defaults to current time)
+        status: Session status (active, completed, abandoned, defaults to "active")
         messages: List of messages in conversation
         routing_decisions: List of routing decisions made
         metadata: Session metadata (preferences, domain, tokens, etc.)
-        storage_tier: Current IOWarp CTE storage tier
+        storage_tier: Current IOWarp CTE storage tier (defaults to "warm")
 
     Example:
         >>> import time
         >>> conv = Conversation(
         ...     session_id="550e8400-e29b-41d4-a716-446655440000",
         ...     user_id="user@example.com",
-        ...     created_at=time.time(),
-        ...     updated_at=time.time(),
-        ...     last_accessed=time.time(),
-        ...     status="active",
-        ...     messages=[],
-        ...     routing_decisions=[],
-        ...     metadata={"domain": "scientific_computing"},
-        ...     storage_tier="warm"
+        ...     created_at=time.time()
         ... )
         >>> encoded = msgspec.msgpack.encode(conv)
         >>> decoded = msgspec.msgpack.decode(encoded, type=Conversation)
@@ -117,9 +111,9 @@ class Conversation(msgspec.Struct):
     session_id: str
     user_id: str
     created_at: float
-    updated_at: float
-    last_accessed: float
-    status: str  # "active", "completed", "abandoned"
+    updated_at: float = msgspec.field(default_factory=lambda: time.time())
+    last_accessed: float = msgspec.field(default_factory=lambda: time.time())
+    status: str = "active"  # "active", "completed", "abandoned"
     messages: List[Message] = msgspec.field(default_factory=list)
     routing_decisions: List[RoutingDecision] = msgspec.field(default_factory=list)
     metadata: Dict[str, Any] = msgspec.field(default_factory=dict)
@@ -190,20 +184,19 @@ class Invocation(msgspec.Struct):
         agent_id: Agent identifier
         tier: Agent tier (1=Main, 2=Expert, 3=Nanoagent)
         source: Integration source (native, langchain, crewai, autogen)
-        started_at: Execution start timestamp (Unix timestamp)
-        completed_at: Execution completion timestamp (Unix timestamp)
         duration_ms: Total execution duration in milliseconds
         status: Execution status (success, failure, timeout)
         input: Input data (query, context, etc.)
         output: Output data (answer, reasoning_trace, etc.)
+        started_at: Execution start timestamp (Unix timestamp, defaults to current time)
+        completed_at: Execution completion timestamp (Unix timestamp, defaults to current time)
         tools_called: List of tool calls made
         nanoagents_spawned: List of nanoagents spawned
         performance: Performance metrics
-        storage_tier: Current IOWarp CTE storage tier
+        storage_tier: Current IOWarp CTE storage tier (defaults to "cold")
 
     Example:
         >>> import time
-        >>> start = time.time()
         >>> inv = Invocation(
         ...     trace_id="trace-789",
         ...     session_id="session-123",
@@ -211,33 +204,29 @@ class Invocation(msgspec.Struct):
         ...     agent_id="DataExpert",
         ...     tier=2,
         ...     source="native",
-        ...     started_at=start,
-        ...     completed_at=start + 1.247,
         ...     duration_ms=1247,
         ...     status="success",
         ...     input={"query": "Optimize HDF5"},
-        ...     output={"answer": "Apply gzip-6"},
-        ...     tools_called=[],
-        ...     nanoagents_spawned=[],
-        ...     performance={"success": True},
-        ...     storage_tier="cold"
+        ...     output={"answer": "Apply gzip-6"}
         ... )
         >>> encoded = msgspec.msgpack.encode(inv)
         >>> decoded = msgspec.msgpack.decode(encoded, type=Invocation)
     """
 
+    # Required fields first
     trace_id: str
     session_id: str
     parent_trace_id: Optional[str]
     agent_id: str
     tier: int  # 1=Main, 2=Expert, 3=Nanoagent
     source: str  # "native", "langchain", "crewai", "autogen"
-    started_at: float
-    completed_at: float
     duration_ms: float
     status: str  # "success", "failure", "timeout"
     input: Dict[str, Any]
     output: Dict[str, Any]
+    # Optional fields with defaults
+    started_at: float = msgspec.field(default_factory=lambda: time.time())
+    completed_at: float = msgspec.field(default_factory=lambda: time.time())
     tools_called: List[ToolCall] = msgspec.field(default_factory=list)
     nanoagents_spawned: List[NanoagentSpawn] = msgspec.field(default_factory=list)
     performance: Dict[str, Any] = msgspec.field(default_factory=dict)
@@ -442,31 +431,25 @@ class Context(msgspec.Struct):
 
     Attributes:
         domain: Domain identifier (e.g., "hdf5_optimization")
-        created_at: Context creation timestamp (Unix timestamp)
-        updated_at: Last update timestamp (Unix timestamp)
+        created_at: Context creation timestamp (Unix timestamp, defaults to current time)
+        updated_at: Last update timestamp (Unix timestamp, defaults to current time)
         retrieved_docs: Retrieved RAG documents
         cached_tool_results: Cached tool execution results
         learned_patterns: Learned patterns from data
-        storage_tier: Current IOWarp CTE storage tier
+        storage_tier: Current IOWarp CTE storage tier (defaults to "cold")
 
     Example:
         >>> import time
         >>> ctx = Context(
-        ...     domain="hdf5_optimization",
-        ...     created_at=time.time(),
-        ...     updated_at=time.time(),
-        ...     retrieved_docs=[],
-        ...     cached_tool_results={},
-        ...     learned_patterns=[],
-        ...     storage_tier="cold"
+        ...     domain="hdf5_optimization"
         ... )
         >>> encoded = msgspec.msgpack.encode(ctx)
         >>> decoded = msgspec.msgpack.decode(encoded, type=Context)
     """
 
     domain: str
-    created_at: float
-    updated_at: float
+    created_at: float = msgspec.field(default_factory=lambda: time.time())
+    updated_at: float = msgspec.field(default_factory=lambda: time.time())
     retrieved_docs: List[RetrievedDoc] = msgspec.field(default_factory=list)
     cached_tool_results: Dict[str, CachedToolResult] = msgspec.field(default_factory=dict)
     learned_patterns: List[LearnedPattern] = msgspec.field(default_factory=list)

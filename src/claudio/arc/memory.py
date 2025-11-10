@@ -635,26 +635,38 @@ class ARCMemory:
             self._disk_writes = 0
 
     @staticmethod
-    def _parse_timestamp(timestamp_str: str) -> float:
-        """Parse ISO 8601 timestamp to Unix timestamp.
+    def _parse_timestamp(timestamp: float | str) -> float:
+        """Parse timestamp to float.
 
         Args:
-            timestamp_str: ISO 8601 timestamp string
+            timestamp: Float (Unix timestamp) or str (ISO 8601)
 
         Returns:
-            Unix timestamp (seconds since epoch)
+            Float timestamp
 
         Examples:
             >>> ts = ARCMemory._parse_timestamp("2025-01-09T14:30:00Z")
             >>> ts > 0
             True
+            >>> ARCMemory._parse_timestamp(1736433000.0)
+            1736433000.0
         """
-        from datetime import datetime
+        # If already float, return as-is
+        if isinstance(timestamp, (int, float)):
+            return float(timestamp)
 
-        # Handle both with and without timezone
-        if timestamp_str.endswith("Z"):
-            dt = datetime.fromisoformat(timestamp_str.replace("Z", "+00:00"))
-        else:
-            dt = datetime.fromisoformat(timestamp_str)
+        # Parse string timestamp (ISO 8601)
+        if isinstance(timestamp, str):
+            from datetime import datetime
 
-        return dt.timestamp()
+            if timestamp.endswith("Z"):
+                dt = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+            else:
+                dt = datetime.fromisoformat(timestamp)
+
+            return dt.timestamp()
+
+        # Fallback: return current timestamp
+        import time
+
+        return time.time()
