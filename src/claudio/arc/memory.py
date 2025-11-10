@@ -100,6 +100,34 @@ class ARCMemory:
         self._disk_reads = 0
         self._disk_writes = 0
 
+        # Index eviction configuration
+        self._index_max_entries = 10000  # Maximum entries per index before eviction
+
+    def _maybe_evict_index(self, index: BTreeIndex) -> None:
+        """Evict old entries from index if it exceeds maximum size.
+
+        Implements LRU-style eviction by removing oldest (first) entries
+        when index grows beyond configured limit. This prevents unbounded
+        memory growth in the B-tree indexes.
+
+        Args:
+            index: BTreeIndex instance to potentially evict from
+
+        Examples:
+            >>> arc = ARCMemory()
+            >>> arc._maybe_evict_index(arc._conv_index)
+        """
+        if len(index) > self._index_max_entries:
+            # Get all keys in sorted order
+            all_keys = list(index.keys())
+
+            # Calculate how many entries to remove (remove 10% to reduce churn)
+            entries_to_remove = len(all_keys) - int(self._index_max_entries * 0.9)
+
+            # Remove oldest entries (first in the sorted order)
+            for key in all_keys[:entries_to_remove]:
+                index.delete(key)
+
     def store_conversation(self, conversation: Conversation) -> None:
         """Store conversation in cache and index.
 
@@ -140,6 +168,9 @@ class ARCMemory:
             encoded = encode_conversation(conversation)
             file_path.write_bytes(encoded)
             self._disk_writes += 1
+
+            # Evict old index entries if necessary
+            self._maybe_evict_index(self._conv_index)
 
     def get_conversation(self, session_id: str) -> Optional[Conversation]:
         """Retrieve conversation (cache-first).
@@ -263,6 +294,9 @@ class ARCMemory:
                     "status": invocation.status,
                 },
             )
+
+            # Evict old index entries if necessary
+            self._maybe_evict_index(self._inv_index)
 
     def get_invocation(self, invocation_id: str) -> Optional[Invocation]:
         """Get specific invocation.

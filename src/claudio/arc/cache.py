@@ -189,6 +189,9 @@ class LRUCache:
             1
         """
         with self._lock:
+            # Clean up expired entries before returning stats
+            self._cleanup_expired()
+
             total_requests = self._hits + self._misses
             hit_rate = self._hits / total_requests if total_requests > 0 else 0.0
 
@@ -200,6 +203,29 @@ class LRUCache:
                 "capacity": self._capacity,
                 "ttl_entries": len(self._ttl),
             }
+
+    def _cleanup_expired(self) -> None:
+        """Remove expired TTL entries from cache and tracking structures.
+
+        Performs active cleanup of entries whose TTL has expired.
+        Must be called with lock held.
+
+        This prevents unbounded growth of the _ttl dictionary and
+        ensures memory is reclaimed from expired entries.
+
+        Examples:
+            >>> cache = LRUCache(capacity=100)
+            >>> cache.put("key1", "value1", ttl_seconds=1)
+            >>> time.sleep(2)
+            >>> cache._cleanup_expired()  # Removes expired entry
+        """
+        now = time.time()
+        # Find all expired keys
+        expired_keys = [key for key, expiry in self._ttl.items() if now > expiry]
+
+        # Remove each expired key
+        for key in expired_keys:
+            self._remove_key(key)
 
     def _remove_key(self, key: str) -> None:
         """Internal method to remove key from cache and TTL storage.

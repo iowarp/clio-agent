@@ -161,32 +161,35 @@ class DataExpert(dspy.Module):
         super().__init__()
         self.use_tools = use_tools
         self.arc_memory = arc_memory
+        self.mcp_connector = None
 
         if use_tools:
-            # Initialize IOWarp MCP connector
-            self.mcp_tools = IOWarpMCPTools(arc_memory=arc_memory)
+            # Create ONE shared MCP connector for all tools
+            from claudio.tools.mcp_connector import IOWarpMCPConnector
+            self.mcp_connector = IOWarpMCPConnector(arc_memory=arc_memory)
 
             # Create tool functions for DSPy ReAct
+            # Pass shared connector to all tools to avoid thread proliferation
             self.tools = [
                 # HDF5 tools
-                create_iowarp_tool_function("hdf5", "analyze_hdf5", arc_memory),
-                create_iowarp_tool_function("hdf5", "optimize_chunks", arc_memory),
-                create_iowarp_tool_function("hdf5", "check_compression", arc_memory),
+                create_iowarp_tool_function("hdf5", "analyze_hdf5", self.mcp_connector),
+                create_iowarp_tool_function("hdf5", "optimize_chunks", self.mcp_connector),
+                create_iowarp_tool_function("hdf5", "check_compression", self.mcp_connector),
 
                 # ADIOS tools
-                create_iowarp_tool_function("adios", "analyze_bp_file", arc_memory),
+                create_iowarp_tool_function("adios", "analyze_bp_file", self.mcp_connector),
 
                 # Parquet tools
-                create_iowarp_tool_function("parquet", "analyze_parquet", arc_memory),
-                create_iowarp_tool_function("parquet", "optimize_parquet", arc_memory),
+                create_iowarp_tool_function("parquet", "analyze_parquet", self.mcp_connector),
+                create_iowarp_tool_function("parquet", "optimize_parquet", self.mcp_connector),
 
                 # SLURM tools
-                create_iowarp_tool_function("slurm", "submit_job", arc_memory),
-                create_iowarp_tool_function("slurm", "check_job_status", arc_memory),
+                create_iowarp_tool_function("slurm", "submit_job", self.mcp_connector),
+                create_iowarp_tool_function("slurm", "check_job_status", self.mcp_connector),
 
                 # Darshan tools
-                create_iowarp_tool_function("darshan", "analyze_log", arc_memory),
-                create_iowarp_tool_function("darshan", "get_io_summary", arc_memory),
+                create_iowarp_tool_function("darshan", "analyze_log", self.mcp_connector),
+                create_iowarp_tool_function("darshan", "get_io_summary", self.mcp_connector),
 
                 # Keep legacy mock tools as fallback
                 hdf5_analyze,
@@ -230,7 +233,7 @@ class DataExpert(dspy.Module):
     def shutdown(self) -> None:
         """Clean up MCP connector resources.
 
-        Closes IOWarpMCPTools instance if it was initialized.
+        Closes the shared IOWarpMCPConnector instance if it was initialized.
         Should be called when the expert is no longer needed.
 
         Example:
@@ -238,8 +241,8 @@ class DataExpert(dspy.Module):
             >>> result = expert(question="...", file_context="...")
             >>> expert.shutdown()  # Clean up resources
         """
-        if hasattr(self, 'mcp_tools') and self.mcp_tools:
-            self.mcp_tools.shutdown()
+        if hasattr(self, 'mcp_connector') and self.mcp_connector:
+            self.mcp_connector.shutdown()
 
     @staticmethod
     def get_capabilities() -> Dict[str, Any]:

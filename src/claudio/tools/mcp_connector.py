@@ -120,6 +120,7 @@ class IOWarpMCPConnector:
         self.arc = arc_memory
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._loop_thread: Optional[threading.Thread] = None
+        self._loop_ready = threading.Event()
         self._clients: Dict[str, Client] = {}
         self._client_lock = threading.Lock()
         self.servers: Dict[str, MCPServerConfig] = {}
@@ -138,11 +139,14 @@ class IOWarpMCPConnector:
 
         Creates daemon thread running asyncio event loop for all MCP operations.
         Loop persists across multiple tool calls for optimal performance.
+        Uses threading.Event for proper synchronization instead of busy-wait.
         """
         def run_loop():
             """Event loop runner in dedicated thread."""
             self._loop = asyncio.new_event_loop()
             asyncio.set_event_loop(self._loop)
+            self._loop.set_exception_handler(self._loop_exception_handler)
+            self._loop_ready.set()  # Signal loop is ready
             self._loop.run_forever()
 
         self._loop_thread = threading.Thread(
@@ -152,9 +156,27 @@ class IOWarpMCPConnector:
         )
         self._loop_thread.start()
 
-        # Wait for loop to be initialized
-        while self._loop is None:
-            time.sleep(0.001)
+        # Wait for loop to be initialized (with timeout)
+        if not self._loop_ready.wait(timeout=5.0):
+            raise RuntimeError("Event loop failed to initialize within 5 seconds")
+
+    def _loop_exception_handler(self, loop: asyncio.AbstractEventLoop, context: Dict[str, Any]) -> None:
+        """Handle exceptions in event loop.
+
+        Args:
+            loop: The event loop where exception occurred
+            context: Exception context with 'message' and 'exception' keys
+        """
+        import logging
+
+        exc = context.get("exception")
+        if exc:
+            logging.error(
+                f"Event loop exception in {loop}: {exc}",
+                exc_info=exc
+            )
+        else:
+            logging.error(f"Event loop error: {context.get('message', 'Unknown error')}")
 
     def _initialize_agent_toolkit_servers(self) -> None:
         """Initialize Agent Toolkit (iowarp-mcps) server configurations.
@@ -531,7 +553,12 @@ class IOWarpMCPConnector:
     def shutdown(self) -> None:
         """Clean shutdown of event loop and clients.
 
-        Exits all client async context managers and stops event loop.
+        Proper shutdown ordering:
+        1. Stop loop first to prevent new connections
+        2. Exit all client contexts
+        3. Clear client dict
+        4. Join thread with timeout
+
         Should be called before program exit for clean shutdown.
 
         Examples:
@@ -541,6 +568,13 @@ class IOWarpMCPConnector:
         """
         if self._loop is None:
             return
+
+        # Stop event loop first (prevents new operations)
+        try:
+            self._loop.call_soon_threadsafe(self._loop.stop)
+        except Exception:
+            # Loop may already be stopped
+            pass
 
         # Exit all client contexts
         for client in list(self._clients.values()):
@@ -554,13 +588,10 @@ class IOWarpMCPConnector:
                 # Ignore errors during shutdown
                 pass
 
-        # Clear clients
+        # Clear clients after exiting contexts
         self._clients.clear()
 
-        # Stop event loop
-        self._loop.call_soon_threadsafe(self._loop.stop)
-
-        # Wait for thread to finish
+        # Join thread with timeout
         if self._loop_thread:
             self._loop_thread.join(timeout=5.0)
 
