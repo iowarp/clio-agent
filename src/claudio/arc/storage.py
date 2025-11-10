@@ -22,7 +22,7 @@ See PLAN.md v0.3.0 Task 2 for requirements.
 
 import os
 import shutil
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -103,48 +103,84 @@ class IOWarpCTEBackend:
         self._local_writes = 0
 
     def _check_iowarp(self) -> bool:
-        """Check if IOWarp is available in environment.
+        """Check if IOWarp runtime is available.
 
-        Checks for IOWarp environment variables or binaries to determine
-        if IOWarp integration is available.
+        Checks for:
+        1. ZeroMQ port 5555 connectivity
+        2. IOWARP_ENDPOINT environment variable
+        3. Docker container presence
 
         Returns:
-            True if IOWarp available, False otherwise
+            True if IOWarp runtime available, False otherwise
         """
-        # Check environment variables
-        iowarp_home = os.getenv("IOWARP_HOME")
-        iowarp_endpoint = os.getenv("IOWARP_ENDPOINT")
+        import socket
 
-        if iowarp_home or iowarp_endpoint:
-            return True
+        # Check environment variable first
+        endpoint = os.getenv("IOWARP_ENDPOINT", "tcp://localhost:5555")
 
-        # Check for iowarp binary in PATH
-        return shutil.which("iowarp") is not None
+        # Try to connect to ZeroMQ port
+        try:
+            # Parse endpoint
+            if "://" in endpoint:
+                protocol, hostport = endpoint.split("://")
+                if ":" in hostport:
+                    host, port = hostport.rsplit(":", 1)
+                    port = int(port)
+                else:
+                    host = hostport
+                    port = 5555
+            else:
+                host = "localhost"
+                port = 5555
+
+            # Test TCP connection
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(1)
+            result = sock.connect_ex((host, port))
+            sock.close()
+
+            return result == 0
+        except Exception:
+            return False
 
     def _initialize_iowarp(self) -> None:
-        """Initialize IOWarp connection and register namespace.
+        """Initialize ZeroMQ connection to IOWarp CTE runtime."""
+        try:
+            import zmq
 
-        Registers the /claudio/arc/* namespace with IOWarp for tier management.
-        This is a placeholder for actual IOWarp API integration.
+            endpoint = os.getenv("IOWARP_ENDPOINT", "tcp://localhost:5555")
 
-        Note:
-            This is v0.3.0 integration structure. Full IOWarp API integration
-            will be implemented in v0.4.0+ when IOWarp SDK is available.
-        """
-        # TODO: Actual IOWarp API integration
-        # Example integration when IOWarp SDK is available:
-        #
-        # import iowarp
-        # self.iowarp_client = iowarp.Client()
-        # self.iowarp_client.register_namespace(
-        #     namespace=self.namespace,
-        #     tier_policy={
-        #         "warm_retention_days": self.tier_policy["hot_to_warm"],
-        #         "cold_retention_days": self.tier_policy["warm_to_cold"],
-        #         "archive_retention_days": self.tier_policy["cold_to_archive"]
-        #     }
-        # )
-        pass
+            # Create ZeroMQ context and socket
+            self.zmq_context = zmq.Context()
+            self.zmq_socket = self.zmq_context.socket(zmq.REQ)
+            self.zmq_socket.connect(endpoint)
+
+            # Register namespace with IOWarp
+            self._register_namespace()
+
+            print(f"✓ Connected to IOWarp CTE runtime at {endpoint}")
+        except ImportError:
+            print("⚠ pyzmq not installed, using local storage fallback")
+            print("  Install with: uv pip install pyzmq")
+            self.iowarp_available = False
+        except Exception as e:
+            print(f"⚠ Could not connect to IOWarp runtime: {e}")
+            print("  Start runtime with: docker-compose up iowarp-runtime")
+            self.iowarp_available = False
+
+    def _register_namespace(self) -> None:
+        """Register /claudio/arc namespace with IOWarp CTE."""
+        request = {
+            "op": "register_namespace",
+            "namespace": self.namespace,
+            "tier_policy": self.tier_policy,
+        }
+
+        self.zmq_socket.send_json(request)
+        response = self.zmq_socket.recv_json()
+
+        if response.get("status") != "ok":
+            raise RuntimeError(f"Failed to register namespace: {response.get('error')}")
 
     def write(self, key: str, data: bytes, tier: str = "warm") -> None:
         """Write data to IOWarp CTE with tier specification.
@@ -208,32 +244,31 @@ class IOWarpCTEBackend:
             return data
 
     def _write_iowarp(self, key: str, data: bytes, tier: str) -> None:
-        """Write to IOWarp with tier specification.
+        """Write to IOWarp CTE via ZeroMQ.
 
         Args:
             key: Data key
             data: Binary data
             tier: Target tier
         """
-        # TODO: Actual IOWarp API call
-        # Example when IOWarp SDK is available:
-        #
-        # self.iowarp_client.write(
-        #     namespace=self.namespace,
-        #     key=key,
-        #     data=data,
-        #     tier=tier,
-        #     metadata={
-        #         "content_type": "application/msgpack",
-        #         "created_at": datetime.utcnow().isoformat() + "Z"
-        #     }
-        # )
+        import base64
 
-        # Fallback to local for now
-        self._write_local(key, data, tier)
+        request = {
+            "op": "write",
+            "namespace": self.namespace,
+            "key": key,
+            "data": base64.b64encode(data).decode("ascii"),
+            "tier": tier,
+        }
+
+        self.zmq_socket.send_json(request)
+        response = self.zmq_socket.recv_json()
+
+        if response.get("status") != "ok":
+            raise RuntimeError(f"Write failed: {response.get('error')}")
 
     def _read_iowarp(self, key: str) -> Optional[bytes]:
-        """Read from IOWarp.
+        """Read from IOWarp CTE via ZeroMQ.
 
         Args:
             key: Data key
@@ -241,20 +276,23 @@ class IOWarpCTEBackend:
         Returns:
             Binary data or None
         """
-        # TODO: Actual IOWarp API call
-        # Example when IOWarp SDK is available:
-        #
-        # try:
-        #     result = self.iowarp_client.read(
-        #         namespace=self.namespace,
-        #         key=key
-        #     )
-        #     return result.data
-        # except iowarp.exceptions.NotFound:
-        #     return None
+        import base64
 
-        # Fallback to local for now
-        return self._read_local(key)
+        request = {
+            "op": "read",
+            "namespace": self.namespace,
+            "key": key,
+        }
+
+        self.zmq_socket.send_json(request)
+        response = self.zmq_socket.recv_json()
+
+        if response.get("status") == "ok":
+            return base64.b64decode(response["data"])
+        elif response.get("status") == "not_found":
+            return None
+        else:
+            raise RuntimeError(f"Read failed: {response.get('error')}")
 
     def _write_local(self, key: str, data: bytes, tier: str = "warm") -> None:
         """Write to local disk (fallback).
@@ -376,7 +414,7 @@ class IOWarpCTEBackend:
             tier: Current tier (if known)
             operation: Operation type ("read", "write", "migrate")
         """
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
 
         if key not in self._access_metadata:
             self._access_metadata[key] = {
@@ -426,7 +464,7 @@ class IOWarpCTEBackend:
         if self._local_writes % 100 != 0:
             return
 
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
 
         for key, metadata in list(self._access_metadata.items()):
             tier = metadata.get("tier", "warm")
@@ -523,11 +561,17 @@ class IOWarpCTEBackend:
         }
 
     def shutdown(self) -> None:
-        """Shutdown backend and save metadata.
+        """Close ZeroMQ connection and save metadata.
 
         Call this before application exit to ensure metadata is persisted.
 
         Examples:
             >>> backend.shutdown()
         """
+        # Save metadata first
         self._save_access_metadata()
+
+        # Close ZeroMQ if connected
+        if self.iowarp_available and hasattr(self, "zmq_socket"):
+            self.zmq_socket.close()
+            self.zmq_context.term()

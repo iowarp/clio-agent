@@ -12,7 +12,7 @@ Architecture:
 See docs/ARC_MEMORY_LAYER.md for detailed schema specifications.
 """
 
-from datetime import datetime
+import uuid
 from typing import Any, Dict, List, Optional
 
 import msgspec
@@ -22,28 +22,28 @@ class Message(msgspec.Struct):
     """Individual message within a conversation.
 
     Attributes:
-        message_id: Unique identifier for the message
         role: Message role (user or assistant)
         content: Message text content
-        timestamp: ISO 8601 timestamp
+        timestamp: Unix timestamp (float from time.time())
+        message_id: Unique identifier for the message (auto-generated if not provided)
         metadata: Optional metadata (source, model_used, etc.)
 
     Example:
+        >>> import time
         >>> msg = Message(
-        ...     message_id="msg-123",
         ...     role="user",
         ...     content="How do I optimize HDF5?",
-        ...     timestamp="2025-01-09T14:30:05Z",
+        ...     timestamp=time.time(),
         ...     metadata={"source": "cli"}
         ... )
         >>> encoded = msgspec.msgpack.encode(msg)
         >>> decoded = msgspec.msgpack.decode(encoded, type=Message)
     """
 
-    message_id: str
     role: str  # "user" or "assistant"
     content: str
-    timestamp: str  # ISO 8601 format
+    timestamp: float  # Unix timestamp from time.time()
+    message_id: str = msgspec.field(default_factory=lambda: str(uuid.uuid4()))
     metadata: Dict[str, Any] = msgspec.field(default_factory=dict)
 
 
@@ -51,7 +51,7 @@ class RoutingDecision(msgspec.Struct):
     """Agent routing decision metadata.
 
     Attributes:
-        timestamp: When routing decision was made
+        timestamp: When routing decision was made (Unix timestamp)
         query: User query that triggered routing
         capabilities_needed: List of required capabilities
         selected_agent: Agent ID that was selected
@@ -60,8 +60,9 @@ class RoutingDecision(msgspec.Struct):
         alternatives: Alternative agents considered
 
     Example:
+        >>> import time
         >>> decision = RoutingDecision(
-        ...     timestamp="2025-01-09T14:30:06Z",
+        ...     timestamp=time.time(),
         ...     query="Optimize 100GB HDF5 file",
         ...     capabilities_needed=["HDF5", "optimization"],
         ...     selected_agent="DataExpert",
@@ -71,7 +72,7 @@ class RoutingDecision(msgspec.Struct):
         ... )
     """
 
-    timestamp: str
+    timestamp: float
     query: str
     capabilities_needed: List[str]
     selected_agent: str
@@ -86,9 +87,9 @@ class Conversation(msgspec.Struct):
     Attributes:
         session_id: Unique session identifier (UUID v4)
         user_id: User identifier
-        created_at: Session creation timestamp (ISO 8601)
-        updated_at: Last update timestamp (ISO 8601)
-        last_accessed: Last access timestamp for tier migration
+        created_at: Session creation timestamp (Unix timestamp)
+        updated_at: Last update timestamp (Unix timestamp)
+        last_accessed: Last access timestamp for tier migration (Unix timestamp)
         status: Session status (active, completed, abandoned)
         messages: List of messages in conversation
         routing_decisions: List of routing decisions made
@@ -96,12 +97,13 @@ class Conversation(msgspec.Struct):
         storage_tier: Current IOWarp CTE storage tier
 
     Example:
+        >>> import time
         >>> conv = Conversation(
         ...     session_id="550e8400-e29b-41d4-a716-446655440000",
         ...     user_id="user@example.com",
-        ...     created_at="2025-01-09T14:30:00Z",
-        ...     updated_at="2025-01-09T15:45:00Z",
-        ...     last_accessed="2025-01-09T15:45:00Z",
+        ...     created_at=time.time(),
+        ...     updated_at=time.time(),
+        ...     last_accessed=time.time(),
         ...     status="active",
         ...     messages=[],
         ...     routing_decisions=[],
@@ -114,9 +116,9 @@ class Conversation(msgspec.Struct):
 
     session_id: str
     user_id: str
-    created_at: str
-    updated_at: str
-    last_accessed: str
+    created_at: float
+    updated_at: float
+    last_accessed: float
     status: str  # "active", "completed", "abandoned"
     messages: List[Message] = msgspec.field(default_factory=list)
     routing_decisions: List[RoutingDecision] = msgspec.field(default_factory=list)
@@ -188,8 +190,8 @@ class Invocation(msgspec.Struct):
         agent_id: Agent identifier
         tier: Agent tier (1=Main, 2=Expert, 3=Nanoagent)
         source: Integration source (native, langchain, crewai, autogen)
-        started_at: Execution start timestamp (ISO 8601)
-        completed_at: Execution completion timestamp (ISO 8601)
+        started_at: Execution start timestamp (Unix timestamp)
+        completed_at: Execution completion timestamp (Unix timestamp)
         duration_ms: Total execution duration in milliseconds
         status: Execution status (success, failure, timeout)
         input: Input data (query, context, etc.)
@@ -200,6 +202,8 @@ class Invocation(msgspec.Struct):
         storage_tier: Current IOWarp CTE storage tier
 
     Example:
+        >>> import time
+        >>> start = time.time()
         >>> inv = Invocation(
         ...     trace_id="trace-789",
         ...     session_id="session-123",
@@ -207,8 +211,8 @@ class Invocation(msgspec.Struct):
         ...     agent_id="DataExpert",
         ...     tier=2,
         ...     source="native",
-        ...     started_at="2025-01-09T14:30:07Z",
-        ...     completed_at="2025-01-09T14:30:08.247Z",
+        ...     started_at=start,
+        ...     completed_at=start + 1.247,
         ...     duration_ms=1247,
         ...     status="success",
         ...     input={"query": "Optimize HDF5"},
@@ -228,8 +232,8 @@ class Invocation(msgspec.Struct):
     agent_id: str
     tier: int  # 1=Main, 2=Expert, 3=Nanoagent
     source: str  # "native", "langchain", "crewai", "autogen"
-    started_at: str
-    completed_at: str
+    started_at: float
+    completed_at: float
     duration_ms: float
     status: str  # "success", "failure", "timeout"
     input: Dict[str, Any]
@@ -312,22 +316,22 @@ class OptimizationRecord(msgspec.Struct):
     """Record of an optimization event.
 
     Attributes:
-        timestamp: Optimization timestamp (ISO 8601)
+        timestamp: Optimization timestamp (Unix timestamp)
         optimizer: Optimizer name
         method: Optimization method (e.g., "MIPRO")
         variant_id: New variant identifier
         improvements: Improvement metrics
         training_examples: Number of training examples used
-        optimization_duration: Duration of optimization process
+        optimization_duration: Duration of optimization process in seconds
     """
 
-    timestamp: str
+    timestamp: float
     optimizer: str
     method: str
     variant_id: str
     improvements: Dict[str, Dict[str, Any]]
     training_examples: int
-    optimization_duration: str
+    optimization_duration: float
 
 
 class Metrics(msgspec.Struct):
@@ -337,7 +341,7 @@ class Metrics(msgspec.Struct):
         agent_id: Agent identifier
         tier: Agent tier (1=Main, 2=Expert, 3=Nanoagent)
         period: Time period (e.g., "2025-01-01/2025-01-31")
-        computed_at: Metrics computation timestamp (ISO 8601)
+        computed_at: Metrics computation timestamp (Unix timestamp)
         invocations: Invocation statistics
         latency: Latency statistics
         user_satisfaction: User satisfaction statistics
@@ -346,11 +350,12 @@ class Metrics(msgspec.Struct):
         storage_tier: Current IOWarp CTE storage tier
 
     Example:
+        >>> import time
         >>> metrics = Metrics(
         ...     agent_id="DataExpert",
         ...     tier=2,
         ...     period="2025-01/2025-01",
-        ...     computed_at="2025-01-31T23:59:59Z",
+        ...     computed_at=time.time(),
         ...     invocations=InvocationStats(1234, 1193, 31, 10, 0.967),
         ...     latency=LatencyStats(1523, 1200, 2500, 4200, 234, 8900),
         ...     user_satisfaction=UserSatisfactionStats(342, 305, 37, 0.89),
@@ -365,7 +370,7 @@ class Metrics(msgspec.Struct):
     agent_id: str
     tier: int
     period: str
-    computed_at: str
+    computed_at: float
     invocations: InvocationStats
     latency: LatencyStats
     user_satisfaction: UserSatisfactionStats
@@ -400,14 +405,14 @@ class CachedToolResult(msgspec.Struct):
     Attributes:
         params_hash: Hash of tool parameters
         result: Tool execution result
-        cached_at: Cache timestamp (ISO 8601)
+        cached_at: Cache timestamp (Unix timestamp)
         ttl: Time-to-live in seconds
         hit_count: Number of cache hits
     """
 
     params_hash: str
     result: Any
-    cached_at: str
+    cached_at: float
     ttl: int
     hit_count: int = 0
 
@@ -420,7 +425,7 @@ class LearnedPattern(msgspec.Struct):
         description: Human-readable description
         confidence: Confidence score (0.0-1.0)
         examples_seen: Number of examples observed
-        learned_at: Pattern learning timestamp (ISO 8601)
+        learned_at: Pattern learning timestamp (Unix timestamp)
         rule: Pattern rule (condition, recommendation)
     """
 
@@ -428,7 +433,7 @@ class LearnedPattern(msgspec.Struct):
     description: str
     confidence: float
     examples_seen: int
-    learned_at: str
+    learned_at: float
     rule: Dict[str, str]
 
 
@@ -437,18 +442,19 @@ class Context(msgspec.Struct):
 
     Attributes:
         domain: Domain identifier (e.g., "hdf5_optimization")
-        created_at: Context creation timestamp (ISO 8601)
-        updated_at: Last update timestamp (ISO 8601)
+        created_at: Context creation timestamp (Unix timestamp)
+        updated_at: Last update timestamp (Unix timestamp)
         retrieved_docs: Retrieved RAG documents
         cached_tool_results: Cached tool execution results
         learned_patterns: Learned patterns from data
         storage_tier: Current IOWarp CTE storage tier
 
     Example:
+        >>> import time
         >>> ctx = Context(
         ...     domain="hdf5_optimization",
-        ...     created_at="2025-01-09T14:30:00Z",
-        ...     updated_at="2025-01-31T14:30:00Z",
+        ...     created_at=time.time(),
+        ...     updated_at=time.time(),
         ...     retrieved_docs=[],
         ...     cached_tool_results={},
         ...     learned_patterns=[],
@@ -459,8 +465,8 @@ class Context(msgspec.Struct):
     """
 
     domain: str
-    created_at: str
-    updated_at: str
+    created_at: float
+    updated_at: float
     retrieved_docs: List[RetrievedDoc] = msgspec.field(default_factory=list)
     cached_tool_results: Dict[str, CachedToolResult] = msgspec.field(default_factory=dict)
     learned_patterns: List[LearnedPattern] = msgspec.field(default_factory=list)

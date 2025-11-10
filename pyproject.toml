@@ -64,6 +64,10 @@ tools = [
     "pyarrow>=14.0.0",           # Parquet MCP server (v0.3.0+)
 ]
 
+iowarp = [
+    "pyzmq>=25.0.0",             # ZeroMQ Python bindings for IOWarp CTE runtime
+]
+
 dev = [
     "pytest>=7.4.0",
     "pytest-cov>=4.1.0",
@@ -73,7 +77,7 @@ dev = [
 ]
 
 all = [
-    "claudio[ui,memory,optimizers,api,tools,dev]",
+    "claudio[ui,memory,optimizers,api,tools,iowarp,dev]",
 ]
 
 [project.urls]

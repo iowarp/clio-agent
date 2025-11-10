@@ -1,6 +1,6 @@
-"""IOWarp MCP Connector - Client for external IOWarp MCP servers
+"""Agent Toolkit MCP Connector - Client for external Agent Toolkit MCP servers
 
-This module provides connectivity to IOWarp MCP servers from:
+This module provides connectivity to Agent Toolkit (iowarp-mcps) MCP servers from:
 https://github.com/iowarp/iowarp-mcps
 
 Connects to external servers (HDF5, ADIOS, Parquet, SLURM, Darshan, etc.)
@@ -11,7 +11,7 @@ Architecture:
         ↓ calls tool
     IOWarpMCPConnector (this module)
         ↓ FastMCP Client protocol
-    IOWarp MCP Server (external: iowarp-mcp-hdf5, etc.)
+    Agent Toolkit MCP Server (external: uvx iowarp-mcps <server>)
         ↓ executes operation
     Scientific data system (HDF5 files, SLURM cluster, etc.)
 
@@ -42,10 +42,10 @@ from fastmcp import Client
 
 @dataclass
 class MCPServerConfig:
-    """Configuration for an IOWarp MCP server connection.
+    """Configuration for an Agent Toolkit MCP server connection.
 
     Supports both stdio (local command) and HTTP/SSE (remote) connections.
-    Default assumes servers are installed via iowarp-mcps package.
+    Default assumes servers are installed via Agent Toolkit (iowarp-mcps) package.
 
     Args:
         name: Server name (e.g., "hdf5", "adios")
@@ -55,11 +55,11 @@ class MCPServerConfig:
         env: Optional environment variables
 
     Examples:
-        >>> # Local stdio connection
+        >>> # Local stdio connection (Agent Toolkit pattern)
         >>> config = MCPServerConfig(
         ...     name="hdf5",
-        ...     command="uv",
-        ...     args=["run", "iowarp-mcp-hdf5"]
+        ...     command="uvx",
+        ...     args=["iowarp-mcps", "hdf5"]
         ... )
         >>>
         >>> # Remote HTTP/SSE connection
@@ -81,20 +81,22 @@ class MCPServerConfig:
 
 
 class IOWarpMCPConnector:
-    """Connector for IOWarp MCP servers.
+    """Connector for Agent Toolkit MCP servers.
 
-    Connects to external IOWarp MCP servers using FastMCP Client protocol.
+    Connects to external Agent Toolkit (iowarp-mcps) MCP servers using FastMCP Client protocol.
     Provides tool calling, resource access, and ARC caching integration.
 
-    Supports IOWarp MCP servers from: https://github.com/iowarp/iowarp-mcps
-    - iowarp-mcp-hdf5: HDF5 file analysis and optimization
-    - iowarp-mcp-adios: ADIOS BP file operations
-    - iowarp-mcp-parquet: Parquet analytics
-    - iowarp-mcp-slurm: SLURM job management
-    - iowarp-mcp-darshan: Darshan I/O trace analysis
-    - iowarp-mcp-compression: Compression testing
-    - iowarp-mcp-pandas: DataFrame operations
-    - iowarp-mcp-plot: Scientific plotting
+    Supports Agent Toolkit MCP servers from: https://github.com/iowarp/iowarp-mcps
+    - hdf5: HDF5 file analysis and optimization
+    - adios: ADIOS BP file operations
+    - parquet: Parquet analytics
+    - slurm: SLURM job management
+    - darshan: Darshan I/O trace analysis
+    - compression: Compression testing
+    - pandas: DataFrame operations
+    - plot: Scientific plotting
+
+    All servers launched via: uvx iowarp-mcps <server-name>
 
     Args:
         arc_memory: Optional ARCMemory instance for tool result caching
@@ -123,7 +125,7 @@ class IOWarpMCPConnector:
         arc_memory: Optional[Any] = None,
         config_file: Optional[str] = None
     ):
-        """Initialize IOWarp MCP connector.
+        """Initialize Agent Toolkit MCP connector.
 
         Args:
             arc_memory: Optional ARCMemory for caching tool results
@@ -133,92 +135,102 @@ class IOWarpMCPConnector:
         self.servers: Dict[str, MCPServerConfig] = {}
         self.clients: Dict[str, Any] = {}  # Client types vary by transport
 
-        # Initialize IOWarp server configurations
+        # Initialize Agent Toolkit server configurations
         if config_file:
             self._load_config_file(config_file)
         else:
             self._initialize_iowarp_servers()
 
     def _initialize_iowarp_servers(self) -> None:
-        """Initialize default IOWarp MCP server configurations.
+        """Initialize Agent Toolkit (iowarp-mcps) server configurations.
 
-        Default configuration assumes servers are installed locally via:
-            pip install iowarp-mcps
+        Connects to Agent Toolkit MCP servers using uvx launcher.
+        Each server runs via: uvx iowarp-mcps <server-name>
 
-        Users can override with environment variables:
-            IOWARP_HDF5_URL=http://server:8000/mcp
-            IOWARP_ADIOS_URL=http://server:8001/mcp
+        Environment variable overrides:
+            AGENT_TOOLKIT_<SERVER>_URL: HTTP/SSE endpoint for server
+            Examples:
+                AGENT_TOOLKIT_HDF5_URL=http://server:8000/mcp
+                AGENT_TOOLKIT_ADIOS_URL=http://server:8001/mcp
         """
         # HDF5 Server - File analysis and optimization
+        hdf5_url = os.environ.get("AGENT_TOOLKIT_HDF5_URL")
         self.servers["hdf5"] = MCPServerConfig(
             name="hdf5",
-            url=os.environ.get("IOWARP_HDF5_URL"),
-            command="uv" if not os.environ.get("IOWARP_HDF5_URL") else None,
-            args=["run", "iowarp-mcp-hdf5"] if not os.environ.get("IOWARP_HDF5_URL") else None,
-            env={"LOG_LEVEL": os.environ.get("IOWARP_LOG_LEVEL", "INFO")}
+            url=hdf5_url,
+            command="uvx" if not hdf5_url else None,
+            args=["iowarp-mcps", "hdf5"] if not hdf5_url else None,
+            env=None
         )
 
         # ADIOS Server - BP file operations
+        adios_url = os.environ.get("AGENT_TOOLKIT_ADIOS_URL")
         self.servers["adios"] = MCPServerConfig(
             name="adios",
-            url=os.environ.get("IOWARP_ADIOS_URL"),
-            command="uv" if not os.environ.get("IOWARP_ADIOS_URL") else None,
-            args=["run", "iowarp-mcp-adios"] if not os.environ.get("IOWARP_ADIOS_URL") else None,
-            env={"LOG_LEVEL": os.environ.get("IOWARP_LOG_LEVEL", "INFO")}
+            url=adios_url,
+            command="uvx" if not adios_url else None,
+            args=["iowarp-mcps", "adios"] if not adios_url else None,
+            env=None
         )
 
         # Parquet Server - Analytics and optimization
+        parquet_url = os.environ.get("AGENT_TOOLKIT_PARQUET_URL")
         self.servers["parquet"] = MCPServerConfig(
             name="parquet",
-            url=os.environ.get("IOWARP_PARQUET_URL"),
-            command="uv" if not os.environ.get("IOWARP_PARQUET_URL") else None,
-            args=["run", "iowarp-mcp-parquet"] if not os.environ.get("IOWARP_PARQUET_URL") else None,
-            env={"LOG_LEVEL": os.environ.get("IOWARP_LOG_LEVEL", "INFO")}
+            url=parquet_url,
+            command="uvx" if not parquet_url else None,
+            args=["iowarp-mcps", "parquet"] if not parquet_url else None,
+            env=None
         )
 
         # SLURM Server - Job management
+        slurm_url = os.environ.get("AGENT_TOOLKIT_SLURM_URL")
         self.servers["slurm"] = MCPServerConfig(
             name="slurm",
-            url=os.environ.get("IOWARP_SLURM_URL"),
-            command="uv" if not os.environ.get("IOWARP_SLURM_URL") else None,
-            args=["run", "iowarp-mcp-slurm"] if not os.environ.get("IOWARP_SLURM_URL") else None,
-            env={"LOG_LEVEL": os.environ.get("IOWARP_LOG_LEVEL", "INFO")}
+            url=slurm_url,
+            command="uvx" if not slurm_url else None,
+            args=["iowarp-mcps", "slurm"] if not slurm_url else None,
+            env=None
         )
 
         # Darshan Server - I/O trace analysis
+        darshan_url = os.environ.get("AGENT_TOOLKIT_DARSHAN_URL")
         self.servers["darshan"] = MCPServerConfig(
             name="darshan",
-            url=os.environ.get("IOWARP_DARSHAN_URL"),
-            command="uv" if not os.environ.get("IOWARP_DARSHAN_URL") else None,
-            args=["run", "iowarp-mcp-darshan"] if not os.environ.get("IOWARP_DARSHAN_URL") else None,
-            env={"LOG_LEVEL": os.environ.get("IOWARP_LOG_LEVEL", "INFO")}
+            url=darshan_url,
+            command="uvx" if not darshan_url else None,
+            args=["iowarp-mcps", "darshan"] if not darshan_url else None,
+            env=None
         )
 
         # Compression Server - Compression algorithm testing
+        compression_url = os.environ.get("AGENT_TOOLKIT_COMPRESSION_URL")
         self.servers["compression"] = MCPServerConfig(
             name="compression",
-            url=os.environ.get("IOWARP_COMPRESSION_URL"),
-            command="uv" if not os.environ.get("IOWARP_COMPRESSION_URL") else None,
-            args=["run", "iowarp-mcp-compression"] if not os.environ.get("IOWARP_COMPRESSION_URL") else None,
-            env={"LOG_LEVEL": os.environ.get("IOWARP_LOG_LEVEL", "INFO")}
+            url=compression_url,
+            command="uvx" if not compression_url else None,
+            args=["iowarp-mcps", "compression"] if not compression_url else None,
+            env=None
         )
 
         # Pandas Server - DataFrame operations
+        pandas_url = os.environ.get("AGENT_TOOLKIT_PANDAS_URL")
         self.servers["pandas"] = MCPServerConfig(
             name="pandas",
-            url=os.environ.get("IOWARP_PANDAS_URL"),
-            command="uv" if not os.environ.get("IOWARP_PANDAS_URL") else None,
-            args=["run", "iowarp-mcp-pandas"] if not os.environ.get("IOWARP_PANDAS_URL") else None,
-            env={"LOG_LEVEL": os.environ.get("IOWARP_LOG_LEVEL", "INFO")}
+            url=pandas_url,
+            command="uvx" if not pandas_url else None,
+            args=["iowarp-mcps", "pandas"] if not pandas_url else None,
+            env=None
         )
 
         # Plot Server - Scientific plotting
+        plot_url = os.environ.get("AGENT_TOOLKIT_PLOT_URL")
         self.servers["plot"] = MCPServerConfig(
             name="plot",
-            url=os.environ.get("IOWARP_PLOT_URL"),
-            command="uv" if not os.environ.get("IOWARP_PLOT_URL") else None,
-            args=["run", "iowarp-mcp-plot"] if not os.environ.get("IOWARP_PLOT_URL") else None,
-            env={"LOG_LEVEL": os.environ.get("IOWARP_LOG_LEVEL", "INFO")}
+            url=plot_url,
+            command="uvx" if not plot_url else None,
+            args=["iowarp-mcps", "plot"] if not plot_url else None,
+            env=None
         )
 
     def _load_config_file(self, config_file: str) -> None:
@@ -233,8 +245,8 @@ class IOWarpMCPConnector:
                     "url": "http://server:8000/mcp"
                 },
                 "adios": {
-                    "command": "uv",
-                    "args": ["run", "iowarp-mcp-adios"]
+                    "command": "uvx",
+                    "args": ["iowarp-mcps", "adios"]
                 }
             }
         """
@@ -254,7 +266,7 @@ class IOWarpMCPConnector:
             )
 
     async def connect_server(self, server_name: str) -> Any:
-        """Connect to an IOWarp MCP server.
+        """Connect to an Agent Toolkit MCP server.
 
         Creates FastMCP Client instance for the specified server.
         Reuses existing connections when available.
@@ -282,7 +294,7 @@ class IOWarpMCPConnector:
         config = self.servers.get(server_name)
         if not config:
             raise ValueError(
-                f"Unknown IOWarp MCP server: {server_name}. "
+                f"Unknown Agent Toolkit MCP server: {server_name}. "
                 f"Available: {list(self.servers.keys())}"
             )
 
@@ -315,7 +327,7 @@ class IOWarpMCPConnector:
 
         except Exception as e:
             raise ConnectionError(
-                f"Failed to connect to IOWarp MCP server '{server_name}': {e}"
+                f"Failed to connect to Agent Toolkit MCP server '{server_name}': {e}"
             ) from e
 
     async def call_tool(
@@ -325,7 +337,7 @@ class IOWarpMCPConnector:
         arguments: Dict[str, Any],
         use_cache: bool = True
     ) -> Any:
-        """Call tool on IOWarp MCP server with optional ARC caching.
+        """Call tool on Agent Toolkit MCP server with optional ARC caching.
 
         Checks ARC cache before calling tool (if enabled). Caches results
         with 1 hour TTL for repeated queries.
@@ -384,7 +396,7 @@ class IOWarpMCPConnector:
         return result
 
     async def list_tools(self, server_name: str) -> List[Any]:
-        """List available tools on IOWarp MCP server.
+        """List available tools on Agent Toolkit MCP server.
 
         Args:
             server_name: Server name (e.g., "hdf5")
@@ -407,7 +419,7 @@ class IOWarpMCPConnector:
         server_name: str,
         uri: str
     ) -> Any:
-        """Read resource from IOWarp MCP server.
+        """Read resource from Agent Toolkit MCP server.
 
         Resources provide read-only access to data sources (files, metadata, etc.)
 
@@ -433,7 +445,7 @@ class IOWarpMCPConnector:
         return content
 
     def get_available_servers(self) -> List[str]:
-        """Get list of configured IOWarp MCP servers.
+        """Get list of configured Agent Toolkit MCP servers.
 
         Returns:
             List of server names
@@ -458,7 +470,7 @@ class IOWarpMCPConnector:
     async def close_all(self) -> None:
         """Close all MCP client connections.
 
-        Gracefully closes all active connections to IOWarp servers.
+        Gracefully closes all active connections to Agent Toolkit servers.
         Automatically called when using connector as async context manager.
 
         Examples:
@@ -487,7 +499,7 @@ class IOWarpMCPConnector:
 
 
 class IOWarpMCPTools:
-    """Synchronous wrapper for IOWarp MCP connector.
+    """Synchronous wrapper for Agent Toolkit MCP connector.
 
     Provides sync interface for DSPy agents that require synchronous tool functions.
     Wraps async connector calls in asyncio.run().
@@ -520,7 +532,7 @@ class IOWarpMCPTools:
         arc_memory: Optional[Any] = None,
         config_file: Optional[str] = None
     ):
-        """Initialize synchronous IOWarp MCP tools wrapper.
+        """Initialize synchronous Agent Toolkit MCP tools wrapper.
 
         Args:
             arc_memory: Optional ARCMemory for caching
@@ -570,7 +582,7 @@ class IOWarpMCPTools:
         return asyncio.run(self.connector.list_tools(server_name))
 
     def get_available_servers(self) -> List[str]:
-        """Get available IOWarp MCP servers.
+        """Get available Agent Toolkit MCP servers.
 
         Returns:
             List of server names
@@ -600,13 +612,13 @@ def create_iowarp_tool_function(
     tool_name: str,
     arc_memory: Optional[Any] = None
 ) -> Callable:
-    """Create DSPy-compatible tool function for IOWarp MCP tool.
+    """Create DSPy-compatible tool function for Agent Toolkit MCP tool.
 
     Convenience function for creating individual tool functions suitable
     for use with DSPy ReAct agents.
 
     Args:
-        server_name: IOWarp server name (e.g., "hdf5")
+        server_name: Agent Toolkit server name (e.g., "hdf5")
         tool_name: Tool name (e.g., "analyze_file")
         arc_memory: Optional ARCMemory for caching
 
@@ -628,10 +640,10 @@ def create_iowarp_tool_function(
     tools = IOWarpMCPTools(arc_memory)
 
     def tool_function(**kwargs):
-        """Auto-generated IOWarp tool function."""
+        """Auto-generated Agent Toolkit tool function."""
         return tools.call_tool(server_name, tool_name, kwargs)
 
     tool_function.__name__ = f"{server_name}_{tool_name}"
-    tool_function.__doc__ = f"Call {tool_name} on {server_name} IOWarp MCP server"
+    tool_function.__doc__ = f"Call {tool_name} on {server_name} Agent Toolkit MCP server"
 
     return tool_function
