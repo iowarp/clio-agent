@@ -370,12 +370,9 @@ class IOWarpMCPConnector:
             ...     {"script": "#!/bin/bash\\n#SBATCH -N 1\\n..."}
             ... )
         """
-        # Build cache key from server, tool, and arguments
-        cache_key = f"iowarp_{server_name}_{tool_name}_{str(sorted(arguments.items()))}"
-
         # Check ARC cache if enabled
         if use_cache and self.arc:
-            cached = self.arc._cache.get(cache_key)
+            cached = self.arc.get_cached_tool_result(server_name, tool_name, arguments)
             if cached is not None:
                 return cached
 
@@ -391,7 +388,7 @@ class IOWarpMCPConnector:
         # Cache result in ARC if enabled
         if use_cache and self.arc:
             # Cache for 1 hour (tool results are relatively stable)
-            self.arc._cache.put(cache_key, result, ttl_seconds=3600)
+            self.arc.cache_tool_result(server_name, tool_name, arguments, result, ttl_seconds=3600)
 
         return result
 

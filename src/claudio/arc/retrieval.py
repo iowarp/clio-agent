@@ -123,10 +123,12 @@ class ContextRetriever:
         # Build Context object
         # Note: Context schema is designed for domain-specific data,
         # but we use it here to return query-relevant context
+        import time
+        current_time = time.time()
         context = Context(
             domain=f"query_context_{session_id}",
-            created_at=datetime.now().isoformat(),
-            updated_at=datetime.now().isoformat(),
+            created_at=current_time,
+            updated_at=current_time,
             retrieved_docs=[],  # Will be populated in future with RAG docs
             cached_tool_results={},  # Retrieved from memory if needed
             learned_patterns=[],  # Will contain key topics as patterns
@@ -141,7 +143,7 @@ class ContextRetriever:
                 description=topic,
                 confidence=0.5,  # Default confidence for keyword-based topics
                 examples_seen=1,
-                learned_at=datetime.now().isoformat(),
+                learned_at=current_time,
                 rule={"type": "keyword", "topic": topic}
             )
             context.learned_patterns.append(pattern)

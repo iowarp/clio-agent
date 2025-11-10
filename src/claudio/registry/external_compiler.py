@@ -25,103 +25,10 @@ import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
+from claudio.registry.a2a_adapter import A2AProtocolHandler, A2ARequest, A2AResponse
+
 if TYPE_CHECKING:
     from claudio.registry.registry import AgentCapability
-
-
-@dataclass
-class A2ARequest:
-    """A2A Protocol request message.
-
-    A2A Protocol: https://a2a-protocol.org/latest/specification/
-
-    Attributes:
-        agent_id: Target agent identifier
-        task: Task description/query
-        context: Optional context from previous interactions
-        session_id: Session identifier for conversation tracking
-        metadata: Additional request metadata
-    """
-    agent_id: str
-    task: str
-    context: Optional[Dict[str, Any]] = None
-    session_id: str = "default"
-    metadata: Dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass
-class A2AResponse:
-    """A2A Protocol response message.
-
-    Attributes:
-        agent_id: Responding agent identifier
-        result: Agent's response/result
-        success: Whether task completed successfully
-        error: Error message if success=False
-        metadata: Response metadata (timing, tokens, etc.)
-    """
-    agent_id: str
-    result: str
-    success: bool = True
-    error: Optional[str] = None
-    metadata: Dict[str, Any] = field(default_factory=dict)
-
-
-class A2AProtocolHandler:
-    """Handler for A2A protocol communication.
-
-    Manages request/response serialization and communication with external agents.
-    Currently implements local simulation for external agents.
-    Full HTTP/WebSocket implementation will be in a2a_adapter.py (Task 1.3).
-    """
-
-    def __init__(self):
-        """Initialize A2A protocol handler."""
-        self._external_agents: Dict[str, Any] = {}
-
-    def send_request(self, request: A2ARequest) -> A2AResponse:
-        """Send A2A request to external agent.
-
-        Args:
-            request: A2A request message
-
-        Returns:
-            A2A response from external agent
-
-        Raises:
-            ValueError: If agent not found or request fails
-        """
-        # TODO: Full implementation in a2a_adapter.py (Task 1.3)
-        # For now, simulate external agent response
-        if request.agent_id not in self._external_agents:
-            return A2AResponse(
-                agent_id=request.agent_id,
-                result="",
-                success=False,
-                error=f"External agent '{request.agent_id}' not configured",
-                metadata={"timestamp": time.time()}
-            )
-
-        # Simulate external agent execution
-        # In production, this would make HTTP/WebSocket call to external agent
-        return A2AResponse(
-            agent_id=request.agent_id,
-            result=f"[Simulated response from {request.agent_id}] Processed: {request.task}",
-            success=True,
-            metadata={
-                "timestamp": time.time(),
-                "framework": self._external_agents[request.agent_id].get("framework", "unknown")
-            }
-        )
-
-    def register_external_agent(self, agent_id: str, config: Dict[str, Any]) -> None:
-        """Register external agent configuration.
-
-        Args:
-            agent_id: External agent identifier
-            config: Agent configuration (endpoint, auth, etc.)
-        """
-        self._external_agents[agent_id] = config
 
 
 @dataclass
@@ -164,7 +71,7 @@ class ExternalAgentWrapper:
     Example:
         >>> wrapper = ExternalAgentWrapper(definition, protocol_handler)
         >>> response = wrapper.forward("Analyze this data")
-        >>> print(response.result)
+        >>> print(response.answer)
     """
 
     def __init__(
@@ -182,15 +89,6 @@ class ExternalAgentWrapper:
         self.protocol_handler = protocol_handler
         self.agent_id = definition.agent_id
         self.framework = definition.framework
-
-        # Register with protocol handler
-        self.protocol_handler.register_external_agent(
-            self.agent_id,
-            {
-                "framework": self.framework,
-                "config": definition.config
-            }
-        )
 
     def forward(
         self,
@@ -210,27 +108,31 @@ class ExternalAgentWrapper:
 
         Example:
             >>> response = wrapper.forward("Summarize this document", session_id="user123")
-            >>> if response.success:
-            ...     print(response.result)
+            >>> print(response.answer)
         """
-        # Create A2A request
+        # Create A2A request using canonical format (query field)
         request = A2ARequest(
             agent_id=self.agent_id,
-            task=question,
-            context=context,
-            session_id=session_id,
-            metadata={
-                "framework": self.framework,
-                "tools": self.definition.tools
+            query=question,
+            context=context or {},
+            session_id=session_id
+        )
+
+        # Send via protocol handler with framework metadata
+        start_time = time.time()
+        response = self.protocol_handler.send_request(
+            framework=self.framework,
+            request=request,
+            external_response={
+                "output": f"[Simulated {self.framework} response] Processed: {question}",
+                "agent_id": self.agent_id
             }
         )
 
-        # Send via protocol handler
-        start_time = time.time()
-        response = self.protocol_handler.send_request(request)
-
         # Add timing metadata
         response.metadata["duration_ms"] = (time.time() - start_time) * 1000
+        response.metadata["framework"] = self.framework
+        response.metadata["tools"] = self.definition.tools
 
         return response
 
@@ -284,7 +186,7 @@ class ExternalAgentCompiler:
     """
 
     def __init__(self):
-        """Initialize external agent compiler."""
+        """Initialize external agent compiler with A2A protocol handler."""
         self.protocol_handler = A2AProtocolHandler()
 
     def compile_agent(self, definition: ExternalAgentDefinition) -> ExternalAgentWrapper:

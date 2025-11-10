@@ -419,13 +419,13 @@ class IOWarpCTEBackend:
         if key not in self._access_metadata:
             self._access_metadata[key] = {
                 "tier": tier or "warm",
-                "created_at": now.isoformat() + "Z",
-                "last_accessed": now.isoformat() + "Z",
+                "created_at": now.isoformat().replace("+00:00", "Z"),
+                "last_accessed": now.isoformat().replace("+00:00", "Z"),
                 "access_count": 1,
             }
         else:
             metadata = self._access_metadata[key]
-            metadata["last_accessed"] = now.isoformat() + "Z"
+            metadata["last_accessed"] = now.isoformat().replace("+00:00", "Z")
             metadata["access_count"] = metadata.get("access_count", 0) + 1
             if tier:
                 metadata["tier"] = tier

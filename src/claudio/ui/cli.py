@@ -1,10 +1,14 @@
 #!/usr/bin/env -S uv run
 # /// script
-# requires-python = ">=3.11"
+# requires-python = ">=3.12"
 # dependencies = [
-#   "dspy-ai>=2.6.0",
-#   "rich>=13.0.0",
+#   "dspy-ai>=3.0.3",
+#   "fastmcp>=2.13.0",
+#   "rich>=14.2.0",
 #   "prompt-toolkit>=3.0.0",
+#   "sortedcontainers>=2.4.0",
+#   "msgspec>=0.18.0",
+#   "requests>=2.31.0",
 # ]
 # ///
 
@@ -444,9 +448,76 @@ if __name__ == "__main__":
         action="store_true",
         help="Show routing reasoning and tool calls"
     )
+    parser.add_argument(
+        "--query", "-q",
+        type=str,
+        help="Non-interactive mode: ask single question and exit"
+    )
+    parser.add_argument(
+        "--session",
+        type=str,
+        default="cli_session",
+        help="Session ID for conversation tracking (default: cli_session)"
+    )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Output results as JSON (use with --query)"
+    )
 
     args = parser.parse_args()
 
-    run_cli(
-        verbose=args.verbose
-    )
+    # Non-interactive mode
+    if args.query:
+        import json
+
+        # Setup LM Studio
+        try:
+            setup_dspy(verbose=args.verbose)
+        except Exception as e:
+            if args.json:
+                print(json.dumps({"error": str(e), "status": "failed"}))
+            else:
+                print(f"❌ Error: {e}")
+            sys.exit(1)
+
+        # Create agent
+        agent = ClaudIO(verbose=args.verbose)
+
+        # Ask question
+        try:
+            result = agent(question=args.query, session_id=args.session)
+
+            if args.json:
+                # JSON output
+                output = {
+                    "question": args.query,
+                    "selected_expert": result.selected_expert,
+                    "answer": result.answer,
+                    "confidence": getattr(result, 'confidence', 0.0),
+                    "duration_ms": getattr(result, 'duration_ms', 0.0),
+                    "status": "success"
+                }
+                print(json.dumps(output, indent=2))
+            else:
+                # Human-readable output
+                console = Console()
+                console.print(f"\n[bold cyan]Question:[/bold cyan] {args.query}")
+                console.print(f"[bold green]Expert:[/bold green] {result.selected_expert}")
+                console.print(f"[bold yellow]Confidence:[/bold yellow] {getattr(result, 'confidence', 0.0):.2f}\n")
+                console.print(Panel(Markdown(result.answer), title="Answer", border_style="green"))
+
+        except Exception as e:
+            if args.json:
+                print(json.dumps({"error": str(e), "status": "failed"}))
+            else:
+                console = Console()
+                console.print(f"[red]❌ Error: {e}[/red]")
+                if args.verbose:
+                    import traceback
+                    traceback.print_exc()
+            sys.exit(1)
+
+    else:
+        # Interactive mode
+        run_cli(verbose=args.verbose)

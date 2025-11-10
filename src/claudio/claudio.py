@@ -279,7 +279,7 @@ class ClaudIO(dspy.Module):
         Returns:
             Conversation object ready to store in ARC
         """
-        current_time = datetime.now().isoformat() + "Z"
+        current_time = time.time()  # Unix timestamp (float)
         msg_id_user = str(uuid.uuid4())
         msg_id_assistant = str(uuid.uuid4())
 
@@ -531,8 +531,8 @@ class ClaudIO(dspy.Module):
             agent_id=expert_id,
             tier=2,  # Tier 2 = Expert
             source="native",
-            started_at=datetime.fromtimestamp(expert_start).isoformat() + "Z",
-            completed_at=datetime.fromtimestamp(time.time()).isoformat() + "Z",
+            started_at=expert_start,  # Unix timestamp (float)
+            completed_at=time.time(),  # Unix timestamp (float)
             duration_ms=expert_duration_ms,
             status="success" if success else "failure",
             input={"query": question, "context": context or ""},

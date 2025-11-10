@@ -305,7 +305,7 @@ class MultiAgentCoordinator:
             plan_id=plan_id,
             tasks=tasks,
             execution_mode=execution_mode,
-            created_at=datetime.now().isoformat(),
+            created_at=datetime.now().isoformat(),  # CoordinationPlan uses string timestamp
         )
 
         return plan
@@ -504,8 +504,8 @@ class MultiAgentCoordinator:
                 agent_id=task.agent_id,
                 tier=2,  # Expert tier
                 source="coordination",
-                started_at=datetime.fromtimestamp(start_time).isoformat(),
-                completed_at=datetime.now().isoformat(),
+                started_at=start_time,  # Unix timestamp (float)
+                completed_at=time.time(),  # Unix timestamp (float)
                 duration_ms=duration_ms,
                 status=status,
                 input=task_input,

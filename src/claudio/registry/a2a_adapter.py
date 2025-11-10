@@ -22,9 +22,9 @@ Example:
     >>> print(response.answer)
 """
 
-from typing import Dict, Any, Optional, Protocol
-from dataclasses import dataclass, asdict
 import json
+from dataclasses import asdict, dataclass
+from typing import Any, Dict, Optional, Protocol
 
 
 @dataclass
