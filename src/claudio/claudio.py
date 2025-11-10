@@ -250,7 +250,10 @@ class ClaudIO(dspy.Module):
         from claudio.config import LMStudioConfig
         main_config = LMStudioConfig(model=main_model)
 
-        with dspy.context(lm=configure_dspy_lm_studio(main_config)):
+        # CRITICAL: Use ChatAdapter explicitly to prevent JSONAdapter fallback
+        # LM Studio doesn't support response_format, JSONAdapter will fail
+        # ChatAdapter with text mode works for all local LMs
+        with dspy.context(lm=configure_dspy_lm_studio(main_config), adapter=dspy.ChatAdapter()):
             self.agent = dspy.ReAct(
                 MainAgentSignature,  # Class-based signature (proper DSPy pattern)
                 tools=[ask_data_expert],  # Add more experts when available

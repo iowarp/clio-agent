@@ -174,21 +174,20 @@ def configure_dspy_lm_studio(config: Optional[LMStudioConfig] = None) -> dspy.LM
     """
     cfg = config or LMStudioConfig()
 
-    # Ensure model name has proper prefix
+    # Use openai/ prefix with model_type='chat'
+    # LM Studio handles gpt-oss Harmony format translation automatically
     model_name = cfg.model
-    if not model_name.startswith("openai/"):
-        model_name = f"openai/{model_name}"
+    if "/" in model_name:
+        model_name = model_name.split("/", 1)[1]
+    model_name = f"openai/{model_name}"
 
     lm = dspy.LM(
         model=model_name,
         api_base=f"{cfg.base_url}/v1",
         api_key=cfg.api_key,
         temperature=cfg.temperature,
-        top_p=cfg.top_p,
-        frequency_penalty=cfg.frequency_penalty,
-        model_type="chat",
         max_tokens=cfg.max_tokens,
-        supports_response_format=False  # Disable for LM Studio compatibility
+        model_type="chat"
     )
 
     return lm
@@ -197,34 +196,38 @@ def configure_dspy_lm_studio(config: Optional[LMStudioConfig] = None) -> dspy.LM
 def configure_dspy_router_lm_studio(config: Optional[RouterLMConfig] = None) -> dspy.LM:
     """Configure DSPy to use LM Studio for router (deterministic)."""
     cfg = config or RouterLMConfig()
-    model_name = cfg.model if cfg.model.startswith("openai/") else f"openai/{cfg.model}"
+
+    model_name = cfg.model
+    if "/" in model_name:
+        model_name = model_name.split("/", 1)[1]
+    model_name = f"openai/{model_name}"
+
     return dspy.LM(
         model=model_name,
         api_base=f"{cfg.base_url}/v1",
         api_key=cfg.api_key,
         temperature=cfg.temperature,
-        top_p=cfg.top_p,
-        frequency_penalty=cfg.frequency_penalty,
-        model_type="chat",
         max_tokens=cfg.max_tokens,
-        supports_response_format=False
+        model_type="chat"
     )
 
 
 def configure_dspy_reasoner_lm_studio(config: Optional[ReasonerLMConfig] = None) -> dspy.LM:
     """Configure DSPy to use LM Studio for reasoner (creative)."""
     cfg = config or ReasonerLMConfig()
-    model_name = cfg.model if cfg.model.startswith("openai/") else f"openai/{cfg.model}"
+
+    model_name = cfg.model
+    if "/" in model_name:
+        model_name = model_name.split("/", 1)[1]
+    model_name = f"openai/{model_name}"
+
     return dspy.LM(
         model=model_name,
         api_base=f"{cfg.base_url}/v1",
         api_key=cfg.api_key,
         temperature=cfg.temperature,
-        top_p=cfg.top_p,
-        frequency_penalty=cfg.frequency_penalty,
-        model_type="chat",
         max_tokens=cfg.max_tokens,
-        supports_response_format=False
+        model_type="chat"
     )
 
 
