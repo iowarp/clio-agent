@@ -346,11 +346,12 @@ wheels = [
 
 [[package]]
 name = "claudio"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "." }
 dependencies = [
     { name = "dspy-ai" },
     { name = "fastmcp" },
+    { name = "requests" },
 ]
 
 [package.optional-dependencies]
@@ -427,6 +428,7 @@ requires-dist = [
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.21.0" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=4.1.0" },
     { name = "pyzmq", marker = "extra == 'iowarp'", specifier = ">=25.0.0" },
+    { name = "requests", specifier = ">=2.31.0" },
     { name = "rich", marker = "extra == 'ui'", specifier = ">=14.2.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.1.0" },
     { name = "scipy", marker = "extra == 'optimizers'", specifier = ">=1.11.0" },

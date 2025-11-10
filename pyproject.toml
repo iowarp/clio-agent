@@ -1,9 +1,13 @@
 [project]
 name = "claudio"
-version = "0.1.0"
-description = "Self-Improving Autonomous Agent for Scientific Data Management - IOWarp Intelligence Layer (CEI)"
+version = "0.2.0"
+description = "ClaudIO: Research Prototype Multi-Agent System for Scientific Data I/O - IOWarp Project (GRC/IIT)"
 authors = [
-    { name = "IOWarp Team", email = "gra@illinoistech.edu" }
+    { name = "Antonis Kougkas", email = "a.kougkas@gmail.com" },
+    { name = "Gnosis Research Center", email = "gra@iit.edu" }
+]
+maintainers = [
+    { name = "Antonis Kougkas", email = "a.kougkas@gmail.com" }
 ]
 readme = "README.md"
 license = { text = "Apache-2.0" }
@@ -18,19 +22,22 @@ keywords = [
 ]
 
 classifiers = [
-    "Development Status :: 4 - Beta",
+    "Development Status :: 3 - Alpha",
     "Intended Audience :: Science/Research",
+    "Intended Audience :: Education",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: Apache Software License",
-    "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Topic :: Scientific/Engineering",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: System :: Distributed Computing",
+    "Environment :: Console",
 ]
 
 dependencies = [
     "dspy-ai>=3.0.3",
     "fastmcp>=2.13.0",
+    "requests>=2.31.0",
 ]
 
 [project.optional-dependencies]
@@ -111,12 +118,12 @@ addopts = [
 
 [tool.black]
 line-length = 100
-target-version = ["py311"]
+target-version = ["py312"]
 include = '\.pyi?$'
 
 [tool.ruff]
 line-length = 100
-target-version = "py311"
+target-version = "py312"
 select = [
     "E",   # pycodestyle errors
     "W",   # pycodestyle warnings
@@ -130,7 +137,7 @@ ignore = [
 ]
 
 [tool.mypy]
-python_version = "3.11"
+python_version = "3.12"
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = false  # Set to true for stricter typing

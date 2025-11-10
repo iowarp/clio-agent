@@ -21,6 +21,7 @@ from typing import Any, Dict, List, Optional
 
 from claudio.arc.cache import LRUCache
 from claudio.arc.index import BTreeIndex
+from claudio.arc.lsm import LSMTree
 from claudio.arc.schema import (
     Context,
     Conversation,
@@ -84,6 +85,13 @@ class ARCMemory:
         # Keys are (session_id, timestamp) tuples
         self._conv_index = BTreeIndex()  # Conversation index
         self._inv_index = BTreeIndex()  # Invocation index
+
+        # LSM tree for high-throughput metrics
+        self._lsm = LSMTree(
+            data_dir=str(self.data_dir / "lsm"),
+            memtable_size=1000,
+            compaction_threshold=5,
+        )
 
         # Thread safety
         self._lock = threading.Lock()
@@ -242,6 +250,19 @@ class ARCMemory:
             encoded = encode_invocation(invocation)
             file_path.write_bytes(encoded)
             self._disk_writes += 1
+
+            # Also store in LSM tree for high-throughput metrics queries
+            self._lsm.write(
+                timestamp=timestamp,
+                metric={
+                    "trace_id": trace_id,
+                    "session_id": session_id,
+                    "agent_id": invocation.agent_id,
+                    "tier": invocation.tier,
+                    "duration_ms": invocation.duration_ms,
+                    "status": invocation.status,
+                },
+            )
 
     def get_invocation(self, invocation_id: str) -> Optional[Invocation]:
         """Get specific invocation.
@@ -557,6 +578,45 @@ class ARCMemory:
             "target_hit_rate": 0.50,  # >50% per PLAN.md
         }
 
+    def query_metrics_by_time_range(
+        self, start_ts: float, end_ts: float
+    ) -> List[Dict[str, Any]]:
+        """Query metrics in time range using LSM tree.
+
+        Provides fast time-range queries over invocation metrics
+        stored in the LSM tree.
+
+        Args:
+            start_ts: Start timestamp (Unix timestamp)
+            end_ts: End timestamp (Unix timestamp)
+
+        Returns:
+            List of metrics in range, sorted by timestamp
+
+        Examples:
+            >>> import time
+            >>> start = time.time() - 3600  # Last hour
+            >>> end = time.time()
+            >>> metrics = arc.query_metrics_by_time_range(start, end)
+            >>> for metric in metrics:
+            ...     print(f"{metric['agent_id']}: {metric['duration_ms']}ms")
+        """
+        return self._lsm.range_scan(start_ts, end_ts)
+
+    def get_lsm_stats(self) -> Dict[str, Any]:
+        """Get LSM tree statistics.
+
+        Returns:
+            Dict with write throughput, compaction stats
+
+        Examples:
+            >>> stats = arc.get_lsm_stats()
+            >>> print(f"LSM writes: {stats['write_count']}")
+            >>> print(f"Flushes: {stats['flush_count']}")
+            >>> print(f"Compactions: {stats['compaction_count']}")
+        """
+        return self._lsm.get_stats()
+
     def get_cache_stats(self) -> Dict[str, Any]:
         """Get cache performance statistics.
 
@@ -633,6 +693,11 @@ class ARCMemory:
             # Reset counters
             self._disk_reads = 0
             self._disk_writes = 0
+
+    def __del__(self) -> None:
+        """Cleanup LSM tree on delete."""
+        if hasattr(self, "_lsm"):
+            self._lsm.close()
 
     @staticmethod
     def _parse_timestamp(timestamp: float | str) -> float:

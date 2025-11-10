@@ -410,20 +410,16 @@ class LearnedPattern(msgspec.Struct):
     """Learned pattern from historical data.
 
     Attributes:
-        pattern_id: Pattern identifier
-        description: Human-readable description
+        pattern_type: Type of pattern (e.g., "frequent_topic", "tool_usage", "error_pattern")
+        pattern_data: Pattern-specific data dictionary
         confidence: Confidence score (0.0-1.0)
-        examples_seen: Number of examples observed
-        learned_at: Pattern learning timestamp (Unix timestamp)
-        rule: Pattern rule (condition, recommendation)
+        learned_at: Pattern learning timestamp (Unix timestamp, defaults to current time)
     """
 
-    pattern_id: str
-    description: str
+    pattern_type: str
+    pattern_data: Dict[str, Any]
     confidence: float
-    examples_seen: int
-    learned_at: float
-    rule: Dict[str, str]
+    learned_at: float = msgspec.field(default_factory=lambda: time.time())
 
 
 class Context(msgspec.Struct):

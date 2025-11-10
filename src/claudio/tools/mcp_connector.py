@@ -1,34 +1,35 @@
-"""Agent Toolkit MCP Connector - Client for external Agent Toolkit MCP servers
+"""Agent Toolkit MCP Connector - Optimal Async/Sync Bridge
 
 This module provides connectivity to Agent Toolkit (iowarp-mcps) MCP servers from:
 https://github.com/iowarp/iowarp-mcps
 
-Connects to external servers (HDF5, ADIOS, Parquet, SLURM, Darshan, etc.)
-using FastMCP Client protocol. Does NOT implement the servers themselves.
-
 Architecture:
-    ClaudIO Agent
+    ClaudIO Agent (sync DSPy code)
         ↓ calls tool
-    IOWarpMCPConnector (this module)
-        ↓ FastMCP Client protocol
+    IOWarpMCPConnector (this module - thread-safe bridge)
+        ↓ FastMCP Client protocol (async)
     Agent Toolkit MCP Server (external: uvx iowarp-mcps <server>)
         ↓ executes operation
     Scientific data system (HDF5 files, SLURM cluster, etc.)
 
+Optimal Async/Sync Bridge Pattern:
+    - Long-lived event loop in dedicated thread
+    - Persistent client connections (enter context once, keep alive)
+    - Thread-safe via asyncio.run_coroutine_threadsafe()
+    - Proper cleanup in shutdown()
+
 Usage:
-    >>> connector = IOWarpMCPConnector(arc_memory=arc)
-    >>> result = await connector.call_tool(
-    ...     "hdf5",
-    ...     "analyze_file",
-    ...     {"filepath": "/data/sim.h5"}
-    ... )
-    >>> # Or use sync wrapper for DSPy
-    >>> tools = IOWarpMCPTools(arc)
-    >>> result = tools.call_tool("hdf5", "analyze_file", {...})
+    >>> # Sync wrapper for DSPy agents
+    >>> tools = IOWarpMCPTools(arc_memory=arc)
+    >>> result = tools.call_tool("hdf5", "analyze_file", {"filepath": "/data/sim.h5"})
+    >>> # Cleanup on exit
+    >>> tools.shutdown()
 """
 
 import asyncio
 import os
+import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
@@ -76,48 +77,33 @@ class MCPServerConfig:
 
 
 # ============================================================================
-# CONNECTOR
+# OPTIMAL ASYNC/SYNC BRIDGE
 # ============================================================================
 
 
 class IOWarpMCPConnector:
-    """Connector for Agent Toolkit MCP servers.
+    """Optimal async/sync bridge with persistent clients and long-lived event loop.
 
-    Connects to external Agent Toolkit (iowarp-mcps) MCP servers using FastMCP Client protocol.
-    Provides tool calling, resource access, and ARC caching integration.
+    Provides thread-safe bridge between sync DSPy code and async FastMCP Client.
+    Uses long-lived event loop in dedicated thread for optimal performance.
 
-    Supports Agent Toolkit MCP servers from: https://github.com/iowarp/iowarp-mcps
-    - hdf5: HDF5 file analysis and optimization
-    - adios: ADIOS BP file operations
-    - parquet: Parquet analytics
-    - slurm: SLURM job management
-    - darshan: Darshan I/O trace analysis
-    - compression: Compression testing
-    - pandas: DataFrame operations
-    - plot: Scientific plotting
-
-    All servers launched via: uvx iowarp-mcps <server-name>
+    Key Features:
+        - One event loop for ALL MCP operations
+        - Clients persist across calls (subprocess stays alive)
+        - Proper FastMCP async context manager usage
+        - Thread-safe from DSPy sync code
+        - Clean shutdown with explicit close()
+        - ARC caching integration
+        - Agent Toolkit configuration (uvx iowarp-mcps pattern)
 
     Args:
         arc_memory: Optional ARCMemory instance for tool result caching
         config_file: Optional path to MCP server configuration JSON
 
     Examples:
-        >>> # Basic usage
-        >>> connector = IOWarpMCPConnector()
-        >>> result = await connector.call_tool(
-        ...     "hdf5",
-        ...     "analyze_file",
-        ...     {"filepath": "/data/simulation.h5"}
-        ... )
-        >>>
-        >>> # With ARC caching
-        >>> from claudio.arc import ARCMemory
-        >>> arc = ARCMemory()
         >>> connector = IOWarpMCPConnector(arc_memory=arc)
-        >>> result = await connector.call_tool("hdf5", "analyze_file", {...})
-        >>> # Second call hits cache
-        >>> result = await connector.call_tool("hdf5", "analyze_file", {...})
+        >>> result = connector.call_tool("hdf5", "analyze_file", {"filepath": "/data/sim.h5"})
+        >>> connector.shutdown()  # Clean shutdown
     """
 
     def __init__(
@@ -125,23 +111,52 @@ class IOWarpMCPConnector:
         arc_memory: Optional[Any] = None,
         config_file: Optional[str] = None
     ):
-        """Initialize Agent Toolkit MCP connector.
+        """Initialize connector with long-lived event loop.
 
         Args:
             arc_memory: Optional ARCMemory for caching tool results
             config_file: Optional custom configuration file path
         """
         self.arc = arc_memory
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._loop_thread: Optional[threading.Thread] = None
+        self._clients: Dict[str, Client] = {}
+        self._client_lock = threading.Lock()
         self.servers: Dict[str, MCPServerConfig] = {}
-        self.clients: Dict[str, Any] = {}  # Client types vary by transport
 
         # Initialize Agent Toolkit server configurations
         if config_file:
             self._load_config_file(config_file)
         else:
-            self._initialize_iowarp_servers()
+            self._initialize_agent_toolkit_servers()
 
-    def _initialize_iowarp_servers(self) -> None:
+        # Start long-lived event loop thread
+        self._start_event_loop()
+
+    def _start_event_loop(self) -> None:
+        """Start long-lived event loop in dedicated thread.
+
+        Creates daemon thread running asyncio event loop for all MCP operations.
+        Loop persists across multiple tool calls for optimal performance.
+        """
+        def run_loop():
+            """Event loop runner in dedicated thread."""
+            self._loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(self._loop)
+            self._loop.run_forever()
+
+        self._loop_thread = threading.Thread(
+            target=run_loop,
+            daemon=True,
+            name="MCP-EventLoop"
+        )
+        self._loop_thread.start()
+
+        # Wait for loop to be initialized
+        while self._loop is None:
+            time.sleep(0.001)
+
+    def _initialize_agent_toolkit_servers(self) -> None:
         """Initialize Agent Toolkit (iowarp-mcps) server configurations.
 
         Connects to Agent Toolkit MCP servers using uvx launcher.
@@ -265,30 +280,25 @@ class IOWarpMCPConnector:
                 **server_config
             )
 
-    async def connect_server(self, server_name: str) -> Any:
-        """Connect to an Agent Toolkit MCP server.
+    async def _connect_server_async(self, server_name: str) -> Client:
+        """Connect to server with persistent client.
 
-        Creates FastMCP Client instance for the specified server.
-        Reuses existing connections when available.
+        Creates client and enters async context manager once.
+        Client persists across calls for optimal subprocess reuse.
 
         Args:
             server_name: Server name (e.g., "hdf5", "adios")
 
         Returns:
-            FastMCP Client instance
+            Connected FastMCP Client instance
 
         Raises:
             ValueError: If server name is unknown
             ConnectionError: If connection fails
-
-        Examples:
-            >>> client = await connector.connect_server("hdf5")
-            >>> async with client:
-            ...     tools = await client.list_tools()
         """
         # Return existing client if already connected
-        if server_name in self.clients:
-            return self.clients[server_name]
+        if server_name in self._clients:
+            return self._clients[server_name]
 
         # Get server configuration
         config = self.servers.get(server_name)
@@ -322,7 +332,9 @@ class IOWarpMCPConnector:
                     "must specify either 'url' or 'command'"
                 )
 
-            self.clients[server_name] = client
+            # CRITICAL: Enter context and keep alive
+            await client.__aenter__()
+            self._clients[server_name] = client
             return client
 
         except Exception as e:
@@ -330,93 +342,142 @@ class IOWarpMCPConnector:
                 f"Failed to connect to Agent Toolkit MCP server '{server_name}': {e}"
             ) from e
 
-    async def call_tool(
+    async def _call_tool_async(
         self,
         server_name: str,
         tool_name: str,
-        arguments: Dict[str, Any],
-        use_cache: bool = True
+        arguments: Dict[str, Any]
     ) -> Any:
-        """Call tool on Agent Toolkit MCP server with optional ARC caching.
-
-        Checks ARC cache before calling tool (if enabled). Caches results
-        with 1 hour TTL for repeated queries.
+        """Call tool with caching (async implementation).
 
         Args:
             server_name: Server name (e.g., "hdf5")
             tool_name: Tool name (e.g., "analyze_file")
             arguments: Tool arguments as dict
-            use_cache: Check ARC cache before calling (default: True)
 
         Returns:
             Tool result (format depends on tool)
-
-        Raises:
-            ValueError: If server or tool is unknown
-            ConnectionError: If server connection fails
-
-        Examples:
-            >>> # Analyze HDF5 file
-            >>> result = await connector.call_tool(
-            ...     "hdf5",
-            ...     "analyze_file",
-            ...     {"filepath": "/data/simulation.h5"}
-            ... )
-            >>>
-            >>> # Submit SLURM job
-            >>> result = await connector.call_tool(
-            ...     "slurm",
-            ...     "submit_job",
-            ...     {"script": "#!/bin/bash\\n#SBATCH -N 1\\n..."}
-            ... )
         """
-        # Check ARC cache if enabled
-        if use_cache and self.arc:
+        # Check ARC cache first
+        if self.arc:
             cached = self.arc.get_cached_tool_result(server_name, tool_name, arguments)
             if cached is not None:
                 return cached
 
-        # Connect to server
-        client = await self.connect_server(server_name)
+        # Get persistent client (creates connection if needed)
+        client = await self._connect_server_async(server_name)
 
-        # Call tool via FastMCP
-        async with client:
-            # FastMCP multi-server pattern: prefix tool name with server name
-            full_tool_name = f"{server_name}_{tool_name}"
-            result = await client.call_tool(full_tool_name, arguments)
+        # Call tool (client is already in context)
+        # FastMCP multi-server pattern: prefix tool name with server name
+        full_tool_name = f"{server_name}_{tool_name}"
+        result = await client.call_tool(full_tool_name, arguments)
 
-        # Cache result in ARC if enabled
-        if use_cache and self.arc:
+        # Cache result in ARC
+        if self.arc:
             # Cache for 1 hour (tool results are relatively stable)
-            self.arc.cache_tool_result(server_name, tool_name, arguments, result, ttl_seconds=3600)
+            self.arc.cache_tool_result(
+                server_name,
+                tool_name,
+                arguments,
+                result,
+                ttl_seconds=3600
+            )
 
         return result
 
-    async def list_tools(self, server_name: str) -> List[Any]:
-        """List available tools on Agent Toolkit MCP server.
+    def call_tool(
+        self,
+        server_name: str,
+        tool_name: str,
+        arguments: Dict[str, Any]
+    ) -> Any:
+        """Thread-safe sync wrapper for tool calling.
+
+        Submits async operation to long-lived event loop via run_coroutine_threadsafe().
+        Thread-safe for use from DSPy sync code.
+
+        Args:
+            server_name: Server name (e.g., "hdf5")
+            tool_name: Tool name (e.g., "analyze_file")
+            arguments: Tool arguments as dict
+
+        Returns:
+            Tool result
+
+        Raises:
+            ValueError: If server or tool is unknown
+            ConnectionError: If server connection fails
+            TimeoutError: If tool call exceeds 60s timeout
+
+        Examples:
+            >>> connector = IOWarpMCPConnector()
+            >>> result = connector.call_tool(
+            ...     "hdf5",
+            ...     "analyze_file",
+            ...     {"filepath": "/data/simulation.h5"}
+            ... )
+        """
+        if self._loop is None:
+            raise RuntimeError("Event loop not initialized")
+
+        # Submit to event loop thread
+        future = asyncio.run_coroutine_threadsafe(
+            self._call_tool_async(server_name, tool_name, arguments),
+            self._loop
+        )
+
+        # Wait for result with timeout
+        return future.result(timeout=60.0)
+
+    async def _list_tools_async(self, server_name: str) -> List[Any]:
+        """List available tools on server (async implementation).
 
         Args:
             server_name: Server name (e.g., "hdf5")
 
         Returns:
             List of tool definitions with schemas
-
-        Examples:
-            >>> tools = await connector.list_tools("hdf5")
-            >>> for tool in tools:
-            ...     print(f"{tool.name}: {tool.description}")
         """
-        client = await self.connect_server(server_name)
-        async with client:
-            tools = await client.list_tools()
+        client = await self._connect_server_async(server_name)
+        tools = await client.list_tools()
         return tools  # type: ignore[no-any-return]
 
-    async def read_resource(
-        self,
-        server_name: str,
-        uri: str
-    ) -> Any:
-        """Read resource from Agent Toolkit MCP server.
+    def list_tools(self, server_name: str) -> List[Any]:
+        """List available tools on server (sync wrapper).
+
+        Args:
+            server_name: Server name (e.g., "hdf5")
+
+        Returns:
+            List of tool definitions with schemas
+        """
+        if self._loop is None:
+            raise RuntimeError("Event loop not initialized")
+
+        future = asyncio.run_coroutine_threadsafe(
+            self._list_tools_async(server_name),
+            self._loop
+        )
+        return future.result(timeout=10.0)
+
+    async def _read_resource_async(self, server_name: str, uri: str) -> Any:
+        """Read resource from server (async implementation).
+
+        Args:
+            server_name: Server name
+            uri: Resource URI (server-specific format)
+
+        Returns:
+            Resource content
+        """
+        client = await self._connect_server_async(server_name)
+        # Prefix URI with server name for multi-server routing
+        prefixed_uri = f"{server_name}://{uri}"
+        content = await client.read_resource(prefixed_uri)
+        return content
+
+    def read_resource(self, server_name: str, uri: str) -> Any:
+        """Read resource from server (sync wrapper).
 
         Resources provide read-only access to data sources (files, metadata, etc.)
 
@@ -428,18 +489,19 @@ class IOWarpMCPConnector:
             Resource content
 
         Examples:
-            >>> # Read HDF5 dataset metadata
-            >>> content = await connector.read_resource(
+            >>> content = connector.read_resource(
             ...     "hdf5",
             ...     "file:///data/sim.h5/dataset/temperature"
             ... )
         """
-        client = await self.connect_server(server_name)
-        async with client:
-            # Prefix URI with server name for multi-server routing
-            prefixed_uri = f"{server_name}://{uri}"
-            content = await client.read_resource(prefixed_uri)
-        return content
+        if self._loop is None:
+            raise RuntimeError("Event loop not initialized")
+
+        future = asyncio.run_coroutine_threadsafe(
+            self._read_resource_async(server_name, uri),
+            self._loop
+        )
+        return future.result(timeout=10.0)
 
     def get_available_servers(self) -> List[str]:
         """Get list of configured Agent Toolkit MCP servers.
@@ -464,30 +526,49 @@ class IOWarpMCPConnector:
         """
         return self.servers.get(server_name)
 
-    async def close_all(self) -> None:
-        """Close all MCP client connections.
+    def shutdown(self) -> None:
+        """Clean shutdown of event loop and clients.
 
-        Gracefully closes all active connections to Agent Toolkit servers.
-        Automatically called when using connector as async context manager.
+        Exits all client async context managers and stops event loop.
+        Should be called before program exit for clean shutdown.
 
         Examples:
-            >>> async with IOWarpMCPConnector() as connector:
-            ...     result = await connector.call_tool(...)
-            >>> # Connections automatically closed
+            >>> connector = IOWarpMCPConnector()
+            >>> # ... use connector ...
+            >>> connector.shutdown()  # Clean shutdown
         """
-        for _client in self.clients.values():
-            # FastMCP clients close automatically with context manager
-            # No explicit close needed
+        if self._loop is None:
+            return
+
+        # Exit all client contexts
+        for client in list(self._clients.values()):
+            try:
+                future = asyncio.run_coroutine_threadsafe(
+                    client.__aexit__(None, None, None),
+                    self._loop
+                )
+                future.result(timeout=5.0)
+            except Exception:
+                # Ignore errors during shutdown
+                pass
+
+        # Clear clients
+        self._clients.clear()
+
+        # Stop event loop
+        self._loop.call_soon_threadsafe(self._loop.stop)
+
+        # Wait for thread to finish
+        if self._loop_thread:
+            self._loop_thread.join(timeout=5.0)
+
+    def __del__(self):
+        """Cleanup on delete."""
+        try:
+            self.shutdown()
+        except Exception:
+            # Ignore errors during cleanup
             pass
-        self.clients.clear()
-
-    async def __aenter__(self):
-        """Async context manager entry."""
-        return self
-
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
-        """Async context manager exit."""
-        await self.close_all()
 
 
 # ============================================================================
@@ -499,7 +580,7 @@ class IOWarpMCPTools:
     """Synchronous wrapper for Agent Toolkit MCP connector.
 
     Provides sync interface for DSPy agents that require synchronous tool functions.
-    Wraps async connector calls in asyncio.run().
+    Uses optimal async/sync bridge with long-lived event loop.
 
     Args:
         arc_memory: Optional ARCMemory instance for caching
@@ -522,6 +603,9 @@ class IOWarpMCPTools:
         >>> # Use in ReAct agent
         >>> import dspy
         >>> agent = dspy.ReAct(signature, tools=[analyze_hdf5])
+        >>>
+        >>> # Clean shutdown
+        >>> tools.shutdown()
     """
 
     def __init__(
@@ -541,8 +625,7 @@ class IOWarpMCPTools:
         self,
         server_name: str,
         tool_name: str,
-        arguments: Dict[str, Any],
-        use_cache: bool = True
+        arguments: Dict[str, Any]
     ) -> Any:
         """Synchronous tool call wrapper.
 
@@ -550,7 +633,6 @@ class IOWarpMCPTools:
             server_name: Server name (e.g., "hdf5")
             tool_name: Tool name (e.g., "analyze_file")
             arguments: Tool arguments
-            use_cache: Use ARC caching (default: True)
 
         Returns:
             Tool result
@@ -563,9 +645,7 @@ class IOWarpMCPTools:
             ...     {"filepath": "/data/sim.h5"}
             ... )
         """
-        return asyncio.run(
-            self.connector.call_tool(server_name, tool_name, arguments, use_cache)
-        )
+        return self.connector.call_tool(server_name, tool_name, arguments)
 
     def list_tools(self, server_name: str) -> List[Any]:
         """List tools on server (synchronous).
@@ -576,7 +656,7 @@ class IOWarpMCPTools:
         Returns:
             List of tool definitions
         """
-        return asyncio.run(self.connector.list_tools(server_name))
+        return self.connector.list_tools(server_name)
 
     def get_available_servers(self) -> List[str]:
         """Get available Agent Toolkit MCP servers.
@@ -596,7 +676,21 @@ class IOWarpMCPTools:
         Returns:
             Resource content
         """
-        return asyncio.run(self.connector.read_resource(server_name, uri))
+        return self.connector.read_resource(server_name, uri)
+
+    def shutdown(self) -> None:
+        """Clean shutdown of connector.
+
+        Should be called before program exit.
+        """
+        self.connector.shutdown()
+
+    def __del__(self):
+        """Cleanup on delete."""
+        try:
+            self.shutdown()
+        except Exception:
+            pass
 
 
 # ============================================================================
