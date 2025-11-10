@@ -10,34 +10,41 @@
 ClaudIO Data Expert Module
 
 Specializes in scientific data file optimization (HDF5, ADIOS, Parquet).
-Uses ReAct pattern for tool-augmented reasoning.
+Uses ReAct pattern with IOWarp MCP tools for autonomous tool-augmented reasoning.
 
 Key Capabilities:
 - HDF5 compression and chunking optimization
 - ADIOS format conversion and tuning
 - Parquet layout optimization
+- SLURM job submission and monitoring
+- Darshan I/O trace analysis
 - Near-data processing (NDP) strategies
 - I/O performance analysis
 
-MCP Tools:
-- hdf5_analyze: Analyze HDF5 file structure
-- hdf5_optimize: Optimize HDF5 compression/chunking
-- adios_convert: Convert to/from ADIOS format
-- parquet_optimize: Optimize Parquet files
-- ndp_query: Near-data processing queries
+IOWarp MCP Tools (via external servers):
+- HDF5: analyze_hdf5, optimize_chunks, check_compression
+- ADIOS: analyze_bp_file
+- Parquet: analyze_parquet, optimize_parquet
+- SLURM: submit_job, check_job_status
+- Darshan: analyze_log, get_io_summary
+
+Tool results are automatically cached via ARC memory (1-hour TTL).
 
 Example:
     >>> from claudio.experts import DataExpert
     >>> from claudio.config import setup_dspy
+    >>> from claudio.arc import ARCMemory
     >>>
     >>> lm = setup_dspy(use_lm_studio=True)
-    >>> expert = DataExpert()
+    >>> arc = ARCMemory()
+    >>> expert = DataExpert(use_tools=True, arc_memory=arc)
     >>>
     >>> result = expert(
     ...     question="How do I optimize HDF5 compression for my 100GB simulation output?",
-    ...     context="Using parallel HDF5 on 64 cores, mostly float64 data"
+    ...     file_context="Using parallel HDF5 on 64 cores, mostly float64 data"
     ... )
-    >>> print(result.answer)
+    >>> print(result.analysis)
+    >>> print(result.recommendations)
 """
 
 import dspy
@@ -53,6 +60,9 @@ if str(_src_root) not in sys.path:
 
 # Import signature
 from claudio.signatures.expert_sig import DataExpertSignature
+
+# Import IOWarp MCP connector
+from claudio.tools.mcp_connector import IOWarpMCPTools, create_iowarp_tool_function
 
 # ============================================================================
 # MOCK TOOLS (Placeholders until FastMCP servers ready)
@@ -108,40 +118,84 @@ def hdf5_optimize(filepath: str, compression: str = "gzip-6", chunking: str = "a
 # ============================================================================
 
 class DataExpert(dspy.Module):
-    """Scientific data file optimization expert using ReAct pattern.
+    """Scientific data file optimization expert using ReAct pattern with IOWarp MCP tools.
 
     Uses ReAct (Reasoning + Acting) pattern to:
     1. Reason about the data optimization problem
-    2. Call appropriate tools (hdf5_analyze, hdf5_optimize, etc.)
-    3. Observe tool results
+    2. Call appropriate IOWarp MCP tools (HDF5, ADIOS, Parquet, SLURM, Darshan)
+    3. Observe tool results (cached via ARC with 1-hour TTL)
     4. Iterate until solution found
 
     Attributes:
-        agent: DSPy ReAct module with data tools
+        agent: DSPy ReAct module with IOWarp MCP tools
+        mcp_tools: IOWarpMCPTools connector instance
+        tools: List of DSPy-compatible tool functions
+
+    IOWarp MCP Tools Available:
+        - HDF5: analyze_hdf5, optimize_chunks, check_compression
+        - ADIOS: analyze_bp_file
+        - Parquet: analyze_parquet, optimize_parquet
+        - SLURM: submit_job, check_job_status
+        - Darshan: analyze_log, get_io_summary
 
     Example:
-        >>> expert = DataExpert()
+        >>> from claudio.arc import ARCMemory
+        >>> arc = ARCMemory()
+        >>> expert = DataExpert(use_tools=True, arc_memory=arc)
         >>> result = expert(
         ...     question="Optimize my 100GB HDF5 file",
-        ...     context="Float64 climate data, 64 cores available"
+        ...     file_context="Float64 climate data, 64 cores available"
         ... )
-        >>> print(result.answer)  # Includes tool call results
-        >>> print(result.trajectory)  # Shows reasoning trace
+        >>> print(result.analysis)  # Technical analysis
+        >>> print(result.recommendations)  # Actionable steps
     """
 
-    def __init__(self, use_tools: bool = True):
+    def __init__(self, use_tools: bool = True, arc_memory: Optional[Any] = None):
         """Initialize Data Expert with ReAct.
 
         Args:
-            use_tools: If True, use ReAct with tools. If False, use ChainOfThought.
+            use_tools: If True, use ReAct with IOWarp MCP tools. If False, use ChainOfThought.
+            arc_memory: Optional ARCMemory instance for tool result caching
         """
         super().__init__()
+        self.use_tools = use_tools
+        self.arc_memory = arc_memory
 
         if use_tools:
-            # ReAct: Reasoning + Acting with tools
+            # Initialize IOWarp MCP connector
+            self.mcp_tools = IOWarpMCPTools(arc_memory=arc_memory)
+
+            # Create tool functions for DSPy ReAct
+            self.tools = [
+                # HDF5 tools
+                create_iowarp_tool_function("hdf5", "analyze_hdf5", arc_memory),
+                create_iowarp_tool_function("hdf5", "optimize_chunks", arc_memory),
+                create_iowarp_tool_function("hdf5", "check_compression", arc_memory),
+
+                # ADIOS tools
+                create_iowarp_tool_function("adios", "analyze_bp_file", arc_memory),
+
+                # Parquet tools
+                create_iowarp_tool_function("parquet", "analyze_parquet", arc_memory),
+                create_iowarp_tool_function("parquet", "optimize_parquet", arc_memory),
+
+                # SLURM tools
+                create_iowarp_tool_function("slurm", "submit_job", arc_memory),
+                create_iowarp_tool_function("slurm", "check_job_status", arc_memory),
+
+                # Darshan tools
+                create_iowarp_tool_function("darshan", "analyze_log", arc_memory),
+                create_iowarp_tool_function("darshan", "get_io_summary", arc_memory),
+
+                # Keep legacy mock tools as fallback
+                hdf5_analyze,
+                hdf5_optimize,
+            ]
+
+            # ReAct: Reasoning + Acting with IOWarp MCP tools
             self.agent = dspy.ReAct(
                 DataExpertSignature,
-                tools=[hdf5_analyze, hdf5_optimize],
+                tools=self.tools,
                 max_iters=5  # Max reasoning iterations
             )
         else:

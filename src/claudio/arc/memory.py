@@ -468,6 +468,95 @@ class ARCMemory:
 
             return context
 
+    def cache_tool_result(
+        self,
+        server_name: str,
+        tool_name: str,
+        arguments: Dict[str, Any],
+        result: Any,
+        ttl_seconds: int = 3600,
+    ) -> None:
+        """Cache tool result in ARC.
+
+        Args:
+            server_name: MCP server name (e.g., "hdf5")
+            tool_name: Tool name (e.g., "analyze_file")
+            arguments: Tool arguments dict
+            result: Tool result to cache
+            ttl_seconds: Cache TTL in seconds (default: 1 hour)
+
+        Examples:
+            >>> arc.cache_tool_result(
+            ...     "hdf5",
+            ...     "analyze_file",
+            ...     {"path": "/data/experiment.h5"},
+            ...     {"shape": [100, 200], "dtype": "float64"},
+            ...     ttl_seconds=1800
+            ... )
+        """
+        import hashlib
+        import json
+
+        # Create cache key from server + tool + args
+        args_str = json.dumps(arguments, sort_keys=True)
+        key_str = f"tool_{server_name}_{tool_name}_{args_str}"
+        cache_key = hashlib.md5(key_str.encode()).hexdigest()
+
+        # Store in cache with TTL
+        self._cache.put(cache_key, result, ttl_seconds=ttl_seconds)
+
+    def get_cached_tool_result(
+        self, server_name: str, tool_name: str, arguments: Dict[str, Any]
+    ) -> Optional[Any]:
+        """Get cached tool result from ARC.
+
+        Args:
+            server_name: MCP server name
+            tool_name: Tool name
+            arguments: Tool arguments dict
+
+        Returns:
+            Cached result or None if not found/expired
+
+        Examples:
+            >>> result = arc.get_cached_tool_result(
+            ...     "hdf5",
+            ...     "analyze_file",
+            ...     {"path": "/data/experiment.h5"}
+            ... )
+            >>> if result is not None:
+            ...     print(f"Cache hit: {result}")
+        """
+        import hashlib
+        import json
+
+        # Create same cache key
+        args_str = json.dumps(arguments, sort_keys=True)
+        key_str = f"tool_{server_name}_{tool_name}_{args_str}"
+        cache_key = hashlib.md5(key_str.encode()).hexdigest()
+
+        return self._cache.get(cache_key)
+
+    def get_tool_cache_stats(self) -> Dict[str, Any]:
+        """Get tool cache statistics.
+
+        Returns:
+            Dict with tool cache hit rate and counts
+
+        Examples:
+            >>> stats = arc.get_tool_cache_stats()
+            >>> print(f"Tool cache hit rate: {stats['tool_cache_hit_rate']:.2%}")
+            >>> print(f"Target: {stats['target_hit_rate']:.2%}")
+        """
+        stats = self._cache.stats()
+        return {
+            "tool_cache_hit_rate": stats["hit_rate"],
+            "tool_cache_hits": stats["hits"],
+            "tool_cache_misses": stats["misses"],
+            "tool_cache_size": stats["size"],
+            "target_hit_rate": 0.50,  # >50% per PLAN.md
+        }
+
     def get_cache_stats(self) -> Dict[str, Any]:
         """Get cache performance statistics.
 

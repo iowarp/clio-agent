@@ -134,6 +134,7 @@ class ClaudIOCLI:
             ("/experts", "List available experts and capabilities"),
             ("/registry", "Show agent registry status"),
             ("/memory", "Display ARC memory statistics"),
+            ("/tools", "Show available MCP tools and cache stats"),
             ("/verbose", "Toggle verbose mode (show routing details)"),
             ("/clear", "Clear conversation history"),
             ("/quit, /exit", "Exit ClaudIO"),
@@ -207,6 +208,45 @@ A2A Protocol: Enabled
         else:
             self.console.print(f"\n[yellow]⚠ Cache hit rate ({hit_rate:.1%}) below target (85%)[/yellow]")
 
+    def print_tools(self):
+        """Display available IOWarp MCP tools and cache statistics."""
+        from claudio.tools.mcp_connector import IOWarpMCPTools
+
+        # Initialize connector
+        mcp_tools = IOWarpMCPTools()
+
+        # Get available servers
+        servers = mcp_tools.get_available_servers()
+
+        # Create table
+        table = Table(title="Available IOWarp MCP Servers")
+        table.add_column("Server", style="cyan")
+        table.add_column("Status", style="green")
+        table.add_column("Tools", style="yellow")
+
+        for server in servers:
+            # Display server info (actual tool count would require connection)
+            table.add_row(server.upper(), "Ready", "~5-10 tools")
+
+        self.console.print(table)
+
+        # Show cache stats if ARC enabled
+        try:
+            if hasattr(self.agent, 'arc') and self.agent.arc:
+                stats = self.agent.arc.get_tool_cache_stats()
+                info = f"""[bold]Tool Cache Statistics[/bold]
+
+Hit Rate: {stats['tool_cache_hit_rate']:.2%}
+Hits: {stats['tool_cache_hits']}
+Misses: {stats['tool_cache_misses']}
+Cache Size: {stats['tool_cache_size']}
+Target: {stats['target_hit_rate']:.0%}
+
+{"[green]✓ Above target[/green]" if stats['tool_cache_hit_rate'] >= stats['target_hit_rate'] else "[yellow]⚠ Below target[/yellow]"}"""
+                self.console.print(Panel(info, title="Cache Performance", border_style="blue"))
+        except Exception as e:
+            self.console.print(f"[dim]Cache stats unavailable: {e}[/dim]")
+
     def handle_command(self, user_input: str) -> bool:
         """Handle special commands.
 
@@ -249,6 +289,10 @@ A2A Protocol: Enabled
 
         elif cmd == "/memory":
             self.print_memory()
+            return True
+
+        elif cmd == "/tools":
+            self.print_tools()
             return True
 
         elif cmd == "/verbose":

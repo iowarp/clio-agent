@@ -32,7 +32,7 @@ Tool Development:
     5. Can be used in dspy.ReAct(..., tools=[tool1, tool2])
 """
 
-from claudio.tools.mcp_wrapper import call_mcp, MCPError
+from claudio.tools.mcp_wrapper import call_tool, MCPError
 
 # Import tool categories
 # TODO: Uncomment when tools are implemented
@@ -48,7 +48,7 @@ from claudio.tools.mcp_wrapper import call_mcp, MCPError
 # )
 
 __all__ = [
-    "call_mcp",
+    "call_tool",
     "MCPError",
     # TODO: Add tool exports
 ]
