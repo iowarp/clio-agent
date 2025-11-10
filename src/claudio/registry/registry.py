@@ -224,12 +224,22 @@ class AgentRegistry:
         Returns:
             List of agent IDs sorted by priority
 
+        Raises:
+            ValueError: If keyword is empty string
+
         Example:
             >>> registry.find_agents_by_keyword("hdf5")
             ['data_expert']
             >>> registry.find_agents_by_keyword("compression")
             ['data_expert', 'storage_expert']
         """
+        # BUG FIX: Validate non-empty keyword to prevent matching all agents
+        if not keyword or not keyword.strip():
+            raise ValueError(
+                "Keyword cannot be empty. Empty string matches all agents "
+                "and causes incorrect routing."
+            )
+
         keyword_lower = keyword.lower()
         matching_agents = []
 

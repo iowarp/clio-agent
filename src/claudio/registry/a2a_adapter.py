@@ -23,6 +23,7 @@ Example:
 """
 
 import json
+import threading
 from dataclasses import asdict, dataclass
 from typing import Any, Dict, Optional, Protocol
 
@@ -59,7 +60,17 @@ class A2ARequest:
 
         Returns:
             A2ARequest instance
+
+        Raises:
+            ValueError: If required fields are missing
         """
+        required_fields = {"agent_id", "query", "context", "session_id"}
+        missing_fields = required_fields - set(data.keys())
+        if missing_fields:
+            raise ValueError(
+                f"A2ARequest requires fields: {required_fields}. "
+                f"Missing: {missing_fields}"
+            )
         return cls(**data)
 
 
@@ -161,10 +172,11 @@ class LangChainAdapter:
         # Extract chat history from context if available
         chat_history = request.context.get("chat_history", [])
 
-        # LangChain format: {"input": query, "chat_history": [(user, ai), ...]}
+        # LangChain format: {"input": query, "chat_history": [(user, ai), ...], "agent_id": agent_id}
         lc_request = {
             "input": request.query,
             "chat_history": chat_history,
+            "agent_id": request.agent_id,  # BUG FIX: Include agent_id for session tracking
         }
 
         # Add any additional context fields
@@ -174,11 +186,12 @@ class LangChainAdapter:
 
         return lc_request
 
-    def convert_response(self, response: Dict[str, Any]) -> A2AResponse:
+    def convert_response(self, response: Dict[str, Any], session_id: Optional[str] = None) -> A2AResponse:
         """Convert LangChain response to A2A format.
 
         Args:
             response: LangChain response dictionary
+            session_id: Session ID to preserve in metadata for conversation tracking
 
         Returns:
             A2A response
@@ -191,6 +204,10 @@ class LangChainAdapter:
             "intermediate_steps": response.get("intermediate_steps", []),
             "source_framework": "langchain"
         }
+
+        # BUG FIX: Include session_id in metadata for conversation tracking
+        if session_id:
+            metadata["session_id"] = session_id
 
         # Add any additional response fields to metadata
         for key, value in response.items():
@@ -252,11 +269,12 @@ class CrewAIAdapter:
 
         return crew_request
 
-    def convert_response(self, response: Dict[str, Any]) -> A2AResponse:
+    def convert_response(self, response: Dict[str, Any], session_id: Optional[str] = None) -> A2AResponse:
         """Convert CrewAI response to A2A format.
 
         Args:
             response: CrewAI response dictionary
+            session_id: Session ID to preserve in metadata for conversation tracking
 
         Returns:
             A2A response
@@ -269,6 +287,10 @@ class CrewAIAdapter:
             "source_framework": "crewai",
             "task_output": response.get("task_output", "")
         }
+
+        # BUG FIX: Include session_id in metadata for conversation tracking
+        if session_id:
+            metadata["session_id"] = session_id
 
         # Add any additional response fields to metadata
         for key, value in response.items():
@@ -331,11 +353,12 @@ class AutoGenAdapter:
 
         return autogen_request
 
-    def convert_response(self, response: Dict[str, Any]) -> A2AResponse:
+    def convert_response(self, response: Dict[str, Any], session_id: Optional[str] = None) -> A2AResponse:
         """Convert AutoGen response to A2A format.
 
         Args:
             response: AutoGen response dictionary
+            session_id: Session ID to preserve in metadata for conversation tracking
 
         Returns:
             A2A response
@@ -346,6 +369,10 @@ class AutoGenAdapter:
         # Build metadata
         metadata = response.get("metadata", {})
         metadata["source_framework"] = "autogen"
+
+        # BUG FIX: Include session_id in metadata for conversation tracking
+        if session_id:
+            metadata["session_id"] = session_id
 
         # Add sender info if available
         if "sender" in response:
@@ -398,6 +425,7 @@ class A2AProtocolHandler:
             "crewai": CrewAIAdapter(),
             "autogen": AutoGenAdapter()
         }
+        self._adapters_lock = threading.Lock()  # BUG FIX: Thread safety for concurrent adapter access
 
     def send_request(
         self,
@@ -437,26 +465,28 @@ class A2AProtocolHandler:
             >>> print(response.answer)
             'Test answer'
         """
-        if framework not in self._adapters:
-            raise ValueError(
-                f"Unsupported framework: {framework}. "
-                f"Supported: {list(self._adapters.keys())}"
-            )
-
         if external_response is None:
             raise ValueError(
                 "external_response parameter required (network communication "
                 "not yet implemented - coming in v0.5.0)"
             )
 
-        adapter = self._adapters[framework]
+        with self._adapters_lock:
+            if framework not in self._adapters:
+                raise ValueError(
+                    f"Unsupported framework: {framework}. "
+                    f"Supported: {list(self._adapters.keys())}"
+                )
 
-        # Convert A2A request to external format
-        # (Not used in this version since we're mocking, but validates conversion)
-        _ = adapter.convert_request(request)
+            adapter = self._adapters[framework]
 
-        # Convert external response to A2A format
-        a2a_response = adapter.convert_response(external_response)
+            # Convert A2A request to external format
+            # (Not used in this version since we're mocking, but validates conversion)
+            _ = adapter.convert_request(request)
+
+            # Convert external response to A2A format
+            # BUG FIX: Pass session_id to preserve session tracking
+            a2a_response = adapter.convert_response(external_response, session_id=request.session_id)
 
         return a2a_response
 
@@ -471,7 +501,7 @@ class A2AProtocolHandler:
             >>> class CustomAdapter:
             ...     def convert_request(self, request):
             ...         return {"custom": request.query}
-            ...     def convert_response(self, response):
+            ...     def convert_response(self, response, session_id=None):
             ...         return A2AResponse(
             ...             agent_id="custom",
             ...             answer=response["result"],
@@ -482,7 +512,8 @@ class A2AProtocolHandler:
             >>> handler = A2AProtocolHandler()
             >>> handler.register_adapter("custom", CustomAdapter())
         """
-        self._adapters[framework] = adapter
+        with self._adapters_lock:
+            self._adapters[framework] = adapter
 
     def get_supported_frameworks(self) -> list[str]:
         """Get list of supported external frameworks.
@@ -495,7 +526,8 @@ class A2AProtocolHandler:
             >>> handler.get_supported_frameworks()
             ['langchain', 'crewai', 'autogen']
         """
-        return list(self._adapters.keys())
+        with self._adapters_lock:
+            return list(self._adapters.keys())
 
     def get_adapter(self, framework: str) -> Optional[A2AAdapter]:
         """Get adapter for specific framework.
@@ -512,4 +544,5 @@ class A2AProtocolHandler:
             >>> isinstance(adapter, LangChainAdapter)
             True
         """
-        return self._adapters.get(framework)
+        with self._adapters_lock:
+            return self._adapters.get(framework)

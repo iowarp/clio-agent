@@ -28,6 +28,7 @@ Example:
     >>> # NOTE: response.answer contains simulated text in v0.3.0, not actual external agent result
 """
 
+import copy
 import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
@@ -48,7 +49,7 @@ class ExternalAgentDefinition:
         description: Human-readable description of agent's capabilities
         keywords: Keywords for capability-based routing
         tools: List of tool names this agent can use
-        config: Framework-specific configuration
+        config: Framework-specific configuration (deep-copied to prevent mutation)
 
     Example:
         >>> definition = ExternalAgentDefinition(
@@ -66,6 +67,11 @@ class ExternalAgentDefinition:
     keywords: List[str]
     tools: List[str]
     config: Dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self):
+        """Deep copy config to prevent mutation of shared dict references."""
+        # BUG FIX: Prevent external code from mutating config dict
+        self.config = copy.deepcopy(self.config)
 
 
 class ExternalAgentWrapper:
@@ -263,12 +269,15 @@ class ExternalAgentCompiler:
         # Import here to avoid circular dependency
         from claudio.registry.registry import AgentCapability
 
+        # BUG FIX: Respect priority from config, default to 7 for external agents
+        priority = definition.config.get("priority", 7)
+
         return AgentCapability(
             keywords=definition.keywords,
             description=definition.description,
             tools=definition.tools,
             specialization=definition.framework,  # Use framework as specialization
-            priority=7,  # External agents get lower priority than internal (default 5)
+            priority=priority,  # Configurable priority with external default (7)
             metadata={
                 "framework": definition.framework,
                 "agent_id": definition.agent_id,

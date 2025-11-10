@@ -2,6 +2,7 @@
 
 from typing import List, Tuple, Dict, Any
 import re
+import warnings
 
 
 class CapabilityMatcher:
@@ -118,6 +119,14 @@ class CapabilityMatcher:
 
         # Handle empty query
         if not query_keywords:
+            # BUG FIX: Warn when query contains only stopwords (silent failure)
+            warnings.warn(
+                f"Query '{query}' contains only stopwords. "
+                "No agent matching performed. "
+                "Consider rewording the query with more specific terms.",
+                UserWarning,
+                stacklevel=2
+            )
             return []
 
         # Calculate scores for each agent
