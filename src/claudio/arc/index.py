@@ -263,14 +263,13 @@ class BTreeIndex:
             n: Number of recent entries to retrieve (default: 1)
 
         Returns:
-            List of n most recent values, newest first
+            List of n most recent values, in chronological order (oldest to newest)
 
-        Time Complexity: O(log N + k) where k = total entries in session
+        Time Complexity: O(log N + k) where k = n (not total entries)
 
         Note:
-            This retrieves all session entries then returns last n.
-            For large sessions with frequent latest-only access,
-            consider maintaining a separate most-recent pointer.
+            Uses reverse iteration to efficiently retrieve only the n most recent
+            entries without loading entire session history.
 
         Examples:
             >>> # Get last message in session
@@ -279,8 +278,16 @@ class BTreeIndex:
             >>> # Get last 5 messages
             >>> recent = index.get_latest_in_session("session_1", n=5)
         """
-        all_items = self.get_session_range(session_id)
-        return all_items[-n:] if len(all_items) >= n else all_items
+        # Get keys in reverse order (most recent first)
+        all_keys = list(self._index.irange(
+            (session_id, 0.0),
+            (session_id, float('inf')),
+            reverse=True
+        ))
+        # Take first n keys (the n most recent)
+        latest_keys = all_keys[:n]
+        # Return values in chronological order (oldest to newest)
+        return [self._index[k] for k in reversed(latest_keys)]
 
     def bisect_left(self, key: Tuple[str, float]) -> int:
         """
