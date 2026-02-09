@@ -8,7 +8,7 @@ focus: "Memory Architecture, O(log N) Retrieval, IOWarp CTE Integration"
 
 # ARC Memory Layer
 
-**Agent Runtime Context (ARC)** is ClaudIO's native, high-performance memory system providing persistent context storage, fast retrieval, and agent coordination.
+**Agent Runtime Context (ARC)** is CLIO Agent's native, high-performance memory system providing persistent context storage, fast retrieval, and agent coordination.
 
 ## Overview
 
@@ -97,7 +97,7 @@ ARC solves critical problems in multi-agent systems:
 │  TIER 3: Persistent Layer (IOWarp CTE Multi-Tier Storage)  │
 │                                                              │
 │  ┌────────────────────────────────────────────────────────┐ │
-│  │  IOWarp Namespace: /claudio/arc/*                     │ │
+│  │  IOWarp Namespace: /clio_agent/arc/*                     │ │
 │  │                                                        │ │
 │  │  Storage Tier Policy (Automatic Migration):           │ │
 │  │                                                        │ │
@@ -456,10 +456,10 @@ class ARCStorage:
     """ARC persistent storage via IOWarp CTE"""
 
     def __init__(self):
-        # Register ClaudIO namespace in IOWarp
+        # Register CLIO Agent namespace in IOWarp
         self.iowarp = IOWarp.connect()
         self.namespace = self.iowarp.register_namespace(
-            path="/claudio/arc",
+            path="/clio_agent/arc",
             tier_policy={
                 "hot": {
                     "storage": "gpu_memory",
@@ -525,7 +525,7 @@ class ARC:
         self,
         cache_size: int = 1000,
         tool_cache_ttl: int = 3600,
-        iowarp_namespace: str = "/claudio/arc",
+        iowarp_namespace: str = "/clio_agent/arc",
         tier_policy: dict = None,
     ):
         """
@@ -649,8 +649,8 @@ arc.update_shared_context(
 ### Example 1: Expert Agent Using ARC
 
 ```python
-from claudio.arc import ARC
-from claudio.experts.data_expert import DataExpert
+from clio_agent.arc import ARC
+from clio_agent.experts.data_expert import DataExpert
 
 class DataExpertWithARC(DataExpert):
     def __init__(self):
@@ -695,7 +695,7 @@ class DataExpertWithARC(DataExpert):
 ### Example 2: Tool Result Caching
 
 ```python
-from claudio.arc import ARC
+from clio_agent.arc import ARC
 
 arc = ARC()
 
@@ -726,7 +726,7 @@ result = call_mcp_tool("hdf5_analyze", {"filepath": "/data/file.h5"})
 ### Example 3: Multi-Agent Coordination via ARC
 
 ```python
-from claudio.arc import ARC
+from clio_agent.arc import ARC
 
 arc = ARC()
 
@@ -840,10 +840,10 @@ data_result = data_expert.forward(..., hpc_context=hpc_profile)
 curl http://localhost:8080/health
 
 # Check namespace registration
-iowarp namespaces list | grep claudio
+iowarp namespaces list | grep clio-agent
 
 # Re-register namespace
-uv run src/claudio/arc/storage.py --register-namespace
+uv run src/clio_agent/arc/storage.py --register-namespace
 ```
 
 ### Issue: High Memory Usage
@@ -864,25 +864,25 @@ uv run src/claudio/arc/storage.py --register-namespace
 
 ```bash
 # ARC Configuration
-CLAUDIO_ARC_CACHE_SIZE=1000           # LRU cache size
-CLAUDIO_ARC_TOOL_TTL=3600             # Tool cache TTL (seconds)
-CLAUDIO_ARC_NAMESPACE=/claudio/arc    # IOWarp namespace
+CLIO_AGENT_ARC_CACHE_SIZE=1000           # LRU cache size
+CLIO_AGENT_ARC_TOOL_TTL=3600             # Tool cache TTL (seconds)
+CLIO_AGENT_ARC_NAMESPACE=/clio_agent/arc    # IOWarp namespace
 
 # IOWarp CTE Connection
 IOWARP_ENDPOINT=http://localhost:8080
 IOWARP_API_KEY=<your-key>
 
 # Tier Policy Overrides
-CLAUDIO_ARC_HOT_TIER=gpu_memory
-CLAUDIO_ARC_WARM_TIER=nvme
-CLAUDIO_ARC_COLD_TIER=parallel_fs
-CLAUDIO_ARC_ARCHIVE_TIER=object_store
+CLIO_AGENT_ARC_HOT_TIER=gpu_memory
+CLIO_AGENT_ARC_WARM_TIER=nvme
+CLIO_AGENT_ARC_COLD_TIER=parallel_fs
+CLIO_AGENT_ARC_ARCHIVE_TIER=object_store
 ```
 
 ### Config File
 
 ```yaml
-# .claudio/arc_config.yaml
+# .clio_agent/arc_config.yaml
 
 cache:
   size: 1000
@@ -899,7 +899,7 @@ lsm_tree:
   background_compaction: true
 
 iowarp:
-  namespace: /claudio/arc
+  namespace: /clio_agent/arc
   endpoint: http://localhost:8080
 
   tier_policy:
@@ -944,8 +944,8 @@ iowarp:
 
 ## Related Documentation
 
-- [ClaudIO Architecture](CLAUDIO_ARCHITECTURE.md) - Full system architecture
-- [System Identity](SYSTEM_IDENTITY.md) - ClaudIO capabilities and design
+- [CLIO Agent Architecture](CLIO_AGENT_ARCHITECTURE.md) - Full system architecture
+- [System Identity](SYSTEM_IDENTITY.md) - CLIO Agent capabilities and design
 - [Optimizer Guide](OPTIMIZER_GUIDE.md) - How Optimizer Layer uses ARC metrics
 - [IOWarp CTE Documentation](https://iowarp.ai/docs/cte) - Context Transfer Engine
 

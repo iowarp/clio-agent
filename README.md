@@ -1,4 +1,4 @@
-# ClaudIO
+# CLIO Agent
 
 **Cognitive Layer for Adaptive Universal Data & Intelligent Operations**
 
@@ -11,9 +11,9 @@ Autonomous agent for scientific data management. **IOWarp Intelligence Layer (CE
 
 ---
 
-## What is ClaudIO?
+## What is CLIO Agent?
 
-ClaudIO is an **autonomous agent specialized in scientific data management** for HPC and research workflows. It operates as the Intelligence Layer (CEI) within IOWarp's 3-tier architecture.
+CLIO Agent is an **autonomous agent specialized in scientific data management** for HPC and research workflows. It operates as the Intelligence Layer (CEI) within IOWarp's 3-tier architecture.
 
 **Core Capabilities:**
 - 🤖 **3-Tier Agent Orchestration**: Main agent → Expert agents → Ephemeral nanoagents
@@ -25,11 +25,11 @@ ClaudIO is an **autonomous agent specialized in scientific data management** for
 - 🗄️ **IOWarp Integration**: CEI (Intelligence + ARC) → CAE/PPI (Tools) → CTE (Storage + ARC Persistence)
 - 🏠 **Model Flexibility**: Any LLM API (cloud, local, custom models)
 
-### Why ClaudIO?
+### Why CLIO Agent?
 
-**ClaudIO is NOT** a framework for building agents - it **IS** the agent.
+**CLIO Agent is NOT** a framework for building agents - it **IS** the agent.
 
-Think of ClaudIO as a specialized colleague for scientific data:
+Think of CLIO Agent as a specialized colleague for scientific data:
 - Works standalone via CLI
 - Collaborates with general agents (Claude Code, Gemini) as a science sidekick
 - Integrates experts built with any framework through the Agent Registry
@@ -48,10 +48,10 @@ Think of ClaudIO as a specialized colleague for scientific data:
 └───────────────────────────┬────────────────────────────────┘
                             │
 ┌───────────────────────────▼────────────────────────────────┐
-│  INTELLIGENCE LAYER (CEI) - ClaudIO + ARC Memory           │
+│  INTELLIGENCE LAYER (CEI) - CLIO Agent + ARC Memory           │
 │                                                             │
 │  ┌──────────────────────────────────────────────────────┐ │
-│  │  ClaudIO Orchestrator (Tier 1)                       │ │
+│  │  CLIO Agent Orchestrator (Tier 1)                       │ │
 │  │   → Agent Registry coordination                      │ │
 │  │   → ARC Memory queries (O(log N))                    │ │
 │  │   → Capability-based routing                         │ │
@@ -85,7 +85,7 @@ Think of ClaudIO as a specialized colleague for scientific data:
 │ (Tools)     │  │ LAYER        │  │ Store (CTE)        │
 │             │  │              │  │                    │
 │ FastMCP     │  │ • Prompt     │  │ IOWarp Namespace:  │
-│ 15+ servers │  │   Optimizers │  │ /claudio/arc/*     │
+│ 15+ servers │  │   Optimizers │  │ /clio_agent/arc/*     │
 │ 150+ tools  │  │ • Routing    │  │                    │
 │ (v0.5.0)    │  │   Optimizers │  │ • Conversations    │
 │             │  │ • Offline    │  │ • Metrics          │
@@ -106,7 +106,7 @@ Think of ClaudIO as a specialized colleague for scientific data:
 ```
 User: "Optimize my 100GB HDF5 file"
     ↓
-ClaudIO Main Agent (Tier 1)
+CLIO Agent Main Agent (Tier 1)
     → Query: "Need HDF5 optimization capability"
     → Agent Registry: Find DataExpert
     ↓
@@ -139,8 +139,8 @@ Result: "Applied gzip-6 compression: 100GB → 45GB (2.2x reduction)"
 
 ```bash
 # Clone repository
-git clone https://github.com/iowarp/claudio
-cd claudio
+git clone https://github.com/iowarp/clio-agent
+cd clio-agent
 
 # Option 1: Local Development (LM Studio)
 # Start LM Studio and load a model (e.g., gpt-oss-20b, granite-4-h-tiny)
@@ -152,35 +152,35 @@ ollama run gpt-oss-20b
 export OPENAI_API_KEY="your-key-here"
 ```
 
-### Running ClaudIO
+### Running CLIO Agent
 
 ```bash
 # Test configuration
-uv run src/claudio/config.py
+uv run src/clio_agent/config.py
 
 # Test main agent
-uv run src/claudio/claudio.py
+uv run src/clio_agent/agent.py
 
 # Test data expert
-uv run src/claudio/experts/data_expert.py
+uv run src/clio_agent/experts/data_expert.py
 
 # Launch interactive CLI
-uv run src/claudio/ui/cli.py
+uv run src/clio_agent/ui/cli.py
 ```
 
 ### Example Interaction
 
 ```
-$ uv run src/claudio/ui/cli.py
+$ uv run src/clio_agent/ui/cli.py
 
-╭─ ClaudIO - IOWarp Intelligence Layer ─╮
+╭─ CLIO Agent - IOWarp Intelligence Layer ─╮
 │ Autonomous Data Management Agent      │
 │ Type /help for commands                │
 ╰────────────────────────────────────────╯
 
 You: How do I optimize my 100GB HDF5 file for parallel I/O?
 
-ClaudIO via DataExpert:
+CLIO Agent via DataExpert:
 
 Based on analysis, here are optimization recommendations:
 
@@ -208,7 +208,7 @@ Would you like me to generate the optimization script?
 
 ### 1. Agent Registry (Capability-Based Coordination)
 
-The **Agent Registry** is ClaudIO's coordination layer for discovering and routing to agents:
+The **Agent Registry** is CLIO Agent's coordination layer for discovering and routing to agents:
 
 - **Native Experts**: Built-in specialist agents (DataExpert, HPCExpert, etc.)
 - **External Agents**: Agents from ANY framework (LangChain, CrewAI, AutoGen)
@@ -218,7 +218,7 @@ The **Agent Registry** is ClaudIO's coordination layer for discovering and routi
 **How it works:**
 ```
 1. User query arrives
-2. ClaudIO extracts needed capabilities (e.g., "HDF5", "optimization")
+2. CLIO Agent extracts needed capabilities (e.g., "HDF5", "optimization")
 3. Query registry for agents matching capabilities
 4. Rank by capability overlap + agent tier
 5. Route to best agent (native OR external via A2A)
@@ -226,27 +226,27 @@ The **Agent Registry** is ClaudIO's coordination layer for discovering and routi
 
 ### 2. A2A Protocol (Agent-to-Agent Communication)
 
-The **A2A Protocol** enables ClaudIO to integrate with any agent framework:
+The **A2A Protocol** enables CLIO Agent to integrate with any agent framework:
 
 - **Standardized Interface**: All agents communicate via A2A protocol
 - **Framework Agnostic**: Works with LangChain, CrewAI, AutoGen, custom agents
-- **Bidirectional**: ClaudIO can call external agents OR be called as a sidekick
-- **Compilation**: Registry compiles external agents into ClaudIO-compatible instances
+- **Bidirectional**: CLIO Agent can call external agents OR be called as a sidekick
+- **Compilation**: Registry compiles external agents into CLIO Agent-compatible instances
 
-**Example - ClaudIO as Sidekick:**
+**Example - CLIO Agent as Sidekick:**
 ```
 Claude Code (general agent) receives science question
-    ↓ (A2A Request to ClaudIO)
-ClaudIO DataExpert handles HDF5 optimization
+    ↓ (A2A Request to CLIO Agent)
+CLIO Agent DataExpert handles HDF5 optimization
     ↓ (A2A Response)
-Claude Code assembles final answer with ClaudIO's expertise
+Claude Code assembles final answer with CLIO Agent's expertise
 ```
 
 ### 3. 3-Tier Agent Hierarchy
 
-ClaudIO uses a **3-tier architecture** for scalability and efficiency:
+CLIO Agent uses a **3-tier architecture** for scalability and efficiency:
 
-- **Tier 1**: ClaudIO Main Agent (orchestrator, routing, context management)
+- **Tier 1**: CLIO Agent Main Agent (orchestrator, routing, context management)
 - **Tier 2**: Expert Agents (persistent specialists like DataExpert, HPCExpert)
 - **Tier 3**: Nanoagents (ephemeral workers spawned for specific tasks)
 
@@ -258,13 +258,13 @@ ClaudIO uses a **3-tier architecture** for scalability and efficiency:
 
 ### 4. IOWarp Integration (CEI/CAE/CTE)
 
-ClaudIO is the **Intelligence Layer (CEI)** of IOWarp's full stack:
+CLIO Agent is the **Intelligence Layer (CEI)** of IOWarp's full stack:
 
-- **CEI (Context Exploration Interface)**: ClaudIO main agent + experts + ARC memory
+- **CEI (Context Exploration Interface)**: CLIO Agent main agent + experts + ARC memory
 - **CAE/PPI (Content Assimilation + Plugin Interface)**: FastMCP tools layer
 - **CTE (Context Transfer Engine)**: Hermes multi-tier storage layer + ARC persistence
 
-This integration enables ClaudIO to:
+This integration enables CLIO Agent to:
 - Call scientific tools via MCP (HDF5, SLURM, etc.)
 - Optimize data movement across storage tiers (GPU → NVMe → PFS)
 - Coordinate with IOWarp's intelligent prefetching and caching
@@ -272,11 +272,11 @@ This integration enables ClaudIO to:
 
 ### 5. ARC (Agent Runtime Context) - Memory Layer
 
-The **ARC Memory Layer** is ClaudIO's native, high-performance memory system:
+The **ARC Memory Layer** is CLIO Agent's native, high-performance memory system:
 
 - **O(log N) Retrieval**: B-tree indexing for fast context search
 - **In-Memory Cache**: LRU cache for hot data (active conversations)
-- **IOWarp CTE Integration**: Persistent storage in `/claudio/arc/*` namespace
+- **IOWarp CTE Integration**: Persistent storage in `/clio_agent/arc/*` namespace
 - **Multi-Tier Storage**: Hot (GPU) → Warm (NVMe) → Cold (PFS) → Archive (Object)
 
 **What ARC Stores:**
@@ -295,7 +295,7 @@ The **ARC Memory Layer** is ClaudIO's native, high-performance memory system:
 
 ### 6. Optimizer Layer - Self-Improvement
 
-The **Optimizer Layer** is ClaudIO's learning system for continuous improvement:
+The **Optimizer Layer** is CLIO Agent's learning system for continuous improvement:
 
 - **Offline Tuning Mode**: User runs optimization sessions to tune agents
 - **Online Learning Mode**: Automatic improvement during operation
@@ -320,7 +320,7 @@ The **Optimizer Layer** is ClaudIO's learning system for continuous improvement:
 **How It Works:**
 ```
 1. Offline Tuning:
-   User: "uv run src/claudio/ui/cli.py --tune"
+   User: "uv run src/clio_agent/ui/cli.py --tune"
    → Provide training examples
    → Select optimizer (BootstrapFewShot, MIPRO, etc.)
    → Run optimization (minutes to hours)
@@ -334,7 +334,7 @@ The **Optimizer Layer** is ClaudIO's learning system for continuous improvement:
 ```
 
 **Why Optimizers Matter:**
-- **Super Tunable**: Customize ClaudIO for your specific domain
+- **Super Tunable**: Customize CLIO Agent for your specific domain
 - **Self-Improving**: Gets better with use
 - **Data-Driven**: Optimizations based on actual performance
 - **Extensible**: Add custom optimizers for unique needs
@@ -344,9 +344,9 @@ The **Optimizer Layer** is ClaudIO's learning system for continuous improvement:
 ## Project Structure
 
 ```
-src/claudio/
+src/clio_agent/
 ├── config.py                 # LM configuration (any provider)
-├── claudio.py                # Main agent orchestrator (Tier 1)
+├── agent.py                # Main agent orchestrator (Tier 1)
 ├── signatures/               # Input/output specifications
 │   ├── main_agent_sig.py     # Routing signature
 │   └── expert_sig.py         # Expert signatures
@@ -361,7 +361,7 @@ src/claudio/
 │   ├── storage.py            # IOWarp CTE integration
 │   └── retrieval.py          # Context retrieval
 ├── optimizers/               # Learning layer (v0.4.0+)
-│   ├── base.py               # ClaudIOOptimizer base class
+│   ├── base.py               # CLIO AgentOptimizer base class
 │   ├── prompt_opt.py         # Prompt optimization
 │   ├── routing_opt.py        # Routing optimization
 │   ├── tool_opt.py           # Tool selection optimization
@@ -375,8 +375,8 @@ src/claudio/
     └── api.py                # REST API (v0.5.0)
 
 docs/
-├── SYSTEM_IDENTITY.md        # ClaudIO identity and capabilities
-├── CLAUDIO_ARCHITECTURE.md   # Full architecture documentation
+├── SYSTEM_IDENTITY.md        # CLIO Agent identity and capabilities
+├── CLIO_AGENT_ARCHITECTURE.md   # Full architecture documentation
 ├── ARC_MEMORY_LAYER.md       # Memory architecture deep dive
 ├── OPTIMIZER_GUIDE.md        # Self-improvement and tuning guide
 └── A2A_PROTOCOL.md           # Agent-to-Agent spec (v0.2.0+)
@@ -411,7 +411,7 @@ tests/
 **Offline Tuning Mode** (v0.4.0+):
 ```bash
 # Launch in tuning mode
-uv run src/claudio/ui/cli.py --tune
+uv run src/clio_agent/ui/cli.py --tune
 
 # Interactive tuning workflow:
 # 1. Select component to optimize (routing, expert prompts, tools)
@@ -425,11 +425,11 @@ uv run src/claudio/ui/cli.py --tune
 
 ## Model Configuration
 
-ClaudIO supports **any LLM provider**:
+CLIO Agent supports **any LLM provider**:
 
 ### Local Development (LM Studio)
 ```python
-from claudio.config import setup_lm
+from clio_agent.config import setup_lm
 
 lm = setup_lm(provider="lm_studio")
 # Models: gpt-oss-20b, granite-4-h-tiny, etc.
@@ -518,19 +518,19 @@ lm = setup_lm(provider="custom", endpoint="http://my-model:8000")
 
 ## Deployment Modes
 
-ClaudIO supports multiple deployment patterns:
+CLIO Agent supports multiple deployment patterns:
 
 ### 1. Standalone CLI
 ```bash
-uv run src/claudio/ui/cli.py
+uv run src/clio_agent/ui/cli.py
 # Interactive command-line interface
 ```
 
 ### 2. Python Library (Planned)
 ```python
-from claudio import ClaudIO
+from clio_agent import ClioAgent
 
-agent = ClaudIO()
+agent = ClioAgent()
 response = agent.query("How do I optimize this HDF5 file?")
 print(response)
 ```
@@ -538,7 +538,7 @@ print(response)
 ### 3. REST API (Planned)
 ```bash
 # Start API server
-uv run src/claudio/ui/api.py --port 8000
+uv run src/clio_agent/ui/api.py --port 8000
 
 # Query via HTTP
 curl -X POST http://localhost:8000/query \
@@ -552,18 +552,18 @@ FROM python:3.11-slim
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 COPY . /app
 WORKDIR /app
-CMD ["uv", "run", "src/claudio/ui/api.py"]
+CMD ["uv", "run", "src/clio_agent/ui/api.py"]
 ```
 
 ### 5. A2A Integration External Agents (Planned)
 ```python
-# ClaudIO as sidekick to another agent
+# CLIO Agent as sidekick to another agent
 from external_agent import ClaudeCode
 
 claude_code = ClaudeCode()
-claude_code.register_sidekick("claudio", a2a_endpoint="http://localhost:8000/a2a")
+claude_code.register_sidekick("clio-agent", a2a_endpoint="http://localhost:8000/a2a")
 
-# ClaudeCode can now delegate science questions to ClaudIO
+# ClaudeCode can now delegate science questions to CLIO Agent
 ```
 
 ---
@@ -594,8 +594,8 @@ claude_code.register_sidekick("claudio", a2a_endpoint="http://localhost:8000/a2a
 
 ## Documentation
 
-- **[docs/SYSTEM_IDENTITY.md](docs/SYSTEM_IDENTITY.md)** - ClaudIO capabilities, identity, design principles
-- **[docs/CLAUDIO_ARCHITECTURE.md](docs/CLAUDIO_ARCHITECTURE.md)** - Full architecture, Agent Registry, A2A protocol
+- **[docs/SYSTEM_IDENTITY.md](docs/SYSTEM_IDENTITY.md)** - CLIO Agent capabilities, identity, design principles
+- **[docs/CLIO_AGENT_ARCHITECTURE.md](docs/CLIO_AGENT_ARCHITECTURE.md)** - Full architecture, Agent Registry, A2A protocol
 - **[CLAUDE.md](CLAUDE.md)** - Developer quick reference
 
 **External Resources:**
@@ -631,13 +631,13 @@ claude_code.register_sidekick("claudio", a2a_endpoint="http://localhost:8000/a2a
 
 ## Contributing
 
-ClaudIO is research/development code as part of the IOWarp project.
+CLIO Agent is research/development code as part of the IOWarp project.
 
 For development:
-1. Read [docs/CLAUDIO_ARCHITECTURE.md](docs/CLAUDIO_ARCHITECTURE.md) for architecture overview
+1. Read [docs/CLIO_AGENT_ARCHITECTURE.md](docs/CLIO_AGENT_ARCHITECTURE.md) for architecture overview
 2. Study [docs/SYSTEM_IDENTITY.md](docs/SYSTEM_IDENTITY.md) for design principles
-3. Explore [src/claudio/experts/data_expert.py](src/claudio/experts/data_expert.py) for agent patterns
-4. Test with: `uv run src/claudio/ui/cli.py`
+3. Explore [src/clio_agent/experts/data_expert.py](src/clio_agent/experts/data_expert.py) for agent patterns
+4. Test with: `uv run src/clio_agent/ui/cli.py`
 
 **Development Priorities:**
 - Agent Registry implementation
@@ -649,19 +649,19 @@ For development:
 
 ## Citation
 
-If you use ClaudIO in your research, please cite:
+If you use CLIO Agent in your research, please cite:
 
 ```bibtex
-@software{claudio2025,
-  title={ClaudIO: Autonomous Agent for Scientific Data Management},
+@software{clioagent2025,
+  title={CLIO Agent: Autonomous Agent for Scientific Data Management},
   author={IOWarp Team},
   year={2025},
-  url={https://github.com/iowarp/claudio}
+  url={https://github.com/iowarp/clio-agent}
 }
 ```
 
 ---
 
-**ClaudIO**: Self-Improving Autonomous Agent for Scientific Computing. Intelligence Layer (CEI) of IOWarp. Built for researchers, by researchers.
+**CLIO Agent**: Self-Improving Autonomous Agent for Scientific Computing. Intelligence Layer (CEI) of IOWarp. Built for researchers, by researchers.
 
 **Core Innovation**: Agent Registry + A2A Protocol + 3-Tier Orchestration + **ARC Memory** + **Optimizer Layer** + IOWarp Integration

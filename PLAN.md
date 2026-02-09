@@ -1,6 +1,6 @@
-# ClaudIO Implementation Plan
+# CLIO Agent Implementation Plan
 
-Phases for transforming ClaudIO from v0.1.0 baseline to v0.5.0 public beta.
+Phases for transforming CLIO Agent from v0.1.0 baseline to v0.5.0 public beta.
 
 ---
 
@@ -9,13 +9,13 @@ Phases for transforming ClaudIO from v0.1.0 baseline to v0.5.0 public beta.
 **Objective**: Add Agent Registry for capability-based routing, A2A protocol for external agent integration, and ARC Memory Layer for persistent context.
 
 **Tasks**:
-1. Implement Agent Registry (`src/claudio/registry/`)
+1. Implement Agent Registry (`src/clio_agent/registry/`)
    - Core registry with agent registration and discovery
    - Capability matcher for extracting capabilities from queries
    - A2A protocol adapters for external agents
    - External agent compiler for LangChain/CrewAI/AutoGen
 
-2. Implement ARC Memory Layer foundation (`src/claudio/arc/`)
+2. Implement ARC Memory Layer foundation (`src/clio_agent/arc/`)
    - Data schemas (Conversation, Invocation, Metrics, Context)
    - LRU cache for hot data
    - B-tree index for O(log N) retrieval
@@ -47,20 +47,20 @@ Phases for transforming ClaudIO from v0.1.0 baseline to v0.5.0 public beta.
 **Objective**: Implement FastMCP servers for scientific tools, integrate ARC with IOWarp CTE for multi-tier persistence, enable tool result caching.
 
 **Tasks**:
-1. Implement MCP Servers (`src/claudio/tools/servers/`)
+1. Implement MCP Servers (`src/clio_agent/tools/servers/`)
    - HDF5 server (analyze, optimize)
    - ADIOS server
    - Parquet server
    - SLURM server
    - Darshan server
 
-2. Integrate ARC with IOWarp CTE (`src/claudio/arc/storage.py`)
-   - Register `/claudio/arc/*` namespace in IOWarp
+2. Integrate ARC with IOWarp CTE (`src/clio_agent/arc/storage.py`)
+   - Register `/clio_agent/arc/*` namespace in IOWarp
    - Implement read/write to CTE
    - Configure tier policy (hot/warm/cold/archive)
    - Automatic tier migration
 
-3. Add LSM tree for metrics (`src/claudio/arc/lsm.py`)
+3. Add LSM tree for metrics (`src/clio_agent/arc/lsm.py`)
    - High-throughput metrics collection
    - Background compaction
 
@@ -83,14 +83,14 @@ Phases for transforming ClaudIO from v0.1.0 baseline to v0.5.0 public beta.
 **Objective**: Implement Tier 3 nanoagents, Optimizer Layer for self-improvement, offline tuning mode.
 
 **Tasks**:
-1. Implement Nanoagent spawning (`src/claudio/nanoagents/`)
+1. Implement Nanoagent spawning (`src/clio_agent/nanoagents/`)
    - Spawner for creating ephemeral nanoagents
    - Nanoagent templates (HDF5 chunk analyzer, compression tester, etc.)
    - Parallel execution
    - ARC tracking
 
-2. Implement Optimizer Layer (`src/claudio/optimizers/`)
-   - Base ClaudIOOptimizer class
+2. Implement Optimizer Layer (`src/clio_agent/optimizers/`)
+   - Base CLIO AgentOptimizer class
    - Prompt optimizer (BootstrapFewShot, MIPRO)
    - Routing optimizer
    - Tool selection optimizer
@@ -120,13 +120,13 @@ Phases for transforming ClaudIO from v0.1.0 baseline to v0.5.0 public beta.
 **Objective**: Add REST API, online learning mode, community optimizer marketplace, expand to 150+ tools.
 
 **Tasks**:
-1. Implement REST API (`src/claudio/ui/api.py`)
+1. Implement REST API (`src/clio_agent/ui/api.py`)
    - `/query` endpoint
    - `/a2a` endpoint for external agents
    - `/metrics` endpoint
    - `/registry` endpoint
 
-2. Implement online learning (`src/claudio/optimizers/online_learning.py`)
+2. Implement online learning (`src/clio_agent/optimizers/online_learning.py`)
    - A/B testing framework
    - Automatic optimization triggers
    - Gradual rollout (10% → 50% → 100%)

@@ -221,7 +221,7 @@ class ResearchPipeline(dspy.Module):
         return result
 ```
 
-### Pattern 3: Expert System (For ClaudIO)
+### Pattern 3: Expert System (For CLIO Agent)
 
 ```python
 class DataExpert(dspy.Module):
@@ -377,7 +377,7 @@ def forward(self, input_text):
 
 ---
 
-## Common Patterns in ClaudIO
+## Common Patterns in CLIO Agent
 
 ### Expert Module Pattern
 ```python

@@ -4,7 +4,7 @@ category: architecture
 priority: high
 prerequisites:
   - foundation/03_MODULES_GUIDE.md
-  - architecture/CLAUDIO_ARCHITECTURE.md
+  - architecture/CLIO_AGENT_ARCHITECTURE.md
 related:
   - research/ADVANCED_PATTERNS.md
 implementation_phase: 2

@@ -1,4 +1,4 @@
-# ClaudIO v0.3.0 Bugs
+# CLIO Agent v0.3.0 Bugs
 
 **Status**: All bugs fixed
 **Date**: 2025-11-09

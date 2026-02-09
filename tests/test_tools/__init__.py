@@ -1,1 +1,1 @@
-"""Tests for ClaudIO tool wrappers."""
+"""Tests for ClioAgent tool wrappers."""

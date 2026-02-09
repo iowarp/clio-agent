@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from claudio.arc.lsm import LSMTree, SSTable
+from clio_agent.arc.lsm import LSMTree, SSTable
 
 
 class TestLSMTree:

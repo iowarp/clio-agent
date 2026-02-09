@@ -1,16 +1,16 @@
-# ClaudIO Self-Improvement
+# CLIO Agent Self-Improvement
 
-How ClaudIO learns and gets better with use.
+How CLIO Agent learns and gets better with use.
 
 ---
 
 ## Concept
 
-**ClaudIO improves through two mechanisms**:
+**CLIO Agent improves through two mechanisms**:
 1. **ARC Memory**: Stores conversations, metrics, performance data
 2. **Optimizer Layer**: Analyzes ARC metrics and tunes agents
 
-**Result**: ClaudIO gets better over time based on actual usage data.
+**Result**: CLIO Agent gets better over time based on actual usage data.
 
 ---
 
@@ -40,7 +40,7 @@ How ClaudIO learns and gets better with use.
 User runs optimization session:
 
 ```bash
-uv run src/claudio/ui/cli.py --tune
+uv run src/clio_agent/ui/cli.py --tune
 ```
 
 **Process**:
@@ -72,7 +72,7 @@ While operating:
 ## Implementation
 
 **Internal**: Uses DSPy optimizers (BootstrapFewShot, MIPROv2)
-**External**: Exposed via ClaudIOOptimizer API
+**External**: Exposed via CLIO AgentOptimizer API
 
 **Storage**: All metrics in ARC, optimized variants versioned in ARC
 
@@ -115,4 +115,4 @@ Continuous cycle
 ---
 
 **See**: PLAN.md (v0.4.0) for implementation tasks
-**See**: CLAUDIO_ARCHITECTURE.md for full architecture
+**See**: CLIO_AGENT_ARCHITECTURE.md for full architecture

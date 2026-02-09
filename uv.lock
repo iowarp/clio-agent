@@ -345,7 +345,7 @@ wheels = [
 ]
 
 [[package]]
-name = "claudio"
+name = "clio-agent"
 version = "0.2.0"
 source = { editable = "." }
 dependencies = [
@@ -413,7 +413,7 @@ ui = [
 [package.metadata]
 requires-dist = [
     { name = "adios2", marker = "extra == 'tools'", specifier = ">=2.9.0" },
-    { name = "claudio", extras = ["ui", "memory", "optimizers", "api", "tools", "iowarp", "dev"], marker = "extra == 'all'" },
+    { name = "clio-agent", extras = ["ui", "memory", "optimizers", "api", "tools", "iowarp", "dev"], marker = "extra == 'all'" },
     { name = "dspy-ai", specifier = ">=3.0.3" },
     { name = "fastapi", marker = "extra == 'api'", specifier = ">=0.104.0" },
     { name = "fastmcp", specifier = ">=2.13.0" },

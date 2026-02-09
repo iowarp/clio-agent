@@ -201,9 +201,9 @@ def tool_metric(example, pred, trace):
     return correct_calls and len(pred.trajectory) <= 5
 ```
 
-**Multi-Dimensional (ClaudIO)**:
+**Multi-Dimensional (CLIO Agent)**:
 ```python
-def claudio_metric(example, pred, trace=None):
+def clio-agent_metric(example, pred, trace=None):
     """Multi-dimensional quality for experts."""
 
     correctness = validate_answer(example, pred)
@@ -311,7 +311,7 @@ with open("optimization_report.txt", "w") as f:
 
 ---
 
-## Optimization Workflow for ClaudIO
+## Optimization Workflow for CLIO Agent
 
 ### Phase 1: Fast Prototyping (Week 1)
 
@@ -523,7 +523,7 @@ class OptimizerMetrics:
         }
 ```
 
-### Success Criteria for ClaudIO
+### Success Criteria for CLIO Agent
 
 ```python
 SUCCESS_CRITERIA = {
@@ -556,4 +556,4 @@ SUCCESS_CRITERIA = {
 - **Workflow** progresses from manual → quick optimization → production optimization
 - **Cost** is reasonable when using appropriate models
 
-Next: Implement [ClaudIO Architecture](../architecture/CLAUDIO_ARCHITECTURE.md) using these foundation concepts.
+Next: Implement [CLIO Agent Architecture](../architecture/CLIO_AGENT_ARCHITECTURE.md) using these foundation concepts.

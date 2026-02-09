@@ -1,12 +1,12 @@
 """
-Tests for claudio.config module.
+Tests for clio_agent.config module.
 
 Tests LM Studio configuration and provider setup.
 """
 
 import pytest
 from unittest.mock import patch, MagicMock
-from claudio.config import (
+from clio_agent.config import (
     LMStudioConfig,
     configure_dspy_lm_studio,
 )
@@ -18,11 +18,11 @@ class TestLMStudioConfig:
     def test_default_config(self):
         """Test default LM Studio configuration values."""
         config = LMStudioConfig()
-
-        assert config.base_url == "http://100.127.255.172:1234"
-        assert config.model == "openai/gpt-oss-20b"
+    
+        assert config.base_url == "http://127.0.0.1:1234"
+        assert config.model == "ibm/granite-4-h-tiny"
         assert config.temperature == 1.0
-        assert config.max_tokens == 8000
+        assert config.max_tokens == 32000
 
     def test_custom_config(self):
         """Test custom LM Studio configuration."""

@@ -1,4 +1,4 @@
-# ClaudIO .gitignore
+# CLIO Agent .gitignore
 # Comprehensive ignore patterns for DSPy agent + UV + HPC scientific computing project
 
 # ============================================================================
@@ -141,7 +141,7 @@ Desktop.ini
 .directory
 
 # ============================================================================
-# Project Specific - ClaudIO
+# Project Specific - CLIO Agent
 # ============================================================================
 
 # AI agents

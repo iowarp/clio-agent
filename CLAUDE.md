@@ -1,12 +1,12 @@
-# ClaudIO Development Rules for AI Agents
+# CLIO Agent Development Rules for AI Agents
 
-Essential rules and guidelines for AI agents implementing ClaudIO.
+Essential rules and guidelines for AI agents implementing CLIO Agent.
 
 ---
 
 ## Core Principles
 
-**ClaudIO IS**: Self-improving autonomous agent for scientific data (not a framework)
+**CLIO Agent IS**: Self-improving autonomous agent for scientific data (not a framework)
 **Architecture**: 3-Tier Orchestration + ARC Memory + Optimizer Layer + IOWarp Integration
 **Current Version**: v0.1.0 (baseline)
 **Target Version**: v0.5.0 (public beta)
@@ -58,7 +58,7 @@ Essential rules and guidelines for AI agents implementing ClaudIO.
 
 ### RULE 2: Never Break v0.1.0 Baseline
 - Main agent, DataExpert, CLI must always work
-- Test before committing: `uv run src/claudio/ui/cli.py`
+- Test before committing: `uv run src/clio_agent/ui/cli.py`
 
 ### RULE 3: DSPy is Internal Implementation Detail
 - Use DSPy internally
@@ -114,7 +114,7 @@ Essential rules and guidelines for AI agents implementing ClaudIO.
 
 1. Read PLAN.md for current task
 2. Read PROJECT_STRUCTURE.md for file locations
-3. Read relevant architecture docs (SYSTEM_IDENTITY, CLAUDIO_ARCHITECTURE, etc.)
+3. Read relevant architecture docs (SYSTEM_IDENTITY, CLIO_AGENT_ARCHITECTURE, etc.)
 4. Implement with type hints + docstrings
 5. Write tests (>80% coverage)
 6. Run: `pytest tests/ && ruff check src/`
@@ -126,9 +126,9 @@ Essential rules and guidelines for AI agents implementing ClaudIO.
 
 ### Current (v0.1.0) ✅
 ```
-src/claudio/
+src/clio_agent/
 ├── config.py
-├── claudio.py
+├── agent.py
 ├── signatures/
 ├── experts/data_expert.py
 └── ui/cli.py
@@ -201,7 +201,7 @@ arc.store_routing_decision(session_id, routing)
 **Before Commit**:
 - [ ] Tests passing
 - [ ] Lint clean: `ruff check src/`
-- [ ] Type check: `mypy src/claudio/`
+- [ ] Type check: `mypy src/clio_agent/`
 
 ---
 
@@ -210,18 +210,18 @@ arc.store_routing_decision(session_id, routing)
 **Read First**:
 - `PLAN.md` - What to build
 - `PROJECT_STRUCTURE.md` - Where files go
-- `docs/CLAUDIO_ARCHITECTURE.md` - How it all fits together
+- `docs/CLIO_AGENT_ARCHITECTURE.md` - How it all fits together
 
 **Test**:
 ```bash
 pytest tests/
 ruff check src/
-mypy src/claudio/
+mypy src/clio_agent/
 ```
 
 **Run**:
 ```bash
-uv run src/claudio/ui/cli.py
+uv run src/clio_agent/ui/cli.py
 ```
 
 ---

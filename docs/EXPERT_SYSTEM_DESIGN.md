@@ -4,7 +4,7 @@ category: architecture
 priority: high
 prerequisites:
   - foundation/03_MODULES_GUIDE.md
-  - architecture/CLAUDIO_ARCHITECTURE.md
+  - architecture/CLIO_AGENT_ARCHITECTURE.md
 related:
   - research/MULTI_AGENT_SYSTEMS.md
   - poc/experts.py
@@ -172,4 +172,4 @@ All independently improve from their specific examples
 
 ---
 
-See [CLAUDIO_ARCHITECTURE](CLAUDIO_ARCHITECTURE.md) for system overview.
+See [CLIO_AGENT_ARCHITECTURE](CLIO_AGENT_ARCHITECTURE.md) for system overview.

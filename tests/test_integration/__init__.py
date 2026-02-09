@@ -1,1 +1,1 @@
-"""Integration tests for ClaudIO."""
+"""Integration tests for ClioAgent."""

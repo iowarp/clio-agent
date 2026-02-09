@@ -1,6 +1,6 @@
-"""Tests for core ClaudIO modules.
+"""Tests for core ClioAgent modules.
 
 Covers:
 - config.py: LM Studio configuration
-- claudio.py: Main ClaudIO agent
+- clio_agent.py: Main ClioAgent agent
 """

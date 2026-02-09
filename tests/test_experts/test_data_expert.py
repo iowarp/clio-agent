@@ -4,7 +4,7 @@ Tests for Data Expert module.
 
 import pytest
 from unittest.mock import Mock, patch
-from claudio.experts.data_expert import DataExpert
+from clio_agent.experts.data_expert import DataExpert
 
 
 class TestDataExpert:
@@ -41,7 +41,7 @@ class TestDataExpert:
 
         assert expert is not None
         assert expert.use_tools is True
-        assert hasattr(expert, 'mcp_tools')
+        assert hasattr(expert, 'mcp_connector')
         assert hasattr(expert, 'tools')
         # Should have 10 IOWarp tools + 2 legacy mock tools
         assert len(expert.tools) == 12
@@ -53,7 +53,7 @@ class TestDataExpert:
 
         assert expert is not None
         assert expert.arc_memory is mock_arc
-        assert hasattr(expert, 'mcp_tools')
+        assert hasattr(expert, 'mcp_connector')
 
     # TODO: Add tests for:
     # - forward() method with mock DSPy predictions

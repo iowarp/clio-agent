@@ -1,7 +1,7 @@
 [project]
-name = "claudio"
+name = "clio-agent"
 version = "0.2.0"
-description = "ClaudIO: Research Prototype Multi-Agent System for Scientific Data I/O - IOWarp Project (GRC/IIT)"
+description = "CLIO Agent — Autonomous AI agent framework for scientific data management. Part of the IOWarp platform."
 authors = [
     { name = "Antonis Kougkas", email = "a.kougkas@gmail.com" },
     { name = "Gnosis Research Center", email = "gra@iit.edu" }
@@ -10,11 +10,11 @@ maintainers = [
     { name = "Antonis Kougkas", email = "a.kougkas@gmail.com" }
 ]
 readme = "README.md"
-license = { text = "Apache-2.0" }
+license = { text = "BSD-3-Clause" }
 requires-python = ">=3.12"
 
 keywords = [
-    "claudio", "iowarp", "autonomous-agent", "self-improving", "multi-agent",
+    "clio-agent", "clio", "iowarp", "autonomous-agent", "self-improving", "multi-agent",
     "arc-memory", "optimizer-layer", "agent-registry", "a2a-protocol",
     "scientific-computing", "hpc", "data-io-optimization",
     "fastmcp", "mcp", "react-pattern", "llm-agents",
@@ -84,25 +84,25 @@ dev = [
 ]
 
 all = [
-    "claudio[ui,memory,optimizers,api,tools,iowarp,dev]",
+    "clio-agent[ui,memory,optimizers,api,tools,iowarp,dev]",
 ]
 
 [project.urls]
-Homepage = "https://github.com/iowarp/claudio"
-Documentation = "https://github.com/iowarp/claudio/tree/main/ai-docs"
-Repository = "https://github.com/iowarp/claudio"
-Issues = "https://github.com/iowarp/claudio/issues"
+Homepage = "https://github.com/iowarp/clio-agent"
+Documentation = "https://github.com/iowarp/clio-agent/tree/main/ai-docs"
+Repository = "https://github.com/iowarp/clio-agent"
+Issues = "https://github.com/iowarp/clio-agent/issues"
 
 [project.scripts]
-claudio = "claudio.ui.cli:run_cli"
-claudio-api = "claudio.ui.api:main"
+clio-agent = "clio_agent.ui.cli:run_cli"
+clio-agent-api = "clio_agent.ui.api:main"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/claudio"]
+packages = ["src/clio_agent"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -111,7 +111,7 @@ python_classes = ["Test*"]
 python_functions = ["test_*"]
 addopts = [
     "--verbose",
-    "--cov=claudio",
+    "--cov=clio_agent",
     "--cov-report=term-missing",
     "--cov-report=html",
 ]
