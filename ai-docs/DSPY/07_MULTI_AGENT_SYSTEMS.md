@@ -11,11 +11,14 @@ Guide to building multi-agent architectures with DSPy 3.x. For individual module
 2. [Hierarchical Agent Systems](#2-hierarchical-agent-systems)
 3. [Pipeline & Sequential Agents](#3-pipeline--sequential-agents)
 4. [Router-Based Dispatch](#4-router-based-dispatch)
-5. [Trajectory Tracking & State](#5-trajectory-tracking--state)
-6. [Agent Optimization Strategies](#6-agent-optimization-strategies)
-7. [Error Handling in Multi-Agent Systems](#7-error-handling-in-multi-agent-systems)
-8. [Production Multi-Agent Deployment](#8-production-multi-agent-deployment)
-9. [CLIO Agent Architecture Patterns](#9-clio-agent-architecture-patterns)
+5. [Agent-as-Tool (Nested Agents)](#5-agent-as-tool-nested-agents)
+6. [Trajectory Tracking & State](#6-trajectory-tracking--state)
+7. [Manual Tool Handling with ToolCalls](#7-manual-tool-handling-with-toolcalls)
+8. [Agent Optimization Strategies](#8-agent-optimization-strategies)
+9. [Output Refinement (BestOfN & Refine)](#9-output-refinement-bestonf--refine)
+10. [Error Handling in Multi-Agent Systems](#10-error-handling-in-multi-agent-systems)
+11. [Production Multi-Agent Deployment](#11-production-multi-agent-deployment)
+12. [CLIO Agent Architecture Patterns](#12-clio-agent-architecture-patterns)
 
 ---
 
@@ -65,8 +68,6 @@ class ResearchAndWrite(dspy.Module):
 ```
 
 ### 1.2 Composition vs. Orchestration Frameworks
-
-DSPy's approach differs from LangGraph, CrewAI, and AutoGen:
 
 | Aspect | DSPy | LangGraph/CrewAI |
 |--------|------|------------------|
@@ -243,7 +244,6 @@ class CapabilityRouter(dspy.Module):
         self.agents = agents
         self.descriptions = descriptions
 
-        # Build routing signature dynamically
         agent_names = list(agents.keys())
         self.router = dspy.ChainOfThought(
             f"query, agent_descriptions: str -> selected_agent: Literal{agent_names}, confidence: float, reasoning: str"
@@ -254,7 +254,6 @@ class CapabilityRouter(dspy.Module):
         routing = self.router(query=query, agent_descriptions=desc_str)
 
         if routing.confidence < 0.5:
-            # Low confidence — try multiple agents
             results = {}
             for name, agent in self.agents.items():
                 try:
@@ -265,22 +264,6 @@ class CapabilityRouter(dspy.Module):
 
         agent = self.agents[routing.selected_agent]
         return agent(query=query)
-
-
-# Usage
-router = CapabilityRouter(
-    agents={
-        "data_expert": DataExpert(),
-        "io_expert": IOExpert(),
-        "config_expert": ConfigExpert(),
-    },
-    descriptions={
-        "data_expert": "Analyzes scientific data files (HDF5, Parquet, CSV)",
-        "io_expert": "Handles I/O patterns and performance analysis",
-        "config_expert": "Manages configuration and IOWarp settings",
-    }
-)
-result = router(query="What's the schema of experiment_001.h5?")
 ```
 
 ### 4.2 Multi-Agent Fan-Out with dspy.Parallel
@@ -300,7 +283,6 @@ class FanOutAnalysis(dspy.Module):
         )
 
     def forward(self, data: str) -> dspy.Prediction:
-        # Prepare parallel execution
         exec_pairs = [(agent, {"data": data}) for agent in self.agents]
         results = self.parallel(exec_pairs)
 
@@ -313,42 +295,95 @@ class FanOutAnalysis(dspy.Module):
 
 ---
 
-## 5. Trajectory Tracking & State
+## 5. Agent-as-Tool (Nested Agents)
 
-### 5.1 dspy.History
+Wrap an agent as a callable tool for another agent — enables hierarchical delegation:
 
-`dspy.History` captures the full trajectory of agent execution — every LM call, tool invocation, and intermediate result.
+```python
+# Sub-agent with its own tools
+sub_agent = dspy.ReAct("sub_task -> sub_result", tools=[tool_a, tool_b])
+
+def delegate_to_specialist(sub_task: str) -> str:
+    """Delegate a sub-task to a specialized data analysis agent."""
+    result = sub_agent(sub_task=sub_task)
+    return result.sub_result
+
+# Main agent uses the sub-agent as one of its tools
+main_agent = dspy.ReAct(
+    "question -> answer",
+    tools=[delegate_to_specialist, search_web, calculator],
+    max_iters=10
+)
+
+result = main_agent(question="Analyze the correlation between columns A and B in data.csv")
+```
+
+---
+
+## 6. Trajectory Tracking & State
+
+### 6.1 ReAct Trajectory Structure
+
+ReAct internally builds a trajectory dict during execution. Each iteration adds 4 keys:
+
+```python
+# Internal trajectory structure (from ReAct.forward())
+trajectory = {
+    "thought_0": "I need to look up the weather...",
+    "tool_name_0": "get_weather",
+    "tool_args_0": {"city": "Tokyo"},
+    "observation_0": "The weather in Tokyo is sunny.",
+    "thought_1": "I now have the answer...",
+    "tool_name_1": "finish",       # Built-in finish tool signals completion
+    "tool_args_1": {},
+    "observation_1": "Completed."
+}
+```
+
+**Key behaviors:**
+- ReAct auto-adds a built-in `finish` tool — calling it ends the loop
+- Tool execution errors are captured as observation strings, not exceptions — the agent can reason about and retry failures
+- Override `truncate_trajectory(trajectory)` for custom context-window management (default: removes oldest 4 keys per truncation)
+
+```python
+class CustomReAct(dspy.ReAct):
+    def truncate_trajectory(self, trajectory):
+        """Keep only last 3 iterations instead of default behavior."""
+        keys = list(trajectory.keys())
+        while len(keys) > 12:  # 4 keys per iteration * 3 iterations
+            del trajectory[keys.pop(0)]
+```
+
+### 6.2 dspy.History
+
+`dspy.History` is a frozen Pydantic `BaseModel` for conversation history:
 
 ```python
 import dspy
 
-agent = dspy.ReAct("task -> result", tools=[search, calculate], max_iters=5)
+# Create history from previous interactions
+history = dspy.History(
+    messages=[
+        {"question": "What is the capital of France?", "answer": "Paris"},
+        {"question": "What is the capital of Germany?", "answer": "Berlin"},
+    ]
+)
 
-# Enable history tracking
-dspy.configure(track_usage=True)
-result = agent(task="Find the population of France and calculate its density")
-
-# Access trajectory
-history = result.history  # dspy.History object
-
-# Iterate over trajectory steps
-for step in history:
-    print(f"Step: {step.module_name}")
-    print(f"  Input: {step.inputs}")
-    print(f"  Output: {step.outputs}")
-    if step.tool_calls:
-        for tc in step.tool_calls:
-            print(f"  Tool: {tc.name}({tc.args}) -> {tc.result}")
+# Pass history to maintain context across calls
+predict = dspy.Predict("question, history: dspy.History -> answer: str")
+result = predict(question="Which one has a larger population?", history=history)
 ```
 
-### 5.2 Custom State Management
+**Key:** Message keys must match the associated signature fields. History is immutable (frozen).
+
+### 6.3 Custom State Management
 
 ```python
 class StatefulAgent(dspy.Module):
     """Agent with explicit state tracking across turns."""
     def __init__(self):
         self.agent = dspy.ReAct(
-            "query, conversation_history: str -> response: str, updated_state: str",
+            "query, conversation_history: str -> response: str",
             tools=[search_data, analyze_file],
             max_iters=5
         )
@@ -367,10 +402,9 @@ class StatefulAgent(dspy.Module):
         self.state.clear()
 ```
 
-### 5.3 Usage Tracking
+### 6.4 Usage Tracking
 
 ```python
-# Track LM usage across multi-agent calls
 dspy.configure(track_usage=True)
 
 orchestrator = OrchestratorAgent()
@@ -383,53 +417,103 @@ for model, stats in usage.items():
     print(f"  Cost: ${stats.get('cost', 0):.4f}")
     print(f"  Calls: {stats['num_calls']}")
 
-# Reset counters
 dspy.reset_lm_usage()
+```
+
+### 6.5 Cache Bypass for Agent Exploration
+
+Use unique `rollout_id` + non-zero temperature to bypass cache while still caching new results:
+
+```python
+predict = dspy.Predict("question -> answer")
+
+# Each call with different rollout_id bypasses cache
+predict(question="1+1", config={"rollout_id": 1, "temperature": 1.0})
+predict(question="1+1", config={"rollout_id": 2, "temperature": 1.0})
+
+# Or disable cache globally
+dspy.configure_cache(enable_disk_cache=False, enable_memory_cache=False)
 ```
 
 ---
 
-## 6. Agent Optimization Strategies
+## 7. Manual Tool Handling with ToolCalls
 
-### 6.1 SIMBA for Agentic Workloads
-
-SIMBA (SIMulated Bandit-based Agent optimization) is purpose-built for optimizing agents and multi-step systems. See [04_OPTIMIZATION_GUIDE.md](04_OPTIMIZATION_GUIDE.md#simba-agent-optimized-new-in-3x) for full API.
+For fine-grained control over tool execution (bypassing ReAct's loop):
 
 ```python
-# Optimize a multi-agent system end-to-end
-trainset = [
-    dspy.Example(user_request="Analyze experiment data", expected_output="...").with_inputs("user_request"),
-    # ... 50-200 examples recommended
-]
+class ToolSignature(dspy.Signature):
+    """Manual tool routing."""
+    question: str = dspy.InputField()
+    tools: list[dspy.Tool] = dspy.InputField()
+    outputs: dspy.ToolCalls = dspy.OutputField()
 
-def agent_metric(example, pred, trace=None):
-    """Evaluate agent quality including tool usage efficiency."""
-    correctness = dspy.evaluate.answer_exact_match(example, pred)
+tools = {
+    "weather": dspy.Tool(weather_fn),
+    "calculator": dspy.Tool(calc_fn),
+}
 
-    # Penalize excessive tool calls
-    tool_calls = len(trace) if trace else 0
-    efficiency = max(0, 1.0 - (tool_calls - 3) * 0.1) if tool_calls > 3 else 1.0
+predictor = dspy.Predict(ToolSignature)
+response = predictor(question="What's 2+2?", tools=list(tools.values()))
 
-    return correctness * 0.7 + efficiency * 0.3
+# Execute tool calls from the output
+for call in response.outputs.tool_calls:
+    # Auto-discover functions by name
+    result = call.execute()
 
-optimizer = dspy.SIMBA(
-    metric=agent_metric,
-    max_bootstrapped_demos=4,
-    max_labeled_demos=8,
-    num_candidate_programs=10,
-)
+    # Or pass explicit function mapping
+    result = call.execute(functions={"weather": weather_fn, "calculator": calc_fn})
 
-optimized_system = optimizer.compile(
-    OrchestratorAgent(),
-    trainset=trainset,
-)
+    # Or pass Tool objects
+    result = call.execute(functions=[dspy.Tool(weather_fn)])
 ```
 
-### 6.2 Optimizing Individual Agents in a System
+**ToolCalls type details:**
+- `from_dict_list(list[dict])` — each dict has `name` and `args` keys
+- `format()` — returns OpenAI-compatible tool_calls schema
+- `validate_input()` — handles list of dicts, dict with "tool_calls" key, or individual pairs
+- `is_streamable()` returns `False` — ToolCalls cannot be streamed
+
+---
+
+## 8. Agent Optimization Strategies
+
+### 8.1 SIMBA for Agentic Workloads
+
+SIMBA (Stochastic Introspective Mini-Batch Ascent) is purpose-built for optimizing agents and multi-step systems.
+
+```python
+optimizer = dspy.SIMBA(
+    metric=agent_metric,                    # Required: (example, pred) -> float
+    bsize=32,                               # Mini-batch size
+    num_candidates=6,                       # New candidates per iteration
+    max_steps=8,                            # Total optimization iterations
+    max_demos=4,                            # Max demos per predictor before removal
+    prompt_model=None,                      # LM for program evolution (default: configured LM)
+    teacher_settings=None,                  # Override for teacher config
+    demo_input_field_maxlen=100_000,        # Max chars for demo input fields
+    num_threads=None,                       # Parallel threads
+    temperature_for_sampling=0.2,           # Temperature for sampling programs
+    temperature_for_candidates=0.2,         # Temperature for generating candidates
+)
+
+optimized = optimizer.compile(
+    student=OrchestratorAgent(),
+    trainset=trainset,
+    seed=0,
+)
+
+# Access optimization results
+optimized.candidate_programs  # list of {"score": float, "program": Module}
+optimized.trial_logs          # batch_idx -> trial info
+```
+
+**Algorithm:** Iterates in mini-batches using softmax sampling to select programs. Stochastically drops demos (Poisson distribution) and applies dual strategies ("append_a_demo" or "append_a_rule") with LLM introspection for improvement rules.
+
+### 8.2 Optimizing Individual Agents in a System
 
 ```python
 class OptimizableSystem(dspy.Module):
-    """System where each agent can be independently optimized."""
     def __init__(self):
         self.router = dspy.ChainOfThought("query -> domain, reasoning")
         self.data_expert = DataExpert()
@@ -442,42 +526,52 @@ class OptimizableSystem(dspy.Module):
         return self.io_expert(query=query)
 
 
-# Strategy: Optimize each component with its own optimizer and dataset
-# 1. Optimize router independently
-router_trainset = [dspy.Example(query="...", domain="data").with_inputs("query")]
-router_optimizer = dspy.MIPROv2(metric=routing_accuracy, num_candidates=20)
+# Strategy: Optimize each component independently
+# 1. Router with MIPROv2 (instruction + demo optimization)
+router_optimizer = dspy.MIPROv2(
+    metric=routing_accuracy,
+    auto="light",                    # "light", "medium", or "heavy"
+    num_candidates=20,
+    max_bootstrapped_demos=3,
+    max_labeled_demos=4,
+)
 
-# 2. Optimize experts with SIMBA (agent-aware)
-expert_optimizer = dspy.SIMBA(metric=expert_metric, max_bootstrapped_demos=4)
+# 2. Experts with SIMBA (agent-aware)
+expert_optimizer = dspy.SIMBA(metric=expert_metric, max_demos=4)
 
 # 3. Compose optimized components
 system = OptimizableSystem()
 system.router = router_optimizer.compile(system.router, trainset=router_trainset)
 system.data_expert = expert_optimizer.compile(system.data_expert, trainset=expert_trainset)
+
+# Save/Load optimized programs
+system.save("optimized_system.json")
+loaded = OptimizableSystem()
+loaded.load("optimized_system.json")
 ```
 
-### 6.3 BootstrapFinetune for Multi-Agent Systems
+### 8.3 BootstrapFinetune for Multi-Agent Systems
 
 ```python
-# Collect trajectories from a strong teacher model, finetune a smaller model
 teacher_lm = dspy.LM("openai/gpt-4o")
 student_lm = dspy.LM("openai/gpt-4o-mini")
 
-# Build system with teacher
 dspy.configure(lm=teacher_lm)
-teacher_system = OrchestratorAgent()
 
-# Optimize with BootstrapFinetune
 optimizer = dspy.BootstrapFinetune(
     metric=agent_metric,
-    max_bootstrapped_demos=4,
-    num_threads=4,
+    multitask=True,                  # Share training data across predictors
+    train_kwargs=None,               # Per-LM finetuning config
+    adapter=None,                    # Data format adapter
+    exclude_demos=False,             # Clear demos post-compilation
+    num_threads=None,
 )
 
-# This collects teacher trajectories, finetunes student
+# Collects teacher trajectories, finetunes student
 optimized = optimizer.compile(
-    teacher_system,
+    student=OrchestratorAgent(),
     trainset=trainset,
+    teacher=None,                    # Optional: explicit teacher or list[Module]
     target=student_lm.model,
 )
 
@@ -486,15 +580,73 @@ dspy.configure(lm=student_lm)
 result = optimized(user_request="Analyze my data")
 ```
 
+**Workflow:** Validates predictors → bootstraps trace data from teacher → prepares finetuning data grouped by LM → runs parallel finetuning via `lm.finetune()` → updates student with finetuned models.
+
 ---
 
-## 7. Error Handling in Multi-Agent Systems
+## 9. Output Refinement (BestOfN & Refine)
 
-### 7.1 Agent-Level Error Isolation
+### 9.1 dspy.BestOfN
+
+Runs a module up to N times, returns the best result by `reward_fn` or first passing threshold:
+
+```python
+qa = dspy.ChainOfThought("question -> answer")
+
+def one_word_reward(args, pred):
+    return 1.0 if len(pred.answer.split()) == 1 else 0.0
+
+best = dspy.BestOfN(
+    module=qa,
+    N=3,                    # Max attempts
+    reward_fn=one_word_reward,
+    threshold=1.0,          # Early-stop threshold
+)
+result = best(question="What is the capital of Belgium?")
+# result.answer -> "Brussels"
+```
+
+Each attempt uses a unique `rollout_id` (bypasses cache). Returns best prediction by `reward_fn` score.
+
+### 9.2 dspy.Refine
+
+Same interface as BestOfN but with **iterative feedback** — after each attempt, generates detailed feedback and uses hints for subsequent runs:
+
+```python
+refine = dspy.Refine(
+    module=qa,
+    N=3,
+    reward_fn=one_word_reward,
+    threshold=1.0,
+    fail_count=1,           # Optional: fail after N consecutive errors
+)
+result = refine(question="What is the capital of Belgium?")
+```
+
+**Use for agent retry patterns:**
+
+```python
+class RetryAgent(dspy.Module):
+    def __init__(self, inner: dspy.Module, max_retries: int = 3):
+        self.refiner = dspy.Refine(
+            module=inner,
+            N=max_retries,
+            reward_fn=lambda args, pred: 1.0 if hasattr(pred, 'response') and pred.response else 0.0,
+            threshold=0.5,
+        )
+
+    def forward(self, **kwargs) -> dspy.Prediction:
+        return self.refiner(**kwargs)
+```
+
+---
+
+## 10. Error Handling in Multi-Agent Systems
+
+### 10.1 Agent-Level Error Isolation
 
 ```python
 class ResilientOrchestrator(dspy.Module):
-    """Orchestrator with per-agent error isolation."""
     def __init__(self):
         self.primary = DataExpert()
         self.fallback = dspy.ChainOfThought("query -> response: str")
@@ -506,36 +658,31 @@ class ResilientOrchestrator(dspy.Module):
                 raise ValueError("Empty result from primary agent")
             return result
         except Exception as e:
-            # Log failure, use fallback
             dspy.logger.warning(f"Primary agent failed: {e}, using fallback")
             return self.fallback(query=query)
 ```
 
-### 7.2 Retry with Backoff
+### 10.2 ReAct Built-in Error Recovery
+
+ReAct captures tool execution errors as observation strings rather than raising exceptions. The agent can reason about the error and retry:
 
 ```python
-class RetryAgent(dspy.Module):
-    """Agent with configurable retry strategy."""
-    def __init__(self, inner: dspy.Module, max_retries: int = 3):
-        self.inner = inner
-        self.max_retries = max_retries
-        self.refiner = dspy.Refine(
-            module=inner,
-            N=max_retries,
-            reward_fn=lambda result: bool(result and hasattr(result, 'response')),
-        )
-
-    def forward(self, **kwargs) -> dspy.Prediction:
-        return self.refiner(**kwargs)
+# Inside ReAct.forward() — errors become observations:
+try:
+    trajectory[f"observation_{idx}"] = self.tools[pred.next_tool_name](
+        **pred.next_tool_args
+    )
+except Exception as err:
+    trajectory[f"observation_{idx}"] = f"Execution error in {pred.next_tool_name}: {err}"
+    # Agent sees the error and can choose a different tool or approach
 ```
 
-### 7.3 Circuit Breaker Pattern
+### 10.3 Circuit Breaker Pattern
 
 ```python
 import time
 
 class CircuitBreaker:
-    """Circuit breaker for agent calls."""
     def __init__(self, failure_threshold: int = 5, reset_timeout: float = 60.0):
         self.failure_count = 0
         self.failure_threshold = failure_threshold
@@ -551,7 +698,7 @@ class CircuitBreaker:
                 self.state = "half-open"
                 return True
             return False
-        return True  # half-open: allow one attempt
+        return True
 
     def record_success(self):
         self.failure_count = 0
@@ -565,7 +712,6 @@ class CircuitBreaker:
 
 
 class ProtectedAgent(dspy.Module):
-    """Agent protected by circuit breaker."""
     def __init__(self, agent: dspy.Module, fallback: dspy.Module):
         self.agent = agent
         self.fallback = fallback
@@ -585,9 +731,9 @@ class ProtectedAgent(dspy.Module):
 
 ---
 
-## 8. Production Multi-Agent Deployment
+## 11. Production Multi-Agent Deployment
 
-### 8.1 FastAPI Deployment
+### 11.1 FastAPI Deployment
 
 ```python
 from fastapi import FastAPI
@@ -596,33 +742,26 @@ import uvicorn
 
 app = FastAPI()
 
-# Load optimized system once at startup
 dspy.configure(lm=dspy.LM("openai/gpt-4o-mini"))
 system = OrchestratorAgent()
-system.load("optimized_system.json")  # Load optimized prompts/demos
+system.load("optimized_system.json")
 
 @app.post("/query")
 async def handle_query(request: dict):
     result = system(user_request=request["query"])
-    return {
-        "response": result.response,
-        "metadata": {
-            "domain": getattr(result, "domain", None),
-        }
-    }
+    return {"response": result.response}
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
 ```
 
-### 8.2 Async Multi-Agent Execution
+### 11.2 Async Multi-Agent Execution
 
 ```python
 import asyncio
 import dspy
 
 class AsyncOrchestrator(dspy.Module):
-    """Orchestrator using async for concurrent agent execution."""
     def __init__(self):
         self.agents = {
             "data": DataExpert(),
@@ -631,12 +770,8 @@ class AsyncOrchestrator(dspy.Module):
         }
 
     async def aforward(self, queries: dict[str, str]) -> dspy.Prediction:
-        """Execute multiple agent queries concurrently."""
-        tasks = []
-        for domain, query in queries.items():
-            if domain in self.agents:
-                tasks.append(self._run_agent(domain, query))
-
+        tasks = [self._run_agent(domain, query) for domain, query in queries.items()
+                 if domain in self.agents]
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
         combined = {}
@@ -653,46 +788,38 @@ class AsyncOrchestrator(dspy.Module):
         return (domain, result)
 
 
-# Execute
 async def main():
     orchestrator = AsyncOrchestrator()
     result = await orchestrator.acall(
-        queries={
-            "data": "Schema of experiment.h5",
-            "io": "Current I/O throughput",
-        }
+        queries={"data": "Schema of experiment.h5", "io": "Current I/O throughput"}
     )
     print(result.results)
 
 asyncio.run(main())
 ```
 
-### 8.3 Per-Request LM Override with dspy.context()
+### 11.3 Per-Request LM Override with dspy.context()
 
 ```python
 import dspy
 
-# Global default
 dspy.configure(lm=dspy.LM("openai/gpt-4o-mini"))
 system = OrchestratorAgent()
 
 # Per-request override (thread-safe)
 with dspy.context(lm=dspy.LM("openai/gpt-4o")):
-    # This request uses gpt-4o
     result = system(user_request="Complex analysis task")
 
 # Back to gpt-4o-mini outside the context
 result = system(user_request="Simple query")
 ```
 
-### 8.4 Streaming Multi-Agent Output
+### 11.4 Streaming Multi-Agent Output
 
 ```python
 import dspy
 
 system = OrchestratorAgent()
-
-# Stream the final output
 stream = dspy.streamify(system)
 
 async for chunk in stream(user_request="Analyze this dataset"):
@@ -702,13 +829,52 @@ async for chunk in stream(user_request="Analyze this dataset"):
         print(chunk, end="", flush=True)
 ```
 
+### 11.5 Custom ReAct Agent (Production Pattern)
+
+For maximum control, build a custom agent loop instead of using `dspy.ReAct`:
+
+```python
+class Agent(dspy.Module):
+    """Production agent with custom tool dispatch and finish semantics."""
+    def __init__(self, max_steps=5):
+        self.max_steps = max_steps
+        instructions = "For the final answer, produce short answers..."
+        signature = dspy.Signature(
+            'question, trajectory, functions -> next_selected_fn, args: dict[str, Any]',
+            instructions
+        )
+        self.react = dspy.ChainOfThought(signature)
+
+    def forward(self, question, functions):
+        tools = {fn_name: fn_metadata(fn) for fn_name, fn in functions.items()}
+        trajectory = []
+
+        for _ in range(self.max_steps):
+            pred = self.react(
+                question=question, trajectory=trajectory, functions=tools
+            )
+            selected_fn = pred.next_selected_fn.strip('"').strip("'")
+            fn_output = functions[selected_fn](**pred.args)
+            trajectory.append(dict(
+                reasoning=pred.reasoning,
+                selected_fn=selected_fn,
+                args=pred.args,
+                output=fn_output,
+            ))
+            if selected_fn == "finish":
+                break
+
+        return dspy.Prediction(
+            answer=fn_output.get("return_value", ""),
+            trajectory=trajectory
+        )
+```
+
 ---
 
-## 9. CLIO Agent Architecture Patterns
+## 12. CLIO Agent Architecture Patterns
 
-### 9.1 Three-Tier Mapping
-
-CLIO Agent uses DSPy's module composition for its three-tier architecture:
+### 12.1 Three-Tier Mapping
 
 | CLIO Tier | DSPy Pattern | Role |
 |-----------|-------------|------|
@@ -716,11 +882,10 @@ CLIO Agent uses DSPy's module composition for its three-tier architecture:
 | Tier 2: Experts | `DataExpert(dspy.Module)` using `dspy.ReAct` | Domain-specific reasoning + tools |
 | Tier 3: Nanoagents | `NanoAgent(dspy.Module)` using `dspy.Predict` | Single-task execution |
 
-### 9.2 Registry-Based Routing
+### 12.2 Registry-Based Routing
 
 ```python
 class CLIORouter(dspy.Module):
-    """CLIO's capability-based routing using the agent registry."""
     def __init__(self, registry):
         self.registry = registry
         self.router = dspy.ChainOfThought(
@@ -728,48 +893,39 @@ class CLIORouter(dspy.Module):
         )
 
     def forward(self, query: str) -> dspy.Prediction:
-        # Get capabilities from registry
         capabilities = self.registry.get_capability_descriptions()
         routing = self.router(query=query, capabilities=capabilities)
-
-        # Get agent from registry
         agent = self.registry.get_agent(routing.selected_agent)
         return agent(query=query)
 ```
 
-### 9.3 ARC-Integrated Agent Pattern
+### 12.3 ARC-Integrated Agent Pattern
 
 ```python
 class ARCAgent(dspy.Module):
-    """Agent that checks ARC cache before execution."""
     def __init__(self, arc, inner_agent: dspy.Module):
         self.arc = arc
         self.inner = inner_agent
 
     def forward(self, query: str) -> dspy.Prediction:
-        # Cache-first pattern
         cached = self.arc.get_cached_result(query)
         if cached:
             return dspy.Prediction(**cached)
 
-        # Execute agent
         import time
         start = time.time()
         result = self.inner(query=query)
         duration_ms = (time.time() - start) * 1000
 
-        # Store in ARC
         self.arc.cache_result(query, result.toDict())
         self.arc.store_invocation({
-            "query": query,
-            "duration_ms": duration_ms,
-            "success": True,
-            "agent": type(self.inner).__name__,
+            "query": query, "duration_ms": duration_ms,
+            "success": True, "agent": type(self.inner).__name__,
         })
         return result
 ```
 
-### 9.4 MCP Gateway with Multi-Agent Backend
+### 12.4 MCP Gateway with Multi-Agent Backend
 
 ```python
 from fastmcp import FastMCP
@@ -777,7 +933,6 @@ import dspy
 
 mcp_server = FastMCP("CLIO Agent")
 
-# Initialize multi-agent system
 dspy.configure(lm=dspy.LM("openai/gpt-4o-mini"))
 system = OrchestratorAgent()
 
@@ -808,15 +963,22 @@ if __name__ == "__main__":
 | Pipeline | Sequential processing stages | Module chaining |
 | Router | Multiple specialists, dynamic dispatch | ChainOfThought + Literal |
 | Fan-out | Independent parallel analyses | dspy.Parallel |
+| Agent-as-Tool | Nested delegation | Function wrapping agent call |
 | Stateful | Multi-turn conversations | Custom state + History |
 | Cache-first | Repeated queries, expensive agents | ARC integration |
+| Manual tools | Fine-grained tool control | dspy.ToolCalls + Predict |
 
 **Optimization Quick Guide:**
 - Router modules → MIPROv2 (instruction + demo optimization)
 - Tool-using agents → SIMBA (agent-aware, long-horizon)
 - End-to-end pipeline → BootstrapFinetune (teacher→student distillation)
+- Quality control → dspy.Refine / dspy.BestOfN (iterative improvement)
+
+**Persistence:**
+- `program.save("optimized.json")` — save optimized prompts/demos
+- `program.load("optimized.json")` — restore from saved state
 
 **See also:**
 - [03_MODULES_GUIDE.md](03_MODULES_GUIDE.md) — ReAct, CodeAct, Parallel, Tool APIs
-- [04_OPTIMIZATION_GUIDE.md](04_OPTIMIZATION_GUIDE.md) — Full optimizer reference
+- [04_OPTIMIZATION_GUIDE.md](04_OPTIMIZATION_GUIDE.md) — Full optimizer reference (SIMBA, MIPROv2, BootstrapFinetune parameters)
 - [06_ADVANCED_PATTERNS.md](06_ADVANCED_PATTERNS.md) — Tool integration, streaming, async, deployment
