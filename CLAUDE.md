@@ -8,8 +8,7 @@ Essential rules and guidelines for AI agents implementing CLIO Agent.
 
 **CLIO Agent IS**: Self-improving autonomous agent for scientific data (not a framework)
 **Architecture**: 3-Tier Orchestration + ARC Memory + Optimizer Layer + IOWarp Integration
-**Current Version**: v0.1.0 (baseline)
-**Target Version**: v0.5.0 (public beta)
+**Internal Engine**: DSPy 3.x (signatures, modules, optimizers) + FastMCP 3.x (tool servers)
 
 ---
 
@@ -19,32 +18,33 @@ Essential rules and guidelines for AI agents implementing CLIO Agent.
 
 ```python
 # Core
-"dspy-ai>=3.0.3"            # Agent patterns + optimizers (INTERNAL)
-"fastmcp>=2.13.0"           # MCP protocol
+"dspy-ai>=3.1.0"             # Agent patterns + optimizers (INTERNAL)
+"fastmcp>=3.0.0"             # MCP protocol + gateway composition
 
 # UI
-"rich>=14.2.0"              # Terminal UI
+"rich>=14.2.0"               # Terminal UI
 
-# Memory Layer (v0.2.0+)
-"sortedcontainers>=2.4.0"   # B-tree index
-"lru-dict>=1.3.0"           # LRU cache
-"msgpack>=1.1.0"            # Serialization
+# Memory Layer
+"sortedcontainers>=2.4.0"    # B-tree index
+"lru-dict>=1.3.0"            # LRU cache
+"msgspec>=0.18.0"            # Serialization
 
-# Optimizer Layer (v0.4.0+)
-"scipy>=1.11.0"             # Statistical tests
-"numpy>=1.24.0"             # Numerical ops
+# Optimizer Layer (Phase 3+)
+"scipy>=1.11.0"              # Statistical tests
+"numpy>=1.24.0"              # Numerical ops
 
-# Tools (v0.3.0+)
-"h5py>=3.10.0"              # HDF5
-"pyarrow>=14.0.0"           # Parquet
+# Tools (Phase 1+)
+"h5py>=3.10.0"               # HDF5 MCP server
+"pyarrow>=14.0.0"            # Parquet MCP server (Phase 2+)
 ```
 
 ### Forbidden
 
 **DO NOT add** without approval:
-- LangChain, CrewAI, AutoGen as core dependencies (external integration only)
+- LangChain, CrewAI, AutoGen as core dependencies (external integration only via A2A)
 - Heavy ML frameworks (TensorFlow, PyTorch)
 - Database ORMs (SQLAlchemy)
+- Custom async/sync bridge code (use native DSPy/FastMCP instead)
 
 **Python Version**: >= 3.12 (LOCKED)
 
@@ -52,90 +52,224 @@ Essential rules and guidelines for AI agents implementing CLIO Agent.
 
 ## Critical Rules (NON-NEGOTIABLE)
 
-### RULE 1: Follow PLAN.md Task Order
-- Implement phases sequentially: v0.2.0 → v0.3.0 → v0.4.0 → v0.5.0
-- Complete tasks within phase before moving to next
+### RULE 1: Follow PLAN.md Phase Order
+- Implement phases sequentially: Phase 1 -> Phase 2 -> ... -> Phase 6
+- Complete tasks within a phase before moving to next
+- Never skip phases or cherry-pick tasks from later phases
 
-### RULE 2: Never Break v0.1.0 Baseline
+### RULE 2: Never Break Baseline
 - Main agent, DataExpert, CLI must always work
 - Test before committing: `uv run src/clio_agent/ui/cli.py`
+- If a change breaks baseline, revert first, then fix
 
 ### RULE 3: DSPy is Internal Implementation Detail
-- Use DSPy internally
-- **DO NOT expose** in user-facing docs or public APIs
+- Use DSPy internally for signatures, modules, optimizers
+- **DO NOT expose** DSPy in user-facing docs, APIs, or error messages
 - **Exception**: CLAUDE.md and code comments only
 
 ### RULE 4: All Data Goes Through ARC
 - Store conversations, invocations, metrics in ARC
-- **DO NOT create** separate storage systems
+- **DO NOT create** separate storage systems, databases, or caches
 
-### RULE 5: Performance Targets
+### RULE 5: Tool Curation (Max 5-7 Per Expert)
+- Each expert gets 5-7 high-level curated tools, not every atomic operation
+- Hide implementation complexity behind composite tools
+- Document each tool with an "agent story" (when/why an agent would use it)
+- **DO NOT auto-generate** tools from OpenAPI specs or file system scans
+
+### RULE 6: Context is Compiled, Not Concatenated
+- Never dump raw conversation history into prompts
+- Use context compilation pipeline: filter -> compact -> enrich -> assemble
+- Set context budgets per tier (T1: 2K tokens, T2: 4K tokens)
+- **DO NOT concatenate** all ARC data into a single string
+
+### RULE 7: Performance Targets
 - Cache hit rate > 85%
 - ARC retrieval < 10ms (O(log N))
 - Tool cache hit rate > 50%
 
-### RULE 6: Test Coverage > 80%
+### RULE 8: Test Coverage > 80% (Phase 4+)
 - Unit tests for all new code
 - Integration tests for critical paths
+- Use `Client(server)` for in-memory MCP server testing
 - Run `pytest tests/` before committing
 
-### RULE 7: Type Hints + Docstrings
+### RULE 9: Type Hints + Docstrings
 - Type hints on all functions
 - Google-style docstrings
-- Examples in docstrings
+- Use `Literal` types for routing decisions
+
+---
+
+## DSPy 3.x Patterns (Use These)
+
+### ChatAdapter for Local Models
+```python
+# Makes ReAct work with LM Studio, Ollama, any chat model
+import dspy
+lm = dspy.LM("openai/model-name", api_base="http://127.0.0.1:1234/v1")
+dspy.configure(lm=lm, adapter=dspy.ChatAdapter())
+```
+
+### Tool.from_mcp_tool() for MCP Bridge
+```python
+# Native bridge: MCP tool -> DSPy tool (replaces mcp_connector.py)
+from fastmcp import Client
+client = Client(server)
+async with client:
+    mcp_tools = await client.list_tools()
+    dspy_tools = [dspy.Tool.from_mcp_tool(t) for t in mcp_tools]
+    agent = dspy.ReAct(signature, tools=dspy_tools)
+```
+
+### Per-Request Model Selection
+```python
+# Use dspy.context() instead of global dspy.configure()
+with dspy.context(lm=expert_model):
+    result = expert(question=query)
+```
+
+### SIMBA for Agentic Optimization
+```python
+# Designed for multi-step agent tasks (not just single predictions)
+optimizer = dspy.SIMBA(metric=success_metric, max_steps=50)
+optimized_agent = optimizer.compile(agent, trainset=examples)
+```
+
+### Typed Outputs
+```python
+# Use Literal for routing decisions (optimizable by DSPy)
+class RoutingSignature(dspy.Signature):
+    question: str = dspy.InputField()
+    selected_expert: Literal["data", "hpc", "none"] = dspy.OutputField()
+```
+
+---
+
+## FastMCP 3.x Patterns (Use These)
+
+### Gateway with mount()
+```python
+from fastmcp import FastMCP
+gateway = FastMCP("clio-gateway")
+gateway.mount("/hdf5", hdf5_server)
+gateway.mount("/parquet", parquet_server)
+# Tools namespaced: hdf5_list_datasets, parquet_analyze_schema
+```
+
+### In-Memory Testing
+```python
+# Test MCP servers without subprocess or network
+from fastmcp import Client
+async def test_hdf5_analyze():
+    async with Client(hdf5_server) as client:
+        result = await client.call_tool("analyze_dataset", {"filepath": "test.h5"})
+        assert result is not None
+```
+
+### Dependency Injection
+```python
+from fastmcp import FastMCP, Depends
+
+def get_arc_memory():
+    return ARCMemory()
+
+@mcp.tool()
+def analyze(filepath: str, arc: ARCMemory = Depends(get_arc_memory)) -> dict:
+    # arc is injected, hidden from LLM tool schema
+    cached = arc.get_cached_tool_result("hdf5", "analyze", {"filepath": filepath})
+    if cached:
+        return cached
+    # ... actual analysis
+```
+
+### Transforms for Access Control
+```python
+from fastmcp.transforms import Enabled
+# Only expose tools matching a condition
+gateway.mount("/admin", admin_server, transforms=[Enabled(lambda t: user.is_admin)])
+```
 
 ---
 
 ## Architecture DOs and DONTs
 
 ### 3-Tier Hierarchy
-
-✅ **DO**: Tier 1 (Main) → Tier 2 (Experts) → Tier 3 (Nanoagents)
-❌ **DON'T**: Skip tiers or mix responsibilities
+- **DO**: Tier 1 (Main) -> Tier 2 (Experts) -> Tier 3 (Nanoagents via dspy.Parallel)
+- **DON'T**: Skip tiers, mix responsibilities, or have experts call other experts directly
 
 ### Agent Registry
-
-✅ **DO**: Use registry for capability-based routing
-❌ **DON'T**: Hardcode if/else routing logic
+- **DO**: Use registry for capability-based routing with typed outputs
+- **DON'T**: Hardcode if/else routing logic or keyword-match routing
 
 ### ARC Memory
+- **DO**: Check cache before expensive operations; compile context before injection
+- **DON'T**: Skip caching, use O(N) algorithms, or concatenate raw history
 
-✅ **DO**: Check cache before expensive operations
-❌ **DON'T**: Skip caching or use O(N) algorithms
+### MCP Tools
+- **DO**: Use FastMCP mount() gateway pattern; test with Client(server) in-memory
+- **DON'T**: Write custom async/sync bridges, spawn subprocess per tool call
+- **DO**: Curate 5-7 tools per expert with clear agent stories
+- **DON'T**: Auto-generate tools, expose 10+ tools, or duplicate tool functionality
 
 ### Optimizers
+- **DO**: Validate with statistical significance before deploying optimized variants
+- **DON'T**: Deploy without testing; optimize without sufficient training data (min 50 examples)
 
-✅ **DO**: Validate before deploying optimized variants
-❌ **DON'T**: Deploy without statistical significance test
+### System Prompts
+- **DO**: Write 500+ word domain-specific prompts for each expert signature
+- **DON'T**: Use generic "helpful assistant" prompts or share prompts across experts
+
+### Model Selection
+- **DO**: Use `dspy.context(lm=...)` for per-request model selection
+- **DON'T**: Mutate global `dspy.configure()` from within expert code
 
 ---
 
 ## Development Workflow
 
-1. Read PLAN.md for current task
-2. Read PROJECT_STRUCTURE.md for file locations
-3. Read relevant architecture docs (SYSTEM_IDENTITY, CLIO_AGENT_ARCHITECTURE, etc.)
-4. Implement with type hints + docstrings
-5. Write tests (>80% coverage)
-6. Run: `pytest tests/ && ruff check src/`
-7. Commit with clear message: `feat: <description>`
+1. Read PLAN.md for current phase and task
+2. Read relevant architecture docs (CLIO_AGENT_ARCHITECTURE, etc.)
+3. Implement with type hints + docstrings
+4. Write tests (using `Client(server)` for MCP, mocks for LM calls)
+5. Run: `pytest tests/ && ruff check src/`
+6. Verify baseline still works: `uv run src/clio_agent/ui/cli.py`
+7. Commit with clear message: `<type>: <description>`
 
 ---
 
 ## File Organization
 
-### Current (v0.1.0) ✅
+### Current Working Files
 ```
 src/clio_agent/
-├── config.py
-├── agent.py
-├── signatures/
-├── experts/data_expert.py
-└── ui/cli.py
+├── config.py                 # LM configuration
+├── agent.py                  # Main agent (Tier 1)
+├── signatures/               # DSPy signatures
+│   ├── main_agent_sig.py
+│   └── expert_sig.py
+├── experts/                  # Domain experts (Tier 2)
+│   └── data_expert.py        # DataExpert (working)
+├── registry/
+│   ├── registry.py           # Capability-based routing
+│   └── capability_matcher.py # Query -> expert matching
+├── arc/                      # Memory layer (90% complete)
+│   ├── memory.py             # Core ARC API
+│   ├── cache.py              # LRU cache
+│   ├── index.py              # B-tree index
+│   ├── lsm.py                # LSM tree for metrics
+│   ├── retrieval.py          # Context retrieval
+│   ├── schema.py             # Data schemas (msgspec)
+│   ├── storage.py            # IOWarp CTE backend (fallback to local FS)
+│   └── coordinator.py        # Multi-agent coordination
+├── tools/                    # FastMCP tool servers
+│   ├── gateway.py            # Gateway with mount() (Phase 1)
+│   └── servers/
+│       └── hdf5_server.py    # HDF5 tools (Phase 1)
+└── ui/
+    ├── cli.py                # Interactive CLI (working)
+    └── api.py                # REST API (Phase 4)
 ```
-
-### Target Structure
-See `PROJECT_STRUCTURE.md` for full 70+ file layout
 
 ---
 
@@ -161,11 +295,27 @@ arc.store_invocation({
 })
 ```
 
-### Pattern 3: Registry Routing
+### Pattern 3: Registry Routing (Typed)
 ```python
-routing = registry.route_query(query)
-expert = get_agent(routing.selected_agent)
-arc.store_routing_decision(session_id, routing)
+class RoutingSignature(dspy.Signature):
+    question: str = dspy.InputField()
+    selected_expert: Literal["data", "hpc", "none"] = dspy.OutputField()
+
+router = dspy.ChainOfThought(RoutingSignature)
+routing = router(question=query)
+expert = registry.get_agent(routing.selected_expert)
+```
+
+### Pattern 4: Context Compilation
+```python
+# DON'T: raw_context = "\n".join(all_messages)
+# DO:
+compiled = context_compiler.compile(
+    query=question,
+    session_id=session_id,
+    budget_tokens=2000,
+    include_procedural=True  # what worked/failed before
+)
 ```
 
 ---
@@ -174,18 +324,21 @@ arc.store_routing_decision(session_id, routing)
 
 - Unit tests: `tests/test_<module>/`
 - Integration tests: `tests/test_integration/`
-- Coverage: > 80%
+- MCP server tests: use `Client(server)` in-memory (no subprocess)
+- LM tests: mock dspy.LM responses
+- Coverage gate: Phase 1 (50%), Phase 2 (60%), Phase 3 (70%), Phase 4+ (80%)
 - Run before commit: `pytest tests/`
 
 ---
 
 ## Error Handling
 
-**Graceful Degradation**:
-- IOWarp unavailable → file-based storage
-- ARC unavailable → continue without memory (warn user)
-- MCP server down → pure reasoning mode
-- Optimizer fails → keep current variant
+**Graceful Degradation Chain**:
+- IOWarp unavailable -> file-based ARC storage
+- ARC unavailable -> continue without memory (warn user)
+- MCP server down -> pure reasoning mode (no tool calls)
+- Optimizer fails -> keep current variant (no rollback)
+- LM timeout -> retry once, then return partial answer
 
 ---
 
@@ -199,24 +352,22 @@ arc.store_routing_decision(session_id, routing)
 - `docs`: Documentation
 
 **Before Commit**:
-- [ ] Tests passing
+- [ ] Tests passing: `pytest tests/`
 - [ ] Lint clean: `ruff check src/`
-- [ ] Type check: `mypy src/clio_agent/`
+- [ ] Baseline works: `uv run src/clio_agent/ui/cli.py`
 
 ---
 
 ## Quick Reference
 
 **Read First**:
-- `PLAN.md` - What to build
-- `PROJECT_STRUCTURE.md` - Where files go
+- `PLAN.md` - What to build (current phase)
 - `docs/CLIO_AGENT_ARCHITECTURE.md` - How it all fits together
 
 **Test**:
 ```bash
 pytest tests/
 ruff check src/
-mypy src/clio_agent/
 ```
 
 **Run**:
@@ -226,4 +377,4 @@ uv run src/clio_agent/ui/cli.py
 
 ---
 
-**THIS IS YOUR REFERENCE. KEEP IT SIMPLE. FOLLOW PLAN.MD.**
+**THIS IS YOUR REFERENCE. FOLLOW PLAN.MD. USE NATIVE DSPy/FastMCP PATTERNS.**
