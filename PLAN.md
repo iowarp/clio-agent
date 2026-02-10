@@ -26,6 +26,12 @@ Dependency-ordered phases for building CLIO Agent into a production-ready autono
 - Update DataExpert to use native tool bridge
 - Remove `IOWarpMCPConnector`, `IOWarpMCPTools`, `create_iowarp_tool_function`
 
+1.2a **Define async boundary**
+- CLI stays sync, agent/expert/tool pipeline async internally
+- FastMCP Client interactions use `async with Client(server)`
+- DSPy ReAct calls use `await react.acall()` for MCP tool execution
+- No custom sync/async bridge code — use native DSPy + FastMCP async patterns
+
 1.3 **Build real HDF5 MCP server**
 - Implement `tools/servers/hdf5_server.py` using FastMCP 3.x
 - Tools: `list_datasets`, `analyze_dataset`, `optimize_chunking`, `check_compression` (4 tools, not 10)
@@ -35,7 +41,7 @@ Dependency-ordered phases for building CLIO Agent into a production-ready autono
 
 1.4 **Build CLIO Gateway server**
 - Create `tools/gateway.py` using FastMCP `mount()` with namespacing
-- Mount HDF5 server at `/hdf5`
+- Mount HDF5 server: `gateway.mount(hdf5_server, namespace="hdf5")`
 - Add `analyze_file` gateway tool with format auto-detection
 - Keep gateway extensible for Phase 2 servers
 
@@ -46,20 +52,27 @@ Dependency-ordered phases for building CLIO Agent into a production-ready autono
 - Add 500+ word domain-specific system prompt to DataExpertSignature
 - Verify: expert can analyze a real HDF5 file end-to-end
 
-1.6 **Fix main agent**
-- Switch ClioAgent from ChainOfThought to ReAct with `ask_data_expert` tool
-- Use `dspy.context(lm=...)` for per-tier model selection (not global mutation)
-- Remove module-level `_data_expert_instance` global; use proper encapsulation
-- Verify: user question flows through main agent -> DataExpert -> HDF5 tools -> answer
+1.6 **Split main agent into Router + Chat Agent**
+- Router (ChainOfThought + Literal, smallest model):
+  - Intent detection: classify query as chat/data/analysis/visualization/none
+  - Runs on fast SLM for low latency
+  - Optimizable with MIPROv2 later
+- Chat Agent (conversational, user-facing):
+  - Handles direct conversation, context management, follow-ups
+  - Delegates to experts via router when domain expertise needed
+  - Returns expert results to user with conversational framing
+- Use `dspy.context(lm=...)` for per-agent model selection
+- Remove module-level `_data_expert_instance` global
+- Verify: user question → router → DataExpert (ReAct) → HDF5 tools → chat agent → answer
 
-1.7 **Clean up stubs**
-- Delete or gut stub files that claim functionality that doesn't exist:
-  - `experts/hpc_expert.py`, `experts/research_expert.py`, `experts/workflow_expert.py` (keep only data_expert.py)
-  - `ui/a2a_endpoint.py`, `ui/tuning_ui.py` (stubs)
-  - `nanoagents/` (entire directory - stubs)
-  - `optimizers/` (entire directory - stubs)
-  - `registry/a2a_adapter.py`, `registry/external_compiler.py` (stubs)
-  - `tools/mcp_wrapper.py` (dead code)
+1.7 **Clean up codebase**
+- Delete dead code files:
+  - `experts/hpc_expert.py`, `experts/research_expert.py`, `experts/workflow_expert.py`
+  - `ui/a2a_endpoint.py`, `ui/tuning_ui.py`
+  - `registry/a2a_adapter.py`, `registry/external_compiler.py`
+  - `tools/mcp_wrapper.py`
+- Clean up nanoagents/ interfaces to match target architecture (mark as planned, not implemented)
+- Clean up optimizers/ interfaces to match target architecture (mark as planned, not implemented)
 - Update imports everywhere
 
 1.8 **Test coverage to 50%**
@@ -70,9 +83,11 @@ Dependency-ordered phases for building CLIO Agent into a production-ready autono
 - Fix any broken existing tests
 
 ### Success Criteria
-- [ ] `dspy.ReAct` works with LM Studio via ChatAdapter
-- [ ] DataExpert analyzes a real `.h5` file through MCP server
+- [ ] Router (CoT + Literal) correctly dispatches to chat agent or DataExpert
+- [ ] Chat Agent handles conversation and expert delegation
+- [ ] DataExpert (ReAct) analyzes a real `.h5` file through MCP server
 - [ ] mcp_connector.py deleted, replaced by native DSPy/FastMCP
+- [ ] Async boundary defined: CLI sync, pipeline async internally
 - [ ] No stub files claiming false functionality
 - [ ] `pytest tests/` passes with >50% coverage
 - [ ] `uv run src/clio_agent/ui/cli.py` works end-to-end
@@ -82,34 +97,34 @@ Dependency-ordered phases for building CLIO Agent into a production-ready autono
 
 ---
 
-## Phase 2: Multi-Expert System
+## Phase 2: Complete Data Management Workflow
 
-**Goal**: Add HPCExpert, implement typed capability-based routing, and demonstrate 2+ experts collaborating via ARC.
+**Goal**: Add AnalysisExpert + VisualizationExpert to close the data lifecycle: storage → analytics → visualization. Prove multi-agent thesis with two new experts.
 
-**Why second**: Foundation must work before adding more experts.
+**Why second**: Foundation must work before adding more experts. Closing the data management cycle proves that specialized small-model agents can match or beat expensive generalist LLMs at lower cost.
 
 ### Tasks
 
 2.1 **Build Parquet MCP server**
 - `tools/servers/parquet_server.py`: `analyze_schema`, `query_data`, `compute_statistics`
-- Mount at `/parquet` in gateway
+- Mount: `gateway.mount(parquet_server, namespace="parquet")`
 - Test with `Client(server)` in-memory
 
-2.2 **Build SLURM MCP server**
-- `tools/servers/slurm_server.py`: `submit_job`, `check_status`, `cancel_job`, `list_jobs`
-- Mount at `/slurm` in gateway
-- Test with `Client(server)` in-memory (mock SLURM calls)
-
-2.3 **Implement HPCExpert**
-- `experts/hpc_expert.py` with ReAct pattern
-- Tools: SLURM server tools via gateway
-- 500+ word domain-specific system prompt for HPC operations
+2.2 **Implement AnalysisExpert**
+- `experts/analysis_expert.py` with ReAct pattern
+- Tools: Parquet server tools + statistical analysis utilities
+- 500+ word domain-specific system prompt for data analysis
 - Register in agent registry with capabilities
+- Update router Literal to include "analysis"
 
-2.4 **Implement typed routing**
-- Replace keyword-matching in `registry/capability_matcher.py` with DSPy-optimizable routing
-- Use typed `Literal` output for expert selection: `Literal["data", "hpc", "none"]`
-- Main agent signature routes to correct expert based on query intent
+2.3 **Implement VisualizationExpert**
+- `experts/visualization_expert.py` with ReAct pattern
+- Tools: chart generation, data formatting, summary tables
+- Register in agent registry
+- Update router Literal to include "visualization"
+
+2.4 **Extend router for multi-expert dispatch**
+- Router Literal: `Literal["chat", "data", "analysis", "visualization", "none"]`
 - Store routing decisions in ARC for future optimization
 
 2.5 **Add context compilation pipeline to ARC**
@@ -119,24 +134,29 @@ Dependency-ordered phases for building CLIO Agent into a production-ready autono
 - Max context budget per tier (T1: 2K tokens, T2: 4K tokens)
 
 2.6 **Expert collaboration via ARC shared context**
-- HPCExpert stores cluster profile in ARC shared context
-- DataExpert reads HPC context to tailor recommendations (e.g., parallel compression)
-- Main agent passes compiled context to both experts
+- DataExpert stores dataset profile in ARC
+- AnalysisExpert reads dataset profile to tailor analysis approach
+- VisualizationExpert reads analysis results for chart selection
 
 2.7 **Dynamic tool discovery**
 - Gateway exposes `list_capabilities` tool
 - Main agent lazy-loads tool schemas (reduce context from ~47K to ~400 tokens)
 - Only inject tool descriptions for the selected expert's tools
 
-2.8 **Test coverage to 60%**
-- Tests for HPCExpert, Parquet server, SLURM server
+2.8 **End-to-end workflow demo**
+- User provides dataset → DataExpert analyzes format → AnalysisExpert runs statistics → VisualizationExpert presents results
+- Prove: 3 small specialized agents complete this cheaper than one large generalist LLM
+
+2.9 **Test coverage to 60%**
+- Tests for AnalysisExpert, VisualizationExpert, Parquet server
 - Integration tests for multi-expert routing
 - Tests for context compilation pipeline
 
 ### Success Criteria
-- [ ] 2 experts (DataExpert + HPCExpert) working with real tools
-- [ ] Main agent correctly routes data questions to DataExpert, HPC questions to HPCExpert
-- [ ] Experts share context via ARC (HPC profile informs data recommendations)
+- [ ] 3 experts (DataExpert + AnalysisExpert + VisualizationExpert) working with real tools
+- [ ] Router correctly dispatches to the right expert based on query intent
+- [ ] Experts share context via ARC (dataset profile flows through pipeline)
+- [ ] End-to-end data lifecycle: storage → analytics → visualization
 - [ ] Context compilation reduces token usage by >50% vs raw concatenation
 - [ ] `pytest tests/` passes with >60% coverage
 
@@ -159,10 +179,11 @@ Dependency-ordered phases for building CLIO Agent into a production-ready autono
 - Implement `optimizers/training_data.py` with data extraction + formatting
 - Minimum 50 examples per expert for meaningful optimization
 
-3.2 **Implement SIMBA optimizer integration**
-- `optimizers/simba_optimizer.py`: wraps DSPy SIMBA for agentic optimization
-- Optimize expert signatures (prompts, few-shot examples)
-- Optimize routing decisions (which expert for which query)
+3.2 **Selective optimization**
+- Router: optimize with MIPROv2 if routing accuracy < 90%
+- Experts: optimize with SIMBA only for experts with measurable underperformance
+- Not everything needs optimization — if it works, leave it alone
+- DSPy provides the infrastructure; using it is a tool, not a requirement
 - Statistical significance testing before deployment (p < 0.05)
 
 3.3 **Variant management**
@@ -284,7 +305,7 @@ Dependency-ordered phases for building CLIO Agent into a production-ready autono
 ### Success Criteria
 - [ ] ARC data persisted in IOWarp CTE
 - [ ] Data migrates across tiers based on access patterns
-- [ ] 4+ MCP servers working (HDF5, Parquet, SLURM, Darshan or ADIOS)
+- [ ] 4+ MCP servers working (HDF5, Parquet, Darshan, ADIOS)
 - [ ] IOWarp CTE connection failure degrades gracefully to local FS
 
 ### Dependencies
@@ -312,9 +333,9 @@ Dependency-ordered phases for building CLIO Agent into a production-ready autono
 - Agent Cards for capability advertisement
 
 6.3 **Additional experts**
+- HPCExpert: HPC job management, cluster optimization (when IOWarp integration is ready)
 - ResearchExpert: literature search, citation management
 - WorkflowExpert: pipeline orchestration (Nextflow, Parsl)
-- AnalysisExpert: statistical analysis, visualization
 
 6.4 **Nanoagent pool** (if needed)
 - Use `dspy.Parallel` for parallel sub-task execution
@@ -350,4 +371,4 @@ Dependency-ordered phases for building CLIO Agent into a production-ready autono
 
 ---
 
-**Last Updated**: 2026-02-09
+**Last Updated**: 2026-02-10
