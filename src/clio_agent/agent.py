@@ -273,44 +273,53 @@ class ClioAgent(dspy.Module):
             lsm_stats=self.lsm.get_stats(),
         )
 
-    def _get_session_context(self, question: str, session_id: str) -> str:
-        """Retrieve session context from ARC Memory.
+    def _get_session_context(
+        self, question: str, session_id: str, tier: int = 2
+    ) -> str:
+        """Retrieve compiled session context from ARC Memory.
+
+        Uses ContextCompiler pipeline (filter -> compact -> enrich -> assemble)
+        with token budgets per tier. Falls back to "No prior context" on error.
 
         Args:
             question: User's current question
             session_id: Session identifier
+            tier: Agent tier for token budget (1=router/2K, 2=expert/4K)
 
         Returns:
             Compiled context string or "No prior context"
         """
-        session_context = "No prior context"
         try:
-            arc_context = self.context_retriever.retrieve_context_for_query(
+            compiled = self.context_retriever.compile_expert_context(
                 query=question,
                 session_id=session_id,
-                max_history=5,
+                tier=tier,
             )
-
             if self.verbose:
-                print(
-                    f"[ClioAgent] Retrieved {len(arc_context.learned_patterns)} "
-                    "context patterns from ARC"
-                )
-
-            if arc_context.learned_patterns:
-                context_parts = []
-                for p in arc_context.learned_patterns:
-                    if hasattr(p, 'pattern_data') and isinstance(p.pattern_data, dict):
-                        for key, value in p.pattern_data.items():
-                            if value and isinstance(value, str):
-                                context_parts.append(f"{key}: {value}")
-                if context_parts:
-                    session_context = "; ".join(context_parts[:5])
+                print(f"[ClioAgent] Compiled context ({len(compiled)} chars, tier={tier})")
+            return compiled
         except Exception as e:
             if self.verbose:
-                print(f"[ClioAgent] Warning: Failed to retrieve context from ARC: {e}")
-
-        return session_context
+                print(f"[ClioAgent] Warning: ContextCompiler failed: {e}, falling back")
+            # Fallback to legacy retrieval
+            try:
+                arc_context = self.context_retriever.retrieve_context_for_query(
+                    query=question,
+                    session_id=session_id,
+                    max_history=5,
+                )
+                if arc_context.learned_patterns:
+                    context_parts = []
+                    for p in arc_context.learned_patterns:
+                        if hasattr(p, 'pattern_data') and isinstance(p.pattern_data, dict):
+                            for key, value in p.pattern_data.items():
+                                if value and isinstance(value, str):
+                                    context_parts.append(f"{key}: {value}")
+                    if context_parts:
+                        return "; ".join(context_parts[:5])
+            except Exception:
+                pass
+        return "No prior context"
 
     def _get_file_context(self, session_id: str) -> str:
         """Load dataset profiles from ARC for expert file context.

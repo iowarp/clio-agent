@@ -57,6 +57,7 @@ class ContextRetriever:
             memory: ARCMemory instance for accessing stored data
         """
         self.memory = memory
+        self._context_compiler = None  # Lazy init
 
         # Common English stop words to filter from keyword extraction
         self._stop_words = {
@@ -66,6 +67,34 @@ class ContextRetriever:
             "where", "why", "can", "could", "would", "should", "my", "me",
             "you", "your", "this", "these", "those"
         }
+
+    def compile_expert_context(
+        self, query: str, session_id: str, tier: int = 2
+    ) -> str:
+        """Compile context using the ContextCompiler pipeline.
+
+        Delegates to ContextCompiler for structured context compilation
+        with filter -> compact -> enrich -> assemble stages and token budgets.
+
+        Args:
+            query: User's current query
+            session_id: Session identifier
+            tier: Agent tier (1 for router, 2 for expert)
+
+        Returns:
+            Compiled context string within tier's token budget.
+
+        Examples:
+            >>> context = retriever.compile_expert_context(
+            ...     "analyze HDF5 compression", "session-1", tier=2
+            ... )
+            >>> print(context)
+        """
+        if self._context_compiler is None:
+            from clio_agent.arc.context_compiler import ContextCompiler
+
+            self._context_compiler = ContextCompiler(self.memory)
+        return self._context_compiler.compile(query, session_id, tier=tier)
 
     def retrieve_context_for_query(
         self,

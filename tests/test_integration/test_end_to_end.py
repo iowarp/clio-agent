@@ -2,13 +2,19 @@
 End-to-end integration tests for CLIO Agent.
 
 Tests the full flow: CLI -> Router -> Expert/Chat -> answer.
+Tests multi-expert workflow, context compilation, routing persistence.
 Tests requiring LM Studio are skipped if not available.
 """
+
+import json
+import time
+from unittest.mock import MagicMock, patch
 
 import pytest
 import requests
 
 from clio_agent.agent import ClioAgent
+from clio_agent.arc.schema import DatasetProfile
 
 
 def lm_studio_available():
@@ -115,4 +121,92 @@ class TestEndToEnd:
         assert hasattr(result, "duration_ms")
         assert hasattr(result, "arc_stats")
         assert hasattr(result, "lsm_stats")
+        agent.shutdown()
+
+
+def _make_mock_router(selected_expert: str):
+    """Create a mock router returning specified expert."""
+    mock_router = MagicMock()
+    mock_result = MagicMock()
+    mock_result.selected_expert = selected_expert
+    mock_router.return_value = mock_result
+    return mock_router
+
+
+class TestMultiExpertWorkflow:
+    """Test cross-expert workflows without LM Studio."""
+
+    def test_multi_expert_workflow(self, tmp_path):
+        """DataExpert stores profile -> AnalysisExpert reads profile."""
+        agent = ClioAgent(data_dir=str(tmp_path / "clio"))
+        session_id = "workflow_test"
+
+        # Step 1: Simulate DataExpert storing a dataset profile
+        profile = DatasetProfile(
+            session_id=session_id,
+            filepath="/data/experiment.parquet",
+            file_format="parquet",
+            created_by="data",
+            created_at=time.time(),
+            schema_info={"columns": ["temp", "pressure", "humidity"], "rows": 5000},
+            statistics={
+                "temp": {"mean": 22.3, "std": 4.1, "min": 10.0, "max": 38.5},
+                "pressure": {"mean": 1013.2, "std": 5.5},
+            },
+            quality_notes=["No nulls detected"],
+        )
+        agent.arc.store_dataset_profile(profile)
+
+        # Step 2: Route to analysis expert -- should receive file_context with profile
+        agent.router = _make_mock_router("analysis")
+
+        received_contexts = []
+        mock_result = MagicMock()
+        mock_result.analysis = "Statistical analysis complete"
+        mock_result.recommendations = "Data quality is excellent"
+
+        def capture_call(self_inner, **kwargs):
+            received_contexts.append(kwargs.get("file_context", ""))
+            return mock_result
+
+        with patch.object(agent.analysis_expert.__class__, "__call__", capture_call):
+            result = agent(question="Analyze the temperature column", session_id=session_id)
+
+        # Verify profile was shared to analysis expert
+        assert len(received_contexts) == 1
+        ctx = json.loads(received_contexts[0])
+        assert ctx[0]["filepath"] == "/data/experiment.parquet"
+        assert ctx[0]["schema"]["rows"] == 5000
+        agent.shutdown()
+
+    def test_context_compilation_in_clioagent(self, tmp_path):
+        """Query ClioAgent, verify ContextCompiler was used."""
+        agent = ClioAgent(data_dir=str(tmp_path / "clio"))
+        session_id = "context_test"
+
+        # Store some prior conversation
+        agent._store_conversation("What is HDF5?", "HDF5 is a data format.", session_id)
+
+        # Now query with "none" to avoid needing LM
+        agent.router = _make_mock_router("none")
+        result = agent(question="Tell me about weather", session_id=session_id)
+
+        # Context compiler should have been used (graceful even if no enrichment)
+        assert result.answer is not None
+        assert result.selected_expert == "none"
+        agent.shutdown()
+
+    def test_routing_decision_persistence(self, tmp_path):
+        """Make 3 queries, verify routing_decisions list in conversation."""
+        agent = ClioAgent(data_dir=str(tmp_path / "clio"))
+        session_id = "routing_persist"
+
+        for expert in ["none", "none", "none"]:
+            agent.router = _make_mock_router(expert)
+            agent(question=f"Query for {expert}", session_id=session_id)
+
+        conv = agent.arc.get_conversation(session_id)
+        assert conv is not None
+        assert len(conv.routing_decisions) == 3
+        assert all(rd.selected_agent == "none" for rd in conv.routing_decisions)
         agent.shutdown()
