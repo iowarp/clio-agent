@@ -2,7 +2,9 @@
 ClioAgent Tools Module
 
 FastMCP gateway and tool servers for scientific computing.
-Gateway will be initialized in Plan 02 with mount() pattern.
+The gateway composes all MCP servers under namespaced prefixes.
 """
 
-__all__: list[str] = []
+from clio_agent.tools.gateway import gateway, get_gateway
+
+__all__ = ["gateway", "get_gateway"]
