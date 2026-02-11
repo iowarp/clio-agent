@@ -23,14 +23,17 @@ class TestRouterSignature:
         """Verify RouterSignature has 'selected_expert' output field."""
         assert "selected_expert" in RouterSignature.output_fields
 
-    def test_selected_expert_is_literal(self):
-        """Verify selected_expert uses Literal['data', 'chat'] annotation."""
+    def test_selected_expert_is_literal_with_five_targets(self):
+        """Verify selected_expert uses Literal with all 5 routing targets."""
         hints = get_type_hints(RouterSignature)
         annotation = hints["selected_expert"]
-        # Extract Literal args
         args = get_args(annotation)
-        assert "data" in args
         assert "chat" in args
+        assert "data" in args
+        assert "analysis" in args
+        assert "visualization" in args
+        assert "none" in args
+        assert len(args) == 5
 
     def test_no_extra_input_fields(self):
         """Router should only have 'question' as input."""
@@ -45,6 +48,18 @@ class TestRouterSignature:
         doc = RouterSignature.__doc__
         assert doc is not None
         assert "route" in doc.lower() or "router" in doc.lower()
+
+    def test_docstring_mentions_analysis(self):
+        """Signature docstring should mention analysis routing."""
+        doc = RouterSignature.__doc__
+        assert doc is not None
+        assert "analysis" in doc.lower()
+
+    def test_docstring_mentions_visualization(self):
+        """Signature docstring should mention visualization routing."""
+        doc = RouterSignature.__doc__
+        assert doc is not None
+        assert "visualization" in doc.lower()
 
     def test_can_create_chain_of_thought(self):
         """Verify ChainOfThought can be instantiated with RouterSignature."""
@@ -80,6 +95,13 @@ class TestChatAgentSignature:
         doc = ChatAgentSignature.__doc__
         assert doc is not None
         assert "CLIO" in doc
+
+    def test_docstring_mentions_all_experts(self):
+        """ChatAgentSignature docstring should mention all 3 experts."""
+        doc = ChatAgentSignature.__doc__
+        assert doc is not None
+        assert "AnalysisExpert" in doc
+        assert "VisualizationExpert" in doc
 
     def test_can_create_chain_of_thought(self):
         """Verify ChainOfThought can be instantiated with ChatAgentSignature."""
@@ -124,6 +146,24 @@ class TestClioAgentRouting:
         assert "data" in agents
         agent.shutdown()
 
+    def test_registry_has_analysis_expert(self):
+        """Registry should have 'analysis' expert registered."""
+        from clio_agent.agent import ClioAgent
+
+        agent = ClioAgent()
+        agents = agent.registry.list_agents()
+        assert "analysis" in agents
+        agent.shutdown()
+
+    def test_registry_has_visualization_expert(self):
+        """Registry should have 'visualization' expert registered."""
+        from clio_agent.agent import ClioAgent
+
+        agent = ClioAgent()
+        agents = agent.registry.list_agents()
+        assert "visualization" in agents
+        agent.shutdown()
+
     def test_registry_data_capability_keywords(self):
         """Data expert capability should include key routing keywords."""
         from clio_agent.agent import ClioAgent
@@ -145,4 +185,26 @@ class TestClioAgentRouting:
         assert cap is not None
         assert "hdf5_analyze_file" in cap.tools
         assert "hdf5_list_datasets" in cap.tools
+        agent.shutdown()
+
+    def test_registry_analysis_capability_keywords(self):
+        """Analysis expert capability should include parquet/statistics keywords."""
+        from clio_agent.agent import ClioAgent
+
+        agent = ClioAgent()
+        cap = agent.registry.get_capabilities("analysis")
+        assert cap is not None
+        assert "parquet" in cap.keywords
+        assert "statistics" in cap.keywords
+        agent.shutdown()
+
+    def test_registry_visualization_capability_keywords(self):
+        """Visualization expert capability should include plot/chart keywords."""
+        from clio_agent.agent import ClioAgent
+
+        agent = ClioAgent()
+        cap = agent.registry.get_capabilities("visualization")
+        assert cap is not None
+        assert "plot" in cap.keywords
+        assert "chart" in cap.keywords
         agent.shutdown()

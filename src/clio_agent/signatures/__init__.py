@@ -8,6 +8,7 @@ Available Signatures:
 - ChatAgentSignature: Conversational responses for non-data queries
 - DataExpertSignature: HDF5, Parquet optimization with ReAct tools
 - AnalysisExpertSignature: Statistical analysis and data profiling
+- VisualizationExpertSignature: Scientific data visualization
 
 Example:
     >>> import dspy
@@ -27,10 +28,14 @@ from clio_agent.signatures.main_agent_sig import (
     ChatAgentSignature,
     RouterSignature,
 )
+from clio_agent.signatures.visualization_sig import (
+    VisualizationExpertSignature,
+)
 
 __all__ = [
     "RouterSignature",
     "ChatAgentSignature",
     "DataExpertSignature",
     "AnalysisExpertSignature",
+    "VisualizationExpertSignature",
 ]

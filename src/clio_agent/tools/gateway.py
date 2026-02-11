@@ -41,6 +41,56 @@ def get_gateway() -> FastMCP:
     return gateway
 
 
+def list_capabilities() -> list[dict[str, str]]:
+    """Return lightweight tool capability summaries for context compilation.
+
+    Returns compact tool summaries (~400 tokens total) instead of full schemas
+    (~47K tokens). Each entry contains tool name, first sentence of description,
+    and server prefix. Designed for injection into compiled context prompts
+    without blowing token budgets.
+
+    Returns:
+        List of dicts with name, description (first sentence), and server keys.
+
+    Example:
+        >>> caps = list_capabilities()
+        >>> for c in caps:
+        ...     print(f"{c['server']}/{c['name']}: {c['description']}")
+    """
+    import asyncio
+
+    async def _list():
+        async with Client(gateway) as client:
+            return await client.list_tools()
+
+    try:
+        tools = asyncio.run(_list())
+    except RuntimeError:
+        # If already in an event loop, create a new one in a thread
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor() as pool:
+            tools = pool.submit(lambda: asyncio.run(_list())).result()
+
+    capabilities = []
+    for t in sorted(tools, key=lambda x: x.name):
+        # Extract first sentence of description
+        desc = t.description or ""
+        first_sentence = desc.split(".")[0].strip() + "." if desc else ""
+        # Determine server from prefix
+        if t.name.startswith("hdf5_"):
+            server = "hdf5"
+        elif t.name.startswith("parquet_"):
+            server = "parquet"
+        else:
+            server = "unknown"
+        capabilities.append({
+            "name": t.name,
+            "description": first_sentence,
+            "server": server,
+        })
+    return capabilities
+
+
 async def list_gateway_tools() -> list[dict[str, Any]]:
     """List all tools available through the gateway with their metadata.
 

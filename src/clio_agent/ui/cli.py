@@ -116,8 +116,8 @@ class ClioAgentCLI:
         # Info section with proper markup
         info = """[dim]Multi-Agent System for Scientific Computing[/dim]
 
-[cyan]Experts:[/cyan] data (HDF5, compression, I/O)
-[green]Local LM:[/green] LM Studio (Router + ChatAgent + DataExpert)
+[cyan]Experts:[/cyan] data (HDF5, compression, I/O), analysis (Parquet, statistics), visualization (charts, plots)
+[green]Local LM:[/green] LM Studio (Router + ChatAgent + 3 Experts)
 
 [dim]Gnosis Research Center | IOWarp Project[/dim]
 [dim]https://iowarp.ai[/dim]"""
@@ -182,7 +182,7 @@ class ClioAgentCLI:
 
 Registered Agents: {agent_count}
 Registry Type: Capability-Based Routing
-Router: Literal["data", "chat"] via ChainOfThought
+Router: Literal["chat", "data", "analysis", "visualization", "none"] via ChainOfThought
 
 [cyan]Registered Agent IDs:[/cyan]
 {', '.join(agent_ids) if agent_ids else 'None'}

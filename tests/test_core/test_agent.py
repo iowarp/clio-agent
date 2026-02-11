@@ -56,12 +56,14 @@ class TestClioAgent:
         assert hasattr(agent, "registry")
         agent.shutdown()
 
-    def test_expert_registry_data(self):
-        """Test that DataExpert is registered."""
+    def test_expert_registry_all(self):
+        """Test that all 3 experts are registered."""
         agent = ClioAgent()
         agents = agent.registry.list_agents()
         assert "data" in agents
-        assert len(agents) == 1
+        assert "analysis" in agents
+        assert "visualization" in agents
+        assert len(agents) == 3
         agent.shutdown()
 
     def test_expert_capabilities(self):

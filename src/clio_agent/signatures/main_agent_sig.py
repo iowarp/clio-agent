@@ -19,7 +19,16 @@ class RouterSignature(dspy.Signature):
     - HDF5 files, datasets, compression, chunking
     - Data format optimization, I/O performance
     - File analysis, storage optimization
-    - Any question mentioning specific file paths or data files
+
+    Route to "analysis" when the user asks about:
+    - Parquet analysis, schema inspection, column statistics
+    - Data profiling, data quality assessment
+    - Statistical summaries, null counts, distributions of tabular data
+
+    Route to "visualization" when the user asks about:
+    - Plotting, charting, graphing data
+    - Distribution visualization, scatter plots, histograms
+    - Creating visual summaries of datasets
 
     Route to "chat" when the user:
     - Greets you (hello, hi, hey)
@@ -27,12 +36,16 @@ class RouterSignature(dspy.Signature):
     - Makes general conversation not about data files
     - Asks about CLIO itself
 
-    When in doubt, route to "chat" -- it's better to have a conversation
-    than to invoke an expert unnecessarily."""
+    Route to "none" when:
+    - The query is completely outside CLIO's capabilities
+    - The user asks about topics unrelated to scientific data
+
+    When in doubt between experts, route to "chat" -- it's better to have a
+    conversation than to invoke an expert unnecessarily."""
 
     question: str = dspy.InputField(desc="User's question or message")
-    selected_expert: Literal["data", "chat"] = dspy.OutputField(
-        desc="Route to 'data' for file/IO questions, 'chat' for everything else"
+    selected_expert: Literal["chat", "data", "analysis", "visualization", "none"] = dspy.OutputField(
+        desc="Route to 'data' for HDF5/IO, 'analysis' for Parquet/statistics, 'visualization' for plots/charts, 'chat' for conversation, 'none' for out-of-scope"
     )
 
 
@@ -41,11 +54,13 @@ class ChatAgentSignature(dspy.Signature):
     You are having a conversation with a scientist or researcher.
 
     Identity: You are CLIO (the agent). The system you run in is the CLIO Framework.
-    You help with HDF5 file optimization, compression, chunking, and I/O performance.
+    You help with scientific data management: HDF5 optimization, Parquet analysis,
+    statistical profiling, and data visualization.
 
     For identity questions: Introduce yourself as CLIO and describe your capabilities.
     For general questions: Be helpful, precise, and suggest how your data expertise
-    could help if relevant. Mention available experts (DataExpert for HDF5 analysis).
+    could help if relevant. Mention available experts: DataExpert for HDF5 analysis,
+    AnalysisExpert for Parquet/statistical profiling, VisualizationExpert for charts.
 
     Keep responses concise but informative. Be confident and direct."""
 

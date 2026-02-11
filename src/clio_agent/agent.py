@@ -6,7 +6,10 @@ Router + ChatAgent + Expert dispatch architecture.
 Architecture:
     User Query -> Router (fast SLM, Literal output)
         -> "data" -> DataExpert (ReAct + HDF5 MCP tools)
+        -> "analysis" -> AnalysisExpert (ReAct + Parquet MCP tools)
+        -> "visualization" -> VisualizationExpert (ReAct + matplotlib tools)
         -> "chat" -> ChatAgent (CoT conversational)
+        -> "none" -> Out-of-scope fallback message
 
 Usage:
     >>> from clio_agent import ClioAgent
@@ -19,6 +22,7 @@ Usage:
     >>> print(result.selected_expert)
 """
 
+import json
 import time
 import uuid
 from typing import Any, Dict, List
@@ -32,6 +36,7 @@ from clio_agent.arc.schema import (
     Conversation,
     Invocation,
     Message,
+    RoutingDecision,
 )
 from clio_agent.config import (
     RouterLMConfig,
@@ -39,7 +44,7 @@ from clio_agent.config import (
     fetch_lm_studio_models,
     select_models_for_agents,
 )
-from clio_agent.experts import DataExpert
+from clio_agent.experts import AnalysisExpert, DataExpert, VisualizationExpert
 from clio_agent.registry.registry import AgentCapability, AgentRegistry
 from clio_agent.signatures.main_agent_sig import ChatAgentSignature, RouterSignature
 
@@ -50,12 +55,17 @@ class ClioAgent(dspy.Module):
     Architecture:
         User Query -> Router (fast SLM, Literal output)
             -> "data" -> DataExpert (ReAct + HDF5 MCP tools)
+            -> "analysis" -> AnalysisExpert (ReAct + Parquet MCP tools)
+            -> "visualization" -> VisualizationExpert (ReAct + matplotlib tools)
             -> "chat" -> ChatAgent (CoT conversational)
+            -> "none" -> Out-of-scope fallback message
 
     Attributes:
         router: DSPy ChainOfThought module with RouterSignature
         chat_agent: DSPy ChainOfThought module with ChatAgentSignature
         data_expert: DataExpert instance with ReAct + MCP tools
+        analysis_expert: AnalysisExpert instance with ReAct + Parquet tools
+        visualization_expert: VisualizationExpert instance with matplotlib tools
         arc: ARC Memory instance
         context_retriever: Context retrieval module
         registry: Agent registry for discovery
@@ -65,11 +75,11 @@ class ClioAgent(dspy.Module):
         >>> agent = ClioAgent()
         >>> result = agent(question="Optimize my HDF5 file", session_id="session-123")
         >>> print(result.answer)
-        >>> print(result.selected_expert)  # "data" or "chat"
+        >>> print(result.selected_expert)  # "data", "analysis", "visualization", "chat", or "none"
     """
 
     def __init__(self, verbose: bool = False, data_dir: str = ".clio_agent"):
-        """Initialize ClioAgent with Router + ChatAgent + DataExpert.
+        """Initialize ClioAgent with Router + ChatAgent + all experts.
 
         Args:
             verbose: If True, print reasoning and decisions
@@ -104,15 +114,21 @@ class ClioAgent(dspy.Module):
         # Chat Agent: ChainOfThought for conversation
         self.chat_agent = dspy.ChainOfThought(ChatAgentSignature)
 
-        # DataExpert: ReAct with real MCP tools
+        # DataExpert: ReAct with real HDF5 MCP tools
         self.data_expert = DataExpert(arc_memory=self.arc)
 
-        # Register in registry
+        # AnalysisExpert: ReAct with real Parquet MCP tools
+        self.analysis_expert = AnalysisExpert(arc_memory=self.arc)
+
+        # VisualizationExpert: ReAct with matplotlib chart tools
+        self.visualization_expert = VisualizationExpert(arc_memory=self.arc)
+
+        # Register all experts in registry
         self.registry.register_agent(
             "data",
             self.data_expert,
             AgentCapability(
-                keywords=['hdf5', 'compression', 'chunking', 'data', 'io', 'parquet'],
+                keywords=['hdf5', 'compression', 'chunking', 'data', 'io'],
                 description='Data I/O optimization expert with HDF5 tools',
                 tools=[
                     'hdf5_list_datasets',
@@ -122,6 +138,37 @@ class ClioAgent(dspy.Module):
                     'hdf5_analyze_file',
                 ],
                 specialization='data_io'
+            )
+        )
+
+        self.registry.register_agent(
+            "analysis",
+            self.analysis_expert,
+            AgentCapability(
+                keywords=['parquet', 'statistics', 'schema', 'profiling', 'analysis', 'data quality'],
+                description='Statistical analysis and data profiling expert with Parquet tools',
+                tools=[
+                    'parquet_analyze_schema',
+                    'parquet_query_data',
+                    'parquet_compute_statistics',
+                ],
+                specialization='data_analysis'
+            )
+        )
+
+        self.registry.register_agent(
+            "visualization",
+            self.visualization_expert,
+            AgentCapability(
+                keywords=['plot', 'chart', 'histogram', 'scatter', 'visualization', 'graph'],
+                description='Scientific data visualization expert with matplotlib tools',
+                tools=[
+                    'plot_histogram',
+                    'plot_bar_chart',
+                    'plot_scatter',
+                    'plot_summary',
+                ],
+                specialization='data_visualization'
             )
         )
 
@@ -136,9 +183,10 @@ class ClioAgent(dspy.Module):
         Flow:
             1. Retrieve context from ARC Memory
             2. Route query using Router with fast model (Literal output)
-            3. Dispatch to DataExpert or ChatAgent
-            4. Store metrics + conversation in ARC
-            5. Return response with selected_expert field
+            3. Load dataset profiles from ARC for expert context
+            4. Dispatch to expert or ChatAgent
+            5. Store routing decision + metrics + conversation in ARC
+            6. Return response with selected_expert field
 
         Args:
             question: User's question or request
@@ -161,7 +209,7 @@ class ClioAgent(dspy.Module):
         try:
             with dspy.context(lm=self._router_lm):
                 routing = self.router(question=question)
-            selected = routing.selected_expert  # "data" or "chat"
+            selected = routing.selected_expert
         except Exception as e:
             if self.verbose:
                 print(f"[Router] Error: {e}, falling back to chat")
@@ -170,13 +218,28 @@ class ClioAgent(dspy.Module):
         if self.verbose:
             print(f"[Router] {question[:50]}... -> {selected}")
 
-        # Step 3: Dispatch to expert or chat agent
+        # Step 3: Load dataset profiles for file context
+        file_context = self._get_file_context(session_id)
+
+        # Step 4: Dispatch to expert or chat agent
         answer = ""
         try:
             if selected == "data":
-                result = self.data_expert(question=question, file_context="")
+                result = self.data_expert(question=question, file_context=file_context)
                 answer = f"{result.analysis}\n\nRecommendations:\n{result.recommendations}"
-            else:
+            elif selected == "analysis":
+                result = self.analysis_expert(question=question, file_context=file_context)
+                answer = f"{result.analysis}\n\nRecommendations:\n{result.recommendations}"
+            elif selected == "visualization":
+                result = self.visualization_expert(question=question, file_context=file_context)
+                answer = f"Visualization: {result.visualization_description}\n\nFile: {result.file_path}"
+            elif selected == "none":
+                answer = (
+                    "I'm CLIO, specialized in scientific data. I can help with "
+                    "HDF5/Parquet analysis, statistical analysis, and data visualization. "
+                    "Could you rephrase your question in terms of data analysis?"
+                )
+            else:  # "chat"
                 result = self.chat_agent(
                     question=question, session_context=session_context
                 )
@@ -194,10 +257,12 @@ class ClioAgent(dspy.Module):
                 "For data I/O questions, consider HDF5 compression and chunking strategies."
             )
 
-        # Step 4: Store metrics + conversation in ARC
+        # Step 5: Store conversation + routing decision + metrics in ARC
+        # Conversation must be stored first so routing decision can append to it
         duration_ms = (time.time() - start_time) * 1000
-        self._store_metrics(question, session_id, selected, duration_ms, success, error_msg)
         self._store_conversation(question, answer, session_id)
+        self._store_routing_decision(question, selected, session_id)
+        self._store_metrics(question, session_id, selected, duration_ms, success, error_msg)
 
         return dspy.Prediction(
             answer=answer,
@@ -247,6 +312,59 @@ class ClioAgent(dspy.Module):
 
         return session_context
 
+    def _get_file_context(self, session_id: str) -> str:
+        """Load dataset profiles from ARC for expert file context.
+
+        Args:
+            session_id: Session identifier
+
+        Returns:
+            JSON string of dataset profiles, or empty string if none.
+        """
+        try:
+            profiles = self.arc.get_session_profiles(session_id)
+            if profiles:
+                return json.dumps([
+                    {
+                        "filepath": p.filepath,
+                        "schema": p.schema_info,
+                        "stats": p.statistics,
+                    }
+                    for p in profiles
+                ])
+        except Exception:
+            pass
+        return ""
+
+    def _store_routing_decision(
+        self, question: str, selected: str, session_id: str
+    ) -> None:
+        """Store routing decision in the ARC conversation object.
+
+        Args:
+            question: User's query
+            selected: Selected expert/handler ID
+            session_id: Session identifier
+        """
+        try:
+            routing_decision = RoutingDecision(
+                timestamp=time.time(),
+                query=question,
+                capabilities_needed=[],
+                selected_agent=selected,
+                reasoning="Literal router",
+                confidence=1.0,
+            )
+
+            conv = self.arc.get_conversation(session_id)
+            if conv:
+                conv.routing_decisions.append(routing_decision)
+                conv.updated_at = time.time()
+                self.arc.store_conversation(conv)
+        except Exception as e:
+            if self.verbose:
+                print(f"[ClioAgent] Warning: Failed to store routing decision: {e}")
+
     def _store_metrics(
         self,
         question: str,
@@ -286,7 +404,7 @@ class ClioAgent(dspy.Module):
             session_id=session_id,
             parent_trace_id=None,
             agent_id=selected_expert,
-            tier=1 if selected_expert == "chat" else 2,
+            tier=1 if selected_expert in ("chat", "none") else 2,
             source="native",
             started_at=time.time() - duration_ms / 1000,
             completed_at=time.time(),
