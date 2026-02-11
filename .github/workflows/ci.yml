@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+    branches: [main, "v*"]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: "latest"
+      - run: uv sync --extra dev --extra api --extra optimizers
+      - run: uv run ruff check src/ tests/
+      - run: uv run ruff format --check src/ tests/
+
+  typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: "latest"
+      - run: uv sync --extra dev --extra api --extra optimizers
+      - run: uv run mypy src/clio_agent/ --ignore-missing-imports
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: "latest"
+      - run: uv sync --extra dev --extra api --extra optimizers
+      - run: uv run pytest tests/ --cov=clio_agent --cov-report=term-missing --cov-fail-under=80 -x
