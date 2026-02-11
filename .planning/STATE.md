@@ -5,23 +5,23 @@
 See: .planning/PROJECT.md (updated 2026-02-10)
 
 **Core value:** Three specialized small-model experts complete the storage-to-insight cycle cheaper and better than one large generalist LLM -- and the system gets measurably better with use.
-**Current focus:** Phase 3 complete, ready for Phase 4 - Production Hardening
+**Current focus:** Phase 4 - Production Hardening (plan 1 of 3 complete)
 
 ## Current Position
 
-Phase: 3 of 4 (Self-Improvement) -- COMPLETE
-Plan: 3 of 3 in current phase (complete)
-Status: Phase 03 complete, ready for Phase 04
-Last activity: 2026-02-11 -- Plan 03-03 executed (CLI integration + 70% coverage)
+Phase: 4 of 4 (Production Hardening)
+Plan: 1 of 3 in current phase (complete)
+Status: Plan 04-01 complete, ready for Plan 04-02
+Last activity: 2026-02-11 -- Plan 04-01 executed (multi-provider config + structured errors)
 
-Progress: [#########░] 90%
+Progress: [##########] 92%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 9
+- Total plans completed: 10
 - Average duration: 9min
-- Total execution time: 1.3 hours
+- Total execution time: 1.4 hours
 
 **By Phase:**
 
@@ -30,9 +30,10 @@ Progress: [#########░] 90%
 | 01-foundation-reset | 3/3 | 24min | 8min |
 | 02-multi-expert-pipeline | 3/3 | 28min | 9min |
 | 03-self-improvement | 3/3 | 25min | 8min |
+| 04-production-hardening | 1/3 | 8min | 8min |
 
 **Recent Trend:**
-- Last 5 plans: 7min, 12min, 6min, 6min, 13min
+- Last 5 plans: 12min, 6min, 6min, 13min, 8min
 - Trend: stable
 
 ## Accumulated Context
@@ -76,6 +77,10 @@ Recent decisions affecting current work:
 - CLI tests use patched __init__ + MockAgent to avoid LM Studio dependency
 - Variant loading wrapped in outer try/except so VariantManager import failure never breaks init
 - ConversationManager and CapabilityMatcher tested for coverage despite being unused code
+- LMProviderConfig supports 4 providers (lm_studio, ollama, openai, anthropic) via CLIO_* env vars
+- ClioError.error_type defaults to 'clio_error' for with_degradation() base-class compatibility
+- Only lm_studio provider triggers fetch_lm_studio_models; others use static config
+- User-facing errors are friendly messages; structured details go in Prediction.error_info
 
 ### Pending Todos
 
@@ -90,5 +95,5 @@ None yet.
 ## Session Continuity
 
 Last session: 2026-02-11
-Stopped at: Completed 03-03-PLAN.md (CLI integration + 70% coverage -- --tune, /metrics, /compare, /rollback, 347 tests)
+Stopped at: Completed 04-01-PLAN.md (multi-provider config + structured errors -- 398 tests, 71% coverage)
 Resume file: None
