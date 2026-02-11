@@ -25,19 +25,28 @@ def _make_mock_agent(
     session_id: str = "default",
     raise_error: Exception | None = None,
 ):
-    """Create a mock ClioAgent with controlled forward() behaviour."""
+    """Create a mock ClioAgent with controlled behaviour.
+
+    dspy.asyncify calls agent() (i.e. __call__), which on a real dspy.Module
+    delegates to forward(). We set both return_value and forward.return_value
+    so the mock works regardless of calling convention.
+    """
     agent = MagicMock()
 
+    prediction = dspy.Prediction(
+        answer=answer,
+        selected_expert=selected_expert,
+        session_id=session_id,
+        duration_ms=42.0,
+        error_info=None,
+    )
+
     if raise_error:
+        agent.side_effect = raise_error
         agent.forward.side_effect = raise_error
     else:
-        agent.forward.return_value = dspy.Prediction(
-            answer=answer,
-            selected_expert=selected_expert,
-            session_id=session_id,
-            duration_ms=42.0,
-            error_info=None,
-        )
+        agent.return_value = prediction
+        agent.forward.return_value = prediction
 
     # Registry with one expert
     registry = AgentRegistry()
@@ -152,13 +161,15 @@ class TestQueryJSON:
         assert "duration_ms" in body
 
     def test_query_with_session_id(self, client, mock_agent):
-        mock_agent.forward.return_value = dspy.Prediction(
+        prediction = dspy.Prediction(
             answer="session answer",
             selected_expert="data",
             session_id="sess-42",
             duration_ms=10.0,
             error_info=None,
         )
+        mock_agent.return_value = prediction
+        mock_agent.forward.return_value = prediction
         resp = client.post(
             "/query", json={"question": "Analyze file", "session_id": "sess-42"}
         )
@@ -180,6 +191,7 @@ class TestQueryJSON:
         assert body["error"] == "service_unavailable"
 
     def test_query_agent_raises_error(self, client, mock_agent):
+        mock_agent.side_effect = RuntimeError("LM timed out")
         mock_agent.forward.side_effect = RuntimeError("LM timed out")
         resp = client.post("/query", json={"question": "test"})
         assert resp.status_code == 500
@@ -215,6 +227,7 @@ class TestQuerySSE:
         assert "event: done" in text
 
     def test_stream_error_event(self, client, mock_agent):
+        mock_agent.side_effect = RuntimeError("boom")
         mock_agent.forward.side_effect = RuntimeError("boom")
         resp = client.post(
             "/query", json={"question": "fail me", "stream": True}
@@ -349,13 +362,15 @@ class TestAPIMain:
 
     def test_query_with_error_info(self, client, mock_agent):
         """Query returning error_info should include it in response."""
-        mock_agent.forward.return_value = dspy.Prediction(
+        prediction = dspy.Prediction(
             answer="partial result",
             selected_expert="data",
             session_id="default",
             duration_ms=100.0,
             error_info={"error": "tool_error", "message": "MCP failed"},
         )
+        mock_agent.return_value = prediction
+        mock_agent.forward.return_value = prediction
         resp = client.post("/query", json={"question": "test"})
         assert resp.status_code == 200
         body = resp.json()
@@ -375,6 +390,7 @@ class TestGlobalExceptionHandler:
         """ClioError should return 400 status."""
         from clio_agent.errors import ExpertError
 
+        mock_agent.side_effect = ExpertError("expert broke")
         mock_agent.forward.side_effect = ExpertError("expert broke")
         # The error goes through _json_response which catches all exceptions,
         # returning 500. Only the global handler converts ClioError to 400.

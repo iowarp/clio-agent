@@ -204,12 +204,10 @@ async def query(req: QueryRequest):
 
 
 async def _json_response(agent: Any, req: QueryRequest) -> JSONResponse:
-    """Execute agent.forward() and return JSON response."""
+    """Execute agent query and return JSON response."""
     try:
         start = time.time()
-        result = await asyncio.to_thread(
-            agent.forward, question=req.question, session_id=req.session_id
-        )
+        result = await asyncio.to_thread(agent, question=req.question, session_id=req.session_id)
         duration_ms = (time.time() - start) * 1000
 
         return JSONResponse(
@@ -230,9 +228,7 @@ async def _stream_response(agent: Any, req: QueryRequest):
     """SSE generator: routing -> chunk(s) -> done | error events."""
     try:
         start = time.time()
-        result = await asyncio.to_thread(
-            agent.forward, question=req.question, session_id=req.session_id
-        )
+        result = await asyncio.to_thread(agent, question=req.question, session_id=req.session_id)
         duration_ms = (time.time() - start) * 1000
 
         # Event: routing
