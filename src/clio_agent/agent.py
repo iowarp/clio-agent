@@ -101,7 +101,7 @@ class ClioAgent(dspy.Module):
             print(f"Selected expert model: {expert_model}")
 
         # Initialize experts with ARC Memory
-        self.data_expert = DataExpert(use_tools=True, arc_memory=self.arc)
+        self.data_expert = DataExpert(arc_memory=self.arc)
 
         # Register experts in registry (for /experts command)
         self.registry.register_agent(
