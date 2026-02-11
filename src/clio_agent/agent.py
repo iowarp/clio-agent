@@ -38,6 +38,7 @@ from clio_agent.arc.schema import (
     Message,
     RoutingDecision,
 )
+from clio_agent.optimizer.instrumentation import _extract_output
 from clio_agent.config import (
     RouterLMConfig,
     configure_dspy_router_lm_studio,
@@ -223,16 +224,17 @@ class ClioAgent(dspy.Module):
 
         # Step 4: Dispatch to expert or chat agent
         answer = ""
+        expert_result = None
         try:
             if selected == "data":
-                result = self.data_expert(question=question, file_context=file_context)
-                answer = f"{result.analysis}\n\nRecommendations:\n{result.recommendations}"
+                expert_result = self.data_expert(question=question, file_context=file_context)
+                answer = f"{expert_result.analysis}\n\nRecommendations:\n{expert_result.recommendations}"
             elif selected == "analysis":
-                result = self.analysis_expert(question=question, file_context=file_context)
-                answer = f"{result.analysis}\n\nRecommendations:\n{result.recommendations}"
+                expert_result = self.analysis_expert(question=question, file_context=file_context)
+                answer = f"{expert_result.analysis}\n\nRecommendations:\n{expert_result.recommendations}"
             elif selected == "visualization":
-                result = self.visualization_expert(question=question, file_context=file_context)
-                answer = f"Visualization: {result.visualization_description}\n\nFile: {result.file_path}"
+                expert_result = self.visualization_expert(question=question, file_context=file_context)
+                answer = f"Visualization: {expert_result.visualization_description}\n\nFile: {expert_result.file_path}"
             elif selected == "none":
                 answer = (
                     "I'm CLIO, specialized in scientific data. I can help with "
@@ -240,10 +242,10 @@ class ClioAgent(dspy.Module):
                     "Could you rephrase your question in terms of data analysis?"
                 )
             else:  # "chat"
-                result = self.chat_agent(
+                expert_result = self.chat_agent(
                     question=question, session_context=session_context
                 )
-                answer = result.answer
+                answer = expert_result.answer
             success = True
         except Exception as e:
             success = False
@@ -255,6 +257,20 @@ class ClioAgent(dspy.Module):
             answer = (
                 f"I encountered an error processing your question: {e}. "
                 "For data I/O questions, consider HDF5 compression and chunking strategies."
+            )
+
+        # Step 4b: Store tier-2 expert invocation for optimizer training data
+        expert_duration_ms = (time.time() - start_time) * 1000
+        if selected in ("data", "analysis", "visualization"):
+            self._store_expert_invocation(
+                question=question,
+                file_context=file_context,
+                selected=selected,
+                session_id=session_id,
+                expert_result=expert_result,
+                success=success,
+                error_msg=error_msg,
+                duration_ms=expert_duration_ms,
             )
 
         # Step 5: Store conversation + routing decision + metrics in ARC
@@ -427,6 +443,62 @@ class ClioAgent(dspy.Module):
             storage_tier="warm",
         )
         self.arc.store_invocation(invocation)
+
+    def _store_expert_invocation(
+        self,
+        question: str,
+        file_context: str,
+        selected: str,
+        session_id: str,
+        expert_result: Any,
+        success: bool,
+        error_msg: str | None,
+        duration_ms: float,
+    ) -> None:
+        """Store tier-2 expert invocation in ARC for optimizer training data.
+
+        Logs detailed input/output for each expert dispatch so the
+        TrainingSetGenerator can convert these to dspy.Examples.
+
+        Args:
+            question: User's question
+            file_context: File context passed to expert
+            selected: Selected expert ID
+            session_id: Session identifier
+            expert_result: dspy.Prediction from expert (or None on failure)
+            success: Whether the expert call succeeded
+            error_msg: Error message if failed
+            duration_ms: Expert call duration in milliseconds
+        """
+        try:
+            output_data: Dict[str, Any] = {}
+            if success and expert_result is not None:
+                output_data = _extract_output(expert_result)
+            elif error_msg:
+                output_data = {"error": str(error_msg)[:500]}
+
+            invocation = Invocation(
+                trace_id=str(uuid.uuid4()),
+                session_id=session_id,
+                parent_trace_id=None,
+                agent_id=selected,
+                tier=2,
+                source="native",
+                started_at=time.time() - duration_ms / 1000,
+                completed_at=time.time(),
+                duration_ms=duration_ms,
+                status="success" if success else "failure",
+                input={"question": question, "file_context": file_context},
+                output=output_data,
+                tools_called=[],
+                nanoagents_spawned=[],
+                performance={"success": success, "duration_ms": duration_ms},
+                storage_tier="warm",
+            )
+            self.arc.store_invocation(invocation)
+        except Exception as e:
+            if self.verbose:
+                print(f"[ClioAgent] Warning: Failed to store expert invocation: {e}")
 
     def _store_conversation(self, question: str, answer: str, session_id: str) -> None:
         """Store conversation in ARC Memory.

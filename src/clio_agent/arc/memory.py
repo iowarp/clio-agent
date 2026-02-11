@@ -29,18 +29,21 @@ from clio_agent.arc.schema import (
     Invocation,
     Metrics,
     ProceduralMemory,
+    VariantRecord,
     decode_context,
     decode_conversation,
     decode_dataset_profile,
     decode_invocation,
     decode_metrics,
     decode_procedural_memory,
+    decode_variant_record,
     encode_context,
     encode_conversation,
     encode_dataset_profile,
     encode_invocation,
     encode_metrics,
     encode_procedural_memory,
+    encode_variant_record,
 )
 
 
@@ -81,6 +84,7 @@ class ARCMemory:
 
         self._profiles_dir = self.data_dir / "profiles"
         self._procedural_dir = self.data_dir / "procedural"
+        self._variants_dir = self.data_dir / "variants"
 
         self._conv_dir.mkdir(exist_ok=True)
         self._inv_dir.mkdir(exist_ok=True)
@@ -88,6 +92,7 @@ class ARCMemory:
         self._context_dir.mkdir(exist_ok=True)
         self._profiles_dir.mkdir(exist_ok=True)
         self._procedural_dir.mkdir(exist_ok=True)
+        self._variants_dir.mkdir(exist_ok=True)
 
         # Cache layer (hot data)
         self._cache = LRUCache(capacity=cache_capacity)
@@ -921,6 +926,118 @@ class ARCMemory:
         memories.sort(key=lambda m: m.learned_at, reverse=True)
         return memories[:limit]
 
+    # ---- Optimizer: Invocation + Variant queries ----
+
+    def get_invocations_by_agent(
+        self,
+        agent_id: str,
+        status: str | None = None,
+        limit: int = 500,
+    ) -> list[Invocation]:
+        """Get invocations for a specific agent across all sessions.
+
+        Scans invocation files on disk, filters by agent_id and optionally
+        by status. Returns list sorted by started_at descending (most recent
+        first).
+
+        Args:
+            agent_id: Agent identifier (e.g., "data", "analysis", "visualization")
+            status: Optional status filter ("success", "failure", "timeout")
+            limit: Maximum number of invocations to return (default: 500)
+
+        Returns:
+            List of Invocation objects, most recent first
+
+        Examples:
+            >>> invocations = arc.get_invocations_by_agent("data", status="success")
+            >>> for inv in invocations:
+            ...     print(f"{inv.trace_id}: {inv.duration_ms}ms")
+        """
+        invocations: list[Invocation] = []
+
+        with self._lock:
+            for fpath in self._inv_dir.glob("*.msgpack"):
+                try:
+                    encoded = fpath.read_bytes()
+                    inv = decode_invocation(encoded)
+                    self._disk_reads += 1
+
+                    if inv.agent_id != agent_id:
+                        continue
+                    if status is not None and inv.status != status:
+                        continue
+
+                    invocations.append(inv)
+                except Exception:
+                    continue
+
+        # Sort by started_at descending (most recent first)
+        invocations.sort(key=lambda inv: inv.started_at, reverse=True)
+        return invocations[:limit]
+
+    def store_variant_record(self, record: VariantRecord) -> None:
+        """Store a variant record in ARC.
+
+        Persists variant metadata to cache and disk for tracking
+        optimization results and variant lifecycle.
+
+        Args:
+            record: VariantRecord object to store
+
+        Examples:
+            >>> from clio_agent.arc.schema import VariantRecord
+            >>> record = VariantRecord(
+            ...     variant_id="data_v2",
+            ...     agent_id="data",
+            ...     before_score=0.65,
+            ...     after_score=0.82,
+            ... )
+            >>> arc.store_variant_record(record)
+        """
+        with self._lock:
+            cache_key = f"variant:{record.variant_id}"
+            self._cache.put(cache_key, record)
+
+            file_path = self._variants_dir / f"{record.variant_id}.msgpack"
+            encoded = encode_variant_record(record)
+            file_path.write_bytes(encoded)
+            self._disk_writes += 1
+
+    def get_variant_records(self, agent_id: str) -> list[VariantRecord]:
+        """Get all variant records for a specific agent.
+
+        Scans variant files on disk, returns all records matching
+        the given agent_id sorted by created_at descending.
+
+        Args:
+            agent_id: Agent identifier (e.g., "data", "analysis")
+
+        Returns:
+            List of VariantRecord objects, most recent first
+
+        Examples:
+            >>> records = arc.get_variant_records("data")
+            >>> for r in records:
+            ...     print(f"{r.variant_id}: {r.before_score} -> {r.after_score}")
+        """
+        records: list[VariantRecord] = []
+
+        with self._lock:
+            for fpath in self._variants_dir.glob("*.msgpack"):
+                try:
+                    encoded = fpath.read_bytes()
+                    record = decode_variant_record(encoded)
+                    self._disk_reads += 1
+
+                    if record.agent_id == agent_id:
+                        records.append(record)
+                except Exception:
+                    continue
+
+        # Sort by created_at descending (most recent first)
+        records.sort(key=lambda r: r.created_at, reverse=True)
+        return records
+
     def clear_cache(self) -> None:
         """Clear in-memory cache (preserves disk storage).
 
@@ -961,6 +1078,8 @@ class ARCMemory:
             for file_path in self._profiles_dir.glob("*.msgpack"):
                 file_path.unlink()
             for file_path in self._procedural_dir.glob("*.msgpack"):
+                file_path.unlink()
+            for file_path in self._variants_dir.glob("*.msgpack"):
                 file_path.unlink()
 
             # Reset counters

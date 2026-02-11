@@ -573,6 +573,60 @@ class DatasetProfile(msgspec.Struct):
     metadata: Dict[str, Any] = msgspec.field(default_factory=dict)
 
 
+class VariantRecord(msgspec.Struct):
+    """Record of an optimized expert variant stored in ARC.
+
+    Tracks variant metadata including training data size, before/after
+    scores, statistical significance, and deployment state. Used by the
+    optimizer to manage variant lifecycle.
+
+    Attributes:
+        variant_id: Unique variant identifier (e.g., "data_expert_v2")
+        agent_id: Which expert this variant belongs to ("data", "analysis", "visualization")
+        created_at: Creation timestamp (Unix timestamp)
+        training_examples: Number of training examples used
+        before_score: Score before optimization
+        after_score: Score after optimization
+        improvement_delta: after_score - before_score
+        p_value: Statistical significance p-value
+        is_significant: Whether improvement passed p<0.05 test
+        is_active: Whether this is the currently deployed variant
+        file_path: Path to saved variant JSON
+        dspy_version: DSPy version used for optimization
+        metadata: Additional metadata
+
+    Example:
+        >>> import time
+        >>> record = VariantRecord(
+        ...     variant_id="data_expert_v2",
+        ...     agent_id="data",
+        ...     training_examples=50,
+        ...     before_score=0.65,
+        ...     after_score=0.82,
+        ...     improvement_delta=0.17,
+        ...     p_value=0.003,
+        ...     is_significant=True,
+        ...     is_active=True,
+        ...     file_path="variants/data_expert_v2.json",
+        ...     dspy_version="3.1.3",
+        ... )
+    """
+
+    variant_id: str
+    agent_id: str
+    created_at: float = msgspec.field(default_factory=lambda: time.time())
+    training_examples: int = 0
+    before_score: float = 0.0
+    after_score: float = 0.0
+    improvement_delta: float = 0.0
+    p_value: float = 1.0
+    is_significant: bool = False
+    is_active: bool = False
+    file_path: str = ""
+    dspy_version: str = ""
+    metadata: Dict[str, Any] = msgspec.field(default_factory=dict)
+
+
 class ProceduralMemory(msgspec.Struct):
     """Record of what worked or failed for an expert in a session.
 
@@ -768,3 +822,27 @@ def decode_procedural_memory(data: bytes) -> ProceduralMemory:
         ProceduralMemory object
     """
     return msgspec.msgpack.decode(data, type=ProceduralMemory)
+
+
+def encode_variant_record(record: VariantRecord) -> bytes:
+    """Encode VariantRecord to msgpack bytes.
+
+    Args:
+        record: VariantRecord object
+
+    Returns:
+        Msgpack-encoded bytes
+    """
+    return msgspec.msgpack.encode(record)
+
+
+def decode_variant_record(data: bytes) -> VariantRecord:
+    """Decode msgpack bytes to VariantRecord.
+
+    Args:
+        data: Msgpack-encoded bytes
+
+    Returns:
+        VariantRecord object
+    """
+    return msgspec.msgpack.decode(data, type=VariantRecord)
