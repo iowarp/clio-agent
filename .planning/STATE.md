@@ -5,23 +5,23 @@
 See: .planning/PROJECT.md (updated 2026-02-10)
 
 **Core value:** Three specialized small-model experts complete the storage-to-insight cycle cheaper and better than one large generalist LLM -- and the system gets measurably better with use.
-**Current focus:** Phase 4 - Production Hardening (plan 2 of 3 complete)
+**Current focus:** Phase 4 - Production Hardening (ALL PLANS COMPLETE)
 
 ## Current Position
 
 Phase: 4 of 4 (Production Hardening)
-Plan: 2 of 3 in current phase (complete)
-Status: Plan 04-02 complete, ready for Plan 04-03
-Last activity: 2026-02-11 -- Plan 04-02 executed (REST API + CI/CD)
+Plan: 3 of 3 in current phase (complete)
+Status: ALL PHASES COMPLETE -- Phase 4 Plan 3 executed (containers + 80% coverage)
+Last activity: 2026-02-11 -- Plan 04-03 executed (Dockerfile, Singularity, 85% coverage)
 
-Progress: [###########] 96%
+Progress: [############] 100%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 11
-- Average duration: 8min
-- Total execution time: 1.5 hours
+- Total plans completed: 12
+- Average duration: 9min
+- Total execution time: 1.9 hours
 
 **By Phase:**
 
@@ -30,11 +30,11 @@ Progress: [###########] 96%
 | 01-foundation-reset | 3/3 | 24min | 8min |
 | 02-multi-expert-pipeline | 3/3 | 28min | 9min |
 | 03-self-improvement | 3/3 | 25min | 8min |
-| 04-production-hardening | 2/3 | 12min | 6min |
+| 04-production-hardening | 3/3 | 36min | 12min |
 
 **Recent Trend:**
-- Last 5 plans: 6min, 6min, 13min, 8min, 4min
-- Trend: stable
+- Last 5 plans: 6min, 13min, 8min, 4min, 24min
+- Trend: stable (24min outlier due to 136 new test backfill)
 
 ## Accumulated Context
 
@@ -86,6 +86,9 @@ Recent decisions affecting current work:
 - Degraded health status when agent fails to initialize (never crashes on startup)
 - Global exception handler catches all unhandled exceptions, returns structured JSON (never tracebacks)
 - TestClient with overridden lifespan for mocked agent injection (no LM dependency in API tests)
+- scipy installed as runtime dependency to enable SIMBA runner statistical tests
+- Container deployment uses CLIO_* env vars for all config, no hardcoded LM URLs
+- HPC containers: Singularity bootstraps from Docker python:3.12-slim base
 
 ### Pending Todos
 
@@ -100,5 +103,5 @@ None yet.
 ## Session Continuity
 
 Last session: 2026-02-11
-Stopped at: Completed 04-02-PLAN.md (REST API + CI/CD -- 413 tests, 15 new API tests)
+Stopped at: Completed 04-03-PLAN.md (containers + 85% coverage -- 549 tests, ALL PHASES COMPLETE)
 Resume file: None
