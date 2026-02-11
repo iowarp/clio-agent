@@ -7,8 +7,6 @@ and capabilities. Does not require LM Studio (no forward() tests).
 
 from unittest.mock import Mock
 
-import pytest
-
 from clio_agent.experts.data_expert import DataExpert, MCPToolBridge
 from clio_agent.tools.gateway import gateway
 
