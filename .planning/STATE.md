@@ -5,23 +5,23 @@
 See: .planning/PROJECT.md (updated 2026-02-10)
 
 **Core value:** Three specialized small-model experts complete the storage-to-insight cycle cheaper and better than one large generalist LLM -- and the system gets measurably better with use.
-**Current focus:** Phase 3 - Self-Improvement (optimization data pipeline)
+**Current focus:** Phase 3 complete, ready for Phase 4 - Production Hardening
 
 ## Current Position
 
-Phase: 3 of 4 (Self-Improvement)
-Plan: 2 of 3 in current phase (complete)
-Status: Plan 03-02 complete, ready for Plan 03-03
-Last activity: 2026-02-11 -- Plan 03-02 executed (SIMBA runner + variant management)
+Phase: 3 of 4 (Self-Improvement) -- COMPLETE
+Plan: 3 of 3 in current phase (complete)
+Status: Phase 03 complete, ready for Phase 04
+Last activity: 2026-02-11 -- Plan 03-03 executed (CLI integration + 70% coverage)
 
-Progress: [########░░] 80%
+Progress: [#########░] 90%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 8
-- Average duration: 8min
-- Total execution time: 1.1 hours
+- Total plans completed: 9
+- Average duration: 9min
+- Total execution time: 1.3 hours
 
 **By Phase:**
 
@@ -29,10 +29,10 @@ Progress: [########░░] 80%
 |-------|-------|-------|----------|
 | 01-foundation-reset | 3/3 | 24min | 8min |
 | 02-multi-expert-pipeline | 3/3 | 28min | 9min |
-| 03-self-improvement | 2/3 | 12min | 6min |
+| 03-self-improvement | 3/3 | 25min | 8min |
 
 **Recent Trend:**
-- Last 5 plans: 9min, 7min, 12min, 6min, 6min
+- Last 5 plans: 7min, 12min, 6min, 6min, 13min
 - Trend: stable
 
 ## Accumulated Context
@@ -73,6 +73,9 @@ Recent decisions affecting current work:
 - load_variant reuses existing module instance via module.load(path) to avoid MCPToolBridge constructor side effects
 - num_threads=1 for dspy.evaluate.Evaluate to prevent MCPToolBridge threading deadlocks
 - Sequential variant IDs ({agent_id}_v{N}) with N from ARC record count
+- CLI tests use patched __init__ + MockAgent to avoid LM Studio dependency
+- Variant loading wrapped in outer try/except so VariantManager import failure never breaks init
+- ConversationManager and CapabilityMatcher tested for coverage despite being unused code
 
 ### Pending Todos
 
@@ -87,5 +90,5 @@ None yet.
 ## Session Continuity
 
 Last session: 2026-02-11
-Stopped at: Completed 03-02-PLAN.md (SIMBA runner + variant management -- SIMBARunner, VariantManager, z-test)
+Stopped at: Completed 03-03-PLAN.md (CLI integration + 70% coverage -- --tune, /metrics, /compare, /rollback, 347 tests)
 Resume file: None
