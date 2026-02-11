@@ -7,6 +7,7 @@ Available Signatures:
 - RouterSignature: Routes questions to experts via Literal typed output
 - ChatAgentSignature: Conversational responses for non-data queries
 - DataExpertSignature: HDF5, Parquet optimization with ReAct tools
+- AnalysisExpertSignature: Statistical analysis and data profiling
 
 Example:
     >>> import dspy
@@ -16,6 +17,9 @@ Example:
     >>> chat = dspy.ChainOfThought(ChatAgentSignature)
 """
 
+from clio_agent.signatures.analysis_sig import (
+    AnalysisExpertSignature,
+)
 from clio_agent.signatures.expert_sig import (
     DataExpertSignature,
 )
@@ -28,4 +32,5 @@ __all__ = [
     "RouterSignature",
     "ChatAgentSignature",
     "DataExpertSignature",
+    "AnalysisExpertSignature",
 ]

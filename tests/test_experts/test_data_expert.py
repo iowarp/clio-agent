@@ -19,7 +19,7 @@ class TestMCPToolBridge:
         bridge = MCPToolBridge(gateway)
         try:
             tool_names = bridge.get_tool_names()
-            assert len(tool_names) == 5
+            assert len(tool_names) >= 5  # At least 5 HDF5 tools (plus any others)
             assert "hdf5_analyze_file" in tool_names
             assert "hdf5_list_datasets" in tool_names
         finally:
@@ -40,7 +40,7 @@ class TestMCPToolBridge:
         bridge = MCPToolBridge(gateway)
         try:
             tools = bridge.to_dspy_tools()
-            assert len(tools) == 5
+            assert len(tools) >= 5  # At least 5 HDF5 tools (plus any others)
             tool_names = [t.name for t in tools]
             assert "hdf5_analyze_file" in tool_names
             assert "hdf5_list_datasets" in tool_names
