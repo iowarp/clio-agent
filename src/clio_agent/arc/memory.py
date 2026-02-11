@@ -25,16 +25,22 @@ from clio_agent.arc.lsm import LSMTree
 from clio_agent.arc.schema import (
     Context,
     Conversation,
+    DatasetProfile,
     Invocation,
     Metrics,
+    ProceduralMemory,
     decode_context,
     decode_conversation,
+    decode_dataset_profile,
     decode_invocation,
     decode_metrics,
+    decode_procedural_memory,
     encode_context,
     encode_conversation,
+    encode_dataset_profile,
     encode_invocation,
     encode_metrics,
+    encode_procedural_memory,
 )
 
 
@@ -73,10 +79,15 @@ class ARCMemory:
         self._metrics_dir = self.data_dir / "metrics"
         self._context_dir = self.data_dir / "context"
 
+        self._profiles_dir = self.data_dir / "profiles"
+        self._procedural_dir = self.data_dir / "procedural"
+
         self._conv_dir.mkdir(exist_ok=True)
         self._inv_dir.mkdir(exist_ok=True)
         self._metrics_dir.mkdir(exist_ok=True)
         self._context_dir.mkdir(exist_ok=True)
+        self._profiles_dir.mkdir(exist_ok=True)
+        self._procedural_dir.mkdir(exist_ok=True)
 
         # Cache layer (hot data)
         self._cache = LRUCache(capacity=cache_capacity)
@@ -686,6 +697,230 @@ class ARCMemory:
                 "inv_index_size": len(self._inv_index),
             }
 
+    # ---- Shared Context: Dataset Profiles ----
+
+    def store_dataset_profile(self, profile: DatasetProfile) -> None:
+        """Store a dataset profile for cross-expert collaboration.
+
+        Stores in cache and persists to disk so other experts can
+        retrieve the profile within the same session.
+
+        Args:
+            profile: DatasetProfile object to store
+
+        Examples:
+            >>> from clio_agent.arc.schema import DatasetProfile
+            >>> profile = DatasetProfile(
+            ...     session_id="session-1",
+            ...     filepath="/data/test.parquet",
+            ...     file_format="parquet",
+            ...     created_by="data",
+            ...     created_at=time.time(),
+            ... )
+            >>> arc.store_dataset_profile(profile)
+        """
+        import hashlib
+
+        with self._lock:
+            cache_key = f"profile:{profile.session_id}:{profile.filepath}"
+            self._cache.put(cache_key, profile)
+
+            # Persist to disk
+            key_hash = hashlib.md5(cache_key.encode()).hexdigest()[:12]
+            file_path = self._profiles_dir / f"{profile.session_id}_{key_hash}.msgpack"
+            encoded = encode_dataset_profile(profile)
+            file_path.write_bytes(encoded)
+            self._disk_writes += 1
+
+    def get_dataset_profile(
+        self, session_id: str, filepath: str
+    ) -> Optional[DatasetProfile]:
+        """Retrieve a dataset profile by session and filepath.
+
+        Checks cache first, then falls back to disk.
+
+        Args:
+            session_id: Session identifier
+            filepath: Path to the analyzed file
+
+        Returns:
+            DatasetProfile if found, None otherwise
+
+        Examples:
+            >>> profile = arc.get_dataset_profile("session-1", "/data/test.parquet")
+            >>> if profile:
+            ...     print(f"Format: {profile.file_format}")
+        """
+        cache_key = f"profile:{session_id}:{filepath}"
+
+        # Fast path: check cache
+        cached = self._cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        # Slow path: scan disk for this session
+        with self._lock:
+            pattern = f"{session_id}_*.msgpack"
+            for file_path in self._profiles_dir.glob(pattern):
+                encoded = file_path.read_bytes()
+                profile = decode_dataset_profile(encoded)
+                self._disk_reads += 1
+                if profile.filepath == filepath:
+                    # Cache for future access
+                    self._cache.put(cache_key, profile)
+                    return profile
+            return None
+
+    def get_session_profiles(self, session_id: str) -> List[DatasetProfile]:
+        """Get all dataset profiles for a session.
+
+        Returns all profiles stored by any expert in the given session,
+        enabling cross-expert collaboration.
+
+        Args:
+            session_id: Session identifier
+
+        Returns:
+            List of DatasetProfile objects for the session
+
+        Examples:
+            >>> profiles = arc.get_session_profiles("session-1")
+            >>> for p in profiles:
+            ...     print(f"{p.filepath}: {p.created_by}")
+        """
+        profiles: List[DatasetProfile] = []
+        seen_filepaths: set[str] = set()
+
+        # Check cache first for known keys
+        with self._lock:
+            if hasattr(self._cache, '_cache'):
+                for key in list(self._cache._cache.keys()):
+                    if key.startswith(f"profile:{session_id}:"):
+                        val = self._cache._cache.get(key)
+                        if val is not None and isinstance(val, DatasetProfile):
+                            profiles.append(val)
+                            seen_filepaths.add(val.filepath)
+
+            # Also scan disk for profiles not in cache
+            pattern = f"{session_id}_*.msgpack"
+            for file_path in self._profiles_dir.glob(pattern):
+                encoded = file_path.read_bytes()
+                profile = decode_dataset_profile(encoded)
+                self._disk_reads += 1
+                if profile.filepath not in seen_filepaths:
+                    profiles.append(profile)
+                    seen_filepaths.add(profile.filepath)
+                    # Cache for future access
+                    cache_key = f"profile:{session_id}:{profile.filepath}"
+                    self._cache.put(cache_key, profile)
+
+        return profiles
+
+    # ---- Shared Context: Procedural Memory ----
+
+    def store_procedural_memory(self, memory: ProceduralMemory) -> None:
+        """Store a procedural memory entry (what worked/failed).
+
+        Persists success/failure/optimization patterns so experts can
+        learn from past attempts.
+
+        Args:
+            memory: ProceduralMemory object to store
+
+        Examples:
+            >>> from clio_agent.arc.schema import ProceduralMemory
+            >>> mem = ProceduralMemory(
+            ...     session_id="session-1",
+            ...     expert_id="data",
+            ...     pattern_type="success",
+            ...     description="gzip-6 worked well",
+            ...     context={"file_type": "hdf5"},
+            ...     outcome="3x compression",
+            ... )
+            >>> arc.store_procedural_memory(mem)
+        """
+        import hashlib
+
+        with self._lock:
+            cache_key = (
+                f"proc:{memory.session_id}:{memory.expert_id}:{memory.learned_at}"
+            )
+            self._cache.put(cache_key, memory)
+
+            # Persist to disk
+            key_hash = hashlib.md5(cache_key.encode()).hexdigest()[:12]
+            file_path = (
+                self._procedural_dir
+                / f"{memory.expert_id}_{key_hash}.msgpack"
+            )
+            encoded = encode_procedural_memory(memory)
+            file_path.write_bytes(encoded)
+            self._disk_writes += 1
+
+    def get_procedural_memories(
+        self,
+        session_id: str,
+        expert_id: Optional[str] = None,
+        limit: int = 10,
+    ) -> List[ProceduralMemory]:
+        """Get procedural memories for a session, optionally filtered by expert.
+
+        Returns most recent memories first.
+
+        Args:
+            session_id: Session identifier
+            expert_id: Optional expert filter (e.g., "data", "analysis")
+            limit: Maximum number of memories to return (default: 10)
+
+        Returns:
+            List of ProceduralMemory objects, most recent first
+
+        Examples:
+            >>> memories = arc.get_procedural_memories("session-1", expert_id="data")
+            >>> for m in memories:
+            ...     print(f"[{m.pattern_type}] {m.description}")
+        """
+        memories: List[ProceduralMemory] = []
+        seen_keys: set[str] = set()
+
+        with self._lock:
+            # Scan cache
+            prefix = f"proc:{session_id}:"
+            if hasattr(self._cache, '_cache'):
+                for key in list(self._cache._cache.keys()):
+                    if key.startswith(prefix):
+                        val = self._cache._cache.get(key)
+                        if val is not None and isinstance(val, ProceduralMemory):
+                            if expert_id is None or val.expert_id == expert_id:
+                                memories.append(val)
+                                seen_keys.add(key)
+
+            # Scan disk
+            if expert_id:
+                pattern = f"{expert_id}_*.msgpack"
+            else:
+                pattern = "*.msgpack"
+
+            for file_path in self._procedural_dir.glob(pattern):
+                encoded = file_path.read_bytes()
+                mem = decode_procedural_memory(encoded)
+                self._disk_reads += 1
+
+                if mem.session_id != session_id:
+                    continue
+                if expert_id is not None and mem.expert_id != expert_id:
+                    continue
+
+                cache_key = f"proc:{mem.session_id}:{mem.expert_id}:{mem.learned_at}"
+                if cache_key not in seen_keys:
+                    memories.append(mem)
+                    seen_keys.add(cache_key)
+                    self._cache.put(cache_key, mem)
+
+        # Sort by learned_at descending (most recent first)
+        memories.sort(key=lambda m: m.learned_at, reverse=True)
+        return memories[:limit]
+
     def clear_cache(self) -> None:
         """Clear in-memory cache (preserves disk storage).
 
@@ -722,6 +957,10 @@ class ARCMemory:
             for file_path in self._metrics_dir.glob("*.msgpack"):
                 file_path.unlink()
             for file_path in self._context_dir.glob("*.msgpack"):
+                file_path.unlink()
+            for file_path in self._profiles_dir.glob("*.msgpack"):
+                file_path.unlink()
+            for file_path in self._procedural_dir.glob("*.msgpack"):
                 file_path.unlink()
 
             # Reset counters
