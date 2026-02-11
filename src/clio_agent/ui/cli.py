@@ -142,6 +142,9 @@ class ClioAgentCLI:
             ("/registry", "Show agent registry status"),
             ("/memory", "Display ARC memory statistics"),
             ("/tools", "Show available MCP tools"),
+            ("/metrics", "Show per-expert performance metrics"),
+            ("/compare <expert>", "Compare all variants for an expert"),
+            ("/rollback <expert>", "Rollback to previous variant for an expert"),
             ("/verbose", "Toggle verbose mode (show routing details)"),
             ("/clear", "Clear conversation history"),
             ("/quit, /exit", "Exit ClioAgent"),
@@ -289,6 +292,26 @@ Router: Literal["chat", "data", "analysis", "visualization", "none"] via ChainOf
             self.print_tools()
             return True
 
+        elif cmd == "/metrics":
+            self._handle_metrics()
+            return True
+
+        elif cmd.startswith("/compare"):
+            parts = cmd.split(None, 1)
+            if len(parts) < 2:
+                self.console.print("[yellow]Usage: /compare <data|analysis|visualization>[/yellow]")
+            else:
+                self._handle_compare(parts[1])
+            return True
+
+        elif cmd.startswith("/rollback"):
+            parts = cmd.split(None, 1)
+            if len(parts) < 2:
+                self.console.print("[yellow]Usage: /rollback <data|analysis|visualization>[/yellow]")
+            else:
+                self._handle_rollback(parts[1])
+            return True
+
         elif cmd == "/verbose":
             self.verbose = not self.verbose
             status = "enabled" if self.verbose else "disabled"
@@ -300,6 +323,100 @@ Router: Literal["chat", "data", "analysis", "visualization", "none"] via ChainOf
             sys.exit(0)
 
         return False
+
+    def _handle_metrics(self) -> None:
+        """Handle /metrics command -- show per-expert performance metrics."""
+        from clio_agent.optimizer.instrumentation import MetricsAggregator
+
+        aggregator = MetricsAggregator(self.agent.arc)
+
+        table = Table(title="Expert Performance Metrics", show_header=True)
+        table.add_column("Expert", style="cyan")
+        table.add_column("Success Rate", justify="right")
+        table.add_column("Avg Latency (ms)", justify="right")
+        table.add_column("Total Invocations", justify="right")
+        table.add_column("Cache Hit Rate", justify="right")
+
+        has_data = False
+        for expert_id in ["data", "analysis", "visualization"]:
+            metrics = aggregator.compute_expert_metrics(expert_id)
+            if metrics["total_invocations"] > 0:
+                has_data = True
+            table.add_row(
+                expert_id,
+                f"{metrics['success_rate']:.1%}",
+                f"{metrics['avg_latency_ms']:.1f}",
+                str(metrics["total_invocations"]),
+                f"{metrics['cache_hit_rate']:.1%}",
+            )
+
+        if has_data:
+            self.console.print(table)
+        else:
+            self.console.print("[yellow]No invocation data yet. Run some queries first.[/yellow]")
+
+    def _handle_compare(self, expert_id: str) -> None:
+        """Handle /compare command -- show variant comparison table for an expert."""
+        from clio_agent.optimizer.variants import VariantManager
+
+        vm = VariantManager(self.agent.arc)
+        variants = vm.compare(expert_id)
+
+        if not variants:
+            self.console.print(f"[yellow]No variants found for {expert_id}.[/yellow]")
+            return
+
+        import datetime
+
+        table = Table(title=f"Variants for {expert_id}", show_header=True)
+        table.add_column("Variant ID", style="cyan")
+        table.add_column("Before", justify="right")
+        table.add_column("After", justify="right")
+        table.add_column("Delta", justify="right")
+        table.add_column("p-value", justify="right")
+        table.add_column("Significant", justify="center")
+        table.add_column("Active", justify="center")
+        table.add_column("Created", justify="right")
+
+        for v in variants:
+            created = datetime.datetime.fromtimestamp(v.created_at).strftime("%Y-%m-%d %H:%M")
+            table.add_row(
+                v.variant_id,
+                f"{v.before_score:.2f}",
+                f"{v.after_score:.2f}",
+                f"{v.improvement_delta:+.2f}",
+                f"{v.p_value:.4f}",
+                "[green]Yes[/green]" if v.is_significant else "[red]No[/red]",
+                "[green]Yes[/green]" if v.is_active else "No",
+                created,
+            )
+
+        self.console.print(table)
+
+    def _handle_rollback(self, expert_id: str) -> None:
+        """Handle /rollback command -- revert to previous variant."""
+        from clio_agent.optimizer.variants import VariantManager
+
+        vm = VariantManager(self.agent.arc)
+        restored = vm.rollback(expert_id)
+
+        if restored:
+            # Load variant state into running expert
+            expert_attr = {
+                "data": "data_expert",
+                "analysis": "analysis_expert",
+                "visualization": "visualization_expert",
+            }.get(expert_id)
+
+            if expert_attr and hasattr(self.agent, expert_attr):
+                try:
+                    vm.load_variant(getattr(self.agent, expert_attr), restored)
+                except Exception as e:
+                    self.console.print(f"[yellow]Warning: Could not load variant state: {e}[/yellow]")
+
+            self.console.print(f"[green]Rolled back to variant {restored}[/green]")
+        else:
+            self.console.print("[yellow]No previous variant to rollback to.[/yellow]")
 
     def ask_question(self, question: str) -> dict:
         """Ask ClioAgent a question via Router -> Expert/Chat dispatch.
@@ -445,8 +562,98 @@ if __name__ == "__main__":
         action="store_true",
         help="Output results as JSON (use with --query)"
     )
+    parser.add_argument(
+        "--tune",
+        type=str,
+        choices=["data", "analysis", "visualization"],
+        metavar="EXPERT_ID",
+        help="Run SIMBA optimization for an expert (data|analysis|visualization)"
+    )
 
     args = parser.parse_args()
+
+    # Tune mode: SIMBA optimization for an expert
+    if args.tune:
+        from rich.console import Console as TuneConsole
+
+        tune_console = TuneConsole()
+        expert_id = args.tune
+
+        try:
+            setup_dspy(verbose=args.verbose)
+        except Exception as e:
+            tune_console.print(f"[red]Error setting up LM: {e}[/red]")
+            sys.exit(1)
+
+        agent = ClioAgent(verbose=args.verbose)
+
+        # Step 1: Generate training set
+        from clio_agent.optimizer.trainer import TrainingSetGenerator
+
+        tune_console.print(f"Generating training set for [cyan]{expert_id}[/cyan]...")
+        generator = TrainingSetGenerator(agent.arc)
+        try:
+            trainset = generator.generate(expert_id, min_examples=30)
+        except ValueError as e:
+            tune_console.print(f"[red]{e}[/red]")
+            sys.exit(1)
+
+        tune_console.print(f"Found [green]{len(trainset)}[/green] training examples")
+
+        # Step 2: Get expert module
+        expert_map = {
+            "data": agent.data_expert,
+            "analysis": agent.analysis_expert,
+            "visualization": agent.visualization_expert,
+        }
+        expert_module = expert_map[expert_id]
+
+        # Step 3: Run SIMBA optimization
+        from clio_agent.optimizer.runner import SIMBARunner
+        from clio_agent.optimizer.variants import VariantManager
+
+        variant_manager = VariantManager(agent.arc)
+        runner = SIMBARunner(agent.arc, variant_manager)
+
+        with tune_console.status("[cyan]Running SIMBA optimization...[/cyan]", spinner="dots"):
+            try:
+                result = runner.run(expert_module, expert_id, trainset)
+            except Exception as e:
+                tune_console.print(f"[red]Optimization error: {e}[/red]")
+                sys.exit(1)
+
+        # Step 4: Display results
+        results_table = Table(title="Optimization Results", show_header=True)
+        results_table.add_column("Metric", style="cyan")
+        results_table.add_column("Value", justify="right")
+
+        results_table.add_row("Before Score", f"{result['before_score']:.2f}")
+        results_table.add_row("After Score", f"{result['after_score']:.2f}")
+        results_table.add_row("Delta", f"{result['improvement_delta']:+.4f}")
+        results_table.add_row("p-value", f"{result['p_value']:.4f}")
+        results_table.add_row(
+            "Significant",
+            "[green]Yes[/green]" if result["is_significant"] else "[red]No[/red]",
+        )
+        tune_console.print(results_table)
+
+        # Step 5: Deploy prompt
+        if result["is_significant"]:
+            response = input("Deploy this variant? [y/N] ").strip().lower()
+            if response == "y":
+                variant_manager.deploy(result["variant_record"].variant_id, expert_id)
+                tune_console.print(
+                    f"[green]Variant {result['variant_record'].variant_id} deployed[/green]"
+                )
+            else:
+                tune_console.print("[yellow]Variant saved but not deployed.[/yellow]")
+        else:
+            tune_console.print(
+                "[yellow]Improvement not statistically significant. "
+                "Variant saved but not deployed.[/yellow]"
+            )
+
+        sys.exit(0)
 
     # Non-interactive mode
     if args.query:

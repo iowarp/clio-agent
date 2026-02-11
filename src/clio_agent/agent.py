@@ -25,6 +25,7 @@ Usage:
 import json
 import time
 import uuid
+from pathlib import Path
 from typing import Any, Dict, List
 
 import dspy
@@ -38,7 +39,6 @@ from clio_agent.arc.schema import (
     Message,
     RoutingDecision,
 )
-from clio_agent.optimizer.instrumentation import _extract_output
 from clio_agent.config import (
     RouterLMConfig,
     configure_dspy_router_lm_studio,
@@ -46,6 +46,7 @@ from clio_agent.config import (
     select_models_for_agents,
 )
 from clio_agent.experts import AnalysisExpert, DataExpert, VisualizationExpert
+from clio_agent.optimizer.instrumentation import _extract_output
 from clio_agent.registry.registry import AgentCapability, AgentRegistry
 from clio_agent.signatures.main_agent_sig import ChatAgentSignature, RouterSignature
 
@@ -172,6 +173,29 @@ class ClioAgent(dspy.Module):
                 specialization='data_visualization'
             )
         )
+
+        # Load active variants for each expert (if any)
+        try:
+            from clio_agent.optimizer.variants import VariantManager
+
+            vm = VariantManager(self.arc)
+            for agent_id, expert_attr in [
+                ("data", "data_expert"),
+                ("analysis", "analysis_expert"),
+                ("visualization", "visualization_expert"),
+            ]:
+                active = vm.get_active_variant(agent_id)
+                if active and Path(active.file_path).exists():
+                    try:
+                        vm.load_variant(getattr(self, expert_attr), active.variant_id)
+                        if self.verbose:
+                            print(f"[ClioAgent] Loaded variant {active.variant_id} for {agent_id}")
+                    except Exception as e:
+                        if self.verbose:
+                            print(f"[ClioAgent] Warning: Could not load variant for {agent_id}: {e}")
+        except Exception as e:
+            if self.verbose:
+                print(f"[ClioAgent] Warning: Variant loading failed: {e}")
 
         if self.verbose:
             print(f"[ClioAgent] Registered {self.registry.get_agent_count()} experts")
