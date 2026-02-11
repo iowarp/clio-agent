@@ -40,10 +40,14 @@ from clio_agent.arc.schema import (
     RoutingDecision,
 )
 from clio_agent.config import (
-    RouterLMConfig,
-    configure_dspy_router_lm_studio,
+    create_router_lm,
     fetch_lm_studio_models,
+    load_config_from_env,
     select_models_for_agents,
+)
+from clio_agent.errors import (
+    ExpertError,
+    RoutingError,
 )
 from clio_agent.experts import AnalysisExpert, DataExpert, VisualizationExpert
 from clio_agent.optimizer.instrumentation import _extract_output
@@ -100,17 +104,25 @@ class ClioAgent(dspy.Module):
         # Initialize Agent Registry (for discovery, not routing)
         self.registry = AgentRegistry()
 
-        # Fetch available models from LM Studio
-        available_models = fetch_lm_studio_models()
-        main_model, expert_model = select_models_for_agents(available_models)
+        # Load provider-agnostic config from environment
+        self._provider_config = load_config_from_env()
+
+        if self._provider_config.provider == "lm_studio":
+            # LM Studio: fetch available models for dynamic selection
+            available_models = fetch_lm_studio_models()
+            main_model, expert_model = select_models_for_agents(available_models)
+            self._provider_config.model = main_model
+        else:
+            main_model = self._provider_config.model
+            expert_model = self._provider_config.model
 
         if self.verbose:
+            print(f"[ClioAgent] Provider: {self._provider_config.provider}")
             print(f"[ClioAgent] Main/Router model: {main_model}")
             print(f"[ClioAgent] Expert model: {expert_model}")
 
         # Router: ChainOfThought with Literal output on fast model
-        router_config = RouterLMConfig(model=main_model)
-        self._router_lm = configure_dspy_router_lm_studio(router_config)
+        self._router_lm = create_router_lm(self._provider_config)
         self.router = dspy.ChainOfThought(RouterSignature)
 
         # Chat Agent: ChainOfThought for conversation
@@ -237,7 +249,11 @@ class ClioAgent(dspy.Module):
             selected = routing.selected_expert
         except Exception as e:
             if self.verbose:
-                print(f"[Router] Error: {e}, falling back to chat")
+                routing_err = RoutingError(
+                    message=f"Router failed, falling back to chat: {e}",
+                    details={"original_error": str(e)},
+                )
+                print(f"[Router] {routing_err.to_dict()}")
             selected = "chat"
 
         if self.verbose:
@@ -249,6 +265,7 @@ class ClioAgent(dspy.Module):
         # Step 4: Dispatch to expert or chat agent
         answer = ""
         expert_result = None
+        error_info = None
         try:
             if selected == "data":
                 expert_result = self.data_expert(question=question, file_context=file_context)
@@ -273,14 +290,17 @@ class ClioAgent(dspy.Module):
             success = True
         except Exception as e:
             success = False
+            expert_err = ExpertError(
+                message=f"The {selected} expert encountered an issue processing your request.",
+                details={"expert": selected, "original_error": str(e)},
+            )
+            error_info = expert_err.to_dict()
             error_msg = str(e)
             if self.verbose:
                 print(f"[ClioAgent] Error in {selected} dispatch: {e}")
-                import traceback
-                traceback.print_exc()
             answer = (
-                f"I encountered an error processing your question: {e}. "
-                "For data I/O questions, consider HDF5 compression and chunking strategies."
+                f"I encountered an issue with the {selected} expert. "
+                "Please try rephrasing your question or try again later."
             )
 
         # Step 4b: Store tier-2 expert invocation for optimizer training data
@@ -311,6 +331,7 @@ class ClioAgent(dspy.Module):
             duration_ms=duration_ms,
             arc_stats=self.arc.get_cache_stats(),
             lsm_stats=self.lsm.get_stats(),
+            error_info=error_info,
         )
 
     def _get_session_context(

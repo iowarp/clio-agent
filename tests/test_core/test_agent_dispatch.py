@@ -104,7 +104,7 @@ class TestForwardDispatch:
         assert "specialized in scientific data" in result.answer
 
     def test_expert_failure_logs_status(self, agent):
-        """Test that expert failure results in error answer."""
+        """Test that expert failure results in structured error."""
         mock_prediction = MagicMock()
         mock_prediction.selected_expert = "data"
         agent.router = MagicMock(return_value=mock_prediction)
@@ -114,7 +114,12 @@ class TestForwardDispatch:
         result = agent.forward(question="Analyze HDF5", session_id="test_session")
 
         assert result.selected_expert == "data"
-        assert "error" in result.answer.lower()
+        # User-facing answer should be friendly (no raw traceback)
+        assert "issue" in result.answer.lower()
+        # Structured error_info should be present
+        assert result.error_info is not None
+        assert result.error_info["error"] == "expert_error"
+        assert result.error_info["details"]["expert"] == "data"
 
     def test_router_failure_falls_back_to_chat(self, agent):
         """Test that router failure falls back to chat."""
