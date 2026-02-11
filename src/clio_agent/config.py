@@ -11,19 +11,218 @@
 """
 ClioAgent Configuration Module
 
-Centralized configuration for LM Studio provider.
-Supports local LLM provider for development.
+Multi-provider LM configuration with environment-based settings.
+Supports LM Studio, Ollama, OpenAI, and Anthropic providers.
 
 Usage:
     >>> from clio_agent.config import setup_dspy
     >>> lm = setup_dspy()
+
+    >>> # Or with environment-based config
+    >>> from clio_agent.config import load_config_from_env, create_lm
+    >>> config = load_config_from_env()
+    >>> lm = create_lm(config)
 """
 
+import os
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import List, Literal, Optional
 
 import dspy
 import requests
+
+# ============================================================================
+# PROVIDER DEFAULTS
+# ============================================================================
+
+PROVIDER_DEFAULTS: dict[str, dict[str, str]] = {
+    "lm_studio": {
+        "api_base": "http://127.0.0.1:1234/v1",
+        "model": "ibm/granite-4-h-tiny",
+        "api_key": "lm-studio",
+    },
+    "ollama": {
+        "api_base": "http://127.0.0.1:11434/v1",
+        "model": "granite3.1-dense:8b",
+        "api_key": "ollama",
+    },
+    "openai": {
+        "api_base": "https://api.openai.com/v1",
+        "model": "gpt-4o-mini",
+        "api_key": "",  # Must come from OPENAI_API_KEY env
+    },
+    "anthropic": {
+        "api_base": "https://api.anthropic.com/v1",
+        "model": "claude-sonnet-4-20250514",
+        "api_key": "",  # Must come from ANTHROPIC_API_KEY env
+    },
+}
+
+# Environment variable names for cloud provider API keys
+_CLOUD_API_KEY_ENV: dict[str, str] = {
+    "openai": "OPENAI_API_KEY",
+    "anthropic": "ANTHROPIC_API_KEY",
+}
+
+
+# ============================================================================
+# MULTI-PROVIDER CONFIGURATION
+# ============================================================================
+
+@dataclass
+class LMProviderConfig:
+    """Multi-provider LM configuration.
+
+    Supports lm_studio, ollama, openai, and anthropic providers.
+    Defaults are loaded from PROVIDER_DEFAULTS based on provider name.
+
+    Attributes:
+        provider: LM provider name
+        api_base: API base URL
+        model: Model identifier
+        api_key: API key
+        temperature: Sampling temperature
+        max_tokens: Maximum tokens per response
+        router_temperature: Lower temperature for deterministic routing
+        environment: Deployment environment (dev/staging/production)
+    """
+
+    provider: Literal["lm_studio", "ollama", "openai", "anthropic"] = "lm_studio"
+    api_base: str = ""
+    model: str = ""
+    api_key: str = ""
+    temperature: float = 1.0
+    max_tokens: int = 32000
+    router_temperature: float = 0.3
+    environment: str = "dev"
+
+    def __post_init__(self) -> None:
+        """Fill empty fields from provider defaults."""
+        defaults = PROVIDER_DEFAULTS.get(self.provider, PROVIDER_DEFAULTS["lm_studio"])
+        if not self.api_base:
+            self.api_base = defaults["api_base"]
+        if not self.model:
+            self.model = defaults["model"]
+        if not self.api_key:
+            # For cloud providers, try environment variable
+            env_var = _CLOUD_API_KEY_ENV.get(self.provider)
+            if env_var:
+                self.api_key = os.environ.get(env_var, "")
+            else:
+                self.api_key = defaults["api_key"]
+
+
+def load_config_from_env() -> LMProviderConfig:
+    """Load LM configuration from environment variables.
+
+    Reads CLIO_* environment variables with fallback to provider defaults.
+
+    Environment variables:
+        CLIO_LM_PROVIDER: Provider name (lm_studio, ollama, openai, anthropic)
+        CLIO_LM_API_BASE: Override API base URL
+        CLIO_LM_MODEL: Override model identifier
+        CLIO_LM_API_KEY: Override API key
+        CLIO_LM_TEMPERATURE: Override temperature
+        CLIO_LM_MAX_TOKENS: Override max tokens
+        CLIO_ENVIRONMENT: Deployment environment (dev/staging/production)
+
+    Returns:
+        LMProviderConfig with env-based settings
+
+    Raises:
+        ValueError: If cloud provider is selected without API key
+    """
+    provider = os.environ.get("CLIO_LM_PROVIDER", "lm_studio")
+    api_base = os.environ.get("CLIO_LM_API_BASE", "")
+    model = os.environ.get("CLIO_LM_MODEL", "")
+    api_key = os.environ.get("CLIO_LM_API_KEY", "")
+    environment = os.environ.get("CLIO_ENVIRONMENT", "dev")
+
+    # Parse numeric env vars
+    temperature_str = os.environ.get("CLIO_LM_TEMPERATURE", "")
+    max_tokens_str = os.environ.get("CLIO_LM_MAX_TOKENS", "")
+
+    kwargs: dict = {
+        "provider": provider,
+        "environment": environment,
+    }
+    if api_base:
+        kwargs["api_base"] = api_base
+    if model:
+        kwargs["model"] = model
+    if api_key:
+        kwargs["api_key"] = api_key
+    if temperature_str:
+        kwargs["temperature"] = float(temperature_str)
+    if max_tokens_str:
+        kwargs["max_tokens"] = int(max_tokens_str)
+
+    config = LMProviderConfig(**kwargs)
+
+    # Validate cloud providers have API keys
+    if config.provider in ("openai", "anthropic") and not config.api_key:
+        env_var = _CLOUD_API_KEY_ENV[config.provider]
+        raise ValueError(
+            f"Cloud provider '{config.provider}' requires an API key. "
+            f"Set CLIO_LM_API_KEY or {env_var} environment variable."
+        )
+
+    return config
+
+
+def create_lm(config: LMProviderConfig) -> dspy.LM:
+    """Create a dspy.LM instance from provider config.
+
+    For openai/anthropic, uses the provider prefix (e.g., 'openai/gpt-4o-mini').
+    For lm_studio/ollama, uses 'openai/{model}' with custom api_base.
+
+    Args:
+        config: LM provider configuration
+
+    Returns:
+        Configured dspy.LM instance
+    """
+    if config.provider in ("openai", "anthropic"):
+        model_name = f"{config.provider}/{config.model}"
+    else:
+        # lm_studio and ollama are OpenAI-compatible
+        model_name = f"openai/{config.model}"
+
+    return dspy.LM(
+        model=model_name,
+        api_base=config.api_base,
+        api_key=config.api_key,
+        temperature=config.temperature,
+        max_tokens=config.max_tokens,
+        model_type="chat",
+    )
+
+
+def create_router_lm(config: LMProviderConfig) -> dspy.LM:
+    """Create a lower-temperature LM for deterministic routing.
+
+    Uses config.router_temperature instead of config.temperature.
+
+    Args:
+        config: LM provider configuration
+
+    Returns:
+        Configured dspy.LM instance with lower temperature
+    """
+    if config.provider in ("openai", "anthropic"):
+        model_name = f"{config.provider}/{config.model}"
+    else:
+        model_name = f"openai/{config.model}"
+
+    return dspy.LM(
+        model=model_name,
+        api_base=config.api_base,
+        api_key=config.api_key,
+        temperature=config.router_temperature,
+        max_tokens=config.max_tokens,
+        model_type="chat",
+    )
+
 
 # ============================================================================
 # LM STUDIO MODEL FETCHING
@@ -51,18 +250,18 @@ def fetch_lm_studio_models(base_url: str = "http://127.0.0.1:1234", max_retries:
             if models:
                 return models
             else:
-                print(f"⏳ Waiting for models to load in LM Studio... (attempt {attempt + 1}/{max_retries})")
+                print(f"Waiting for models to load in LM Studio... (attempt {attempt + 1}/{max_retries})")
                 time.sleep(retry_delay)
         except requests.exceptions.ConnectionError:
             if attempt == 0:
-                print(f"⏳ Connecting to LM Studio at {base_url}...")
+                print(f"Connecting to LM Studio at {base_url}...")
             print(f"   Retry {attempt + 1}/{max_retries}... (waiting {retry_delay}s)")
             time.sleep(retry_delay)
         except Exception as e:
             print(f"Error fetching models: {e}")
             return []
 
-    print(f"❌ Could not connect to LM Studio after {max_retries} attempts")
+    print(f"Could not connect to LM Studio after {max_retries} attempts")
     print(f"   Please ensure LM Studio is running at {base_url}")
     print("   and a model is loaded")
     return []
@@ -86,7 +285,7 @@ def select_models_for_agents(models: List[str]) -> tuple[str, str]:
     chat_models = [m for m in models if "embedding" not in m.lower()]
 
     if not chat_models:
-        print("⚠️ No chat/instruct models found. Using available models as fallback.")
+        print("No chat/instruct models found. Using available models as fallback.")
         chat_models = models
 
     # Strategy 1: Look for granite chat models
@@ -118,7 +317,7 @@ def select_models_for_agents(models: List[str]) -> tuple[str, str]:
     if expert_model is None:
         expert_model = "ibm/granite-4-h-tiny"
 
-    print("✓ Selected models:")
+    print("Selected models:")
     print(f"  Main/Router: {main_model}")
     print(f"  Expert/Reasoner: {expert_model}")
 
@@ -126,9 +325,7 @@ def select_models_for_agents(models: List[str]) -> tuple[str, str]:
 
 
 # ============================================================================
-# CONFIGURATION CLASSES
-# ============================================================================
-# CONFIGURATION CLASSES
+# BACKWARD-COMPATIBLE CONFIGURATION CLASSES
 # ============================================================================
 
 @dataclass
@@ -164,10 +361,8 @@ class ReasonerLMConfig:
     api_key: str = "lm-studio"
 
 
-
-
 # ============================================================================
-# DSPY SETUP FUNCTIONS
+# BACKWARD-COMPATIBLE DSPY SETUP FUNCTIONS
 # ============================================================================
 
 def configure_dspy_lm_studio(config: Optional[LMStudioConfig] = None) -> dspy.LM:
@@ -188,7 +383,6 @@ def configure_dspy_lm_studio(config: Optional[LMStudioConfig] = None) -> dspy.LM
     cfg = config or LMStudioConfig()
 
     # Use openai/ prefix - LM Studio is OpenAI-compatible
-    # LiteLLM's lm_studio/ provider has response parsing issues
     model_name = f"openai/{cfg.model}"
 
     lm = dspy.LM(
@@ -233,15 +427,14 @@ def configure_dspy_reasoner_lm_studio(config: Optional[ReasonerLMConfig] = None)
     )
 
 
-
-
-
-
 def setup_dspy(
     model: Optional[str] = None,
     verbose: bool = True
 ) -> dspy.LM:
-    """Setup DSPy with LM Studio provider.
+    """Setup DSPy with configured LM provider.
+
+    Internally uses load_config_from_env() + create_lm() for provider-agnostic setup.
+    Falls back to LM Studio defaults if no environment variables are set.
 
     Args:
         model: Optional model override
@@ -251,32 +444,34 @@ def setup_dspy(
         Configured DSPy LM instance
 
     Example:
-        >>> # Use LM Studio with default model
+        >>> # Use default provider (LM Studio or env-configured)
         >>> lm = setup_dspy()
 
-        >>> # Use LM Studio with custom model
+        >>> # Use with model override
         >>> lm = setup_dspy(model="mistral:7b")
     """
-    # Configure LM Studio with error handling
     try:
-        config = LMStudioConfig()
+        config = load_config_from_env()
         if model:
             config.model = model
-        lm = configure_dspy_lm_studio(config)
+
+        lm = create_lm(config)
 
         if verbose:
-            print("✓ LM Studio configured")
-            print(f"  URL: {config.base_url}")
+            print(f"LM configured ({config.provider})")
+            print(f"  API Base: {config.api_base}")
             print(f"  Model: {config.model}")
             print(f"  Temperature: {config.temperature}")
             print(f"  Max Tokens: {config.max_tokens}")
 
+    except ValueError:
+        # Config validation error (e.g., missing API key)
+        raise
     except Exception as e:
-        print(f"\n❌ Failed to configure LM Studio: {e}")
+        print(f"\nFailed to configure LM: {e}")
         print("\nTroubleshooting:")
-        print("  • Ensure LM Studio is running")
-        print(f"  • Check server is accessible at {LMStudioConfig().base_url}")
-        print("  • Verify model is loaded in LM Studio")
+        print("  - Ensure your LM provider is running")
+        print("  - Check CLIO_LM_* environment variables")
         raise
 
     # Configure DSPy globally with ChatAdapter for ReAct compatibility
@@ -294,8 +489,8 @@ if __name__ == "__main__":
     print("=" * 60)
 
     try:
-        # Test LM Studio configuration
-        print("\n1. Testing LM Studio configuration...")
+        # Test configuration
+        print("\n1. Testing LM configuration...")
         lm = setup_dspy()
 
         # Simple test prediction
@@ -304,10 +499,10 @@ if __name__ == "__main__":
         result = predictor(question="What is 2+2?")
         print(f"Answer: {result.answer}")
 
-        print("\n✅ Configuration working!")
+        print("\nConfiguration working!")
 
     except Exception as e:
-        print(f"\n❌ Error: {e}")
+        print(f"\nError: {e}")
         print("\nTroubleshooting:")
-        print("- Ensure LM Studio is running at configured URL")
-        print("- Check that model is loaded in LM Studio")
+        print("- Ensure LM provider is running")
+        print("- Check CLIO_LM_* environment variables")
