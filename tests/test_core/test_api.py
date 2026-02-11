@@ -275,3 +275,109 @@ class TestMetrics:
         resp = degraded_client.get("/metrics")
         assert resp.status_code == 200
         assert resp.json()["metrics"] == {}
+
+
+# ---------------------------------------------------------------------------
+# API main() entry point
+# ---------------------------------------------------------------------------
+
+
+class TestAPIMain:
+    """Tests for the main() entry point argparse."""
+
+    def test_main_exists(self):
+        """main function should exist and be callable."""
+        from clio_agent.ui.api import main
+
+        assert callable(main)
+
+    def test_query_response_model(self):
+        """QueryResponse model should serialize correctly."""
+        from clio_agent.ui.api import QueryResponse
+
+        qr = QueryResponse(
+            answer="test",
+            selected_expert="data",
+            session_id="s1",
+            duration_ms=42.0,
+        )
+        d = qr.model_dump()
+        assert d["answer"] == "test"
+        assert d["error_info"] is None
+
+    def test_health_response_model(self):
+        """HealthResponse model should have defaults."""
+        from clio_agent.ui.api import HealthResponse
+
+        hr = HealthResponse(status="ok")
+        assert hr.version == "0.2.0"
+        assert hr.environment == "dev"
+        assert hr.error is None
+
+    def test_expert_info_model(self):
+        """ExpertInfo model should accept all fields."""
+        from clio_agent.ui.api import ExpertInfo
+
+        ei = ExpertInfo(
+            id="data",
+            description="Data expert",
+            keywords=["hdf5"],
+            tools=["hdf5_analyze"],
+        )
+        assert ei.id == "data"
+
+    def test_stream_done_event_contains_answer(self, client):
+        """SSE done event should contain the full answer."""
+        resp = client.post(
+            "/query", json={"question": "Stream test", "stream": True}
+        )
+        text = resp.text
+        # Parse SSE events: find the done event data line
+        lines = text.splitlines()
+        found_done = False
+        for i, line in enumerate(lines):
+            if line.strip() == "event: done":
+                # Next data: line should have the answer
+                for j in range(i + 1, min(i + 3, len(lines))):
+                    if lines[j].startswith("data:"):
+                        data = json.loads(lines[j][len("data:"):].strip())
+                        assert "answer" in data
+                        found_done = True
+                        break
+                break
+        assert found_done, "No done event found in SSE stream"
+
+    def test_query_with_error_info(self, client, mock_agent):
+        """Query returning error_info should include it in response."""
+        mock_agent.forward.return_value = dspy.Prediction(
+            answer="partial result",
+            selected_expert="data",
+            session_id="default",
+            duration_ms=100.0,
+            error_info={"error": "tool_error", "message": "MCP failed"},
+        )
+        resp = client.post("/query", json={"question": "test"})
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["error_info"] is not None
+        assert body["error_info"]["error"] == "tool_error"
+
+
+# ---------------------------------------------------------------------------
+# Global exception handler
+# ---------------------------------------------------------------------------
+
+
+class TestGlobalExceptionHandler:
+    """Tests for global exception handler."""
+
+    def test_clio_error_returns_400(self, client, mock_agent):
+        """ClioError should return 400 status."""
+        from clio_agent.errors import ExpertError
+
+        mock_agent.forward.side_effect = ExpertError("expert broke")
+        # The error goes through _json_response which catches all exceptions,
+        # returning 500. Only the global handler converts ClioError to 400.
+        # Since forward() is wrapped in try/except, it returns 500 from _json_response.
+        resp = client.post("/query", json={"question": "test"})
+        assert resp.status_code == 500

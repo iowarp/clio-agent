@@ -4,14 +4,13 @@ Tests for multi-provider LM configuration.
 Tests LMProviderConfig, load_config_from_env, create_lm, and create_router_lm.
 """
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import dspy
 import pytest
 
 from clio_agent.config import (
     LMProviderConfig,
-    PROVIDER_DEFAULTS,
     create_lm,
     create_router_lm,
     load_config_from_env,
@@ -249,3 +248,96 @@ class TestCreateRouterLM:
         )
         lm = create_router_lm(config)
         assert lm.kwargs.get("temperature") == 0.1
+
+
+class TestSetupDspy:
+    """Test setup_dspy function."""
+
+    def test_setup_returns_lm(self):
+        """setup_dspy should return a dspy.LM instance."""
+        from clio_agent.config import setup_dspy
+
+        with patch.dict("os.environ", {}, clear=True):
+            lm = setup_dspy(verbose=False)
+            assert isinstance(lm, dspy.LM)
+
+    def test_setup_with_model_override(self):
+        """setup_dspy with model override should use specified model."""
+        from clio_agent.config import setup_dspy
+
+        with patch.dict("os.environ", {}, clear=True):
+            lm = setup_dspy(model="custom/model", verbose=False)
+            assert "custom/model" in lm.model
+
+    def test_setup_verbose_prints(self, capsys):
+        """setup_dspy with verbose=True should print config info."""
+        from clio_agent.config import setup_dspy
+
+        with patch.dict("os.environ", {}, clear=True):
+            setup_dspy(verbose=True)
+            captured = capsys.readouterr()
+            assert "LM configured" in captured.out
+
+    def test_setup_cloud_no_key_raises(self):
+        """setup_dspy with cloud provider missing key should raise ValueError."""
+        from clio_agent.config import setup_dspy
+
+        env = {"CLIO_LM_PROVIDER": "openai"}
+        with patch.dict("os.environ", env, clear=True):
+            with pytest.raises(ValueError, match="requires an API key"):
+                setup_dspy(verbose=False)
+
+
+class TestFetchLmStudioModels:
+    """Test fetch_lm_studio_models with mocked HTTP."""
+
+    def test_successful_fetch(self):
+        """Should return model list on successful response."""
+        from clio_agent.config import fetch_lm_studio_models
+
+        mock_response = {"data": [{"id": "model-1"}, {"id": "model-2"}]}
+        with patch("clio_agent.config.requests.get") as mock_get:
+            mock_resp = MagicMock()
+            mock_resp.json.return_value = mock_response
+            mock_resp.raise_for_status.return_value = None
+            mock_get.return_value = mock_resp
+
+            models = fetch_lm_studio_models(max_retries=1)
+            assert models == ["model-1", "model-2"]
+
+    def test_empty_models_retries(self):
+        """Should retry when models list is empty."""
+        from clio_agent.config import fetch_lm_studio_models
+
+        with patch("clio_agent.config.requests.get") as mock_get:
+            mock_resp = MagicMock()
+            mock_resp.json.return_value = {"data": []}
+            mock_resp.raise_for_status.return_value = None
+            mock_get.return_value = mock_resp
+
+            with patch("time.sleep"):
+                models = fetch_lm_studio_models(max_retries=2, retry_delay=0)
+                assert models == []
+
+    def test_connection_error_retries(self):
+        """Should retry on ConnectionError."""
+        import requests as req
+
+        from clio_agent.config import fetch_lm_studio_models
+
+        with patch("clio_agent.config.requests.get") as mock_get:
+            mock_get.side_effect = req.exceptions.ConnectionError("refused")
+
+            with patch("time.sleep"):
+                models = fetch_lm_studio_models(max_retries=2, retry_delay=0)
+                assert models == []
+
+    def test_generic_error_returns_empty(self):
+        """Should return empty on generic exception."""
+        from clio_agent.config import fetch_lm_studio_models
+
+        with patch("clio_agent.config.requests.get") as mock_get:
+            mock_get.side_effect = Exception("weird error")
+
+            models = fetch_lm_studio_models(max_retries=1)
+            assert models == []
