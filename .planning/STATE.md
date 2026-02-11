@@ -10,18 +10,18 @@ See: .planning/PROJECT.md (updated 2026-02-10)
 ## Current Position
 
 Phase: 3 of 4 (Self-Improvement)
-Plan: 1 of 3 in current phase (complete)
-Status: Plan 03-01 complete, ready for Plan 03-02
-Last activity: 2026-02-11 -- Plan 03-01 executed (optimization data pipeline)
+Plan: 2 of 3 in current phase (complete)
+Status: Plan 03-02 complete, ready for Plan 03-03
+Last activity: 2026-02-11 -- Plan 03-02 executed (SIMBA runner + variant management)
 
-Progress: [#######░░░] 70%
+Progress: [########░░] 80%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 7
+- Total plans completed: 8
 - Average duration: 8min
-- Total execution time: 1.0 hours
+- Total execution time: 1.1 hours
 
 **By Phase:**
 
@@ -29,10 +29,10 @@ Progress: [#######░░░] 70%
 |-------|-------|-------|----------|
 | 01-foundation-reset | 3/3 | 24min | 8min |
 | 02-multi-expert-pipeline | 3/3 | 28min | 9min |
-| 03-self-improvement | 1/3 | 6min | 6min |
+| 03-self-improvement | 2/3 | 12min | 6min |
 
 **Recent Trend:**
-- Last 5 plans: 10min, 9min, 7min, 12min, 6min
+- Last 5 plans: 9min, 7min, 12min, 6min, 6min
 - Trend: stable
 
 ## Accumulated Context
@@ -69,6 +69,10 @@ Recent decisions affecting current work:
 - Output fields truncated to 500 chars in instrumented invocations to prevent ARC bloat
 - VisualizationExpert metric mapping: visualization_description -> analysis weight, file_path -> recommendations weight
 - Error keywords as frozenset for O(1) membership testing in clio_expert_metric
+- Cast scipy numpy types to native Python types to prevent msgspec serialization errors
+- load_variant reuses existing module instance via module.load(path) to avoid MCPToolBridge constructor side effects
+- num_threads=1 for dspy.evaluate.Evaluate to prevent MCPToolBridge threading deadlocks
+- Sequential variant IDs ({agent_id}_v{N}) with N from ARC record count
 
 ### Pending Todos
 
@@ -83,5 +87,5 @@ None yet.
 ## Session Continuity
 
 Last session: 2026-02-11
-Stopped at: Completed 03-01-PLAN.md (optimization data pipeline -- instrumentation + training set generator + metric)
+Stopped at: Completed 03-02-PLAN.md (SIMBA runner + variant management -- SIMBARunner, VariantManager, z-test)
 Resume file: None
