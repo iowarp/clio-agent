@@ -5,23 +5,23 @@
 See: .planning/PROJECT.md (updated 2026-02-10)
 
 **Core value:** Three specialized small-model experts complete the storage-to-insight cycle cheaper and better than one large generalist LLM -- and the system gets measurably better with use.
-**Current focus:** Phase 4 - Production Hardening (plan 1 of 3 complete)
+**Current focus:** Phase 4 - Production Hardening (plan 2 of 3 complete)
 
 ## Current Position
 
 Phase: 4 of 4 (Production Hardening)
-Plan: 1 of 3 in current phase (complete)
-Status: Plan 04-01 complete, ready for Plan 04-02
-Last activity: 2026-02-11 -- Plan 04-01 executed (multi-provider config + structured errors)
+Plan: 2 of 3 in current phase (complete)
+Status: Plan 04-02 complete, ready for Plan 04-03
+Last activity: 2026-02-11 -- Plan 04-02 executed (REST API + CI/CD)
 
-Progress: [##########] 92%
+Progress: [###########] 96%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 10
-- Average duration: 9min
-- Total execution time: 1.4 hours
+- Total plans completed: 11
+- Average duration: 8min
+- Total execution time: 1.5 hours
 
 **By Phase:**
 
@@ -30,10 +30,10 @@ Progress: [##########] 92%
 | 01-foundation-reset | 3/3 | 24min | 8min |
 | 02-multi-expert-pipeline | 3/3 | 28min | 9min |
 | 03-self-improvement | 3/3 | 25min | 8min |
-| 04-production-hardening | 1/3 | 8min | 8min |
+| 04-production-hardening | 2/3 | 12min | 6min |
 
 **Recent Trend:**
-- Last 5 plans: 12min, 6min, 6min, 13min, 8min
+- Last 5 plans: 6min, 6min, 13min, 8min, 4min
 - Trend: stable
 
 ## Accumulated Context
@@ -81,6 +81,11 @@ Recent decisions affecting current work:
 - ClioError.error_type defaults to 'clio_error' for with_degradation() base-class compatibility
 - Only lm_studio provider triggers fetch_lm_studio_models; others use static config
 - User-facing errors are friendly messages; structured details go in Prediction.error_info
+- asyncio.to_thread wraps synchronous agent.forward() for non-blocking FastAPI handlers
+- SSE simulates streaming by splitting final answer into word chunks (DSPy not natively streaming)
+- Degraded health status when agent fails to initialize (never crashes on startup)
+- Global exception handler catches all unhandled exceptions, returns structured JSON (never tracebacks)
+- TestClient with overridden lifespan for mocked agent injection (no LM dependency in API tests)
 
 ### Pending Todos
 
@@ -95,5 +100,5 @@ None yet.
 ## Session Continuity
 
 Last session: 2026-02-11
-Stopped at: Completed 04-01-PLAN.md (multi-provider config + structured errors -- 398 tests, 71% coverage)
+Stopped at: Completed 04-02-PLAN.md (REST API + CI/CD -- 413 tests, 15 new API tests)
 Resume file: None
