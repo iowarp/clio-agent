@@ -2,11 +2,13 @@
 CLIO Agent Test Fixtures
 
 Provides shared fixtures for all test modules, including synthetic
-HDF5 test data for MCP server testing.
+HDF5 and Parquet test data for MCP server testing.
 """
 
 import h5py
 import numpy as np
+import pyarrow as pa
+import pyarrow.parquet as pq
 import pytest
 
 
@@ -59,5 +61,41 @@ def sample_hdf5(tmp_path):
         # Root attributes
         f.attrs["created_by"] = "clio-agent-test"
         f.attrs["version"] = "1.0"
+
+    return str(filepath)
+
+
+@pytest.fixture
+def sample_parquet(tmp_path):
+    """Create a synthetic Parquet file for testing.
+
+    Structure:
+        id          - int64, sequential 0-99
+        temperature - float64, random 15.0-35.0
+        city        - string, random from ["NYC", "LA", "Chicago", "Houston", "Phoenix"]
+
+    100 rows total.
+
+    Returns:
+        str: Path to the temporary Parquet file
+    """
+    rng = np.random.default_rng(42)  # Deterministic for reproducibility
+
+    cities = ["NYC", "LA", "Chicago", "Houston", "Phoenix"]
+    n_rows = 100
+
+    table = pa.table({
+        "id": pa.array(range(n_rows), type=pa.int64()),
+        "temperature": pa.array(
+            rng.uniform(15.0, 35.0, size=n_rows), type=pa.float64()
+        ),
+        "city": pa.array(
+            [cities[i % len(cities)] for i in rng.integers(0, len(cities), size=n_rows)],
+            type=pa.string(),
+        ),
+    })
+
+    filepath = tmp_path / "test_data.parquet"
+    pq.write_table(table, filepath)
 
     return str(filepath)

@@ -39,6 +39,7 @@ dependencies = [
     "fastmcp>=2.14.0",
     "requests>=2.31.0",
     "h5py>=3.10.0",
+    "pyarrow>=14.0.0",
     "rich>=14.2.0",
     "prompt-toolkit>=3.0.0",
     "sortedcontainers>=2.4.0",
@@ -60,7 +61,7 @@ api = [
 ]
 
 tools = [
-    "pyarrow>=14.0.0",           # Parquet MCP server (v0.3.0+)
+    # pyarrow moved to core dependencies (v0.2.0)
 ]
 
 iowarp = [
