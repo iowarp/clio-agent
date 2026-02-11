@@ -8,7 +8,7 @@ Transform CLIO Agent from a working-but-stub-heavy CoT agent into a production-r
 
 - [x] **Phase 1: Foundation Reset** - Replace stubs with real DSPy 3.x/FastMCP 3.x patterns and working HDF5 tools
 - [x] **Phase 2: Multi-Expert Pipeline** - Three experts (Data, Analysis, Visualization) with shared context and compiled memory
-- [ ] **Phase 3: Self-Improvement** - SIMBA optimization, training data collection, variant management with rollback
+- [x] **Phase 3: Self-Improvement** - SIMBA optimization, training data collection, variant management with rollback
 - [ ] **Phase 4: Production Hardening** - REST API, CI/CD, containers, multi-provider LM, 80% test coverage
 
 ## Phase Details
@@ -60,9 +60,9 @@ Plans:
 **Plans:** 3 plans
 
 Plans:
-- [ ] 03-01-PLAN.md -- Instrumentation decorator, ARC extensions, training set generator
-- [ ] 03-02-PLAN.md -- SIMBA runner, variant manager, statistical significance testing
-- [ ] 03-03-PLAN.md -- CLI wiring (--tune, /metrics, /compare, /rollback) + 70% coverage
+- [x] 03-01-PLAN.md -- Instrumentation decorator, ARC extensions, training set generator
+- [x] 03-02-PLAN.md -- SIMBA runner, variant manager, statistical significance testing
+- [x] 03-03-PLAN.md -- CLI wiring (--tune, /metrics, /compare, /rollback) + 70% coverage
 
 ### Phase 4: Production Hardening
 **Goal**: CLIO Agent runs as a containerized service with REST API, CI/CD, and multi-provider LM support
@@ -74,12 +74,12 @@ Plans:
   3. GitHub Actions CI passes: ruff, mypy, pytest with 80% coverage gate
   4. Switching LM provider from LM Studio to Ollama requires only config change, no code change
   5. Raw Python tracebacks never reach the user -- all errors are structured JSON with degradation fallback
-**Plans**: TBD
+**Plans:** 3 plans
 
 Plans:
-- [ ] 04-01: TBD
-- [ ] 04-02: TBD
-- [ ] 04-03: TBD
+- [ ] 04-01-PLAN.md -- Multi-provider LM config, env-based settings, structured error handling
+- [ ] 04-02-PLAN.md -- FastAPI REST API with SSE streaming, GitHub Actions CI, pre-commit hooks
+- [ ] 04-03-PLAN.md -- Dockerfile, Singularity, Docker Compose, 80% test coverage
 
 ## Progress
 
@@ -87,5 +87,5 @@ Plans:
 |-------|----------------|--------|-----------|
 | 1. Foundation Reset | 3/3 | ✓ Complete | 2026-02-10 |
 | 2. Multi-Expert Pipeline | 3/3 | ✓ Complete | 2026-02-10 |
-| 3. Self-Improvement | 0/3 | Planned | - |
-| 4. Production Hardening | 0/3 | Not started | - |
+| 3. Self-Improvement | 3/3 | ✓ Complete | 2026-02-11 |
+| 4. Production Hardening | 0/3 | In progress | - |
