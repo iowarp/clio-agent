@@ -18,7 +18,9 @@ ClioAgent Command-Line Interface
 Interactive ClioAgent Agent Framework TUI for scientific data I/O assistance.
 
 Features:
+- Router-based dispatch to DataExpert or ChatAgent
 - DataExpert agent with ReAct pattern (reasoning + tool calling)
+- ChatAgent for conversational responses
 - Rich TUI with syntax highlighting
 - Conversation history
 
@@ -31,6 +33,7 @@ Example:
     >>> run_cli()
 """
 
+import asyncio
 import sys
 from pathlib import Path
 
@@ -57,8 +60,9 @@ class ClioAgentCLI:
     """Interactive CLI for ClioAgent data I/O expert system.
 
     Demonstrates:
-    - ClioAgent agent with DataExpert
-    - ReAct agent with MCP tools
+    - ClioAgent Router -> Expert/Chat dispatch
+    - DataExpert ReAct agent with MCP tools
+    - ChatAgent for conversational queries
     - Observable reasoning traces
 
     Attributes:
@@ -86,13 +90,13 @@ class ClioAgentCLI:
                 verbose=False  # Don't spam console during init
             )
         except Exception as e:
-            self.console.print(f"\n[red]❌ Error setting up LM: {e}[/red]")
+            self.console.print(f"\n[red]Error setting up LM: {e}[/red]")
             self.console.print("\n[yellow]Troubleshooting:[/yellow]")
-            self.console.print("- Ensure LM Studio is running at http://100.127.255.164:1234")
-            self.console.print("- Ensure LM Studio is running and model is loaded")
+            self.console.print("- Ensure LM Studio is running at http://127.0.0.1:1234")
+            self.console.print("- Ensure a model is loaded in LM Studio")
             sys.exit(1)
 
-        # Create ClioAgent agent (already fixed above, but keeping for clarity)
+        # Create ClioAgent agent
         self.agent = ClioAgent(verbose=False)
 
     def print_banner(self):
@@ -112,8 +116,8 @@ class ClioAgentCLI:
         # Info section with proper markup
         info = """[dim]Multi-Agent System for Scientific Computing[/dim]
 
-[cyan]Experts:[/cyan] data • hpc • analysis • research • workflow
-[green]Local LM:[/green] LM Studio • Ollama • OpenAI
+[cyan]Experts:[/cyan] data (HDF5, compression, I/O)
+[green]Local LM:[/green] LM Studio (Router + ChatAgent + DataExpert)
 
 [dim]Gnosis Research Center | IOWarp Project[/dim]
 [dim]https://iowarp.ai[/dim]"""
@@ -137,7 +141,7 @@ class ClioAgentCLI:
             ("/experts", "List available experts and capabilities"),
             ("/registry", "Show agent registry status"),
             ("/memory", "Display ARC memory statistics"),
-            ("/tools", "Show available MCP tools and cache stats"),
+            ("/tools", "Show available MCP tools"),
             ("/verbose", "Toggle verbose mode (show routing details)"),
             ("/clear", "Clear conversation history"),
             ("/quit, /exit", "Exit ClioAgent"),
@@ -178,7 +182,7 @@ class ClioAgentCLI:
 
 Registered Agents: {agent_count}
 Registry Type: Capability-Based Routing
-A2A Protocol: Enabled
+Router: Literal["data", "chat"] via ChainOfThought
 
 [cyan]Registered Agent IDs:[/cyan]
 {', '.join(agent_ids) if agent_ids else 'None'}
@@ -207,17 +211,35 @@ A2A Protocol: Enabled
         # Show performance vs targets
         hit_rate = stats['hit_rate']
         if hit_rate >= 0.85:
-            self.console.print(f"\n[green]✓ Cache hit rate ({hit_rate:.1%}) exceeds target (85%)[/green]")
+            self.console.print(f"\n[green]Cache hit rate ({hit_rate:.1%}) exceeds target (85%)[/green]")
         else:
-            self.console.print(f"\n[yellow]⚠ Cache hit rate ({hit_rate:.1%}) below target (85%)[/yellow]")
+            self.console.print(f"\n[yellow]Cache hit rate ({hit_rate:.1%}) below target (85%)[/yellow]")
 
     def print_tools(self):
-        """Display available MCP tools status."""
-        self.console.print(Panel(
-            "[dim]MCP tools will be available after gateway initialization (Plan 02).[/dim]",
-            title="MCP Tools",
-            border_style="blue"
-        ))
+        """Display available MCP tools from the gateway."""
+        from fastmcp import Client
+
+        from clio_agent.tools.gateway import gateway
+
+        async def _list():
+            async with Client(gateway) as c:
+                return await c.list_tools()
+
+        try:
+            tools = asyncio.run(_list())
+        except Exception as e:
+            self.console.print(f"[red]Error listing tools: {e}[/red]")
+            return
+
+        tools_table = Table(title="MCP Tools (via Gateway)", show_header=True)
+        tools_table.add_column("Tool", style="cyan")
+        tools_table.add_column("Description")
+
+        for t in sorted(tools, key=lambda x: x.name):
+            desc = t.description or ""
+            tools_table.add_row(t.name, desc[:80])
+
+        self.console.print(tools_table)
 
     def handle_command(self, user_input: str) -> bool:
         """Handle special commands.
@@ -248,7 +270,7 @@ A2A Protocol: Enabled
             self.history = []
             self.console.clear()
             self.print_banner()
-            self.console.print("[green]✓ History cleared[/green]")
+            self.console.print("[green]History cleared[/green]")
             return True
 
         elif cmd == "/experts":
@@ -270,7 +292,7 @@ A2A Protocol: Enabled
         elif cmd == "/verbose":
             self.verbose = not self.verbose
             status = "enabled" if self.verbose else "disabled"
-            self.console.print(f"[green]✓ Verbose mode {status}[/green]")
+            self.console.print(f"[green]Verbose mode {status}[/green]")
             return True
 
         elif cmd in ["/quit", "/exit", "/q"]:
@@ -280,32 +302,30 @@ A2A Protocol: Enabled
         return False
 
     def ask_question(self, question: str) -> dict:
-        """Ask ClioAgent a question via intelligent agent orchestration.
+        """Ask ClioAgent a question via Router -> Expert/Chat dispatch.
 
         Flow:
-            1. ClioAgent ReAct agent processes question
-            2. Agent reasons and calls expert tools as needed
-            3. Display results with reasoning trajectories
+            1. Router classifies intent (Literal["data", "chat"])
+            2. Dispatches to DataExpert or ChatAgent
+            3. Display results with expert label
 
         Args:
             question: User's question
 
         Returns:
-            Dictionary with result including answer, trajectory, and stats
+            Dictionary with result including answer, expert, and stats
         """
         # Show processing spinner
         with self.console.status(
-            "[#00B4FF]Analyzing with ClioAgent agents...[/#00B4FF]",
+            "[#00B4FF]Routing query...[/#00B4FF]",
             spinner="dots"
         ):
             result = self.agent(question=question)
 
         return {
             "question": question,
-            "expert": "ReAct",  # Main agent uses ReAct pattern
+            "expert": result.selected_expert,
             "answer": result.answer,
-            "trajectory_steps": len(getattr(result, 'trajectory', [])),
-            "trajectory": getattr(result, 'trajectory', []),
             "duration_ms": getattr(result, 'duration_ms', 0)
         }
 
@@ -316,14 +336,14 @@ A2A Protocol: Enabled
         from prompt_toolkit.history import InMemoryHistory
 
         self.print_banner()
-        self.console.print("\n[bold green]●[/bold green] Ready  [dim]|[/dim]  Type [cyan]/help[/cyan] for commands\n")
+        self.console.print("\n[bold green]Ready[/bold green]  [dim]|[/dim]  Type [cyan]/help[/cyan] for commands\n")
 
         # Setup prompt toolkit for better input
         history = InMemoryHistory()
 
         while True:
             try:
-                # Get user input with history and auto-suggest (POC pattern)
+                # Get user input with history and auto-suggest
                 user_input = pt_prompt(
                     "You: ",
                     history=history,
@@ -341,21 +361,18 @@ A2A Protocol: Enabled
                 # Ask question via ClioAgent agent
                 result = self.ask_question(user_input)
 
-                # Show verbose info (trajectory details)
+                # Show verbose info
                 if self.verbose:
-                    self.console.print(f"\n[#00B4FF]→ Agent:[/#00B4FF] [bold]{result['expert']}[/bold]")
+                    self.console.print(f"\n[#00B4FF]Router:[/#00B4FF] [bold]{result['expert']}[/bold]")
+                    self.console.print(f"[#FF8800]Duration:[/#FF8800] {result['duration_ms']:.0f}ms\n")
 
-                    if result.get('trajectory_steps'):
-                        self.console.print(f"[dim]→ Reasoning steps: {result['trajectory_steps']}[/dim]")
-                        self.console.print(f"[#FF8800]→ Duration:[/#FF8800] {result['duration_ms']:.0f}ms\n")
-
-                # Show answer with POC-style panel
+                # Show answer with expert label in panel
                 expert_label = result['expert'].upper()
                 self.console.print(
                     Panel(
                         Markdown(result['answer']),
-                        title=f"[bold #00FF88]CLIO[/bold #00FF88] [dim]via {expert_label} Expert[/dim]",
-                        subtitle="[dim]Intelligent multi-agent routing[/dim]" if not self.verbose else None,
+                        title=f"[bold #00FF88]CLIO[/bold #00FF88] [dim]via {expert_label}[/dim]",
+                        subtitle="[dim]Router dispatch[/dim]" if not self.verbose else None,
                         border_style="#00B4FF"
                     )
                 )
@@ -373,7 +390,7 @@ A2A Protocol: Enabled
                 break
 
             except Exception as e:
-                self.console.print(f"\n[red]❌ Error: {e}[/red]")
+                self.console.print(f"\n[red]Error: {e}[/red]")
                 if self.verbose:
                     import traceback
                     traceback.print_exc()
@@ -442,7 +459,7 @@ if __name__ == "__main__":
             if args.json:
                 print(json.dumps({"error": str(e), "status": "failed"}))
             else:
-                print(f"❌ Error: {e}")
+                print(f"Error: {e}")
             sys.exit(1)
 
         # Create agent
@@ -457,7 +474,7 @@ if __name__ == "__main__":
                 output = {
                     "question": args.query,
                     "answer": result.answer,
-                    "trajectory_steps": len(getattr(result, 'trajectory', [])),
+                    "selected_expert": result.selected_expert,
                     "duration_ms": getattr(result, 'duration_ms', 0.0),
                     "session_id": getattr(result, 'session_id', args.session),
                     "status": "success"
@@ -467,9 +484,7 @@ if __name__ == "__main__":
                 # Human-readable output
                 console = Console()
                 console.print(f"\n[bold cyan]Question:[/bold cyan] {args.query}")
-                console.print("[bold green]Agent:[/bold green] ReAct")
-                trajectory_steps = len(getattr(result, 'trajectory', []))
-                console.print(f"[bold yellow]Reasoning Steps:[/bold yellow] {trajectory_steps}\n")
+                console.print(f"[bold green]Router:[/bold green] {result.selected_expert}")
                 console.print(Panel(Markdown(result.answer), title="CLIO", border_style="green"))
 
         except Exception as e:
@@ -477,7 +492,7 @@ if __name__ == "__main__":
                 print(json.dumps({"error": str(e), "status": "failed"}))
             else:
                 console = Console()
-                console.print(f"[red]❌ Error: {e}[/red]")
+                console.print(f"[red]Error: {e}[/red]")
                 if args.verbose:
                     import traceback
                     traceback.print_exc()
