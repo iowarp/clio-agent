@@ -1,0 +1,22 @@
+services:
+  clio-agent:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - CLIO_LM_PROVIDER=${CLIO_LM_PROVIDER:-lm_studio}
+      - CLIO_LM_API_BASE=${CLIO_LM_API_BASE:-http://host.docker.internal:1234/v1}
+      - CLIO_LM_MODEL=${CLIO_LM_MODEL:-}
+      - CLIO_LM_API_KEY=${CLIO_LM_API_KEY:-lm-studio}
+      - CLIO_ENVIRONMENT=production
+    volumes:
+      - clio-data:/app/.clio_agent
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+
+volumes:
+  clio-data:

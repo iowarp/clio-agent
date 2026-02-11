@@ -1,0 +1,28 @@
+Bootstrap: docker
+From: python:3.12-slim
+
+%files
+    pyproject.toml /app/pyproject.toml
+    uv.lock /app/uv.lock
+    src/ /app/src/
+
+%post
+    pip install uv
+    cd /app && uv sync --frozen --extra api --extra optimizers --no-dev
+
+%environment
+    export PATH="/app/.venv/bin:$PATH"
+    export CLIO_ENVIRONMENT=production
+
+%runscript
+    exec uvicorn clio_agent.ui.api:app --host 0.0.0.0 --port 8000 "$@"
+
+%labels
+    Author Antonis Kougkas
+    Version 0.2.0
+    Description CLIO Agent - Autonomous AI for Scientific Data
+
+%help
+    CLIO Agent container for HPC environments.
+    Run: singularity run clio-agent.sif
+    Set LM provider via env vars: CLIO_LM_PROVIDER, CLIO_LM_API_BASE, etc.
