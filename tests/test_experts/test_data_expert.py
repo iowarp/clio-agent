@@ -25,7 +25,7 @@ class TestDataExpert:
 
         assert expert is not None
         assert hasattr(expert, 'forward')
-        assert hasattr(expert, 'agent')  # ReAct agent attribute
+        assert hasattr(expert, 'agent')
 
     def test_expert_chainofthought_mode(self):
         """Test expert in ChainOfThought mode (no tools)."""
@@ -35,28 +35,18 @@ class TestDataExpert:
         assert expert.use_tools is False
         assert hasattr(expert, 'agent')
 
-    def test_expert_react_mode_with_tools(self):
-        """Test expert in ReAct mode with IOWarp MCP tools."""
+    def test_expert_tools_mode_uses_cot(self):
+        """Test expert in tools mode still uses ChainOfThought (Plan 02 will add ReAct)."""
         expert = DataExpert(use_tools=True, arc_memory=None)
 
         assert expert is not None
         assert expert.use_tools is True
-        assert hasattr(expert, 'mcp_connector')
-        assert hasattr(expert, 'tools')
-        # Should have 10 IOWarp tools + 2 legacy mock tools
-        assert len(expert.tools) == 12
+        assert hasattr(expert, 'agent')
 
-    def test_expert_react_mode_with_arc(self):
+    def test_expert_with_arc_memory(self):
         """Test expert with ARC memory integration."""
         mock_arc = Mock()
         expert = DataExpert(use_tools=True, arc_memory=mock_arc)
 
         assert expert is not None
         assert expert.arc_memory is mock_arc
-        assert hasattr(expert, 'mcp_connector')
-
-    # TODO: Add tests for:
-    # - forward() method with mock DSPy predictions
-    # - Tool calling with mock IOWarp servers
-    # - ARC caching of tool results
-    # - Error handling

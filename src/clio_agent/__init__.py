@@ -31,8 +31,8 @@ __version__ = "0.2.0"
 __author__ = "IOWarp Team"
 
 # Core imports
-from clio_agent.config import setup_dspy, LMStudioConfig
 from clio_agent.agent import ClioAgent
+from clio_agent.config import LMStudioConfig, setup_dspy
 
 __all__ = [
     "ClioAgent",

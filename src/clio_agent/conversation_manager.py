@@ -14,10 +14,11 @@ Manages conversation history, context summarization, and multi-turn flow.
 Uses DSPy for intelligent history processing and memory buffering.
 """
 
-import dspy
-from typing import List, Dict, Any, Optional
 import sys
 from pathlib import Path
+from typing import Any, Dict, List
+
+import dspy
 
 # Add src to path for UV script execution
 _current_file = Path(__file__).resolve()

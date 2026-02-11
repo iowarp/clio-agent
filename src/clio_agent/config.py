@@ -19,12 +19,11 @@ Usage:
     >>> lm = setup_dspy()
 """
 
-import dspy
-import os
-import requests
-from typing import Optional, List
 from dataclasses import dataclass
+from typing import List, Optional
 
+import dspy
+import requests
 
 # ============================================================================
 # LM STUDIO MODEL FETCHING
@@ -65,7 +64,7 @@ def fetch_lm_studio_models(base_url: str = "http://127.0.0.1:1234", max_retries:
 
     print(f"❌ Could not connect to LM Studio after {max_retries} attempts")
     print(f"   Please ensure LM Studio is running at {base_url}")
-    print(f"   and a model is loaded")
+    print("   and a model is loaded")
     return []
 
 
@@ -92,7 +91,7 @@ def select_models_for_agents(models: List[str]) -> tuple[str, str]:
 
     # Strategy 1: Look for granite chat models
     granite_models = [m for m in chat_models if "granite" in m.lower()]
-    
+
     if granite_models:
         main_model = granite_models[0]
         # Try to find a different granite model for expert, or use the same one
@@ -100,11 +99,11 @@ def select_models_for_agents(models: List[str]) -> tuple[str, str]:
             expert_model = granite_models[1]
         else:
             expert_model = main_model
-    
+
     # Strategy 2: If no granite models, take any available chat model
     if main_model is None and chat_models:
         main_model = chat_models[0]
-    
+
     if expert_model is None:
         # Try to pick a different model if possible
         remaining_models = [m for m in chat_models if m != main_model]
@@ -119,7 +118,7 @@ def select_models_for_agents(models: List[str]) -> tuple[str, str]:
     if expert_model is None:
         expert_model = "ibm/granite-4-h-tiny"
 
-    print(f"✓ Selected models:")
+    print("✓ Selected models:")
     print(f"  Main/Router: {main_model}")
     print(f"  Expert/Reasoner: {expert_model}")
 
@@ -266,7 +265,7 @@ def setup_dspy(
         lm = configure_dspy_lm_studio(config)
 
         if verbose:
-            print(f"✓ LM Studio configured")
+            print("✓ LM Studio configured")
             print(f"  URL: {config.base_url}")
             print(f"  Model: {config.model}")
             print(f"  Temperature: {config.temperature}")
@@ -280,8 +279,8 @@ def setup_dspy(
         print("  • Verify model is loaded in LM Studio")
         raise
 
-    # Configure DSPy globally
-    dspy.configure(lm=lm)
+    # Configure DSPy globally with ChatAdapter for ReAct compatibility
+    dspy.configure(lm=lm, adapter=dspy.ChatAdapter())
 
     return lm
 

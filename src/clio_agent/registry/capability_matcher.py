@@ -1,8 +1,8 @@
 """Capability extraction and matching for routing"""
 
-from typing import List, Tuple, Dict, Any
 import re
 import warnings
+from typing import Any, Dict, List, Tuple
 
 
 class CapabilityMatcher:

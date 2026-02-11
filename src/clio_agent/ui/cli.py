@@ -32,15 +32,13 @@ Example:
 """
 
 import sys
-from typing import Optional
 from pathlib import Path
+
 from rich.console import Console
-from rich.panel import Panel
-from rich.prompt import Prompt
 from rich.markdown import Markdown
+from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
-from rich import print as rprint
 
 # Add src to path
 _current_file = Path(__file__).resolve()
@@ -48,9 +46,8 @@ _src_root = _current_file.parent.parent.parent  # src/clio_agent/ui/cli.py -> sr
 if str(_src_root) not in sys.path:
     sys.path.insert(0, str(_src_root))
 
-from clio_agent.config import setup_dspy
 from clio_agent.agent import ClioAgent
-
+from clio_agent.config import setup_dspy
 
 # ============================================================================
 # CLI CLASS
@@ -103,7 +100,7 @@ class ClioAgentCLI:
         from rich.align import Align
 
         # ASCII art logo
-        logo = """   ____ _     ___ ___ 
+        logo = """   ____ _     ___ ___
   / ___| |   |_ _/ _ \\
  | |   | |    | | | | |
  | |___| |___ | | |_| |
@@ -215,43 +212,12 @@ A2A Protocol: Enabled
             self.console.print(f"\n[yellow]⚠ Cache hit rate ({hit_rate:.1%}) below target (85%)[/yellow]")
 
     def print_tools(self):
-        """Display available IOWarp MCP tools and cache statistics."""
-        from clio_agent.tools.mcp_connector import IOWarpMCPTools
-
-        # Initialize connector
-        mcp_tools = IOWarpMCPTools()
-
-        # Get available servers
-        servers = mcp_tools.get_available_servers()
-
-        # Create table
-        table = Table(title="Available IOWarp MCP Servers")
-        table.add_column("Server", style="cyan")
-        table.add_column("Status", style="green")
-        table.add_column("Tools", style="yellow")
-
-        for server in servers:
-            # Display server info (actual tool count would require connection)
-            table.add_row(server.upper(), "Ready", "~5-10 tools")
-
-        self.console.print(table)
-
-        # Show cache stats if ARC enabled
-        try:
-            if hasattr(self.agent, 'arc') and self.agent.arc:
-                stats = self.agent.arc.get_tool_cache_stats()
-                info = f"""[bold]Tool Cache Statistics[/bold]
-
-Hit Rate: {stats['tool_cache_hit_rate']:.2%}
-Hits: {stats['tool_cache_hits']}
-Misses: {stats['tool_cache_misses']}
-Cache Size: {stats['tool_cache_size']}
-Target: {stats['target_hit_rate']:.0%}
-
-{"[green]✓ Above target[/green]" if stats['tool_cache_hit_rate'] >= stats['target_hit_rate'] else "[yellow]⚠ Below target[/yellow]"}"""
-                self.console.print(Panel(info, title="Cache Performance", border_style="blue"))
-        except Exception as e:
-            self.console.print(f"[dim]Cache stats unavailable: {e}[/dim]")
+        """Display available MCP tools status."""
+        self.console.print(Panel(
+            "[dim]MCP tools will be available after gateway initialization (Plan 02).[/dim]",
+            title="MCP Tools",
+            border_style="blue"
+        ))
 
     def handle_command(self, user_input: str) -> bool:
         """Handle special commands.
@@ -329,7 +295,7 @@ Target: {stats['target_hit_rate']:.0%}
         """
         # Show processing spinner
         with self.console.status(
-            f"[#00B4FF]Analyzing with ClioAgent agents...[/#00B4FF]",
+            "[#00B4FF]Analyzing with ClioAgent agents...[/#00B4FF]",
             spinner="dots"
         ):
             result = self.agent(question=question)
@@ -346,10 +312,8 @@ Target: {stats['target_hit_rate']:.0%}
     def run(self):
         """Run interactive CLI loop with enhanced UX."""
         from prompt_toolkit import prompt as pt_prompt
-        from prompt_toolkit.history import InMemoryHistory
         from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
-        from rich.live import Live
-        from rich.spinner import Spinner
+        from prompt_toolkit.history import InMemoryHistory
 
         self.print_banner()
         self.console.print("\n[bold green]●[/bold green] Ready  [dim]|[/dim]  Type [cyan]/help[/cyan] for commands\n")
@@ -391,7 +355,7 @@ Target: {stats['target_hit_rate']:.0%}
                     Panel(
                         Markdown(result['answer']),
                         title=f"[bold #00FF88]CLIO[/bold #00FF88] [dim]via {expert_label} Expert[/dim]",
-                        subtitle=f"[dim]Intelligent multi-agent routing[/dim]" if not self.verbose else None,
+                        subtitle="[dim]Intelligent multi-agent routing[/dim]" if not self.verbose else None,
                         border_style="#00B4FF"
                     )
                 )
@@ -503,7 +467,7 @@ if __name__ == "__main__":
                 # Human-readable output
                 console = Console()
                 console.print(f"\n[bold cyan]Question:[/bold cyan] {args.query}")
-                console.print(f"[bold green]Agent:[/bold green] ReAct")
+                console.print("[bold green]Agent:[/bold green] ReAct")
                 trajectory_steps = len(getattr(result, 'trajectory', []))
                 console.print(f"[bold yellow]Reasoning Steps:[/bold yellow] {trajectory_steps}\n")
                 console.print(Panel(Markdown(result.answer), title="CLIO", border_style="green"))

@@ -1,68 +1,34 @@
-#!/usr/bin/env -S uv run
-# /// script
-# requires-python = ">=3.12"
-# dependencies = [
-#   "dspy-ai>=3.0.3",
-#   "fastmcp>=2.13.0",
-# ]
-# ///
-
 """
 ClioAgent - Main Agent Module
 
-The primary ClioAgent agent that uses DSPy ReAct pattern with subagents as tools.
-Refactored to follow proper DSPy architecture patterns.
+The primary ClioAgent agent that uses DSPy ChainOfThought with subagents.
+Plan 03 will restructure this into Router + ChatAgent with ReAct.
 
 Architecture:
     User Question
-        ↓
-    ClioAgent ReAct Agent (routing + execution in one)
-        ├─ Retrieves context from ARC Memory
-        ├─ Calls expert tool functions
-        │   └─ DataExpert (ReAct Pattern with MCP tools)
-        └─ Stores invocation + conversation in ARC
-        ↓
-    Returns answer with trajectory
-
-Key Principles:
-- ReAct pattern for main agent (no separate routing step)
-- Experts wrapped as tool functions
-- ARC Memory for context retrieval and storage
-- LSM Tree for metrics logging
-- Registry for validation and discovery (not routing)
+        |
+    ClioAgent (ChainOfThought)
+        |- Retrieves context from ARC Memory
+        |- Stores invocation + conversation in ARC
+        |
+    Returns answer
 
 Usage:
     >>> from clio_agent import ClioAgent
     >>> from clio_agent.config import setup_dspy
     >>>
-    >>> # Setup LM (LM Studio)
     >>> lm = setup_dspy()
-    >>>
-    >>> # Create ClioAgent agent
     >>> agent = ClioAgent()
-    >>>
-    >>> # Ask data I/O questions
     >>> result = agent(question="How do I optimize HDF5 files?")
-    >>>
-    >>> # Inspect results
-    >>> print(f"Answer: {result.answer}")
+    >>> print(result.answer)
 """
 
-import sys
 import time
 import uuid
-from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 import dspy
 
-# Add src to path for UV script execution
-_current_file = Path(__file__).resolve()
-_src_root = _current_file.parent.parent  # src/clio_agent/file.py -> src/
-if str(_src_root) not in sys.path:
-    sys.path.insert(0, str(_src_root))
-
-# Import ARC Memory components
 from clio_agent.arc.lsm import LSMTree
 from clio_agent.arc.memory import ARCMemory
 from clio_agent.arc.retrieval import ContextRetriever
@@ -72,122 +38,25 @@ from clio_agent.arc.schema import (
     Message,
     ToolCall,
 )
-
-# Import experts
-from clio_agent.experts import DataExpert
-from clio_agent.registry.registry import AgentCapability, AgentRegistry
-
-# Import config
 from clio_agent.config import (
+    LMStudioConfig,
     configure_dspy_lm_studio,
     fetch_lm_studio_models,
     select_models_for_agents,
 )
+from clio_agent.experts import DataExpert
+from clio_agent.registry.registry import AgentCapability, AgentRegistry
+from clio_agent.signatures.main_agent_sig import MainAgentSignature
 
-
-# ============================================================================
-# MAIN AGENT SIGNATURE (DSPy Signature Class)
-# ============================================================================
-
-class MainAgentSignature(dspy.Signature):
-    """
-    You are CLIO, an autonomous science agent operating within the CLIO Framework.
-    Your goal is to assist scientists and researchers with data management, HPC operations, and scientific discovery.
-
-    Identity Rules:
-    1. You are CLIO (the agent). The system you run in is the CLIO Framework.
-    2. If asked "who are you?" (or similar identity questions), state clearly: "I am CLIO, the science agent ready to assist you..."
-    3. Be confident, precise, and helpful. Instill trust.
-    4. You have access to expert sub-agents (e.g., DataExpert) which you can route tasks to.
-
-    Input:
-    - question: User's question or request
-    - session_context: Context retrieved from ARC Memory (key topics, history)
-
-    Output:
-    - answer: Final answer from ReAct agent (incorporating expert tool results if needed).
-    """
-
-    question: str = dspy.InputField(desc="User's question or request")
-    session_context: str = dspy.InputField(
-        desc="Session context from ARC Memory (key topics, history)"
-    )
-    answer: str = dspy.OutputField(desc="CLIO's answer with reasoning")
-
-
-# ============================================================================
-# MODULE-LEVEL TOOL FUNCTIONS
-# ============================================================================
-
-_data_expert_instance: Optional[DataExpert] = None
-
-
-def ask_data_expert(question: str, file_context: str = "") -> str:
-    """Consult the Data I/O optimization expert.
-
-    Tool function for ReAct pattern. Asks the DataExpert about HDF5, ADIOS,
-    Parquet, compression, and chunking strategies.
-
-    Args:
-        question: The question to ask the expert
-        file_context: Optional file context or path information
-
-    Returns:
-        Expert analysis and recommendations as string
-
-    Note:
-        This is a module-level tool function (required for DSPy ReAct introspection).
-        The _data_expert_instance is set by ClioAgent.__init__() after expert creation.
-
-    Example:
-        >>> result = ask_data_expert("How do I optimize HDF5 compression?")
-        >>> print(result)
-    """
-    global _data_expert_instance
-
-    if _data_expert_instance is None:
-        return "Error: DataExpert not initialized. Please initialize ClioAgent first."
-
-    try:
-        # Call DataExpert with history (required parameter)
-        from clio_agent.arc.schema import History
-
-        result = _data_expert_instance(
-            question=question,
-            file_context=file_context,
-            history=History(messages=[])
-        )
-
-        # Extract answer from result
-        if hasattr(result, "analysis") and hasattr(result, "recommendations"):
-            return f"{result.analysis}\n\nRecommendations:\n{result.recommendations}"
-        elif hasattr(result, "answer"):
-            return result.answer
-        else:
-            return str(result)
-    except Exception as e:
-        return f"Error consulting DataExpert: {str(e)}"
-
-
-# ============================================================================
-# CLIO AGENT (DSPy ReAct Pattern)
-# ============================================================================
 
 class ClioAgent(dspy.Module):
-    """ClioAgent - ReAct-based orchestration system for conversational data I/O optimization.
+    """ClioAgent - ChainOfThought-based orchestration for conversational data I/O optimization.
 
-    Uses DSPy ReAct pattern with subagents as tools. Main agent automatically routes
-    and executes expert calls based on the question.
-
-    Architecture:
-        - Main Agent: ReAct pattern with experts as tools
-        - DataExpert: Tool function wrapping DataExpert.forward()
-        - ARC Memory: Context retrieval and storage
-        - LSM Tree: High-throughput metrics logging
-        - Registry: Expert validation and discovery
+    Uses DSPy ChainOfThought with ARC Memory for context. Plan 03 will convert to
+    Router + ReAct pattern with experts as tools.
 
     Attributes:
-        agent: DSPy ReAct module with expert tools
+        agent: DSPy ChainOfThought module
         data_expert: DataExpert instance
         arc: ARC Memory instance
         context_retriever: Context retrieval module
@@ -201,7 +70,7 @@ class ClioAgent(dspy.Module):
     """
 
     def __init__(self, verbose: bool = False, data_dir: str = ".clio_agent"):
-        """Initialize ClioAgent ReAct-based system.
+        """Initialize ClioAgent.
 
         Args:
             verbose: If True, print reasoning and decisions
@@ -234,10 +103,6 @@ class ClioAgent(dspy.Module):
         # Initialize experts with ARC Memory
         self.data_expert = DataExpert(use_tools=True, arc_memory=self.arc)
 
-        # Set global reference for module-level ask_data_expert tool function
-        global _data_expert_instance
-        _data_expert_instance = self.data_expert
-
         # Register experts in registry (for /experts command)
         self.registry.register_agent(
             "data",
@@ -250,16 +115,13 @@ class ClioAgent(dspy.Module):
             )
         )
 
-        # Main agent uses ChainOfThought (ReAct incompatible with LM Studio)
-        # Note: ReAct requires JSONAdapter which LM Studio rejects
-        # ChainOfThought works reliably with all local LM providers
-        from clio_agent.config import LMStudioConfig
+        # Main agent uses ChainOfThought
         main_config = LMStudioConfig(model=main_model)
 
         with dspy.context(lm=configure_dspy_lm_studio(main_config)):
             self.agent = dspy.ChainOfThought(
                 MainAgentSignature,
-                n=3  # Multiple reasoning passes
+                n=3
             )
 
         if self.verbose:
@@ -268,47 +130,25 @@ class ClioAgent(dspy.Module):
             print(f"[ClioAgent] LSM Tree initialized at {data_dir}/arc/lsm")
 
     def forward(self, question: str, session_id: str = "default") -> dspy.Prediction:
-        """Process question using ReAct pattern with expert tools.
-
-        This is the main entry point for ClioAgent with ARC Memory integration.
+        """Process question using ChainOfThought with ARC Memory.
 
         Flow:
             1. Retrieve context from ARC Memory
-            2. ReAct agent processes question (routing + execution in one)
-               - Agent decides which expert tool to call
-               - Calls expert tool(s) as needed
-               - Generates final answer
+            2. ChainOfThought processes question
             3. Store invocation metrics in LSM Tree
             4. Store conversation in ARC Memory
-            5. Return response with trajectory
+            5. Return response
 
         Args:
             question: User's question or request
-            session_id: Session identifier for conversation tracking (default: "default")
+            session_id: Session identifier for conversation tracking
 
         Returns:
-            dspy.Prediction with fields:
-                - answer: Final answer from ReAct agent
-                - trajectory: List of tool calls and observations
-                - session_id: Session identifier
-                - duration_ms: Total execution time in milliseconds
-                - arc_stats: ARC Memory cache statistics
-                - lsm_stats: LSM Tree statistics
-
-        Example:
-            >>> agent = ClioAgent()
-            >>> result = agent(
-            ...     question="My HDF5 file is 100GB, how do I optimize it?",
-            ...     session_id="session-123"
-            ... )
-            >>> print(result.answer)
-            >>> print(f"Tool calls: {len(result.trajectory)}")
-            >>> print(f"Cache hit rate: {result.arc_stats['hit_rate']}")
+            dspy.Prediction with answer, trajectory, session_id, duration_ms, arc_stats, lsm_stats
         """
         start_time = time.time()
 
         # STEP 1: Retrieve context from ARC Memory
-        # =========================================
         session_context = "No prior context"
         try:
             arc_context = self.context_retriever.retrieve_context_for_query(
@@ -320,14 +160,10 @@ class ClioAgent(dspy.Module):
             if self.verbose:
                 print(f"\n[ClioAgent] Retrieved {len(arc_context.learned_patterns)} context patterns from ARC")
 
-            # Format context for ReAct (extract from learned patterns)
-            # Note: LearnedPattern schema has pattern_type, pattern_data, confidence, learned_at
-            # pattern_data is a dict that may contain various keys (rule, topic, etc.)
             if arc_context.learned_patterns:
                 context_parts = []
                 for p in arc_context.learned_patterns:
                     if hasattr(p, 'pattern_data') and isinstance(p.pattern_data, dict):
-                        # Extract any useful info from pattern_data
                         for key, value in p.pattern_data.items():
                             if value and isinstance(value, str):
                                 context_parts.append(f"{key}: {value}")
@@ -336,10 +172,8 @@ class ClioAgent(dspy.Module):
         except Exception as e:
             if self.verbose:
                 print(f"[ClioAgent] Warning: Failed to retrieve context from ARC: {e}")
-            # Continue with "No prior context" fallback
 
-        # STEP 2: ReAct agent (routing + execution in one)
-        # =================================================
+        # STEP 2: ChainOfThought agent
         success = False
         error_msg = None
         result = None
@@ -354,17 +188,15 @@ class ClioAgent(dspy.Module):
             success = False
             error_msg = str(e)
             if self.verbose:
-                print(f"[ClioAgent] Error in ReAct execution: {e}")
+                print(f"[ClioAgent] Error in execution: {e}")
                 import traceback
                 traceback.print_exc()
-            # Fallback response
             result = dspy.Prediction(
                 answer=f"I encountered an error processing your question: {str(e)}. For data I/O questions, consider HDF5 compression and chunking strategies.",
                 trajectory=[]
             )
 
         # STEP 3: Store invocation metrics in LSM Tree
-        # =============================================
         duration_ms = (time.time() - start_time) * 1000
 
         self.lsm.write(
@@ -380,14 +212,11 @@ class ClioAgent(dspy.Module):
         )
 
         # STEP 4: Store invocation in ARC Memory
-        # =======================================
         invocation_id = str(uuid.uuid4())
-        tool_calls = []
+        tool_calls: list[ToolCall] = []
 
-        # Extract tool calls from trajectory
         if hasattr(result, 'trajectory') and result.trajectory:
             for step in result.trajectory:
-                # ReAct trajectory format varies, handle gracefully
                 if isinstance(step, dict):
                     tool_calls.append(ToolCall(
                         tool=step.get('tool', 'unknown'),
@@ -402,7 +231,7 @@ class ClioAgent(dspy.Module):
             session_id=session_id,
             parent_trace_id=None,
             agent_id="main",
-            tier=1,  # Tier 1 = Main Agent
+            tier=1,
             source="native",
             started_at=start_time,
             completed_at=time.time(),
@@ -424,7 +253,6 @@ class ClioAgent(dspy.Module):
             print(f"[ClioAgent] Stored invocation {invocation_id} in ARC")
 
         # STEP 5: Store conversation in ARC Memory
-        # =========================================
         answer = result.answer if hasattr(result, 'answer') else str(result)
         self._store_conversation(question, answer, session_id)
 
@@ -432,7 +260,6 @@ class ClioAgent(dspy.Module):
             print(f"[ClioAgent] Stored conversation in ARC for session {session_id}")
 
         # STEP 6: Assemble response
-        # =========================
         total_duration_ms = (time.time() - start_time) * 1000
 
         response = dspy.Prediction(
@@ -446,19 +273,12 @@ class ClioAgent(dspy.Module):
 
         return response
 
-    def _store_conversation(self, question: str, answer: str, session_id: str):
-        """Store conversation in ARC Memory.
-
-        Args:
-            question: User question
-            answer: Assistant answer
-            session_id: Session identifier
-        """
+    def _store_conversation(self, question: str, answer: str, session_id: str) -> None:
+        """Store conversation in ARC Memory."""
         current_time = time.time()
         msg_id_user = str(uuid.uuid4())
         msg_id_assistant = str(uuid.uuid4())
 
-        # Create messages
         user_msg = Message(
             message_id=msg_id_user,
             role="user",
@@ -475,17 +295,14 @@ class ClioAgent(dspy.Module):
             metadata={"agent": "main"}
         )
 
-        # Get existing conversation or create new
         existing_conv = self.arc.get_conversation(session_id)
 
         if existing_conv:
-            # Append to existing conversation
             existing_conv.messages.extend([user_msg, assistant_msg])
             existing_conv.updated_at = current_time
             existing_conv.last_accessed = current_time
             self.arc.store_conversation(existing_conv)
         else:
-            # Create new conversation
             conv = Conversation(
                 session_id=session_id,
                 user_id="default_user",
@@ -495,92 +312,34 @@ class ClioAgent(dspy.Module):
                 status="active",
                 messages=[user_msg, assistant_msg],
                 routing_decisions=[],
-                metadata={"clio_agent_version": "0.3.0", "arc_enabled": True},
+                metadata={"clio_agent_version": "0.2.0", "arc_enabled": True},
                 storage_tier="warm"
             )
             self.arc.store_conversation(conv)
 
     def get_arc_stats(self) -> Dict[str, Any]:
-        """Get ARC memory statistics.
-
-        Returns:
-            Dictionary with cache statistics including:
-                - hit_rate: Cache hit rate (0.0 to 1.0)
-                - size: Current cache size
-                - capacity: Maximum cache capacity
-                - hits: Number of cache hits
-                - misses: Number of cache misses
-                - disk_reads: Number of disk reads
-                - disk_writes: Number of disk writes
-
-        Example:
-            >>> stats = agent.get_arc_stats()
-            >>> print(f"Hit rate: {stats['hit_rate']:.2%}")
-            Hit rate: 87.5%
-        """
+        """Get ARC memory statistics."""
         return self.arc.get_cache_stats()
 
     def get_lsm_stats(self) -> Dict[str, Any]:
-        """Get LSM Tree statistics.
-
-        Returns:
-            Dictionary with LSM statistics including:
-                - write_count: Total writes
-                - flush_count: Total MemTable flushes
-                - compaction_count: Total compactions
-                - memtable_size: Current MemTable entry count
-                - sstable_count: Current SSTable count
-                - total_records: Approximate total records
-
-        Example:
-            >>> stats = agent.get_lsm_stats()
-            >>> print(f"Total writes: {stats['write_count']}")
-            Total writes: 1234
-        """
+        """Get LSM Tree statistics."""
         return self.lsm.get_stats()
 
     def get_session_history(self, session_id: str, limit: int = 10) -> List[Conversation]:
-        """Get conversation history for session from ARC Memory.
-
-        Args:
-            session_id: Session identifier
-            limit: Maximum number of conversations to retrieve
-
-        Returns:
-            List of Conversation objects for the session
-
-        Example:
-            >>> history = agent.get_session_history("session-123", limit=5)
-            >>> for conv in history:
-            ...     print(f"Session: {conv.session_id}, Messages: {len(conv.messages)}")
-        """
+        """Get conversation history for session from ARC Memory."""
         return self.arc.get_conversation_history(session_id, limit=limit)
 
-    def shutdown(self):
-        """Clean shutdown of ClioAgent.
-
-        Closes LSM Tree (flushes MemTable, stops compaction).
-        Call before process exit.
-
-        Example:
-            >>> agent = ClioAgent()
-            >>> # ... use agent ...
-            >>> agent.shutdown()
-        """
+    def shutdown(self) -> None:
+        """Clean shutdown of ClioAgent. Closes LSM Tree."""
         if self.verbose:
             print("[ClioAgent] Shutting down...")
 
-        # Close LSM Tree (flushes MemTable, stops compaction)
         self.lsm.close()
 
         if self.verbose:
             print("[ClioAgent] LSM Tree closed")
             print("[ClioAgent] Shutdown complete")
 
-
-# ============================================================================
-# HELPER FUNCTIONS
-# ============================================================================
 
 def load_optimized_clio_agent(path: str, verbose: bool = False) -> ClioAgent:
     """Load an optimized ClioAgent agent from disk.
@@ -591,74 +350,5 @@ def load_optimized_clio_agent(path: str, verbose: bool = False) -> ClioAgent:
 
     Returns:
         Optimized ClioAgent instance
-
-    Example:
-        >>> agent = load_optimized_clio_agent("data/compiled/clio_agent_v2.json")
-        >>> # Use optimized version with improved routing
-        >>> result = agent(question="...")
     """
-    # TODO: Implement loading from compiled DSPy artifacts
-    # agent = ClioAgent(verbose=verbose)
-    # agent.load(path)
-    # return agent
     raise NotImplementedError("Optimization loading not yet implemented")
-
-
-# ============================================================================
-# TEST MAIN
-# ============================================================================
-
-if __name__ == "__main__":
-    print("ClioAgent Agent Test (ReAct Pattern)")
-    print("=" * 60)
-
-    # Import config
-    from clio_agent.config import setup_dspy
-
-    try:
-        print("\nInitializing with LM Studio...")
-        lm = setup_dspy()
-
-    except Exception as e:
-        print(f"\n❌ Error: {e}")
-        print("Make sure LM Studio is running at the configured URL")
-        sys.exit(1)
-
-    # Create ClioAgent agent
-    print("\nCreating ClioAgent agent...")
-    agent = ClioAgent(verbose=True)
-
-    # Test questions for data expert
-    test_questions = [
-        "How do I optimize HDF5 compression?",
-        "What's the best chunking strategy for my dataset?",
-        "How can I improve parallel I/O performance?",
-    ]
-
-    print("\nTesting ClioAgent agent...")
-    print("-" * 60)
-
-    session_id = f"test-{int(time.time())}"
-
-    for i, question in enumerate(test_questions, 1):
-        print(f"\n{i}. Question: {question}")
-
-        result = agent(question=question, session_id=session_id)
-
-        print(f"   Answer: {result.answer[:200]}...")
-        if hasattr(result, 'trajectory') and result.trajectory:
-            print(f"   Tool calls: {len(result.trajectory)}")
-        print(f"   Duration: {result.duration_ms:.2f}ms")
-
-    # Print statistics
-    print("\n" + "=" * 60)
-    print("Statistics:")
-    print(f"ARC Stats: {agent.get_arc_stats()}")
-    print(f"LSM Stats: {agent.get_lsm_stats()}")
-
-    # Clean shutdown
-    agent.shutdown()
-
-    print("\n✅ ClioAgent agent test complete!")
-    print("\nNote: This is baseline performance without optimization.")
-    print("After collecting usage logs and running MIPROv2, expect 30-50% improvement.")

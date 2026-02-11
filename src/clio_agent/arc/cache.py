@@ -1,8 +1,8 @@
 """LRU Cache for hot data (O(1) access)"""
 
-from typing import Any, Optional, Dict
 import time
 from threading import Lock
+from typing import Any, Dict, Optional
 
 try:
     from lru import LRU  # lru-dict package

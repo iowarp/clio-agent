@@ -19,7 +19,6 @@ See docs/ARC_MEMORY_LAYER.md for architecture details.
 
 import re
 from collections import Counter
-from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from clio_agent.arc.memory import ARCMemory

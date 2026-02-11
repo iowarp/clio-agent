@@ -21,7 +21,6 @@ See PLAN.md v0.3.0 Task 2 for requirements.
 """
 
 import os
-import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional

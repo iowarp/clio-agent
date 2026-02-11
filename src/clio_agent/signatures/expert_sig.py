@@ -17,9 +17,10 @@ Available Signature:
 - DataExpertSignature: Scientific data file optimization
 """
 
-import dspy
 import sys
 from pathlib import Path
+
+import dspy
 
 # Add src to path for UV script execution
 _current_file = Path(__file__).resolve()

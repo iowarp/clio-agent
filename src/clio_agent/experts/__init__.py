@@ -30,20 +30,11 @@ Expert Registry:
     >>> result = data_expert(question="...")
 """
 
-import sys
-from pathlib import Path
+from typing import Any, Dict
 
-# Add src to path for UV script execution
-_current_file = Path(__file__).resolve()
-_src_root = _current_file.parent.parent  # src/clio_agent/experts/__init__.py -> src/
-if str(_src_root) not in sys.path:
-    sys.path.insert(0, str(_src_root))
-
-from clio_agent.experts.data_expert import DataExpert
-
-from typing import Dict, Any
 import dspy
 
+from clio_agent.experts.data_expert import DataExpert
 
 # ============================================================================
 # EXPERT REGISTRY

@@ -22,10 +22,10 @@ Example:
     >>> matching = registry.find_agents_by_keyword("hdf5")
 """
 
-from typing import Dict, List, Optional, Any
-from dataclasses import dataclass, field
-import threading
 import copy
+import threading
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional
 
 
 @dataclass

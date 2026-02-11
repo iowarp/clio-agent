@@ -27,10 +27,10 @@ Example:
     ... )
 """
 
-from clio_agent.signatures.main_agent_sig import MainAgentSignature
 from clio_agent.signatures.expert_sig import (
     DataExpertSignature,
 )
+from clio_agent.signatures.main_agent_sig import MainAgentSignature
 
 __all__ = [
     "MainAgentSignature",
