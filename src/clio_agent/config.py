@@ -291,6 +291,14 @@ def _lm_studio_models_url(base_url: str) -> str:
     return f"{normalized}/v1/models"
 
 
+def _openai_compatible_api_base(base_url: str) -> str:
+    """Return an OpenAI-compatible API base with exactly one /v1 suffix."""
+    normalized = base_url.rstrip("/")
+    if normalized.endswith("/v1"):
+        return normalized
+    return f"{normalized}/v1"
+
+
 def select_models_for_agents(models: List[str]) -> tuple[str, str]:
     """Select main and expert models from available models.
 
@@ -416,7 +424,7 @@ def configure_dspy_lm_studio(config: Optional[LMStudioConfig] = None) -> dspy.LM
 
     lm = dspy.LM(
         model=model_name,
-        api_base=f"{cfg.base_url}/v1",
+        api_base=_openai_compatible_api_base(cfg.base_url),
         api_key=cfg.api_key,
         temperature=cfg.temperature,
         max_tokens=cfg.max_tokens,
@@ -433,7 +441,7 @@ def configure_dspy_router_lm_studio(config: Optional[RouterLMConfig] = None) -> 
 
     return dspy.LM(
         model=model_name,
-        api_base=f"{cfg.base_url}/v1",
+        api_base=_openai_compatible_api_base(cfg.base_url),
         api_key=cfg.api_key,
         temperature=cfg.temperature,
         max_tokens=cfg.max_tokens,
@@ -448,7 +456,7 @@ def configure_dspy_reasoner_lm_studio(config: Optional[ReasonerLMConfig] = None)
 
     return dspy.LM(
         model=model_name,
-        api_base=f"{cfg.base_url}/v1",
+        api_base=_openai_compatible_api_base(cfg.base_url),
         api_key=cfg.api_key,
         temperature=cfg.temperature,
         max_tokens=cfg.max_tokens,
