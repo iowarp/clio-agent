@@ -61,11 +61,13 @@ def analyze_schema(filepath: str) -> dict[str, Any]:
         columns = []
         for i in range(len(schema)):
             field = schema.field(i)
-            columns.append({
-                "name": field.name,
-                "type": str(field.type),
-                "nullable": field.nullable,
-            })
+            columns.append(
+                {
+                    "name": field.name,
+                    "type": str(field.type),
+                    "nullable": field.nullable,
+                }
+            )
 
         result: dict[str, Any] = {
             "filepath": str(safe_path),
@@ -204,19 +206,25 @@ def compute_statistics(filepath: str, column: str) -> dict[str, Any]:
             "null_count": null_count,
         }
 
-        # Check if numeric type using pyarrow type checking
-        _NUMERIC_TYPES = (
-            pa.int8(), pa.int16(), pa.int32(), pa.int64(),
-            pa.uint8(), pa.uint16(), pa.uint32(), pa.uint64(),
-            pa.float16(), pa.float32(), pa.float64(),
-        )
-        is_numeric = col_type in _NUMERIC_TYPES
+        is_numeric = pa.types.is_integer(col_type) or pa.types.is_floating(col_type)
 
         if is_numeric:
-            # Convert to numpy for statistics, dropping nulls
-            series = col_array.to_numpy()
-            # Filter out NaN/None for numeric stats
-            valid = series[~np.isnan(series)] if np.issubdtype(series.dtype, np.floating) else series
+            non_null = col_array.drop_null()
+            if len(non_null) == 0:
+                result["unique_count"] = 0
+                result["non_null_count"] = 0
+                return result
+
+            series = non_null.to_numpy(zero_copy_only=False)
+            if np.issubdtype(series.dtype, np.floating):
+                valid = series[~np.isnan(series)]
+            else:
+                valid = series
+
+            if len(valid) == 0:
+                result["unique_count"] = 0
+                result["non_null_count"] = 0
+                return result
 
             result["min"] = float(np.min(valid))
             result["max"] = float(np.max(valid))
@@ -224,6 +232,7 @@ def compute_statistics(filepath: str, column: str) -> dict[str, Any]:
             result["std"] = float(np.std(valid))
             result["median"] = float(np.median(valid))
             result["unique_count"] = int(len(np.unique(valid)))
+            result["non_null_count"] = int(len(valid))
         else:
             # String/categorical statistics
             py_values = col_array.to_pylist()
