@@ -11,8 +11,9 @@ uv sync --extra dev --extra api --extra optimizers
 ## 2) Run quality checks before every PR
 
 ```bash
-uv run ruff check src/ tests/
-uv run ruff format src/ tests/
+uv run ruff check src/ tests/ scripts/create_demo_data.py
+uv run ruff format src/ tests/ scripts/create_demo_data.py
+bash -n scripts/homelab-env.sh
 uv run mypy src/
 uv run pytest tests/ -m "not integration" --cov-fail-under=80
 ```
@@ -26,6 +27,11 @@ uv run pytest tests/
 ## 3) Run the app locally
 
 ```bash
+source scripts/homelab-env.sh
+clio_homelab_use dynamo-lms
+export CLIO_ALLOWED_ROOTS=/home/akougkas/iowarp/clio-agent:/tmp
+uv run src/clio_agent/ui/cli.py doctor
+uv run scripts/create_demo_data.py --output-dir /tmp/clio-agent-demo
 uv run src/clio_agent/ui/cli.py
 uv run src/clio_agent/ui/api.py --port 8000
 ```

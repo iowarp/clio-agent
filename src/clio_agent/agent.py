@@ -720,6 +720,7 @@ class ClioAgent(dspy.Module):
                     return f"{int(value)} {unit}"
                 return f"{value:.1f} {unit}"
             value /= 1024
+        return f"{value:.1f} TiB"
 
     @staticmethod
     def _call_tool_function(tool: Any, *args: Any, **kwargs: Any) -> Any:

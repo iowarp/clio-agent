@@ -9,14 +9,34 @@ import logging
 import threading
 from collections.abc import Callable, Mapping
 from contextlib import suppress
-from typing import Any, AsyncContextManager, Protocol
+from typing import Any, Protocol
 
 import dspy
 from fastmcp import Client
 
 logger = logging.getLogger(__name__)
 
-ClientFactory = Callable[[Any], AsyncContextManager[Any]]
+class MCPClientProtocol(Protocol):
+    """Subset of FastMCP client methods used by the bridge."""
+
+    async def __aenter__(self) -> "MCPClientProtocol":
+        """Enter the client context."""
+        ...
+
+    async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> bool | None:
+        """Exit the client context."""
+        ...
+
+    async def list_tools(self) -> list[Any]:
+        """List tools exposed by the backing server."""
+        ...
+
+    async def call_tool(self, name: str, arguments: dict[str, Any]) -> Any:
+        """Call a named tool on the backing server."""
+        ...
+
+
+ClientFactory = Callable[[Any], MCPClientProtocol]
 
 
 class ToolExecutor(Protocol):
@@ -64,7 +84,8 @@ class MCPToolBridge:
         self._timeout = timeout
         self._setup_timeout = setup_timeout
         self._client_factory = client_factory or Client
-        self._client: Any | None = None
+        self._client_ctx: MCPClientProtocol | None = None
+        self._client: MCPClientProtocol | None = None
         self._mcp_tools: dict[str, Any] = {}
         self._setup_done = threading.Event()
         self._setup_error: BaseException | None = None
@@ -115,8 +136,8 @@ class MCPToolBridge:
     async def _setup(self) -> None:
         """Open the client connection and discover tools."""
         try:
-            self._client = self._client_factory(self._server)
-            await self._client.__aenter__()
+            self._client_ctx = self._client_factory(self._server)
+            self._client = await self._client_ctx.__aenter__()
             tools = await self._client.list_tools()
             for tool in tools:
                 self._mcp_tools[tool.name] = tool
@@ -180,10 +201,10 @@ class MCPToolBridge:
                 return
             self._closed = True
 
-            if self._client is not None and self._loop.is_running():
+            if self._client_ctx is not None and self._loop.is_running():
                 try:
                     future = asyncio.run_coroutine_threadsafe(
-                        self._client.__aexit__(None, None, None),
+                        self._client_ctx.__aexit__(None, None, None),
                         self._loop,
                     )
                     future.result(timeout=min(5.0, max(0.1, self._timeout)))

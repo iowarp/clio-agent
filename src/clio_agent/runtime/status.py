@@ -647,11 +647,13 @@ class RuntimeProbe:
             item for item in env_paths if item["configured"] and item.get("exists") is False
         ]
         if missing_env_paths:
-            missing = ", ".join(f"{item['name']}={item['value']}" for item in missing_env_paths)
+            missing_env_summary = ", ".join(
+                f"{item['name']}={item['value']}" for item in missing_env_paths
+            )
             return IntegrationStatus(
                 name="clio_core",
                 state=IntegrationState.MISCONFIGURED,
-                summary=f"Configured clio-core env path(s) do not exist: {missing}",
+                summary=f"Configured clio-core env path(s) do not exist: {missing_env_summary}",
                 config_source=source,
                 next_action="Fix or unset the missing clio-core environment path(s).",
                 endpoint=str(core_path),
@@ -683,16 +685,16 @@ class RuntimeProbe:
         if visualizer.get("state") == "ready":
             capabilities.append("visualizer-status")
 
-        missing: list[str] = []
+        missing_capabilities: list[str] = []
         if not chimaera_bins:
-            missing.append("chimaera binary")
+            missing_capabilities.append("chimaera binary")
         if not config_candidates and not any(
             item["name"] in {"CHI_SERVER_CONF", "WRP_RUNTIME_CONF"} and item["configured"]
             for item in env_paths
         ):
-            missing.append("runtime YAML config")
+            missing_capabilities.append("runtime YAML config")
         if visualizer.get("state") == "unavailable":
-            missing.append("visualizer status endpoint")
+            missing_capabilities.append("visualizer status endpoint")
 
         details = {
             "suggested_env": _CLIO_CORE_ENV_VARS,
@@ -706,11 +708,14 @@ class RuntimeProbe:
             "explicit_path": explicit,
         }
 
-        if missing:
+        if missing_capabilities:
             return IntegrationStatus(
                 name="clio_core",
                 state=IntegrationState.DEGRADED,
-                summary=f"clio-core path exists but discovery is incomplete: {', '.join(missing)}.",
+                summary=(
+                    "clio-core path exists but discovery is incomplete: "
+                    f"{', '.join(missing_capabilities)}."
+                ),
                 config_source=source,
                 next_action=(
                     "Build/install clio-core or set CLIO_CHIMAERA_BIN, CHI_SERVER_CONF, "

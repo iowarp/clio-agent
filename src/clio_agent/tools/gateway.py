@@ -20,7 +20,7 @@ Usage:
 """
 
 import inspect
-from typing import Any
+from typing import Any, cast
 
 from fastmcp import Client, FastMCP
 
@@ -31,10 +31,11 @@ from clio_agent.tools.servers.parquet_server import parquet_server
 def _mount_with_namespace(parent: FastMCP, server: FastMCP, namespace: str) -> None:
     """Mount a server with stable namespaced tool names across FastMCP versions."""
     mount_params = inspect.signature(parent.mount).parameters
+    mount = cast(Any, parent.mount)
     if "namespace" in mount_params:
-        parent.mount(server, namespace=namespace)
+        mount(server, namespace=namespace)
     else:
-        parent.mount(server, prefix=namespace)
+        mount(server, prefix=namespace)
 
 
 # Gateway singleton: composes all tool servers under namespaced prefixes.

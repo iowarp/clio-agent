@@ -7,15 +7,18 @@
 - `arc/` for memory/indexing/storage components
 - `tools/servers/` for FastMCP-backed tool servers
 - `optimizer/` for tuning and instrumentation workflows
+- `runtime/` for doctor and integration status reporting
 
 Tests mirror the runtime layout in `tests/` (`test_core/`, `test_arc/`, `test_experts/`, `test_tools/`, `test_integration/`). Architecture and design docs live in `docs/`, and reference material is in `ai-docs/`.
+Helper scripts for local demos and homelab setup live in `scripts/`.
 
 ## Build, Test, and Development Commands
 Use `uv` for environment and command execution:
 - `uv sync --extra dev --extra api --extra optimizers` installs contributor dependencies.
-- `uv run ruff check src/ tests/` runs lint checks.
-- `uv run ruff format src/ tests/` formats code.
+- `uv run ruff check src/ tests/ scripts/create_demo_data.py` runs lint checks.
+- `uv run ruff format src/ tests/ scripts/create_demo_data.py` formats code.
 - `uv run pytest tests/` runs the full test suite with coverage output.
+- `uv run src/clio_agent/ui/cli.py doctor` reports runtime truth for LM, tools, file policy, API, and `clio-core`.
 - `uv run src/clio_agent/ui/cli.py` starts the interactive CLI.
 - `uv run src/clio_agent/ui/api.py --port 8000` starts the REST API locally.
 
