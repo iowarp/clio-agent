@@ -10,12 +10,13 @@ import time
 from typing import get_args, get_type_hints
 from unittest.mock import MagicMock, patch
 
-import dspy
+import pytest
 
 from clio_agent.agent import ClioAgent
-from clio_agent.arc.memory import ARCMemory
 from clio_agent.arc.schema import DatasetProfile
 from clio_agent.signatures.main_agent_sig import RouterSignature
+
+pytestmark = pytest.mark.integration
 
 
 class TestRouterLiteral:
@@ -106,7 +107,7 @@ class TestDispatch:
         mock_result.recommendations = "Check null rates"
 
         with patch.object(agent, "analysis_expert", return_value=mock_result) as mock_expert:
-            result = agent(question="Analyze the schema of data.parquet")
+            result = agent(question="Analyze parquet schema")
             mock_expert.assert_called_once()
             assert "Parquet schema" in result.answer
             assert result.selected_expert == "analysis"
@@ -238,7 +239,6 @@ class TestDatasetProfileSharing:
 
         # Track what file_context the analysis_expert receives
         received_contexts = []
-        original_call = agent.analysis_expert.__class__.__call__
 
         mock_result = MagicMock()
         mock_result.analysis = "Analysis with profile context"

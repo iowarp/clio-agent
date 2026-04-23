@@ -18,6 +18,7 @@ from typing import Any, Callable, Mapping
 import requests
 
 from clio_agent.config import PROVIDER_DEFAULTS, LMProviderConfig
+from clio_agent.tools.file_policy import FileAccessPolicy, FilePolicyError
 
 
 class IntegrationState(str, Enum):
@@ -198,6 +199,7 @@ class RuntimeProbe:
         integrations = [
             self.probe_lm_provider(),
             self.probe_arc(),
+            self.probe_file_policy(),
             gateway_status,
             self.probe_hdf5(gateway_tools),
             self.probe_parquet(gateway_tools),
@@ -205,6 +207,56 @@ class RuntimeProbe:
             self.probe_clio_core(),
         ]
         return RuntimeReport(integrations=integrations)
+
+    def probe_file_policy(self) -> IntegrationStatus:
+        """Report local file access policy used by tools and direct answers."""
+        try:
+            policy = FileAccessPolicy.from_mapping(self.env)
+        except FilePolicyError as exc:
+            return IntegrationStatus(
+                name="file_policy",
+                state=IntegrationState.MISCONFIGURED,
+                summary=exc.message,
+                config_source=exc.field,
+                next_action=exc.next_action,
+                details=exc.to_result()["error"],
+                required=True,
+            )
+
+        details = policy.to_dict()
+        roots = ", ".join(details["allowed_roots"])
+        config_source = (
+            "env:CLIO_ALLOWED_ROOTS"
+            if self.env.get("CLIO_ALLOWED_ROOTS", "").strip()
+            else "default:cwd+/tmp"
+        )
+        max_source = (
+            "env:CLIO_MAX_FILE_SIZE_BYTES"
+            if self.env.get("CLIO_MAX_FILE_SIZE_BYTES", "").strip()
+            else "default:1GiB"
+        )
+        symlink_source = (
+            "env:CLIO_ALLOW_SYMLINKS"
+            if self.env.get("CLIO_ALLOW_SYMLINKS", "").strip()
+            else "default:deny-symlinks"
+        )
+        symlink_summary = "allowed" if policy.allow_symlinks else "denied"
+        return IntegrationStatus(
+            name="file_policy",
+            state=IntegrationState.READY,
+            summary=(
+                f"Local file access allows roots [{roots}], max file size "
+                f"{_format_bytes(policy.max_file_size_bytes)}, symlinks {symlink_summary}."
+            ),
+            config_source=f"{config_source}; {max_source}; {symlink_source}",
+            next_action=(
+                "Set CLIO_ALLOWED_ROOTS, CLIO_MAX_FILE_SIZE_BYTES, or "
+                "CLIO_ALLOW_SYMLINKS to change local file policy."
+            ),
+            capabilities=["read-validation", "write-validation", "size-limit"],
+            details=details,
+            required=True,
+        )
 
     def probe_lm_provider(self) -> IntegrationStatus:
         """Probe configured LM provider without constructing a DSPy agent."""
@@ -866,6 +918,17 @@ def _existing_unique_paths(paths: list[Path], *, executable: bool = False) -> li
             seen.add(resolved)
             results.append(resolved)
     return results
+
+
+def _format_bytes(size: int) -> str:
+    value = float(size)
+    for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
+        if value < 1024 or unit == "TiB":
+            if unit == "B":
+                return f"{int(value)} {unit}"
+            return f"{value:.1f} {unit}"
+        value /= 1024
+    return f"{size} B"
 
 
 def _list_gateway_capabilities() -> list[dict[str, Any]]:

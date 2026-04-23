@@ -6,7 +6,7 @@ import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 DEFAULT_MAX_FILE_SIZE_BYTES = 1 << 30
 DEFAULT_ALLOWED_ROOTS = (Path.cwd(), Path("/tmp"))
@@ -63,13 +63,18 @@ class FileAccessPolicy:
     @classmethod
     def from_env(cls) -> "FileAccessPolicy":
         """Build policy from CLIO_* environment variables."""
-        roots_raw = os.environ.get("CLIO_ALLOWED_ROOTS", "")
+        return cls.from_mapping(os.environ)
+
+    @classmethod
+    def from_mapping(cls, env: Mapping[str, str]) -> "FileAccessPolicy":
+        """Build policy from an environment-like mapping."""
+        roots_raw = env.get("CLIO_ALLOWED_ROOTS", "")
         if roots_raw.strip():
             roots = tuple(Path(item).expanduser() for item in roots_raw.split(os.pathsep) if item)
         else:
             roots = DEFAULT_ALLOWED_ROOTS
 
-        max_size_raw = os.environ.get("CLIO_MAX_FILE_SIZE_BYTES", "")
+        max_size_raw = env.get("CLIO_MAX_FILE_SIZE_BYTES", "")
         try:
             max_size = int(max_size_raw) if max_size_raw else DEFAULT_MAX_FILE_SIZE_BYTES
         except ValueError as exc:
@@ -87,7 +92,7 @@ class FileAccessPolicy:
                 next_action="Set CLIO_MAX_FILE_SIZE_BYTES to a positive integer.",
             )
 
-        allow_symlinks = os.environ.get("CLIO_ALLOW_SYMLINKS", "false").lower() in {
+        allow_symlinks = env.get("CLIO_ALLOW_SYMLINKS", "false").lower() in {
             "1",
             "true",
             "yes",
@@ -97,6 +102,16 @@ class FileAccessPolicy:
             max_file_size_bytes=max_size,
             allow_symlinks=allow_symlinks,
         )
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return a JSON-serializable policy snapshot."""
+        return {
+            "allowed_roots": [str(root) for root in self.allowed_roots],
+            "max_file_size_bytes": self.max_file_size_bytes,
+            "allow_symlinks": self.allow_symlinks,
+            "read_mode": "existing regular files under allowed roots",
+            "write_mode": "explicit output paths under allowed roots",
+        }
 
     def validate_read(self, filepath: str, *, field: str = "filepath") -> Path:
         """Validate a read-only file path and return its resolved path."""
@@ -136,8 +151,7 @@ class FileAccessPolicy:
             raise self._error(
                 code="file_too_large",
                 message=(
-                    f"File size {size} exceeds policy limit "
-                    f"{self.max_file_size_bytes}: {resolved}"
+                    f"File size {size} exceeds policy limit {self.max_file_size_bytes}: {resolved}"
                 ),
                 field=field,
                 path=str(resolved),

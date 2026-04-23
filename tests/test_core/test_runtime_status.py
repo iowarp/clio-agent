@@ -53,11 +53,13 @@ def test_runtime_report_ready_path(tmp_path):
     assert report.overall_status == "ready"
     assert report.by_name("lm_provider").state == IntegrationState.READY
     assert report.by_name("arc").state == IntegrationState.READY
+    assert report.by_name("file_policy").state == IntegrationState.READY
     assert report.by_name("gateway").state == IntegrationState.READY
     assert report.by_name("hdf5").state == IntegrationState.READY
     assert report.by_name("parquet").state == IntegrationState.READY
     assert report.by_name("api").state == IntegrationState.READY
     assert report.by_name("clio_core").state == IntegrationState.SKIPPED
+    assert report.by_name("file_policy").details["max_file_size_bytes"] == 1 << 30
 
 
 def test_runtime_report_degraded_path(tmp_path):
@@ -122,6 +124,40 @@ def test_lm_provider_misconfigured_when_cloud_key_missing(tmp_path):
     assert status.state == IntegrationState.MISCONFIGURED
     assert "requires" in status.summary
     assert "CLIO_LM_API_KEY" in status.summary
+
+
+def test_file_policy_probe_reports_configured_roots(tmp_path):
+    """Doctor exposes the effective local file access policy."""
+    probe = RuntimeProbe(
+        env={
+            "CLIO_ALLOWED_ROOTS": str(tmp_path),
+            "CLIO_MAX_FILE_SIZE_BYTES": "4096",
+            "CLIO_ALLOW_SYMLINKS": "true",
+        },
+        default_clio_core_path=None,
+    )
+
+    status = probe.probe_file_policy()
+
+    assert status.state == IntegrationState.READY
+    assert "CLIO_ALLOWED_ROOTS" in status.config_source
+    assert status.details["allowed_roots"] == [str(tmp_path.resolve())]
+    assert status.details["max_file_size_bytes"] == 4096
+    assert status.details["allow_symlinks"] is True
+
+
+def test_file_policy_probe_reports_invalid_policy_as_misconfigured():
+    """Invalid file policy env should be a doctor status, not a tool-time crash."""
+    probe = RuntimeProbe(
+        env={"CLIO_MAX_FILE_SIZE_BYTES": "not-an-int"},
+        default_clio_core_path=None,
+    )
+
+    status = probe.probe_file_policy()
+
+    assert status.state == IntegrationState.MISCONFIGURED
+    assert "CLIO_MAX_FILE_SIZE_BYTES" in status.summary
+    assert status.details["type"] == "file_policy"
 
 
 def test_clio_core_probe_ready_with_default_path(tmp_path, monkeypatch):

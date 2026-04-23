@@ -4,6 +4,9 @@
 # dependencies = [
 #   "dspy-ai>=3.0.3",
 #   "fastmcp>=2.13.0",
+#   "h5py>=3.10.0",
+#   "pyarrow>=14.0.0",
+#   "matplotlib>=3.8.0",
 #   "rich>=14.2.0",
 #   "prompt-toolkit>=3.0.0",
 #   "sortedcontainers>=2.4.0",
@@ -36,9 +39,11 @@ Example:
 import asyncio
 import sys
 from pathlib import Path
+from typing import Any
 
 from rich.console import Console
 from rich.markdown import Markdown
+from rich.markup import escape
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
@@ -56,6 +61,7 @@ from clio_agent.config import setup_dspy
 # CLI CLASS
 # ============================================================================
 
+
 class ClioAgentCLI:
     """Interactive CLI for ClioAgent data I/O expert system.
 
@@ -71,10 +77,7 @@ class ClioAgentCLI:
         history: Conversation history
     """
 
-    def __init__(
-        self,
-        verbose: bool = False
-    ):
+    def __init__(self, verbose: bool = False):
         """Initialize ClioAgent CLI.
 
         Args:
@@ -82,7 +85,7 @@ class ClioAgentCLI:
         """
         self.console = Console()
         self.verbose = verbose
-        self.history = []
+        self.history: list[dict[str, Any]] = []
 
         # Setup LM Studio
         try:
@@ -125,9 +128,9 @@ class ClioAgentCLI:
         self.console.print()
         self.console.print(Align.center(logo_text))
         self.console.print()
-        self.console.print(Align.center(
-            Panel(info, border_style="cyan", expand=False, padding=(0, 2))
-        ))
+        self.console.print(
+            Align.center(Panel(info, border_style="cyan", expand=False, padding=(0, 2)))
+        )
 
     def print_help(self):
         """Print help message."""
@@ -168,12 +171,8 @@ class ClioAgentCLI:
         experts_table.add_column("Keywords", style="yellow")
 
         for expert_id, cap in caps.items():
-            keywords = ", ".join(cap['keywords'][:5])  # Show first 5
-            experts_table.add_row(
-                expert_id,
-                cap['description'][:60] + "...",
-                keywords
-            )
+            keywords = ", ".join(cap["keywords"][:5])  # Show first 5
+            experts_table.add_row(expert_id, cap["description"][:60] + "...", keywords)
 
         self.console.print(experts_table)
 
@@ -189,7 +188,7 @@ Registry Type: Capability-Based Routing
 Router: Literal["chat", "data", "analysis", "visualization", "none"] via ChainOfThought
 
 [cyan]Registered Agent IDs:[/cyan]
-{', '.join(agent_ids) if agent_ids else 'None'}
+{", ".join(agent_ids) if agent_ids else "None"}
 
 [dim]Use /experts to see detailed agent capabilities[/dim]"""
 
@@ -205,19 +204,23 @@ Router: Literal["chat", "data", "analysis", "visualization", "none"] via ChainOf
 
         table.add_row("Cache Hit Rate", f"{stats['hit_rate']:.2%}")
         table.add_row("Cache Size", f"{stats['size']}/{stats['capacity']}")
-        table.add_row("Cache Hits", str(stats['hits']))
-        table.add_row("Cache Misses", str(stats['misses']))
-        table.add_row("Disk Reads", str(stats.get('disk_reads', 0)))
-        table.add_row("Disk Writes", str(stats.get('disk_writes', 0)))
+        table.add_row("Cache Hits", str(stats["hits"]))
+        table.add_row("Cache Misses", str(stats["misses"]))
+        table.add_row("Disk Reads", str(stats.get("disk_reads", 0)))
+        table.add_row("Disk Writes", str(stats.get("disk_writes", 0)))
 
         self.console.print(table)
 
         # Show performance vs targets
-        hit_rate = stats['hit_rate']
+        hit_rate = stats["hit_rate"]
         if hit_rate >= 0.85:
-            self.console.print(f"\n[green]Cache hit rate ({hit_rate:.1%}) exceeds target (85%)[/green]")
+            self.console.print(
+                f"\n[green]Cache hit rate ({hit_rate:.1%}) exceeds target (85%)[/green]"
+            )
         else:
-            self.console.print(f"\n[yellow]Cache hit rate ({hit_rate:.1%}) below target (85%)[/yellow]")
+            self.console.print(
+                f"\n[yellow]Cache hit rate ({hit_rate:.1%}) below target (85%)[/yellow]"
+            )
 
     def print_tools(self):
         """Display available MCP tools from the gateway."""
@@ -319,7 +322,9 @@ Router: Literal["chat", "data", "analysis", "visualization", "none"] via ChainOf
         elif cmd.startswith("/rollback"):
             parts = cmd.split(None, 1)
             if len(parts) < 2:
-                self.console.print("[yellow]Usage: /rollback <data|analysis|visualization>[/yellow]")
+                self.console.print(
+                    "[yellow]Usage: /rollback <data|analysis|visualization>[/yellow]"
+                )
             else:
                 self._handle_rollback(parts[1])
             return True
@@ -424,7 +429,9 @@ Router: Literal["chat", "data", "analysis", "visualization", "none"] via ChainOf
                 try:
                     vm.load_variant(getattr(self.agent, expert_attr), restored)
                 except Exception as e:
-                    self.console.print(f"[yellow]Warning: Could not load variant state: {e}[/yellow]")
+                    self.console.print(
+                        f"[yellow]Warning: Could not load variant state: {e}[/yellow]"
+                    )
 
             self.console.print(f"[green]Rolled back to variant {restored}[/green]")
         else:
@@ -445,17 +452,14 @@ Router: Literal["chat", "data", "analysis", "visualization", "none"] via ChainOf
             Dictionary with result including answer, expert, and stats
         """
         # Show processing spinner
-        with self.console.status(
-            "[#00B4FF]Routing query...[/#00B4FF]",
-            spinner="dots"
-        ):
+        with self.console.status("[#00B4FF]Routing query...[/#00B4FF]", spinner="dots"):
             result = self.agent(question=question)
 
         return {
             "question": question,
             "expert": result.selected_expert,
             "answer": result.answer,
-            "duration_ms": getattr(result, 'duration_ms', 0)
+            "duration_ms": getattr(result, "duration_ms", 0),
         }
 
     def run(self):
@@ -465,7 +469,9 @@ Router: Literal["chat", "data", "analysis", "visualization", "none"] via ChainOf
         from prompt_toolkit.history import InMemoryHistory
 
         self.print_banner()
-        self.console.print("\n[bold green]Ready[/bold green]  [dim]|[/dim]  Type [cyan]/help[/cyan] for commands\n")
+        self.console.print(
+            "\n[bold green]Ready[/bold green]  [dim]|[/dim]  Type [cyan]/help[/cyan] for commands\n"
+        )
 
         # Setup prompt toolkit for better input
         history = InMemoryHistory()
@@ -474,9 +480,7 @@ Router: Literal["chat", "data", "analysis", "visualization", "none"] via ChainOf
             try:
                 # Get user input with history and auto-suggest
                 user_input = pt_prompt(
-                    "You: ",
-                    history=history,
-                    auto_suggest=AutoSuggestFromHistory()
+                    "You: ", history=history, auto_suggest=AutoSuggestFromHistory()
                 ).strip()
 
                 if not user_input.strip():
@@ -492,17 +496,21 @@ Router: Literal["chat", "data", "analysis", "visualization", "none"] via ChainOf
 
                 # Show verbose info
                 if self.verbose:
-                    self.console.print(f"\n[#00B4FF]Router:[/#00B4FF] [bold]{result['expert']}[/bold]")
-                    self.console.print(f"[#FF8800]Duration:[/#FF8800] {result['duration_ms']:.0f}ms\n")
+                    self.console.print(
+                        f"\n[#00B4FF]Router:[/#00B4FF] [bold]{result['expert']}[/bold]"
+                    )
+                    self.console.print(
+                        f"[#FF8800]Duration:[/#FF8800] {result['duration_ms']:.0f}ms\n"
+                    )
 
                 # Show answer with expert label in panel
-                expert_label = result['expert'].upper()
+                expert_label = result["expert"].upper()
                 self.console.print(
                     Panel(
-                        Markdown(result['answer']),
+                        Markdown(result["answer"]),
                         title=f"[bold #00FF88]CLIO[/bold #00FF88] [dim]via {expert_label}[/dim]",
                         subtitle="[dim]Router dispatch[/dim]" if not self.verbose else None,
-                        border_style="#00B4FF"
+                        border_style="#00B4FF",
                     )
                 )
 
@@ -522,6 +530,7 @@ Router: Literal["chat", "data", "analysis", "visualization", "none"] via ChainOf
                 self.console.print(f"\n[red]Error: {e}[/red]")
                 if self.verbose:
                     import traceback
+
                     traceback.print_exc()
                 continue
 
@@ -530,9 +539,8 @@ Router: Literal["chat", "data", "analysis", "visualization", "none"] via ChainOf
 # MAIN ENTRY POINT
 # ============================================================================
 
-def run_cli(
-    verbose: bool = False
-):
+
+def run_cli(verbose: bool = False):
     """Run ClioAgent CLI with agent framework.
 
     Args:
@@ -541,9 +549,7 @@ def run_cli(
     Example:
         >>> run_cli()  # Uses LM Studio
     """
-    cli = ClioAgentCLI(
-        verbose=verbose
-    )
+    cli = ClioAgentCLI(verbose=verbose)
     cli.run()
 
 
@@ -560,6 +566,7 @@ def render_doctor_report(console: Console, report) -> None:
     table = Table(title=title, show_header=True)
     table.add_column("Integration", style="cyan")
     table.add_column("Status")
+    table.add_column("Summary")
     table.add_column("Config Source")
     table.add_column("Endpoint")
     table.add_column("Next Action")
@@ -570,9 +577,10 @@ def render_doctor_report(console: Console, report) -> None:
         table.add_row(
             item.name,
             f"[{style}]{state}[/{style}]",
-            item.config_source,
-            item.endpoint or "",
-            item.next_action,
+            escape(item.summary),
+            escape(item.config_source),
+            escape(item.endpoint or ""),
+            escape(item.next_action),
         )
 
     console.print(table)
@@ -605,32 +613,26 @@ if __name__ == "__main__":
         help="Optional command. Use 'doctor' to inspect runtime integrations.",
     )
     parser.add_argument(
-        "--verbose", "-v",
-        action="store_true",
-        help="Show routing reasoning and tool calls"
+        "--verbose", "-v", action="store_true", help="Show routing reasoning and tool calls"
     )
     parser.add_argument(
-        "--query", "-q",
-        type=str,
-        help="Non-interactive mode: ask single question and exit"
+        "--query", "-q", type=str, help="Non-interactive mode: ask single question and exit"
     )
     parser.add_argument(
         "--session",
         type=str,
         default="cli_session",
-        help="Session ID for conversation tracking (default: cli_session)"
+        help="Session ID for conversation tracking (default: cli_session)",
     )
     parser.add_argument(
-        "--json",
-        action="store_true",
-        help="Output results as JSON (use with --query)"
+        "--json", action="store_true", help="Output results as JSON (use with --query)"
     )
     parser.add_argument(
         "--tune",
         type=str,
         choices=["data", "analysis", "visualization"],
         metavar="EXPERT_ID",
-        help="Run SIMBA optimization for an expert (data|analysis|visualization)"
+        help="Run SIMBA optimization for an expert (data|analysis|visualization)",
     )
 
     args = parser.parse_args()
@@ -744,13 +746,15 @@ if __name__ == "__main__":
 
             if args.json:
                 # JSON output
+                error_info = getattr(result, "error_info", None)
                 output = {
                     "question": args.query,
                     "answer": result.answer,
                     "selected_expert": result.selected_expert,
-                    "duration_ms": getattr(result, 'duration_ms', 0.0),
-                    "session_id": getattr(result, 'session_id', args.session),
-                    "status": "success"
+                    "duration_ms": getattr(result, "duration_ms", 0.0),
+                    "session_id": getattr(result, "session_id", args.session),
+                    "error_info": error_info,
+                    "status": "degraded" if error_info else "success",
                 }
                 print(json.dumps(output, indent=2))
             else:
@@ -768,6 +772,7 @@ if __name__ == "__main__":
                 console.print(f"[red]Error: {e}[/red]")
                 if args.verbose:
                     import traceback
+
                     traceback.print_exc()
             sys.exit(1)
 

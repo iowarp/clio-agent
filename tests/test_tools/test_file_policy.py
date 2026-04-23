@@ -63,3 +63,21 @@ def test_validate_read_rejects_symlink_by_default(tmp_path):
         raise AssertionError("Expected FilePolicyError")
 
     assert result["error"]["code"] == "symlink_denied"
+
+
+def test_policy_from_mapping_reports_effective_settings(tmp_path):
+    policy = FileAccessPolicy.from_mapping(
+        {
+            "CLIO_ALLOWED_ROOTS": str(tmp_path),
+            "CLIO_MAX_FILE_SIZE_BYTES": "4096",
+            "CLIO_ALLOW_SYMLINKS": "true",
+        }
+    )
+
+    result = policy.to_dict()
+
+    assert result["allowed_roots"] == [str(tmp_path.resolve())]
+    assert result["max_file_size_bytes"] == 4096
+    assert result["allow_symlinks"] is True
+    assert "read_mode" in result
+    assert "write_mode" in result

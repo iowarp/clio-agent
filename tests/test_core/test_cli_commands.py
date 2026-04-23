@@ -7,7 +7,6 @@ that optimizer commands integrate correctly without requiring LM Studio.
 import io
 from unittest.mock import MagicMock, patch
 
-import pytest
 from rich.console import Console
 
 from clio_agent.arc.memory import ARCMemory
@@ -254,15 +253,17 @@ class TestHandleCommand:
         """Test /memory command shows ARC stats."""
         cli = _make_cli(tmp_path)
         # Mock get_arc_stats
-        cli.agent.get_arc_stats = MagicMock(return_value={
-            "hit_rate": 0.50,
-            "hits": 10,
-            "misses": 10,
-            "size": 5,
-            "capacity": 1000,
-            "disk_reads": 3,
-            "disk_writes": 7,
-        })
+        cli.agent.get_arc_stats = MagicMock(
+            return_value={
+                "hit_rate": 0.50,
+                "hits": 10,
+                "misses": 10,
+                "size": 5,
+                "capacity": 1000,
+                "disk_reads": 3,
+                "disk_writes": 7,
+            }
+        )
         result = cli.handle_command("/memory")
         assert result is True
         output = cli.console.file.getvalue()
@@ -293,7 +294,14 @@ class TestHandleCommand:
                     summary="LM ready",
                     config_source="test",
                     next_action="No action required.",
-                )
+                ),
+                IntegrationStatus(
+                    name="file_policy",
+                    state=IntegrationState.READY,
+                    summary="Local file access allows roots [/tmp], symlinks denied.",
+                    config_source="default:cwd+/tmp",
+                    next_action="No action required.",
+                ),
             ]
         )
 
@@ -304,6 +312,7 @@ class TestHandleCommand:
         output = cli.console.file.getvalue()
         assert "CLIO Runtime Doctor" in output
         assert "lm_provider" in output
+        assert "file_policy" in output
         assert "ready" in output
 
     def test_history_with_entries(self, tmp_path):
@@ -347,15 +356,17 @@ class TestHandleCommand:
     def test_memory_above_target(self, tmp_path):
         """Test /memory shows green when hit rate exceeds target."""
         cli = _make_cli(tmp_path)
-        cli.agent.get_arc_stats = MagicMock(return_value={
-            "hit_rate": 0.90,
-            "hits": 90,
-            "misses": 10,
-            "size": 100,
-            "capacity": 1000,
-            "disk_reads": 5,
-            "disk_writes": 10,
-        })
+        cli.agent.get_arc_stats = MagicMock(
+            return_value={
+                "hit_rate": 0.90,
+                "hits": 90,
+                "misses": 10,
+                "size": 100,
+                "capacity": 1000,
+                "disk_reads": 5,
+                "disk_writes": 10,
+            }
+        )
         cli.handle_command("/memory")
         output = cli.console.file.getvalue()
         assert "exceeds target" in output
