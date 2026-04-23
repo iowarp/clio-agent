@@ -92,7 +92,7 @@ def test_agent_init_suppresses_model_selection_output(tmp_path, monkeypatch, cap
     import clio_agent.agent as agent_module
 
     monkeypatch.delenv("CLIO_LM_PROVIDER", raising=False)
-    monkeypatch.setattr(agent_module, "fetch_lm_studio_models", lambda: ["granite"])
+    monkeypatch.setattr(agent_module, "fetch_lm_studio_models", lambda **_: ["granite"])
 
     def noisy_selector(models):
         print("noisy model selection")

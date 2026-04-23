@@ -337,6 +337,24 @@ class TestFetchLmStudioModels:
             models = fetch_lm_studio_models(max_retries=1)
             assert models == ["model-1", "model-2"]
 
+    def test_fetch_accepts_api_base_with_v1_suffix(self):
+        """Configured LM Studio api_base values may already include /v1."""
+        from clio_agent.config import fetch_lm_studio_models
+
+        with patch("clio_agent.config.requests.get") as mock_get:
+            mock_resp = MagicMock()
+            mock_resp.json.return_value = {"data": [{"id": "nemotron"}]}
+            mock_resp.raise_for_status.return_value = None
+            mock_get.return_value = mock_resp
+
+            models = fetch_lm_studio_models(
+                base_url="http://192.168.86.143:1234/v1",
+                max_retries=1,
+            )
+
+        assert models == ["nemotron"]
+        mock_get.assert_called_once_with("http://192.168.86.143:1234/v1/models", timeout=10)
+
     def test_empty_models_retries(self):
         """Should retry when models list is empty."""
         from clio_agent.config import fetch_lm_studio_models

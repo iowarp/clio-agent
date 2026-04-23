@@ -27,7 +27,7 @@ Usage:
 import os
 from dataclasses import dataclass
 from ipaddress import ip_address
-from typing import List, Literal, Optional
+from typing import List, Literal, Mapping, Optional
 from urllib.parse import urlparse
 
 import dspy
@@ -173,6 +173,12 @@ def load_config_from_env() -> LMProviderConfig:
     return config
 
 
+def has_explicit_model_override(env: Mapping[str, str] | None = None) -> bool:
+    """Return whether CLIO_LM_MODEL was explicitly set."""
+    current_env = env or os.environ
+    return bool(current_env.get("CLIO_LM_MODEL", "").strip())
+
+
 def create_lm(config: LMProviderConfig) -> dspy.LM:
     """Create a dspy.LM instance from provider config.
 
@@ -247,9 +253,11 @@ def fetch_lm_studio_models(
     """
     import time
 
+    models_url = _lm_studio_models_url(base_url)
+
     for attempt in range(max_retries):
         try:
-            response = requests.get(f"{base_url}/v1/models", timeout=10)
+            response = requests.get(models_url, timeout=10)
             response.raise_for_status()
             data = response.json()
             models = [model["id"] for model in data["data"]]
@@ -273,6 +281,14 @@ def fetch_lm_studio_models(
     print(f"   Please ensure LM Studio is running at {base_url}")
     print("   and a model is loaded")
     return []
+
+
+def _lm_studio_models_url(base_url: str) -> str:
+    """Return the normalized LM Studio model-list endpoint."""
+    normalized = base_url.rstrip("/")
+    if normalized.endswith("/v1"):
+        return f"{normalized}/models"
+    return f"{normalized}/v1/models"
 
 
 def select_models_for_agents(models: List[str]) -> tuple[str, str]:
@@ -487,7 +503,7 @@ def setup_dspy(model: Optional[str] = None, verbose: bool = True) -> dspy.LM:
     # Local OpenAI-compatible servers often reject LiteLLM's JSON mode fallback
     # (`response_format={"type": "json_object"}`). Keep them on text chat
     # formatting; cloud providers can still use DSPy's JSON fallback.
-    use_json_fallback = not _is_local_openai_compatible_backend(config)
+    use_json_fallback = not is_local_openai_compatible_backend(config)
     dspy.configure(
         lm=lm,
         adapter=dspy.ChatAdapter(use_json_adapter_fallback=use_json_fallback),
@@ -496,7 +512,7 @@ def setup_dspy(model: Optional[str] = None, verbose: bool = True) -> dspy.LM:
     return lm
 
 
-def _is_local_openai_compatible_backend(config: LMProviderConfig) -> bool:
+def is_local_openai_compatible_backend(config: LMProviderConfig) -> bool:
     """Return whether the configured backend behaves like a local OpenAI API."""
     if config.provider in {"lm_studio", "ollama"}:
         return True
@@ -516,6 +532,11 @@ def _is_local_openai_compatible_backend(config: LMProviderConfig) -> bool:
         return False
 
     return addr.is_loopback or addr.is_private or addr.is_link_local
+
+
+def _is_local_openai_compatible_backend(config: LMProviderConfig) -> bool:
+    """Backward-compatible alias for internal callers."""
+    return is_local_openai_compatible_backend(config)
 
 
 # ============================================================================

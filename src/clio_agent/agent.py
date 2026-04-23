@@ -8,7 +8,7 @@ Architecture:
         -> "data" -> DataExpert (ReAct + HDF5 MCP tools)
         -> "analysis" -> AnalysisExpert (ReAct + Parquet MCP tools)
         -> "visualization" -> VisualizationExpert (ReAct + matplotlib tools)
-        -> "chat" -> ChatAgent (CoT conversational)
+        -> "chat" -> ChatAgent (conversational response)
         -> "none" -> Out-of-scope fallback message
 
 Usage:
@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 import dspy
+import requests
 
 from clio_agent.arc.lsm import LSMTree
 from clio_agent.arc.memory import ARCMemory
@@ -43,6 +44,8 @@ from clio_agent.arc.schema import (
 from clio_agent.config import (
     create_router_lm,
     fetch_lm_studio_models,
+    has_explicit_model_override,
+    is_local_openai_compatible_backend,
     load_config_from_env,
     select_models_for_agents,
 )
@@ -69,12 +72,12 @@ class ClioAgent(dspy.Module):
             -> "data" -> DataExpert (ReAct + HDF5 MCP tools)
             -> "analysis" -> AnalysisExpert (ReAct + Parquet MCP tools)
             -> "visualization" -> VisualizationExpert (ReAct + matplotlib tools)
-            -> "chat" -> ChatAgent (CoT conversational)
+            -> "chat" -> ChatAgent (conversational response)
             -> "none" -> Out-of-scope fallback message
 
     Attributes:
         router: DSPy ChainOfThought module with RouterSignature
-        chat_agent: DSPy ChainOfThought module with ChatAgentSignature
+        chat_agent: DSPy Predict module with ChatAgentSignature
         data_expert: DataExpert instance with ReAct + MCP tools
         analysis_expert: AnalysisExpert instance with ReAct + Parquet tools
         visualization_expert: VisualizationExpert instance with matplotlib tools
@@ -113,9 +116,11 @@ class ClioAgent(dspy.Module):
         # Load provider-agnostic config from environment
         self._provider_config = load_config_from_env()
 
-        if self._provider_config.provider == "lm_studio":
-            # LM Studio: fetch available models for dynamic selection
-            available_models = fetch_lm_studio_models()
+        if self._provider_config.provider == "lm_studio" and not has_explicit_model_override():
+            # LM Studio without an explicit model pin: discover loaded models
+            # from the configured API base and use the same selected model for
+            # routing and the global DSPy runtime.
+            available_models = fetch_lm_studio_models(base_url=self._provider_config.api_base)
             if self.verbose:
                 main_model, expert_model = select_models_for_agents(available_models)
             else:
@@ -138,8 +143,10 @@ class ClioAgent(dspy.Module):
         self._router_lm = create_router_lm(self._provider_config)
         self.router = dspy.ChainOfThought(RouterSignature)
 
-        # Chat Agent: ChainOfThought for conversation
-        self.chat_agent = dspy.ChainOfThought(ChatAgentSignature)
+        # Chat Agent: Predict for conversational responses. This keeps the
+        # structured output surface smaller than ChainOfThought, which is more
+        # reliable with local OpenAI-compatible backends.
+        self.chat_agent = dspy.Predict(ChatAgentSignature)
 
         # DataExpert: ReAct with real HDF5 MCP tools
         self.data_expert = DataExpert(arc_memory=self.arc)
@@ -327,8 +334,7 @@ class ClioAgent(dspy.Module):
                     "Could you rephrase your question in terms of data analysis?"
                 )
             else:  # "chat"
-                expert_result = self.chat_agent(question=question, session_context=session_context)
-                answer = self._coerce_text(expert_result.answer)
+                answer = self._run_chat_agent(question, session_context)
             success = True
         except Exception as e:
             success = False
@@ -408,6 +414,84 @@ class ClioAgent(dspy.Module):
         if selected == "visualization":
             return self._direct_visualization_answer(question, file_context)
         return None
+
+    def _run_chat_agent(self, question: str, session_context: str) -> str:
+        """Generate a conversational reply, falling back for local backends."""
+        try:
+            result = self.chat_agent(question=question, session_context=session_context)
+            answer = self._coerce_text(getattr(result, "answer", None)).strip()
+            if answer:
+                return answer
+            raise ValueError("Chat agent returned an empty answer.")
+        except Exception as chat_error:
+            if self.verbose:
+                print(f"[ClioAgent] ChatAgent failed, trying direct fallback: {chat_error}")
+
+            if not is_local_openai_compatible_backend(self._provider_config):
+                raise
+
+            try:
+                return self._direct_chat_completion(question, session_context)
+            except Exception as fallback_error:
+                raise RuntimeError(
+                    f"ChatAgent failed ({chat_error}); direct fallback failed ({fallback_error})"
+                ) from fallback_error
+
+    def _direct_chat_completion(self, question: str, session_context: str) -> str:
+        """Call the configured OpenAI-compatible chat endpoint directly."""
+        headers = {"Content-Type": "application/json"}
+        if self._provider_config.api_key:
+            headers["Authorization"] = f"Bearer {self._provider_config.api_key}"
+
+        system_prompt = self._build_direct_chat_system_prompt(session_context)
+        payload = {
+            "model": self._provider_config.model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": question},
+            ],
+            "temperature": self._provider_config.temperature,
+            "max_tokens": self._provider_config.max_tokens,
+        }
+
+        response = requests.post(
+            f"{self._provider_config.api_base.rstrip('/')}/chat/completions",
+            json=payload,
+            headers=headers,
+            timeout=60,
+        )
+        response.raise_for_status()
+        data = response.json()
+        answer = self._extract_chat_completion_text(data).strip()
+        if not answer:
+            raise ValueError("Direct chat completion returned empty content.")
+        return answer
+
+    @staticmethod
+    def _build_direct_chat_system_prompt(session_context: str) -> str:
+        """Build the system prompt used by the direct chat fallback."""
+        prompt = (ChatAgentSignature.__doc__ or "").strip()
+        if session_context and session_context != "No prior context":
+            return f"{prompt}\n\nRelevant session context:\n{session_context}"
+        return prompt
+
+    @staticmethod
+    def _extract_chat_completion_text(payload: Dict[str, Any]) -> str:
+        """Extract assistant text from an OpenAI-compatible chat response."""
+        try:
+            content = payload["choices"][0]["message"]["content"]
+        except (KeyError, IndexError, TypeError) as exc:
+            raise ValueError(f"Unexpected chat completion payload: {payload}") from exc
+
+        if isinstance(content, list):
+            text_parts = [
+                part.get("text", "")
+                for part in content
+                if isinstance(part, dict) and isinstance(part.get("text"), str)
+            ]
+            return "\n".join(part for part in text_parts if part).strip()
+
+        return ClioAgent._coerce_text(content)
 
     def _direct_hdf5_answer(self, question: str, file_context: str) -> dspy.Prediction | None:
         """Inspect an explicit HDF5 path without relying on ReAct planning."""

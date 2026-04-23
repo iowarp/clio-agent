@@ -4,6 +4,7 @@ Tests for clio_agent.agent module.
 Tests ClioAgent Router + ChatAgent + Expert dispatch architecture.
 """
 
+from unittest.mock import patch
 
 from clio_agent.agent import ClioAgent
 
@@ -114,6 +115,49 @@ class TestClioAgent:
         agent = ClioAgent()
         assert agent._router_lm is not None
         agent.shutdown()
+
+    def test_lm_studio_explicit_model_skips_model_discovery(self, tmp_path, monkeypatch):
+        """Explicit CLIO_LM_MODEL should keep lm_studio pinned to one model."""
+        monkeypatch.setenv("CLIO_LM_PROVIDER", "lm_studio")
+        monkeypatch.setenv("CLIO_LM_API_BASE", "http://192.168.86.143:1234/v1")
+        monkeypatch.setenv("CLIO_LM_MODEL", "nemotron-cascade-2-30b-a3b-i1")
+
+        with patch(
+            "clio_agent.agent.fetch_lm_studio_models",
+            side_effect=AssertionError("model discovery should be skipped"),
+        ):
+            agent = ClioAgent(data_dir=str(tmp_path / "clio"))
+
+        try:
+            assert agent._provider_config.model == "nemotron-cascade-2-30b-a3b-i1"
+            assert agent._router_lm.model == "openai/nemotron-cascade-2-30b-a3b-i1"
+        finally:
+            agent.shutdown()
+
+    def test_lm_studio_discovery_uses_configured_api_base(self, tmp_path, monkeypatch):
+        """LM Studio discovery should use the configured remote endpoint."""
+        monkeypatch.setenv("CLIO_LM_PROVIDER", "lm_studio")
+        monkeypatch.setenv("CLIO_LM_API_BASE", "http://192.168.86.143:1234/v1")
+        monkeypatch.delenv("CLIO_LM_MODEL", raising=False)
+
+        seen: dict[str, str] = {}
+
+        def fake_fetch(*, base_url: str, **_: object):
+            seen["base_url"] = base_url
+            return ["nemotron-cascade-2-30b-a3b-i1"]
+
+        with patch("clio_agent.agent.fetch_lm_studio_models", side_effect=fake_fetch):
+            with patch(
+                "clio_agent.agent.select_models_for_agents",
+                return_value=("nemotron-cascade-2-30b-a3b-i1", "nemotron-cascade-2-30b-a3b-i1"),
+            ):
+                agent = ClioAgent(data_dir=str(tmp_path / "clio"))
+
+        try:
+            assert seen["base_url"] == "http://192.168.86.143:1234/v1"
+            assert agent._provider_config.model == "nemotron-cascade-2-30b-a3b-i1"
+        finally:
+            agent.shutdown()
 
     def test_get_session_context_empty(self):
         """Test session context retrieval with no history."""
