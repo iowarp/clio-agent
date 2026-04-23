@@ -142,6 +142,7 @@ class ClioAgentCLI:
             ("/registry", "Show agent registry status"),
             ("/memory", "Display ARC memory statistics"),
             ("/tools", "Show available MCP tools"),
+            ("/doctor", "Show runtime integration status"),
             ("/metrics", "Show per-expert performance metrics"),
             ("/compare <expert>", "Compare all variants for an expert"),
             ("/rollback <expert>", "Rollback to previous variant for an expert"),
@@ -244,6 +245,13 @@ Router: Literal["chat", "data", "analysis", "visualization", "none"] via ChainOf
 
         self.console.print(tools_table)
 
+    def print_doctor(self) -> None:
+        """Display runtime integration status."""
+        from clio_agent.runtime.status import collect_runtime_status
+
+        report = collect_runtime_status()
+        render_doctor_report(self.console, report)
+
     def handle_command(self, user_input: str) -> bool:
         """Handle special commands.
 
@@ -290,6 +298,10 @@ Router: Literal["chat", "data", "analysis", "visualization", "none"] via ChainOf
 
         elif cmd == "/tools":
             self.print_tools()
+            return True
+
+        elif cmd == "/doctor":
+            self.print_doctor()
             return True
 
         elif cmd == "/metrics":
@@ -535,11 +547,62 @@ def run_cli(
     cli.run()
 
 
+def render_doctor_report(console: Console, report) -> None:
+    """Render a runtime doctor report to a Rich console."""
+    status_styles = {
+        "ready": "green",
+        "degraded": "yellow",
+        "unavailable": "red",
+        "misconfigured": "red",
+        "skipped": "cyan",
+    }
+    title = f"CLIO Runtime Doctor ({report.overall_status})"
+    table = Table(title=title, show_header=True)
+    table.add_column("Integration", style="cyan")
+    table.add_column("Status")
+    table.add_column("Config Source")
+    table.add_column("Endpoint")
+    table.add_column("Next Action")
+
+    for item in report.integrations:
+        state = item.state.value
+        style = status_styles.get(state, "white")
+        table.add_row(
+            item.name,
+            f"[{style}]{state}[/{style}]",
+            item.config_source,
+            item.endpoint or "",
+            item.next_action,
+        )
+
+    console.print(table)
+
+
+def run_doctor(json_output: bool = False) -> int:
+    """Run the non-interactive doctor command."""
+    from clio_agent.runtime.status import collect_runtime_status
+
+    report = collect_runtime_status()
+    if json_output:
+        import json
+
+        print(json.dumps(report.to_dict(), indent=2))
+    else:
+        render_doctor_report(Console(), report)
+    return 0
+
+
 if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(
         description="ClioAgent: Agent Framework for Scientific Computing (IOWarp Intelligence Layer)"
+    )
+    parser.add_argument(
+        "command",
+        nargs="?",
+        choices=["doctor"],
+        help="Optional command. Use 'doctor' to inspect runtime integrations.",
     )
     parser.add_argument(
         "--verbose", "-v",
@@ -571,6 +634,9 @@ if __name__ == "__main__":
     )
 
     args = parser.parse_args()
+
+    if args.command == "doctor":
+        sys.exit(run_doctor(json_output=args.json))
 
     # Tune mode: SIMBA optimization for an expert
     if args.tune:

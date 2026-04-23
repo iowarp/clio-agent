@@ -29,11 +29,12 @@ from typing import Any
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sse_starlette.sse import EventSourceResponse
 
 from clio_agent.config import load_config_from_env, setup_dspy
 from clio_agent.errors import ClioError, format_error_response
+from clio_agent.runtime.status import IntegrationState, collect_runtime_status
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +69,8 @@ class HealthResponse(BaseModel):
     version: str = "0.2.0"
     provider: str = ""
     environment: str = "dev"
+    overall_status: str = ""
+    integrations: list[dict[str, Any]] = Field(default_factory=list)
     error: str | None = None
 
 
@@ -170,18 +173,47 @@ async def health() -> HealthResponse:
     """
     config = getattr(app.state, "provider_config", None)
     if getattr(app.state, "healthy", False):
+        overall_status, integrations = _runtime_health_detail(IntegrationState.READY)
         return HealthResponse(
             status="ok",
             provider=config.provider if config else "",
             environment=config.environment if config else "dev",
+            overall_status=overall_status,
+            integrations=integrations,
         )
     error_msg = getattr(app.state, "startup_error", "Agent not initialized")
+    overall_status, integrations = _runtime_health_detail(
+        IntegrationState.DEGRADED,
+        api_error=error_msg,
+    )
     return HealthResponse(
         status="degraded",
         provider=config.provider if config else "",
         environment=config.environment if config else "dev",
+        overall_status=overall_status,
+        integrations=integrations,
         error=error_msg,
     )
+
+
+def _runtime_health_detail(
+    api_state: IntegrationState,
+    *,
+    api_error: str | None = None,
+) -> tuple[str, list[dict[str, Any]]]:
+    """Build health integration detail without letting doctor probes break /health."""
+    try:
+        report = collect_runtime_status(
+            api_state=api_state,
+            api_error=api_error,
+            lm_timeout=0.5,
+        )
+    except Exception as exc:
+        logger.warning("Runtime status collection failed during health check: %s", exc)
+        return IntegrationState.DEGRADED.value, []
+
+    data = report.to_dict()
+    return report.overall_status, data["integrations"]
 
 
 @app.post("/query")

@@ -142,6 +142,35 @@ class TestHealth:
         assert body["status"] == "degraded"
         assert body["error"] == "LM Studio unreachable"
 
+    def test_health_includes_integration_details(self, client, monkeypatch):
+        from clio_agent.runtime.status import (
+            IntegrationState,
+            IntegrationStatus,
+            RuntimeReport,
+        )
+        from clio_agent.ui import api
+
+        report = RuntimeReport(
+            integrations=[
+                IntegrationStatus(
+                    name="api",
+                    state=IntegrationState.READY,
+                    summary="API ready",
+                    config_source="test",
+                    next_action="No action required.",
+                )
+            ]
+        )
+        monkeypatch.setattr(api, "collect_runtime_status", lambda **kwargs: report)
+
+        resp = client.get("/health")
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["overall_status"] == "ready"
+        assert body["integrations"][0]["name"] == "api"
+        assert body["integrations"][0]["status"] == "ready"
+
 
 # ---------------------------------------------------------------------------
 # POST /query (JSON)

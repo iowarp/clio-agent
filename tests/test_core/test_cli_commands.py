@@ -276,6 +276,36 @@ class TestHandleCommand:
         output = cli.console.file.getvalue()
         assert "MCP Tools" in output or "Tool" in output
 
+    def test_doctor_command(self, tmp_path):
+        """Test /doctor command shows integration status."""
+        from clio_agent.runtime.status import (
+            IntegrationState,
+            IntegrationStatus,
+            RuntimeReport,
+        )
+
+        cli = _make_cli(tmp_path)
+        report = RuntimeReport(
+            integrations=[
+                IntegrationStatus(
+                    name="lm_provider",
+                    state=IntegrationState.READY,
+                    summary="LM ready",
+                    config_source="test",
+                    next_action="No action required.",
+                )
+            ]
+        )
+
+        with patch("clio_agent.runtime.status.collect_runtime_status", return_value=report):
+            result = cli.handle_command("/doctor")
+
+        assert result is True
+        output = cli.console.file.getvalue()
+        assert "CLIO Runtime Doctor" in output
+        assert "lm_provider" in output
+        assert "ready" in output
+
     def test_history_with_entries(self, tmp_path):
         """Test /history with entries shows them."""
         cli = _make_cli(tmp_path)
