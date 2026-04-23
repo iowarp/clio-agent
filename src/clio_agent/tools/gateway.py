@@ -19,6 +19,7 @@ Usage:
     ...     result = await client.call_tool("parquet_analyze_schema", {"filepath": "data.parquet"})
 """
 
+import inspect
 from typing import Any
 
 from fastmcp import Client, FastMCP
@@ -26,10 +27,20 @@ from fastmcp import Client, FastMCP
 from clio_agent.tools.servers.hdf5_server import hdf5_server
 from clio_agent.tools.servers.parquet_server import parquet_server
 
+
+def _mount_with_namespace(parent: FastMCP, server: FastMCP, namespace: str) -> None:
+    """Mount a server with stable namespaced tool names across FastMCP versions."""
+    mount_params = inspect.signature(parent.mount).parameters
+    if "namespace" in mount_params:
+        parent.mount(server, namespace=namespace)
+    else:
+        parent.mount(server, prefix=namespace)
+
+
 # Gateway singleton: composes all tool servers under namespaced prefixes.
 gateway = FastMCP("clio-gateway")
-gateway.mount(hdf5_server, prefix="hdf5")
-gateway.mount(parquet_server, prefix="parquet")
+_mount_with_namespace(gateway, hdf5_server, "hdf5")
+_mount_with_namespace(gateway, parquet_server, "parquet")
 
 
 def get_gateway() -> FastMCP:

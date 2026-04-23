@@ -10,7 +10,7 @@ import json
 import pytest
 from fastmcp import Client
 
-from clio_agent.tools.gateway import gateway, get_gateway
+from clio_agent.tools.gateway import _mount_with_namespace, gateway, get_gateway
 
 
 def _parse_result(result):
@@ -26,6 +26,34 @@ def _parse_result(result):
     return {"raw": str(data)}
 
 
+def test_mount_helper_uses_namespace_when_supported():
+    """Gateway helper should use FastMCP namespace API when available."""
+    calls = []
+
+    class Parent:
+        def mount(self, server, namespace=None):
+            calls.append((server, namespace))
+
+    server = object()
+    _mount_with_namespace(Parent(), server, "hdf5")
+
+    assert calls == [(server, "hdf5")]
+
+
+def test_mount_helper_falls_back_to_prefix():
+    """Installed FastMCP 2.x exposes prefix, so the helper must preserve it."""
+    calls = []
+
+    class Parent:
+        def mount(self, server, prefix=None):
+            calls.append((server, prefix))
+
+    server = object()
+    _mount_with_namespace(Parent(), server, "parquet")
+
+    assert calls == [(server, "parquet")]
+
+
 @pytest.mark.asyncio
 async def test_gateway_has_namespaced_tools():
     """Test that gateway exposes HDF5 tools with 'hdf5_' prefix."""
@@ -37,6 +65,26 @@ async def test_gateway_has_namespaced_tools():
         assert "hdf5_check_compression" in tool_names
         assert "hdf5_optimize_chunking" in tool_names
         assert "hdf5_analyze_file" in tool_names
+
+
+@pytest.mark.asyncio
+async def test_gateway_preserves_stable_tool_names():
+    """Gateway modernization must not rename existing HDF5/Parquet tools."""
+    expected = {
+        "hdf5_list_datasets",
+        "hdf5_analyze_dataset",
+        "hdf5_check_compression",
+        "hdf5_optimize_chunking",
+        "hdf5_analyze_file",
+        "parquet_analyze_schema",
+        "parquet_query_data",
+        "parquet_compute_statistics",
+    }
+    async with Client(gateway) as client:
+        tools = await client.list_tools()
+        tool_names = {t.name for t in tools}
+
+    assert expected <= tool_names
 
 
 @pytest.mark.asyncio
