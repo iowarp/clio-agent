@@ -26,7 +26,9 @@ Usage:
 
 import os
 from dataclasses import dataclass
+from ipaddress import ip_address
 from typing import List, Literal, Optional
+from urllib.parse import urlparse
 
 import dspy
 import requests
@@ -68,6 +70,7 @@ _CLOUD_API_KEY_ENV: dict[str, str] = {
 # ============================================================================
 # MULTI-PROVIDER CONFIGURATION
 # ============================================================================
+
 
 @dataclass
 class LMProviderConfig:
@@ -228,7 +231,10 @@ def create_router_lm(config: LMProviderConfig) -> dspy.LM:
 # LM STUDIO MODEL FETCHING
 # ============================================================================
 
-def fetch_lm_studio_models(base_url: str = "http://127.0.0.1:1234", max_retries: int = 10, retry_delay: float = 2.0) -> List[str]:
+
+def fetch_lm_studio_models(
+    base_url: str = "http://127.0.0.1:1234", max_retries: int = 10, retry_delay: float = 2.0
+) -> List[str]:
     """Fetch available models from LM Studio API with retry logic.
 
     Args:
@@ -246,11 +252,13 @@ def fetch_lm_studio_models(base_url: str = "http://127.0.0.1:1234", max_retries:
             response = requests.get(f"{base_url}/v1/models", timeout=10)
             response.raise_for_status()
             data = response.json()
-            models = [model['id'] for model in data['data']]
+            models = [model["id"] for model in data["data"]]
             if models:
                 return models
             else:
-                print(f"Waiting for models to load in LM Studio... (attempt {attempt + 1}/{max_retries})")
+                print(
+                    f"Waiting for models to load in LM Studio... (attempt {attempt + 1}/{max_retries})"
+                )
                 time.sleep(retry_delay)
         except requests.exceptions.ConnectionError:
             if attempt == 0:
@@ -328,12 +336,14 @@ def select_models_for_agents(models: List[str]) -> tuple[str, str]:
 # BACKWARD-COMPATIBLE CONFIGURATION CLASSES
 # ============================================================================
 
+
 @dataclass
 class LMStudioConfig:
     """Configuration for LM Studio provider.
 
     Default: IBM Granite model at http://127.0.0.1:1234
     """
+
     base_url: str = "http://127.0.0.1:1234"
     model: str = "ibm/granite-4-h-tiny"
     temperature: float = 1.0
@@ -344,6 +354,7 @@ class LMStudioConfig:
 @dataclass
 class RouterLMConfig:
     """Configuration for router LM (deterministic for accurate routing)."""
+
     base_url: str = "http://127.0.0.1:1234"
     model: str = "ibm/granite-4-h-tiny"
     temperature: float = 0.3
@@ -354,6 +365,7 @@ class RouterLMConfig:
 @dataclass
 class ReasonerLMConfig:
     """Configuration for reasoner/expert LM."""
+
     base_url: str = "http://127.0.0.1:1234"
     model: str = "ibm/granite-4-h-tiny"
     temperature: float = 1.0
@@ -364,6 +376,7 @@ class ReasonerLMConfig:
 # ============================================================================
 # BACKWARD-COMPATIBLE DSPY SETUP FUNCTIONS
 # ============================================================================
+
 
 def configure_dspy_lm_studio(config: Optional[LMStudioConfig] = None) -> dspy.LM:
     """Configure DSPy to use LM Studio for main agent.
@@ -391,7 +404,7 @@ def configure_dspy_lm_studio(config: Optional[LMStudioConfig] = None) -> dspy.LM
         api_key=cfg.api_key,
         temperature=cfg.temperature,
         max_tokens=cfg.max_tokens,
-        model_type="chat"
+        model_type="chat",
     )
 
     return lm
@@ -408,7 +421,7 @@ def configure_dspy_router_lm_studio(config: Optional[RouterLMConfig] = None) -> 
         api_key=cfg.api_key,
         temperature=cfg.temperature,
         max_tokens=cfg.max_tokens,
-        model_type="chat"
+        model_type="chat",
     )
 
 
@@ -423,14 +436,11 @@ def configure_dspy_reasoner_lm_studio(config: Optional[ReasonerLMConfig] = None)
         api_key=cfg.api_key,
         temperature=cfg.temperature,
         max_tokens=cfg.max_tokens,
-        model_type="chat"
+        model_type="chat",
     )
 
 
-def setup_dspy(
-    model: Optional[str] = None,
-    verbose: bool = True
-) -> dspy.LM:
+def setup_dspy(model: Optional[str] = None, verbose: bool = True) -> dspy.LM:
     """Setup DSPy with configured LM provider.
 
     Internally uses load_config_from_env() + create_lm() for provider-agnostic setup.
@@ -474,10 +484,38 @@ def setup_dspy(
         print("  - Check CLIO_LM_* environment variables")
         raise
 
-    # Configure DSPy globally with ChatAdapter for ReAct compatibility
-    dspy.configure(lm=lm, adapter=dspy.ChatAdapter())
+    # Local OpenAI-compatible servers often reject LiteLLM's JSON mode fallback
+    # (`response_format={"type": "json_object"}`). Keep them on text chat
+    # formatting; cloud providers can still use DSPy's JSON fallback.
+    use_json_fallback = not _is_local_openai_compatible_backend(config)
+    dspy.configure(
+        lm=lm,
+        adapter=dspy.ChatAdapter(use_json_adapter_fallback=use_json_fallback),
+    )
 
     return lm
+
+
+def _is_local_openai_compatible_backend(config: LMProviderConfig) -> bool:
+    """Return whether the configured backend behaves like a local OpenAI API."""
+    if config.provider in {"lm_studio", "ollama"}:
+        return True
+    if config.provider != "openai":
+        return False
+
+    parsed = urlparse(config.api_base)
+    host = parsed.hostname
+    if not host:
+        return False
+    if host in {"localhost"}:
+        return True
+
+    try:
+        addr = ip_address(host)
+    except ValueError:
+        return False
+
+    return addr.is_loopback or addr.is_private or addr.is_link_local
 
 
 # ============================================================================

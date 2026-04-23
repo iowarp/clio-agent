@@ -287,6 +287,38 @@ class TestSetupDspy:
             with pytest.raises(ValueError, match="requires an API key"):
                 setup_dspy(verbose=False)
 
+    def test_setup_local_openai_compatible_endpoint_disables_json_fallback(self):
+        """Pinned local LM Studio via OpenAI-compatible API should use text chat mode."""
+        from clio_agent.config import setup_dspy
+
+        env = {
+            "CLIO_LM_PROVIDER": "openai",
+            "CLIO_LM_API_BASE": "http://192.168.86.143:1234/v1",
+            "CLIO_LM_API_KEY": "lm-studio",
+            "CLIO_LM_MODEL": "nemotron-cascade-2-30b-a3b-i1",
+        }
+        with patch.dict("os.environ", env, clear=True):
+            with patch("clio_agent.config.dspy.configure") as mock_configure:
+                setup_dspy(verbose=False)
+
+        adapter = mock_configure.call_args.kwargs["adapter"]
+        assert adapter.use_json_adapter_fallback is False
+
+    def test_setup_cloud_openai_keeps_json_fallback(self):
+        """Real OpenAI API should retain DSPy's JSON adapter fallback."""
+        from clio_agent.config import setup_dspy
+
+        env = {
+            "CLIO_LM_PROVIDER": "openai",
+            "CLIO_LM_API_KEY": "sk-test",
+        }
+        with patch.dict("os.environ", env, clear=True):
+            with patch("clio_agent.config.dspy.configure") as mock_configure:
+                setup_dspy(verbose=False)
+
+        adapter = mock_configure.call_args.kwargs["adapter"]
+        assert adapter.use_json_adapter_fallback is True
+
 
 class TestFetchLmStudioModels:
     """Test fetch_lm_studio_models with mocked HTTP."""
