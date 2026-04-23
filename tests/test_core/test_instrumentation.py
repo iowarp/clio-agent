@@ -13,7 +13,6 @@ import tempfile
 import time
 
 import dspy
-import msgspec
 
 from clio_agent.arc.memory import ARCMemory
 from clio_agent.arc.schema import (

@@ -8,6 +8,7 @@ The instrumented data becomes the training set for SIMBA optimization.
 """
 
 import functools
+import json
 import time
 import uuid
 from typing import Any, Callable, Dict
@@ -136,7 +137,7 @@ def _extract_output(result: Any) -> Dict[str, Any]:
             for key in result.keys():
                 val = getattr(result, key, "")
                 if val is not None:
-                    output_data[key] = str(val)[:500]
+                    output_data[key] = _to_safe_text(val)[:500]
         except Exception:
             pass
     else:
@@ -144,9 +145,37 @@ def _extract_output(result: Any) -> Dict[str, Any]:
         for field in ("analysis", "recommendations", "visualization_description", "file_path", "answer"):
             val = getattr(result, field, None)
             if val is not None:
-                output_data[field] = str(val)[:500]
+                output_data[field] = _to_safe_text(val)[:500]
 
     return output_data
+
+
+def _to_safe_text(value: Any) -> str:
+    """Convert model/tool outputs to a stable string without serializer warnings."""
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (int, float, bool)):
+        return str(value)
+    if isinstance(value, (list, dict)):
+        try:
+            return json.dumps(value, ensure_ascii=False)
+        except Exception:
+            return str(value)
+
+    if hasattr(value, "model_dump"):
+        try:
+            dumped = value.model_dump(mode="json", warnings="none")
+            return json.dumps(dumped, ensure_ascii=False)
+        except Exception:
+            pass
+
+    content = getattr(value, "content", None)
+    if isinstance(content, str):
+        return content
+
+    return str(value)
 
 
 class MetricsAggregator:

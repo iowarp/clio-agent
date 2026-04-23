@@ -404,7 +404,7 @@ def analyze_file(filepath: str) -> dict[str, Any]:
                 if ds.compression:
                     compressed += 1
 
-            compression_summary = {
+            compression_summary: dict[str, int | float] = {
                 "compressed_datasets": compressed,
                 "uncompressed_datasets": len(datasets) - compressed,
                 "total_raw_bytes": total_raw_bytes,

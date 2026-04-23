@@ -1,374 +1,611 @@
-# CLIO Agent Implementation Plan
-
-Dependency-ordered phases for building CLIO Agent into a production-ready autonomous science agent.
-
-**Current State** (Feb 2026): ~8,200 lines Python, 60+ modules. Main agent + DataExpert work in ChainOfThought mode. ARC memory 90% complete. All MCP servers are stubs. Optimizer layer is stubs. Nanoagents are stubs.
-
----
-
-## Phase 1: Foundation Reset
-
-**Goal**: Replace over-engineered custom infrastructure with native DSPy 3.x + FastMCP 3.x capabilities. Get one expert (DataExpert) working end-to-end with real tools.
-
-**Why first**: Everything else depends on a working tool layer and correct DSPy patterns.
-
-### Tasks
-
-1.1 **Upgrade dependencies**
-- Pin `dspy-ai>=3.1.0` and `fastmcp>=3.0.0` in pyproject.toml
-- Configure `dspy.ChatAdapter` globally so ReAct works with LM Studio
-- Verify ReAct agent can call tools with local models
-- Remove `JSONAdapter` workarounds in agent.py
-
-1.2 **Delete mcp_connector.py (789 lines)**
-- Replace with `dspy.Tool.from_mcp_tool()` for DSPy tool bridging
-- Replace with `fastmcp.Client` for direct MCP server communication
-- Update DataExpert to use native tool bridge
-- Remove `IOWarpMCPConnector`, `IOWarpMCPTools`, `create_iowarp_tool_function`
-
-1.2a **Define async boundary**
-- CLI stays sync, agent/expert/tool pipeline async internally
-- FastMCP Client interactions use `async with Client(server)`
-- DSPy ReAct calls use `await react.acall()` for MCP tool execution
-- No custom sync/async bridge code — use native DSPy + FastMCP async patterns
-
-1.3 **Build real HDF5 MCP server**
-- Implement `tools/servers/hdf5_server.py` using FastMCP 3.x
-- Tools: `list_datasets`, `analyze_dataset`, `optimize_chunking`, `check_compression` (4 tools, not 10)
-- Use `h5py` for actual file operations
-- Test with `Client(server)` in-memory pattern (no subprocess needed)
-- Remove mock `hdf5_analyze` / `hdf5_optimize` from data_expert.py
-
-1.4 **Build CLIO Gateway server**
-- Create `tools/gateway.py` using FastMCP `mount()` with namespacing
-- Mount HDF5 server: `gateway.mount(hdf5_server, namespace="hdf5")`
-- Add `analyze_file` gateway tool with format auto-detection
-- Keep gateway extensible for Phase 2 servers
-
-1.5 **Fix DataExpert to use real tools**
-- Switch from ChainOfThought fallback to ReAct with ChatAdapter
-- Connect to HDF5 MCP server via gateway
-- Limit to 5-7 tools (curated, not exhaustive)
-- Add 500+ word domain-specific system prompt to DataExpertSignature
-- Verify: expert can analyze a real HDF5 file end-to-end
-
-1.6 **Split main agent into Router + Chat Agent**
-- Router (ChainOfThought + Literal, smallest model):
-  - Intent detection: classify query as chat/data/analysis/visualization/none
-  - Runs on fast SLM for low latency
-  - Optimizable with MIPROv2 later
-- Chat Agent (conversational, user-facing):
-  - Handles direct conversation, context management, follow-ups
-  - Delegates to experts via router when domain expertise needed
-  - Returns expert results to user with conversational framing
-- Use `dspy.context(lm=...)` for per-agent model selection
-- Remove module-level `_data_expert_instance` global
-- Verify: user question → router → DataExpert (ReAct) → HDF5 tools → chat agent → answer
-
-1.7 **Clean up codebase**
-- Delete dead code files:
-  - `experts/hpc_expert.py`, `experts/research_expert.py`, `experts/workflow_expert.py`
-  - `ui/a2a_endpoint.py`, `ui/tuning_ui.py`
-  - `registry/a2a_adapter.py`, `registry/external_compiler.py`
-  - `tools/mcp_wrapper.py`
-- Clean up nanoagents/ interfaces to match target architecture (mark as planned, not implemented)
-- Clean up optimizers/ interfaces to match target architecture (mark as planned, not implemented)
-- Update imports everywhere
-
-1.8 **Test coverage to 50%**
-- Write tests for HDF5 MCP server using `Client(server)` in-memory testing
-- Write tests for gateway tool routing
-- Write tests for DataExpert with mocked MCP tools
-- Write tests for main agent forward() flow
-- Fix any broken existing tests
-
-### Success Criteria
-- [ ] Router (CoT + Literal) correctly dispatches to chat agent or DataExpert
-- [ ] Chat Agent handles conversation and expert delegation
-- [ ] DataExpert (ReAct) analyzes a real `.h5` file through MCP server
-- [ ] mcp_connector.py deleted, replaced by native DSPy/FastMCP
-- [ ] Async boundary defined: CLI sync, pipeline async internally
-- [ ] No stub files claiming false functionality
-- [ ] `pytest tests/` passes with >50% coverage
-- [ ] `uv run src/clio_agent/ui/cli.py` works end-to-end
-
-### Dependencies
-- None (this is the foundation)
-
----
-
-## Phase 2: Complete Data Management Workflow
-
-**Goal**: Add AnalysisExpert + VisualizationExpert to close the data lifecycle: storage → analytics → visualization. Prove multi-agent thesis with two new experts.
-
-**Why second**: Foundation must work before adding more experts. Closing the data management cycle proves that specialized small-model agents can match or beat expensive generalist LLMs at lower cost.
-
-### Tasks
-
-2.1 **Build Parquet MCP server**
-- `tools/servers/parquet_server.py`: `analyze_schema`, `query_data`, `compute_statistics`
-- Mount: `gateway.mount(parquet_server, namespace="parquet")`
-- Test with `Client(server)` in-memory
-
-2.2 **Implement AnalysisExpert**
-- `experts/analysis_expert.py` with ReAct pattern
-- Tools: Parquet server tools + statistical analysis utilities
-- 500+ word domain-specific system prompt for data analysis
-- Register in agent registry with capabilities
-- Update router Literal to include "analysis"
-
-2.3 **Implement VisualizationExpert**
-- `experts/visualization_expert.py` with ReAct pattern
-- Tools: chart generation, data formatting, summary tables
-- Register in agent registry
-- Update router Literal to include "visualization"
-
-2.4 **Extend router for multi-expert dispatch**
-- Router Literal: `Literal["chat", "data", "analysis", "visualization", "none"]`
-- Store routing decisions in ARC for future optimization
-
-2.5 **Add context compilation pipeline to ARC**
-- Implement `arc/context_compiler.py`: filter -> compact -> enrich -> assemble
-- Replace raw history concatenation with compiled context windows
-- Add procedural memory type (what worked/failed) alongside episodic and semantic
-- Max context budget per tier (T1: 2K tokens, T2: 4K tokens)
-
-2.6 **Expert collaboration via ARC shared context**
-- DataExpert stores dataset profile in ARC
-- AnalysisExpert reads dataset profile to tailor analysis approach
-- VisualizationExpert reads analysis results for chart selection
-
-2.7 **Dynamic tool discovery**
-- Gateway exposes `list_capabilities` tool
-- Main agent lazy-loads tool schemas (reduce context from ~47K to ~400 tokens)
-- Only inject tool descriptions for the selected expert's tools
-
-2.8 **End-to-end workflow demo**
-- User provides dataset → DataExpert analyzes format → AnalysisExpert runs statistics → VisualizationExpert presents results
-- Prove: 3 small specialized agents complete this cheaper than one large generalist LLM
-
-2.9 **Test coverage to 60%**
-- Tests for AnalysisExpert, VisualizationExpert, Parquet server
-- Integration tests for multi-expert routing
-- Tests for context compilation pipeline
-
-### Success Criteria
-- [ ] 3 experts (DataExpert + AnalysisExpert + VisualizationExpert) working with real tools
-- [ ] Router correctly dispatches to the right expert based on query intent
-- [ ] Experts share context via ARC (dataset profile flows through pipeline)
-- [ ] End-to-end data lifecycle: storage → analytics → visualization
-- [ ] Context compilation reduces token usage by >50% vs raw concatenation
-- [ ] `pytest tests/` passes with >60% coverage
-
-### Dependencies
-- Phase 1 complete
-
----
-
-## Phase 3: Self-Improvement (Optimizer Layer)
-
-**Goal**: Implement the Optimizer Layer using DSPy 3.x SIMBA optimizer. Collect training data, optimize prompts, deploy improved variants.
-
-**Why third**: Need working experts + ARC metrics to have data for optimization.
-
-### Tasks
-
-3.1 **Training data collection**
-- Instrument all expert calls to log (input, output, success/failure) to ARC
-- Build training set generator from ARC invocation history
-- Implement `optimizers/training_data.py` with data extraction + formatting
-- Minimum 50 examples per expert for meaningful optimization
-
-3.2 **Selective optimization**
-- Router: optimize with MIPROv2 if routing accuracy < 90%
-- Experts: optimize with SIMBA only for experts with measurable underperformance
-- Not everything needs optimization — if it works, leave it alone
-- DSPy provides the infrastructure; using it is a tool, not a requirement
-- Statistical significance testing before deployment (p < 0.05)
-
-3.3 **Variant management**
-- `optimizers/variant_manager.py`: store optimized variants in ARC
-- Load best variant on startup
-- Rollback capability if new variant degrades performance
-- Version tracking: variant_id, training_examples, improvement_delta
-
-3.4 **Offline tuning CLI mode**
-- `--tune` flag on CLI for interactive tuning session
-- Show current performance metrics
-- Run optimization with progress reporting
-- Before/after comparison display
-- Deploy or rollback decision
-
-3.5 **Metrics dashboard in CLI**
-- `/metrics` command shows: success_rate, avg_latency, cache_hit_rate per expert
-- `/compare` command shows variant A vs B performance
-- Stored in ARC, computed from LSM tree data
-
-3.6 **Test coverage to 70%**
-- Tests for training data extraction
-- Tests for optimizer integration (mock LM calls)
-- Tests for variant management
-- Tests for metrics computation
-
-### Success Criteria
-- [ ] Training data collected from ARC (50+ examples per expert)
-- [ ] SIMBA optimization improves expert success_rate by >5%
-- [ ] `uv run src/clio_agent/ui/cli.py --tune` runs optimization workflow
-- [ ] Optimized variants stored in ARC with rollback capability
-- [ ] `pytest tests/` passes with >70% coverage
-
-### Dependencies
-- Phase 2 complete (need multi-expert + ARC metrics data)
-
----
-
-## Phase 4: Production Hardening
-
-**Goal**: REST API, CI/CD pipeline, container deployment, 80%+ test coverage. Make CLIO Agent deployable.
-
-### Tasks
-
-4.1 **REST API**
-- `ui/api.py` using FastAPI
-- `POST /query` - send question, get answer
-- `GET /experts` - list registered experts
-- `GET /metrics` - performance metrics
-- `GET /health` - health check
-- SSE streaming for long-running queries
-
-4.2 **CI/CD pipeline**
-- GitHub Actions: lint (ruff), type check (mypy), test (pytest), coverage gate (80%)
-- Pre-commit hooks: ruff format + ruff check
-- Automated release workflow on tag push
-
-4.3 **Container deployment**
-- Dockerfile for CLIO Agent API server
-- Singularity definition file for HPC environments
-- Docker Compose with CLIO Agent + LM Studio
-- Health checks and graceful shutdown
-
-4.4 **Test coverage to 80%**
-- Unit tests for all modules
-- Integration tests for API endpoints
-- End-to-end tests for CLI and API
-- Performance benchmarks for ARC operations
-
-4.5 **Error handling hardening**
-- Structured error responses (not raw tracebacks)
-- Graceful degradation: MCP server down -> reasoning-only mode
-- Timeout handling for LM calls and tool calls
-- Rate limiting on API endpoints
-
-4.6 **Configuration management**
-- Environment-based config (dev, staging, production)
-- Support for multiple LM providers (LM Studio, Ollama, OpenAI, Anthropic)
-- MCP server configuration via config file or environment variables
-
-### Success Criteria
-- [ ] REST API functional with OpenAPI docs
-- [ ] CI/CD pipeline runs on every PR
-- [ ] Docker image builds and runs CLIO Agent
-- [ ] `pytest tests/` passes with >80% coverage
-- [ ] Graceful degradation verified (kill MCP server, agent still responds)
-
-### Dependencies
-- Phase 3 complete (optimizer layer needs to be stable before production)
-
----
-
-## Phase 5: IOWarp Integration
-
-**Goal**: Connect ARC persistent storage to IOWarp CTE backend. Enable multi-tier data migration and intelligent prefetching.
-
-### Tasks
-
-5.1 **ARC-CTE storage backend**
-- Implement real IOWarp CTE connection in `arc/storage.py` (currently falls back to local FS)
-- Register `/clio_agent/arc/*` namespace in IOWarp
-- Read/write conversations, invocations, metrics to CTE
-
-5.2 **Multi-tier migration**
-- Configure tier policy: hot (NVMe) -> warm (PFS) -> cold (object store)
-- Automatic migration based on access patterns
-- Prefetching for predicted queries
-
-5.3 **Additional MCP servers for IOWarp ecosystem**
-- Darshan server: `analyze_log`, `get_io_summary`
-- ADIOS server: `analyze_bp_file`, `convert_format`
-- Mount all in gateway
-
-5.4 **IOWarp-aware optimizations**
-- DataExpert considers storage tier when recommending strategies
-- Tool results cached at appropriate IOWarp tier
-- ARC retrieval uses IOWarp prefetching hints
-
-### Success Criteria
-- [ ] ARC data persisted in IOWarp CTE
-- [ ] Data migrates across tiers based on access patterns
-- [ ] 4+ MCP servers working (HDF5, Parquet, Darshan, ADIOS)
-- [ ] IOWarp CTE connection failure degrades gracefully to local FS
-
-### Dependencies
-- Phase 4 complete (need production-quality code before IOWarp integration)
-- IOWarp CTE runtime available
-
----
-
-## Phase 6: Advanced Features
-
-**Goal**: Online learning, A2A protocol, additional experts, community features.
-
-### Tasks
-
-6.1 **Online learning**
-- A/B testing framework for prompt variants
-- Automatic optimization triggers based on metric degradation
-- Gradual rollout (10% -> 50% -> 100%)
-- Rollback on degradation detection
-
-6.2 **A2A Protocol**
-- Implement Google A2A protocol for external agent integration
-- CLIO Agent as provider (other agents call CLIO for science tasks)
-- CLIO Agent as consumer (CLIO delegates to external agents)
-- Agent Cards for capability advertisement
-
-6.3 **Additional experts**
-- HPCExpert: HPC job management, cluster optimization (when IOWarp integration is ready)
-- ResearchExpert: literature search, citation management
-- WorkflowExpert: pipeline orchestration (Nextflow, Parsl)
-
-6.4 **Nanoagent pool** (if needed)
-- Use `dspy.Parallel` for parallel sub-task execution
-- Ephemeral workers for parameter sweeps, compression testing
-- Pool management with resource limits
-
-6.5 **Model-role fit**
-- Configure different models per agent tier
-- T1 (main): fast model for routing (SLM)
-- T2 (experts): capable model for reasoning
-- T3 (nanoagents): smallest model for focused tasks
-- `dspy.context(lm=...)` per-request model switching
-
-### Success Criteria
-- [ ] Online learning automatically improves performance
-- [ ] A2A protocol allows external agents to call CLIO Agent
-- [ ] 4+ experts working
-- [ ] Model-role fit reduces cost while maintaining quality
-
-### Dependencies
-- Phase 5 complete
-
----
-
-## Cross-Cutting Requirements (All Phases)
-
-- Main agent + DataExpert + CLI must always work (never break baseline)
-- All data flows through ARC (no separate storage systems)
-- DSPy is internal implementation detail (never exposed in user-facing interfaces)
-- Tool curation: max 5-7 tools per expert (curated, not exhaustive)
-- Type hints on all functions, Google-style docstrings
-- Commit format: `<type>: <description>` (feat, fix, refactor, test, docs)
-
----
-
-**Last Updated**: 2026-02-10
+# CLIO Agent Global Development Plan
+
+Last updated: 2026-04-23
+
+This file is the working source of truth for building CLIO Agent beyond the
+v0.2.0 MVP into the full agent harness envisioned by the project.
+
+If this file conflicts with older planning archives under `.planning/`, treat
+the archive as historical context and this file as the active spec. If this
+file conflicts with source code or tests, verify the source first, then update
+this file in the same change.
+
+## Mission
+
+CLIO Agent is the IOWarp intelligence layer for scientific data management. It
+is not a generic agent framework and not a demo chatbot. It should help HPC and
+research users inspect, optimize, transform, profile, schedule, and reason about
+real scientific data workflows using real tools connected to the user's real
+environment.
+
+The core product promise is:
+
+> A locally deployable, memory-backed, self-improving scientific agent that routes
+> work to specialized experts, uses real I/O and HPC tools, records what
+> happened in ARC, and improves only when measured evidence says it improved.
+
+## Current Baseline
+
+The current codebase is a real alpha, not empty scaffolding.
+
+Implemented and source-verified:
+
+- Main orchestrator: `src/clio_agent/agent.py`
+- CLI: `src/clio_agent/ui/cli.py`
+- REST API with health/query/experts/metrics/SSE: `src/clio_agent/ui/api.py`
+- Multi-provider LM configuration: `src/clio_agent/config.py`
+- ARC memory, schemas, cache, index, LSM, retrieval, context compilation:
+  `src/clio_agent/arc/`
+- HDF5 FastMCP server using `h5py`: `src/clio_agent/tools/servers/hdf5_server.py`
+- Parquet FastMCP server using `pyarrow`: `src/clio_agent/tools/servers/parquet_server.py`
+- FastMCP gateway: `src/clio_agent/tools/gateway.py`
+- Data, Analysis, Visualization experts: `src/clio_agent/experts/`
+- Offline optimization support: `src/clio_agent/optimizer/`
+- Container and CI artifacts: `Dockerfile`, `docker-compose.yml`,
+  `singularity.def`, `.github/workflows/ci.yml`
+
+Recent local verification:
+
+- `uv run pytest tests/`: 549 passed
+- `uv run ruff check src/ tests/ scripts/create_demo_data.py`: passed
+- Touched files pass `ruff format --check`
+- Live CLI and API smoke checks worked against generated HDF5 and Parquet files
+
+Known baseline caveats:
+
+- The reliable path for explicit file tasks is deterministic tool routing. The
+  LLM ReAct path remains useful but should not be the only production path.
+- FastMCP gateway still uses the deprecated `prefix=` mount style. Move to the
+  supported namespace API before relying on long-term compatibility.
+- `MCPToolBridge` is a pragmatic async-to-sync adapter. It works, but it is a
+  harness risk for concurrency, streaming, optimization, and long-running
+  remote tools.
+- IOWarp CTE support is an adapter-shaped local fallback, not proven production
+  CTE integration.
+- ADIOS, Darshan, SLURM/PBS, compression benchmarking, workflow execution, A2A,
+  and nanoagent execution are not yet real product capabilities.
+- Existing planning docs contain stale statements from earlier phases. Use them
+  for design intent, not current-state truth.
+
+## Product Boundaries
+
+In scope:
+
+- Scientific data I/O inspection and optimization
+- HDF5, Parquet, ADIOS2/BP, Darshan, compression, format conversion
+- HPC scheduler and job context integration, starting with SLURM unless the
+  deployment target requires PBS first
+- ARC memory with durable local mode and real IOWarp CTE mode
+- CLI, REST API, library use, and future agent-to-agent access
+- Tool-backed answers with traceable evidence
+- Offline optimization and gated variant deployment
+- Local-first deployment with LM Studio or Ollama, plus cloud provider support
+
+Out of scope unless explicitly promoted:
+
+- A general-purpose chatbot
+- A framework for arbitrary agent creation
+- Unbounded autonomous job submission without policy and approval gates
+- Production online learning that can deploy changes without evaluation gates
+- Replacing IOWarp runtime components that CLIO should integrate with
+
+## Architectural Commitments
+
+1. Source and tests outrank docs.
+2. CLIO is a hierarchical agent: orchestrator, experts, optional workers.
+3. All durable runtime context flows through ARC.
+4. Tool servers perform real operations or clearly report that the real backend
+   is unavailable.
+5. The agent never invents file-specific or environment-specific facts without
+   a tool result, a stored ARC record, or an explicit user-provided fact.
+6. Context is compiled with budgets. Raw history concatenation is not allowed
+   for production paths.
+7. Tool sets are curated. Each expert should see the smallest useful set of
+   high-level tools, normally 5 to 7.
+8. Deterministic routing and validation protect the product path. LLM routing
+   and ReAct are reasoning layers, not the only safety mechanism.
+9. Optimization is evidence-gated. Variants can be saved freely, but deployment
+   requires before/after evaluation and rollback.
+10. External integration failures degrade clearly. Users should know which
+    backend is live, degraded, skipped, or unavailable.
+
+## Runtime Modes
+
+CLIO must support these deployment modes:
+
+| Mode | Target | Required behavior |
+| --- | --- | --- |
+| Standalone local | Developer workstation | LM Studio/Ollama plus local ARC and in-process tools |
+| API service | Server or container | FastAPI with health, query, experts, metrics, structured errors |
+| HPC login node | Cluster environment | CLI/API with scheduler, Darshan, ADIOS, and filesystem-safe policies |
+| IOWarp integrated | Full IOWarp stack | ARC uses CTE, tools use CAE/PPI where available |
+| Agent sidekick | External coding/science agents | A2A or HTTP contract exposing CLIO capabilities safely |
+
+## Integration Model
+
+CLIO should integrate with the IOWarp stack as follows:
+
+| IOWarp layer | CLIO responsibility |
+| --- | --- |
+| CEI | CLIO orchestrator, context compilation, expert routing, final answer synthesis |
+| CAE/PPI | FastMCP tool gateway and scientific tool servers |
+| CTE | ARC durable storage, tier policy, prefetch/promotion hints |
+| Storage/runtime | HDF5, Parquet, ADIOS2, Darshan logs, scheduler state, real filesystems |
+
+The local fallback is part of the product, but it must be explicitly reported as
+fallback mode. A successful local fallback is not proof that IOWarp integration
+works.
+
+## Capability Matrix
+
+| Capability | Current status | Target status |
+| --- | --- | --- |
+| HDF5 inspection | Real local server | Production tool with safe paths, chunk/compression planning, optional rewrite plan |
+| Parquet inspection | Real local server | Production schema, stats, quality profile, partition/row-group advice |
+| Visualization | Real local matplotlib tools | Stable chart artifacts, file registry, optional API artifact retrieval |
+| ARC local memory | Real | Retention, locking, repair, export, privacy controls |
+| ARC CTE backend | Partial adapter | Real CTE contract with namespace, tier migration, stats, failure modes |
+| Offline optimization | Real but underused | Evidence-gated workflow with curated datasets and model/provider matrix |
+| REST API | Real | Auth, streaming lifecycle, cancellation, artifact endpoints |
+| CI/container | Present | Verified build/test matrix plus live-integration gates when credentials exist |
+| ADIOS2/BP | Missing | Real ADIOS2 server and conversion/profile workflow |
+| Darshan | Missing | Real log parser/profiler server and HPC I/O recommendations |
+| SLURM/PBS | Missing | Real scheduler server with read-only default and guarded submit/cancel |
+| Compression benchmarking | Missing | Real sampling benchmark with limits, provenance, and reproducible output |
+| Multi-expert coordination | Partial | Plan-execute-verify workflows with dependency passing and trace storage |
+| A2A/external agents | Missing | Authenticated protocol with agent card and bounded delegation |
+| Nanoagents/parallel workers | Placeholder concept | Only implement after real workflows need parallel fan-out |
+
+## Version Roadmap
+
+### v0.3: Integration-Ready Harness
+
+Goal: make the existing alpha trustworthy as a base for real environments.
+
+Deliverables:
+
+- Replace deprecated FastMCP `prefix=` gateway mounts with current namespace API.
+- Add a runtime capability probe command, preferably `clio-agent doctor`.
+- Add an integration registry that describes every configured backend:
+  provider, endpoint, auth mode, health, capability set, and fallback state.
+- Add explicit file access policy: allowed roots, read/write mode, max file size,
+  symlink behavior, and unsafe-path rejection.
+- Add tool parameter and result validation around every tool call.
+- Replace or isolate `MCPToolBridge` behind an interface that supports both sync
+  CLI calls and async API service calls without hidden global thread behavior.
+- Add artifact registry for generated plots and future reports.
+- Reconcile stale docs that claim planned features are current.
+
+Acceptance gates:
+
+- Full test suite passes.
+- `clio-agent doctor` reports LM, ARC, gateway, HDF5, Parquet, API readiness.
+- A missing LM, missing IOWarp runtime, or missing tool backend produces a
+  structured degraded status, not a crash.
+- Gateway namespace migration is covered by tests.
+- No production path depends on README-only claims.
+
+### v0.4: Real Scientific Tool Integrations
+
+Goal: make CLIO useful against real scientific/HPC artifacts, not only HDF5 and
+Parquet sample files.
+
+Deliverables:
+
+- ADIOS2/BP FastMCP server:
+  - inspect variables, attributes, timesteps, shapes, engines, file metadata
+  - sample variable data within configured limits
+  - recommend conversion or layout strategy
+  - optionally convert BP to HDF5/Parquet through a guarded write workflow
+- Darshan FastMCP server:
+  - parse real Darshan logs
+  - summarize POSIX/MPI-IO/HDF5 behavior
+  - detect common I/O bottlenecks
+  - produce actionable recommendations tied to counters
+- Scheduler server, starting with SLURM unless changed:
+  - read-only default: partition info, queue status, job status, accounting
+  - guarded mutating operations: submit, cancel, hold, release
+  - explicit user approval for mutating operations in CLI/API
+- Compression benchmark server:
+  - bounded sample extraction
+  - candidate codec tests where libraries are available
+  - speed, ratio, CPU, and memory reporting
+  - provenance for benchmark inputs and limits
+- Tool packaging model:
+  - in-process for tests
+  - stdio or HTTP/SSE for real deployments
+  - config-driven selection
+
+Acceptance gates:
+
+- Each new integration has tests with deterministic fixtures.
+- Each new integration has at least one live/manual verification recipe.
+- Real backend unavailable states are distinguishable from code failures.
+- Mutating scheduler and conversion operations require an approval policy.
+
+### v0.5: Agent Harness and Objective-Driven Workflows
+
+Goal: make CLIO perform multi-step work reliably with planning, verification,
+and traceability.
+
+Deliverables:
+
+- Introduce a `TaskSpec` model stored in ARC:
+  - user objective
+  - files/resources involved
+  - constraints and safety policy
+  - selected experts/tools
+  - expected outputs
+  - validation criteria
+- Implement plan-execute-verify orchestration:
+  - deterministic objective parsing for known scientific tasks
+  - expert selection through registry plus capability matcher
+  - explicit tool call plan
+  - result validation before final answer
+  - retry/fallback rules
+- Upgrade `MultiAgentCoordinator`:
+  - dependency-aware sequential execution
+  - safe parallel execution where dependencies permit
+  - cancellation and timeout propagation
+  - coordination trace in ARC
+- Add first-class workflows:
+  - HDF5 optimization assessment
+  - Parquet data-quality profile
+  - ADIOS/Darshan I/O diagnosis
+  - scheduler-aware run analysis
+  - storage-to-insight pipeline across data, analysis, visualization
+
+Acceptance gates:
+
+- Workflows pass golden-task tests with fixed data/log fixtures.
+- Every final answer can cite tool outputs or ARC records used.
+- Failed validation produces a partial result plus next action, not false
+  success.
+- API supports request cancellation and long-running task status.
+
+### v0.6: ARC + IOWarp CTE Production Integration
+
+Goal: make ARC a real IOWarp-backed memory layer while preserving local mode.
+
+Deliverables:
+
+- Define and implement the real CTE client contract:
+  - namespace registration
+  - read/write/delete/list
+  - tier selection
+  - metadata and stats
+  - migration and prefetch hints if the runtime exposes them
+- Add ARC storage modes:
+  - `local`
+  - `cte`
+  - `auto` with explicit fallback reporting
+- Add retention and maintenance:
+  - invocation and metrics retention policy
+  - LSM compaction safety and repair
+  - index rebuild
+  - export/import
+- Add privacy and security:
+  - optional no-persist mode
+  - sensitive field redaction
+  - encryption-at-rest option if required for deployments
+- Add concurrency controls for API service mode.
+
+Acceptance gates:
+
+- Local mode and CTE mode pass the same ARC contract tests.
+- CTE failures degrade to local mode only when policy permits fallback.
+- Tier stats shown by CLI/API are real in CTE mode and clearly labeled in
+  fallback mode.
+- ARC survives restart with conversation, invocation, profile, metric, and
+  variant records intact.
+
+### v0.7: Evaluation and Self-Improvement as Product
+
+Goal: make "gets better with use" measurable and safe.
+
+Deliverables:
+
+- Golden evaluation suite:
+  - HDF5 fixtures
+  - Parquet fixtures
+  - ADIOS fixtures
+  - Darshan logs
+  - scheduler transcripts or live read-only cluster checks
+- Scorecards:
+  - routing accuracy
+  - tool-call correctness
+  - answer groundedness
+  - latency
+  - cost/token use
+  - regression rate
+- Training data quality controls:
+  - only successful and validated invocations become candidates
+  - deduplication and leakage checks
+  - manual curation path for high-value examples
+- Optimization deployment:
+  - shadow evaluation first
+  - statistical significance gates
+  - human approval for production activation
+  - rollback and audit trail
+
+Acceptance gates:
+
+- Optimizer cannot deploy a variant without evaluation evidence.
+- `/metrics`, `/compare`, and API metrics report evaluation-backed scores.
+- CI can run offline golden evaluations.
+- Live evaluations are separately gated and skipped cleanly when backends are
+  unavailable.
+
+### v0.8: External Agent and Team Integration
+
+Goal: expose CLIO safely to other agents, services, and team workflows.
+
+Deliverables:
+
+- Agent card or service descriptor with capabilities, limits, and auth.
+- A2A or HTTP delegation endpoint:
+  - query
+  - task submission
+  - task status
+  - artifact retrieval
+  - trace retrieval
+- Authentication and authorization:
+  - API keys or bearer tokens
+  - role/policy checks for mutating operations
+  - per-tool allow/deny rules
+- Team collaboration:
+  - documented work-package ownership
+  - integration test environments
+  - release checklists
+  - evidence templates for PRs
+
+Acceptance gates:
+
+- External callers can discover CLIO capabilities without reading source.
+- External calls are bounded by policy and logged in ARC.
+- A mutating external request cannot run without authorization and approval.
+
+### v1.0: Production Release
+
+Goal: CLIO is deployable in a real IOWarp/HPC environment with a stable contract.
+
+Release criteria:
+
+- At least four real scientific/HPC integrations are production-ready:
+  HDF5, Parquet, plus two of ADIOS2, Darshan, SLURM/PBS, compression.
+- ARC local and CTE modes are contract-tested.
+- CLI and API are both documented and stable.
+- Security policy exists for file access, command execution, and job mutation.
+- Golden evaluations pass at agreed thresholds.
+- Container and HPC deployment paths are verified.
+- Known limitations are explicit and user-visible.
+
+## Work Packages for Coding Agents
+
+Use these work packages to split work across team members or coding agents.
+Each package should produce source changes, tests, and evidence.
+
+### WP-01: Planning Truth Reconciliation
+
+Scope:
+
+- Make this `PLAN.md` the active global spec.
+- Mark older `.planning` docs as archive where they conflict.
+- Update stale docs that claim missing capabilities are implemented.
+
+Files likely touched:
+
+- `PLAN.md`
+- `.planning/STATE.md`
+- `.planning/PROJECT.md`
+- selected docs under `docs/`
+
+Done when:
+
+- A new contributor can read one plan and understand current vs target state.
+- No active doc claims ADIOS, Darshan, SLURM, A2A, nanoagents, or CTE are fully
+  delivered unless source and tests prove it.
+
+### WP-02: Runtime Doctor and Integration Registry
+
+Scope:
+
+- Add capability registry for LM, ARC, gateway, tools, CTE, scheduler.
+- Add CLI/API health details.
+- Add `clio-agent doctor` or equivalent.
+
+Done when:
+
+- The runtime reports `ready`, `degraded`, `unavailable`, or `misconfigured`
+  per integration.
+- Doctor output includes exact config source and next action.
+
+### WP-03: Gateway Modernization and Tool Contracts
+
+Scope:
+
+- Move FastMCP mounts to current namespace API.
+- Add schema validation for parameters and results.
+- Add file access policy enforcement.
+- Add tool timeout and cancellation behavior.
+
+Done when:
+
+- HDF5 and Parquet tests pass through the modern gateway.
+- Unsafe paths and invalid arguments are rejected before tool execution.
+
+### WP-04: Async Harness Refactor
+
+Scope:
+
+- Define sync and async execution boundaries.
+- Hide or replace `MCPToolBridge`.
+- Support CLI sync calls, FastAPI async calls, and optimizer evaluation without
+  deadlocks or leaked threads.
+
+Done when:
+
+- Expert tools run through a single execution abstraction.
+- API can serve concurrent requests without creating unbounded background
+  threads.
+
+### WP-05: Real CTE Adapter
+
+Scope:
+
+- Identify real IOWarp CTE API or SDK.
+- Implement ARC storage contract against it.
+- Preserve local fallback mode.
+
+Done when:
+
+- Contract tests pass in local and CTE modes.
+- CTE mode reports real namespace and tier stats.
+
+### WP-06: ADIOS2 Server
+
+Scope:
+
+- Add ADIOS2/BP inspection and optional conversion tools.
+- Add deterministic fixtures and live verification recipe.
+
+Done when:
+
+- CLIO can inspect BP variables/timesteps and recommend a concrete next action.
+
+### WP-07: Darshan Server
+
+Scope:
+
+- Add Darshan log parsing and I/O diagnosis.
+- Map counters to recommendations with traceable evidence.
+
+Done when:
+
+- CLIO can turn a real Darshan log into bottleneck findings and next actions.
+
+### WP-08: Scheduler Server
+
+Scope:
+
+- Add SLURM first unless project leadership chooses PBS first.
+- Read-only operations first, mutating operations behind approval policy.
+
+Done when:
+
+- CLIO can inspect queue/job/accounting state.
+- Submit/cancel cannot run without explicit approval.
+
+### WP-09: Workflow Orchestrator
+
+Scope:
+
+- Add `TaskSpec`, plan-execute-verify, and workflow traces.
+- Upgrade `MultiAgentCoordinator`.
+
+Done when:
+
+- Multi-step HDF5/Parquet/Darshan workflows pass golden-task tests.
+
+### WP-10: Evaluation Harness
+
+Scope:
+
+- Add golden datasets/logs or generators.
+- Add scoring and regression gates.
+- Wire offline evaluation to CI where feasible.
+
+Done when:
+
+- A release candidate can be judged by scorecards, not ad hoc demos.
+
+## Integration Definition of Done
+
+Every real integration must include:
+
+- Config keys and environment variables
+- Health probe
+- Clear unavailable/degraded behavior
+- Tool API with typed inputs and outputs
+- Parameter validation
+- Timeout limits
+- Safe error messages
+- Unit tests with deterministic fixtures
+- Integration tests that can be skipped when the backend is unavailable
+- Manual live verification steps
+- ARC trace fields for tool calls and results
+- Documentation of any mutating or security-sensitive behavior
+
+Mocks are allowed for unit tests. They are not acceptable as proof that a
+capability is delivered.
+
+## Agent and Team Collaboration Rules
+
+All human and coding-agent contributors should follow these rules:
+
+1. Read `AGENTS.md`, this `PLAN.md`, and the relevant source files before
+   changing code.
+2. Start by checking `git status --short`.
+3. Do not rewrite unrelated dirty files.
+4. Work in scoped packages with clear file ownership.
+5. Prefer source and tests over docs when resolving conflicts.
+6. Add tests proportional to blast radius.
+7. For external integrations, include both offline tests and live verification
+   instructions.
+8. Never claim a backend is integrated because a fallback path works.
+9. Do not expose DSPy concepts in user-facing interfaces unless the interface is
+   explicitly for developers.
+10. PRs must include commands run, results, skipped checks, and required human
+    verification.
+
+## Required Evidence for PRs
+
+Every PR should include:
+
+- Problem statement
+- Implementation summary
+- Files changed by ownership area
+- Test commands and results
+- Integration evidence:
+  - backend used
+  - endpoint or environment
+  - sample input
+  - sample output
+  - skipped live checks with reason
+- Rollback or failure mode if the change affects runtime behavior
+
+For planner/spec changes, include:
+
+- Which older docs were reconciled
+- Which source files were checked
+- Which decisions remain open
+
+## Open Decisions
+
+These require project-owner input before the related work can be considered
+complete. Defaults are listed so coding can proceed without blocking where safe.
+
+| Decision | Default until changed | Needed for |
+| --- | --- | --- |
+| Real CTE API/SDK and endpoint | Keep local fallback and design a small adapter interface | v0.6 |
+| First scheduler | SLURM | v0.4 scheduler server |
+| Mutating job policy | Deny by default, require explicit approval | Scheduler and workflow tools |
+| Canonical live environment | Developer local plus optional HPC login node | Live verification |
+| Canonical model set | LM Studio/Ollama local first, OpenAI/Anthropic optional | Evaluation matrix |
+| Real fixture sources | Generated fixtures until project data is provided | Evaluation harness |
+| A2A protocol flavor | HTTP task API first, formal A2A after capabilities stabilize | v0.8 |
+
+## Immediate Next Milestone
+
+The next milestone should be v0.3: Integration-Ready Harness.
+
+Recommended first four tasks:
+
+1. Add `clio-agent doctor` and integration status models.
+2. Modernize FastMCP gateway namespacing and add tests.
+3. Add file access policy plus tool parameter/result validation.
+4. Define the CTE adapter interface and identify the real IOWarp runtime
+   contract with the project owner.
+
+Do not start ADIOS, Darshan, or scheduler implementation until task 1 gives
+the team a reliable way to see which runtime integrations are live.

@@ -4,7 +4,6 @@ Tests forward() dispatch, expert invocation instrumentation, variant loading
 on __init__, and error handling paths -- all without requiring LM Studio.
 """
 
-import time
 from unittest.mock import MagicMock, patch
 
 import dspy
@@ -210,9 +209,7 @@ class TestVariantLoading:
         agent = ClioAgent(data_dir=str(tmp_path / "clio"), verbose=True)
 
         from clio_agent.arc.schema import VariantRecord
-        from clio_agent.optimizer.variants import VariantManager
 
-        vm = VariantManager(agent.arc)
         record = VariantRecord(
             variant_id="data_v1",
             agent_id="data",

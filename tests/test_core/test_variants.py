@@ -13,7 +13,6 @@ Tests cover:
 
 import time
 from pathlib import Path
-from unittest.mock import MagicMock, patch
 
 import dspy
 import pytest
@@ -66,7 +65,7 @@ class TestSaveVariant:
 
     def test_save_creates_file_on_disk(self, vm, mock_module, tmp_path):
         """save_variant creates a JSON file on disk."""
-        record = vm.save_variant(
+        vm.save_variant(
             mock_module, "data", 0.6, 0.85, 50, 0.003, True
         )
 
@@ -76,7 +75,7 @@ class TestSaveVariant:
 
     def test_save_stores_variant_record_in_arc(self, vm, arc, mock_module):
         """save_variant stores VariantRecord in ARC memory."""
-        record = vm.save_variant(
+        vm.save_variant(
             mock_module, "data", 0.6, 0.85, 50, 0.003, True
         )
 

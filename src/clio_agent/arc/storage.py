@@ -120,11 +120,13 @@ class IOWarpCTEBackend:
         # Try to connect to ZeroMQ port
         try:
             # Parse endpoint
+            host: str
+            port: int
             if "://" in endpoint:
-                protocol, hostport = endpoint.split("://")
+                _, hostport = endpoint.split("://")
                 if ":" in hostport:
-                    host, port = hostport.rsplit(":", 1)
-                    port = int(port)
+                    host, port_str = hostport.rsplit(":", 1)
+                    port = int(port_str)
                 else:
                     host = hostport
                     port = 5555

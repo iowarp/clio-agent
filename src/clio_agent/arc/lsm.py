@@ -239,6 +239,7 @@ class LSMTree:
         # Generate SSTable filename with timestamp
         timestamp_ns = time.time_ns()
         sstable_path = self.data_dir / f"sst_{timestamp_ns}.msgpack"
+        self.data_dir.mkdir(parents=True, exist_ok=True)
 
         # Serialize MemTable to msgpack
         # Store as list of (timestamp, metric) tuples for efficiency
@@ -277,6 +278,7 @@ class LSMTree:
         # Generate SSTable filename with timestamp
         timestamp_ns = time.time_ns()
         sstable_path = self.data_dir / f"sst_{timestamp_ns}.msgpack"
+        self.data_dir.mkdir(parents=True, exist_ok=True)
 
         # Serialize MemTable to msgpack
         # Store as list of (timestamp, metric) tuples for efficiency
@@ -348,6 +350,10 @@ class LSMTree:
         compacted_path = self.data_dir / f"sst_compacted_{timestamp_ns}.msgpack"
 
         sorted_entries = [(ts, merged_data[ts]) for ts in sorted(merged_data.keys())]
+        if not sorted_entries:
+            self._sstables = [sst for sst in self._sstables if sst.file_path.exists()]
+            return
+
         encoded = msgspec.msgpack.encode(sorted_entries)
         compacted_path.write_bytes(encoded)
 
@@ -375,9 +381,7 @@ class LSMTree:
             self._sstables = [compacted_sstable]
             self._compaction_count += 1
 
-    def _read_from_sstable(
-        self, sstable: SSTable, timestamp: float
-    ) -> Optional[Dict[str, Any]]:
+    def _read_from_sstable(self, sstable: SSTable, timestamp: float) -> Optional[Dict[str, Any]]:
         """Read single metric from SSTable.
 
         Args:
@@ -424,6 +428,9 @@ class LSMTree:
         Returns:
             List of (timestamp, metric) tuples
         """
+        if not sstable.file_path.exists():
+            return []
+
         encoded = sstable.file_path.read_bytes()
         entries: List[tuple[float, Dict[str, Any]]] = msgspec.msgpack.decode(encoded)
         return entries

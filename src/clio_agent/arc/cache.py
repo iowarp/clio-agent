@@ -36,13 +36,14 @@ class LRUCache:
         """
         self._capacity = capacity
         self._lock = Lock()
+        self._cache: Any
 
         # Use lru-dict if available, otherwise use dict with manual LRU
         if HAS_LRU_DICT:
-            self._cache: LRU = LRU(capacity)
+            self._cache = LRU(capacity)
         else:
-            self._cache: Dict[str, Any] = {}
-            self._access_order: list = []  # Track access order for manual LRU
+            self._cache = {}
+            self._access_order: list[str] = []  # Track access order for manual LRU
 
         # TTL storage: key -> expiry_timestamp
         self._ttl: Dict[str, float] = {}

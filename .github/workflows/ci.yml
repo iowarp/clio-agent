@@ -17,3 +17,5 @@ jobs:
       - run: uv sync --extra dev --extra api --extra optimizers
       - run: uv run ruff check src/ tests/
       - run: uv run ruff format --check src/ tests/
+      - run: uv run mypy src/
+      - run: uv run pytest tests/ -m "not integration" --cov-fail-under=80

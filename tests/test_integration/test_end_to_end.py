@@ -16,6 +16,8 @@ import requests
 from clio_agent.agent import ClioAgent
 from clio_agent.arc.schema import DatasetProfile
 
+pytestmark = pytest.mark.integration
+
 
 def lm_studio_available():
     """Check if LM Studio is running and has models loaded."""
@@ -92,6 +94,7 @@ class TestAgentArchitecture:
     not lm_studio_available(),
     reason="LM Studio not running or no models loaded",
 )
+@pytest.mark.filterwarnings("ignore:Pydantic serializer warnings:UserWarning")
 class TestEndToEnd:
     """End-to-end tests requiring LM Studio."""
 
@@ -170,7 +173,7 @@ class TestMultiExpertWorkflow:
             return mock_result
 
         with patch.object(agent.analysis_expert.__class__, "__call__", capture_call):
-            result = agent(question="Analyze the temperature column", session_id=session_id)
+            agent(question="Analyze the temperature column", session_id=session_id)
 
         # Verify profile was shared to analysis expert
         assert len(received_contexts) == 1

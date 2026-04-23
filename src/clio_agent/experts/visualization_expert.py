@@ -366,7 +366,7 @@ def plot_summary(filepath: str, output_path: str = "") -> str:
             )
             ax_corr.set_title("Correlation Heatmap")
 
-        fig.tight_layout(rect=[0, 0, 1, 0.96])
+        fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.96))
 
         fig.savefig(safe_output_path, dpi=150, bbox_inches="tight")
         plt.close("all")

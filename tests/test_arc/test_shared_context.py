@@ -7,7 +7,6 @@ session isolation, disk persistence, ordering, and msgpack round-trips.
 
 import time
 
-import msgspec
 import pytest
 
 from clio_agent.arc.memory import ARCMemory

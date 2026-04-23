@@ -19,10 +19,13 @@ See docs/ARC_MEMORY_LAYER.md for architecture details.
 
 import re
 from collections import Counter
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from clio_agent.arc.memory import ARCMemory
 from clio_agent.arc.schema import Context, Conversation
+
+if TYPE_CHECKING:
+    from clio_agent.arc.context_compiler import ContextCompiler
 
 
 class ContextRetriever:
@@ -57,7 +60,7 @@ class ContextRetriever:
             memory: ARCMemory instance for accessing stored data
         """
         self.memory = memory
-        self._context_compiler = None  # Lazy init
+        self._context_compiler: ContextCompiler | None = None  # Lazy init
 
         # Common English stop words to filter from keyword extraction
         self._stop_words = {

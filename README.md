@@ -644,17 +644,13 @@ claude_code.register_sidekick("clio-agent", a2a_endpoint="http://localhost:8000/
 
 CLIO Agent is research/development code as part of the IOWarp project.
 
-For development:
-1. Read [docs/CLIO_AGENT_ARCHITECTURE.md](docs/CLIO_AGENT_ARCHITECTURE.md) for architecture overview
-2. Study [docs/SYSTEM_IDENTITY.md](docs/SYSTEM_IDENTITY.md) for design principles
-3. Explore [src/clio_agent/experts/data_expert.py](src/clio_agent/experts/data_expert.py) for agent patterns
-4. Test with: `uv run src/clio_agent/ui/cli.py`
+For day-to-day contributor workflow, start with:
+- [docs/CONTRIBUTOR_QUICKSTART.md](docs/CONTRIBUTOR_QUICKSTART.md)
 
-**Development Priorities (Phase 1):**
-- Real HDF5 MCP server (FastMCP 3.x)
-- DSPy 3.x ReAct + ChatAdapter integration
-- Delete mcp_connector.py, clean up stubs
-- Test coverage to 50%
+Recommended background reading:
+1. [docs/CLIO_AGENT_ARCHITECTURE.md](docs/CLIO_AGENT_ARCHITECTURE.md)
+2. [docs/SYSTEM_IDENTITY.md](docs/SYSTEM_IDENTITY.md)
+3. [src/clio_agent/experts/data_expert.py](src/clio_agent/experts/data_expert.py)
 
 ---
 

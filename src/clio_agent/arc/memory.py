@@ -228,9 +228,7 @@ class ARCMemory:
 
             return conversation
 
-    def get_conversation_history(
-        self, session_id: str, limit: int = 10
-    ) -> List[Conversation]:
+    def get_conversation_history(self, session_id: str, limit: int = 10) -> List[Conversation]:
         """Get recent conversations for session.
 
         Retrieves the most recent conversation states (useful for seeing
@@ -350,9 +348,7 @@ class ARCMemory:
 
             return invocation
 
-    def get_session_invocations(
-        self, session_id: str, limit: int = 100
-    ) -> List[Invocation]:
+    def get_session_invocations(self, session_id: str, limit: int = 100) -> List[Invocation]:
         """Get invocations for a session.
 
         Retrieves invocation traces for analysis and debugging.
@@ -372,13 +368,29 @@ class ARCMemory:
         # Get all index entries for this session
         index_entries = self._inv_index.get_session_range(session_id)
 
-        # Extract trace IDs and load invocations
+        # Extract trace IDs and load invocations. The B-tree is in-memory, so
+        # after process restart it may be empty even though invocation files
+        # exist on disk. Fall back to scanning persisted invocations.
         invocations = []
-        for entry in index_entries[-limit:]:  # Get most recent
-            trace_id = entry["trace_id"]
-            inv = self.get_invocation(trace_id)
-            if inv:
-                invocations.append(inv)
+        if index_entries:
+            for entry in index_entries[-limit:]:  # Get most recent
+                trace_id = entry["trace_id"]
+                inv = self.get_invocation(trace_id)
+                if inv:
+                    invocations.append(inv)
+        else:
+            with self._lock:
+                for fpath in self._inv_dir.glob("*.msgpack"):
+                    try:
+                        encoded = fpath.read_bytes()
+                        inv = decode_invocation(encoded)
+                        self._disk_reads += 1
+                    except Exception:
+                        continue
+                    if inv.session_id == session_id:
+                        invocations.append(inv)
+            invocations.sort(key=lambda inv: inv.started_at)
+            invocations = invocations[-limit:]
 
         # Return most recent first
         return list(reversed(invocations))
@@ -418,9 +430,7 @@ class ARCMemory:
             file_path.write_bytes(encoded)
             self._disk_writes += 1
 
-    def get_metrics(
-        self, agent_id: str, period: Optional[str] = None
-    ) -> Optional[Metrics]:
+    def get_metrics(self, agent_id: str, period: Optional[str] = None) -> Optional[Metrics]:
         """Get metrics for agent.
 
         Args:
@@ -628,9 +638,7 @@ class ARCMemory:
             "target_hit_rate": 0.50,  # >50% per PLAN.md
         }
 
-    def query_metrics_by_time_range(
-        self, start_ts: float, end_ts: float
-    ) -> List[Dict[str, Any]]:
+    def query_metrics_by_time_range(self, start_ts: float, end_ts: float) -> List[Dict[str, Any]]:
         """Query metrics in time range using LSM tree.
 
         Provides fast time-range queries over invocation metrics
@@ -737,9 +745,7 @@ class ARCMemory:
             file_path.write_bytes(encoded)
             self._disk_writes += 1
 
-    def get_dataset_profile(
-        self, session_id: str, filepath: str
-    ) -> Optional[DatasetProfile]:
+    def get_dataset_profile(self, session_id: str, filepath: str) -> Optional[DatasetProfile]:
         """Retrieve a dataset profile by session and filepath.
 
         Checks cache first, then falls back to disk.
@@ -798,7 +804,7 @@ class ARCMemory:
 
         # Check cache first for known keys
         with self._lock:
-            if hasattr(self._cache, '_cache'):
+            if hasattr(self._cache, "_cache"):
                 for key in list(self._cache._cache.keys()):
                     if key.startswith(f"profile:{session_id}:"):
                         val = self._cache._cache.get(key)
@@ -847,17 +853,12 @@ class ARCMemory:
         import hashlib
 
         with self._lock:
-            cache_key = (
-                f"proc:{memory.session_id}:{memory.expert_id}:{memory.learned_at}"
-            )
+            cache_key = f"proc:{memory.session_id}:{memory.expert_id}:{memory.learned_at}"
             self._cache.put(cache_key, memory)
 
             # Persist to disk
             key_hash = hashlib.md5(cache_key.encode()).hexdigest()[:12]
-            file_path = (
-                self._procedural_dir
-                / f"{memory.expert_id}_{key_hash}.msgpack"
-            )
+            file_path = self._procedural_dir / f"{memory.expert_id}_{key_hash}.msgpack"
             encoded = encode_procedural_memory(memory)
             file_path.write_bytes(encoded)
             self._disk_writes += 1
@@ -891,7 +892,7 @@ class ARCMemory:
         with self._lock:
             # Scan cache
             prefix = f"proc:{session_id}:"
-            if hasattr(self._cache, '_cache'):
+            if hasattr(self._cache, "_cache"):
                 for key in list(self._cache._cache.keys()):
                     if key.startswith(prefix):
                         val = self._cache._cache.get(key)
@@ -1088,8 +1089,15 @@ class ARCMemory:
 
     def __del__(self) -> None:
         """Cleanup LSM tree on delete."""
-        if hasattr(self, "_lsm"):
-            self._lsm.close()
+        lsm = getattr(self, "_lsm", None)
+        if lsm is None:
+            return
+
+        try:
+            lsm.close()
+        except Exception:
+            # Destructors must not raise during interpreter shutdown or tmpdir cleanup.
+            pass
 
     @staticmethod
     def _parse_timestamp(timestamp: float | str) -> float:

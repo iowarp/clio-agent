@@ -111,8 +111,8 @@ async def lifespan(app: FastAPI):
 
         from clio_agent.agent import ClioAgent
 
-        agent = ClioAgent()
-        app.state.agent = agent
+        startup_agent = ClioAgent()
+        app.state.agent = startup_agent
         app.state.healthy = True
         logger.info("ClioAgent initialized (provider=%s)", config.provider)
     except Exception as e:
@@ -131,9 +131,9 @@ async def lifespan(app: FastAPI):
     yield
 
     # Shutdown
-    agent = getattr(app.state, "agent", None)
-    if agent is not None:
-        agent.shutdown()
+    shutdown_agent = getattr(app.state, "agent", None)
+    if shutdown_agent is not None:
+        shutdown_agent.shutdown()
         logger.info("ClioAgent shut down")
 
 

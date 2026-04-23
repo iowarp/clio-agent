@@ -146,10 +146,11 @@ Desktop.ini
 
 # AI agents
 .planning/
+.clio_agent/
+.codex
 
 ai-docs/_archived/
 ANTHONY/
 .research/
-
 
 

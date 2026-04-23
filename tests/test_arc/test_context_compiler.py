@@ -201,7 +201,7 @@ class TestCompact:
             "profiles": [
                 {"filepath": "/data/test.parquet", "format": "parquet",
                  "schema": {"columns": ["a"] * 100, "rows": 1000},
-                 "stats": {"a": {"mean": 1.0} for _ in range(50)},
+                 "stats": {f"a_{i}": {"mean": 1.0} for i in range(50)},
                  "created_by": "data"}
             ],
             "procedural": [],
