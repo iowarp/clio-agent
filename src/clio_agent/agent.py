@@ -57,6 +57,8 @@ from clio_agent.experts import AnalysisExpert, DataExpert, VisualizationExpert
 from clio_agent.optimizer.instrumentation import _extract_output
 from clio_agent.registry.registry import AgentCapability, AgentRegistry
 from clio_agent.signatures.main_agent_sig import ChatAgentSignature, RouterSignature
+from clio_agent.tools.execution import create_sync_tool_executor
+from clio_agent.tools.gateway import gateway
 
 _FILE_PATH_RE = re.compile(
     r"(?P<path>(?:~|/|\.{1,2}/)?[^\s'\"`]+?\.(?:h5|hdf5|parquet|csv))",
@@ -148,11 +150,20 @@ class ClioAgent(dspy.Module):
         # reliable with local OpenAI-compatible backends.
         self.chat_agent = dspy.Predict(ChatAgentSignature)
 
+        # Shared MCP executor: one explicit sync boundary for CLI/API thread calls.
+        self.tool_executor = create_sync_tool_executor(gateway)
+
         # DataExpert: ReAct with real HDF5 MCP tools
-        self.data_expert = DataExpert(arc_memory=self.arc)
+        self.data_expert = DataExpert(
+            arc_memory=self.arc,
+            tool_executor=self.tool_executor,
+        )
 
         # AnalysisExpert: ReAct with real Parquet MCP tools
-        self.analysis_expert = AnalysisExpert(arc_memory=self.arc)
+        self.analysis_expert = AnalysisExpert(
+            arc_memory=self.arc,
+            tool_executor=self.tool_executor,
+        )
 
         # VisualizationExpert: ReAct with matplotlib chart tools
         self.visualization_expert = VisualizationExpert(arc_memory=self.arc)

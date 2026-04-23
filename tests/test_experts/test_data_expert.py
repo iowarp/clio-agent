@@ -1,7 +1,7 @@
 """
 Tests for Data Expert module.
 
-Tests DataExpert initialization, tool loading via MCPToolBridge,
+Tests DataExpert initialization, tool loading via the MCP execution boundary,
 and capabilities. Does not require LM Studio (no forward() tests).
 """
 
@@ -10,6 +10,7 @@ from unittest.mock import Mock
 import dspy
 
 from clio_agent.experts.data_expert import DataExpert, MCPToolBridge
+from clio_agent.tools.execution import SyncMCPToolExecutor
 from clio_agent.tools.gateway import gateway
 
 
@@ -79,40 +80,53 @@ class TestDataExpert:
     def test_expert_initialization(self):
         """Test expert can be initialized with real MCP tools."""
         expert = DataExpert()
-
-        assert expert is not None
-        assert hasattr(expert, "forward")
-        assert hasattr(expert, "agent")
-        assert hasattr(expert, "_tools")
-        assert hasattr(expert, "_bridge")
+        try:
+            assert expert is not None
+            assert hasattr(expert, "forward")
+            assert hasattr(expert, "agent")
+            assert hasattr(expert, "_tools")
+            assert hasattr(expert, "_tool_executor")
+            assert isinstance(expert._tool_executor, SyncMCPToolExecutor)
+        finally:
+            expert.close()
 
     def test_expert_has_tools(self):
         """Test expert loads at least 4 HDF5 tools."""
         expert = DataExpert()
-        assert len(expert._tools) >= 4
+        try:
+            assert len(expert._tools) >= 4
+        finally:
+            expert.close()
 
     def test_expert_has_react_agent(self):
         """Test expert uses ReAct, not ChainOfThought."""
         expert = DataExpert()
-        # ReAct agent should have tools attribute
-        assert hasattr(expert.agent, "tools")
-        agent_type = type(expert.agent).__name__
-        assert "ReAct" in agent_type
+        try:
+            assert hasattr(expert.agent, "tools")
+            agent_type = type(expert.agent).__name__
+            assert "ReAct" in agent_type
+        finally:
+            expert.close()
 
     def test_expert_tool_names(self):
         """Test expert has the expected HDF5 tools."""
         expert = DataExpert()
-        tool_names = [t.name for t in expert._tools]
-        assert "hdf5_analyze_file" in tool_names
-        assert "hdf5_list_datasets" in tool_names
+        try:
+            tool_names = [t.name for t in expert._tools]
+            assert "hdf5_analyze_file" in tool_names
+            assert "hdf5_list_datasets" in tool_names
+        finally:
+            expert.close()
 
     def test_expert_with_arc_memory(self):
         """Test expert with ARC memory integration."""
         mock_arc = Mock()
         expert = DataExpert(arc_memory=mock_arc)
-
-        assert expert is not None
-        assert expert.arc_memory is mock_arc
+        try:
+            assert expert is not None
+            assert expert.arc_memory is mock_arc
+        finally:
+            expert.close()
 
     def test_expert_accepts_tool_executor_boundary(self):
         """DataExpert should depend on a tool executor interface."""
@@ -139,7 +153,7 @@ class TestDataExpert:
         executor = FakeExecutor()
         expert = DataExpert(tool_executor=executor)
 
-        assert expert._bridge is executor
+        assert expert._tool_executor is executor
         expert.close()
         assert executor.closed is True
 

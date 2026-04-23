@@ -5,7 +5,7 @@ and comparing optimized expert variants. Each variant is stored as a
 JSON file on disk with metadata tracked in ARC memory via VariantRecord.
 
 Key design decisions:
-- load_variant reuses existing module instance to avoid MCPToolBridge
+- load_variant reuses existing module instance to avoid tool executor
   constructor side effects (Pitfall 5 from research).
 - Only one variant per agent is active at any time.
 - Variant IDs are sequential: {agent_id}_v1, {agent_id}_v2, etc.
@@ -117,7 +117,7 @@ class VariantManager:
     ) -> dspy.Module:
         """Load a variant's state into an existing module instance.
 
-        Reuses the existing module instance to avoid MCPToolBridge
+        Reuses the existing module instance to avoid tool executor
         constructor side effects. Calls existing_module.load() which
         loads saved state into the same object.
 

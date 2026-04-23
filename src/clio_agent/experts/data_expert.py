@@ -2,11 +2,11 @@
 ClioAgent Data Expert Module
 
 Specializes in scientific data file optimization (HDF5, Parquet).
-Uses ReAct with real MCP tools from the CLIO gateway via the
-dspy.Tool.from_mcp_tool() bridge for tool-backed analysis.
+Uses ReAct with real MCP tools from the CLIO gateway via the CLIO tool
+execution boundary for tool-backed analysis.
 
-The DataExpert connects to the FastMCP gateway, loads HDF5 tools,
-and uses DSPy ReAct to reason and act with those tools.
+The DataExpert connects to the FastMCP gateway, loads HDF5 tools, and uses
+DSPy ReAct to reason and act with those tools.
 
 Example:
     >>> from clio_agent.experts import DataExpert
@@ -28,16 +28,19 @@ from typing import Any, Optional
 import dspy
 
 from clio_agent.signatures.expert_sig import DataExpertSignature
-from clio_agent.tools.execution import MCPToolBridge, ToolExecutor
+from clio_agent.tools import execution as tool_execution
+from clio_agent.tools.execution import ToolExecutor, create_sync_tool_executor
 from clio_agent.tools.gateway import gateway
 
 logger = logging.getLogger(__name__)
+
+MCPToolBridge = tool_execution.MCPToolBridge
 
 
 class DataExpert(dspy.Module):
     """Scientific data expert with ReAct + real HDF5 MCP tools.
 
-    Connects to the CLIO MCP gateway via MCPToolBridge to load real
+    Connects to the CLIO MCP gateway through a sync tool executor to load real
     HDF5 analysis tools, then uses DSPy ReAct for tool-augmented reasoning.
 
     Attributes:
@@ -63,14 +66,14 @@ class DataExpert(dspy.Module):
 
         Args:
             arc_memory: Optional ARCMemory instance for tool result caching
-            tool_executor: Optional executor for MCP-backed tools
+            tool_executor: Optional sync executor for MCP-backed tools
         """
         super().__init__()
         self.arc_memory = arc_memory
 
-        # Bridge MCP tools to DSPy tools via an injectable execution boundary.
-        self._bridge = tool_executor or MCPToolBridge(gateway)
-        self._tools = self._bridge.to_dspy_tools()
+        self._tool_executor = tool_executor or create_sync_tool_executor(gateway)
+        self._bridge = self._tool_executor
+        self._tools = self._tool_executor.to_dspy_tools()
 
         logger.info(
             "DataExpert initialized with %d tools: %s",
@@ -99,7 +102,7 @@ class DataExpert(dspy.Module):
 
     def close(self) -> None:
         """Release tool execution resources."""
-        self._bridge.close()
+        self._tool_executor.close()
 
     @staticmethod
     def get_capabilities() -> dict[str, Any]:

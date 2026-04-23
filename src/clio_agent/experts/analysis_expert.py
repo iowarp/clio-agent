@@ -3,7 +3,7 @@ ClioAgent Analysis Expert Module
 
 Specializes in statistical analysis and data profiling of tabular
 datasets (Parquet). Uses ReAct with real Parquet MCP tools from the
-CLIO gateway via MCPToolBridge for tool-backed analysis.
+CLIO gateway via the CLIO tool execution boundary for tool-backed analysis.
 
 The AnalysisExpert connects to the FastMCP gateway, filters to
 Parquet-prefixed tools, and uses DSPy ReAct to reason and act.
@@ -28,7 +28,7 @@ from typing import Any, Optional
 import dspy
 
 from clio_agent.signatures.analysis_sig import AnalysisExpertSignature
-from clio_agent.tools.execution import MCPToolBridge, ToolExecutor
+from clio_agent.tools.execution import ToolExecutor, create_sync_tool_executor
 from clio_agent.tools.gateway import gateway
 
 logger = logging.getLogger(__name__)
@@ -37,7 +37,7 @@ logger = logging.getLogger(__name__)
 class AnalysisExpert(dspy.Module):
     """Statistical analysis expert with ReAct + real Parquet MCP tools.
 
-    Connects to the CLIO MCP gateway via MCPToolBridge to load Parquet
+    Connects to the CLIO MCP gateway via a sync tool executor to load Parquet
     analysis tools, then uses DSPy ReAct for tool-augmented reasoning
     about data content, distributions, and quality.
 
@@ -64,14 +64,14 @@ class AnalysisExpert(dspy.Module):
 
         Args:
             arc_memory: Optional ARCMemory instance for tool result caching
-            tool_executor: Optional executor for MCP-backed tools
+            tool_executor: Optional sync executor for MCP-backed tools
         """
         super().__init__()
         self.arc_memory = arc_memory
 
-        # Bridge MCP tools to DSPy tools via an injectable execution boundary.
-        self._bridge = tool_executor or MCPToolBridge(gateway)
-        all_tools = self._bridge.to_dspy_tools()
+        self._tool_executor = tool_executor or create_sync_tool_executor(gateway)
+        self._bridge = self._tool_executor
+        all_tools = self._tool_executor.to_dspy_tools()
 
         # Filter to only parquet-prefixed tools
         self._tools = [t for t in all_tools if t.name.startswith("parquet_")]
@@ -103,7 +103,7 @@ class AnalysisExpert(dspy.Module):
 
     def close(self) -> None:
         """Release tool execution resources."""
-        self._bridge.close()
+        self._tool_executor.close()
 
     @staticmethod
     def get_capabilities() -> dict[str, Any]:

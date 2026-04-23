@@ -5,7 +5,7 @@ evaluate before score, run SIMBA compilation, evaluate after score,
 test statistical significance, and save the optimized variant.
 
 Key design decisions:
-- num_threads=1 for Evaluate to avoid MCPToolBridge deadlocks (Pitfall 6)
+- num_threads=1 for Evaluate to avoid sync tool executor contention (Pitfall 6)
 - 20%/80% train/validation split per DSPy recommendation
 - scipy imported lazily inside test_significance (optional dependency)
 - Two-proportion z-test for statistical significance (Pattern 5 from research)
@@ -112,7 +112,7 @@ class SIMBARunner:
         evaluator = dspy.evaluate.Evaluate(
             devset=val_split,
             metric=metric_fn,
-            num_threads=1,  # Pitfall 6: MCPToolBridge threading
+            num_threads=1,  # Pitfall 6: sync tool executor threading
             display_progress=True,
             display_table=0,
         )

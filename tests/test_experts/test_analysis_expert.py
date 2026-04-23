@@ -1,7 +1,7 @@
 """
 Tests for Analysis Expert module.
 
-Tests AnalysisExpert initialization, tool loading via MCPToolBridge,
+Tests AnalysisExpert initialization, tool loading via the MCP execution boundary,
 capabilities, and signature. Does not require LM Studio (no forward() tests
 that call real LMs).
 """
@@ -12,7 +12,7 @@ from unittest.mock import Mock
 import dspy
 
 from clio_agent.experts.analysis_expert import AnalysisExpert
-from clio_agent.experts.data_expert import MCPToolBridge
+from clio_agent.tools.execution import SyncMCPToolExecutor
 
 
 class TestAnalysisExpertSignature:
@@ -43,30 +43,42 @@ class TestAnalysisExpert:
     def test_analysis_expert_loads_parquet_tools(self):
         """Test expert tools all start with parquet_ prefix."""
         expert = AnalysisExpert()
-        for tool in expert._tools:
-            assert tool.name.startswith("parquet_"), (
-                f"Tool {tool.name} does not have parquet_ prefix"
-            )
+        try:
+            for tool in expert._tools:
+                assert tool.name.startswith("parquet_"), (
+                    f"Tool {tool.name} does not have parquet_ prefix"
+                )
+        finally:
+            expert.close()
 
     def test_analysis_expert_tool_count(self):
         """Test expert has exactly 3 parquet tools."""
         expert = AnalysisExpert()
-        assert len(expert._tools) == 3
+        try:
+            assert len(expert._tools) == 3
+        finally:
+            expert.close()
 
     def test_analysis_expert_tool_names(self):
         """Test expert has the expected parquet tools."""
         expert = AnalysisExpert()
-        tool_names = [t.name for t in expert._tools]
-        assert "parquet_analyze_schema" in tool_names
-        assert "parquet_query_data" in tool_names
-        assert "parquet_compute_statistics" in tool_names
+        try:
+            tool_names = [t.name for t in expert._tools]
+            assert "parquet_analyze_schema" in tool_names
+            assert "parquet_query_data" in tool_names
+            assert "parquet_compute_statistics" in tool_names
+        finally:
+            expert.close()
 
     def test_analysis_expert_has_react_agent(self):
         """Test expert uses ReAct, not ChainOfThought."""
         expert = AnalysisExpert()
-        assert hasattr(expert.agent, "tools")
-        agent_type = type(expert.agent).__name__
-        assert "ReAct" in agent_type
+        try:
+            assert hasattr(expert.agent, "tools")
+            agent_type = type(expert.agent).__name__
+            assert "ReAct" in agent_type
+        finally:
+            expert.close()
 
     def test_analysis_expert_capabilities_keywords(self):
         """Test expert capabilities contain analysis-related keywords."""
@@ -91,23 +103,31 @@ class TestAnalysisExpert:
     def test_analysis_expert_forward_signature(self):
         """Test forward method accepts question and file_context parameters."""
         expert = AnalysisExpert()
-        sig = inspect.signature(expert.forward)
-        params = list(sig.parameters.keys())
-        assert "question" in params
-        assert "file_context" in params
+        try:
+            sig = inspect.signature(expert.forward)
+            params = list(sig.parameters.keys())
+            assert "question" in params
+            assert "file_context" in params
+        finally:
+            expert.close()
 
-    def test_mcptoolbridge_reuse(self):
-        """Test that AnalysisExpert imports MCPToolBridge, not redefines it."""
-        # Verify AnalysisExpert uses the same MCPToolBridge class as DataExpert
+    def test_analysis_expert_uses_sync_tool_executor_boundary(self):
+        """Default AnalysisExpert should use the explicit sync executor."""
         expert = AnalysisExpert()
-        assert isinstance(expert._bridge, MCPToolBridge)
+        try:
+            assert isinstance(expert._tool_executor, SyncMCPToolExecutor)
+        finally:
+            expert.close()
 
     def test_analysis_expert_with_arc_memory(self):
         """Test expert with ARC memory integration."""
         mock_arc = Mock()
         expert = AnalysisExpert(arc_memory=mock_arc)
-        assert expert is not None
-        assert expert.arc_memory is mock_arc
+        try:
+            assert expert is not None
+            assert expert.arc_memory is mock_arc
+        finally:
+            expert.close()
 
     def test_analysis_expert_accepts_tool_executor_boundary(self):
         """AnalysisExpert should filter tools from an injected executor."""
@@ -140,7 +160,7 @@ class TestAnalysisExpert:
         executor = FakeExecutor()
         expert = AnalysisExpert(tool_executor=executor)
 
-        assert expert._bridge is executor
+        assert expert._tool_executor is executor
         assert [tool.name for tool in expert._tools] == ["parquet_analyze_schema"]
         expert.close()
         assert executor.closed is True
@@ -148,9 +168,12 @@ class TestAnalysisExpert:
     def test_analysis_expert_initialization(self):
         """Test expert can be initialized and has required attributes."""
         expert = AnalysisExpert()
-        assert expert is not None
-        assert hasattr(expert, "forward")
-        assert hasattr(expert, "agent")
-        assert hasattr(expert, "_tools")
-        assert hasattr(expert, "_bridge")
-        assert hasattr(expert, "arc_memory")
+        try:
+            assert expert is not None
+            assert hasattr(expert, "forward")
+            assert hasattr(expert, "agent")
+            assert hasattr(expert, "_tools")
+            assert hasattr(expert, "_tool_executor")
+            assert hasattr(expert, "arc_memory")
+        finally:
+            expert.close()
