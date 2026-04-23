@@ -168,8 +168,56 @@ class TestDataExpert:
                 "hdf5_analyze_file",
                 "hdf5_list_datasets",
             ]
+            arc_tool = result.tool_provenance[1].to_arc_tool_call()
+            assert arc_tool.result["ok"] is True
+            assert arc_tool.result["datasets"]["count"] == 3
         finally:
             expert.close()
+
+    def test_expert_rejects_invalid_hdf5_tool_shape(self):
+        """Malformed HDF5 tool payloads should not produce file facts."""
+
+        class FakeExecutor:
+            closed = False
+
+            def to_dspy_tools(self):
+                def fake_tool(**kwargs):
+                    return "{}"
+
+                return [
+                    dspy.Tool(
+                        func=fake_tool,
+                        name="hdf5_analyze_file",
+                        desc="Fake HDF5 analyzer.",
+                        args={},
+                    ),
+                    dspy.Tool(
+                        func=fake_tool,
+                        name="hdf5_list_datasets",
+                        desc="Fake HDF5 lister.",
+                        args={},
+                    ),
+                ]
+
+            def call_tool(self, name, args):
+                assert name == "hdf5_analyze_file"
+                return '{"filepath": "/tmp/broken.h5", "total_datasets": 99}'
+
+            def close(self):
+                self.closed = True
+
+        expert = DataExpert(tool_executor=FakeExecutor())
+
+        result = expert(question="Inspect /tmp/broken.h5")
+
+        assert result.synthesis_source == "deterministic"
+        assert result.analysis.startswith("Could not inspect HDF5 file")
+        assert "99 datasets" not in result.analysis
+        assert result.tool_provenance[0].ok is False
+        error = result.tool_provenance[0].result["error"]
+        assert error["type"] == "tool_contract"
+        assert error["code"] == "invalid_result_shape"
+        expert.close()
 
 
 class TestDataExpertSignature:

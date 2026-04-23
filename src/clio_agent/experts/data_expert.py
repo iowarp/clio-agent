@@ -35,6 +35,8 @@ from clio_agent.harness import (
     extract_file_paths,
     format_bytes,
     format_tool_error,
+    validate_tool_items,
+    validate_tool_result,
 )
 from clio_agent.signatures.expert_sig import DataExpertSignature
 from clio_agent.tools import execution as tool_execution
@@ -44,6 +46,36 @@ from clio_agent.tools.gateway import gateway
 logger = logging.getLogger(__name__)
 
 MCPToolBridge = tool_execution.MCPToolBridge
+
+HDF5_FILE_RESULT_FIELDS: dict[str, type | tuple[type, ...]] = {
+    "filepath": str,
+    "file_size_bytes": int,
+    "total_datasets": int,
+    "total_groups": int,
+    "datasets": list,
+    "groups": list,
+    "compression_summary": dict,
+}
+
+HDF5_COMPRESSION_FIELDS: dict[str, type | tuple[type, ...]] = {
+    "compressed_datasets": int,
+    "uncompressed_datasets": int,
+    "total_raw_bytes": int,
+    "total_stored_bytes": int,
+}
+
+HDF5_DATASET_LIST_FIELDS: dict[str, type | tuple[type, ...]] = {
+    "filepath": str,
+    "total_datasets": int,
+    "datasets": list,
+}
+
+HDF5_DATASET_ROW_FIELDS: dict[str, type | tuple[type, ...]] = {
+    "path": str,
+    "shape": list,
+    "dtype": str,
+    "size_bytes": int,
+}
 
 
 class DataExpert(dspy.Module):
@@ -121,30 +153,51 @@ class DataExpert(dspy.Module):
         """Inspect a concrete HDF5 path through deterministic gateway tools."""
         runner = NativeToolRunner(self._tool_executor)
         overview = runner.call("hdf5_analyze_file", {"filepath": filepath})
+        overview_valid = validate_tool_result(
+            "hdf5_analyze_file",
+            overview,
+            HDF5_FILE_RESULT_FIELDS,
+        )
+        if not overview_valid.ok:
+            assert overview_valid.error is not None
+            runner.mark_validation_error("hdf5_analyze_file", overview_valid.error)
+            return self._hdf5_failure_result(filepath, overview_valid.error, runner)
+
+        overview_data = overview_valid.data or {}
+        comp_valid = validate_tool_result(
+            "hdf5_analyze_file",
+            overview_data.get("compression_summary"),
+            HDF5_COMPRESSION_FIELDS,
+        )
+        if not comp_valid.ok:
+            assert comp_valid.error is not None
+            runner.mark_validation_error("hdf5_analyze_file", comp_valid.error)
+            return self._hdf5_failure_result(filepath, comp_valid.error, runner)
+
         datasets = runner.call("hdf5_list_datasets", {"filepath": filepath})
+        datasets_valid = validate_tool_result(
+            "hdf5_list_datasets",
+            datasets,
+            HDF5_DATASET_LIST_FIELDS,
+        )
+        if not datasets_valid.ok:
+            assert datasets_valid.error is not None
+            runner.mark_validation_error("hdf5_list_datasets", datasets_valid.error)
+            return self._hdf5_failure_result(filepath, datasets_valid.error, runner)
 
-        if isinstance(overview, dict) and "error" in overview:
-            return ExpertResult(
-                analysis=(
-                    f"Could not inspect HDF5 file {filepath}: "
-                    f"{format_tool_error(overview['error'])}"
-                ),
-                recommendations="Verify the path exists and that the file is readable HDF5.",
-                source="deterministic",
-                tools=runner.observations,
-                metadata={"expert": "data", "format": "hdf5", "filepath": filepath},
-            )
+        datasets_data = datasets_valid.data or {}
+        rows_valid = validate_tool_items(
+            "hdf5_list_datasets",
+            datasets_data,
+            "datasets",
+            HDF5_DATASET_ROW_FIELDS,
+        )
+        if not rows_valid.ok:
+            assert rows_valid.error is not None
+            runner.mark_validation_error("hdf5_list_datasets", rows_valid.error)
+            return self._hdf5_failure_result(filepath, rows_valid.error, runner)
 
-        if not isinstance(overview, dict):
-            return ExpertResult(
-                analysis=f"Could not inspect HDF5 file {filepath}: unexpected tool result.",
-                recommendations="Retry the inspection and check the gateway health if it repeats.",
-                source="deterministic",
-                tools=runner.observations,
-                metadata={"expert": "data", "format": "hdf5", "filepath": filepath},
-            )
-
-        dataset_rows = datasets.get("datasets", []) if isinstance(datasets, dict) else []
+        dataset_rows = datasets_data["datasets"]
         dataset_lines = [
             f"- {d['path']}: shape={d['shape']}, dtype={d['dtype']}, "
             f"size={format_bytes(d['size_bytes'])}"
@@ -153,15 +206,15 @@ class DataExpert(dspy.Module):
         if len(dataset_rows) > 12:
             dataset_lines.append(f"- ... {len(dataset_rows) - 12} more datasets")
 
-        comp_summary = overview.get("compression_summary", {})
-        total = overview.get("total_datasets", len(dataset_rows))
+        comp_summary = comp_valid.data or {}
+        total = overview_data["total_datasets"]
         compressed = comp_summary.get("compressed_datasets", 0)
         uncompressed = comp_summary.get("uncompressed_datasets", 0)
         ratio = comp_summary.get("overall_ratio")
 
         analysis = (
             f"Inspected HDF5 file {filepath}. It contains {total} datasets "
-            f"and {overview.get('total_groups', 0)} groups.\n"
+            f"and {overview_data['total_groups']} groups.\n"
             + ("\n".join(dataset_lines) if dataset_lines else "No datasets were found.")
             + "\n\n"
             f"Compression summary: {compressed} compressed, {uncompressed} uncompressed."
@@ -177,6 +230,20 @@ class DataExpert(dspy.Module):
         return ExpertResult(
             analysis=analysis,
             recommendations=recommendations,
+            source="deterministic",
+            tools=runner.observations,
+            metadata={"expert": "data", "format": "hdf5", "filepath": filepath},
+        )
+
+    @staticmethod
+    def _hdf5_failure_result(
+        filepath: str,
+        error: dict[str, Any],
+        runner: NativeToolRunner,
+    ) -> ExpertResult:
+        return ExpertResult(
+            analysis=f"Could not inspect HDF5 file {filepath}: {format_tool_error(error)}",
+            recommendations="Verify the path, file readability, and HDF5 tool contract.",
             source="deterministic",
             tools=runner.observations,
             metadata={"expert": "data", "format": "hdf5", "filepath": filepath},

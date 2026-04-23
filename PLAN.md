@@ -45,6 +45,9 @@ Implemented and source-verified:
   with deterministic tool execution first and explicit tool provenance:
   `src/clio_agent/experts/data_expert.py`,
   `src/clio_agent/experts/analysis_expert.py`
+- Native HDF5, Parquet, and CSV expert paths validate tool result shapes before
+  answer construction, normalize tool errors, and store compact ARC-compatible
+  tool summaries through `src/clio_agent/harness.py`
 - Visualization expert remains a chart-focused DSPy ReAct module around local
   matplotlib tools: `src/clio_agent/experts/visualization_expert.py`
 - Offline optimization support: `src/clio_agent/optimizer/`

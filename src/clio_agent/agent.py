@@ -66,7 +66,7 @@ from clio_agent.optimizer.instrumentation import _extract_output
 from clio_agent.registry.registry import AgentCapability, AgentRegistry
 from clio_agent.signatures.main_agent_sig import ChatAgentSignature, RouterSignature
 from clio_agent.tools.execution import create_sync_tool_executor
-from clio_agent.tools.file_policy import FilePolicyError, validate_write_path
+from clio_agent.tools.file_policy import FileAccessPolicy, FilePolicyError, validate_write_path
 from clio_agent.tools.gateway import gateway
 
 
@@ -503,7 +503,7 @@ class ClioAgent(dspy.Module):
             return None
 
         filepath = paths[0]
-        artifact_root = Path(os.environ.get("CLIO_ARTIFACT_DIR", "/tmp/clio-agent-artifacts"))
+        artifact_root = self._default_artifact_root(filepath)
         output_dir = artifact_root / "charts"
         output_path = output_dir / f"summary_{filepath.stem}.png"
 
@@ -540,6 +540,26 @@ class ClioAgent(dspy.Module):
             ),
             file_path=chart_path,
         )
+
+    @staticmethod
+    def _default_artifact_root(filepath: Path) -> Path:
+        """Return an artifact root that respects configured file policy roots."""
+        configured = os.environ.get("CLIO_ARTIFACT_DIR", "").strip()
+        if configured:
+            return Path(configured).expanduser()
+
+        if not os.environ.get("CLIO_ALLOWED_ROOTS", "").strip():
+            return Path("/tmp/clio-agent-artifacts")
+
+        policy = FileAccessPolicy.from_env()
+        resolved_file = filepath.expanduser().resolve(strict=False)
+        for root in policy.allowed_roots:
+            try:
+                resolved_file.relative_to(root)
+                return root / ".clio-agent-artifacts"
+            except ValueError:
+                continue
+        return policy.allowed_roots[0] / ".clio-agent-artifacts"
 
     @staticmethod
     def _call_tool_function(tool: Any, *args: Any, **kwargs: Any) -> Any:

@@ -5,6 +5,8 @@ from __future__ import annotations
 import re
 import time
 import uuid
+from collections.abc import Mapping as MappingABC
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal, Mapping
@@ -73,7 +75,7 @@ class ToolObservation:
         return ToolCall(
             tool=self.tool,
             params=self.params,
-            result=self.result,
+            result=compact_tool_result(self.result, tool=self.tool, ok=self.ok),
             duration_ms=self.duration_ms,
             cached=False,
         )
@@ -98,6 +100,20 @@ class ExpertResult:
     source: ExpertSource
     tools: tuple[ToolObservation, ...] = ()
     metadata: Mapping[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class ValidatedToolResult:
+    """Validated native tool payload or a normalized contract error."""
+
+    tool: str
+    data: dict[str, Any] | None = None
+    error: dict[str, Any] | None = None
+
+    @property
+    def ok(self) -> bool:
+        """Return whether validation succeeded."""
+        return self.error is None and self.data is not None
 
 
 @dataclass
@@ -256,12 +272,275 @@ def format_bytes(size: int) -> str:
     return f"{value:.1f} TiB"
 
 
+def normalize_tool_error(
+    error: Any,
+    *,
+    tool: str | None = None,
+    code: str = "tool_failed",
+    next_action: str = "Check the tool arguments and gateway health, then retry.",
+    details: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Normalize all native tool failures to one ARC/API-compatible shape."""
+    if isinstance(error, MappingABC) and "error" in error:
+        return normalize_tool_error(
+            error["error"],
+            tool=tool,
+            code=code,
+            next_action=next_action,
+            details=details,
+        )
+
+    normalized: dict[str, Any]
+    if isinstance(error, MappingABC):
+        normalized = {
+            "type": str(error.get("type") or "tool_error"),
+            "code": str(error.get("code") or code),
+            "message": str(error.get("message") or error),
+            "next_action": str(error.get("next_action") or next_action),
+        }
+        for key in ("field", "path"):
+            value = error.get(key)
+            if value is not None:
+                normalized[key] = str(value)
+        if error.get("details") is not None:
+            normalized["details"] = _json_safe(error["details"])
+    else:
+        normalized = {
+            "type": "tool_error",
+            "code": code,
+            "message": str(error) if error else "Tool returned an error.",
+            "next_action": next_action,
+        }
+
+    if tool:
+        normalized["tool"] = tool
+    if details:
+        existing = normalized.get("details")
+        if isinstance(existing, dict):
+            existing.update(_json_safe(details))
+        else:
+            normalized["details"] = _json_safe(details)
+    return normalized
+
+
+def normalize_tool_result(result: Any, *, tool: str | None = None) -> Any:
+    """Return a tool result with normalized error payloads."""
+    if isinstance(result, MappingABC) and "error" in result:
+        normalized = dict(result)
+        normalized["error"] = normalize_tool_error(result["error"], tool=tool)
+        return normalized
+    if isinstance(result, str) and result.startswith("Error:"):
+        return {
+            "error": normalize_tool_error(
+                result.removeprefix("Error:").strip(),
+                tool=tool,
+            )
+        }
+    return result
+
+
+def validate_tool_result(
+    tool: str,
+    result: Any,
+    required_fields: Mapping[str, type | tuple[type, ...]],
+) -> ValidatedToolResult:
+    """Validate a native tool result mapping before answer construction."""
+    normalized = normalize_tool_result(result, tool=tool)
+    if isinstance(normalized, MappingABC) and "error" in normalized:
+        return ValidatedToolResult(tool=tool, error=normalized["error"])
+    if not isinstance(normalized, dict):
+        return _validation_failure(
+            tool,
+            "invalid_result_type",
+            f"{tool} returned {type(normalized).__name__}, expected object.",
+            {"received_type": type(normalized).__name__},
+        )
+
+    field_error = _validate_fields(tool, normalized, required_fields)
+    if field_error:
+        return ValidatedToolResult(tool=tool, error=field_error)
+    return ValidatedToolResult(tool=tool, data=normalized)
+
+
+def validate_tool_items(
+    tool: str,
+    result: Mapping[str, Any],
+    field: str,
+    required_fields: Mapping[str, type | tuple[type, ...]],
+) -> ValidatedToolResult:
+    """Validate a list field containing typed object items."""
+    items = result.get(field)
+    if not isinstance(items, list):
+        return _validation_failure(
+            tool,
+            "invalid_result_field",
+            f"{tool} returned invalid {field!r}; expected list.",
+            {"field": field, "received_type": type(items).__name__},
+        )
+
+    for index, item in enumerate(items):
+        if not isinstance(item, dict):
+            return _validation_failure(
+                tool,
+                "invalid_result_item",
+                f"{tool} returned invalid {field}[{index}]; expected object.",
+                {"field": field, "index": index, "received_type": type(item).__name__},
+            )
+        field_error = _validate_fields(tool, item, required_fields, context=f"{field}[{index}]")
+        if field_error:
+            return ValidatedToolResult(tool=tool, error=field_error)
+    return ValidatedToolResult(tool=tool, data=dict(result))
+
+
+def compact_tool_result(
+    result: Any,
+    *,
+    tool: str | None = None,
+    ok: bool | None = None,
+    max_items: int = 8,
+    max_text: int = 500,
+) -> Any:
+    """Compact a tool result for durable ARC provenance."""
+    normalized = normalize_tool_result(result, tool=tool)
+    if isinstance(normalized, MappingABC) and "error" in normalized:
+        return {"ok": False, "error": normalize_tool_error(normalized["error"], tool=tool)}
+
+    compacted = _compact_value(normalized, max_items=max_items, max_text=max_text, depth=0)
+    if isinstance(compacted, dict):
+        if ok is not None:
+            compacted.setdefault("ok", bool(ok))
+        return compacted
+    return {"ok": bool(ok) if ok is not None else tool_result_ok(normalized), "value": compacted}
+
+
 def format_tool_error(error: Any) -> str:
     """Format structured tool errors for user-facing expert answers."""
-    if isinstance(error, dict):
-        message = error.get("message") or str(error)
-        next_action = error.get("next_action")
-        if next_action:
-            return f"{message} Next action: {next_action}"
-        return str(message)
-    return str(error)
+    normalized = normalize_tool_error(error)
+    message = normalized.get("message") or str(error)
+    next_action = normalized.get("next_action")
+    if next_action:
+        return f"{message} Next action: {next_action}"
+    return str(message)
+
+
+def _validation_failure(
+    tool: str,
+    code: str,
+    message: str,
+    details: Mapping[str, Any],
+) -> ValidatedToolResult:
+    return ValidatedToolResult(
+        tool=tool,
+        error=normalize_tool_error(
+            {"type": "tool_contract", "code": code, "message": message},
+            tool=tool,
+            code=code,
+            next_action="Fix the tool contract or inspect the tool backend before retrying.",
+            details=details,
+        ),
+    )
+
+
+def _validate_fields(
+    tool: str,
+    data: Mapping[str, Any],
+    required_fields: Mapping[str, type | tuple[type, ...]],
+    *,
+    context: str = "result",
+) -> dict[str, Any] | None:
+    missing: list[str] = []
+    invalid: list[dict[str, str]] = []
+    for field_name, expected_type in required_fields.items():
+        if field_name not in data:
+            missing.append(field_name)
+            continue
+        value = data[field_name]
+        if not _matches_type(value, expected_type):
+            invalid.append(
+                {
+                    "field": field_name,
+                    "expected": _type_label(expected_type),
+                    "received": type(value).__name__,
+                }
+            )
+
+    if not missing and not invalid:
+        return None
+
+    details: dict[str, Any] = {"context": context}
+    if missing:
+        details["missing"] = missing
+    if invalid:
+        details["invalid"] = invalid
+    return normalize_tool_error(
+        {
+            "type": "tool_contract",
+            "code": "invalid_result_shape",
+            "message": f"{tool} returned an invalid {context} shape.",
+        },
+        tool=tool,
+        code="invalid_result_shape",
+        next_action="Fix the tool contract or inspect the tool backend before retrying.",
+        details=details,
+    )
+
+
+def _matches_type(value: Any, expected_type: type | tuple[type, ...]) -> bool:
+    expected = expected_type if isinstance(expected_type, tuple) else (expected_type,)
+    for item in expected:
+        if item is int and isinstance(value, bool):
+            continue
+        if item is float and isinstance(value, (int, float)) and not isinstance(value, bool):
+            return True
+        if isinstance(value, item):
+            return True
+    return False
+
+
+def _type_label(expected_type: type | tuple[type, ...]) -> str:
+    expected = expected_type if isinstance(expected_type, tuple) else (expected_type,)
+    return " | ".join(item.__name__ for item in expected)
+
+
+def _compact_value(value: Any, *, max_items: int, max_text: int, depth: int) -> Any:
+    if depth >= 4:
+        return _compact_scalar(value, max_text=max_text)
+    if isinstance(value, MappingABC):
+        return {
+            str(key): _compact_value(val, max_items=max_items, max_text=max_text, depth=depth + 1)
+            for key, val in value.items()
+        }
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        items = list(value)
+        payload: dict[str, Any] = {
+            "count": len(items),
+            "items": [
+                _compact_value(item, max_items=max_items, max_text=max_text, depth=depth + 1)
+                for item in items[:max_items]
+            ],
+        }
+        if len(items) > max_items:
+            payload["truncated"] = True
+        return payload
+    return _compact_scalar(value, max_text=max_text)
+
+
+def _compact_scalar(value: Any, *, max_text: int) -> Any:
+    if value is None or isinstance(value, (int, float, bool)):
+        return value
+    if isinstance(value, bytes):
+        value = value.decode("utf-8", errors="replace")
+    text = str(value)
+    if len(text) > max_text:
+        return text[:max_text] + "...[truncated]"
+    return text
+
+
+def _json_safe(value: Any) -> Any:
+    if isinstance(value, MappingABC):
+        return {str(key): _json_safe(val) for key, val in value.items()}
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        return [_json_safe(item) for item in value]
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    return str(value)

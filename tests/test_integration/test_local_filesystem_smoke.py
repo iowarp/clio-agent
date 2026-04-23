@@ -164,6 +164,39 @@ def test_direct_agent_answers_for_local_hdf5_parquet_csv(
     )
 
 
+def test_direct_visualization_uses_allowed_root_for_default_artifacts(
+    sample_parquet,
+    tmp_path,
+    monkeypatch,
+):
+    """Default chart artifacts should stay inside a narrowed file policy root."""
+    monkeypatch.setenv("CLIO_LM_PROVIDER", "ollama")
+    monkeypatch.setenv("CLIO_ALLOWED_ROOTS", str(tmp_path))
+    monkeypatch.delenv("CLIO_ARTIFACT_DIR", raising=False)
+
+    agent = ClioAgent(data_dir=str(tmp_path / "clio"), verbose=False)
+    try:
+        result = agent(
+            question=f"Visualize summary for {sample_parquet}",
+            session_id="local-viz",
+        )
+        invocations = agent.arc.get_invocations_by_agent("visualization")
+    finally:
+        agent.shutdown()
+
+    assert result.selected_expert == "visualization"
+    assert "Created a summary dashboard" in result.answer
+    assert "Could not create visualization" not in result.answer
+    artifact_path = Path(result.answer.split("File: ", 1)[1].strip())
+    assert artifact_path.exists()
+    artifact_path.relative_to(tmp_path)
+    assert any(
+        tool.tool == "plot_summary" and tool.result.get("ok") is True
+        for invocation in invocations
+        for tool in invocation.tools_called
+    )
+
+
 def test_api_query_wraps_real_local_agent_path(sample_hdf5, tmp_path, monkeypatch):
     """The API query endpoint should preserve deterministic local file answers."""
     from clio_agent.config import LMProviderConfig

@@ -5,6 +5,7 @@ that optimizer commands integrate correctly without requiring LM Studio.
 """
 
 import io
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from rich.console import Console
@@ -22,6 +23,7 @@ class MockAgent:
         self.data_expert = MagicMock()
         self.analysis_expert = MagicMock()
         self.visualization_expert = MagicMock()
+        self._provider_config = SimpleNamespace(provider="ollama", model="granite3.1-dense:8b")
         self.registry = MagicMock()
         self.registry.get_agent_count.return_value = 3
         self.registry.list_agents.return_value = ["data", "analysis", "visualization"]
@@ -352,6 +354,9 @@ class TestHandleCommand:
         output = cli.console.file.getvalue()
         # Banner contains ASCII art with "___" patterns and project info
         assert "IOWarp" in output or "Scientific Computing" in output
+        assert "Ollama" in output
+        assert "granite3.1-dense:8b" in output
+        assert "LM Studio" not in output
 
     def test_memory_above_target(self, tmp_path):
         """Test /memory shows green when hit rate exceeds target."""

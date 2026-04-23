@@ -55,7 +55,7 @@ if str(_src_root) not in sys.path:
     sys.path.insert(0, str(_src_root))
 
 from clio_agent.agent import ClioAgent
-from clio_agent.config import setup_dspy
+from clio_agent.config import load_config_from_env, setup_dspy
 
 # ============================================================================
 # CLI CLASS
@@ -93,10 +93,20 @@ class ClioAgentCLI:
                 verbose=False  # Don't spam console during init
             )
         except Exception as e:
+            try:
+                config = load_config_from_env()
+            except Exception:
+                config = None
             self.console.print(f"\n[red]Error setting up LM: {e}[/red]")
             self.console.print("\n[yellow]Troubleshooting:[/yellow]")
-            self.console.print("- Ensure LM Studio is running at http://127.0.0.1:1234")
-            self.console.print("- Ensure a model is loaded in LM Studio")
+            if config is not None:
+                self.console.print(
+                    f"- Ensure {self._provider_label(config.provider)} is running at "
+                    f"{config.api_base}"
+                )
+                self.console.print(f"- Ensure model {config.model!r} is available")
+            else:
+                self.console.print("- Check CLIO_LM_* environment variables")
             sys.exit(1)
 
         # Create ClioAgent agent
@@ -117,10 +127,15 @@ class ClioAgentCLI:
         logo_text = Text(logo, style="bold cyan", justify="center")
 
         # Info section with proper markup
-        info = """[dim]Multi-Agent System for Scientific Computing[/dim]
+        config = getattr(self.agent, "_provider_config", None)
+        provider = self._provider_label(getattr(config, "provider", "unknown"))
+        model = getattr(config, "model", "")
+        lm_line = provider if not model else f"{provider} ({model})"
+
+        info = f"""[dim]Multi-Agent System for Scientific Computing[/dim]
 
 [cyan]Experts:[/cyan] data (HDF5, compression, I/O), analysis (Parquet, statistics), visualization (charts, plots)
-[green]Local LM:[/green] LM Studio (Router + ChatAgent + 3 Experts)
+[green]Local LM:[/green] {lm_line}
 
 [dim]Gnosis Research Center | IOWarp Project[/dim]
 [dim]https://iowarp.ai[/dim]"""
@@ -131,6 +146,17 @@ class ClioAgentCLI:
         self.console.print(
             Align.center(Panel(info, border_style="cyan", expand=False, padding=(0, 2)))
         )
+
+    @staticmethod
+    def _provider_label(provider: str) -> str:
+        """Return a readable provider name for CLI status text."""
+        labels = {
+            "lm_studio": "LM Studio",
+            "ollama": "Ollama",
+            "openai": "OpenAI",
+            "anthropic": "Anthropic",
+        }
+        return labels.get(provider, provider.replace("_", " ").title())
 
     def print_help(self):
         """Print help message."""
