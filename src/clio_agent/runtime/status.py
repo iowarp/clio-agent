@@ -7,6 +7,8 @@ booting a full agent or requiring live IOWarp/clio-core services.
 from __future__ import annotations
 
 import importlib.util
+import os
+import shutil
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
@@ -126,6 +128,32 @@ _PARQUET_TOOLS = {
     "parquet_query_data",
     "parquet_compute_statistics",
 }
+_DEFAULT_CLIO_CORE_PATH = Path("/home/akougkas/iowarp/clio-core")
+_CLIO_CORE_ENV_VARS = [
+    "CHI_SERVER_CONF",
+    "WRP_RUNTIME_CONF",
+    "CHI_REPO_PATH",
+    "LD_LIBRARY_PATH",
+]
+_CLIO_CORE_CONFIG_CANDIDATES = [
+    "docker/quickstart/chimaera.yaml",
+    "context-runtime/config/chimaera_default.yaml",
+    "docker/wrp_cte_bench/cte_config.yaml",
+    "context-assimilation-engine/config/wrp_config_example.yaml",
+    "context-transfer-engine/config/cae_example.yaml",
+]
+_CLIO_CORE_REPO_CONFIG_CANDIDATES = [
+    "context-runtime/modules/chimaera_repo.yaml",
+    "context-assimilation-engine/chimaera_repo.yaml",
+    "context-transfer-engine/chimaera_repo.yaml",
+]
+_CLIO_CORE_BINARY_CANDIDATES = [
+    "build/bin/{name}",
+    "build/dev/bin/{name}",
+    "build/local/bin/{name}",
+    "install/bin/{name}",
+    "installers/pip/iowarp_core/bin/{name}",
+]
 
 
 class RuntimeProbe:
@@ -144,15 +172,19 @@ class RuntimeProbe:
         module_checker: ModuleChecker | None = None,
         lm_timeout: float = 1.0,
         api_timeout: float = 1.0,
+        default_clio_core_path: str | Path | None = _DEFAULT_CLIO_CORE_PATH,
     ) -> None:
-        import os
-
         self.env = env if env is not None else os.environ
         self.http_get = http_get or requests.get
         self.gateway_lister = gateway_lister or _list_gateway_capabilities
         self.module_checker = module_checker or _module_available
         self.lm_timeout = lm_timeout
         self.api_timeout = api_timeout
+        self.default_clio_core_path = (
+            Path(default_clio_core_path).expanduser()
+            if default_clio_core_path is not None
+            else None
+        )
 
     def collect(
         self,
@@ -520,27 +552,21 @@ class RuntimeProbe:
 
     def probe_clio_core(self) -> IntegrationStatus:
         """Report optional clio-core configuration without starting services."""
-        configured_path = self.env.get("CLIO_CORE_PATH") or self.env.get("CHI_REPO_PATH")
-        source = "env:CLIO_CORE_PATH/CHI_REPO_PATH" if configured_path else "default:not configured"
-        suggested_env = [
-            "CHI_SERVER_CONF",
-            "WRP_RUNTIME_CONF",
-            "CHI_REPO_PATH",
-            "LD_LIBRARY_PATH",
-        ]
-        if not configured_path:
+        core_path, source, explicit = self._resolve_clio_core_path()
+        if core_path is None:
             return IntegrationStatus(
                 name="clio_core",
                 state=IntegrationState.SKIPPED,
                 summary="Optional clio-core runtime probe is not configured.",
                 config_source=source,
-                next_action="Set CLIO_CORE_PATH or CHI_REPO_PATH when enabling clio-core probing.",
+                next_action=(
+                    "Set CLIO_CORE_PATH or CHI_REPO_PATH when enabling clio-core probing."
+                ),
                 capabilities=[],
-                details={"suggested_env": suggested_env},
+                details={"suggested_env": _CLIO_CORE_ENV_VARS},
                 required=False,
             )
 
-        core_path = Path(configured_path).expanduser()
         if not core_path.exists():
             return IntegrationStatus(
                 name="clio_core",
@@ -549,21 +575,187 @@ class RuntimeProbe:
                 config_source=source,
                 next_action="Fix CLIO_CORE_PATH or CHI_REPO_PATH.",
                 endpoint=str(core_path),
-                details={"suggested_env": suggested_env},
+                details={"suggested_env": _CLIO_CORE_ENV_VARS},
+                required=False,
+            )
+        if not core_path.is_dir():
+            return IntegrationStatus(
+                name="clio_core",
+                state=IntegrationState.MISCONFIGURED,
+                summary=f"Configured clio-core path is not a directory: {core_path}",
+                config_source=source,
+                next_action="Set CLIO_CORE_PATH or CHI_REPO_PATH to the clio-core repository root.",
+                endpoint=str(core_path),
+                details={"suggested_env": _CLIO_CORE_ENV_VARS},
+                required=False,
+            )
+
+        env_paths = self._clio_core_env_details()
+        missing_env_paths = [
+            item for item in env_paths if item["configured"] and item.get("exists") is False
+        ]
+        if missing_env_paths:
+            missing = ", ".join(f"{item['name']}={item['value']}" for item in missing_env_paths)
+            return IntegrationStatus(
+                name="clio_core",
+                state=IntegrationState.MISCONFIGURED,
+                summary=f"Configured clio-core env path(s) do not exist: {missing}",
+                config_source=source,
+                next_action="Fix or unset the missing clio-core environment path(s).",
+                endpoint=str(core_path),
+                details={
+                    "suggested_env": _CLIO_CORE_ENV_VARS,
+                    "env": env_paths,
+                    "non_destructive": True,
+                },
+                required=False,
+            )
+
+        chimaera_bins = self._find_binary_candidates(core_path, "chimaera", "CLIO_CHIMAERA_BIN")
+        cae_bins = self._find_binary_candidates(core_path, "wrp_cae_omni", "CLIO_WRP_CAE_OMNI_BIN")
+        config_candidates = self._find_existing_relative(core_path, _CLIO_CORE_CONFIG_CANDIDATES)
+        repo_configs = self._find_existing_relative(core_path, _CLIO_CORE_REPO_CONFIG_CANDIDATES)
+        visualizer = self._probe_visualizer(core_path)
+
+        capabilities = ["path-detected"]
+        if chimaera_bins:
+            capabilities.append("chimaera-cli")
+        if cae_bins:
+            capabilities.append("wrp_cae_omni")
+        if config_candidates:
+            capabilities.append("yaml-config")
+        if repo_configs:
+            capabilities.append("chimaera-repo-config")
+        if visualizer.get("source_detected"):
+            capabilities.append("visualizer-source")
+        if visualizer.get("state") == "ready":
+            capabilities.append("visualizer-status")
+
+        missing: list[str] = []
+        if not chimaera_bins:
+            missing.append("chimaera binary")
+        if not config_candidates and not any(
+            item["name"] in {"CHI_SERVER_CONF", "WRP_RUNTIME_CONF"} and item["configured"]
+            for item in env_paths
+        ):
+            missing.append("runtime YAML config")
+        if visualizer.get("state") == "unavailable":
+            missing.append("visualizer status endpoint")
+
+        details = {
+            "suggested_env": _CLIO_CORE_ENV_VARS,
+            "env": env_paths,
+            "chimaera_binaries": chimaera_bins,
+            "wrp_cae_omni_binaries": cae_bins,
+            "config_candidates": config_candidates,
+            "repo_configs": repo_configs,
+            "visualizer": visualizer,
+            "non_destructive": True,
+            "explicit_path": explicit,
+        }
+
+        if missing:
+            return IntegrationStatus(
+                name="clio_core",
+                state=IntegrationState.DEGRADED,
+                summary=f"clio-core path exists but discovery is incomplete: {', '.join(missing)}.",
+                config_source=source,
+                next_action=(
+                    "Build/install clio-core or set CLIO_CHIMAERA_BIN, CHI_SERVER_CONF, "
+                    "WRP_RUNTIME_CONF, CHI_REPO_PATH, and LD_LIBRARY_PATH as needed."
+                ),
+                endpoint=str(core_path),
+                capabilities=capabilities,
+                details=details,
                 required=False,
             )
 
         return IntegrationStatus(
             name="clio_core",
-            state=IntegrationState.SKIPPED,
-            summary="clio-core path exists; non-destructive runtime probing is deferred.",
+            state=IntegrationState.READY,
+            summary="clio-core discovery found a repository path, chimaera binary, and config.",
             config_source=source,
-            next_action="Use the later clio-core probe slice to inspect chimaera/config readiness.",
+            next_action="No action required for discovery; start clio-core services explicitly when needed.",
             endpoint=str(core_path),
-            capabilities=["path-detected"],
-            details={"suggested_env": suggested_env},
+            capabilities=capabilities,
+            details=details,
             required=False,
         )
+
+    def _resolve_clio_core_path(self) -> tuple[Path | None, str, bool]:
+        configured_path = self.env.get("CLIO_CORE_PATH") or self.env.get("CHI_REPO_PATH")
+        if configured_path:
+            return Path(configured_path).expanduser(), "env:CLIO_CORE_PATH/CHI_REPO_PATH", True
+        if self.default_clio_core_path and self.default_clio_core_path.exists():
+            return self.default_clio_core_path, f"default:{self.default_clio_core_path}", False
+        return None, "default:not configured", False
+
+    def _clio_core_env_details(self) -> list[dict[str, Any]]:
+        details: list[dict[str, Any]] = []
+        for name in _CLIO_CORE_ENV_VARS:
+            value = self.env.get(name, "")
+            item: dict[str, Any] = {"name": name, "configured": bool(value)}
+            if value:
+                item["value"] = value
+                if name == "LD_LIBRARY_PATH":
+                    paths = [Path(part).expanduser() for part in value.split(os.pathsep) if part]
+                    item["paths"] = [str(path) for path in paths]
+                    item["exists"] = all(path.exists() for path in paths) if paths else False
+                else:
+                    path = Path(value).expanduser()
+                    item["value"] = str(path)
+                    item["exists"] = path.exists()
+            details.append(item)
+        return details
+
+    def _find_binary_candidates(self, core_path: Path, name: str, env_key: str) -> list[str]:
+        candidates: list[Path] = []
+        env_value = self.env.get(env_key)
+        if env_value:
+            candidates.append(Path(env_value).expanduser())
+        path_candidate = shutil.which(name, path=self.env.get("PATH"))
+        if path_candidate:
+            candidates.append(Path(path_candidate))
+        for pattern in _CLIO_CORE_BINARY_CANDIDATES:
+            candidates.append(core_path / pattern.format(name=name))
+        return _existing_unique_paths(candidates, executable=True)
+
+    @staticmethod
+    def _find_existing_relative(core_path: Path, relative_paths: list[str]) -> list[str]:
+        return _existing_unique_paths([core_path / item for item in relative_paths])
+
+    def _probe_visualizer(self, core_path: Path) -> dict[str, Any]:
+        source_detected = any(
+            (core_path / item).exists()
+            for item in (
+                "context-visualizer/pyproject.toml",
+                "context-visualizer/context_visualizer/chimaera_client.py",
+            )
+        )
+        visualizer_url = self.env.get("CLIO_CORE_VISUALIZER_URL") or self.env.get(
+            "CLIO_VISUALIZER_URL"
+        )
+        result: dict[str, Any] = {
+            "source_detected": source_detected,
+            "configured_url": visualizer_url or "",
+            "state": "skipped",
+        }
+        if not visualizer_url:
+            return result
+
+        status_url = visualizer_url.rstrip("/") + "/status"
+        result["status_url"] = status_url
+        try:
+            response = self.http_get(status_url, timeout=self.api_timeout)
+        except Exception as exc:
+            result["state"] = "unavailable"
+            result["error"] = str(exc)
+            return result
+
+        status_code = getattr(response, "status_code", 200)
+        result["http_status"] = status_code
+        result["state"] = "ready" if status_code < 400 else "unavailable"
+        return result
 
     def _load_lm_config(self) -> tuple[LMProviderConfig, str]:
         provider = self.env.get("CLIO_LM_PROVIDER", "lm_studio")
@@ -659,6 +851,21 @@ def collect_runtime_status(
 
 def _module_available(module_name: str) -> bool:
     return importlib.util.find_spec(module_name) is not None
+
+
+def _existing_unique_paths(paths: list[Path], *, executable: bool = False) -> list[str]:
+    seen: set[str] = set()
+    results: list[str] = []
+    for path in paths:
+        if not path.exists() or not path.is_file():
+            continue
+        if executable and not os.access(path, os.X_OK):
+            continue
+        resolved = str(path.resolve())
+        if resolved not in seen:
+            seen.add(resolved)
+            results.append(resolved)
+    return results
 
 
 def _list_gateway_capabilities() -> list[dict[str, Any]]:

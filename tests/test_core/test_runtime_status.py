@@ -45,6 +45,7 @@ def test_runtime_report_ready_path(tmp_path):
         http_get=fake_get,
         gateway_lister=lambda: HDF5_CAPS + PARQUET_CAPS,
         module_checker=lambda name: name in {"h5py", "pyarrow.parquet"},
+        default_clio_core_path=None,
     )
 
     report = probe.collect(api_state=IntegrationState.READY)
@@ -66,6 +67,7 @@ def test_runtime_report_degraded_path(tmp_path):
         http_get=lambda *args, **kwargs: FakeResponse({"data": []}),
         gateway_lister=lambda: HDF5_CAPS,
         module_checker=lambda name: name in {"h5py", "pyarrow.parquet"},
+        default_clio_core_path=None,
     )
 
     report = probe.collect(api_state=IntegrationState.READY)
@@ -92,6 +94,7 @@ def test_runtime_report_unavailable_path(tmp_path):
         http_get=unavailable_lm,
         gateway_lister=unavailable_gateway,
         module_checker=lambda name: False,
+        default_clio_core_path=None,
     )
 
     report = probe.collect(api_state=IntegrationState.DEGRADED, api_error="startup failed")
@@ -111,6 +114,7 @@ def test_lm_provider_misconfigured_when_cloud_key_missing(tmp_path):
         env={"CLIO_DATA_DIR": str(tmp_path), "CLIO_LM_PROVIDER": "openai"},
         gateway_lister=lambda: HDF5_CAPS + PARQUET_CAPS,
         module_checker=lambda name: True,
+        default_clio_core_path=None,
     )
 
     status = probe.probe_lm_provider()
@@ -118,3 +122,122 @@ def test_lm_provider_misconfigured_when_cloud_key_missing(tmp_path):
     assert status.state == IntegrationState.MISCONFIGURED
     assert "requires" in status.summary
     assert "CLIO_LM_API_KEY" in status.summary
+
+
+def test_clio_core_probe_ready_with_default_path(tmp_path, monkeypatch):
+    """Default clio-core path discovery is non-destructive and reports readiness."""
+    core = tmp_path / "clio-core"
+    bin_dir = core / "build" / "bin"
+    bin_dir.mkdir(parents=True)
+    chimaera = bin_dir / "chimaera"
+    chimaera.write_text("#!/bin/sh\n", encoding="utf-8")
+    chimaera.chmod(0o755)
+    config_dir = core / "context-runtime" / "config"
+    config_dir.mkdir(parents=True)
+    (config_dir / "chimaera_default.yaml").write_text("runtime: {}\n", encoding="utf-8")
+    repo_dir = core / "context-transfer-engine"
+    repo_dir.mkdir(parents=True)
+    (repo_dir / "chimaera_repo.yaml").write_text("repo: {}\n", encoding="utf-8")
+    visualizer_dir = core / "context-visualizer"
+    visualizer_dir.mkdir(parents=True)
+    (visualizer_dir / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
+    monkeypatch.setenv("PATH", "")
+
+    probe = RuntimeProbe(
+        env={"CLIO_DATA_DIR": str(tmp_path / "data")},
+        default_clio_core_path=core,
+    )
+
+    status = probe.probe_clio_core()
+
+    assert status.state == IntegrationState.READY
+    assert "chimaera-cli" in status.capabilities
+    assert "yaml-config" in status.capabilities
+    assert "chimaera-repo-config" in status.capabilities
+    assert "visualizer-source" in status.capabilities
+    assert status.details["non_destructive"] is True
+    assert status.details["chimaera_binaries"] == [str(chimaera.resolve())]
+
+
+def test_clio_core_probe_degraded_when_binary_missing(tmp_path):
+    """Existing clio-core path without a chimaera binary is degraded."""
+    core = tmp_path / "clio-core"
+    config_dir = core / "context-runtime" / "config"
+    config_dir.mkdir(parents=True)
+    (config_dir / "chimaera_default.yaml").write_text("runtime: {}\n", encoding="utf-8")
+
+    probe = RuntimeProbe(
+        env={"CLIO_DATA_DIR": str(tmp_path / "data")},
+        default_clio_core_path=core,
+    )
+
+    status = probe.probe_clio_core()
+
+    assert status.state == IntegrationState.DEGRADED
+    assert "chimaera binary" in status.summary
+    assert status.details["config_candidates"]
+
+
+def test_clio_core_probe_checks_configured_visualizer_status(tmp_path, monkeypatch):
+    """Configured visualizer URLs are checked via a non-destructive /status GET."""
+    core = tmp_path / "clio-core"
+    bin_dir = core / "build" / "bin"
+    bin_dir.mkdir(parents=True)
+    chimaera = bin_dir / "chimaera"
+    chimaera.write_text("#!/bin/sh\n", encoding="utf-8")
+    chimaera.chmod(0o755)
+    config_dir = core / "context-runtime" / "config"
+    config_dir.mkdir(parents=True)
+    (config_dir / "chimaera_default.yaml").write_text("runtime: {}\n", encoding="utf-8")
+    monkeypatch.setenv("PATH", "")
+
+    def fake_get(url: str, timeout: float):
+        assert url == "http://127.0.0.1:8088/status"
+        assert timeout == 1.0
+        return FakeResponse({"status": "ok"})
+
+    probe = RuntimeProbe(
+        env={
+            "CLIO_CORE_PATH": str(core),
+            "CLIO_CORE_VISUALIZER_URL": "http://127.0.0.1:8088",
+        },
+        http_get=fake_get,
+        default_clio_core_path=None,
+    )
+
+    status = probe.probe_clio_core()
+
+    assert status.state == IntegrationState.READY
+    assert "visualizer-status" in status.capabilities
+    assert status.details["visualizer"]["status_url"] == "http://127.0.0.1:8088/status"
+
+
+def test_clio_core_probe_misconfigured_for_missing_explicit_path(tmp_path):
+    """Explicit missing clio-core paths are misconfigured, not skipped."""
+    missing = tmp_path / "missing-core"
+    probe = RuntimeProbe(
+        env={"CLIO_CORE_PATH": str(missing)},
+        default_clio_core_path=None,
+    )
+
+    status = probe.probe_clio_core()
+
+    assert status.state == IntegrationState.MISCONFIGURED
+    assert str(missing) in status.summary
+
+
+def test_clio_core_probe_misconfigured_for_missing_env_config(tmp_path):
+    """Configured clio-core env paths must point at existing files or dirs."""
+    core = tmp_path / "clio-core"
+    core.mkdir()
+    missing_conf = tmp_path / "missing.yaml"
+    probe = RuntimeProbe(
+        env={"CLIO_CORE_PATH": str(core), "CHI_SERVER_CONF": str(missing_conf)},
+        default_clio_core_path=None,
+    )
+
+    status = probe.probe_clio_core()
+
+    assert status.state == IntegrationState.MISCONFIGURED
+    assert "CHI_SERVER_CONF" in status.summary
+    assert status.details["env"][0]["exists"] is False
