@@ -29,7 +29,7 @@ from typing import Any
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sse_starlette.sse import EventSourceResponse
 
 from clio_agent.config import load_config_from_env, setup_dspy
@@ -50,6 +50,14 @@ class QueryRequest(BaseModel):
     question: str
     session_id: str = "default"
     stream: bool = False
+
+    @field_validator("question", "session_id")
+    @classmethod
+    def _reject_blank_strings(cls, value: str) -> str:
+        """Reject blank query fields before they reach the agent runtime."""
+        if not value.strip():
+            raise ValueError("must not be blank")
+        return value
 
 
 class QueryResponse(BaseModel):
@@ -224,9 +232,7 @@ async def query(req: QueryRequest):
         error_msg = getattr(app.state, "startup_error", "Agent not initialized")
         return JSONResponse(
             status_code=503,
-            content=format_error_response(
-                ClioError(error_msg, error_type="service_unavailable")
-            ),
+            content=format_error_response(ClioError(error_msg, error_type="service_unavailable")),
         )
 
     if req.stream:

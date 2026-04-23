@@ -199,9 +199,7 @@ class TestQueryJSON:
         )
         mock_agent.return_value = prediction
         mock_agent.forward.return_value = prediction
-        resp = client.post(
-            "/query", json={"question": "Analyze file", "session_id": "sess-42"}
-        )
+        resp = client.post("/query", json={"question": "Analyze file", "session_id": "sess-42"})
         assert resp.status_code == 200
         assert resp.json()["session_id"] == "sess-42"
 
@@ -211,6 +209,14 @@ class TestQueryJSON:
 
     def test_query_empty_body(self, client):
         resp = client.post("/query", content=b"{}")
+        assert resp.status_code == 422
+
+    def test_query_blank_question(self, client):
+        resp = client.post("/query", json={"question": "   "})
+        assert resp.status_code == 422
+
+    def test_query_blank_session_id(self, client):
+        resp = client.post("/query", json={"question": "Hello", "session_id": " "})
         assert resp.status_code == 422
 
     def test_query_agent_unavailable(self, degraded_client):
@@ -239,16 +245,12 @@ class TestQuerySSE:
     """Tests for POST /query with stream=True."""
 
     def test_stream_content_type(self, client):
-        resp = client.post(
-            "/query", json={"question": "Stream me", "stream": True}
-        )
+        resp = client.post("/query", json={"question": "Stream me", "stream": True})
         assert resp.status_code == 200
         assert "text/event-stream" in resp.headers["content-type"]
 
     def test_stream_events(self, client):
-        resp = client.post(
-            "/query", json={"question": "Stream me", "stream": True}
-        )
+        resp = client.post("/query", json={"question": "Stream me", "stream": True})
         text = resp.text
         # Must contain routing, chunk, and done events
         assert "event: routing" in text
@@ -258,15 +260,13 @@ class TestQuerySSE:
     def test_stream_error_event(self, client, mock_agent):
         mock_agent.side_effect = RuntimeError("boom")
         mock_agent.forward.side_effect = RuntimeError("boom")
-        resp = client.post(
-            "/query", json={"question": "fail me", "stream": True}
-        )
+        resp = client.post("/query", json={"question": "fail me", "stream": True})
         text = resp.text
         assert "event: error" in text
         # Parse the error data
         for line in text.splitlines():
             if line.startswith("data:") and "internal_error" in line:
-                data = json.loads(line[len("data:"):].strip())
+                data = json.loads(line[len("data:") :].strip())
                 assert data["error"] == "internal_error"
                 break
 
@@ -370,9 +370,7 @@ class TestAPIMain:
 
     def test_stream_done_event_contains_answer(self, client):
         """SSE done event should contain the full answer."""
-        resp = client.post(
-            "/query", json={"question": "Stream test", "stream": True}
-        )
+        resp = client.post("/query", json={"question": "Stream test", "stream": True})
         text = resp.text
         # Parse SSE events: find the done event data line
         lines = text.splitlines()
@@ -382,7 +380,7 @@ class TestAPIMain:
                 # Next data: line should have the answer
                 for j in range(i + 1, min(i + 3, len(lines))):
                     if lines[j].startswith("data:"):
-                        data = json.loads(lines[j][len("data:"):].strip())
+                        data = json.loads(lines[j][len("data:") :].strip())
                         assert "answer" in data
                         found_done = True
                         break
