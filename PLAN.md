@@ -30,6 +30,8 @@ The current codebase is a real alpha, not empty scaffolding.
 
 Implemented and source-verified:
 
+- CLIO harness contracts for validated route decisions and explicit tool traces:
+  `src/clio_agent/harness.py`
 - Main orchestrator: `src/clio_agent/agent.py`
 - CLI: `src/clio_agent/ui/cli.py`
 - REST API with health/query/experts/metrics/SSE: `src/clio_agent/ui/api.py`
@@ -38,14 +40,30 @@ Implemented and source-verified:
   `src/clio_agent/arc/`
 - HDF5 FastMCP server using `h5py`: `src/clio_agent/tools/servers/hdf5_server.py`
 - Parquet FastMCP server using `pyarrow`: `src/clio_agent/tools/servers/parquet_server.py`
-- FastMCP gateway: `src/clio_agent/tools/gateway.py`
-- Data, Analysis, Visualization experts: `src/clio_agent/experts/`
+- FastMCP 3 gateway: `src/clio_agent/tools/gateway.py`
+- Data and Analysis experts now use native typed CLIO request/result contracts
+  with deterministic tool execution first and explicit tool provenance:
+  `src/clio_agent/experts/data_expert.py`,
+  `src/clio_agent/experts/analysis_expert.py`
+- Visualization expert remains a chart-focused DSPy ReAct module around local
+  matplotlib tools: `src/clio_agent/experts/visualization_expert.py`
 - Offline optimization support: `src/clio_agent/optimizer/`
 - Container and CI artifacts: `Dockerfile`, `docker-compose.yml`,
   `singularity.def`, `.github/workflows/ci.yml`
 
 Recent local verification:
 
+- `uv sync --extra dev --extra api --extra optimizers`: upgraded FastMCP to
+  `3.2.4` and switched from legacy `dspy-ai` to direct `dspy` dependency
+  (2026-04-23)
+- `uv run python -c "import dspy, fastmcp; ..."`: reported `dspy 3.1.3`,
+  `fastmcp 3.2.4` (2026-04-23)
+- Focused upgraded-harness smoke checks against generated HDF5, Parquet, and
+  visualization outputs passed locally (2026-04-23)
+- `uv run pytest tests/test_tools/test_gateway.py tests/test_tools/test_execution.py
+  tests/test_core/test_api.py tests/test_core/test_cli_commands.py
+  tests/test_integration/test_local_filesystem_smoke.py --no-cov -q`: 78 passed
+  (2026-04-23)
 - `uv run pytest tests/`: 598 passed, 84% coverage (2026-04-23)
 - `uv run ruff check src/ tests/ scripts/create_demo_data.py`: passed (2026-04-23)
 - `uv run ruff format <first-wave touched Python files> --check`: passed (2026-04-23)
@@ -53,11 +71,12 @@ Recent local verification:
 
 Known baseline caveats:
 
-- The reliable path for explicit file tasks is deterministic tool routing. The
-  LLM ReAct path remains useful but should not be the only production path.
-- FastMCP gateway uses a compatibility helper that prefers the supported
-  `namespace=` mount API and falls back to `prefix=` for installed FastMCP
-  versions that still expose it.
+- The product path for explicit HDF5, Parquet, and CSV file tasks is
+  deterministic harness routing plus native expert tool execution with ARC tool
+  traces. LLM routing and DSPy synthesis are reasoning extensions, not the core
+  safety path.
+- FastMCP gateway is now validated on FastMCP 3.2.4 with stable namespaced tool
+  names.
 - `MCPToolBridge` is retained as a compatibility shim over the explicit sync
   MCP executor. New tool execution paths should use the sync or async executor
   interfaces directly.
@@ -103,8 +122,9 @@ Out of scope unless explicitly promoted:
    for production paths.
 7. Tool sets are curated. Each expert should see the smallest useful set of
    high-level tools, normally 5 to 7.
-8. Deterministic routing and validation protect the product path. LLM routing
-   and ReAct are reasoning layers, not the only safety mechanism.
+8. Deterministic routing, typed expert contracts, and validated tool execution
+   protect the product path. LLM routing and DSPy synthesis are optional
+   reasoning layers, not the execution owner.
 9. Optimization is evidence-gated. Variants can be saved freely, but deployment
    requires before/after evaluation and rollback.
 10. External integration failures degrade clearly. Users should know which
@@ -443,6 +463,9 @@ Scope:
 - Hide or replace `MCPToolBridge`.
 - Support CLI sync calls, FastAPI async calls, and optimizer evaluation without
   deadlocks or leaked threads.
+- Keep expert tool execution CLIO-native: typed request/result objects,
+  deterministic tools first, explicit provenance, and DSPy only for synthesis
+  or planning where it adds value.
 
 Done when:
 
@@ -612,7 +635,7 @@ Recommended next tasks:
 1. Finish tool result validation contracts for every HDF5, Parquet, CSV, and
    visualization response shape.
 2. Migrate future direct API tool-use paths to `AsyncMCPToolExecutor` instead of
-   sync executor calls when they no longer need DSPy ReAct's sync callable shape.
+   sync executor calls when API handlers can stay fully async end-to-end.
 3. Define the CTE adapter interface and identify the real IOWarp runtime
    contract with the project owner.
 4. Add artifact registry support for generated charts and future reports.

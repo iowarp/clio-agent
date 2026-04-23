@@ -6,8 +6,8 @@ DSPy signature definitions for ClioAgent components.
 Available Signatures:
 - RouterSignature: Routes questions to experts via Literal typed output
 - ChatAgentSignature: Conversational responses for non-data queries
-- DataExpertSignature: HDF5, Parquet optimization with ReAct tools
-- AnalysisExpertSignature: Statistical analysis and data profiling
+- DataExpertSignature: HDF5 and data-layout synthesis
+- AnalysisExpertSignature: Statistical analysis and data profiling synthesis
 - VisualizationExpertSignature: Scientific data visualization
 
 Example:

@@ -61,7 +61,7 @@ class AsyncToolExecutor(Protocol):
 
 
 class SyncToolExecutor(Protocol):
-    """Synchronous tool execution interface used by CLI and ReAct experts."""
+    """Synchronous tool execution interface used by CLI and native expert callers."""
 
     def call_tool(self, name: str, args: Mapping[str, Any]) -> str:
         """Call a named tool and return a string result."""
@@ -110,7 +110,7 @@ def create_sync_tool_executor(
     setup_timeout: float = 10.0,
     client_factory: ClientFactory | None = None,
 ) -> SyncToolExecutor:
-    """Create a sync executor for CLI and DSPy ReAct call sites."""
+    """Create a sync executor for CLI and deterministic expert call sites."""
     return SyncMCPToolExecutor(
         server,
         timeout=timeout,

@@ -134,6 +134,8 @@ def test_direct_agent_answers_for_local_hdf5_parquet_csv(
             question=f"Inspect {sample_csv}",
             session_id="local-csv",
         )
+        data_invocations = agent.arc.get_invocations_by_agent("data")
+        analysis_invocations = agent.arc.get_invocations_by_agent("analysis")
     finally:
         agent.shutdown()
 
@@ -145,6 +147,21 @@ def test_direct_agent_answers_for_local_hdf5_parquet_csv(
     assert csv.selected_expert == "analysis"
     assert "Inspected CSV file" in csv.answer
     assert "temperature" in csv.answer
+    assert any(
+        tool.tool == "hdf5_analyze_file"
+        for invocation in data_invocations
+        for tool in invocation.tools_called
+    )
+    assert any(
+        tool.tool == "parquet_analyze_schema"
+        for invocation in analysis_invocations
+        for tool in invocation.tools_called
+    )
+    assert any(
+        tool.tool == "csv_read_table"
+        for invocation in analysis_invocations
+        for tool in invocation.tools_called
+    )
 
 
 def test_api_query_wraps_real_local_agent_path(sample_hdf5, tmp_path, monkeypatch):

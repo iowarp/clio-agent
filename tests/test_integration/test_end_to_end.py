@@ -47,12 +47,12 @@ class TestAgentArchitecture:
         assert agent.registry.get_agent_count() == 3
         agent.shutdown()
 
-    def test_agent_data_expert_has_react(self):
-        """DataExpert should use ReAct with real MCP tools."""
+    def test_agent_data_expert_has_native_tool_boundary(self):
+        """DataExpert should expose native tools without ReAct ownership."""
         agent = ClioAgent()
         expert = agent.data_expert
         assert hasattr(expert, "agent")
-        assert hasattr(expert.agent, "tools")
+        assert "ReAct" not in type(expert.agent).__name__
         assert len(expert._tools) >= 4
         agent.shutdown()
 

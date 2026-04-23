@@ -1,9 +1,8 @@
 """
 Tests for Analysis Expert module.
 
-Tests AnalysisExpert initialization, tool loading via the MCP execution boundary,
-capabilities, and signature. Does not require LM Studio (no forward() tests
-that call real LMs).
+Tests AnalysisExpert initialization, native tool execution via the MCP execution
+boundary, capabilities, and signature. Does not require LM Studio.
 """
 
 import inspect
@@ -70,13 +69,13 @@ class TestAnalysisExpert:
         finally:
             expert.close()
 
-    def test_analysis_expert_has_react_agent(self):
-        """Test expert uses ReAct, not ChainOfThought."""
+    def test_analysis_expert_has_synthesis_module_not_react(self):
+        """Test expert keeps DSPy only for synthesis, not tool execution."""
         expert = AnalysisExpert()
         try:
-            assert hasattr(expert.agent, "tools")
             agent_type = type(expert.agent).__name__
-            assert "ReAct" in agent_type
+            assert "Predict" in agent_type
+            assert "ReAct" not in agent_type
         finally:
             expert.close()
 
@@ -108,6 +107,21 @@ class TestAnalysisExpert:
             params = list(sig.parameters.keys())
             assert "question" in params
             assert "file_context" in params
+        finally:
+            expert.close()
+
+    def test_analysis_expert_forward_uses_native_parquet_tools(self, sample_parquet):
+        """Explicit Parquet questions should run tools without LM calls."""
+        expert = AnalysisExpert()
+        try:
+            result = expert(question=f"Show statistics for temperature in {sample_parquet}")
+            assert "Column statistics" in result.analysis
+            assert "temperature" in result.analysis
+            assert result.synthesis_source == "deterministic"
+            assert [tool.tool for tool in result.tool_provenance] == [
+                "parquet_analyze_schema",
+                "parquet_compute_statistics",
+            ]
         finally:
             expert.close()
 

@@ -5,8 +5,8 @@ Router + ChatAgent + Expert dispatch architecture.
 
 Architecture:
     User Query -> Router (fast SLM, Literal output)
-        -> "data" -> DataExpert (ReAct + HDF5 MCP tools)
-        -> "analysis" -> AnalysisExpert (ReAct + Parquet MCP tools)
+        -> "data" -> DataExpert (native HDF5 tools + optional synthesis)
+        -> "analysis" -> AnalysisExpert (native Parquet/CSV tools + optional synthesis)
         -> "visualization" -> VisualizationExpert (ReAct + matplotlib tools)
         -> "chat" -> ChatAgent (conversational response)
         -> "none" -> Out-of-scope fallback message
@@ -23,7 +23,7 @@ Usage:
 """
 
 import json
-import re
+import os
 import time
 import uuid
 from pathlib import Path
@@ -54,16 +54,20 @@ from clio_agent.errors import (
     RoutingError,
 )
 from clio_agent.experts import AnalysisExpert, DataExpert, VisualizationExpert
+from clio_agent.harness import (
+    IntentRouter,
+    RouteDecision,
+    RunTrace,
+    extract_file_paths,
+    format_tool_error,
+    tool_result_ok,
+)
 from clio_agent.optimizer.instrumentation import _extract_output
 from clio_agent.registry.registry import AgentCapability, AgentRegistry
 from clio_agent.signatures.main_agent_sig import ChatAgentSignature, RouterSignature
 from clio_agent.tools.execution import create_sync_tool_executor
+from clio_agent.tools.file_policy import FilePolicyError, validate_write_path
 from clio_agent.tools.gateway import gateway
-
-_FILE_PATH_RE = re.compile(
-    r"(?P<path>(?:~|/|\.{1,2}/)?[^\s'\"`]+?\.(?:h5|hdf5|parquet|csv))",
-    re.IGNORECASE,
-)
 
 
 class ClioAgent(dspy.Module):
@@ -71,8 +75,8 @@ class ClioAgent(dspy.Module):
 
     Architecture:
         User Query -> Router (fast SLM, Literal output)
-            -> "data" -> DataExpert (ReAct + HDF5 MCP tools)
-            -> "analysis" -> AnalysisExpert (ReAct + Parquet MCP tools)
+            -> "data" -> DataExpert (native HDF5 tools + optional synthesis)
+            -> "analysis" -> AnalysisExpert (native Parquet/CSV tools + optional synthesis)
             -> "visualization" -> VisualizationExpert (ReAct + matplotlib tools)
             -> "chat" -> ChatAgent (conversational response)
             -> "none" -> Out-of-scope fallback message
@@ -80,8 +84,8 @@ class ClioAgent(dspy.Module):
     Attributes:
         router: DSPy ChainOfThought module with RouterSignature
         chat_agent: DSPy Predict module with ChatAgentSignature
-        data_expert: DataExpert instance with ReAct + MCP tools
-        analysis_expert: AnalysisExpert instance with ReAct + Parquet tools
+        data_expert: DataExpert instance with native HDF5 tools
+        analysis_expert: AnalysisExpert instance with native Parquet/CSV tools
         visualization_expert: VisualizationExpert instance with matplotlib tools
         arc: ARC Memory instance
         context_retriever: Context retrieval module
@@ -144,6 +148,8 @@ class ClioAgent(dspy.Module):
         # Router: ChainOfThought with Literal output on fast model
         self._router_lm = create_router_lm(self._provider_config)
         self.router = dspy.ChainOfThought(RouterSignature)
+        self.intent_router = IntentRouter()
+        self._active_trace: RunTrace | None = None
 
         # Chat Agent: Predict for conversational responses. This keeps the
         # structured output surface smaller than ChainOfThought, which is more
@@ -153,13 +159,13 @@ class ClioAgent(dspy.Module):
         # Shared MCP executor: one explicit sync boundary for CLI/API thread calls.
         self.tool_executor = create_sync_tool_executor(gateway)
 
-        # DataExpert: ReAct with real HDF5 MCP tools
+        # DataExpert: native deterministic HDF5 tools with optional DSPy synthesis
         self.data_expert = DataExpert(
             arc_memory=self.arc,
             tool_executor=self.tool_executor,
         )
 
-        # AnalysisExpert: ReAct with real Parquet MCP tools
+        # AnalysisExpert: native deterministic Parquet/CSV tools with optional DSPy synthesis
         self.analysis_expert = AnalysisExpert(
             arc_memory=self.arc,
             tool_executor=self.tool_executor,
@@ -279,33 +285,16 @@ class ClioAgent(dspy.Module):
         # Step 1: Retrieve context from ARC Memory
         session_context = self._get_session_context(question, session_id)
 
-        # Step 2: Route query. Obvious file/tool requests use deterministic
-        # routing first so demos do not depend on local model parsing latency.
+        # Step 2: Route query through the CLIO harness.
         success = False
         error_msg = None
-        selected = "chat"  # default fallback
-
-        heuristic_selected = self._route_with_heuristics(question)
-        if heuristic_selected:
-            if self.verbose:
-                print(f"[Router] heuristic route: {heuristic_selected}")
-            selected = heuristic_selected
-        else:
-            try:
-                with dspy.context(lm=self._router_lm):
-                    routing = self.router(question=question)
-                selected = routing.selected_expert
-            except Exception as e:
-                if self.verbose:
-                    routing_err = RoutingError(
-                        message=f"Router failed, falling back to chat: {e}",
-                        details={"original_error": str(e)},
-                    )
-                    print(f"[Router] {routing_err.to_dict()}")
-                selected = "chat"
+        route = self._route_question(question)
+        selected = route.target
+        trace = RunTrace(route=route)
+        self._active_trace = trace
 
         if self.verbose:
-            print(f"[Router] {question[:50]}... -> {selected}")
+            print(f"[Router] {route.source}: {question[:50]}... -> {selected}")
 
         # Step 3: Load dataset profiles for file context
         file_context = self._get_file_context(session_id)
@@ -316,23 +305,19 @@ class ClioAgent(dspy.Module):
         error_info = None
         try:
             if selected == "data":
-                expert_result = self._direct_tool_answer(selected, question, file_context)
-                if expert_result is None:
-                    expert_result = self.data_expert(question=question, file_context=file_context)
+                expert_result = self.data_expert(question=question, file_context=file_context)
+                self._merge_expert_provenance(trace, expert_result)
                 answer = (
                     f"{expert_result.analysis}\n\nRecommendations:\n{expert_result.recommendations}"
                 )
             elif selected == "analysis":
-                expert_result = self._direct_tool_answer(selected, question, file_context)
-                if expert_result is None:
-                    expert_result = self.analysis_expert(
-                        question=question, file_context=file_context
-                    )
+                expert_result = self.analysis_expert(question=question, file_context=file_context)
+                self._merge_expert_provenance(trace, expert_result)
                 answer = (
                     f"{expert_result.analysis}\n\nRecommendations:\n{expert_result.recommendations}"
                 )
             elif selected == "visualization":
-                expert_result = self._direct_tool_answer(selected, question, file_context)
+                expert_result = self._direct_visualization_answer(question, file_context)
                 if expert_result is None:
                     expert_result = self.visualization_expert(
                         question=question, file_context=file_context
@@ -374,18 +359,22 @@ class ClioAgent(dspy.Module):
                 success=success,
                 error_msg=error_msg,
                 duration_ms=expert_duration_ms,
+                trace=trace,
             )
 
         # Step 5: Store conversation + routing decision + metrics in ARC
         # Conversation must be stored first so routing decision can append to it
         duration_ms = (time.time() - start_time) * 1000
         self._store_conversation(question, answer, session_id)
-        self._store_routing_decision(question, selected, session_id)
-        self._store_metrics(question, session_id, selected, duration_ms, success, error_msg)
+        self._store_routing_decision(question, route, session_id)
+        self._store_metrics(question, session_id, selected, duration_ms, success, error_msg, trace)
+        self._active_trace = None
 
         return dspy.Prediction(
             answer=answer,
             selected_expert=selected,
+            route_source=route.source,
+            route_reason=route.reason,
             session_id=session_id,
             duration_ms=duration_ms,
             arc_stats=self.arc.get_cache_stats(),
@@ -393,38 +382,39 @@ class ClioAgent(dspy.Module):
             error_info=error_info,
         )
 
-    @staticmethod
-    def _route_with_heuristics(question: str) -> str | None:
-        """Return a deterministic route for obvious MVP/demo intents."""
-        q = question.lower()
+    def _route_question(self, question: str) -> RouteDecision:
+        """Choose a validated route for one question."""
+        deterministic = self.intent_router.classify(question)
+        if deterministic:
+            return deterministic
 
-        if any(word in q for word in ("plot", "chart", "graph", "histogram", "scatter")):
-            return "visualization"
-        if any(token in q for token in (".h5", ".hdf5", "hdf5", "chunking", "compression")):
-            return "data"
-        if any(
-            token in q for token in (".parquet", "parquet", "schema", "statistics", "null count")
-        ):
-            return "analysis"
-        if any(token in q for token in (".csv", "csv")):
-            return "analysis"
-        if q.strip() in {"hi", "hello", "hey"} or "who are you" in q:
-            return "chat"
-        return None
-
-    def _direct_tool_answer(
-        self, selected: str, question: str, file_context: str
-    ) -> dspy.Prediction | None:
-        """Use deterministic local tools for explicit file-path questions."""
-        if selected == "data":
-            return self._direct_hdf5_answer(question, file_context)
-        if selected == "analysis":
-            return self._direct_parquet_answer(question, file_context) or self._direct_csv_answer(
-                question, file_context
+        try:
+            with dspy.context(lm=self._router_lm):
+                routing = self.router(question=question)
+            return RouteDecision.from_dspy(getattr(routing, "selected_expert", None))
+        except Exception as e:
+            if self.verbose:
+                routing_err = RoutingError(
+                    message=f"Router failed: {e}",
+                    details={"original_error": str(e)},
+                )
+                print(f"[Router] {routing_err.to_dict()}")
+            return RouteDecision(
+                target="chat",
+                source="guard",
+                reason=f"Router failed; kept control in chat: {e}",
+                confidence=0.0,
             )
-        if selected == "visualization":
-            return self._direct_visualization_answer(question, file_context)
-        return None
+
+    @staticmethod
+    def _merge_expert_provenance(trace: RunTrace, expert_result: Any) -> None:
+        """Copy native expert tool provenance into the active run trace."""
+        provenance = getattr(expert_result, "tool_provenance", None)
+        if not isinstance(provenance, (list, tuple)):
+            return
+        for observation in provenance:
+            if hasattr(observation, "to_arc_tool_call"):
+                trace.tools.append(observation)
 
     def _run_chat_agent(self, question: str, session_context: str) -> str:
         """Generate a conversational reply, falling back for local backends."""
@@ -504,184 +494,39 @@ class ClioAgent(dspy.Module):
 
         return ClioAgent._coerce_text(content)
 
-    def _direct_hdf5_answer(self, question: str, file_context: str) -> dspy.Prediction | None:
-        """Inspect an explicit HDF5 path without relying on ReAct planning."""
-        paths = self._extract_file_paths(question, file_context, {".h5", ".hdf5"})
-        if not paths:
-            return None
-
-        filepath = paths[0]
-        from clio_agent.tools.servers.hdf5_server import analyze_file, list_datasets
-
-        overview = self._call_tool_function(analyze_file, str(filepath))
-        datasets = self._call_tool_function(list_datasets, str(filepath))
-
-        if "error" in overview:
-            return dspy.Prediction(
-                analysis=(
-                    f"Could not inspect HDF5 file {filepath}: "
-                    f"{self._format_tool_error(overview['error'])}"
-                ),
-                recommendations="Verify the path exists and that the file is readable HDF5.",
-            )
-
-        dataset_rows = datasets.get("datasets", []) if isinstance(datasets, dict) else []
-        dataset_lines = [
-            f"- {d['path']}: shape={d['shape']}, dtype={d['dtype']}, "
-            f"size={self._format_bytes(d['size_bytes'])}"
-            for d in dataset_rows[:12]
-        ]
-        if len(dataset_rows) > 12:
-            dataset_lines.append(f"- ... {len(dataset_rows) - 12} more datasets")
-
-        comp_summary = overview.get("compression_summary", {})
-        total = overview.get("total_datasets", len(dataset_rows))
-        compressed = comp_summary.get("compressed_datasets", 0)
-        uncompressed = comp_summary.get("uncompressed_datasets", 0)
-        ratio = comp_summary.get("overall_ratio")
-
-        analysis = (
-            f"Inspected HDF5 file {filepath}. It contains {total} datasets "
-            f"and {overview.get('total_groups', 0)} groups.\n"
-            + ("\n".join(dataset_lines) if dataset_lines else "No datasets were found.")
-            + "\n\n"
-            f"Compression summary: {compressed} compressed, {uncompressed} uncompressed."
-        )
-        if ratio is not None:
-            analysis += f" Overall raw-to-stored ratio is about {ratio}x."
-
-        if uncompressed:
-            recommendations = (
-                "Compression is partially configured. Review uncompressed numeric datasets and "
-                "consider chunked gzip/lzf compression when read patterns tolerate it. Keep chunk "
-                "sizes near 1 MiB as a starting point, then tune for row, column, or random access."
-            )
-        else:
-            recommendations = (
-                "Compression coverage looks reasonable. Validate chunk shapes against the dominant "
-                "read pattern before changing the file layout."
-            )
-
-        return dspy.Prediction(analysis=analysis, recommendations=recommendations)
-
-    def _direct_parquet_answer(self, question: str, file_context: str) -> dspy.Prediction | None:
-        """Inspect an explicit Parquet path without relying on ReAct planning."""
-        paths = self._extract_file_paths(question, file_context, {".parquet"})
-        if not paths:
-            return None
-
-        filepath = paths[0]
-        from clio_agent.tools.servers.parquet_server import analyze_schema, compute_statistics
-
-        schema = self._call_tool_function(analyze_schema, str(filepath))
-        if "error" in schema:
-            return dspy.Prediction(
-                analysis=(
-                    f"Could not inspect Parquet file {filepath}: "
-                    f"{self._format_tool_error(schema['error'])}"
-                ),
-                recommendations="Verify the path exists and that the file is readable Parquet.",
-            )
-
-        columns = schema.get("columns", [])
-        column_lines = [
-            f"- {c['name']}: {c['type']}, nullable={c['nullable']}" for c in columns[:12]
-        ]
-        if len(columns) > 12:
-            column_lines.append(f"- ... {len(columns) - 12} more columns")
-
-        stats_lines = []
-        q_lower = question.lower()
-        for col in columns[:4]:
-            name = col["name"]
-            if name.lower() not in q_lower and "stat" not in q_lower:
-                continue
-            stats = self._call_tool_function(compute_statistics, str(filepath), name)
-            if "error" not in stats:
-                stats_bits = [
-                    f"{k}={stats[k]}"
-                    for k in ("min", "max", "mean", "null_count", "unique_count")
-                    if k in stats
-                ]
-                stats_lines.append(f"{name}: " + ", ".join(stats_bits))
-
-        analysis = (
-            f"Inspected Parquet file {filepath}. It has {schema.get('num_rows')} rows, "
-            f"{schema.get('num_columns')} columns, and {schema.get('num_row_groups')} row groups.\n"
-            + "\n".join(column_lines)
-        )
-        if stats_lines:
-            analysis += "\n\nColumn statistics:\n" + "\n".join(stats_lines)
-
-        recommendations = (
-            "Use the schema and row group count to decide whether the file needs repartitioning. "
-            "For analysis questions, compute statistics on the specific columns involved instead "
-            "of scanning every column."
-        )
-
-        return dspy.Prediction(analysis=analysis, recommendations=recommendations)
-
-    def _direct_csv_answer(self, question: str, file_context: str) -> dspy.Prediction | None:
-        """Inspect an explicit CSV path without relying on chat fallback."""
-        paths = self._extract_file_paths(question, file_context, {".csv"})
-        if not paths:
-            return None
-
-        filepath = paths[0]
-        try:
-            import pyarrow.csv as pcsv
-
-            from clio_agent.tools.file_policy import FilePolicyError, validate_read_path
-
-            safe_path = validate_read_path(str(filepath))
-            table = pcsv.read_csv(safe_path)
-        except FilePolicyError as exc:
-            return dspy.Prediction(
-                analysis=(
-                    f"Could not inspect CSV file {filepath}: "
-                    f"{self._format_tool_error(exc.to_result()['error'])}"
-                ),
-                recommendations="Move the file under an allowed root or adjust CLIO_ALLOWED_ROOTS.",
-            )
-        except Exception as exc:
-            return dspy.Prediction(
-                analysis=f"Could not inspect CSV file {filepath}: {exc}",
-                recommendations="Verify the path exists and that the file is readable CSV.",
-            )
-
-        column_lines = []
-        for field in table.schema:
-            null_count = table.column(field.name).null_count
-            column_lines.append(f"- {field.name}: {field.type}, nulls={null_count}")
-
-        analysis = (
-            f"Inspected CSV file {safe_path}. It has {table.num_rows} rows and "
-            f"{table.num_columns} columns.\n"
-            + ("\n".join(column_lines) if column_lines else "No columns were found.")
-        )
-        recommendations = (
-            "CSV is readable in local mode. For repeated analysis or larger files, convert to "
-            "Parquet so schema, compression, and column statistics are cheaper to inspect."
-        )
-
-        return dspy.Prediction(analysis=analysis, recommendations=recommendations)
-
     def _direct_visualization_answer(
         self, question: str, file_context: str
     ) -> dspy.Prediction | None:
         """Create a deterministic summary plot for explicit tabular file paths."""
-        paths = self._extract_file_paths(question, file_context, {".parquet", ".csv"})
+        paths = extract_file_paths(question, file_context, {".parquet", ".csv"})
         if not paths:
             return None
 
         filepath = paths[0]
-        output_dir = Path(".clio_agent") / "charts"
-        output_dir.mkdir(parents=True, exist_ok=True)
+        artifact_root = Path(os.environ.get("CLIO_ARTIFACT_DIR", "/tmp/clio-agent-artifacts"))
+        output_dir = artifact_root / "charts"
         output_path = output_dir / f"summary_{filepath.stem}.png"
+
+        try:
+            validate_write_path(str(artifact_root.parent / f".{artifact_root.name}.probe"))
+            output_dir.mkdir(parents=True, exist_ok=True)
+            safe_output_path = validate_write_path(str(output_path))
+        except FilePolicyError as exc:
+            return dspy.Prediction(
+                visualization_description=(
+                    f"Could not create visualization: {format_tool_error(exc.to_result()['error'])}"
+                ),
+                file_path="",
+            )
 
         from clio_agent.experts.visualization_expert import plot_summary
 
-        chart_path = plot_summary(str(filepath), output_path=str(output_path))
+        chart_path = self._run_local_tool(
+            "plot_summary",
+            plot_summary,
+            str(filepath),
+            output_path=str(safe_output_path),
+        )
         if chart_path.startswith("Error:"):
             return dspy.Prediction(
                 visualization_description=f"Could not create visualization: {chart_path}",
@@ -697,58 +542,51 @@ class ClioAgent(dspy.Module):
         )
 
     @staticmethod
-    def _extract_file_paths(question: str, file_context: str, suffixes: set[str]) -> list[Path]:
-        """Extract existing file paths with one of the requested suffixes."""
-        paths: list[Path] = []
-        seen: set[str] = set()
-
-        def add_matches(text: str, *, include_missing: bool) -> None:
-            for match in _FILE_PATH_RE.finditer(text):
-                raw = match.group("path").rstrip(".,;:)]}")
-                path = Path(raw).expanduser()
-                if path.suffix.lower() not in suffixes:
-                    continue
-                if not path.is_absolute():
-                    path = path.resolve()
-                if not include_missing and not path.exists():
-                    continue
-                key = str(path)
-                if key not in seen:
-                    paths.append(path)
-                    seen.add(key)
-
-        add_matches(question, include_missing=True)
-        add_matches(file_context, include_missing=False)
-        return paths
-
-    @staticmethod
-    def _format_bytes(size: int) -> str:
-        """Format byte counts for compact terminal/API answers."""
-        value = float(size)
-        for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
-            if value < 1024 or unit == "TiB":
-                if unit == "B":
-                    return f"{int(value)} {unit}"
-                return f"{value:.1f} {unit}"
-            value /= 1024
-        return f"{value:.1f} TiB"
-
-    @staticmethod
     def _call_tool_function(tool: Any, *args: Any, **kwargs: Any) -> Any:
         """Call either a FastMCP FunctionTool or a plain Python helper."""
         fn = getattr(tool, "fn", tool)
         return fn(*args, **kwargs)
 
+    def _run_local_tool(self, name: str, tool: Any, *args: Any, **kwargs: Any) -> Any:
+        """Run a local tool and record its result in the active harness trace."""
+        start = time.time()
+        result = self._call_tool_function(tool, *args, **kwargs)
+        duration_ms = (time.time() - start) * 1000
+        params = self._bind_tool_params(tool, args, kwargs)
+        self._record_tool_call(name, params, result, duration_ms)
+        return result
+
+    def _record_tool_call(
+        self,
+        name: str,
+        params: dict[str, Any],
+        result: Any,
+        duration_ms: float,
+    ) -> None:
+        """Record a tool call if a run trace is active."""
+        if self._active_trace is None:
+            return
+        self._active_trace.record_tool(
+            tool=name,
+            params=params,
+            result=result,
+            duration_ms=duration_ms,
+            ok=tool_result_ok(result),
+        )
+
     @staticmethod
-    def _format_tool_error(error: Any) -> str:
-        """Format structured tool errors for user-facing direct answers."""
-        if isinstance(error, dict):
-            message = error.get("message") or str(error)
-            next_action = error.get("next_action")
-            if next_action:
-                return f"{message} Next action: {next_action}"
-            return str(message)
-        return str(error)
+    def _bind_tool_params(tool: Any, args: tuple[Any, ...], kwargs: dict[str, Any]) -> dict[str, Any]:
+        """Best-effort conversion of positional tool args into named params."""
+        import inspect
+
+        fn = getattr(tool, "fn", tool)
+        try:
+            bound = inspect.signature(fn).bind_partial(*args, **kwargs)
+            return dict(bound.arguments)
+        except Exception:
+            params: dict[str, Any] = {"args": list(args)}
+            params.update(kwargs)
+            return params
 
     @staticmethod
     def _coerce_text(value: Any) -> str:
@@ -852,7 +690,12 @@ class ClioAgent(dspy.Module):
             pass
         return ""
 
-    def _store_routing_decision(self, question: str, selected: str, session_id: str) -> None:
+    def _store_routing_decision(
+        self,
+        question: str,
+        route: RouteDecision,
+        session_id: str,
+    ) -> None:
         """Store routing decision in the ARC conversation object.
 
         Args:
@@ -864,10 +707,10 @@ class ClioAgent(dspy.Module):
             routing_decision = RoutingDecision(
                 timestamp=time.time(),
                 query=question,
-                capabilities_needed=[],
-                selected_agent=selected,
-                reasoning="Literal router",
-                confidence=1.0,
+                capabilities_needed=list(route.capabilities),
+                selected_agent=route.target,
+                reasoning=f"{route.source}: {route.reason}",
+                confidence=route.confidence,
             )
 
             conv = self.arc.get_conversation(session_id)
@@ -887,6 +730,7 @@ class ClioAgent(dspy.Module):
         duration_ms: float,
         success: bool,
         error_msg: str | None = None,
+        trace: RunTrace | None = None,
     ) -> None:
         """Store invocation metrics in LSM Tree and ARC Memory.
 
@@ -912,7 +756,7 @@ class ClioAgent(dspy.Module):
         )
 
         # Store invocation in ARC Memory
-        invocation_id = str(uuid.uuid4())
+        invocation_id = trace.trace_id if trace else str(uuid.uuid4())
         invocation = Invocation(
             trace_id=invocation_id,
             session_id=session_id,
@@ -926,7 +770,7 @@ class ClioAgent(dspy.Module):
             status="success" if success else "failure",
             input={"query": question},
             output={"error": error_msg} if error_msg else {},
-            tools_called=[],
+            tools_called=[tool.to_arc_tool_call() for tool in (trace.tools if trace else [])],
             nanoagents_spawned=[],
             performance={"success": success, "duration_ms": duration_ms},
             storage_tier="warm",
@@ -943,6 +787,7 @@ class ClioAgent(dspy.Module):
         success: bool,
         error_msg: str | None,
         duration_ms: float,
+        trace: RunTrace | None = None,
     ) -> None:
         """Store tier-2 expert invocation in ARC for optimizer training data.
 
@@ -979,7 +824,7 @@ class ClioAgent(dspy.Module):
                 status="success" if success else "failure",
                 input={"question": question, "file_context": file_context},
                 output=output_data,
-                tools_called=[],
+                tools_called=[tool.to_arc_tool_call() for tool in (trace.tools if trace else [])],
                 nanoagents_spawned=[],
                 performance={"success": success, "duration_ms": duration_ms},
                 storage_tier="warm",

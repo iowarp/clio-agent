@@ -1,8 +1,8 @@
 """
 Tests for Data Expert module.
 
-Tests DataExpert initialization, tool loading via the MCP execution boundary,
-and capabilities. Does not require LM Studio (no forward() tests).
+Tests DataExpert initialization, native tool execution via the MCP execution
+boundary, and capabilities. Does not require LM Studio.
 """
 
 from unittest.mock import Mock
@@ -98,13 +98,13 @@ class TestDataExpert:
         finally:
             expert.close()
 
-    def test_expert_has_react_agent(self):
-        """Test expert uses ReAct, not ChainOfThought."""
+    def test_expert_has_synthesis_module_not_react(self):
+        """Test expert keeps DSPy only for synthesis, not tool execution."""
         expert = DataExpert()
         try:
-            assert hasattr(expert.agent, "tools")
             agent_type = type(expert.agent).__name__
-            assert "ReAct" in agent_type
+            assert "Predict" in agent_type
+            assert "ReAct" not in agent_type
         finally:
             expert.close()
 
@@ -156,6 +156,20 @@ class TestDataExpert:
         assert expert._tool_executor is executor
         expert.close()
         assert executor.closed is True
+
+    def test_expert_forward_uses_native_hdf5_tools(self, sample_hdf5):
+        """Explicit HDF5 questions should run tools without LM calls."""
+        expert = DataExpert()
+        try:
+            result = expert(question=f"What datasets are in {sample_hdf5}?")
+            assert "simulation/temperature" in result.analysis
+            assert result.synthesis_source == "deterministic"
+            assert [tool.tool for tool in result.tool_provenance] == [
+                "hdf5_analyze_file",
+                "hdf5_list_datasets",
+            ]
+        finally:
+            expert.close()
 
 
 class TestDataExpertSignature:

@@ -65,6 +65,8 @@ class QueryResponse(BaseModel):
 
     answer: str
     selected_expert: str
+    route_source: str = ""
+    route_reason: str = ""
     session_id: str
     duration_ms: float
     error_info: dict[str, Any] | None = None
@@ -252,6 +254,8 @@ async def _json_response(agent: Any, req: QueryRequest) -> JSONResponse:
             content=QueryResponse(
                 answer=result.answer,
                 selected_expert=result.selected_expert,
+                route_source=getattr(result, "route_source", ""),
+                route_reason=getattr(result, "route_reason", ""),
                 session_id=result.session_id,
                 duration_ms=duration_ms,
                 error_info=getattr(result, "error_info", None),
@@ -272,7 +276,13 @@ async def _stream_response(agent: Any, req: QueryRequest):
         # Event: routing
         yield {
             "event": "routing",
-            "data": json.dumps({"selected_expert": result.selected_expert}),
+            "data": json.dumps(
+                {
+                    "selected_expert": result.selected_expert,
+                    "route_source": getattr(result, "route_source", ""),
+                    "route_reason": getattr(result, "route_reason", ""),
+                }
+            ),
         }
 
         # Event: chunk -- split answer into word chunks for SSE infrastructure
@@ -293,6 +303,8 @@ async def _stream_response(agent: Any, req: QueryRequest):
                 {
                     "answer": result.answer,
                     "selected_expert": result.selected_expert,
+                    "route_source": getattr(result, "route_source", ""),
+                    "route_reason": getattr(result, "route_reason", ""),
                     "duration_ms": duration_ms,
                 }
             ),

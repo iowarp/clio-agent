@@ -2,8 +2,8 @@
 # /// script
 # requires-python = ">=3.12"
 # dependencies = [
-#   "dspy-ai>=3.0.3",
-#   "fastmcp>=2.13.0",
+#   "dspy>=3.1.3",
+#   "fastmcp>=3.2.4",
 #   "h5py>=3.10.0",
 #   "pyarrow>=14.0.0",
 #   "matplotlib>=3.8.0",
@@ -22,7 +22,7 @@ Interactive ClioAgent Agent Framework TUI for scientific data I/O assistance.
 
 Features:
 - Router-based dispatch to DataExpert or ChatAgent
-- DataExpert agent with ReAct pattern (reasoning + tool calling)
+- DataExpert with native tool execution and optional synthesis
 - ChatAgent for conversational responses
 - Rich TUI with syntax highlighting
 - Conversation history
@@ -67,7 +67,7 @@ class ClioAgentCLI:
 
     Demonstrates:
     - ClioAgent Router -> Expert/Chat dispatch
-    - DataExpert ReAct agent with MCP tools
+    - DataExpert native execution with MCP tools
     - ChatAgent for conversational queries
     - Observable reasoning traces
 
@@ -751,6 +751,8 @@ if __name__ == "__main__":
                     "question": args.query,
                     "answer": result.answer,
                     "selected_expert": result.selected_expert,
+                    "route_source": getattr(result, "route_source", ""),
+                    "route_reason": getattr(result, "route_reason", ""),
                     "duration_ms": getattr(result, "duration_ms", 0.0),
                     "session_id": getattr(result, "session_id", args.session),
                     "error_info": error_info,
@@ -761,7 +763,15 @@ if __name__ == "__main__":
                 # Human-readable output
                 console = Console()
                 console.print(f"\n[bold cyan]Question:[/bold cyan] {args.query}")
-                console.print(f"[bold green]Router:[/bold green] {result.selected_expert}")
+                route_source = getattr(result, "route_source", "")
+                route_reason = getattr(result, "route_reason", "")
+                if route_source:
+                    console.print(
+                        f"[bold green]Router:[/bold green] {result.selected_expert} "
+                        f"([dim]{route_source}: {route_reason}[/dim])"
+                    )
+                else:
+                    console.print(f"[bold green]Router:[/bold green] {result.selected_expert}")
                 console.print(Panel(Markdown(result.answer), title="CLIO", border_style="green"))
 
         except Exception as e:
