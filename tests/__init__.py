@@ -4,17 +4,18 @@ ClioAgent Test Suite
 Tests for ClioAgent components.
 
 Test Structure:
-- test_core/: Core functionality (config, clio_agent agent)
-- test_experts/: DataExpert tests
-- test_tools/: MCP tool wrapper tests (placeholder)
-- test_integration/: End-to-end integration tests (placeholder)
+- test_core/: Core functionality, config, API/CLI, runtime status, optimizer plumbing
+- test_arc/: ARC memory, storage, indexing, LSM, retrieval, and context compilation
+- test_experts/: Data, Analysis, and Visualization expert tests
+- test_tools/: File policy, gateway, HDF5, Parquet, and execution boundary tests
+- test_integration/: Local filesystem and multi-expert end-to-end smoke tests
 
 Current Test Coverage:
-- ✅ Config: LM Studio configuration
-- ✅ ClioAgent: Agent initialization and routing
-- ✅ DataExpert: Capabilities and initialization
-- 🔄 Tools: TODO
-- 🔄 Integration: TODO
+- Multi-provider LM configuration and local OpenAI-compatible fallbacks
+- ClioAgent initialization, routing, dispatch, ARC instrumentation, and local direct-tool answers
+- Real local HDF5 and Parquet FastMCP tools through the gateway
+- Visualization artifact generation with file policy enforcement
+- Runtime doctor and API health/status behavior
 
 Running Tests:
     # All tests
@@ -29,6 +30,6 @@ Running Tests:
     # Single test
     pytest tests/test_experts/test_data_expert.py::TestDataExpert::test_capabilities -v
 
-Note: This is a minimal test suite. Tests focus on core functionality.
-More comprehensive testing will be added as the system expands.
+Note: Live external backends remain optional. Integration tests should skip
+cleanly when a required runtime is unavailable.
 """

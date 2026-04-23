@@ -567,7 +567,7 @@ claude_code.register_sidekick("clio-agent", a2a_endpoint="http://localhost:8000/
 ## Technologies
 
 **Core Stack:**
-- **[FastMCP 3.x](https://github.com/jlowin/fastmcp)** - Model Context Protocol for tool integration
+- **[FastMCP](https://github.com/jlowin/fastmcp)** - Model Context Protocol for tool integration
 - **[UV](https://github.com/astral-sh/uv)** - Fast Python package manager (10-100x faster than pip)
 - **[DSPy 3.x](https://github.com/stanfordnlp/dspy)** - DSPy: Programming—not prompting—Foundation Models
 - **[Rich](https://rich.readthedocs.io)** - Terminal UI framework

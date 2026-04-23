@@ -46,20 +46,21 @@ Implemented and source-verified:
 
 Recent local verification:
 
-- `uv run pytest tests/`: 549 passed
-- `uv run ruff check src/ tests/ scripts/create_demo_data.py`: passed
-- Touched files pass `ruff format --check`
+- `uv run pytest tests/`: 598 passed, 84% coverage (2026-04-23)
+- `uv run ruff check src/ tests/ scripts/create_demo_data.py`: passed (2026-04-23)
+- `uv run ruff format <first-wave touched Python files> --check`: passed (2026-04-23)
 - Live CLI and API smoke checks worked against generated HDF5 and Parquet files
 
 Known baseline caveats:
 
 - The reliable path for explicit file tasks is deterministic tool routing. The
   LLM ReAct path remains useful but should not be the only production path.
-- FastMCP gateway still uses the deprecated `prefix=` mount style. Move to the
-  supported namespace API before relying on long-term compatibility.
-- `MCPToolBridge` is a pragmatic async-to-sync adapter. It works, but it is a
-  harness risk for concurrency, streaming, optimization, and long-running
-  remote tools.
+- FastMCP gateway uses a compatibility helper that prefers the supported
+  `namespace=` mount API and falls back to `prefix=` for installed FastMCP
+  versions that still expose it.
+- `MCPToolBridge` is retained as a compatibility shim over the explicit sync
+  MCP executor. New tool execution paths should use the sync or async executor
+  interfaces directly.
 - IOWarp CTE support is an adapter-shaped local fallback, not proven production
   CTE integration.
 - ADIOS, Darshan, SLURM/PBS, compression benchmarking, workflow execution, A2A,
@@ -599,13 +600,23 @@ complete. Defaults are listed so coding can proceed without blocking where safe.
 
 The next milestone should be v0.3: Integration-Ready Harness.
 
-Recommended first four tasks:
+Source-verified v0.3 items already present:
 
-1. Add `clio-agent doctor` and integration status models.
-2. Modernize FastMCP gateway namespacing and add tests.
-3. Add file access policy plus tool parameter/result validation.
-4. Define the CTE adapter interface and identify the real IOWarp runtime
+- `doctor` runtime integration status models and CLI/API health detail.
+- FastMCP gateway namespace compatibility with stable tool names.
+- File access policy and basic tool parameter validation for current HDF5,
+  Parquet, CSV, and visualization paths.
+
+Recommended next tasks:
+
+1. Finish tool result validation contracts for every HDF5, Parquet, CSV, and
+   visualization response shape.
+2. Migrate future direct API tool-use paths to `AsyncMCPToolExecutor` instead of
+   sync executor calls when they no longer need DSPy ReAct's sync callable shape.
+3. Define the CTE adapter interface and identify the real IOWarp runtime
    contract with the project owner.
+4. Add artifact registry support for generated charts and future reports.
 
-Do not start ADIOS, Darshan, or scheduler implementation until task 1 gives
-the team a reliable way to see which runtime integrations are live.
+Do not start ADIOS, Darshan, or scheduler implementation until the v0.3
+integration harness stays green and every current backend reports clear ready,
+degraded, unavailable, or misconfigured status.

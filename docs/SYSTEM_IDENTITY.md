@@ -1,6 +1,6 @@
 # CLIO Agent System Identity
 
-**Version**: 0.1.0
+**Version**: 0.2.0
 **Role**: Autonomous Agent for Scientific Data Management
 **Specialization**: HPC workflows, data I/O optimization
 
@@ -106,7 +106,7 @@ I dynamically discover agents registered in `src/clio_agent/registry/`.
 ### ARC Memory (v0.2.0+)
 - Store conversations, invocations, metrics
 - O(log N) retrieval for context
-- Persist in IOWarp CTE multi-tier storage
+- Persist locally today, with IOWarp CTE as a future production backend
 
 ### Self-Improvement (v0.4.0+)
 - Optimize prompts based on ARC metrics
@@ -130,10 +130,10 @@ I dynamically discover agents registered in `src/clio_agent/registry/`.
 ### Standalone (Current)
 User → CLI → CLIO Agent → Expert → Response
 
-### Sidekick (v0.2.0+ with A2A)
-General Agent → A2A Request → CLIO Agent → Expert → A2A Response → General Agent
+### Sidekick (Future)
+General Agent → authenticated delegation request → CLIO Agent → Expert → bounded response
 
-### API (v0.5.0)
+### API (Current)
 Application → REST API → CLIO Agent → Expert → JSON Response
 
 ---
@@ -151,4 +151,4 @@ Application → REST API → CLIO Agent → Expert → JSON Response
 
 **For Technical Architecture**: See `docs/CLIO_AGENT_ARCHITECTURE.md`
 **For Implementation Plan**: See `PLAN.md`
-**For AI Developer Rules**: See `CLAUDE.md`
+**For AI Developer Rules**: See `AGENTS.md`

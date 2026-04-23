@@ -1,6 +1,6 @@
 # MCP Tool Integration
 
-How CLIO Agent integrates scientific tool servers using FastMCP 3.x and DSPy 3.x.
+How CLIO Agent integrates scientific tool servers using FastMCP and DSPy.
 
 **Version**: 2.0 | **Updated**: 2026-02-09
 
@@ -379,5 +379,5 @@ gateway.mount("/hdf5", {"command": "uvx", "args": ["iowarp-mcps", "hdf5"]})
 
 - [CLIO_AGENT_ARCHITECTURE.md](CLIO_AGENT_ARCHITECTURE.md) - System architecture
 - [EXPERT_SYSTEM_DESIGN.md](EXPERT_SYSTEM_DESIGN.md) - Expert agent patterns
-- [ai-docs/FASTMCP/](../ai-docs/FASTMCP/) - FastMCP 3.x reference
+- [ai-docs/FASTMCP/](../ai-docs/FASTMCP/) - FastMCP reference material
 - [ai-docs/DSPY/06_ADVANCED_PATTERNS.md](../ai-docs/DSPY/06_ADVANCED_PATTERNS.md) - DSPy tool integration
