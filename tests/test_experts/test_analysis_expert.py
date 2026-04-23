@@ -9,6 +9,8 @@ that call real LMs).
 import inspect
 from unittest.mock import Mock
 
+import dspy
+
 from clio_agent.experts.analysis_expert import AnalysisExpert
 from clio_agent.experts.data_expert import MCPToolBridge
 
@@ -106,6 +108,42 @@ class TestAnalysisExpert:
         expert = AnalysisExpert(arc_memory=mock_arc)
         assert expert is not None
         assert expert.arc_memory is mock_arc
+
+    def test_analysis_expert_accepts_tool_executor_boundary(self):
+        """AnalysisExpert should filter tools from an injected executor."""
+
+        class FakeExecutor:
+            closed = False
+
+            def to_dspy_tools(self):
+                def fake_tool(**kwargs):
+                    return "{}"
+
+                return [
+                    dspy.Tool(
+                        func=fake_tool,
+                        name="hdf5_analyze_file",
+                        desc="Fake HDF5 analyzer.",
+                        args={},
+                    ),
+                    dspy.Tool(
+                        func=fake_tool,
+                        name="parquet_analyze_schema",
+                        desc="Fake Parquet analyzer.",
+                        args={},
+                    ),
+                ]
+
+            def close(self):
+                self.closed = True
+
+        executor = FakeExecutor()
+        expert = AnalysisExpert(tool_executor=executor)
+
+        assert expert._bridge is executor
+        assert [tool.name for tool in expert._tools] == ["parquet_analyze_schema"]
+        expert.close()
+        assert executor.closed is True
 
     def test_analysis_expert_initialization(self):
         """Test expert can be initialized and has required attributes."""

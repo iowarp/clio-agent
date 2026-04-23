@@ -27,8 +27,8 @@ from typing import Any, Optional
 
 import dspy
 
-from clio_agent.experts.data_expert import MCPToolBridge
 from clio_agent.signatures.analysis_sig import AnalysisExpertSignature
+from clio_agent.tools.execution import MCPToolBridge, ToolExecutor
 from clio_agent.tools.gateway import gateway
 
 logger = logging.getLogger(__name__)
@@ -55,17 +55,22 @@ class AnalysisExpert(dspy.Module):
         >>> print(result.analysis)
     """
 
-    def __init__(self, arc_memory: Optional[Any] = None):
+    def __init__(
+        self,
+        arc_memory: Optional[Any] = None,
+        tool_executor: Optional[ToolExecutor] = None,
+    ):
         """Initialize Analysis Expert with ReAct and Parquet MCP tools.
 
         Args:
             arc_memory: Optional ARCMemory instance for tool result caching
+            tool_executor: Optional executor for MCP-backed tools
         """
         super().__init__()
         self.arc_memory = arc_memory
 
-        # Bridge MCP tools to DSPy tools via background event loop
-        self._bridge = MCPToolBridge(gateway)
+        # Bridge MCP tools to DSPy tools via an injectable execution boundary.
+        self._bridge = tool_executor or MCPToolBridge(gateway)
         all_tools = self._bridge.to_dspy_tools()
 
         # Filter to only parquet-prefixed tools
@@ -95,6 +100,10 @@ class AnalysisExpert(dspy.Module):
             dspy.Prediction with analysis and recommendations fields
         """
         return self.agent(question=question, file_context=file_context)
+
+    def close(self) -> None:
+        """Release tool execution resources."""
+        self._bridge.close()
 
     @staticmethod
     def get_capabilities() -> dict[str, Any]:

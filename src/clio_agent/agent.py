@@ -608,9 +608,19 @@ class ClioAgent(dspy.Module):
         return self.arc.get_conversation_history(session_id, limit=limit)
 
     def shutdown(self) -> None:
-        """Clean shutdown of ClioAgent. Closes LSM Tree."""
+        """Clean shutdown of ClioAgent resources."""
         if self.verbose:
             print("[ClioAgent] Shutting down...")
+
+        for attr in ("data_expert", "analysis_expert", "visualization_expert"):
+            expert = getattr(self, attr, None)
+            close = getattr(expert, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception as e:
+                    if self.verbose:
+                        print(f"[ClioAgent] Warning: failed to close {attr}: {e}")
 
         self.lsm.close()
 

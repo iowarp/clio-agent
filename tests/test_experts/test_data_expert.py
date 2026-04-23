@@ -7,6 +7,8 @@ and capabilities. Does not require LM Studio (no forward() tests).
 
 from unittest.mock import Mock
 
+import dspy
+
 from clio_agent.experts.data_expert import DataExpert, MCPToolBridge
 from clio_agent.tools.gateway import gateway
 
@@ -111,6 +113,35 @@ class TestDataExpert:
 
         assert expert is not None
         assert expert.arc_memory is mock_arc
+
+    def test_expert_accepts_tool_executor_boundary(self):
+        """DataExpert should depend on a tool executor interface."""
+
+        class FakeExecutor:
+            closed = False
+
+            def to_dspy_tools(self):
+                def fake_tool(**kwargs):
+                    return "{}"
+
+                return [
+                    dspy.Tool(
+                        func=fake_tool,
+                        name="hdf5_analyze_file",
+                        desc="Fake HDF5 analyzer.",
+                        args={},
+                    )
+                ]
+
+            def close(self):
+                self.closed = True
+
+        executor = FakeExecutor()
+        expert = DataExpert(tool_executor=executor)
+
+        assert expert._bridge is executor
+        expert.close()
+        assert executor.closed is True
 
 
 class TestDataExpertSignature:
