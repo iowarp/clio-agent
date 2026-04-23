@@ -15,14 +15,20 @@ Autonomous agent for scientific data management. **IOWarp Intelligence Layer (CE
 
 CLIO Agent is an **autonomous agent specialized in scientific data management** for HPC and research workflows. It operates as the Intelligence Layer (CEI) within IOWarp's 3-tier architecture.
 
+**Experimental v0.2 note:**
+The reliable path today is a local-filesystem-first harness for `HDF5`, `Parquet`, and `CSV`
+inspection through the FastMCP gateway, CLI/API, explicit file policy, and `doctor` runtime
+reporting. Full `clio-core`/CTE runtime control and broader A2A integration remain future work
+behind explicit external-process boundaries.
+
 **Core Capabilities:**
-- 🤖 **3-Tier Agent Orchestration**: Main agent → Expert agents → Ephemeral nanoagents
-- 🧠 **Native Memory (ARC)**: O(log N) context retrieval, IOWarp-backed persistent storage
-- 📈 **Self-Improving**: Offline tuning + online learning via Optimizer Layer
-- 🔌 **Agent Registry**: Integrate agents from ANY framework (LangChain, CrewAI, AutoGen)
-- 🔗 **A2A Protocol**: Agent-to-agent communication for external collaboration
-- 🛠️ **FastMCP Tools**: Access 15+ MCP servers for scientific infrastructure
-- 🗄️ **IOWarp Integration**: CEI (Intelligence + ARC) → CAE/PPI (Tools) → CTE (Storage + ARC Persistence)
+- 🤖 **Multi-Expert Orchestration**: Main agent → DataExpert / AnalysisExpert / VisualizationExpert
+- 🧠 **Native Memory (ARC)**: O(log N) context retrieval with local-first persistence
+- 📈 **Self-Improving**: Offline tuning + instrumentation via the Optimizer Layer
+- 🔌 **Agent Registry**: Route built-in experts today, with explicit external integration boundaries
+- 🩺 **Runtime Doctor**: Report LM, gateway, HDF5, Parquet, API, file policy, and `clio-core` truth
+- 🛠️ **FastMCP Tools**: Access real HDF5 and Parquet tools through a namespaced gateway
+- 🗄️ **IOWarp Integration Boundary**: Probe `clio-core` repo/config/binary readiness without starting services
 - 🏠 **Model Flexibility**: Any LLM API (cloud, local, custom models)
 
 ### Why CLIO Agent?
@@ -44,7 +50,7 @@ Think of CLIO Agent as a specialized colleague for scientific data:
 ```
 ┌────────────────────────────────────────────────────────────┐
 │  USER INTERFACES (AI Gateway)                              │
-│  • CLI (current)  • REST API (planned)  • A2A Protocol     │
+│  • CLI (current)  • REST API (current)  • A2A (future)     │
 └───────────────────────────┬────────────────────────────────┘
                             │
 ┌───────────────────────────▼────────────────────────────────┐
@@ -60,9 +66,9 @@ Think of CLIO Agent as a specialized colleague for scientific data:
 │    ┌──────────┼──────────┬──────────────┐                 │
 │    ▼          ▼          ▼              ▼                 │
 │  ┌──────┐ ┌──────┐ ┌──────────┐  ┌──────────────┐        │
-│  │Data  │ │HPC   │ │Research  │  │External      │        │
-│  │Expert│ │Expert│ │Expert    │  │Agents        │        │
-│  │(T2)  │ │(T2)  │ │(T2)      │  │(via A2A)     │        │
+│  │Data  │ │Analysis│ │Visualization│ │External   │       │
+│  │Expert│ │Expert  │ │Expert       │ │Agents     │       │
+│  │(T2)  │ │(T2)    │ │(T2)         │ │(future)   │       │
 │  └──┬───┘ └──┬───┘ └──┬───────┘  └──────────────┘        │
 │     │        │        │                                   │
 │     │  All tiers read/write ARC for coordination          │
@@ -84,10 +90,10 @@ Think of CLIO Agent as a specialized colleague for scientific data:
 │ CAE/PPI     │  │ OPTIMIZER    │  │ ARC Persistent     │
 │ (Tools)     │  │ LAYER        │  │ Store (CTE)        │
 │             │  │              │  │                    │
-│ FastMCP     │  │ • Prompt     │  │ IOWarp Namespace:  │
-│ 15+ servers │  │   Optimizers │  │ /clio_agent/arc/*     │
-│ 150+ tools  │  │ • Routing    │  │                    │
-│ (Phase 4+)  │  │   Optimizers │  │ • Conversations    │
+│ FastMCP     │  │ • Prompt     │  │ Local-first ARC /  │
+│ local tools │  │   Optimizers │  │ future CTE         │
+│ gateway     │  │ • Routing    │  │                    │
+│ (current)   │  │   Optimizers │  │ • Conversations    │
 │             │  │ • Offline    │  │ • Metrics          │
 │             │  │   Tuning     │  │ • Invocations      │
 │             │  │ • Online     │  │ • Context          │
@@ -142,30 +148,31 @@ Result: "Applied gzip-6 compression: 100GB → 45GB (2.2x reduction)"
 git clone https://github.com/iowarp/clio-agent
 cd clio-agent
 
-# Option 1: Local Development (LM Studio)
-# Start LM Studio and load a model (e.g., gpt-oss-20b, granite-4-h-tiny)
+# Install dependencies
+uv sync --extra dev --extra api --extra optimizers
 
-# Option 2: Local Production (Ollama)
-ollama run gpt-oss-20b
+# Optional homelab profile for local LM Studio on Dynamo
+source scripts/homelab-env.sh
+clio_homelab_use dynamo-lms
 
-# Option 3: Cloud (OpenAI, Anthropic, etc.)
-export OPENAI_API_KEY="your-key-here"
+# Constrain local file access for tool execution
+export CLIO_ALLOWED_ROOTS=/home/akougkas/iowarp/clio-agent:/tmp
+
+# Inspect runtime truth before using the agent
+uv run src/clio_agent/ui/cli.py doctor
+
+# Create deterministic demo data
+uv run scripts/create_demo_data.py --output-dir /tmp/clio-agent-demo
 ```
 
 ### Running CLIO Agent
 
 ```bash
-# Test configuration
-uv run src/clio_agent/config.py
-
-# Test main agent
-uv run src/clio_agent/agent.py
-
-# Test data expert
-uv run src/clio_agent/experts/data_expert.py
-
 # Launch interactive CLI
 uv run src/clio_agent/ui/cli.py
+
+# Launch REST API
+uv run src/clio_agent/ui/api.py --host 127.0.0.1 --port 8000
 ```
 
 ### Example Interaction
@@ -178,28 +185,15 @@ $ uv run src/clio_agent/ui/cli.py
 │ Type /help for commands                │
 ╰────────────────────────────────────────╯
 
-You: How do I optimize my 100GB HDF5 file for parallel I/O?
+You: What datasets are in /tmp/clio-agent-demo/clio_demo.h5?
 
 CLIO Agent via DataExpert:
 
-Based on analysis, here are optimization recommendations:
+Found 3 datasets:
 
-1. **Compression** (Priority: High)
-   • Apply gzip-6 compression (2-3x reduction expected)
-   • Alternative: blosc for faster parallel decompression
-   • Expected size: 33-50GB
-
-2. **Chunking** (Priority: High)
-   • Enable automatic chunking for parallel access
-   • Recommended chunk size: 1-10MB (match access pattern)
-   • Benefits: Enables MPI-IO collective operations
-
-3. **Parallel I/O Strategy**
-   • Use HDF5's MPI-IO mode on HPC cluster
-   • Configure collective buffering
-   • Expected improvement: 5-10x faster parallel writes
-
-Would you like me to generate the optimization script?
+1. `/simulation/temperature` - shape `(120, 80)`, gzip-6 compressed
+2. `/simulation/pressure` - shape `(120, 80)`, chunked
+3. `/time_step` - shape `(120,)`
 ```
 
 ---
@@ -210,8 +204,8 @@ Would you like me to generate the optimization script?
 
 The **Agent Registry** is CLIO Agent's coordination layer for discovering and routing to agents:
 
-- **Native Experts**: Built-in specialist agents (DataExpert, HPCExpert, etc.)
-- **External Agents**: Agents from ANY framework (LangChain, CrewAI, AutoGen)
+- **Native Experts**: Built-in specialists (DataExpert, AnalysisExpert, VisualizationExpert)
+- **External Agents**: Future explicit integration boundary, not the default v0.2 path
 - **Capability Matching**: Route queries based on agent capabilities, not hardcoded rules
 - **Dynamic Discovery**: Agents register at runtime with their capabilities
 
@@ -221,19 +215,19 @@ The **Agent Registry** is CLIO Agent's coordination layer for discovering and ro
 2. CLIO Agent extracts needed capabilities (e.g., "HDF5", "optimization")
 3. Query registry for agents matching capabilities
 4. Rank by capability overlap + agent tier
-5. Route to best agent (native OR external via A2A)
+5. Route to the best built-in expert for the current runtime
 ```
 
 ### 2. A2A Protocol (Agent-to-Agent Communication)
 
-The **A2A Protocol** enables CLIO Agent to integrate with any agent framework:
+The **A2A Protocol** remains a future integration boundary for CLIO Agent.
+It is not the primary runtime path in the current experimental `v0.2` branch.
 
-- **Standardized Interface**: All agents communicate via A2A protocol
-- **Framework Agnostic**: Works with LangChain, CrewAI, AutoGen, custom agents
-- **Bidirectional**: CLIO Agent can call external agents OR be called as a sidekick
-- **Compilation**: Registry compiles external agents into CLIO Agent-compatible instances
+- **Current focus**: built-in experts + explicit local filesystem workflows
+- **Future direction**: external agent communication via stable process/protocol boundaries
+- **Constraint**: no broad external-agent runtime is enabled by default today
 
-**Example - CLIO Agent as Sidekick:**
+**Future Example - CLIO Agent as Sidekick:**
 ```
 Claude Code (general agent) receives science question
     ↓ (A2A Request to CLIO Agent)
@@ -247,8 +241,8 @@ Claude Code assembles final answer with CLIO Agent's expertise
 CLIO Agent uses a **3-tier architecture** for scalability and efficiency:
 
 - **Tier 1**: CLIO Agent Main Agent (orchestrator, routing, context management)
-- **Tier 2**: Expert Agents (persistent specialists like DataExpert, HPCExpert)
-- **Tier 3**: Nanoagents (ephemeral workers spawned for specific tasks)
+- **Tier 2**: Expert Agents (persistent specialists like DataExpert, AnalysisExpert, VisualizationExpert)
+- **Tier 3**: Future ephemeral workers for specialized sub-tasks
 
 **Why 3 tiers?**
 - **Separation of concerns**: Orchestration vs. expertise vs. execution
@@ -276,7 +270,7 @@ The **ARC Memory Layer** is CLIO Agent's native, high-performance memory system:
 
 - **O(log N) Retrieval**: B-tree indexing for fast context search
 - **In-Memory Cache**: LRU cache for hot data (active conversations)
-- **IOWarp CTE Integration**: Persistent storage in `/clio_agent/arc/*` namespace
+- **Local-First Persistence**: Persistent storage under `.clio_agent/` today, with CTE later
 - **Multi-Tier Storage**: Hot (GPU) → Warm (NVMe) → Cold (PFS) → Archive (Object)
 
 **What ARC Stores:**
@@ -346,49 +340,30 @@ The **Optimizer Layer** is CLIO Agent's learning system for continuous improveme
 ```
 src/clio_agent/
 ├── config.py                 # LM configuration (any provider)
-├── agent.py                # Main agent orchestrator (Tier 1)
+├── agent.py                  # Main agent orchestrator
+├── runtime/                  # Doctor and runtime status reporting
 ├── signatures/               # Input/output specifications
-│   ├── main_agent_sig.py     # Routing signature
-│   └── expert_sig.py         # Expert signatures
-├── experts/                  # Domain expert agents (Tier 2)
-│   └── data_expert.py        # DataExpert (HDF5, ADIOS, Parquet) ✅
-├── registry/                 # Agent Registry
-│   ├── registry.py           # Capability-based routing
-│   └── capability_matcher.py # Query -> expert matching
+├── experts/                  # Data, analysis, visualization experts
+├── registry/                 # Agent registry and capability routing
 ├── arc/                      # Memory layer
-│   ├── memory.py             # Core ARC implementation
-│   ├── cache.py              # LRU cache
-│   ├── index.py              # B-tree indexing for O(log N)
-│   ├── lsm.py                # LSM tree for metrics
-│   ├── schema.py             # Data schemas
-│   ├── storage.py            # IOWarp CTE integration
-│   ├── retrieval.py          # Context retrieval
-│   └── coordinator.py        # Multi-agent coordination
-├── optimizers/               # Learning layer (Phase 3+)
-│   ├── base.py               # CLIO AgentOptimizer base class
-│   ├── prompt_opt.py         # Prompt optimization
-│   ├── routing_opt.py        # Routing optimization
-│   ├── tool_opt.py           # Tool selection optimization
-│   └── metrics.py            # Performance tracking
-├── tools/                    # FastMCP integration (CAE/PPI)
-│   ├── mcp_connector.py      # MCP bridge (being replaced Phase 1)
-│   └── servers/              # MCP server implementations
-│       └── hdf5_server.py    # HDF5 operations (stub)
+├── optimizer/                # Instrumentation, training, variants, runner
+├── tools/                    # Gateway, file policy, execution boundary
+│   └── servers/              # HDF5 and Parquet MCP servers
 └── ui/
-    ├── cli.py                # Interactive CLI ✅
-    └── api.py                # REST API (Phase 4)
+    ├── cli.py                # Interactive CLI and `doctor`
+    └── api.py                # FastAPI REST API
 
 docs/
-├── SYSTEM_IDENTITY.md        # CLIO Agent identity and capabilities
 ├── CLIO_AGENT_ARCHITECTURE.md   # Full architecture documentation
+├── CONTRIBUTOR_QUICKSTART.md    # Fast contributor path
 ├── MCP_TOOL_INTEGRATION.md   # MCP integration patterns
-└── EXPERT_SYSTEM_DESIGN.md   # Expert agent design guide
+└── SYSTEM_IDENTITY.md        # CLIO Agent identity and capabilities
 
 tests/
 ├── test_core/                # Core functionality tests
 ├── test_arc/                 # Memory layer tests
-├── test_optimizers/          # Optimizer tests
 ├── test_experts/             # Expert agent tests
+├── test_tools/               # Gateway and tool server tests
 └── test_integration/         # End-to-end tests
 ```
 
@@ -403,11 +378,12 @@ tests/
 /experts   - List registered agents (native + external)
 /registry  - Show Agent Registry status
 /memory    - Show ARC memory statistics
+/tools     - Show available MCP tools
+/doctor    - Show runtime integration status
 /metrics   - Show agent performance metrics
 /verbose   - Toggle reasoning trace display
 /history   - Show conversation history
 /clear     - Clear history
-/tune      - Enter offline tuning mode (Phase 3)
 /quit      - Exit
 ```
 
@@ -473,56 +449,27 @@ lm = setup_dspy(provider="custom", endpoint="http://my-model:8000")
 
 ## Current Status
 
-### ✅ Working Now (Feb 2026)
+### ✅ Working Now (Apr 2026)
 
-- **Main Agent (Tier 1)**: CoT mode orchestration with conversation management
-- **DataExpert (Tier 2)**: CoT mode specialist for HDF5, ADIOS, Parquet
-- **ARC Memory (90% complete)**: LRU cache, B-tree index, LSM tree for metrics
-- **Agent Registry**: Keyword-based capability routing (being upgraded to typed routing)
-- **CLI**: Rich TUI interactive interface
-- **LM Config**: LM Studio, Ollama, OpenAI, Anthropic, custom endpoints
+- **Main Agent + Experts**: DataExpert, AnalysisExpert, and VisualizationExpert are wired into routing
+- **FastMCP Gateway**: Real HDF5 and Parquet tools plus safe CSV inspection paths
+- **Runtime Doctor**: CLI/API health reporting for LM, gateway, HDF5, Parquet, API, file policy, and `clio-core`
+- **File Policy**: Explicit local file access boundaries via `CLIO_ALLOWED_ROOTS`
+- **API + CLI**: Interactive CLI, `/health`, `/query`, `/experts`, and `/metrics`
+- **LM Config**: LM Studio, Ollama, OpenAI-compatible, Anthropic, and OpenAI providers
 
-### 🚧 Phase 1: Foundation Reset (Current)
+### 🚧 Current Boundaries
 
-**Goals**: Real MCP integration, DSPy 3.x patterns, clean up stubs
+- **Local-filesystem-first**: current reliable product path is local HDF5/Parquet/CSV inspection
+- **clio-core probe only**: repo/config/binary discovery is non-destructive and does not start services
+- **A2A later**: external agent integration remains future work
+- **No broad HPC mutation path yet**: scheduler and service-control workflows remain out of scope for v0.2
 
-- Replace mcp_connector.py with FastMCP 3.x gateway + mount()
-- Implement real HDF5 MCP server (FastMCP 3.x)
-- Integrate DSPy 3.x ReAct + ChatAdapter for LM Studio compatibility
-- Delete mcp_connector.py (789 lines), clean up stub code
-- Raise test coverage to 50%
+### 📋 Near-Term Direction
 
-**See PLAN.md for detailed task list**
-
-### 📋 Upcoming Phases
-
-**Phase 2: Multi-Expert System**
-- HPCExpert (SLURM, PBS, resource management)
-- Typed routing with Literal outputs (optimizable by DSPy)
-- Context compilation pipeline (filter -> compact -> enrich -> assemble)
-- Tool curation (max 5-7 tools per expert with agent stories)
-
-**Phase 3: Self-Improvement Layer**
-- SIMBA optimizer for agentic workflows
-- Training data collection in ARC
-- Offline tuning mode via CLI
-- Statistical validation before deploying optimized variants
-
-**Phase 4: Production Hardening**
-- REST API (FastAPI)
-- CI/CD pipeline
-- Docker/Singularity containers
-- Test coverage to 80%
-
-**Phase 5: IOWarp CTE Integration**
-- ARC persistent storage in IOWarp namespace
-- Multi-tier data movement (GPU → NVMe → PFS → Object)
-- Tool result caching across storage tiers
-
-**Phase 6: Advanced Features**
-- Online learning mode (A/B testing, auto-optimization)
-- A2A protocol for external agent integration
-- Additional experts (ResearchExpert, VisualizationExpert, etc.)
+- deeper external-process/config integration with `clio-core`
+- more live health probes and degraded-state reporting
+- broader tool coverage after the local harness path is hardened
 
 ---
 
@@ -545,18 +492,18 @@ response = agent.query("How do I optimize this HDF5 file?")
 print(response)
 ```
 
-### 3. REST API (Planned)
+### 3. REST API (Current)
 ```bash
 # Start API server
-uv run src/clio_agent/ui/api.py --port 8000
+uv run src/clio_agent/ui/api.py --host 127.0.0.1 --port 8000
 
 # Query via HTTP
 curl -X POST http://localhost:8000/query \
   -H "Content-Type: application/json" \
-  -d '{"query": "Optimize HDF5 file", "context": {}}'
+  -d '{"question": "What datasets are in /tmp/clio-agent-demo/clio_demo.h5?"}'
 ```
 
-### 4. Container (Planned)
+### 4. Container (Experimental)
 ```dockerfile
 FROM python:3.12-slim
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
@@ -565,7 +512,7 @@ WORKDIR /app
 CMD ["uv", "run", "src/clio_agent/ui/api.py"]
 ```
 
-### 5. A2A Integration External Agents (Planned)
+### 5. A2A Integration External Agents (Future)
 ```python
 # CLIO Agent as sidekick to another agent
 from external_agent import ClaudeCode
@@ -596,8 +543,8 @@ claude_code.register_sidekick("clio-agent", a2a_endpoint="http://localhost:8000/
 
 ### Research Assistance
 
-- **Literature Search**: ArXiv, PubMed integration (via ResearchExpert)
-- **Data Analysis**: Statistical analysis, visualization recommendations
+- **Data Analysis**: Local Parquet/CSV statistics and schema inspection
+- **Visualization**: Generate local charts and summaries from supported datasets
 - **Reproducibility**: Generate workflow specifications, track provenance
 
 ---
@@ -607,7 +554,8 @@ claude_code.register_sidekick("clio-agent", a2a_endpoint="http://localhost:8000/
 - **[PLAN.md](PLAN.md)** - Development roadmap and current phase tasks
 - **[docs/SYSTEM_IDENTITY.md](docs/SYSTEM_IDENTITY.md)** - CLIO Agent capabilities, identity, design principles
 - **[docs/CLIO_AGENT_ARCHITECTURE.md](docs/CLIO_AGENT_ARCHITECTURE.md)** - Full architecture, 3-tier orchestration, ARC memory
-- **[CLAUDE.md](CLAUDE.md)** - Developer quick reference
+- **[AGENTS.md](AGENTS.md)** - Repository guidance for contributors and coding agents
+- **[docs/CONTRIBUTOR_QUICKSTART.md](docs/CONTRIBUTOR_QUICKSTART.md)** - Fast contributor path
 
 **External Resources:**
 - [IOWarp Architecture](https://iowarp.ai/docs) - Full IOWarp Docs
