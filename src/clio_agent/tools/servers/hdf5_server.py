@@ -27,6 +27,13 @@ import h5py
 import numpy as np
 from fastmcp import FastMCP
 
+from clio_agent.tools.file_policy import (
+    FilePolicyError,
+    validate_choice,
+    validate_non_empty_string,
+    validate_read_path,
+)
+
 hdf5_server = FastMCP("hdf5")
 
 
@@ -89,13 +96,16 @@ def list_datasets(filepath: str) -> dict[str, Any]:
         for each dataset, plus 'total_datasets' count.
     """
     try:
-        with h5py.File(filepath, "r") as f:
+        safe_path = validate_read_path(filepath)
+        with h5py.File(safe_path, "r") as f:
             datasets = _collect_datasets(f)
             return {
-                "filepath": filepath,
+                "filepath": str(safe_path),
                 "total_datasets": len(datasets),
                 "datasets": datasets,
             }
+    except FilePolicyError as e:
+        return e.to_result()
     except Exception as e:
         return {"error": str(e)}
 
@@ -116,7 +126,9 @@ def analyze_dataset(filepath: str, dataset: str) -> dict[str, Any]:
         min/max/mean statistics for numeric datasets.
     """
     try:
-        with h5py.File(filepath, "r") as f:
+        validate_non_empty_string(dataset, field="dataset")
+        safe_path = validate_read_path(filepath)
+        with h5py.File(safe_path, "r") as f:
             ds = f[dataset]
             if not isinstance(ds, h5py.Dataset):
                 return {"error": f"'{dataset}' is a group, not a dataset"}
@@ -166,6 +178,8 @@ def analyze_dataset(filepath: str, dataset: str) -> dict[str, Any]:
                     }
 
             return info
+    except FilePolicyError as e:
+        return e.to_result()
     except Exception as e:
         return {"error": str(e)}
 
@@ -185,8 +199,9 @@ def check_compression(filepath: str) -> dict[str, Any]:
         compression summary.
     """
     try:
-        file_size = os.path.getsize(filepath)
-        with h5py.File(filepath, "r") as f:
+        safe_path = validate_read_path(filepath)
+        file_size = os.path.getsize(safe_path)
+        with h5py.File(safe_path, "r") as f:
             datasets = _collect_datasets(f)
             compression_info = []
             total_raw_size = 0
@@ -221,7 +236,7 @@ def check_compression(filepath: str) -> dict[str, Any]:
                 compression_info.append(entry)
 
             return {
-                "filepath": filepath,
+                "filepath": str(safe_path),
                 "file_size_bytes": file_size,
                 "total_raw_size_bytes": total_raw_size,
                 "total_datasets": len(datasets),
@@ -229,6 +244,8 @@ def check_compression(filepath: str) -> dict[str, Any]:
                 "uncompressed_datasets": len(datasets) - compressed_count,
                 "datasets": compression_info,
             }
+    except FilePolicyError as e:
+        return e.to_result()
     except Exception as e:
         return {"error": str(e)}
 
@@ -254,7 +271,10 @@ def optimize_chunking(
         Dictionary with current and recommended chunk shapes, plus rationale.
     """
     try:
-        with h5py.File(filepath, "r") as f:
+        validate_choice(access_pattern, {"row", "column", "random"}, field="access_pattern")
+        validate_non_empty_string(dataset, field="dataset")
+        safe_path = validate_read_path(filepath)
+        with h5py.File(safe_path, "r") as f:
             ds = f[dataset]
             if not isinstance(ds, h5py.Dataset):
                 return {"error": f"'{dataset}' is a group, not a dataset"}
@@ -292,14 +312,12 @@ def optimize_chunking(
                     last_dim = max(1, min(target_elements // max(1, leading_size), shape[-1]))
                     recommended = (*shape[:-1], last_dim)
 
-            elif access_pattern == "random":
+            else:
                 # Balanced chunks: roughly equal along all dimensions
                 elements_per_dim = max(1, int(target_elements ** (1.0 / ndim)))
                 recommended = tuple(
                     min(elements_per_dim, s) for s in shape
                 )
-            else:
-                return {"error": f"Unknown access pattern: '{access_pattern}'. Use 'row', 'column', or 'random'."}
 
             # Ensure chunk dims don't exceed dataset dims
             recommended = tuple(min(r, s) for r, s in zip(recommended, shape, strict=True))
@@ -345,6 +363,8 @@ def optimize_chunking(
                 )
 
             return result
+    except FilePolicyError as e:
+        return e.to_result()
     except Exception as e:
         return {"error": str(e)}
 
@@ -364,8 +384,9 @@ def analyze_file(filepath: str) -> dict[str, Any]:
         and compression summary.
     """
     try:
-        file_size = os.path.getsize(filepath)
-        with h5py.File(filepath, "r") as f:
+        safe_path = validate_read_path(filepath)
+        file_size = os.path.getsize(safe_path)
+        with h5py.File(safe_path, "r") as f:
             datasets = _collect_datasets(f)
             groups = _collect_groups(f)
 
@@ -395,7 +416,7 @@ def analyze_file(filepath: str) -> dict[str, Any]:
                 )
 
             return {
-                "filepath": filepath,
+                "filepath": str(safe_path),
                 "file_size_bytes": file_size,
                 "total_datasets": len(datasets),
                 "total_groups": len(groups),
@@ -404,5 +425,7 @@ def analyze_file(filepath: str) -> dict[str, Any]:
                 "root_attributes": root_attrs,
                 "compression_summary": compression_summary,
             }
+    except FilePolicyError as e:
+        return e.to_result()
     except Exception as e:
         return {"error": str(e)}

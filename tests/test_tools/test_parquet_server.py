@@ -5,6 +5,7 @@ Tests all 3 Parquet tools using in-memory Client(parquet_server) pattern,
 plus gateway integration tests for namespaced parquet_* tool access.
 """
 
+import importlib
 import json
 
 import pytest
@@ -12,6 +13,8 @@ from fastmcp import Client
 
 from clio_agent.tools.gateway import gateway
 from clio_agent.tools.servers.parquet_server import parquet_server
+
+parquet_module = importlib.import_module("clio_agent.tools.servers.parquet_server")
 
 
 def _parse_result(result):
@@ -25,6 +28,49 @@ def _parse_result(result):
         except json.JSONDecodeError:
             return {"raw": data}
     return {"raw": str(data)}
+
+
+@pytest.mark.asyncio
+async def test_file_policy_rejects_unsafe_parquet_path_before_open(tmp_path, monkeypatch):
+    """Unsafe paths should fail validation before pyarrow opens the file."""
+    allowed = tmp_path / "allowed"
+    allowed.mkdir()
+    outside = tmp_path / "outside.parquet"
+    outside.write_bytes(b"not parquet")
+    monkeypatch.setenv("CLIO_ALLOWED_ROOTS", str(allowed))
+
+    def fail_open(*args, **kwargs):
+        raise AssertionError("pq.ParquetFile should not be called")
+
+    monkeypatch.setattr(parquet_module.pq, "ParquetFile", fail_open)
+
+    async with Client(parquet_server) as client:
+        result = await client.call_tool("analyze_schema", {"filepath": str(outside)})
+    data = _parse_result(result)
+
+    assert data["error"]["type"] == "file_policy"
+    assert data["error"]["code"] == "outside_allowed_roots"
+
+
+@pytest.mark.asyncio
+async def test_invalid_parquet_args_rejected_before_read(sample_parquet, monkeypatch):
+    """Invalid row_limit should fail before pyarrow reads the file."""
+
+    def fail_read(*args, **kwargs):
+        raise AssertionError("pq.read_table should not be called")
+
+    monkeypatch.setattr(parquet_module.pq, "read_table", fail_read)
+
+    async with Client(parquet_server) as client:
+        result = await client.call_tool(
+            "query_data",
+            {"filepath": sample_parquet, "row_limit": 0},
+        )
+    data = _parse_result(result)
+
+    assert data["error"]["type"] == "file_policy"
+    assert data["error"]["code"] == "invalid_argument"
+    assert data["error"]["field"] == "row_limit"
 
 
 # --- analyze_schema tests ---

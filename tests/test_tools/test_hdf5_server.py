@@ -5,12 +5,15 @@ Uses in-memory Client(server) pattern for testing -- no subprocess, no network.
 All tests use the sample_hdf5 fixture from conftest.py.
 """
 
+import importlib
 import json
 
 import pytest
 from fastmcp import Client
 
 from clio_agent.tools.servers.hdf5_server import hdf5_server
+
+hdf5_module = importlib.import_module("clio_agent.tools.servers.hdf5_server")
 
 
 def _parse_result(result):
@@ -28,6 +31,53 @@ def _parse_result(result):
         except json.JSONDecodeError:
             return {"raw": data}
     return {"raw": str(data)}
+
+
+@pytest.mark.asyncio
+async def test_file_policy_rejects_unsafe_hdf5_path_before_open(tmp_path, monkeypatch):
+    """Unsafe paths should fail validation before h5py opens the file."""
+    allowed = tmp_path / "allowed"
+    allowed.mkdir()
+    outside = tmp_path / "outside.h5"
+    outside.write_bytes(b"not hdf5")
+    monkeypatch.setenv("CLIO_ALLOWED_ROOTS", str(allowed))
+
+    def fail_open(*args, **kwargs):
+        raise AssertionError("h5py.File should not be called")
+
+    monkeypatch.setattr(hdf5_module.h5py, "File", fail_open)
+
+    async with Client(hdf5_server) as client:
+        result = await client.call_tool("analyze_file", {"filepath": str(outside)})
+    data = _parse_result(result)
+
+    assert data["error"]["type"] == "file_policy"
+    assert data["error"]["code"] == "outside_allowed_roots"
+
+
+@pytest.mark.asyncio
+async def test_invalid_hdf5_args_rejected_before_open(sample_hdf5, monkeypatch):
+    """Invalid access_pattern should fail before h5py opens the file."""
+
+    def fail_open(*args, **kwargs):
+        raise AssertionError("h5py.File should not be called")
+
+    monkeypatch.setattr(hdf5_module.h5py, "File", fail_open)
+
+    async with Client(hdf5_server) as client:
+        result = await client.call_tool(
+            "optimize_chunking",
+            {
+                "filepath": sample_hdf5,
+                "dataset": "simulation/temperature",
+                "access_pattern": "diagonal",
+            },
+        )
+    data = _parse_result(result)
+
+    assert data["error"]["type"] == "file_policy"
+    assert data["error"]["code"] == "invalid_argument"
+    assert data["error"]["field"] == "access_pattern"
 
 
 @pytest.mark.asyncio

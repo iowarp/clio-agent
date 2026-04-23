@@ -33,6 +33,13 @@ import pyarrow.csv as pcsv
 import pyarrow.parquet as pq
 
 from clio_agent.signatures.visualization_sig import VisualizationExpertSignature
+from clio_agent.tools.file_policy import (
+    FilePolicyError,
+    validate_non_empty_string,
+    validate_positive_int,
+    validate_read_path,
+    validate_write_path,
+)
 
 matplotlib.use("Agg")  # Headless rendering
 
@@ -51,13 +58,20 @@ def _load_table(filepath: str):
     Raises:
         ValueError: If file format is not supported
     """
-    lower = filepath.lower()
+    safe_path = validate_read_path(filepath)
+    lower = str(safe_path).lower()
     if lower.endswith(".parquet"):
-        return pq.read_table(filepath)
+        return pq.read_table(safe_path)
     elif lower.endswith(".csv"):
-        return pcsv.read_csv(filepath)
+        return pcsv.read_csv(safe_path)
     else:
         raise ValueError(f"Unsupported file format: {filepath}. Use .parquet or .csv")
+
+
+def _resolve_output_path(output_path: str, default_filename: str) -> str:
+    """Validate chart output path and return an absolute path string."""
+    target = output_path or os.path.join(os.getcwd(), default_filename)
+    return str(validate_write_path(target).resolve(strict=False))
 
 
 def plot_histogram(
@@ -78,6 +92,9 @@ def plot_histogram(
         Absolute path to the saved PNG file, or error message string.
     """
     try:
+        validate_non_empty_string(column, field="column")
+        validate_positive_int(bins, field="bins", max_value=1000)
+        safe_output_path = _resolve_output_path(output_path, f"histogram_{column}.png")
         table = _load_table(filepath)
         if column not in table.column_names:
             return f"Error: Column '{column}' not found. Available: {table.column_names}"
@@ -95,12 +112,13 @@ def plot_histogram(
         ax.set_title(f"Distribution of {column}")
         ax.grid(axis="y", alpha=0.3)
 
-        if not output_path:
-            output_path = os.path.join(os.getcwd(), f"histogram_{column}.png")
-        fig.savefig(output_path, dpi=150, bbox_inches="tight")
+        fig.savefig(safe_output_path, dpi=150, bbox_inches="tight")
         plt.close("all")
 
-        return os.path.abspath(output_path)
+        return safe_output_path
+    except FilePolicyError as e:
+        plt.close("all")
+        return e.to_text()
     except Exception as e:
         plt.close("all")
         return f"Error: {e}"
@@ -124,6 +142,9 @@ def plot_bar_chart(
         Absolute path to the saved PNG file, or error message string.
     """
     try:
+        validate_non_empty_string(column, field="column")
+        validate_positive_int(top_n, field="top_n", max_value=1000)
+        safe_output_path = _resolve_output_path(output_path, f"bar_chart_{column}.png")
         table = _load_table(filepath)
         if column not in table.column_names:
             return f"Error: Column '{column}' not found. Available: {table.column_names}"
@@ -155,12 +176,13 @@ def plot_bar_chart(
         ax.set_title(f"Top {min(top_n, len(labels))} values in {column}")
         ax.grid(axis="x", alpha=0.3)
 
-        if not output_path:
-            output_path = os.path.join(os.getcwd(), f"bar_chart_{column}.png")
-        fig.savefig(output_path, dpi=150, bbox_inches="tight")
+        fig.savefig(safe_output_path, dpi=150, bbox_inches="tight")
         plt.close("all")
 
-        return os.path.abspath(output_path)
+        return safe_output_path
+    except FilePolicyError as e:
+        plt.close("all")
+        return e.to_text()
     except Exception as e:
         plt.close("all")
         return f"Error: {e}"
@@ -184,6 +206,12 @@ def plot_scatter(
         Absolute path to the saved PNG file, or error message string.
     """
     try:
+        validate_non_empty_string(x_column, field="x_column")
+        validate_non_empty_string(y_column, field="y_column")
+        safe_output_path = _resolve_output_path(
+            output_path,
+            f"scatter_{x_column}_vs_{y_column}.png",
+        )
         table = _load_table(filepath)
         for col in [x_column, y_column]:
             if col not in table.column_names:
@@ -209,12 +237,13 @@ def plot_scatter(
         ax.set_title(f"{y_column} vs {x_column}")
         ax.grid(alpha=0.3)
 
-        if not output_path:
-            output_path = os.path.join(os.getcwd(), f"scatter_{x_column}_vs_{y_column}.png")
-        fig.savefig(output_path, dpi=150, bbox_inches="tight")
+        fig.savefig(safe_output_path, dpi=150, bbox_inches="tight")
         plt.close("all")
 
-        return os.path.abspath(output_path)
+        return safe_output_path
+    except FilePolicyError as e:
+        plt.close("all")
+        return e.to_text()
     except Exception as e:
         plt.close("all")
         return f"Error: {e}"
@@ -237,6 +266,10 @@ def plot_summary(filepath: str, output_path: str = "") -> str:
         Absolute path to the saved PNG file, or error message string.
     """
     try:
+        if not output_path:
+            base = os.path.splitext(os.path.basename(filepath))[0]
+            output_path = os.path.join(os.getcwd(), f"summary_{base}.png")
+        safe_output_path = _resolve_output_path(output_path, "summary.png")
         table = _load_table(filepath)
         schema = table.schema
         col_names = table.column_names
@@ -335,13 +368,13 @@ def plot_summary(filepath: str, output_path: str = "") -> str:
 
         fig.tight_layout(rect=[0, 0, 1, 0.96])
 
-        if not output_path:
-            base = os.path.splitext(os.path.basename(filepath))[0]
-            output_path = os.path.join(os.getcwd(), f"summary_{base}.png")
-        fig.savefig(output_path, dpi=150, bbox_inches="tight")
+        fig.savefig(safe_output_path, dpi=150, bbox_inches="tight")
         plt.close("all")
 
-        return os.path.abspath(output_path)
+        return safe_output_path
+    except FilePolicyError as e:
+        plt.close("all")
+        return e.to_text()
     except Exception as e:
         plt.close("all")
         return f"Error: {e}"

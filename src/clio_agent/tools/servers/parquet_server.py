@@ -26,6 +26,13 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from fastmcp import FastMCP
 
+from clio_agent.tools.file_policy import (
+    FilePolicyError,
+    validate_non_empty_string,
+    validate_positive_int,
+    validate_read_path,
+)
+
 parquet_server = FastMCP("parquet")
 
 
@@ -46,7 +53,8 @@ def analyze_schema(filepath: str) -> dict[str, Any]:
         file_size_bytes, and created_by metadata.
     """
     try:
-        parquet_file = pq.ParquetFile(filepath)
+        safe_path = validate_read_path(filepath)
+        parquet_file = pq.ParquetFile(safe_path)
         schema = parquet_file.schema_arrow
         metadata = parquet_file.metadata
 
@@ -60,12 +68,12 @@ def analyze_schema(filepath: str) -> dict[str, Any]:
             })
 
         result: dict[str, Any] = {
-            "filepath": filepath,
+            "filepath": str(safe_path),
             "num_columns": len(columns),
             "columns": columns,
             "num_rows": metadata.num_rows,
             "num_row_groups": metadata.num_row_groups,
-            "file_size_bytes": os.path.getsize(filepath),
+            "file_size_bytes": os.path.getsize(safe_path),
         }
 
         # Creator metadata (may be None)
@@ -83,6 +91,8 @@ def analyze_schema(filepath: str) -> dict[str, Any]:
             result["key_value_metadata"] = kv_metadata
 
         return result
+    except FilePolicyError as e:
+        return e.to_result()
     except Exception as e:
         return {"error": str(e)}
 
@@ -108,12 +118,14 @@ def query_data(
         and rows_returned count.
     """
     try:
+        validate_positive_int(row_limit, field="row_limit", max_value=10000)
+        safe_path = validate_read_path(filepath)
         # Parse column selection
         col_list = None
         if columns and columns.strip():
             col_list = [c.strip() for c in columns.split(",") if c.strip()]
 
-        table = pq.read_table(filepath, columns=col_list)
+        table = pq.read_table(safe_path, columns=col_list)
         total_rows = len(table)
 
         # Limit rows
@@ -141,12 +153,14 @@ def query_data(
             records.append(record)
 
         return {
-            "filepath": filepath,
+            "filepath": str(safe_path),
             "columns": column_names,
             "total_rows": total_rows,
             "rows_returned": num_returned,
             "rows": records,
         }
+    except FilePolicyError as e:
+        return e.to_result()
     except Exception as e:
         return {"error": str(e)}
 
@@ -170,7 +184,9 @@ def compute_statistics(filepath: str, column: str) -> dict[str, Any]:
         Dictionary with column statistics appropriate to the data type.
     """
     try:
-        table = pq.read_table(filepath, columns=[column])
+        validate_non_empty_string(column, field="column")
+        safe_path = validate_read_path(filepath)
+        table = pq.read_table(safe_path, columns=[column])
 
         if column not in table.column_names:
             return {"error": f"Column '{column}' not found in file"}
@@ -181,7 +197,7 @@ def compute_statistics(filepath: str, column: str) -> dict[str, Any]:
         total_count = len(col_array)
 
         result: dict[str, Any] = {
-            "filepath": filepath,
+            "filepath": str(safe_path),
             "column": column,
             "dtype": str(col_type),
             "total_count": total_count,
@@ -226,5 +242,7 @@ def compute_statistics(filepath: str, column: str) -> dict[str, Any]:
                 result["value_counts"] = dict(sorted_counts[:5])
 
         return result
+    except FilePolicyError as e:
+        return e.to_result()
     except Exception as e:
         return {"error": str(e)}

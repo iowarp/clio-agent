@@ -10,6 +10,7 @@ import inspect
 import os
 from unittest.mock import Mock
 
+import clio_agent.experts.visualization_expert as viz_module
 from clio_agent.experts.visualization_expert import (
     VisualizationExpert,
     plot_bar_chart,
@@ -127,6 +128,43 @@ class TestPlotHistogram:
         result = plot_histogram(sample_parquet, "nonexistent_column", output_path=output)
         assert result.startswith("Error:")
         assert "nonexistent_column" in result
+
+    def test_plot_histogram_rejects_unsafe_path_before_read(self, tmp_path, monkeypatch):
+        """Unsafe input path should fail policy before pyarrow reads it."""
+        allowed = tmp_path / "allowed"
+        allowed.mkdir()
+        outside = tmp_path / "outside.parquet"
+        outside.write_bytes(b"not parquet")
+        output = str(allowed / "hist.png")
+        monkeypatch.setenv("CLIO_ALLOWED_ROOTS", str(allowed))
+
+        def fail_read(*args, **kwargs):
+            raise AssertionError("pq.read_table should not be called")
+
+        monkeypatch.setattr(viz_module.pq, "read_table", fail_read)
+
+        result = plot_histogram(str(outside), "temperature", output_path=output)
+
+        assert result.startswith("Error:")
+        assert "file_policy" in result
+        assert "outside_allowed_roots" in result
+
+    def test_plot_histogram_rejects_invalid_bins_before_read(
+        self, sample_parquet, tmp_path, monkeypatch
+    ):
+        """Invalid bins should fail validation before pyarrow reads the file."""
+        output = str(tmp_path / "hist.png")
+
+        def fail_read(*args, **kwargs):
+            raise AssertionError("pq.read_table should not be called")
+
+        monkeypatch.setattr(viz_module.pq, "read_table", fail_read)
+
+        result = plot_histogram(sample_parquet, "temperature", bins=0, output_path=output)
+
+        assert result.startswith("Error:")
+        assert "file_policy" in result
+        assert "invalid_argument" in result
 
 
 class TestPlotBarChart:
