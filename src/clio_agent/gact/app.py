@@ -527,7 +527,7 @@ def build_app(
                 memory=True,  # BBB11 — /v1/memory/stats backed by ARC
                 structured_errors=True,  # always — we return the envelope for every error
                 integration_health=True,  # /v1/health above carries it
-                tool_telemetry=False,
+                tool_telemetry=True,  # BBB18 — tool.call.started/completed events
             ),
             transports=TransportFlags(events_sse=True, events_websocket=False),
             auth=AuthInfo(schemes=["trust_socket"], current="trust_socket"),
@@ -1100,6 +1100,37 @@ def build_app(
                 payload={
                     "message_id": assistant_msg.id,
                     "part": part.model_dump(exclude_none=True),
+                },
+            ))
+        # CLIO-BBBBBBBBBB18: per-tool telemetry events. Emit a
+        # started/completed pair for each tool the agent reported.
+        # The fake-agent path derives these from
+        # Prediction.tools_called post-hoc; a real ReAct agent that
+        # instruments MCPToolBridge.call_tool could publish the
+        # events live from within forward() — the wire shape is the
+        # same either way, so the TUI's renderer doesn't care.
+        for idx, call in enumerate(tools_called):
+            call_id = f"call_{assistant_msg.id}_{idx}"
+            bus.publish(Event(
+                type="tool.call.started",
+                session_id=sid,
+                payload={
+                    "message_id": assistant_msg.id,
+                    "call_id": call_id,
+                    "tool": call.get("name", ""),
+                    "args": call.get("args", {}),
+                },
+            ))
+            bus.publish(Event(
+                type="tool.call.completed",
+                session_id=sid,
+                payload={
+                    "message_id": assistant_msg.id,
+                    "call_id": call_id,
+                    "tool": call.get("name", ""),
+                    "ok": call.get("ok", True),
+                    "duration_ms": call.get("duration_ms", 0.0),
+                    "cached": call.get("cached", False),
                 },
             ))
         completed_payload: dict[str, Any] = {

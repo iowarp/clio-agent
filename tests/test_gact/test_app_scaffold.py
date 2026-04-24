@@ -64,15 +64,19 @@ def test_capabilities_advertises_v0_2(client: TestClient) -> None:
         "/v1/health returns integrations[], so this must be True"
     )
     # Landed capabilities.
-    for flag in ("sessions", "agent_routing", "memory"):
+    for flag in (
+        "sessions",
+        "agent_routing",
+        "memory",
+        "metrics",
+        "session_branching",
+        "search_messages",
+        "cost_tracking",
+        "files",
+        "tool_telemetry",
+    ):
         assert caps[flag] is True, (
             f"{flag} implemented — must advertise True"
-        )
-    # Capabilities not yet wired — advertised False so the TUI
-    # doesn't try to render them against this backend.
-    for flag in ("tool_telemetry",):
-        assert caps[flag] is False, (
-            f"{flag} not yet implemented; must advertise False until wired"
         )
 
 
