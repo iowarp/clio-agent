@@ -225,6 +225,53 @@ class PostMessageRequest(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class AgentDef(BaseModel):
+    """GACT §6.5 + v0.2 §4.3.1 multi-tier additions.
+
+    Fields CLIO can't populate (system_prompt, default_model,
+    parameters, etc.) stay absent from the wire — SPEC §3.2 says
+    clients tolerate missing-optional fields.
+    """
+
+    id: str
+    source: Literal["builtin", "user", "recipe", "skill"] = "builtin"
+    title: str
+    description: str = ""
+    tools: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    # v0.2 — multi-tier routing
+    tier: int = 0  # 0 = untagged, 1 = orchestrator, 2 = specialist, 3 = nanoagent
+    specialization: str = ""
+    keywords: list[str] = Field(default_factory=list)
+
+
+class ListAgentsResponse(BaseModel):
+    """GET /v1/agents body."""
+
+    agents: list[AgentDef]
+
+
+class Tool(BaseModel):
+    """SPEC §4.6 (subset). The gateway surfaces a curated set per
+    expert; we flatten them into a single catalog for GET
+    /v1/catalog/tools."""
+
+    id: str
+    source: Literal["builtin", "mcp", "recipe", "extension"] = "builtin"
+    server_id: Optional[str] = None
+    name: str
+    title: str = ""
+    description: str = ""
+    permission_default: str = "ask"
+
+
+class ListToolsResponse(BaseModel):
+    """GET /v1/catalog/tools body."""
+
+    tools: list[Tool]
+
+
 class PostMessageResponse(BaseModel):
     """POST /v1/sessions/{sid}/messages response — SPEC §6.3.
 

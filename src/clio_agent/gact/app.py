@@ -54,10 +54,128 @@ def _iso_from_epoch(ts: float) -> str:
 
     return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
 
+
+# CLIO-BBBBBBBBBB10: mapping from CLIO expert id to its GACT v0.2
+# specialization tag. Free-form (UI palette hint); picked to match
+# the emulator's generic "code_editing / data_analysis /
+# knowledge_retrieval / visualization" vocab the TUI already
+# colour-codes.
+_EXPERT_SPECIALIZATION: dict[str, str] = {
+    "data": "data_analysis",
+    "analysis": "data_analysis",
+    "visualization": "data_visualization",
+}
+
+# CLIO-BBBBBBBBBB10: per-expert curated tool list. CLIO's Expert
+# classes attach their tools at construction time (via
+# MCPToolBridge.to_dspy_tools()), but we don't want to import DSPy +
+# spin up tool servers just to list a catalog. The tool sets are
+# stable so hardcoding the mapping here is cheap + honest; if an
+# expert's tool set drifts, the test_agents_catalog test fails and
+# we update both sides at once.
+_EXPERT_TOOLS: dict[str, list[str]] = {
+    "data": [
+        "hdf5_list_datasets",
+        "hdf5_analyze_dataset",
+        "hdf5_check_compression",
+        "hdf5_optimize_chunking",
+        "hdf5_analyze_file",
+    ],
+    "analysis": [
+        "parquet_analyze_schema",
+        "parquet_query_data",
+        "parquet_compute_statistics",
+    ],
+    "visualization": [
+        "plot_histogram",
+        "plot_bar_chart",
+        "plot_scatter",
+        "plot_summary",
+    ],
+}
+
+
+def _builtin_agents() -> list[AgentDef]:
+    """Return CLIO's built-in tier-2 experts as AgentDef rows.
+
+    Imports are lazy inside the function because importing
+    clio_agent.experts at module load time pulls in DSPy + the
+    tool bridges — heavy, and we don't want it to explode scaffold
+    tests if DSPy isn't available. Each expert exposes
+    ``get_capabilities()`` returning ``{name, description, keywords,
+    tools}``; we map those onto the GACT AgentDef shape.
+
+    A tier-1 orchestrator row ('main') is synthesised so the TUI
+    can see the full hierarchy; its tools list is empty (the
+    orchestrator dispatches rather than acting itself).
+    """
+
+    from clio_agent.experts import get_expert_capabilities
+
+    rows: list[AgentDef] = [
+        AgentDef(
+            id="main",
+            source="builtin",
+            title="Main Agent",
+            description=(
+                "Tier-1 orchestrator. Routes user queries to tier-2 "
+                "specialists based on keyword heuristics + LM classifier."
+            ),
+            tier=1,
+            specialization="orchestrator",
+        ),
+    ]
+
+    for expert_id, caps in get_expert_capabilities().items():
+        name = caps.get("name", expert_id.replace("_", " ").title())
+        description = caps.get("description", "")
+        keywords = list(caps.get("keywords", []))
+        tools = list(_EXPERT_TOOLS.get(expert_id, []))
+        rows.append(
+            AgentDef(
+                id=expert_id,
+                source="builtin",
+                title=name,
+                description=description,
+                tools=tools,
+                tier=2,
+                specialization=_EXPERT_SPECIALIZATION.get(
+                    expert_id, expert_id
+                ),
+                keywords=keywords,
+            )
+        )
+
+    return rows
+
+
+def _builtin_tools() -> list[Tool]:
+    """Flatten the experts' curated tool lists into a single GACT
+    Tool catalog. Stable ids (same strings the experts reference),
+    backend flag `builtin`. The names MAY duplicate across experts
+    (e.g. read_file) — we dedupe by id so GET /v1/catalog/tools has
+    one row per distinct tool."""
+
+    seen: dict[str, Tool] = {}
+    for agent in _builtin_agents():
+        if agent.tier != 2:
+            continue
+        for tool_name in agent.tools:
+            if tool_name in seen:
+                continue
+            seen[tool_name] = Tool(
+                id=tool_name,
+                source="builtin",
+                name=tool_name,
+                title=tool_name.replace("_", " ").title(),
+            )
+    return list(seen.values())
+
 from typing import Any, Protocol
 
 from clio_agent.gact.sessions import SessionStore, _default_store_path
 from clio_agent.gact.types import (
+    AgentDef,
     AuthInfo,
     BackendInfo,
     Capabilities,
@@ -67,12 +185,15 @@ from clio_agent.gact.types import (
     ErrorInfo,
     HealthResponse,
     Integration,
+    ListAgentsResponse,
     ListSessionsResponse,
+    ListToolsResponse,
     Message,
     Part,
     PostMessageRequest,
     PostMessageResponse,
     Session,
+    Tool,
     TransportFlags,
 )
 
@@ -210,7 +331,7 @@ def build_app(
                 # v0.2 additions — advertised when the scaffold
                 # actually emits them. Turned on piecewise as the
                 # follow-on items land.
-                agent_routing=False,
+                agent_routing=True,  # BBB10 — /v1/agents?tier= + tier-2 catalog
                 memory=False,
                 structured_errors=True,  # always — we return the envelope for every error
                 integration_health=True,  # /v1/health above carries it
@@ -401,6 +522,20 @@ def build_app(
             user_message=user_msg, assistant_message=assistant_msg
         )
 
+    # ---- /v1/agents catalog (BBB10) ----------------------------------
+
+    @app.get("/v1/agents", response_model=ListAgentsResponse)
+    async def list_agents(tier: Optional[int] = None) -> ListAgentsResponse:
+        """SPEC §6.5 + v0.2 §4.3.1: optional ?tier=N filter."""
+        rows = _builtin_agents()
+        if tier is not None:
+            rows = [a for a in rows if a.tier == tier]
+        return ListAgentsResponse(agents=rows)
+
+    @app.get("/v1/catalog/tools", response_model=ListToolsResponse)
+    async def list_tools() -> ListToolsResponse:
+        return ListToolsResponse(tools=_builtin_tools())
+
     # ---- 501 stubs for the still-unwired v0.2 surface ----------------
 
     _stub_routes: list[tuple[str, str, str]] = [
@@ -408,7 +543,6 @@ def build_app(
         ("GET", "/v1/workspaces", "workspaces"),
         ("GET", "/v1/sessions/{sid}/messages", "sessions"),
         ("GET", "/v1/sessions/{sid}/events", "sessions"),
-        ("GET", "/v1/agents", "agent_routing"),
         ("GET", "/v1/tools", "tools"),
         ("GET", "/v1/commands", "commands"),
         ("GET", "/v1/metrics", "metrics"),
