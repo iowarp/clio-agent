@@ -75,6 +75,7 @@ def test_capabilities_advertises_v0_2(client: TestClient) -> None:
         "files",
         "diffs",
         "permissions",
+        "subagents",
         "tool_telemetry",
     ):
         assert caps[flag] is True, (

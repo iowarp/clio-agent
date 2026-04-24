@@ -533,6 +533,7 @@ def build_app(
                 files=True,  # BBB22 — /v1/sessions/{sid}/context/files CRUD
                 diffs=True,  # BBB21 — file_diff parts + /diffs/apply,reject
                 permissions=True,  # BBB23 — /v1/permissions + permission.* events
+                subagents=True,  # BBB25 — nanoagent subsessions + subagent.* events
                 # v0.2 additions — advertised when the scaffold
                 # actually emits them. Turned on piecewise as the
                 # follow-on items land.
@@ -1164,6 +1165,7 @@ def build_app(
         rationale = ""
         tools_called: list[dict[str, Any]] = []
         proposed_diffs: list[Any] = []
+        nanoagents: list[Any] = []
         turn_tokens: dict[str, int] = {
             "input": 0, "output": 0, "cache_read": 0, "cache_write": 0,
         }
@@ -1194,6 +1196,13 @@ def build_app(
                     turn_tokens[key] = int(v or 0)
             turn_cost = float(getattr(pred, "cost_usd", 0.0) or 0.0)
             proposed_diffs = list(getattr(pred, "file_diffs", None) or [])
+            # CLIO-BBBBBBBBBB25: nanoagents spawned by this turn.
+            # Each spawn: {agent_id, input, answer?, duration_ms?,
+            # tokens?, cost_usd?}. We create a subsession per spawn
+            # so the TUI's hierarchical sidebar renders the tree,
+            # store the spawn's user/assistant exchange under it,
+            # and publish subagent.started/completed events.
+            nanoagents = list(getattr(pred, "nanoagents_spawned", None) or [])
             # CLIO-BBBBBBBBBB23: register any permission requests the
             # agent emits onto app.state.permissions + broadcast a
             # permission.requested event. Each entry is a dict with
@@ -1315,6 +1324,76 @@ def build_app(
                 "part_id": p.id,
                 "message_id": assistant_msg.id,
             })
+
+        # CLIO-BBBBBBBBBB25: materialise each nanoagent spawn as a
+        # child session. Publishes subagent.started/completed so the
+        # TUI's sidebar can render the hierarchy without polling.
+        for spawn in nanoagents:
+            get = spawn.get if isinstance(spawn, dict) else (
+                lambda k, default=None, _s=spawn: getattr(_s, k, default)
+            )
+            agent_id = get("agent_id") or get("agent") or "nanoagent"
+            spawn_input = get("input") or {}
+            answer = get("answer") or ""
+            subsess = app.state.sessions.create(
+                workspace_id=sess.workspace_id,
+                title=f"{agent_id} subagent",
+                parent_session_id=sid,
+            )
+            # Store a user/assistant pair so GET /messages under the
+            # subsession reflects what the nanoagent actually did.
+            sub_now = time.time()
+            sub_user = Message(
+                id=_new_message_id("user"),
+                session_id=subsess.id,
+                role="user",
+                created_at=_iso_from_epoch(sub_now),
+                updated_at=_iso_from_epoch(sub_now),
+                parts=[Part(
+                    id=_new_part_id(),
+                    type="text",
+                    text=str(spawn_input),
+                )],
+            )
+            sub_asst = Message(
+                id=_new_message_id("asst"),
+                session_id=subsess.id,
+                role="assistant",
+                created_at=_iso_from_epoch(sub_now),
+                updated_at=_iso_from_epoch(sub_now),
+                parts=[Part(id=_new_part_id(), type="text", text=answer)] if answer else [],
+                stop_reason="end_turn",
+            )
+            app.state.messages.setdefault(subsess.id, []).extend(
+                [sub_user, sub_asst]
+            )
+            app.state.sessions.update(
+                subsess.id, message_count=2, status="idle"
+            )
+            # Events fire on the PARENT session so the SSE subscriber
+            # sees its children open + settle.
+            app.state.bus.publish(Event(
+                type="subagent.started",
+                session_id=sid,
+                payload={
+                    "parent_session_id": sid,
+                    "child_session_id": subsess.id,
+                    "agent_id": agent_id,
+                    "spawned_by_message_id": assistant_msg.id,
+                },
+            ))
+            app.state.bus.publish(Event(
+                type="subagent.completed",
+                session_id=sid,
+                payload={
+                    "parent_session_id": sid,
+                    "child_session_id": subsess.id,
+                    "agent_id": agent_id,
+                    "duration_ms": float(get("duration_ms", 0.0) or 0.0),
+                    "tokens": get("tokens") or {},
+                    "cost_usd": float(get("cost_usd", 0.0) or 0.0),
+                },
+            ))
 
         # Settle the session back to idle (or error, if we already
         # stamped it above). Also accumulate the turn's cost/tokens
