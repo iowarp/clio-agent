@@ -266,6 +266,11 @@ class Part(BaseModel):
     confidence: float = 0.0
     heuristic: bool = False
 
+    # file_diff (BBB21): a proposed edit awaiting apply/reject.
+    path: str = ""
+    unified_diff: str = ""
+    status: str = ""  # "pending" | "applied" | "rejected"
+
 
 class ContextFile(BaseModel):
     """SPEC §6.9 — a file pinned into a session's context."""

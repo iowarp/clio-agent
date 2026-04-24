@@ -73,6 +73,7 @@ def test_capabilities_advertises_v0_2(client: TestClient) -> None:
         "search_messages",
         "cost_tracking",
         "files",
+        "diffs",
         "tool_telemetry",
     ):
         assert caps[flag] is True, (

@@ -405,6 +405,11 @@ def build_app(
     # session_id, each value is an ordered dict of
     # path -> ContextFile dict.
     app.state.context_files: dict[str, dict[str, dict[str, Any]]] = {}
+    # CLIO-BBBBBBBBBB21: per-session pending diffs. Keyed by
+    # session_id -> list of {path, unified_diff, status,
+    # part_id, message_id}. Status is "pending" until apply/reject
+    # flips it.
+    app.state.pending_diffs: dict[str, list[dict[str, Any]]] = {}
 
     @app.get("/v1/health", response_model=HealthResponse)
     async def health() -> HealthResponse:
@@ -520,6 +525,7 @@ def build_app(
                 search_messages=True,  # BBB27 — GET /sessions/{sid}/messages/search
                 cost_tracking=True,  # BBB24 — Message.tokens + Session.cost_usd rollup
                 files=True,  # BBB22 — /v1/sessions/{sid}/context/files CRUD
+                diffs=True,  # BBB21 — file_diff parts + /diffs/apply,reject
                 # v0.2 additions — advertised when the scaffold
                 # actually emits them. Turned on piecewise as the
                 # follow-on items land.
@@ -593,6 +599,112 @@ def build_app(
                 ).model_dump(exclude_none=True),
             )
         return JSONResponse(status_code=204, content=None)
+
+    # ---- /v1/sessions/{sid}/diffs/* (BBB21) ---------------------------
+
+    def _filter_diff_paths(
+        rows: list[dict[str, Any]], paths: list[str]
+    ) -> list[dict[str, Any]]:
+        """Narrow pending diffs to a given path allow-list. Empty
+        list (or no param) means "every pending row"."""
+
+        if not paths:
+            return [r for r in rows if r["status"] == "pending"]
+        allow = set(paths)
+        return [r for r in rows if r["path"] in allow and r["status"] == "pending"]
+
+    @app.post("/v1/sessions/{sid}/diffs/apply")
+    async def diffs_apply(
+        sid: str, request: Request
+    ) -> dict[str, list[str]]:
+        """Mark pending diffs as applied + publish events.
+
+        Body: ``{paths: [...]}`` (optional). If omitted, every
+        pending diff is applied. Returns ``{applied: [...]}``. Does
+        NOT actually touch the filesystem — the agent is responsible
+        for that once it sees the ``file.diff.applied`` event; this
+        endpoint just records the user's decision and broadcasts it.
+        """
+
+        if app.state.sessions.get(sid) is None:
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="internal_error",
+                        message=f"session not found: {sid}",
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        if not isinstance(body, dict):
+            body = {}
+        paths = [p for p in (body.get("paths") or []) if isinstance(p, str)]
+
+        rows = app.state.pending_diffs.get(sid, [])
+        targets = _filter_diff_paths(rows, paths)
+        applied: list[str] = []
+        for r in targets:
+            r["status"] = "applied"
+            applied.append(r["path"])
+            app.state.bus.publish(Event(
+                type="file.diff.applied",
+                session_id=sid,
+                payload={
+                    "session_id": sid,
+                    "path": r["path"],
+                    "part_id": r.get("part_id", ""),
+                    "message_id": r.get("message_id", ""),
+                },
+            ))
+        return {"applied": applied}
+
+    @app.post("/v1/sessions/{sid}/diffs/reject")
+    async def diffs_reject(
+        sid: str, request: Request
+    ) -> dict[str, list[str]]:
+        """Mark pending diffs as rejected + publish events."""
+
+        if app.state.sessions.get(sid) is None:
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="internal_error",
+                        message=f"session not found: {sid}",
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        if not isinstance(body, dict):
+            body = {}
+        paths = [p for p in (body.get("paths") or []) if isinstance(p, str)]
+
+        rows = app.state.pending_diffs.get(sid, [])
+        targets = _filter_diff_paths(rows, paths)
+        rejected: list[str] = []
+        for r in targets:
+            r["status"] = "rejected"
+            rejected.append(r["path"])
+            app.state.bus.publish(Event(
+                type="file.diff.rejected",
+                session_id=sid,
+                payload={
+                    "session_id": sid,
+                    "path": r["path"],
+                    "part_id": r.get("part_id", ""),
+                    "message_id": r.get("message_id", ""),
+                },
+            ))
+        return {"rejected": rejected}
 
     # ---- /v1/sessions/{sid}/context/files (BBB22) ---------------------
 
@@ -965,6 +1077,7 @@ def build_app(
         selected_agent = ""
         rationale = ""
         tools_called: list[dict[str, Any]] = []
+        proposed_diffs: list[Any] = []
         turn_tokens: dict[str, int] = {
             "input": 0, "output": 0, "cache_read": 0, "cache_write": 0,
         }
@@ -994,6 +1107,7 @@ def build_app(
                         v = getattr(raw_tokens, key, 0)
                     turn_tokens[key] = int(v or 0)
             turn_cost = float(getattr(pred, "cost_usd", 0.0) or 0.0)
+            proposed_diffs = list(getattr(pred, "file_diffs", None) or [])
             # CLIO-BBBBBBBBBB20: if /cancel arrived while the agent
             # was mid-forward, override the turn as a cancellation.
             # Agents that cooperate (check an is_cancelled hook) get
@@ -1038,6 +1152,26 @@ def build_app(
             assistant_parts.append(
                 Part(id=_new_part_id(), type="text", text=answer_text)
             )
+        # CLIO-BBBBBBBBBB21: turn Prediction.file_diffs into
+        # file_diff Parts + pending_diffs rows so the TUI can render
+        # apply/reject keys and the endpoint can record decisions.
+        for row in proposed_diffs:
+            if isinstance(row, dict):
+                path = row.get("path", "")
+                udiff = row.get("unified_diff", "")
+            else:
+                path = getattr(row, "path", "")
+                udiff = getattr(row, "unified_diff", "")
+            if not path or not udiff:
+                continue
+            pid = _new_part_id()
+            assistant_parts.append(Part(
+                id=pid,
+                type="file_diff",
+                path=path,
+                unified_diff=udiff,
+                status="pending",
+            ))
 
         assistant_metadata: dict[str, Any] = {}
         if tools_called:
@@ -1055,6 +1189,20 @@ def build_app(
             error_info=error_info,
             metadata=assistant_metadata,
         )
+
+        # CLIO-BBBBBBBBBB21: index any file_diff parts into
+        # pending_diffs so /diffs/apply + /diffs/reject can find them.
+        bucket = app.state.pending_diffs.setdefault(sid, [])
+        for p in assistant_parts:
+            if p.type != "file_diff":
+                continue
+            bucket.append({
+                "path": p.path,
+                "unified_diff": p.unified_diff,
+                "status": "pending",
+                "part_id": p.id,
+                "message_id": assistant_msg.id,
+            })
 
         # Settle the session back to idle (or error, if we already
         # stamped it above). Also accumulate the turn's cost/tokens
