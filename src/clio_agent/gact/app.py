@@ -23,12 +23,38 @@ from __future__ import annotations
 
 import argparse
 import time
+import uuid
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import AsyncIterator, Optional
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
+
+# ---- ID + timestamp helpers used by the message endpoint ---------
+# Kept at module level (not inside build_app) so they're trivially
+# importable by future streaming code + easy to mock in tests.
+
+
+def _new_message_id(role_prefix: str) -> str:
+    """Generate a message id. Role prefix ('user' / 'asst' / 'tool')
+    makes log scraping + human triage cheaper."""
+
+    return f"msg_{role_prefix}_{uuid.uuid4().hex[:12]}"
+
+
+def _new_part_id() -> str:
+    return f"part_{uuid.uuid4().hex[:12]}"
+
+
+def _iso_from_epoch(ts: float) -> str:
+    """ISO-8601 UTC with microsecond precision to match the session
+    registry's created_at format."""
+
+    return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
+
+from typing import Any, Protocol
 
 from clio_agent.gact.sessions import SessionStore, _default_store_path
 from clio_agent.gact.types import (
@@ -42,9 +68,27 @@ from clio_agent.gact.types import (
     HealthResponse,
     Integration,
     ListSessionsResponse,
+    Message,
+    Part,
+    PostMessageRequest,
+    PostMessageResponse,
     Session,
     TransportFlags,
 )
+
+
+class AgentLike(Protocol):
+    """Structural interface for anything the GACT POST-message path
+    can drive. Lets tests inject a fake without pulling DSPy + a real
+    LM; production wires the actual ``ClioAgent``.
+
+    ``forward`` MUST return something with ``.answer`` (str) and
+    ``.selected_expert`` (str). The real ``dspy.Prediction`` already
+    matches this shape; FakeClioAgent in the tests does too.
+    """
+
+    def forward(self, question: str, session_id: str) -> Any:  # pragma: no cover
+        ...
 
 # Version pins. Keep in sync with the gact-tui SPEC.md version bump
 # history; bump EMULATOR_VERSION-equivalent here only when the
@@ -88,7 +132,10 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     # wired.
 
 
-def build_app(sessions_path: Optional[Path] = None) -> FastAPI:
+def build_app(
+    sessions_path: Optional[Path] = None,
+    agent: Optional[AgentLike] = None,
+) -> FastAPI:
     """Construct the FastAPI app.
 
     Kept as a factory (not a module-level ``app = FastAPI()``) so
@@ -100,6 +147,12 @@ def build_app(sessions_path: Optional[Path] = None) -> FastAPI:
     ``None`` uses the production default (``~/.config/clio-agent/
     sessions.json``); tests pass ``tmp_path / "sessions.json"`` for
     isolation.
+
+    ``agent`` is the ClioAgent-like object driving turns. Left
+    ``None`` for builds that only exercise session CRUD without
+    actual LM calls — endpoints needing an agent (POST messages, SSE)
+    return a structured 503 until one is wired. Production main()
+    constructs a real ``ClioAgent`` and passes it here.
     """
 
     app = FastAPI(
@@ -114,6 +167,7 @@ def build_app(sessions_path: Optional[Path] = None) -> FastAPI:
     app.state.sessions = SessionStore(
         path=sessions_path if sessions_path is not None else _default_store_path()
     )
+    app.state.agent = agent  # may be None; POST message checks before using
 
     @app.get("/v1/health", response_model=HealthResponse)
     async def health() -> HealthResponse:
@@ -227,12 +281,131 @@ def build_app(sessions_path: Optional[Path] = None) -> FastAPI:
             )
         return JSONResponse(status_code=204, content=None)
 
+    # ---- POST /v1/sessions/{sid}/messages (BBB9) ---------------------
+    # Non-streaming turn: 1 request, 1 response body containing both
+    # the stored user message + the assistant's reply. Streaming
+    # (SSE on /v1/sessions/{sid}/events) lands in BBB10.
+
+    @app.post(
+        "/v1/sessions/{sid}/messages", response_model=PostMessageResponse
+    )
+    async def post_message(
+        sid: str, req: PostMessageRequest
+    ) -> PostMessageResponse:
+        sess = app.state.sessions.get(sid)
+        if sess is None:
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="internal_error",
+                        message=f"session not found: {sid}",
+                        details={"session_id": sid},
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        if app.state.agent is None:
+            raise HTTPException(
+                status_code=503,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="config_error",
+                        message=(
+                            "ClioAgent not wired into this build. Launch via "
+                            "`clio-agent-gact` (which constructs a real agent) "
+                            "or pass `agent=...` to build_app()."
+                        ),
+                        details={"session_id": sid},
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+
+        # Mark the session running + stamp updated_at so clients see
+        # the transition even though no SSE stream is live for the
+        # non-streaming path.
+        app.state.sessions.update(sid, status="running")
+
+        now = time.time()
+        user_msg = Message(
+            id=_new_message_id("user"),
+            session_id=sid,
+            role="user",
+            created_at=_iso_from_epoch(now),
+            updated_at=_iso_from_epoch(now),
+            parts=[Part(id=_new_part_id(), type="text", text=req.text)],
+            metadata=req.metadata,
+        )
+
+        error_info: Optional[ErrorInfo] = None
+        answer_text = ""
+        selected_agent = ""
+        rationale = ""
+
+        try:
+            pred = app.state.agent.forward(req.text, session_id=sid)
+            answer_text = getattr(pred, "answer", "")
+            selected_agent = getattr(pred, "selected_expert", "") or ""
+            rationale = getattr(pred, "routing_rationale", "")
+        except Exception as exc:
+            error_info = ErrorInfo(
+                error="agent_error",
+                message=f"agent.forward raised: {exc}",
+                details={"original_error": type(exc).__name__},
+                recoverable=True,
+            )
+            app.state.sessions.update(sid, status="error")
+
+        # Build assistant parts — routing_decision (v0.2) first when
+        # we got a selected_agent, then the text answer.
+        assistant_parts: list[Part] = []
+        if selected_agent:
+            assistant_parts.append(
+                Part(
+                    id=_new_part_id(),
+                    type="routing_decision",
+                    selected_agent=selected_agent,
+                    rationale=rationale,
+                    confidence=0.0,  # unknown at this layer
+                    heuristic=False,
+                )
+            )
+        if answer_text:
+            assistant_parts.append(
+                Part(id=_new_part_id(), type="text", text=answer_text)
+            )
+
+        assistant_msg = Message(
+            id=_new_message_id("asst"),
+            session_id=sid,
+            role="assistant",
+            created_at=_iso_from_epoch(time.time()),
+            updated_at=_iso_from_epoch(time.time()),
+            parts=assistant_parts,
+            error_info=error_info,
+        )
+
+        # Settle the session back to idle (or error, if we already
+        # stamped it above).
+        if error_info is None:
+            app.state.sessions.update(
+                sid, status="idle", message_count=sess.message_count + 2
+            )
+        else:
+            app.state.sessions.update(
+                sid, message_count=sess.message_count + 2
+            )
+
+        return PostMessageResponse(
+            user_message=user_msg, assistant_message=assistant_msg
+        )
+
     # ---- 501 stubs for the still-unwired v0.2 surface ----------------
 
     _stub_routes: list[tuple[str, str, str]] = [
         # (method, path, capability_name_for_error)
         ("GET", "/v1/workspaces", "workspaces"),
-        ("POST", "/v1/sessions/{sid}/messages", "sessions"),
         ("GET", "/v1/sessions/{sid}/messages", "sessions"),
         ("GET", "/v1/sessions/{sid}/events", "sessions"),
         ("GET", "/v1/agents", "agent_routing"),

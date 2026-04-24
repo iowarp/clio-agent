@@ -74,7 +74,6 @@ def test_capabilities_advertises_v0_2(client: TestClient) -> None:
     "method,path",
     [
         ("GET", "/v1/workspaces"),
-        ("POST", "/v1/sessions/abc/messages"),
         ("GET", "/v1/sessions/abc/messages"),
         ("GET", "/v1/sessions/abc/events"),
         ("GET", "/v1/agents"),

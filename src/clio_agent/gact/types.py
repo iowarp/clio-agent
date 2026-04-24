@@ -175,3 +175,63 @@ class ListSessionsResponse(BaseModel):
     """GET /v1/sessions body."""
 
     sessions: list[Session]
+
+
+# ---------------------------------------------------------------------------
+# §4.4 — Message + Part (subset populated by BBB9)
+# ---------------------------------------------------------------------------
+
+
+class Part(BaseModel):
+    """SPEC §4.5. The discriminator is ``type``; fields are
+    ``omitempty`` JSON-wise so unused ones don't serialise."""
+
+    id: str
+    type: str
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    # text / error (v0.1 error part shape)
+    text: str = ""
+
+    # routing_decision (v0.2 §4.5)
+    selected_agent: str = ""
+    rationale: str = ""
+    confidence: float = 0.0
+    heuristic: bool = False
+
+
+class Message(BaseModel):
+    """SPEC §4.4 + v0.2 error_info. Fields outside BBB9's scope
+    (model/tokens/cost/stop_reason/parent etc.) default to zero /
+    empty until their endpoints land."""
+
+    id: str
+    session_id: str
+    role: Literal["user", "assistant", "system", "tool"]
+    created_at: str
+    updated_at: str
+    parts: list[Part] = Field(default_factory=list)
+    error_info: Optional[ErrorInfo] = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class PostMessageRequest(BaseModel):
+    """POST /v1/sessions/{sid}/messages body — SPEC §6.3."""
+
+    # The simplest v0.2 shape: a single text part. Future PRs can
+    # widen to accept multi-part user input (image + text, resource
+    # refs, etc.); the TUI only sends text today.
+    text: str
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class PostMessageResponse(BaseModel):
+    """POST /v1/sessions/{sid}/messages response — SPEC §6.3.
+
+    Carries the full assistant turn (one request → one response
+    when ``stream`` is false). Streaming lands in BBB10 via SSE on
+    /v1/sessions/{sid}/events.
+    """
+
+    user_message: Message
+    assistant_message: Message
