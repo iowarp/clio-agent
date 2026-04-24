@@ -210,7 +210,9 @@ class Session(BaseModel):
     id: str
     workspace_id: str
     title: str
-    status: Literal["idle", "running", "waiting_permission", "error"] = "idle"
+    status: Literal[
+        "idle", "running", "waiting_permission", "error", "cancelled"
+    ] = "idle"
     created_at: str
     updated_at: str
     message_count: int = 0

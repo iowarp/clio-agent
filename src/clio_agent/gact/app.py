@@ -395,6 +395,11 @@ def build_app(
     # persisted across restarts — disk-backed persistence lives in
     # the CLIO catch-up phase alongside ARC session replay.
     app.state.messages: dict[str, list[Message]] = {}
+    # CLIO-BBBBBBBBBB20: cooperative cancellation flags. POST /cancel
+    # adds a sid; the POST-message handler checks + clears after the
+    # agent returns. Set (not dict) because the flag's presence IS
+    # the signal — no payload.
+    app.state.cancel_flags: set[str] = set()
 
     @app.get("/v1/health", response_model=HealthResponse)
     async def health() -> HealthResponse:
@@ -580,6 +585,54 @@ def build_app(
             )
         return JSONResponse(status_code=204, content=None)
 
+    # ---- POST /v1/sessions/{sid}/cancel (BBB20) -----------------------
+
+    @app.post("/v1/sessions/{sid}/cancel")
+    async def cancel_session(sid: str) -> JSONResponse:
+        """Cooperative cancel of an in-flight turn on this session.
+
+        The agent's ``forward()`` checks ``agent.is_cancelled(sid)``
+        periodically (or honors a threading.Event we hand it) and
+        returns early with ``error_info.error == "cancelled"``. The
+        endpoint itself just flips the flag + publishes a
+        ``session.cancelled`` event so any live SSE subscriber sees
+        the transition without waiting for the next turn boundary.
+
+        Returns 204 whether a turn was actually running — the TUI
+        fires this on Esc/Ctrl+C speculatively and doesn't want an
+        error if the race finished on its own.
+        """
+
+        sess = app.state.sessions.get(sid)
+        if sess is None:
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="internal_error",
+                        message=f"session not found: {sid}",
+                        details={"session_id": sid},
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+
+        # Set the cancellation flag. The POST-message handler checks
+        # this after forward() returns so even agents that don't
+        # cooperate produce a cancelled-looking turn envelope.
+        app.state.cancel_flags.add(sid)
+        app.state.sessions.update(sid, status="cancelled")
+        app.state.bus.publish(Event(
+            type="session.status_changed",
+            session_id=sid,
+            payload={
+                "session_id": sid,
+                "status": "cancelled",
+                "prev_status": sess.status,
+            },
+        ))
+        return JSONResponse(status_code=204, content=None)
+
     # ---- POST /v1/sessions/{sid}/messages (BBB9) ---------------------
     # Non-streaming turn: 1 request, 1 response body containing both
     # the stored user message + the assistant's reply. Streaming
@@ -681,6 +734,23 @@ def build_app(
             # duration_ms, cached}` — all fields optional so the TUI
             # renders whatever's present.
             tools_called = _extract_tools_called(pred)
+            # CLIO-BBBBBBBBBB20: if /cancel arrived while the agent
+            # was mid-forward, override the turn as a cancellation.
+            # Agents that cooperate (check an is_cancelled hook) get
+            # here with partial output we discard; agents that don't
+            # (including FakeClioAgent) have their answer_text
+            # thrown away and the turn still reports cancelled —
+            # consistent UX either way.
+            if sid in app.state.cancel_flags:
+                app.state.cancel_flags.discard(sid)
+                error_info = ErrorInfo(
+                    error="cancelled",
+                    message="turn cancelled by client",
+                    details={"session_id": sid},
+                    recoverable=True,
+                )
+                answer_text = ""
+                tools_called = []
         except Exception as exc:
             error_info = ErrorInfo(
                 error="agent_error",
