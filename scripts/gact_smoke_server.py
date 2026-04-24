@@ -34,12 +34,21 @@ class _Prediction:
     tools_called: list[dict] = None  # type: ignore[assignment]
     tokens: dict = None  # type: ignore[assignment]
     cost_usd: float = 0.0
+    file_diffs: list[dict] = None  # type: ignore[assignment]
+    permissions_requested: list[dict] = None  # type: ignore[assignment]
+    nanoagents_spawned: list[dict] = None  # type: ignore[assignment]
 
     def __post_init__(self) -> None:
         if self.tools_called is None:
             self.tools_called = []
         if self.tokens is None:
             self.tokens = {}
+        if self.file_diffs is None:
+            self.file_diffs = []
+        if self.permissions_requested is None:
+            self.permissions_requested = []
+        if self.nanoagents_spawned is None:
+            self.nanoagents_spawned = []
 
 
 class FakeClioAgent:
@@ -68,6 +77,44 @@ class FakeClioAgent:
 
     def forward(self, question: str, session_id: str):
         q = question.lower()
+        # CLIO-BBBBBBBBBB29: scripted side-effects for a richer TUI
+        # demo. Keywords -> extras that drive specific TUI surfaces:
+        #   "propose"/"edit"   -> file_diff Part + pending diffs pane
+        #   "delete"/"destroy" -> permission.requested prompt
+        #   "split"/"review"   -> nanoagent spawn (tree sidebar)
+        extra_diffs: list[dict] = []
+        extra_perms: list[dict] = []
+        extra_spawns: list[dict] = []
+        if "propose" in q or "edit" in q:
+            extra_diffs = [{
+                "path": "example.py",
+                "unified_diff": (
+                    "--- a/example.py\n"
+                    "+++ b/example.py\n"
+                    "@@ -1,3 +1,3 @@\n"
+                    " def greet(name):\n"
+                    "-    return f'hello, {name}'\n"
+                    "+    return f'hello, {name}!'\n"
+                ),
+            }]
+        if "delete" in q or "destroy" in q or "remove" in q:
+            extra_perms = [{
+                "tool_call": {
+                    "call_id": "c1",
+                    "tool_name": "shell.exec",
+                    "input": {"cmd": "rm -rf /tmp/scratch"},
+                },
+                "summary": "destructive filesystem operation",
+            }]
+        if "split" in q or "review" in q:
+            extra_spawns = [{
+                "agent_id": "code_reviewer",
+                "input": {"files": ["example.py"]},
+                "answer": "looks good; one nit on line 3",
+                "duration_ms": 145.0,
+                "cost_usd": 0.0009,
+            }]
+
         for expert, keywords in self._KEYWORDS.items():
             for kw in keywords:
                 if kw in q:
@@ -106,6 +153,9 @@ class FakeClioAgent:
                             "cache_write": 0,
                         },
                         cost_usd=0.00412,
+                        file_diffs=extra_diffs,
+                        permissions_requested=extra_perms,
+                        nanoagents_spawned=extra_spawns,
                     )
         return _Prediction(
             answer=(
@@ -114,6 +164,9 @@ class FakeClioAgent:
             ),
             selected_expert="main",
             routing_rationale="no keyword match; fell through to tier-1",
+            file_diffs=extra_diffs,
+            permissions_requested=extra_perms,
+            nanoagents_spawned=extra_spawns,
         )
 
 
