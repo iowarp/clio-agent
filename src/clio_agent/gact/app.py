@@ -398,23 +398,95 @@ def build_app(
 
     @app.get("/v1/health", response_model=HealthResponse)
     async def health() -> HealthResponse:
+        """SPEC §3.4 — per-subsystem status feeds the TUI's /doctor
+        modal (v0.2 `integration_health`). We report on whatever is
+        actually wired in this build: the API itself, the session
+        store, the agent (real vs fake vs not-wired), and ARC.
+
+        overall_status collapses the rows to the worst case:
+        ready > degraded > unavailable.
+        """
+
         uptime = int(time.time() - app.state.started_at)
-        return HealthResponse(
-            healthy=True,
-            uptime_s=uptime,
-            overall_status="ready",
-            integrations=[
-                Integration(
-                    name="api",
+        rows: list[Integration] = [
+            Integration(
+                name="api",
+                status="ready",
+                detail=f"clio-agent-gact {GACT_BACKEND_VERSION}",
+            ),
+            Integration(
+                name="sessions",
+                status="ready",
+                detail=f"{len(app.state.sessions.list())} session(s) registered",
+            ),
+        ]
+
+        agent = app.state.agent
+        if agent is None:
+            rows.append(Integration(
+                name="agent",
+                status="unavailable",
+                detail="no ClioAgent wired; POST /messages will 503",
+            ))
+        else:
+            # Heuristic: the production ClioAgent is a class that
+            # imports DSPy under the hood and exposes it via
+            # `agent.__class__.__module__`. The smoke/test fakes
+            # live under 'gact_smoke_server' or '__main__'. Label
+            # them so the /doctor modal is honest about what's
+            # running.
+            mod = type(agent).__module__
+            is_fake = (
+                "smoke" in mod
+                or mod == "__main__"
+                or "test" in mod.lower()
+            )
+            rows.append(Integration(
+                name="agent",
+                status="degraded" if is_fake else "ready",
+                detail=(
+                    f"{type(agent).__name__} (fake — dev harness)"
+                    if is_fake
+                    else f"{type(agent).__name__} wired"
+                ),
+            ))
+
+        if app.state.arc is None:
+            rows.append(Integration(
+                name="arc",
+                status="degraded",
+                detail="no ARC wired; /v1/memory/stats returns zeros",
+            ))
+        else:
+            try:
+                stats = app.state.arc.get_cache_stats()
+                hr = stats.get("hit_rate", 0.0)
+                rows.append(Integration(
+                    name="arc",
                     status="ready",
-                    detail=f"clio-agent-gact {GACT_BACKEND_VERSION}",
-                ),
-                Integration(
-                    name="clio_agent",
+                    detail=f"cache {int(hr * 100)}% hit rate",
+                ))
+            except Exception as exc:
+                rows.append(Integration(
+                    name="arc",
                     status="unavailable",
-                    detail="ClioAgent wiring deferred to CLIO-BBBBBBBBBB7",
-                ),
-            ],
+                    detail=f"ARC.get_cache_stats raised: {exc!r}",
+                ))
+
+        # Worst-status wins.
+        statuses = {r.status for r in rows}
+        if "unavailable" in statuses:
+            overall = "unavailable"
+        elif "degraded" in statuses:
+            overall = "degraded"
+        else:
+            overall = "ready"
+
+        return HealthResponse(
+            healthy=overall != "unavailable",
+            uptime_s=uptime,
+            overall_status=overall,
+            integrations=rows,
         )
 
     @app.get("/v1/capabilities", response_model=Capabilities)

@@ -34,8 +34,13 @@ def test_health_returns_v0_2_shape(client: TestClient) -> None:
     resp = client.get("/v1/health")
     assert resp.status_code == 200
     body = resp.json()
-    assert body["healthy"] is True
-    assert body["overall_status"] == "ready"
+    # The default build_app() has no agent + no ARC wired, so the
+    # integrations table flags both as unavailable/degraded and the
+    # overall_status collapses accordingly. The scaffold test just
+    # pins the shape — behavioural tests in test_doctor_integrations
+    # cover the per-row logic.
+    assert body["overall_status"] in {"ready", "degraded", "unavailable"}
+    assert isinstance(body["healthy"], bool)
     # v0.2 integrations[] — at least one row with name + status.
     integrations = body.get("integrations", [])
     assert len(integrations) > 0, "v0.2 health must include integrations[]"
