@@ -31,6 +31,11 @@ class _Prediction:
     answer: str
     selected_expert: str
     routing_rationale: str = ""
+    tools_called: list[dict] = None  # type: ignore[assignment]
+
+    def __post_init__(self) -> None:
+        if self.tools_called is None:
+            self.tools_called = []
 
 
 class FakeClioAgent:
@@ -72,6 +77,24 @@ class FakeClioAgent:
                         routing_rationale=(
                             f"matched keyword {kw!r} -> {expert}"
                         ),
+                        # A plausible tool-call trace for the post-
+                        # hoc gutter render in the TUI.
+                        tools_called=[
+                            {
+                                "name": f"{expert}.analyze",
+                                "args": {"keyword": kw},
+                                "ok": True,
+                                "duration_ms": 24.7,
+                                "cached": True,
+                            },
+                            {
+                                "name": f"{expert}.summarise",
+                                "args": {},
+                                "ok": True,
+                                "duration_ms": 12.3,
+                                "cached": False,
+                            },
+                        ],
                     )
         return _Prediction(
             answer=(

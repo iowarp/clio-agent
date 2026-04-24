@@ -75,6 +75,62 @@ def _iso_from_epoch(ts: float) -> str:
     return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
 
 
+def _extract_tools_called(pred: Any) -> list[dict[str, Any]]:
+    """Pull an agent prediction's tool-call trace into a wire-shaped
+    list.
+
+    The tier-2 experts expose their tool calls on
+    ``pred.tools_called`` when the ReAct loop tracks them. Each
+    entry is either a ``clio_agent.arc.schema.ToolCall`` (msgspec
+    struct), a plain dict, or an object with attribute access —
+    handle all three. Fields copied onto the wire when present:
+    name, args, ok, duration_ms, cached. All optional.
+    """
+
+    raw = getattr(pred, "tools_called", None)
+    if not raw:
+        return []
+
+    out: list[dict[str, Any]] = []
+    for call in raw:
+        row: dict[str, Any] = {}
+        if isinstance(call, dict):
+            def get(key: str, default: Any = None, _src: Any = call) -> Any:
+                return _src.get(key, default)
+        else:
+            # msgspec structs + DSPy trace records — attribute access.
+            def get(key: str, default: Any = None, _src: Any = call) -> Any:
+                return getattr(_src, key, default)
+
+        name = get("name") or get("tool") or ""
+        if name:
+            row["name"] = str(name)
+
+        args = get("args")
+        if args is None:
+            args = get("arguments")
+        if args is not None:
+            row["args"] = args
+
+        status = get("status")
+        if status is not None:
+            row["ok"] = status not in {"failure", "error", "timeout"}
+        elif get("ok") is not None:
+            row["ok"] = bool(get("ok"))
+
+        duration_ms = get("duration_ms")
+        if duration_ms is not None:
+            row["duration_ms"] = float(duration_ms)
+
+        cached = get("cached")
+        if cached is not None:
+            row["cached"] = bool(cached)
+
+        if row:
+            out.append(row)
+    return out
+
+
 # CLIO-BBBBBBBBBB10: mapping from CLIO expert id to its GACT v0.2
 # specialization tag. Free-form (UI palette hint); picked to match
 # the emulator's generic "code_editing / data_analysis /
@@ -539,12 +595,20 @@ def build_app(
         answer_text = ""
         selected_agent = ""
         rationale = ""
+        tools_called: list[dict[str, Any]] = []
 
         try:
             pred = app.state.agent.forward(user_text, session_id=sid)
             answer_text = getattr(pred, "answer", "")
             selected_agent = getattr(pred, "selected_expert", "") or ""
             rationale = getattr(pred, "routing_rationale", "")
+            # Optional: the agent may expose ToolCall traces from the
+            # underlying ReAct loop. Normalise whatever shape the
+            # agent emits (ARC ToolCall struct, DSPy trace row, plain
+            # dict) into the v0.2 wire shape `{name, args, ok,
+            # duration_ms, cached}` — all fields optional so the TUI
+            # renders whatever's present.
+            tools_called = _extract_tools_called(pred)
         except Exception as exc:
             error_info = ErrorInfo(
                 error="agent_error",
@@ -573,6 +637,9 @@ def build_app(
                 Part(id=_new_part_id(), type="text", text=answer_text)
             )
 
+        assistant_metadata: dict[str, Any] = {}
+        if tools_called:
+            assistant_metadata["tools_called"] = tools_called
         assistant_msg = Message(
             id=_new_message_id("asst"),
             session_id=sid,
@@ -581,6 +648,7 @@ def build_app(
             updated_at=_iso_from_epoch(time.time()),
             parts=assistant_parts,
             error_info=error_info,
+            metadata=assistant_metadata,
         )
 
         # Settle the session back to idle (or error, if we already
@@ -627,15 +695,24 @@ def build_app(
                     "part": part.model_dump(exclude_none=True),
                 },
             ))
+        completed_payload: dict[str, Any] = {
+            "message_id": assistant_msg.id,
+            "stop_reason": "error" if error_info else "end_turn",
+            "tokens": {"input": 0, "output": 0},
+            "cost_usd": 0.0,
+        }
+        if tools_called:
+            # BBB16: the TUI renders a post-hoc gutter under the turn
+            # by reading metadata.tools_called off the completion
+            # event OR the assistant message. We emit both for
+            # redundancy — the emulator only populates it on the
+            # completion event, but downstream consumers of the
+            # persisted message log want it on the message too.
+            completed_payload["metadata"] = {"tools_called": tools_called}
         bus.publish(Event(
             type="message.completed",
             session_id=sid,
-            payload={
-                "message_id": assistant_msg.id,
-                "stop_reason": "error" if error_info else "end_turn",
-                "tokens": {"input": 0, "output": 0},
-                "cost_usd": 0.0,
-            },
+            payload=completed_payload,
         ))
         bus.publish(Event(
             type="session.status_changed",
