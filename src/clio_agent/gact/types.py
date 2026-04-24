@@ -216,6 +216,7 @@ class Session(BaseModel):
     created_at: str
     updated_at: str
     message_count: int = 0
+    parent_session_id: str = ""
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 

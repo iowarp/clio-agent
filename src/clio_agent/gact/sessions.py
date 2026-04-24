@@ -90,6 +90,7 @@ class Session:
     created_at: str = field(default_factory=_utcnow_iso)
     updated_at: str = field(default_factory=_utcnow_iso)
     message_count: int = 0
+    parent_session_id: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_wire(self) -> dict[str, Any]:
@@ -178,6 +179,7 @@ class SessionStore:
         workspace_id: str,
         title: str = "",
         metadata: Optional[dict[str, Any]] = None,
+        parent_session_id: str = "",
     ) -> Session:
         """Create a new session. Returns the freshly-minted record."""
 
@@ -191,6 +193,7 @@ class SessionStore:
             created_at=now,
             updated_at=now,
             metadata=dict(metadata or {}),
+            parent_session_id=parent_session_id,
         )
         with self._lock:
             self._sessions[sid] = sess

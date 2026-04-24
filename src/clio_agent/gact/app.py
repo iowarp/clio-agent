@@ -510,7 +510,9 @@ def build_app(
                 # capabilities we don't actually provide.
                 sessions=True,  # BBB8 — /v1/sessions CRUD
                 commands=False,
-                metrics=False,
+                metrics=True,  # BBB15 — /v1/metrics returns SPEC §6.16 envelope
+                session_branching=True,  # BBB26 — POST /sessions/{sid}/fork
+                search_messages=True,  # BBB27 — GET /sessions/{sid}/messages/search
                 # v0.2 additions — advertised when the scaffold
                 # actually emits them. Turned on piecewise as the
                 # follow-on items land.
@@ -584,6 +586,124 @@ def build_app(
                 ).model_dump(exclude_none=True),
             )
         return JSONResponse(status_code=204, content=None)
+
+    # ---- POST /v1/sessions/{sid}/fork (BBB26) -------------------------
+
+    @app.post("/v1/sessions/{sid}/fork")
+    async def fork_session(sid: str, request: Request) -> JSONResponse:
+        """Copy a session + its messages into a fresh session.
+
+        Body (optional): ``{"at_message_id": "<id>", "title": "..."}``
+        ``at_message_id`` truncates the copy at + including that
+        message (so "branch from this point"). Absent → copy every
+        stored message.
+
+        The new session's ``parent_session_id`` points at the source
+        so the TUI's sidebar can render the fork hierarchy (the v0.1
+        Session already carries that field).
+        """
+
+        sess = app.state.sessions.get(sid)
+        if sess is None:
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="internal_error",
+                        message=f"session not found: {sid}",
+                        details={"session_id": sid},
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        if not isinstance(body, dict):
+            body = {}
+        at = body.get("at_message_id") or ""
+        title = body.get("title") or f"{sess.title} (fork)"
+
+        src_msgs = list(app.state.messages.get(sid, []))
+        if at:
+            kept: list[Message] = []
+            for m in src_msgs:
+                kept.append(m)
+                if m.id == at:
+                    break
+            src_msgs = kept
+
+        new_sess = app.state.sessions.create(
+            workspace_id=sess.workspace_id,
+            title=title,
+            parent_session_id=sid,
+        )
+        # Deep-copy parts so the fork's message log doesn't alias the
+        # source's. Pydantic's model_copy gives us a snapshot.
+        app.state.messages[new_sess.id] = [m.model_copy(deep=True) for m in src_msgs]
+        app.state.sessions.update(
+            new_sess.id, message_count=len(src_msgs)
+        )
+        return JSONResponse(
+            status_code=201,
+            content=Session(**new_sess.to_wire()).model_dump(exclude_none=True),
+        )
+
+    # ---- GET /v1/sessions/{sid}/messages/search (BBB27) ---------------
+
+    @app.get("/v1/sessions/{sid}/messages/search")
+    async def search_messages(sid: str, q: str = "") -> dict[str, Any]:
+        """Case-insensitive substring search across stored messages.
+
+        Returns ``{matches: [{message_id, part_id, snippet, score}]}``.
+        Score is a crude recency-biased ranking: newer hits score
+        higher (+0.01 per message index) so identical snippets
+        surface in turn order.
+        """
+
+        sess = app.state.sessions.get(sid)
+        if sess is None:
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="internal_error",
+                        message=f"session not found: {sid}",
+                        details={"session_id": sid},
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        needle = q.strip().lower()
+        if not needle:
+            return {"matches": []}
+
+        matches: list[dict[str, Any]] = []
+        rows = app.state.messages.get(sid, [])
+        for idx, m in enumerate(rows):
+            for part in m.parts:
+                text = (part.text or "").lower()
+                i = text.find(needle)
+                if i < 0:
+                    continue
+                # 60-char snippet window centered on the hit.
+                start = max(0, i - 30)
+                end = min(len(part.text), i + len(needle) + 30)
+                snippet = part.text[start:end]
+                if start > 0:
+                    snippet = "…" + snippet
+                if end < len(part.text):
+                    snippet = snippet + "…"
+                matches.append({
+                    "message_id": m.id,
+                    "part_id": part.id,
+                    "snippet": snippet,
+                    "score": 1.0 + (idx * 0.01),
+                })
+        matches.sort(key=lambda r: r["score"], reverse=True)
+        return {"matches": matches}
 
     # ---- POST /v1/sessions/{sid}/cancel (BBB20) -----------------------
 
