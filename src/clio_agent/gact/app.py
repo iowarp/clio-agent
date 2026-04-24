@@ -1432,15 +1432,55 @@ def build_app(
                 parts=[],  # parts arrive via subsequent .added events
             ).model_dump(exclude_none=True),
         ))
+        # CLIO-BBBBBBBBBB19: text parts stream via message.part.added
+        # (empty text) + N message.part.delta events that carry
+        # text_append chunks. Non-text parts (routing_decision,
+        # file_diff) arrive whole. Scaffold chunks synchronous text
+        # into 64-char windows — a real DSPy pass-through would
+        # drive the same delta shape with actual token chunks.
+        _CHUNK = 64
         for part in assistant_parts:
-            bus.publish(Event(
-                type="message.part.added",
-                session_id=sid,
-                payload={
-                    "message_id": assistant_msg.id,
-                    "part": part.model_dump(exclude_none=True),
-                },
-            ))
+            if part.type == "text" and part.text:
+                # Added with empty text + id so subscribers have
+                # something to append into.
+                stub = part.model_copy(deep=True)
+                stub.text = ""
+                bus.publish(Event(
+                    type="message.part.added",
+                    session_id=sid,
+                    payload={
+                        "message_id": assistant_msg.id,
+                        "part": stub.model_dump(exclude_none=True),
+                    },
+                ))
+                full = part.text
+                for i in range(0, len(full), _CHUNK):
+                    bus.publish(Event(
+                        type="message.part.delta",
+                        session_id=sid,
+                        payload={
+                            "message_id": assistant_msg.id,
+                            "part_id": part.id,
+                            "delta": {"text_append": full[i:i + _CHUNK]},
+                        },
+                    ))
+                bus.publish(Event(
+                    type="message.part.completed",
+                    session_id=sid,
+                    payload={
+                        "message_id": assistant_msg.id,
+                        "part_id": part.id,
+                    },
+                ))
+            else:
+                bus.publish(Event(
+                    type="message.part.added",
+                    session_id=sid,
+                    payload={
+                        "message_id": assistant_msg.id,
+                        "part": part.model_dump(exclude_none=True),
+                    },
+                ))
         # CLIO-BBBBBBBBBB18: per-tool telemetry events. Emit a
         # started/completed pair for each tool the agent reported.
         # The fake-agent path derives these from
