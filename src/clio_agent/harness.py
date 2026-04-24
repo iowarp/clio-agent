@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 import time
 import uuid
@@ -151,76 +152,6 @@ class RunTrace:
         return (time.time() - self.started_at) * 1000
 
 
-class IntentRouter:
-    """Deterministic CLIO router for obvious scientific-data intents.
-
-    LLM routing remains useful for vague language, but explicit file/tool
-    intents should not depend on model parsing.
-    """
-
-    _VISUAL_TOKENS = ("plot", "chart", "graph", "histogram", "scatter", "visualize")
-    _HDF5_TOKENS = (".h5", ".hdf5", "hdf5", "chunking", "compression")
-    _PARQUET_TOKENS = (".parquet", "parquet", "schema", "statistics", "null count")
-    _CSV_TOKENS = (".csv", "csv")
-    _CHAT_TOKENS = ("who are you", "what can you do", "help")
-    _GREETINGS = {"hi", "hello", "hey"}
-
-    def classify(self, question: str) -> RouteDecision | None:
-        """Return a deterministic route when the intent is unambiguous."""
-        q = question.lower().strip()
-        capabilities: list[str] = []
-
-        if any(token in q for token in self._VISUAL_TOKENS):
-            capabilities.append("visualization")
-            return RouteDecision(
-                target="visualization",
-                source="deterministic",
-                reason="Visualization verb detected.",
-                confidence=0.95,
-                capabilities=tuple(capabilities),
-            )
-
-        if any(token in q for token in self._HDF5_TOKENS):
-            capabilities.extend(["hdf5", "data-layout"])
-            return RouteDecision(
-                target="data",
-                source="deterministic",
-                reason="HDF5 or storage-layout intent detected.",
-                confidence=0.95,
-                capabilities=tuple(capabilities),
-            )
-
-        if any(token in q for token in self._PARQUET_TOKENS):
-            capabilities.extend(["parquet", "profiling"])
-            return RouteDecision(
-                target="analysis",
-                source="deterministic",
-                reason="Parquet/statistics intent detected.",
-                confidence=0.95,
-                capabilities=tuple(capabilities),
-            )
-
-        if any(token in q for token in self._CSV_TOKENS):
-            capabilities.extend(["csv", "profiling"])
-            return RouteDecision(
-                target="analysis",
-                source="deterministic",
-                reason="CSV inspection intent detected.",
-                confidence=0.9,
-                capabilities=tuple(capabilities),
-            )
-
-        if q in self._GREETINGS or any(token in q for token in self._CHAT_TOKENS):
-            return RouteDecision(
-                target="chat",
-                source="deterministic",
-                reason="Conversational CLIO intent detected.",
-                confidence=0.9,
-            )
-
-        return None
-
-
 def tool_result_ok(result: Any) -> bool:
     """Return whether a tool result represents success."""
     if isinstance(result, dict) and "error" in result:
@@ -289,6 +220,17 @@ def normalize_tool_error(
             next_action=next_action,
             details=details,
         )
+
+    if isinstance(error, str):
+        parsed_error = _parse_json_error_text(error)
+        if parsed_error is not None:
+            return normalize_tool_error(
+                parsed_error,
+                tool=tool,
+                code=code,
+                next_action=next_action,
+                details=details,
+            )
 
     normalized: dict[str, Any]
     if isinstance(error, MappingABC):
@@ -544,3 +486,16 @@ def _json_safe(value: Any) -> Any:
     if value is None or isinstance(value, (str, int, float, bool)):
         return value
     return str(value)
+
+
+def _parse_json_error_text(text: str) -> Any | None:
+    stripped = text.removeprefix("Error:").strip()
+    if not stripped.startswith("{"):
+        return None
+    try:
+        decoded = json.loads(stripped)
+    except json.JSONDecodeError:
+        return None
+    if isinstance(decoded, MappingABC):
+        return decoded
+    return None

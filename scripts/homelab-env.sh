@@ -5,12 +5,19 @@
 # Source this file, then switch with:
 #   clio_homelab_use dynamo-lms
 #   clio_homelab_use mini-llama
+#   clio_homelab_use mini-gemma4
 #   clio_homelab_use dynamo-ollama
 
 _clio_homelab_set_common() {
   export CLIO_LM_API_BASE="$1"
   export CLIO_LM_MODEL="$2"
   export CLIO_LM_API_KEY="$3"
+  if [[ -n "${4:-}" ]]; then
+    export CLIO_LM_TEMPERATURE="$4"
+  fi
+  if [[ -n "${5:-}" ]]; then
+    export CLIO_LM_MAX_TOKENS="$5"
+  fi
 }
 
 clio_homelab_use() {
@@ -31,6 +38,15 @@ clio_homelab_use() {
         "Qwen3.5-35B-A3B-UD-Q4_K_XL" \
         "llama"
       ;;
+    mini-gemma4)
+      export CLIO_LM_PROVIDER="lm_studio"
+      _clio_homelab_set_common \
+        "http://192.168.86.141:8080/v1" \
+        "gemma-4-26B-A4B-it-Q4_K_M" \
+        "llama" \
+        "0.3" \
+        "16384"
+      ;;
     dynamo-ollama)
       export CLIO_LM_PROVIDER="ollama"
       _clio_homelab_set_common \
@@ -50,6 +66,7 @@ Usage:
 Profiles:
   dynamo-lms      -> DYNAMO LM Studio (nemotron-cascade-2-30b-a3b-i1)
   mini-llama      -> MINI llama.cpp server (Qwen3.5-35B-A3B-UD-Q4_K_XL)
+  mini-gemma4     -> MINI llama.cpp server (gemma-4-26B-A4B-it-Q4_K_M)
   dynamo-ollama   -> DYNAMO Ollama (nemotron-3-nano:30b)
   status          -> print current CLIO_LM_* values
 EOF
@@ -70,4 +87,6 @@ clio_homelab_status() {
   printf "CLIO_LM_API_BASE=%s\n" "${CLIO_LM_API_BASE:-}"
   printf "CLIO_LM_MODEL=%s\n" "${CLIO_LM_MODEL:-}"
   printf "CLIO_LM_API_KEY=%s\n" "${CLIO_LM_API_KEY:-}"
+  printf "CLIO_LM_TEMPERATURE=%s\n" "${CLIO_LM_TEMPERATURE:-}"
+  printf "CLIO_LM_MAX_TOKENS=%s\n" "${CLIO_LM_MAX_TOKENS:-}"
 }

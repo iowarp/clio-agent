@@ -77,6 +77,14 @@ HDF5_DATASET_ROW_FIELDS: dict[str, type | tuple[type, ...]] = {
     "size_bytes": int,
 }
 
+HDF5_DATASET_ANALYSIS_FIELDS: dict[str, type | tuple[type, ...]] = {
+    "path": str,
+    "shape": list,
+    "dtype": str,
+    "size_bytes": int,
+    "is_chunked": bool,
+}
+
 
 class DataExpert(dspy.Module):
     """Scientific data expert with native HDF5 tool execution.
@@ -147,7 +155,116 @@ class DataExpert(dspy.Module):
         paths = extract_file_paths(request.question, request.file_context, {".h5", ".hdf5"})
         if not paths:
             return self._synthesize_without_tools(request)
+        if self._wants_dataset_analysis(request.question):
+            return self._inspect_hdf5_dataset_request(request, str(paths[0]))
         return self._inspect_hdf5_file(request, str(paths[0]))
+
+    def _inspect_hdf5_dataset_request(self, request: ExpertRequest, filepath: str) -> ExpertResult:
+        """Run hdf5_analyze_dataset when a concrete dataset is named."""
+        runner = NativeToolRunner(self._tool_executor)
+        datasets = runner.call("hdf5_list_datasets", {"filepath": filepath})
+        datasets_valid = validate_tool_result(
+            "hdf5_list_datasets",
+            datasets,
+            HDF5_DATASET_LIST_FIELDS,
+        )
+        if not datasets_valid.ok:
+            assert datasets_valid.error is not None
+            runner.mark_validation_error("hdf5_list_datasets", datasets_valid.error)
+            return self._hdf5_failure_result(filepath, datasets_valid.error, runner)
+
+        datasets_data = datasets_valid.data or {}
+        rows_valid = validate_tool_items(
+            "hdf5_list_datasets",
+            datasets_data,
+            "datasets",
+            HDF5_DATASET_ROW_FIELDS,
+        )
+        if not rows_valid.ok:
+            assert rows_valid.error is not None
+            runner.mark_validation_error("hdf5_list_datasets", rows_valid.error)
+            return self._hdf5_failure_result(filepath, rows_valid.error, runner)
+
+        dataset_rows = datasets_data["datasets"]
+        dataset_path = self._match_dataset_path(request.question, dataset_rows)
+        if not dataset_path:
+            dataset_lines = [f"- {d['path']}" for d in dataset_rows[:12]]
+            if len(dataset_rows) > 12:
+                dataset_lines.append(f"- ... {len(dataset_rows) - 12} more datasets")
+            return ExpertResult(
+                analysis=(
+                    f"hdf5_analyze_dataset needs a dataset path inside {filepath}. "
+                    "Available datasets:\n"
+                    + ("\n".join(dataset_lines) if dataset_lines else "No datasets were found.")
+                ),
+                recommendations=(
+                    "Retry with a dataset path, for example: "
+                    f"Run hdf5_analyze_dataset on {filepath} for "
+                    f"{dataset_rows[0]['path'] if dataset_rows else '<dataset>'}."
+                ),
+                source="deterministic",
+                tools=runner.observations,
+                metadata={
+                    "expert": "data",
+                    "format": "hdf5",
+                    "filepath": filepath,
+                    "mode": "missing_dataset",
+                },
+            )
+
+        dataset_result = runner.call(
+            "hdf5_analyze_dataset",
+            {"filepath": filepath, "dataset": dataset_path},
+        )
+        dataset_valid = validate_tool_result(
+            "hdf5_analyze_dataset",
+            dataset_result,
+            HDF5_DATASET_ANALYSIS_FIELDS,
+        )
+        if not dataset_valid.ok:
+            assert dataset_valid.error is not None
+            runner.mark_validation_error("hdf5_analyze_dataset", dataset_valid.error)
+            return self._hdf5_failure_result(filepath, dataset_valid.error, runner)
+
+        dataset_data = dataset_valid.data or {}
+        details = [
+            f"- shape={dataset_data['shape']}",
+            f"- dtype={dataset_data['dtype']}",
+            f"- size={format_bytes(dataset_data['size_bytes'])}",
+            f"- chunked={dataset_data['is_chunked']}",
+        ]
+        if "chunks" in dataset_data:
+            details.append(f"- chunks={dataset_data['chunks']}")
+        if "compression" in dataset_data:
+            details.append(f"- compression={dataset_data['compression']}")
+        stats = dataset_data.get("statistics")
+        if isinstance(stats, dict):
+            stats_bits = [
+                f"{key}={stats[key]}"
+                for key in ("min", "max", "mean", "sampled_elements", "total_elements")
+                if key in stats
+            ]
+            if stats_bits:
+                details.append("- statistics: " + ", ".join(stats_bits))
+
+        return ExpertResult(
+            analysis=(
+                f"Analyzed HDF5 dataset {dataset_path} in {filepath}.\n"
+                + "\n".join(details)
+            ),
+            recommendations=self._hdf5_recommendations(
+                uncompressed=0 if dataset_data.get("compression") else 1,
+                question=request.question,
+            ),
+            source="deterministic",
+            tools=runner.observations,
+            metadata={
+                "expert": "data",
+                "format": "hdf5",
+                "filepath": filepath,
+                "dataset": dataset_path,
+            },
+        )
 
     def _inspect_hdf5_file(self, request: ExpertRequest, filepath: str) -> ExpertResult:
         """Inspect a concrete HDF5 path through deterministic gateway tools."""
@@ -248,6 +365,23 @@ class DataExpert(dspy.Module):
             tools=runner.observations,
             metadata={"expert": "data", "format": "hdf5", "filepath": filepath},
         )
+
+    @staticmethod
+    def _wants_dataset_analysis(question: str) -> bool:
+        q_lower = question.lower()
+        return any(
+            token in q_lower
+            for token in ("hdf5_analyze_dataset", "analyze_dataset", "analyze dataset")
+        )
+
+    @staticmethod
+    def _match_dataset_path(question: str, dataset_rows: list[dict[str, Any]]) -> str | None:
+        q_lower = question.lower()
+        for row in dataset_rows:
+            path = str(row.get("path", ""))
+            if path and path.lower() in q_lower:
+                return path
+        return None
 
     @staticmethod
     def _hdf5_recommendations(*, uncompressed: int, question: str) -> str:

@@ -21,7 +21,7 @@ ClioAgent Command-Line Interface
 Interactive ClioAgent Agent Framework TUI for scientific data I/O assistance.
 
 Features:
-- Router-based dispatch to DataExpert or ChatAgent
+- Planner loop over registered experts and tools
 - DataExpert with native tool execution and optional synthesis
 - ChatAgent for conversational responses
 - Rich TUI with syntax highlighting
@@ -55,7 +55,7 @@ if str(_src_root) not in sys.path:
     sys.path.insert(0, str(_src_root))
 
 from clio_agent.agent import ClioAgent
-from clio_agent.config import load_config_from_env, setup_dspy
+from clio_agent.config import load_config_from_env, load_project_env_file, setup_dspy
 
 # ============================================================================
 # CLI CLASS
@@ -66,7 +66,7 @@ class ClioAgentCLI:
     """Interactive CLI for ClioAgent data I/O expert system.
 
     Demonstrates:
-    - ClioAgent Router -> Expert/Chat dispatch
+    - ClioAgent planner loop -> tools/experts/answer
     - DataExpert native execution with MCP tools
     - ChatAgent for conversational queries
     - Observable reasoning traces
@@ -86,6 +86,7 @@ class ClioAgentCLI:
         self.console = Console()
         self.verbose = verbose
         self.history: list[dict[str, Any]] = []
+        load_project_env_file()
 
         # Setup LM Studio
         try:
@@ -170,6 +171,7 @@ class ClioAgentCLI:
             ("/experts", "List available experts and capabilities"),
             ("/registry", "Show agent registry status"),
             ("/memory", "Display ARC memory statistics"),
+            ("/models", "Show configured local LM model"),
             ("/tools", "Show available MCP tools"),
             ("/doctor", "Show runtime integration status"),
             ("/metrics", "Show per-expert performance metrics"),
@@ -210,8 +212,8 @@ class ClioAgentCLI:
         info = f"""[bold]Agent Registry Status[/bold]
 
 Registered Agents: {agent_count}
-Registry Type: Capability-Based Routing
-Router: Literal["chat", "data", "analysis", "visualization", "none"] via ChainOfThought
+Registry Type: Planner-visible experts and tools
+Planner: JSON action loop over chat, data, analysis, visualization, and none
 
 [cyan]Registered Agent IDs:[/cyan]
 {", ".join(agent_ids) if agent_ids else "None"}
@@ -274,6 +276,21 @@ Router: Literal["chat", "data", "analysis", "visualization", "none"] via ChainOf
 
         self.console.print(tools_table)
 
+    def print_models(self) -> None:
+        """Display configured LM endpoint and model."""
+        import os
+
+        config = getattr(self.agent, "_provider_config", None) or load_config_from_env()
+        table = Table(title="LM Configuration", show_header=True)
+        table.add_column("Setting", style="cyan")
+        table.add_column("Value", style="green")
+        table.add_row("Provider", self._provider_label(config.provider))
+        table.add_row("API Base", config.api_base)
+        table.add_row("Model", config.model)
+        table.add_row("Max Tokens", str(config.max_tokens))
+        table.add_row("Env File", os.environ.get("CLIO_ENV_FILE_LOADED", "not loaded"))
+        self.console.print(table)
+
     def print_doctor(self) -> None:
         """Display runtime integration status."""
         from clio_agent.runtime.status import collect_runtime_status
@@ -323,6 +340,10 @@ Router: Literal["chat", "data", "analysis", "visualization", "none"] via ChainOf
 
         elif cmd == "/memory":
             self.print_memory()
+            return True
+
+        elif cmd == "/models":
+            self.print_models()
             return True
 
         elif cmd == "/tools":
@@ -464,12 +485,12 @@ Router: Literal["chat", "data", "analysis", "visualization", "none"] via ChainOf
             self.console.print("[yellow]No previous variant to rollback to.[/yellow]")
 
     def ask_question(self, question: str) -> dict:
-        """Ask ClioAgent a question via Router -> Expert/Chat dispatch.
+        """Ask ClioAgent a question via the planner loop.
 
         Flow:
-            1. Router classifies intent (Literal["data", "chat"])
-            2. Dispatches to DataExpert or ChatAgent
-            3. Display results with expert label
+            1. Planner chooses tool, expert, answer, or no-op action
+            2. Tool/expert observations are recorded
+            3. Display results with selected handler label
 
         Args:
             question: User's question
@@ -478,7 +499,7 @@ Router: Literal["chat", "data", "analysis", "visualization", "none"] via ChainOf
             Dictionary with result including answer, expert, and stats
         """
         # Show processing spinner
-        with self.console.status("[#00B4FF]Routing query...[/#00B4FF]", spinner="dots"):
+        with self.console.status("[#00B4FF]Running agent loop...[/#00B4FF]", spinner="dots"):
             result = self.agent(question=question)
 
         return {
@@ -523,7 +544,7 @@ Router: Literal["chat", "data", "analysis", "visualization", "none"] via ChainOf
                 # Show verbose info
                 if self.verbose:
                     self.console.print(
-                        f"\n[#00B4FF]Router:[/#00B4FF] [bold]{result['expert']}[/bold]"
+                        f"\n[#00B4FF]Agent:[/#00B4FF] [bold]{result['expert']}[/bold]"
                     )
                     self.console.print(
                         f"[#FF8800]Duration:[/#FF8800] {result['duration_ms']:.0f}ms\n"
@@ -535,7 +556,7 @@ Router: Literal["chat", "data", "analysis", "visualization", "none"] via ChainOf
                     Panel(
                         Markdown(result["answer"]),
                         title=f"[bold #00FF88]CLIO[/bold #00FF88] [dim]via {expert_label}[/dim]",
-                        subtitle="[dim]Router dispatch[/dim]" if not self.verbose else None,
+                        subtitle="[dim]Agent loop[/dim]" if not self.verbose else None,
                         border_style="#00B4FF",
                     )
                 )
@@ -662,6 +683,7 @@ if __name__ == "__main__":
     )
 
     args = parser.parse_args()
+    load_project_env_file()
 
     if args.command == "doctor":
         sys.exit(run_doctor(json_output=args.json))
@@ -793,11 +815,11 @@ if __name__ == "__main__":
                 route_reason = getattr(result, "route_reason", "")
                 if route_source:
                     console.print(
-                        f"[bold green]Router:[/bold green] {result.selected_expert} "
+                        f"[bold green]Agent:[/bold green] {result.selected_expert} "
                         f"([dim]{route_source}: {route_reason}[/dim])"
                     )
                 else:
-                    console.print(f"[bold green]Router:[/bold green] {result.selected_expert}")
+                    console.print(f"[bold green]Agent:[/bold green] {result.selected_expert}")
                 console.print(Panel(Markdown(result.answer), title="CLIO", border_style="green"))
 
         except Exception as e:

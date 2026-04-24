@@ -270,6 +270,33 @@ class TestQuerySSE:
                 assert data["error"] == "internal_error"
                 break
 
+    def test_stream_done_event_includes_error_info(self, client, mock_agent):
+        prediction = dspy.Prediction(
+            answer="handled failure",
+            selected_expert="data",
+            session_id="default",
+            duration_ms=100.0,
+            error_info={
+                "error": "tool_error",
+                "message": "File does not exist",
+                "details": {"tool": "hdf5_analyze_file"},
+            },
+        )
+        mock_agent.return_value = prediction
+        mock_agent.forward.return_value = prediction
+
+        resp = client.post("/query", json={"question": "missing file", "stream": True})
+
+        lines = resp.text.splitlines()
+        for i, line in enumerate(lines):
+            if line.strip() == "event: done":
+                for j in range(i + 1, min(i + 3, len(lines))):
+                    if lines[j].startswith("data:"):
+                        data = json.loads(lines[j][len("data:") :].strip())
+                        assert data["error_info"]["error"] == "tool_error"
+                        return
+        raise AssertionError("No done event found in SSE stream")
+
 
 # ---------------------------------------------------------------------------
 # GET /experts

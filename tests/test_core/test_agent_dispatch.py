@@ -1,9 +1,10 @@
-"""Tests for agent.py dispatch with mocked experts and router.
+"""Tests for agent.py dispatch with mocked experts and planner.
 
 Tests forward() dispatch, expert invocation instrumentation, variant loading
 on __init__, and error handling paths -- all without requiring LM Studio.
 """
 
+import json
 from unittest.mock import MagicMock, patch
 
 import dspy
@@ -20,15 +21,73 @@ def agent(tmp_path):
     a.shutdown()
 
 
+def _plan_action(action: dict[str, object]) -> dspy.Prediction:
+    return dspy.Prediction(action_json=json.dumps(action))
+
+
+def _set_planner(agent: ClioAgent, action: dict[str, object]) -> None:
+    agent.action_planner = MagicMock(return_value=_plan_action(action))
+
+
 class TestForwardDispatch:
-    """Test forward() dispatch to experts with mocked router."""
+    """Test forward() dispatch to experts with mocked planner."""
+
+    @staticmethod
+    def _plan_action(action: dict[str, object]) -> dspy.Prediction:
+        return dspy.Prediction(action_json=json.dumps(action))
+
+    def _set_planner(self, agent: ClioAgent, action: dict[str, object]) -> None:
+        _set_planner(agent, action)
+
+    def test_incompatible_file_expert_replans_without_synthesis(self, agent, tmp_path):
+        """An HDF5 follow-up must not let the analysis expert synthesize fake file facts."""
+        hdf5_path = tmp_path / "run.h5"
+        hdf5_path.touch()
+        agent._store_conversation(
+            f"Inspect {hdf5_path}",
+            f"Inspected HDF5 file {hdf5_path}.",
+            "guard-hdf5",
+        )
+        agent.action_planner = MagicMock(
+            side_effect=[
+                _plan_action(
+                    {
+                        "action": "expert",
+                        "expert": "analysis",
+                        "question": "analyze it",
+                        "reason": "incorrect expert choice",
+                    }
+                ),
+                _plan_action(
+                    {
+                        "action": "expert",
+                        "expert": "data",
+                        "question": "analyze it",
+                        "reason": "compatible expert choice",
+                    }
+                ),
+            ]
+        )
+        agent.analysis_expert = MagicMock(
+            return_value=dspy.Prediction(analysis="fake analysis", recommendations="fake rec")
+        )
+        agent.data_expert = MagicMock(
+            return_value=dspy.Prediction(analysis="native hdf5 facts", recommendations="native rec")
+        )
+
+        result = agent.forward(question="analyze it", session_id="guard-hdf5")
+
+        assert result.selected_expert == "data"
+        assert "native hdf5 facts" in result.answer
+        agent.analysis_expert.assert_not_called()
+        agent.data_expert.assert_called_once()
 
     def test_dispatch_data_expert(self, agent):
         """Test routing to data expert stores tier-2 invocation."""
-        # Mock router to return "data"
-        mock_prediction = MagicMock()
-        mock_prediction.selected_expert = "data"
-        agent.router = MagicMock(return_value=mock_prediction)
+        self._set_planner(
+            agent,
+            {"action": "expert", "expert": "data", "question": "Optimize my HDF5 file"},
+        )
 
         # Mock data expert
         expert_result = dspy.Prediction(
@@ -45,9 +104,10 @@ class TestForwardDispatch:
 
     def test_dispatch_analysis_expert(self, agent):
         """Test routing to analysis expert."""
-        mock_prediction = MagicMock()
-        mock_prediction.selected_expert = "analysis"
-        agent.router = MagicMock(return_value=mock_prediction)
+        self._set_planner(
+            agent,
+            {"action": "expert", "expert": "analysis", "question": "Analyze parquet schema"},
+        )
 
         expert_result = dspy.Prediction(
             analysis="Parquet schema analysis",
@@ -62,9 +122,10 @@ class TestForwardDispatch:
 
     def test_dispatch_visualization_expert(self, agent):
         """Test routing to visualization expert."""
-        mock_prediction = MagicMock()
-        mock_prediction.selected_expert = "visualization"
-        agent.router = MagicMock(return_value=mock_prediction)
+        self._set_planner(
+            agent,
+            {"action": "expert", "expert": "visualization", "question": "Plot a histogram"},
+        )
 
         expert_result = dspy.Prediction(
             visualization_description="Histogram of temperature",
@@ -79,9 +140,7 @@ class TestForwardDispatch:
 
     def test_dispatch_chat(self, agent):
         """Test routing to chat agent."""
-        mock_prediction = MagicMock()
-        mock_prediction.selected_expert = "chat"
-        agent.router = MagicMock(return_value=mock_prediction)
+        self._set_planner(agent, {"action": "answer", "answer": ""})
 
         chat_result = dspy.Prediction(answer="I can help with data analysis.")
         agent.chat_agent = MagicMock(return_value=chat_result)
@@ -91,11 +150,68 @@ class TestForwardDispatch:
         assert result.selected_expert == "chat"
         assert "help with data" in result.answer
 
+    def test_hdf5_file_followup_reuses_last_session_path(self, agent, tmp_path):
+        """Pathless HDF5 follow-ups should stay on the native data expert path."""
+        hdf5_path = tmp_path / "run.h5"
+        agent._store_conversation(
+            f"Inspect {hdf5_path}",
+            f"Inspected HDF5 file {hdf5_path}.",
+            "followup-hdf5",
+        )
+        agent.data_expert = MagicMock(
+            return_value=dspy.Prediction(analysis="native hdf5 facts", recommendations="native rec")
+        )
+        self._set_planner(
+            agent,
+            {"action": "expert", "expert": "data", "question": "summarize the full file"},
+        )
+
+        result = agent.forward(
+            question="summarize the full file",
+            session_id="followup-hdf5",
+        )
+
+        assert result.selected_expert == "data"
+        assert result.route_source == "dspy"
+        assert "planner" in result.route_reason.lower()
+        call = agent.data_expert.call_args.kwargs
+        assert str(hdf5_path) in call["question"]
+        assert str(hdf5_path) in call["file_context"]
+
+    def test_parquet_file_followup_reuses_last_session_path(self, agent, tmp_path):
+        """Pathless tabular follow-ups should stay on the native analysis path."""
+        parquet_path = tmp_path / "run.parquet"
+        agent._store_conversation(
+            f"Inspect {parquet_path}",
+            f"Inspected Parquet file {parquet_path}.",
+            "followup-parquet",
+        )
+        agent.analysis_expert = MagicMock(
+            return_value=dspy.Prediction(
+                analysis="native parquet facts",
+                recommendations="native rec",
+            )
+        )
+        self._set_planner(
+            agent,
+            {"action": "expert", "expert": "analysis", "question": "summarize the full file"},
+        )
+
+        result = agent.forward(
+            question="summarize the full file",
+            session_id="followup-parquet",
+        )
+
+        assert result.selected_expert == "analysis"
+        assert result.route_source == "dspy"
+        assert "planner" in result.route_reason.lower()
+        call = agent.analysis_expert.call_args.kwargs
+        assert str(parquet_path) in call["question"]
+        assert str(parquet_path) in call["file_context"]
+
     def test_dispatch_chat_falls_back_to_direct_local_completion(self, agent, monkeypatch):
         """Local chat should recover from DSPy parse failures with the same model."""
-        mock_prediction = MagicMock()
-        mock_prediction.selected_expert = "chat"
-        agent.router = MagicMock(return_value=mock_prediction)
+        self._set_planner(agent, {"action": "answer", "answer": ""})
 
         agent.chat_agent = MagicMock(
             side_effect=RuntimeError("Adapter ChatAdapter failed to parse the LM response")
@@ -141,9 +257,16 @@ class TestForwardDispatch:
 
     def test_dispatch_none_out_of_scope(self, agent):
         """Test routing to 'none' returns out-of-scope message."""
-        mock_prediction = MagicMock()
-        mock_prediction.selected_expert = "none"
-        agent.router = MagicMock(return_value=mock_prediction)
+        self._set_planner(
+            agent,
+            {
+                "action": "none",
+                "answer": (
+                    "I'm CLIO, specialized in scientific data. Could you rephrase "
+                    "your question in terms of data analysis?"
+                ),
+            },
+        )
 
         result = agent.forward(question="What is the meaning of life?", session_id="test_session")
 
@@ -152,9 +275,7 @@ class TestForwardDispatch:
 
     def test_expert_failure_logs_status(self, agent):
         """Test that expert failure results in structured error."""
-        mock_prediction = MagicMock()
-        mock_prediction.selected_expert = "data"
-        agent.router = MagicMock(return_value=mock_prediction)
+        self._set_planner(agent, {"action": "expert", "expert": "data", "question": "Analyze HDF5"})
 
         agent.data_expert = MagicMock(side_effect=RuntimeError("MCP tool failed"))
 
@@ -168,22 +289,20 @@ class TestForwardDispatch:
         assert result.error_info["error"] == "expert_error"
         assert result.error_info["details"]["expert"] == "data"
 
-    def test_router_failure_falls_back_to_chat(self, agent):
-        """Test that router failure falls back to chat."""
-        agent.router = MagicMock(side_effect=RuntimeError("Router failed"))
-
-        chat_result = dspy.Prediction(answer="Fallback response")
-        agent.chat_agent = MagicMock(return_value=chat_result)
+    def test_planner_failure_returns_structured_error(self, agent):
+        """Planner failures should be structured instead of faking an answer."""
+        agent.action_planner = MagicMock(side_effect=RuntimeError("Planner failed"))
+        agent._provider_config.provider = "anthropic"
 
         result = agent.forward(question="Test query", session_id="test_session")
 
         assert result.selected_expert == "chat"
+        assert result.error_info is not None
+        assert result.error_info["error"] == "routing_error"
 
     def test_stores_expert_invocation_in_arc(self, agent):
         """Test that expert dispatch stores invocation in ARC."""
-        mock_prediction = MagicMock()
-        mock_prediction.selected_expert = "data"
-        agent.router = MagicMock(return_value=mock_prediction)
+        self._set_planner(agent, {"action": "expert", "expert": "data", "question": "Test query"})
 
         expert_result = dspy.Prediction(
             analysis="Result",
@@ -238,9 +357,7 @@ class TestVariantLoading:
 
     def test_forward_stores_conversation(self, agent):
         """Test that forward() stores conversation in ARC."""
-        mock_prediction = MagicMock()
-        mock_prediction.selected_expert = "chat"
-        agent.router = MagicMock(return_value=mock_prediction)
+        _set_planner(agent, {"action": "answer", "answer": ""})
 
         chat_result = dspy.Prediction(answer="Hello!")
         agent.chat_agent = MagicMock(return_value=chat_result)

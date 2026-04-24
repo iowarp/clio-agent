@@ -174,6 +174,40 @@ class TestDataExpert:
         finally:
             expert.close()
 
+    def test_analyze_dataset_without_dataset_lists_available_datasets(self, sample_hdf5):
+        """hdf5_analyze_dataset needs a dataset argument and should not fake one."""
+        expert = DataExpert()
+        try:
+            result = expert(question=f"Run hdf5_analyze_dataset on {sample_hdf5}")
+
+            assert result.synthesis_source == "deterministic"
+            assert "needs a dataset path" in result.analysis
+            assert "simulation/temperature" in result.analysis
+            assert [tool.tool for tool in result.tool_provenance] == ["hdf5_list_datasets"]
+        finally:
+            expert.close()
+
+    def test_analyze_dataset_with_dataset_uses_dataset_tool(self, sample_hdf5):
+        """Named dataset analysis should call hdf5_analyze_dataset directly."""
+        expert = DataExpert()
+        try:
+            result = expert(
+                question=(
+                    f"Run hdf5_analyze_dataset on {sample_hdf5} "
+                    "for simulation/temperature"
+                )
+            )
+
+            assert result.synthesis_source == "deterministic"
+            assert "Analyzed HDF5 dataset simulation/temperature" in result.analysis
+            assert "statistics:" in result.analysis
+            assert [tool.tool for tool in result.tool_provenance] == [
+                "hdf5_list_datasets",
+                "hdf5_analyze_dataset",
+            ]
+        finally:
+            expert.close()
+
     def test_expert_rejects_invalid_hdf5_tool_shape(self):
         """Malformed HDF5 tool payloads should not produce file facts."""
 

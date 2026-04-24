@@ -1,9 +1,11 @@
 """
-ClioAgent Router and Chat Agent Signatures
+ClioAgent planner and chat signatures.
 
 Defines the input/output interfaces for:
-- RouterSignature: Lightweight routing with Literal typed output
-- ChatAgentSignature: Conversational responses for non-data queries
+- AgentActionSignature: planner loop action selection over registered tools/experts
+- AgentAnswerSignature: final answer synthesis from loop observations
+- RouterSignature: legacy Literal router contract retained for compatibility tests
+- ChatAgentSignature: conversational responses for non-data queries
 """
 
 from typing import Literal
@@ -11,41 +13,71 @@ from typing import Literal
 import dspy
 
 
+class AgentActionSignature(dspy.Signature):
+    """You are CLIO's agent planner.
+
+    You control a tool-using scientific data agent. Select the next best action
+    from the capabilities listed in the prompt. Use observations from previous
+    steps as ground truth.
+
+    Return exactly one JSON object and no prose. The JSON object must have one
+    of these forms:
+
+    {"action":"tool","tool":"<listed tool name>","args":{...},"reason":"..."}
+    {"action":"expert","expert":"data|analysis|visualization","question":"...","reason":"..."}
+    {"action":"answer","answer":"...","reason":"..."}
+    {"action":"none","answer":"...","reason":"..."}
+
+    Rules:
+    - Choose only tools and experts present in capabilities.
+    - Call tools when local file facts, schema, datasets, statistics, or chart
+      artifacts are needed.
+    - Delegate to an expert when the user asks for a higher-level task that
+      matches an expert's listed tools.
+    - Do not choose an expert whose listed tools/file formats cannot inspect
+      the current file context.
+    - Answer directly only for conversation, capability questions, or after
+      observations are sufficient.
+    - Never invent file-specific facts. Use only observations for file facts.
+    - If a tool failed, answer with the failure and the next concrete action
+      instead of pretending the file was inspected.
+    """
+
+    question: str = dspy.InputField(desc="User's current message")
+    session_context: str = dspy.InputField(desc="Relevant conversation history")
+    file_context: str = dspy.InputField(desc="Current file context, if any")
+    capabilities: str = dspy.InputField(desc="Registered experts and callable tools")
+    observations: str = dspy.InputField(desc="Prior loop observations for this request")
+    action_json: str = dspy.OutputField(desc="One JSON action object")
+
+
+class AgentAnswerSignature(dspy.Signature):
+    """You are CLIO answering after executing agent-loop actions.
+
+    Use the observations as ground truth. Do not invent local file contents,
+    schemas, datasets, statistics, or artifact paths that are not in the
+    observations. If the observations contain an error, explain the error and
+    the next useful action.
+    """
+
+    question: str = dspy.InputField(desc="User's current message")
+    session_context: str = dspy.InputField(desc="Relevant conversation history")
+    observations: str = dspy.InputField(desc="Tool/expert observations from this request")
+    answer: str = dspy.OutputField(desc="Final user-facing answer")
+
+
 class RouterSignature(dspy.Signature):
-    """You are the CLIO Router. Your only job is to classify user intent and
-    route to the correct handler. You do NOT answer questions yourself.
+    """Legacy typed route contract retained for compatibility.
 
-    Route to "data" when the user asks about:
-    - HDF5 files, datasets, compression, chunking
-    - Data format optimization, I/O performance
-    - File analysis, storage optimization
-
-    Route to "analysis" when the user asks about:
-    - Parquet analysis, schema inspection, column statistics
-    - Data profiling, data quality assessment
-    - Statistical summaries, null counts, distributions of tabular data
-
-    Route to "visualization" when the user asks about:
-    - Plotting, charting, graphing data
-    - Distribution visualization, scatter plots, histograms
-    - Creating visual summaries of datasets
-
-    Route to "chat" when the user:
-    - Greets you (hello, hi, hey)
-    - Asks who you are or what you can do
-    - Makes general conversation not about data files
-    - Asks about CLIO itself
-
-    Route to "none" when:
-    - The query is completely outside CLIO's capabilities
-    - The user asks about topics unrelated to scientific data
-
-    When in doubt between experts, route to "chat" -- it's better to have a
-    conversation than to invoke an expert unnecessarily."""
+    Production CLIO uses AgentActionSignature for the tool/expert loop. This
+    older signature remains importable for integrations that still expect a
+    Literal selected_expert output covering chat, data, analysis, visualization,
+    and none.
+    """
 
     question: str = dspy.InputField(desc="User's question or message")
     selected_expert: Literal["chat", "data", "analysis", "visualization", "none"] = dspy.OutputField(
-        desc="Route to 'data' for HDF5/IO, 'analysis' for Parquet/statistics, 'visualization' for plots/charts, 'chat' for conversation, 'none' for out-of-scope"
+        desc="Legacy route id: chat, data, analysis, visualization, or none"
     )
 
 
@@ -61,6 +93,10 @@ class ChatAgentSignature(dspy.Signature):
     For general questions: Be helpful, precise, and suggest how your data expertise
     could help if relevant. Mention available experts: DataExpert for HDF5 analysis,
     AnalysisExpert for Parquet/statistical profiling, VisualizationExpert for charts.
+
+    Do not invent file-specific facts from conversation history. If the user asks
+    for details about a local file, dataset, schema, columns, statistics, or plots,
+    the answer must come from the routed expert/tool path, not chat synthesis.
 
     Keep responses concise but informative. Be confident and direct."""
 

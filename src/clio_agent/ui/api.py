@@ -32,7 +32,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator
 from sse_starlette.sse import EventSourceResponse
 
-from clio_agent.config import load_config_from_env, setup_dspy
+from clio_agent.config import load_config_from_env, load_project_env_file, setup_dspy
 from clio_agent.errors import ClioError, format_error_response
 from clio_agent.runtime.status import IntegrationState, collect_runtime_status
 
@@ -115,6 +115,7 @@ async def lifespan(app: FastAPI):
     """Application lifespan: initialize agent on startup, shutdown on exit."""
     # Startup
     try:
+        load_project_env_file()
         config = load_config_from_env()
         app.state.provider_config = config
         setup_dspy()
@@ -306,6 +307,7 @@ async def _stream_response(agent: Any, req: QueryRequest):
                     "route_source": getattr(result, "route_source", ""),
                     "route_reason": getattr(result, "route_reason", ""),
                     "duration_ms": duration_ms,
+                    "error_info": getattr(result, "error_info", None),
                 }
             ),
         }
