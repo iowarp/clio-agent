@@ -331,6 +331,11 @@ def build_app(
     # CLIO-BBBBBBBBBB13: per-session pub/sub. POST /messages
     # publishes; /v1/sessions/{sid}/events subscribers consume.
     app.state.bus = EventBus()
+    # CLIO-BBBBBBBBBB14: in-memory message log keyed by session_id.
+    # Populated by POST /messages, read by GET /messages. Not
+    # persisted across restarts — disk-backed persistence lives in
+    # the CLIO catch-up phase alongside ARC session replay.
+    app.state.messages: dict[str, list[Message]] = {}
 
     @app.get("/v1/health", response_model=HealthResponse)
     async def health() -> HealthResponse:
@@ -499,6 +504,23 @@ def build_app(
             )
         )
 
+        user_text = req.extract_text()
+        if not user_text:
+            raise HTTPException(
+                status_code=422,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="internal_error",
+                        message=(
+                            "request body carried no text: expected "
+                            "parts[] containing a text part or legacy "
+                            "top-level text field"
+                        ),
+                        details={"session_id": sid},
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            )
         now = time.time()
         user_msg = Message(
             id=_new_message_id("user"),
@@ -506,7 +528,7 @@ def build_app(
             role="user",
             created_at=_iso_from_epoch(now),
             updated_at=_iso_from_epoch(now),
-            parts=[Part(id=_new_part_id(), type="text", text=req.text)],
+            parts=[Part(id=_new_part_id(), type="text", text=user_text)],
             metadata=req.metadata,
         )
 
@@ -516,7 +538,7 @@ def build_app(
         rationale = ""
 
         try:
-            pred = app.state.agent.forward(req.text, session_id=sid)
+            pred = app.state.agent.forward(user_text, session_id=sid)
             answer_text = getattr(pred, "answer", "")
             selected_agent = getattr(pred, "selected_expert", "") or ""
             rationale = getattr(pred, "routing_rationale", "")
@@ -573,18 +595,26 @@ def build_app(
         # SSE subscribers see the turn unfold. Order mirrors
         # SPEC §7.4: the user message arrives first, then the
         # assistant message body grows part-by-part, then completion.
+        # Payload shape: the Message object directly, not wrapped
+        # under a `{"message": ...}` key. Matches what the reference
+        # emulator emits + what the TUI's decodeMessage expects
+        # (the inner payload IS the Message).
         bus: EventBus = app.state.bus
-        bus.publish(Event(type="message.created", session_id=sid,
-                          payload={"message": user_msg.model_dump(exclude_none=True)}))
-        bus.publish(Event(type="message.created", session_id=sid,
-                          payload={"message": Message(
-                              id=assistant_msg.id,
-                              session_id=sid,
-                              role="assistant",
-                              created_at=assistant_msg.created_at,
-                              updated_at=assistant_msg.updated_at,
-                              parts=[],  # parts arrive via subsequent .added events
-                          ).model_dump(exclude_none=True)}))
+        bus.publish(Event(
+            type="message.created", session_id=sid,
+            payload=user_msg.model_dump(exclude_none=True),
+        ))
+        bus.publish(Event(
+            type="message.created", session_id=sid,
+            payload=Message(
+                id=assistant_msg.id,
+                session_id=sid,
+                role="assistant",
+                created_at=assistant_msg.created_at,
+                updated_at=assistant_msg.updated_at,
+                parts=[],  # parts arrive via subsequent .added events
+            ).model_dump(exclude_none=True),
+        ))
         for part in assistant_parts:
             bus.publish(Event(
                 type="message.part.added",
@@ -614,9 +644,45 @@ def build_app(
             },
         ))
 
+        log = app.state.messages.setdefault(sid, [])
+        log.append(user_msg)
+        log.append(assistant_msg)
+
         return PostMessageResponse(
             user_message=user_msg, assistant_message=assistant_msg
         )
+
+    @app.get("/v1/sessions/{sid}/messages")
+    async def list_messages(sid: str) -> dict[str, Any]:
+        """List messages in a session.
+
+        Today: in-memory log populated by POST /messages; returns
+        empty when the session exists but has no turns yet. The v0.1
+        wire shape (no pagination header, bare array) is what every
+        v0.1 backend does; v0.2 clients accept both.
+        """
+
+        sess = app.state.sessions.get(sid)
+        if sess is None:
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="internal_error",
+                        message=f"session not found: {sid}",
+                        details={"session_id": sid},
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        # TUI (and SPEC §6.4) expect newest-first with an optional
+        # cursor for older pages. We store chronologically so reverse
+        # at read time.
+        rows = list(reversed(app.state.messages.get(sid, [])))
+        return {
+            "messages": [m.model_dump(exclude_none=True) for m in rows],
+            "next_cursor": None,
+        }
 
     # ---- /v1/agents catalog (BBB10) ----------------------------------
 
@@ -696,7 +762,7 @@ def build_app(
     # ---- /v1/sessions/{sid}/events SSE (BBB13) -----------------------
 
     @app.get("/v1/sessions/{sid}/events")
-    async def session_events(sid: str) -> StreamingResponse:
+    async def session_events(sid: str, request: Request) -> StreamingResponse:
         """SSE feed for one session. Emits the events POST /messages
         publishes (status_changed, message.created, message.part.*,
         message.completed) plus periodic 15-s heartbeats so HTTP
@@ -730,7 +796,13 @@ def build_app(
             )
             yield _format_sse(connected)
 
-            sub = app.state.bus.subscribe(sid)
+            try:
+                last_event_id = int(
+                    request.headers.get("last-event-id", "0")
+                )
+            except (TypeError, ValueError):
+                last_event_id = 0
+            sub = app.state.bus.subscribe(sid, last_event_id=last_event_id)
             heartbeat_task: Optional[asyncio.Task] = None
             try:
                 # Heartbeat task — pumps a server.heartbeat event
@@ -772,7 +844,6 @@ def build_app(
     _stub_routes: list[tuple[str, str, str]] = [
         # (method, path, capability_name_for_error)
         ("GET", "/v1/workspaces", "workspaces"),
-        ("GET", "/v1/sessions/{sid}/messages", "sessions"),
         ("GET", "/v1/tools", "tools"),
         ("GET", "/v1/commands", "commands"),
         ("GET", "/v1/metrics", "metrics"),

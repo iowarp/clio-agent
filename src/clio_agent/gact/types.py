@@ -238,9 +238,15 @@ class ListSessionsResponse(BaseModel):
 
 class Part(BaseModel):
     """SPEC §4.5. The discriminator is ``type``; fields are
-    ``omitempty`` JSON-wise so unused ones don't serialise."""
+    ``omitempty`` JSON-wise so unused ones don't serialise.
 
-    id: str
+    ``id`` is optional on the wire because v0.1 clients may omit it
+    when POSTing user parts (they let the server assign an id). The
+    server always populates it before emitting on SSE, so readers
+    still see a stable id.
+    """
+
+    id: str = ""
     type: str
     metadata: dict[str, Any] = Field(default_factory=dict)
 
@@ -270,13 +276,31 @@ class Message(BaseModel):
 
 
 class PostMessageRequest(BaseModel):
-    """POST /v1/sessions/{sid}/messages body — SPEC §6.3."""
+    """POST /v1/sessions/{sid}/messages body — SPEC §6.3.
 
-    # The simplest v0.2 shape: a single text part. Future PRs can
-    # widen to accept multi-part user input (image + text, resource
-    # refs, etc.); the TUI only sends text today.
-    text: str
+    The wire contract uses ``parts[]`` (a list of the same Part
+    shape the server emits). We accept ``text`` as a convenience
+    alias for the single-text-part form because CLIO's early
+    scaffold used that; prefer ``parts`` for new callers.
+    """
+
+    parts: list[Part] = Field(default_factory=list)
+    text: Optional[str] = None
+    model: Optional[dict[str, Any]] = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+    def extract_text(self) -> str:
+        """Return the user-visible text payload.
+
+        Preference order: the first Part with ``type == "text"``,
+        falling back to the legacy ``text`` field when the caller
+        used the simpler shape.
+        """
+
+        for p in self.parts:
+            if p.type == "text" and p.text:
+                return p.text
+        return self.text or ""
 
 
 class AgentDef(BaseModel):

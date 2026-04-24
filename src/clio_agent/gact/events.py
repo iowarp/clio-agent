@@ -91,21 +91,34 @@ class EventBus:
     instances which serialize their own operations.
     """
 
-    def __init__(self, *, queue_capacity: int = 256) -> None:
+    def __init__(
+        self, *, queue_capacity: int = 256, history_per_session: int = 256
+    ) -> None:
         self._capacity = queue_capacity
+        self._history_cap = history_per_session
         # session_id -> list of subscriber queues
         self._subs: dict[str, list[asyncio.Queue[Event]]] = defaultdict(list)
+        # session_id -> bounded replay log. New subscribers receive
+        # ``history[last_event_id + 1:]`` on connect so they don't
+        # miss events published before they arrived (SPEC §7.3 replay).
+        self._history: dict[str, list[Event]] = defaultdict(list)
 
     def publish(self, event: Event) -> None:
-        """Fan-out to every subscriber of event.session_id.
+        """Fan-out to every subscriber of event.session_id + record
+        into the replay log.
 
-        Drops events when a subscriber's queue is full rather than
-        blocking the publisher — slow consumers shouldn't stall the
-        agent's turn loop. The dropped events show up as a
-        ``server.disposed``-equivalent gap in the client's stream;
-        clients catch up via ``GET /v1/sessions/{sid}/messages``
-        on reconnect.
+        Drops events into live queues when a subscriber's queue is
+        full rather than blocking the publisher — slow consumers
+        shouldn't stall the agent's turn loop. The dropped events
+        show up as a ``server.disposed``-equivalent gap in the
+        client's stream; clients catch up via ``GET /v1/sessions/
+        {sid}/messages`` on reconnect.
         """
+
+        log = self._history[event.session_id]
+        log.append(event)
+        if len(log) > self._history_cap:
+            del log[: len(log) - self._history_cap]
 
         for q in self._subs.get(event.session_id, []):
             try:
@@ -114,20 +127,41 @@ class EventBus:
                 pass
 
     async def subscribe(
-        self, session_id: str
+        self, session_id: str, *, last_event_id: int = 0
     ) -> AsyncIterator[Event]:
         """Yield events for ``session_id`` until the consumer drops.
 
+        ``last_event_id`` is the highest event id the client already
+        has (from the ``Last-Event-ID`` header or the SSE ``id:``
+        line); the bus first drains any buffered events strictly
+        newer than that, then streams live.
+
         Use as ``async for event in bus.subscribe(sid)``. Cleanup is
-        guaranteed via ``finally`` even if the consumer cancels mid-
-        iteration.
+        guaranteed via ``finally`` even if the consumer cancels
+        mid-iteration.
         """
 
         q: asyncio.Queue[Event] = asyncio.Queue(maxsize=self._capacity)
         self._subs[session_id].append(q)
         try:
+            # Replay the buffered tail first. This matters for the
+            # happy path too: the TUI creates a session, immediately
+            # POSTs a message, and only then subscribes to SSE —
+            # without replay it misses every message.* event from the
+            # turn that just fired. We snapshot the history up-front
+            # so events published DURING replay come via the queue
+            # only (not also via the snapshot), avoiding duplicates.
+            snapshot = list(self._history.get(session_id, []))
+            replayed_max = last_event_id
+            for ev in snapshot:
+                if ev.id > last_event_id:
+                    yield ev
+                    if ev.id > replayed_max:
+                        replayed_max = ev.id
             while True:
                 event = await q.get()
+                if event.id <= replayed_max:
+                    continue
                 yield event
         finally:
             try:
