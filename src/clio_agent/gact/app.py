@@ -674,6 +674,9 @@ from clio_agent.gact.types import (
     ListAgentsResponse,
     ListSessionsResponse,
     ListToolsResponse,
+    LMProviderInfo,
+    LMProviderPreset,
+    LMProviderRequest,
     MemoryStats,
     Message,
     Metrics,
@@ -823,6 +826,10 @@ def build_app(
     # {id, session_id, tool_call, summary, created_at, status,
     #  action, resolved_at}.
     app.state.permissions: dict[str, dict[str, Any]] = {}
+    # CLIO-BBBBBBBBBB-D: live LM config — what the TUI configured
+    # us with. Distinct from boot-time env because PUT /providers/lm
+    # rebuilds the agent + DSPy config in-place.
+    app.state.lm_config: Optional[dict[str, str]] = None
 
     @app.get("/v1/health", response_model=HealthResponse)
     async def health() -> HealthResponse:
@@ -900,6 +907,35 @@ def build_app(
                     status="unavailable",
                     detail=f"ARC.get_cache_stats raised: {exc!r}",
                 ))
+
+        # LM row drives the TUI's "configure provider on connect"
+        # decision. ``configured`` mirrors what GET /v1/providers/lm
+        # reports — agent present + last-known config from PUT.
+        cfg = app.state.lm_config or {}
+        if app.state.agent is not None and cfg:
+            detail = f"{cfg.get('provider', '?')}/{cfg.get('model', '?')}"
+            rows.append(Integration(
+                name="lm",
+                status="ready",
+                detail=detail,
+            ))
+        elif app.state.agent is not None:
+            # Agent wired by env at boot; lm_config wasn't recorded
+            # but we know an LM is configured.
+            rows.append(Integration(
+                name="lm",
+                status="ready",
+                detail="configured from env at boot",
+            ))
+        else:
+            rows.append(Integration(
+                name="lm",
+                status="unavailable",
+                detail=(
+                    "no LM configured; PUT /v1/providers/lm or set "
+                    "CLIO_LM_PROVIDER and restart"
+                ),
+            ))
 
         # Worst-status wins.
         statuses = {r.status for r in rows}
@@ -1843,6 +1879,145 @@ def build_app(
                 output_total=tokens_output,
             ),
             cost=MetricsCost(total_usd=cost_total),
+        )
+
+    # ---- /v1/providers/lm (CLIO-BBBBBBBBBB-D) ------------------------
+
+    _LM_PRESETS: list[LMProviderPreset] = [
+        LMProviderPreset(
+            id="meridian",
+            label="Claude Max via Meridian",
+            provider="openai",
+            api_base="http://127.0.0.1:3456/v1",
+            suggested_model="claude-haiku-4-5-20251001",
+            requires_api_key=False,
+            description=(
+                "Routes through a local Meridian proxy that translates "
+                "your Claude Max OAuth into an OpenAI-compatible API. "
+                "Cheapest, fastest, default for CLIO development."
+            ),
+        ),
+        LMProviderPreset(
+            id="anthropic",
+            label="Anthropic API",
+            provider="anthropic",
+            api_base="https://api.anthropic.com",
+            suggested_model="claude-haiku-4-5-20251001",
+            requires_api_key=True,
+            description="Direct Anthropic API. Requires an ANTHROPIC_API_KEY.",
+        ),
+        LMProviderPreset(
+            id="openrouter",
+            label="OpenRouter",
+            provider="openai",
+            api_base="https://openrouter.ai/api/v1",
+            suggested_model="openai/gpt-oss-120b:free",
+            requires_api_key=True,
+            description=(
+                "OpenAI-compatible gateway over many providers. Free "
+                "tier models (suffixed :free) work without spend but "
+                "are heavily rate-limited."
+            ),
+        ),
+        LMProviderPreset(
+            id="lm_studio",
+            label="LM Studio (localhost)",
+            provider="lm_studio",
+            api_base="http://127.0.0.1:1234/v1",
+            suggested_model="",
+            requires_api_key=False,
+            description=(
+                "Locally-hosted models via LM Studio. Model name is "
+                "discovered automatically when blank."
+            ),
+        ),
+        LMProviderPreset(
+            id="ollama",
+            label="Ollama (localhost)",
+            provider="ollama",
+            api_base="http://127.0.0.1:11434/v1",
+            suggested_model="llama3.2",
+            requires_api_key=False,
+            description="Locally-hosted models via Ollama.",
+        ),
+    ]
+
+    @app.get("/v1/providers/lm", response_model=LMProviderInfo)
+    async def get_lm_provider() -> LMProviderInfo:
+        """Report the live LM config — what we'd report on /doctor as
+        the 'lm' integration row, plus a list of presets the TUI's
+        provider picker shows.
+
+        ``configured`` is true when an agent is wired and ready to
+        run; the TUI uses this to decide whether to show the config
+        modal on connect.
+        """
+
+        cfg = app.state.lm_config or {}
+        return LMProviderInfo(
+            configured=app.state.agent is not None,
+            provider=cfg.get("provider", ""),
+            api_base=cfg.get("api_base", ""),
+            model=cfg.get("model", ""),
+            presets=_LM_PRESETS,
+        )
+
+    @app.put("/v1/providers/lm", response_model=LMProviderInfo)
+    async def put_lm_provider(req: LMProviderRequest) -> LMProviderInfo:
+        """Reconfigure the LM in-place. Rebuilds DSPy + the
+        ClioAgent so subsequent POST /messages drive the new
+        provider. The old agent's state (ARC, sessions, in-flight
+        messages) is preserved across the swap.
+        """
+
+        try:
+            import dspy
+
+            from clio_agent.agent import ClioAgent
+            from clio_agent.config import (
+                LMProviderConfig,
+                create_lm,
+            )
+
+            cfg = LMProviderConfig(
+                provider=req.provider,
+                api_base=req.api_base,
+                model=req.model,
+                api_key=req.api_key or "x",
+            )
+            dspy.configure(lm=create_lm(cfg))
+            agent = await asyncio.get_running_loop().run_in_executor(
+                None, lambda: ClioAgent(verbose=False)
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(
+                status_code=400,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="config_error",
+                        message=f"failed to configure LM: {exc}",
+                        details={"original_error": type(exc).__name__},
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            ) from exc
+
+        # Swap the agent + ARC atomically. Old agent isn't
+        # explicitly closed because we don't know what background
+        # state it owns; Python's GC will clean up.
+        app.state.agent = agent
+        app.state.arc = agent.arc
+        app.state.lm_config = {
+            "provider": req.provider,
+            "api_base": req.api_base,
+            "model": req.model,
+        }
+        return LMProviderInfo(
+            configured=True,
+            provider=req.provider,
+            api_base=req.api_base,
+            model=req.model,
+            presets=_LM_PRESETS,
         )
 
     # ---- 501 stubs for the still-unwired v0.2 surface ----------------

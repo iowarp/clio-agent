@@ -447,3 +447,48 @@ class Metrics(BaseModel):
     tokens: MetricsTokens = Field(default_factory=MetricsTokens)
     cost: MetricsCost = Field(default_factory=MetricsCost)
     latencies: dict[str, MetricsLatencyStat] = Field(default_factory=dict)
+
+
+# ---------------------------------------------------------------------------
+# /v1/providers/lm — TUI-side LM config (CLIO-BBBBBBBBBB-D)
+# ---------------------------------------------------------------------------
+
+
+class LMProviderInfo(BaseModel):
+    """GET /v1/providers/lm body. Reports current LM config state
+    + an enumerated list of presets the TUI can show in its
+    provider picker. ``api_key`` is never echoed back; the TUI
+    asks the user fresh on every change."""
+
+    configured: bool
+    provider: str = ""
+    api_base: str = ""
+    model: str = ""
+    presets: list["LMProviderPreset"] = Field(default_factory=list)
+
+
+class LMProviderPreset(BaseModel):
+    """One row in the TUI's provider picker. ``requires_api_key``
+    tells the modal whether to render the api_key field; some
+    presets (Meridian on localhost) don't need one."""
+
+    id: str
+    label: str
+    provider: str
+    api_base: str
+    suggested_model: str
+    requires_api_key: bool = True
+    description: str = ""
+
+
+class LMProviderRequest(BaseModel):
+    """PUT /v1/providers/lm body. Provider is one of
+    `openai|anthropic|openrouter|lm_studio|ollama|...` — anything
+    LiteLLM understands. ``api_key`` is required for cloud
+    providers; locally-OpenAI-compatible backends (LM Studio,
+    Ollama, Meridian) tolerate any non-empty string."""
+
+    provider: str
+    api_base: str
+    model: str
+    api_key: str = "x"
