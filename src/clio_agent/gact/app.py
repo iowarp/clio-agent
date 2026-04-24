@@ -24,6 +24,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -1172,7 +1173,16 @@ def build_app(
         turn_cost = 0.0
 
         try:
-            pred = app.state.agent.forward(user_text, session_id=sid)
+            # Run the agent's synchronous forward() in the default
+            # executor so a long turn doesn't block the event loop —
+            # SSE subscribers + the /health probe need to keep
+            # answering while the real ClioAgent is off talking to
+            # Claude via Meridian.
+            loop = asyncio.get_running_loop()
+            pred = await loop.run_in_executor(
+                None,
+                lambda: app.state.agent.forward(user_text, session_id=sid),
+            )
             answer_text = getattr(pred, "answer", "")
             selected_agent = getattr(pred, "selected_expert", "") or ""
             rationale = getattr(pred, "routing_rationale", "")
@@ -1853,8 +1863,10 @@ app = build_app()
 def main() -> None:
     """Console-script entry point.
 
-    Keeps its flag surface narrow on purpose — uvicorn has plenty of
-    knobs but most operators just want ``--host`` and ``--port``.
+    When ``CLIO_LM_PROVIDER`` is set the real ``ClioAgent`` is
+    instantiated + injected so POST /messages drives a real LM.
+    Otherwise the module-level ``app`` (no agent wired) runs, which
+    is fine for capability introspection but 503s on /messages.
     """
 
     import uvicorn
@@ -1870,9 +1882,42 @@ def main() -> None:
         action="store_true",
         help="auto-reload on source changes (dev only)",
     )
+    parser.add_argument(
+        "--no-agent",
+        action="store_true",
+        help=(
+            "skip ClioAgent construction even when LM env is configured. "
+            "Use when the real agent's boot cost (DSPy + ARC hydration) "
+            "gets in the way of a capability-only smoke."
+        ),
+    )
     args = parser.parse_args()
+
+    # CLIO-BBBBBBBBBB-D2: auto-wire the real ClioAgent when the env
+    # gives us an LM endpoint. Falls back to the no-agent module-
+    # level app on import / construction failures — a bootable GACT
+    # surface is strictly better than a stack trace.
+    app_to_run: FastAPI = app
+    if not args.no_agent and os.environ.get("CLIO_LM_PROVIDER"):
+        try:
+            import dspy
+
+            from clio_agent.agent import ClioAgent
+            from clio_agent.config import create_lm, load_config_from_env
+
+            provider_cfg = load_config_from_env()
+            dspy.configure(lm=create_lm(provider_cfg))
+            agent = ClioAgent(verbose=False)
+            app_to_run = build_app(agent=agent, arc=agent.arc)
+        except Exception as exc:  # noqa: BLE001
+            print(
+                f"[clio-agent-gact] ClioAgent init failed ({exc!r}); "
+                "running with no agent wired. POST /messages will 503.",
+                flush=True,
+            )
+
     uvicorn.run(
-        "clio_agent.gact.app:app",
+        app_to_run,
         host=args.host,
         port=args.port,
         reload=args.reload,
