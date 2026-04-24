@@ -410,6 +410,12 @@ def build_app(
     # part_id, message_id}. Status is "pending" until apply/reject
     # flips it.
     app.state.pending_diffs: dict[str, list[dict[str, Any]]] = {}
+    # CLIO-BBBBBBBBBB23: pending permission requests. Flat dict
+    # keyed by permission_id so GET /v1/permissions can filter by
+    # session cheaply. Each record carries
+    # {id, session_id, tool_call, summary, created_at, status,
+    #  action, resolved_at}.
+    app.state.permissions: dict[str, dict[str, Any]] = {}
 
     @app.get("/v1/health", response_model=HealthResponse)
     async def health() -> HealthResponse:
@@ -526,6 +532,7 @@ def build_app(
                 cost_tracking=True,  # BBB24 — Message.tokens + Session.cost_usd rollup
                 files=True,  # BBB22 — /v1/sessions/{sid}/context/files CRUD
                 diffs=True,  # BBB21 — file_diff parts + /diffs/apply,reject
+                permissions=True,  # BBB23 — /v1/permissions + permission.* events
                 # v0.2 additions — advertised when the scaffold
                 # actually emits them. Turned on piecewise as the
                 # follow-on items land.
@@ -598,6 +605,85 @@ def build_app(
                     )
                 ).model_dump(exclude_none=True),
             )
+        return JSONResponse(status_code=204, content=None)
+
+    # ---- /v1/permissions (BBB23) --------------------------------------
+
+    @app.get("/v1/permissions")
+    async def list_permissions(
+        session_id: str = "", status: str = ""
+    ) -> dict[str, Any]:
+        """List permission requests.
+
+        ?session_id=<sid> narrows to a session; ?status=pending
+        hides resolved rows. Both are optional.
+        """
+
+        rows = list(app.state.permissions.values())
+        if session_id:
+            rows = [r for r in rows if r.get("session_id") == session_id]
+        if status:
+            rows = [r for r in rows if r.get("status") == status]
+        return {"permissions": rows}
+
+    @app.post("/v1/permissions/{pid}")
+    async def respond_permission(
+        pid: str, request: Request
+    ) -> JSONResponse:
+        """Resolve a pending permission. Body: ``{action}`` where
+        action is ``allow | deny | allow_session | allow_workspace``.
+        Idempotent when the row is already resolved (returns the
+        existing resolution rather than erroring).
+        """
+
+        row = app.state.permissions.get(pid)
+        if row is None:
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="internal_error",
+                        message=f"permission not found: {pid}",
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        if not isinstance(body, dict):
+            body = {}
+        action = body.get("action") or ""
+        if action not in {
+            "allow", "deny", "allow_session", "allow_workspace"
+        }:
+            raise HTTPException(
+                status_code=422,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="internal_error",
+                        message=(
+                            "action must be one of allow, deny, "
+                            "allow_session, allow_workspace"
+                        ),
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        if row.get("status") == "pending":
+            row["status"] = "resolved"
+            row["action"] = action
+            row["resolved_at"] = datetime.now(timezone.utc).isoformat()
+            app.state.bus.publish(Event(
+                type="permission.resolved",
+                session_id=row.get("session_id", ""),
+                payload={
+                    "permission_id": pid,
+                    "action": action,
+                    "session_id": row.get("session_id", ""),
+                },
+            ))
         return JSONResponse(status_code=204, content=None)
 
     # ---- /v1/sessions/{sid}/diffs/* (BBB21) ---------------------------
@@ -1108,6 +1194,32 @@ def build_app(
                     turn_tokens[key] = int(v or 0)
             turn_cost = float(getattr(pred, "cost_usd", 0.0) or 0.0)
             proposed_diffs = list(getattr(pred, "file_diffs", None) or [])
+            # CLIO-BBBBBBBBBB23: register any permission requests the
+            # agent emits onto app.state.permissions + broadcast a
+            # permission.requested event. Each entry is a dict with
+            # at minimum {tool_call: {tool_name, input?, server_id?}}
+            # + optional {summary, id}. Auto-gen missing fields.
+            for req in (getattr(pred, "permissions_requested", None) or []):
+                src = req if isinstance(req, dict) else {
+                    "tool_call": getattr(req, "tool_call", {}),
+                    "summary": getattr(req, "summary", ""),
+                    "id": getattr(req, "id", ""),
+                }
+                pid = src.get("id") or f"perm_{uuid.uuid4().hex[:12]}"
+                row = {
+                    "id": pid,
+                    "session_id": sid,
+                    "tool_call": src.get("tool_call") or {},
+                    "summary": src.get("summary", ""),
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                    "status": "pending",
+                }
+                app.state.permissions[pid] = row
+                app.state.bus.publish(Event(
+                    type="permission.requested",
+                    session_id=sid,
+                    payload=row,
+                ))
             # CLIO-BBBBBBBBBB20: if /cancel arrived while the agent
             # was mid-forward, override the turn as a cancellation.
             # Agents that cooperate (check an is_cancelled hook) get
