@@ -144,6 +144,60 @@ class ErrorEnvelope(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# §6.19 — memory stats (v0.2)
+# ---------------------------------------------------------------------------
+
+
+class CacheStats(BaseModel):
+    """ARC cache counters — SPEC §6.19."""
+
+    hits: int = 0
+    misses: int = 0
+    hit_rate: float = 0.0  # [0..1]
+    capacity: int = 0
+
+
+class SessionMemoryStats(BaseModel):
+    """Per-session context retention — SPEC §6.19. Populated only
+    when ?session_id= is supplied."""
+
+    session_id: str
+    messages_retained: int = 0
+    tokens_retained: int = 0
+    tokens_budget: Optional[int] = None  # null = unbounded
+    profiles_attached: int = 0
+
+
+class GlobalMemoryStats(BaseModel):
+    """ARC-wide totals — SPEC §6.19."""
+
+    conversations_total: int = 0
+    invocations_total: int = 0
+
+
+class MemoryStats(BaseModel):
+    """GET /v1/memory/stats body — SPEC §6.19.
+
+    ``global`` is a Python keyword, so the attribute is spelled
+    ``global_``; ``serialization_alias`` maps it to the wire key
+    ``global``. FastAPI's response-rendering path uses the alias
+    automatically when ``response_model_by_alias=True`` on the
+    route (set in app.py).
+    """
+
+    cache: CacheStats
+    session: Optional[SessionMemoryStats] = None
+    global_: GlobalMemoryStats = Field(
+        default_factory=GlobalMemoryStats,
+        alias="global",
+        serialization_alias="global",
+    )
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    model_config = {"populate_by_name": True}
+
+
+# ---------------------------------------------------------------------------
 # §4 — data model (populated incrementally)
 # ---------------------------------------------------------------------------
 

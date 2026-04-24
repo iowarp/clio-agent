@@ -178,21 +178,25 @@ from clio_agent.gact.types import (
     AgentDef,
     AuthInfo,
     BackendInfo,
+    CacheStats,
     Capabilities,
     CapabilityFlags,
     CreateSessionRequest,
     ErrorEnvelope,
     ErrorInfo,
+    GlobalMemoryStats,
     HealthResponse,
     Integration,
     ListAgentsResponse,
     ListSessionsResponse,
     ListToolsResponse,
     Message,
+    MemoryStats,
     Part,
     PostMessageRequest,
     PostMessageResponse,
     Session,
+    SessionMemoryStats,
     Tool,
     TransportFlags,
 )
@@ -253,9 +257,22 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     # wired.
 
 
+class ARCLike(Protocol):
+    """Structural interface for the ARC reference /v1/memory/stats
+    pulls from. Real ``ARCMemory`` matches it; tests pass a fake.
+
+    ``get_cache_stats`` returns a dict with ``hits`` / ``misses`` /
+    ``hit_rate`` / ``capacity`` (see ``ARCMemory.get_cache_stats``).
+    """
+
+    def get_cache_stats(self) -> dict[str, Any]:  # pragma: no cover
+        ...
+
+
 def build_app(
     sessions_path: Optional[Path] = None,
     agent: Optional[AgentLike] = None,
+    arc: Optional[ARCLike] = None,
 ) -> FastAPI:
     """Construct the FastAPI app.
 
@@ -289,6 +306,7 @@ def build_app(
         path=sessions_path if sessions_path is not None else _default_store_path()
     )
     app.state.agent = agent  # may be None; POST message checks before using
+    app.state.arc = arc  # may be None; /v1/memory/stats returns zeros in that case
 
     @app.get("/v1/health", response_model=HealthResponse)
     async def health() -> HealthResponse:
@@ -332,7 +350,7 @@ def build_app(
                 # actually emits them. Turned on piecewise as the
                 # follow-on items land.
                 agent_routing=True,  # BBB10 — /v1/agents?tier= + tier-2 catalog
-                memory=False,
+                memory=True,  # BBB11 — /v1/memory/stats backed by ARC
                 structured_errors=True,  # always — we return the envelope for every error
                 integration_health=True,  # /v1/health above carries it
                 tool_telemetry=False,
@@ -536,6 +554,67 @@ def build_app(
     async def list_tools() -> ListToolsResponse:
         return ListToolsResponse(tools=_builtin_tools())
 
+    # ---- /v1/memory/stats (BBB11) ------------------------------------
+    # Returns cache counters + per-session context retention + global
+    # ARC totals. When ARC isn't wired (tests, smoke-boot scenarios)
+    # returns zeros per SPEC §6.19 ("zeros are a valid signal").
+
+    @app.get(
+        "/v1/memory/stats",
+        response_model=MemoryStats,
+        response_model_by_alias=True,
+    )
+    async def memory_stats(session_id: Optional[str] = None) -> MemoryStats:
+        if app.state.arc is not None:
+            raw = app.state.arc.get_cache_stats()
+            cache = CacheStats(
+                hits=int(raw.get("hits", 0)),
+                misses=int(raw.get("misses", 0)),
+                hit_rate=float(raw.get("hit_rate", 0.0)),
+                capacity=int(raw.get("capacity", 0)),
+            )
+            # ARC tracks conversation + invocation counts via the
+            # index sizes it reports alongside the cache. Future: if
+            # the numbers start diverging from what operators expect
+            # we can call dedicated getters; for now the index sizes
+            # are a good-faith approximation.
+            global_stats = GlobalMemoryStats(
+                conversations_total=int(raw.get("conv_index_size", 0)),
+                invocations_total=int(raw.get("inv_index_size", 0)),
+            )
+        else:
+            cache = CacheStats()
+            global_stats = GlobalMemoryStats()
+
+        session_block: Optional[SessionMemoryStats] = None
+        if session_id:
+            sess_rec = app.state.sessions.get(session_id)
+            if sess_rec is not None:
+                # CLIO tracks tokens per invocation, not per
+                # session; for the TUI's purposes message_count is
+                # a reasonable proxy until BBB19 moves sessions into
+                # ARC and per-turn tokens become available on the
+                # Session record.
+                session_block = SessionMemoryStats(
+                    session_id=session_id,
+                    messages_retained=sess_rec.message_count,
+                    tokens_retained=0,
+                    tokens_budget=4000,
+                    profiles_attached=0,
+                )
+            else:
+                # Unknown session: return an empty block rather than
+                # a 404. The TUI's footer chip handles zero stats
+                # gracefully; a 404 would spam the logs on every
+                # mis-timed fetch.
+                session_block = SessionMemoryStats(session_id=session_id)
+
+        return MemoryStats(
+            cache=cache,
+            session=session_block,
+            global_=global_stats,
+        )
+
     # ---- 501 stubs for the still-unwired v0.2 surface ----------------
 
     _stub_routes: list[tuple[str, str, str]] = [
@@ -546,7 +625,6 @@ def build_app(
         ("GET", "/v1/tools", "tools"),
         ("GET", "/v1/commands", "commands"),
         ("GET", "/v1/metrics", "metrics"),
-        ("GET", "/v1/memory/stats", "memory"),
     ]
 
     def _make_stub(cap: str):
