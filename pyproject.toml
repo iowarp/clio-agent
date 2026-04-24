@@ -107,6 +107,7 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
+asyncio_mode = "auto"  # CLIO-BBBBBBBBBB13: SSE tests use async httpx
 markers = [
     "integration: marks tests requiring full-stack/external runtime behavior",
 ]

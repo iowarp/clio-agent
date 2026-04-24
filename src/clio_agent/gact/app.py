@@ -22,6 +22,8 @@ using the native API unchanged.
 from __future__ import annotations
 
 import argparse
+import asyncio
+import json
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -30,7 +32,25 @@ from pathlib import Path
 from typing import AsyncIterator, Optional
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
+
+
+def _format_sse(event: "Event") -> bytes:
+    """Render an Event as the SSE wire format (SPEC §7.2)::
+
+        event: <type>
+        id: <numeric monotonic id>
+        data: <json envelope>
+        <blank line>
+    """
+
+    payload = json.dumps(event.envelope())
+    lines = (
+        f"event: {event.type}\n"
+        f"id: {event.id}\n"
+        f"data: {payload}\n\n"
+    )
+    return lines.encode("utf-8")
 
 # ---- ID + timestamp helpers used by the message endpoint ---------
 # Kept at module level (not inside build_app) so they're trivially
@@ -173,6 +193,7 @@ def _builtin_tools() -> list[Tool]:
 
 from typing import Any, Protocol
 
+from clio_agent.gact.events import Event, EventBus, heartbeat_payload
 from clio_agent.gact.sessions import SessionStore, _default_store_path
 from clio_agent.gact.types import (
     AgentDef,
@@ -307,6 +328,9 @@ def build_app(
     )
     app.state.agent = agent  # may be None; POST message checks before using
     app.state.arc = arc  # may be None; /v1/memory/stats returns zeros in that case
+    # CLIO-BBBBBBBBBB13: per-session pub/sub. POST /messages
+    # publishes; /v1/sessions/{sid}/events subscribers consume.
+    app.state.bus = EventBus()
 
     @app.get("/v1/health", response_model=HealthResponse)
     async def health() -> HealthResponse:
@@ -465,6 +489,15 @@ def build_app(
         # the transition even though no SSE stream is live for the
         # non-streaming path.
         app.state.sessions.update(sid, status="running")
+        # CLIO-BBBBBBBBBB13: publish so any open SSE subscriber sees
+        # the same lifecycle the non-streaming response will report.
+        app.state.bus.publish(
+            Event(
+                type="session.status_changed",
+                session_id=sid,
+                payload={"session_id": sid, "status": "running", "prev_status": "idle"},
+            )
+        )
 
         now = time.time()
         user_msg = Message(
@@ -535,6 +568,51 @@ def build_app(
             app.state.sessions.update(
                 sid, message_count=sess.message_count + 2
             )
+
+        # CLIO-BBBBBBBBBB13: publish per-message events so live
+        # SSE subscribers see the turn unfold. Order mirrors
+        # SPEC §7.4: the user message arrives first, then the
+        # assistant message body grows part-by-part, then completion.
+        bus: EventBus = app.state.bus
+        bus.publish(Event(type="message.created", session_id=sid,
+                          payload={"message": user_msg.model_dump(exclude_none=True)}))
+        bus.publish(Event(type="message.created", session_id=sid,
+                          payload={"message": Message(
+                              id=assistant_msg.id,
+                              session_id=sid,
+                              role="assistant",
+                              created_at=assistant_msg.created_at,
+                              updated_at=assistant_msg.updated_at,
+                              parts=[],  # parts arrive via subsequent .added events
+                          ).model_dump(exclude_none=True)}))
+        for part in assistant_parts:
+            bus.publish(Event(
+                type="message.part.added",
+                session_id=sid,
+                payload={
+                    "message_id": assistant_msg.id,
+                    "part": part.model_dump(exclude_none=True),
+                },
+            ))
+        bus.publish(Event(
+            type="message.completed",
+            session_id=sid,
+            payload={
+                "message_id": assistant_msg.id,
+                "stop_reason": "error" if error_info else "end_turn",
+                "tokens": {"input": 0, "output": 0},
+                "cost_usd": 0.0,
+            },
+        ))
+        bus.publish(Event(
+            type="session.status_changed",
+            session_id=sid,
+            payload={
+                "session_id": sid,
+                "status": "error" if error_info else "idle",
+                "prev_status": "running",
+            },
+        ))
 
         return PostMessageResponse(
             user_message=user_msg, assistant_message=assistant_msg
@@ -615,13 +693,86 @@ def build_app(
             global_=global_stats,
         )
 
+    # ---- /v1/sessions/{sid}/events SSE (BBB13) -----------------------
+
+    @app.get("/v1/sessions/{sid}/events")
+    async def session_events(sid: str) -> StreamingResponse:
+        """SSE feed for one session. Emits the events POST /messages
+        publishes (status_changed, message.created, message.part.*,
+        message.completed) plus periodic 15-s heartbeats so HTTP
+        proxies don't drop the idle connection.
+
+        Per SPEC §7.1: streams forever until the client disconnects.
+        Emits ``server.connected`` immediately so clients can confirm
+        the wire is healthy before any real event arrives.
+        """
+
+        if app.state.sessions.get(sid) is None:
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="internal_error",
+                        message=f"session not found: {sid}",
+                        details={"session_id": sid},
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+
+        async def event_stream() -> AsyncIterator[bytes]:
+            # Initial server.connected event so clients can flip
+            # their UI from "connecting" to "live" immediately.
+            connected = Event(
+                type="server.connected",
+                session_id=sid,
+                payload={"server_version": GACT_BACKEND_VERSION},
+            )
+            yield _format_sse(connected)
+
+            sub = app.state.bus.subscribe(sid)
+            heartbeat_task: Optional[asyncio.Task] = None
+            try:
+                # Heartbeat task — pumps a server.heartbeat event
+                # into the queue every 15s. SPEC §7.1.
+                async def _heartbeat() -> None:
+                    while True:
+                        await asyncio.sleep(15)
+                        app.state.bus.publish(
+                            Event(
+                                type="server.heartbeat",
+                                session_id=sid,
+                                payload=heartbeat_payload(),
+                            )
+                        )
+
+                heartbeat_task = asyncio.create_task(_heartbeat())
+
+                async for event in sub:
+                    yield _format_sse(event)
+            except asyncio.CancelledError:
+                # Client disconnected. Cleanup happens in `finally`.
+                pass
+            finally:
+                if heartbeat_task is not None:
+                    heartbeat_task.cancel()
+
+        return StreamingResponse(
+            event_stream(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",  # nginx: don't buffer SSE
+            },
+        )
+
     # ---- 501 stubs for the still-unwired v0.2 surface ----------------
 
     _stub_routes: list[tuple[str, str, str]] = [
         # (method, path, capability_name_for_error)
         ("GET", "/v1/workspaces", "workspaces"),
         ("GET", "/v1/sessions/{sid}/messages", "sessions"),
-        ("GET", "/v1/sessions/{sid}/events", "sessions"),
         ("GET", "/v1/tools", "tools"),
         ("GET", "/v1/commands", "commands"),
         ("GET", "/v1/metrics", "metrics"),
