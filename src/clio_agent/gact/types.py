@@ -360,3 +360,49 @@ class PostMessageResponse(BaseModel):
 
     user_message: Message
     assistant_message: Message
+
+
+# ---------------------------------------------------------------------------
+# §6.16 — /v1/metrics
+# ---------------------------------------------------------------------------
+
+
+class MetricsSessions(BaseModel):
+    total: int = 0
+    active: int = 0
+    by_status: dict[str, int] = Field(default_factory=dict)
+
+
+class MetricsMessages(BaseModel):
+    total: int = 0
+    by_role: dict[str, int] = Field(default_factory=dict)
+
+
+class MetricsTokens(BaseModel):
+    input_total: int = 0
+    output_total: int = 0
+    cache_read_total: int = 0
+    cache_write_total: int = 0
+
+
+class MetricsCost(BaseModel):
+    total_usd: float = 0.0
+    by_provider: dict[str, float] = Field(default_factory=dict)
+
+
+class MetricsLatencyStat(BaseModel):
+    count: int = 0
+    p50_ms: float = 0.0
+    p95_ms: float = 0.0
+    max_ms: float = 0.0
+
+
+class Metrics(BaseModel):
+    """GET /v1/metrics body — SPEC §6.16."""
+
+    uptime_s: int
+    sessions: MetricsSessions = Field(default_factory=MetricsSessions)
+    messages: MetricsMessages = Field(default_factory=MetricsMessages)
+    tokens: MetricsTokens = Field(default_factory=MetricsTokens)
+    cost: MetricsCost = Field(default_factory=MetricsCost)
+    latencies: dict[str, MetricsLatencyStat] = Field(default_factory=dict)

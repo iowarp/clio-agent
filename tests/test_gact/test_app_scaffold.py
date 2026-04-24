@@ -77,7 +77,6 @@ def test_capabilities_advertises_v0_2(client: TestClient) -> None:
         ("GET", "/v1/workspaces"),
         ("GET", "/v1/tools"),
         ("GET", "/v1/commands"),
-        ("GET", "/v1/metrics"),
     ],
 )
 def test_stubbed_routes_return_501_with_v0_2_envelope(

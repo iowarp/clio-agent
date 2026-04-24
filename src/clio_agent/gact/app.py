@@ -213,6 +213,9 @@ from clio_agent.gact.types import (
     ListToolsResponse,
     MemoryStats,
     Message,
+    Metrics,
+    MetricsMessages,
+    MetricsSessions,
     Part,
     PostMessageRequest,
     PostMessageResponse,
@@ -839,6 +842,51 @@ def build_app(
             },
         )
 
+    # ---- /v1/metrics (BBB15) -----------------------------------------
+
+    @app.get("/v1/metrics", response_model=Metrics)
+    async def metrics() -> Metrics:
+        """Aggregate runtime metrics — SPEC §6.16.
+
+        Today: counters synthesised from the session + in-memory
+        message logs. ARC-backed per-expert latency/success-rate
+        rollups come in when we reshape `ARCMemory.get_metrics()`
+        into this envelope (tracked in the v0.3 roadmap); for now
+        the endpoint returns the wire-compatible skeleton with zero
+        tokens/cost/latencies so the TUI's Metrics tab renders
+        rather than falling back to a permanent "n/a".
+        """
+
+        uptime = max(0, int(time.time() - app.state.started_at))
+
+        all_sessions = app.state.sessions.list()
+        by_status: dict[str, int] = {}
+        active = 0
+        for s in all_sessions:
+            by_status[s.status] = by_status.get(s.status, 0) + 1
+            if s.status in {"running", "idle"}:
+                active += 1
+
+        message_total = 0
+        role_counts: dict[str, int] = {}
+        for rows in app.state.messages.values():
+            message_total += len(rows)
+            for m in rows:
+                role_counts[m.role] = role_counts.get(m.role, 0) + 1
+
+        return Metrics(
+            uptime_s=uptime,
+            sessions=MetricsSessions(
+                total=len(all_sessions),
+                active=active,
+                by_status=by_status,
+            ),
+            messages=MetricsMessages(
+                total=message_total,
+                by_role=role_counts,
+            ),
+        )
+
     # ---- 501 stubs for the still-unwired v0.2 surface ----------------
 
     _stub_routes: list[tuple[str, str, str]] = [
@@ -846,7 +894,6 @@ def build_app(
         ("GET", "/v1/workspaces", "workspaces"),
         ("GET", "/v1/tools", "tools"),
         ("GET", "/v1/commands", "commands"),
-        ("GET", "/v1/metrics", "metrics"),
     ]
 
     def _make_stub(cap: str):
