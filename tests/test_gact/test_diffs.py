@@ -33,10 +33,8 @@ def _client(tmp_path: Path, diffs) -> TestClient:
 
 
 def _turn(client: TestClient, sid: str) -> dict:
-    return client.post(
-        f"/v1/sessions/{sid}/messages",
-        json={"parts": [{"type": "text", "text": "propose an edit"}]},
-    ).json()
+    from .conftest import complete_turn
+    return complete_turn(client, sid, "propose an edit")
 
 
 SAMPLE_DIFF = """--- a/main.go
@@ -53,8 +51,8 @@ def test_assistant_emits_file_diff_part(tmp_path: Path) -> None:
         {"path": "main.go", "unified_diff": SAMPLE_DIFF},
     ])
     sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
-    resp = _turn(client, sid)
-    parts = resp["assistant_message"]["parts"]
+    a = _turn(client, sid)
+    parts = a["parts"]
     diff_parts = [p for p in parts if p["type"] == "file_diff"]
     assert len(diff_parts) == 1
     assert diff_parts[0]["path"] == "main.go"

@@ -45,10 +45,8 @@ def _client(tmp_path: Path, pred) -> TestClient:
 
 
 def _turn(client: TestClient, sid: str) -> dict:
-    return client.post(
-        f"/v1/sessions/{sid}/messages",
-        json={"parts": [{"type": "text", "text": "hello"}]},
-    ).json()
+    from .conftest import complete_turn
+    return complete_turn(client, sid, "hello")
 
 
 def test_turn_with_cost_populates_every_surface(tmp_path: Path) -> None:
@@ -59,8 +57,7 @@ def test_turn_with_cost_populates_every_surface(tmp_path: Path) -> None:
     client = _client(tmp_path, pred)
     sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
 
-    resp = _turn(client, sid)
-    a = resp["assistant_message"]
+    a = _turn(client, sid)
     assert a["tokens"]["input"] == 100
     assert a["tokens"]["output"] == 50
     assert a["cost_usd"] == 0.0032
@@ -90,7 +87,6 @@ def test_turn_without_cost_keeps_zero_envelope(tmp_path: Path) -> None:
     pred = _Pred(tokens=None, cost_usd=0.0)
     client = _client(tmp_path, pred)
     sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
-    resp = _turn(client, sid)
-    a = resp["assistant_message"]
+    a = _turn(client, sid)
     assert a["tokens"]["input"] == 0
     assert a["cost_usd"] == 0.0

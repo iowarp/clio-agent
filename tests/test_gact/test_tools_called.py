@@ -48,20 +48,20 @@ def _client(tmp_path: Path, pred) -> TestClient:
 
 
 def test_no_tools_called_keeps_metadata_empty(tmp_path: Path) -> None:
+    from .conftest import complete_turn
+
     client = _client(tmp_path, _PredNoTools())
-    sess = client.post("/v1/sessions", json={"title": "t"}).json()
-    resp = client.post(
-        f"/v1/sessions/{sess['id']}/messages",
-        json={"parts": [{"type": "text", "text": "hi"}]},
-    ).json()
-    # No tools_called in either the response body or the message
-    # metadata — we don't want a bare `{tools_called: []}` row on the
-    # wire because the TUI's renderer treats its presence as "call
-    # the post-hoc gutter".
-    assert "tools_called" not in resp["assistant_message"]["metadata"]
+    sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
+    a = complete_turn(client, sid, "hi")
+    # No tools_called metadata key — TUI's renderer treats its
+    # presence as "call the post-hoc gutter" so an empty list is
+    # also wrong.
+    assert "tools_called" not in a["metadata"]
 
 
 def test_tools_called_propagates_to_message_and_completion(tmp_path: Path) -> None:
+    from .conftest import complete_turn
+
     tools = [
         {
             "name": "hdf5_analyze",
@@ -82,13 +82,9 @@ def test_tools_called_propagates_to_message_and_completion(tmp_path: Path) -> No
     pred = _PredWithTools(tools_called=tools)
     client = _client(tmp_path, pred)
 
-    sess = client.post("/v1/sessions", json={"title": "t"}).json()
-    resp = client.post(
-        f"/v1/sessions/{sess['id']}/messages",
-        json={"parts": [{"type": "text", "text": "analyze /tmp/x.h5"}]},
-    ).json()
-
-    md = resp["assistant_message"]["metadata"]
+    sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
+    a = complete_turn(client, sid, "analyze /tmp/x.h5")
+    md = a["metadata"]
     assert "tools_called" in md
     rows = md["tools_called"]
     assert len(rows) == 2

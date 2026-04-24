@@ -36,10 +36,8 @@ def _client(tmp_path: Path) -> TestClient:
 
 
 def _turn(client: TestClient, sid: str, text: str) -> dict:
-    return client.post(
-        f"/v1/sessions/{sid}/messages",
-        json={"parts": [{"type": "text", "text": text}]},
-    ).json()
+    from .conftest import complete_turn
+    return complete_turn(client, sid, text)
 
 
 def test_fork_copies_messages_and_sets_parent(tmp_path: Path) -> None:
@@ -61,9 +59,9 @@ def test_fork_copies_messages_and_sets_parent(tmp_path: Path) -> None:
 def test_fork_truncates_at_message_id(tmp_path: Path) -> None:
     client = _client(tmp_path)
     src = client.post("/v1/sessions", json={"title": "src"}).json()["id"]
-    t1 = _turn(client, src, "one")
+    t1_assistant = _turn(client, src, "one")
     _turn(client, src, "two")
-    cutoff = t1["assistant_message"]["id"]
+    cutoff = t1_assistant["id"]
 
     fork = client.post(
         f"/v1/sessions/{src}/fork",

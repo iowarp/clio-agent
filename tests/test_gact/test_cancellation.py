@@ -67,17 +67,15 @@ def test_cancel_during_turn_marks_turn_as_cancelled(tmp_path: Path) -> None:
     stays set until the handler clears it, so the order is
     observationally equivalent to a cancel landing mid-forward."""
 
+    from .conftest import complete_turn
+
     client = _client(tmp_path)
     sess = client.post("/v1/sessions", json={"title": "t"}).json()
     sid = sess["id"]
     # Cancel *first*, then POST. Handler should pick up the flag.
     client.post(f"/v1/sessions/{sid}/cancel")
-    resp = client.post(
-        f"/v1/sessions/{sid}/messages",
-        json={"parts": [{"type": "text", "text": "hi"}]},
-    ).json()
-
-    assert resp["assistant_message"]["error_info"]["error"] == "cancelled"
-    # No text part, no tools_called metadata.
-    parts = resp["assistant_message"]["parts"]
+    a = complete_turn(client, sid, "hi")
+    assert a["error_info"]["error"] == "cancelled"
+    # No text part with body — turn was cancelled before producing.
+    parts = a["parts"]
     assert all(p["type"] != "text" or not p.get("text") for p in parts)

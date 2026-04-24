@@ -388,13 +388,19 @@ class ListToolsResponse(BaseModel):
 class PostMessageResponse(BaseModel):
     """POST /v1/sessions/{sid}/messages response — SPEC §6.3.
 
-    Carries the full assistant turn (one request → one response
-    when ``stream`` is false). Streaming lands in BBB10 via SSE on
-    /v1/sessions/{sid}/events.
+    Returns immediately with an ack: just the user message id and
+    accepted_at timestamp. The assistant turn arrives asynchronously
+    via the SSE channel (message.created, message.part.added,
+    message.part.delta, message.completed). This shape matches the
+    TUI's ``PostMessageResponse`` Go struct + the emulator's
+    behaviour so the wire is interoperable.
+
+    The full Message objects are still discoverable via
+    GET /v1/sessions/{sid}/messages once the turn settles.
     """
 
-    user_message: Message
-    assistant_message: Message
+    message_id: str
+    accepted_at: str
 
 
 # ---------------------------------------------------------------------------

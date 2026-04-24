@@ -32,7 +32,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import AsyncIterator, Optional
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 
@@ -74,6 +74,412 @@ def _iso_from_epoch(ts: float) -> str:
     registry's created_at format."""
 
     return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
+
+
+async def _run_turn_in_background(
+    app: "FastAPI",
+    sid: str,
+    user_text: str,
+    user_msg: "Message",
+) -> None:
+    """Drive an agent turn off the request thread.
+
+    The POST handler returns immediately after staging the user
+    message; this coroutine handles the rest: invoking forward() in
+    an executor, slicing the result into Parts, publishing every
+    SSE event the TUI consumes, persisting the assistant message,
+    and settling the session back to idle (or error).
+
+    Errors here are *consumed* — they emit a message.completed with
+    error_info and a session.status_changed → error so the TUI sees
+    the failure live. We never re-raise; the request that started us
+    is long gone.
+    """
+
+    bus: EventBus = app.state.bus
+    sess = app.state.sessions.get(sid)
+    if sess is None:
+        # Session evaporated between POST + background start; can't
+        # do anything useful. Don't raise — the publishing path
+        # would crash and pollute logs with no client to notify.
+        return
+
+    error_info: Optional[ErrorInfo] = None
+    answer_text = ""
+    selected_agent = ""
+    rationale = ""
+    tools_called: list[dict[str, Any]] = []
+    proposed_diffs: list[Any] = []
+    nanoagents: list[Any] = []
+    turn_tokens: dict[str, int] = {
+        "input": 0, "output": 0, "cache_read": 0, "cache_write": 0,
+    }
+    turn_cost = 0.0
+
+    try:
+        loop = asyncio.get_running_loop()
+        pred = await loop.run_in_executor(
+            None,
+            lambda: app.state.agent.forward(user_text, session_id=sid),
+        )
+        answer_text = getattr(pred, "answer", "")
+        selected_agent = getattr(pred, "selected_expert", "") or ""
+        rationale = getattr(pred, "routing_rationale", "")
+        tools_called = _extract_tools_called(pred)
+        # CLIO-BBBBBBBBBB24: cost + token rollup. Real DSPy
+        # predictions don't always populate .tokens / .cost_usd
+        # directly — pull from dspy.LM history when the prediction
+        # itself doesn't carry them.
+        raw_tokens = getattr(pred, "tokens", None)
+        if raw_tokens is not None:
+            for key in turn_tokens:
+                if isinstance(raw_tokens, dict):
+                    v = raw_tokens.get(key, 0)
+                else:
+                    v = getattr(raw_tokens, key, 0)
+                turn_tokens[key] = int(v or 0)
+        else:
+            usage = _usage_from_dspy_history()
+            for key in turn_tokens:
+                turn_tokens[key] = int(usage.get(key, 0) or 0)
+            turn_cost = float(usage.get("cost_usd", 0.0) or 0.0)
+        if not turn_cost:
+            turn_cost = float(getattr(pred, "cost_usd", 0.0) or 0.0)
+        proposed_diffs = list(getattr(pred, "file_diffs", None) or [])
+        nanoagents = list(getattr(pred, "nanoagents_spawned", None) or [])
+        for req in (getattr(pred, "permissions_requested", None) or []):
+            src = req if isinstance(req, dict) else {
+                "tool_call": getattr(req, "tool_call", {}),
+                "summary": getattr(req, "summary", ""),
+                "id": getattr(req, "id", ""),
+            }
+            pid = src.get("id") or f"perm_{uuid.uuid4().hex[:12]}"
+            row = {
+                "id": pid,
+                "session_id": sid,
+                "tool_call": src.get("tool_call") or {},
+                "summary": src.get("summary", ""),
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "status": "pending",
+            }
+            app.state.permissions[pid] = row
+            bus.publish(Event(
+                type="permission.requested",
+                session_id=sid,
+                payload=row,
+            ))
+        if sid in app.state.cancel_flags:
+            app.state.cancel_flags.discard(sid)
+            error_info = ErrorInfo(
+                error="cancelled",
+                message="turn cancelled by client",
+                details={"session_id": sid},
+                recoverable=True,
+            )
+            answer_text = ""
+            tools_called = []
+    except asyncio.CancelledError:
+        error_info = ErrorInfo(
+            error="cancelled",
+            message="turn cancelled by client",
+            details={"session_id": sid},
+            recoverable=True,
+        )
+        answer_text = ""
+        tools_called = []
+    except Exception as exc:  # noqa: BLE001
+        error_info = ErrorInfo(
+            error="agent_error",
+            message=f"agent.forward raised: {exc}",
+            details={"original_error": type(exc).__name__},
+            recoverable=True,
+        )
+
+    # Build assistant parts — routing_decision (v0.2) first when we
+    # got a selected_agent, then the text answer, then any file_diffs.
+    assistant_parts: list[Part] = []
+    if selected_agent:
+        assistant_parts.append(Part(
+            id=_new_part_id(),
+            type="routing_decision",
+            selected_agent=selected_agent,
+            rationale=rationale,
+            confidence=0.0,
+            heuristic=False,
+        ))
+    if answer_text:
+        assistant_parts.append(
+            Part(id=_new_part_id(), type="text", text=answer_text)
+        )
+    for row in proposed_diffs:
+        if isinstance(row, dict):
+            path = row.get("path", "")
+            udiff = row.get("unified_diff", "")
+        else:
+            path = getattr(row, "path", "")
+            udiff = getattr(row, "unified_diff", "")
+        if not path or not udiff:
+            continue
+        assistant_parts.append(Part(
+            id=_new_part_id(),
+            type="file_diff",
+            path=path,
+            unified_diff=udiff,
+            status="pending",
+        ))
+
+    assistant_metadata: dict[str, Any] = {}
+    if tools_called:
+        assistant_metadata["tools_called"] = tools_called
+    assistant_msg = Message(
+        id=_new_message_id("asst"),
+        session_id=sid,
+        role="assistant",
+        created_at=_iso_from_epoch(time.time()),
+        updated_at=_iso_from_epoch(time.time()),
+        parts=assistant_parts,
+        tokens=Tokens(**turn_tokens),
+        cost_usd=turn_cost,
+        stop_reason="error" if error_info else "end_turn",
+        error_info=error_info,
+        metadata=assistant_metadata,
+    )
+
+    # Index file_diff parts so /diffs/apply + /diffs/reject find them.
+    bucket = app.state.pending_diffs.setdefault(sid, [])
+    for p in assistant_parts:
+        if p.type != "file_diff":
+            continue
+        bucket.append({
+            "path": p.path,
+            "unified_diff": p.unified_diff,
+            "status": "pending",
+            "part_id": p.id,
+            "message_id": assistant_msg.id,
+        })
+
+    # Materialise nanoagent spawns + publish their lifecycle events.
+    for spawn in nanoagents:
+        get = spawn.get if isinstance(spawn, dict) else (
+            lambda k, default=None, _s=spawn: getattr(_s, k, default)
+        )
+        agent_id = get("agent_id") or get("agent") or "nanoagent"
+        spawn_input = get("input") or {}
+        answer = get("answer") or ""
+        subsess = app.state.sessions.create(
+            workspace_id=sess.workspace_id,
+            title=f"{agent_id} subagent",
+            parent_session_id=sid,
+        )
+        sub_now = time.time()
+        sub_user = Message(
+            id=_new_message_id("user"),
+            session_id=subsess.id,
+            role="user",
+            created_at=_iso_from_epoch(sub_now),
+            updated_at=_iso_from_epoch(sub_now),
+            parts=[Part(
+                id=_new_part_id(), type="text", text=str(spawn_input),
+            )],
+        )
+        sub_asst = Message(
+            id=_new_message_id("asst"),
+            session_id=subsess.id,
+            role="assistant",
+            created_at=_iso_from_epoch(sub_now),
+            updated_at=_iso_from_epoch(sub_now),
+            parts=[Part(id=_new_part_id(), type="text", text=answer)] if answer else [],
+            stop_reason="end_turn",
+        )
+        app.state.messages.setdefault(subsess.id, []).extend(
+            [sub_user, sub_asst]
+        )
+        app.state.sessions.update(
+            subsess.id, message_count=2, status="idle"
+        )
+        bus.publish(Event(
+            type="subagent.started",
+            session_id=sid,
+            payload={
+                "parent_session_id": sid,
+                "child_session_id": subsess.id,
+                "agent_id": agent_id,
+                "spawned_by_message_id": assistant_msg.id,
+            },
+        ))
+        bus.publish(Event(
+            type="subagent.completed",
+            session_id=sid,
+            payload={
+                "parent_session_id": sid,
+                "child_session_id": subsess.id,
+                "agent_id": agent_id,
+                "duration_ms": float(get("duration_ms", 0.0) or 0.0),
+                "tokens": get("tokens") or {},
+                "cost_usd": float(get("cost_usd", 0.0) or 0.0),
+            },
+        ))
+
+    # message.created for the assistant message (empty body — parts
+    # arrive via subsequent message.part.added/delta events).
+    bus.publish(Event(
+        type="message.created", session_id=sid,
+        payload=Message(
+            id=assistant_msg.id,
+            session_id=sid,
+            role="assistant",
+            created_at=assistant_msg.created_at,
+            updated_at=assistant_msg.updated_at,
+            parts=[],
+        ).model_dump(exclude_none=True),
+    ))
+    # Stream text parts via message.part.added (empty) + N
+    # message.part.delta + message.part.completed.
+    _CHUNK = 64
+    for part in assistant_parts:
+        if part.type == "text" and part.text:
+            stub = part.model_copy(deep=True)
+            stub.text = ""
+            bus.publish(Event(
+                type="message.part.added",
+                session_id=sid,
+                payload={
+                    "message_id": assistant_msg.id,
+                    "part": stub.model_dump(exclude_none=True),
+                },
+            ))
+            full = part.text
+            for i in range(0, len(full), _CHUNK):
+                bus.publish(Event(
+                    type="message.part.delta",
+                    session_id=sid,
+                    payload={
+                        "message_id": assistant_msg.id,
+                        "part_id": part.id,
+                        "delta": {"text_append": full[i:i + _CHUNK]},
+                    },
+                ))
+            bus.publish(Event(
+                type="message.part.completed",
+                session_id=sid,
+                payload={
+                    "message_id": assistant_msg.id,
+                    "part_id": part.id,
+                },
+            ))
+        else:
+            bus.publish(Event(
+                type="message.part.added",
+                session_id=sid,
+                payload={
+                    "message_id": assistant_msg.id,
+                    "part": part.model_dump(exclude_none=True),
+                },
+            ))
+    # Per-tool telemetry events synthesised from the prediction's
+    # tool_called trace. A real ReAct agent that instruments
+    # MCPToolBridge.call_tool publishes the same wire shape live;
+    # the TUI's renderer doesn't care which flavour it is.
+    for idx, call in enumerate(tools_called):
+        call_id = f"call_{assistant_msg.id}_{idx}"
+        bus.publish(Event(
+            type="tool.call.started",
+            session_id=sid,
+            payload={
+                "message_id": assistant_msg.id,
+                "call_id": call_id,
+                "tool": call.get("name", ""),
+                "args": call.get("args", {}),
+            },
+        ))
+        bus.publish(Event(
+            type="tool.call.completed",
+            session_id=sid,
+            payload={
+                "message_id": assistant_msg.id,
+                "call_id": call_id,
+                "tool": call.get("name", ""),
+                "ok": call.get("ok", True),
+                "duration_ms": call.get("duration_ms", 0.0),
+                "cached": call.get("cached", False),
+            },
+        ))
+    completed_payload: dict[str, Any] = {
+        "message_id": assistant_msg.id,
+        "stop_reason": "error" if error_info else "end_turn",
+        "tokens": dict(turn_tokens),
+        "cost_usd": turn_cost,
+    }
+    if tools_called:
+        completed_payload["metadata"] = {"tools_called": tools_called}
+    bus.publish(Event(
+        type="message.completed",
+        session_id=sid,
+        payload=completed_payload,
+    ))
+
+    # Persist + settle.
+    app.state.messages.setdefault(sid, []).append(assistant_msg)
+    app.state.sessions.update(
+        sid,
+        status="idle" if error_info is None else "error",
+        message_count=sess.message_count + 2,
+        add_tokens_input=turn_tokens["input"],
+        add_tokens_output=turn_tokens["output"],
+        add_cost_usd=turn_cost,
+    )
+    bus.publish(Event(
+        type="session.status_changed",
+        session_id=sid,
+        payload={
+            "session_id": sid,
+            "status": "error" if error_info else "idle",
+            "prev_status": "running",
+        },
+    ))
+
+
+def _usage_from_dspy_history() -> dict[str, Any]:
+    """Reach into DSPy's currently-configured LM and pull the most
+    recent call's usage block. Returns ``{}`` whenever DSPy isn't
+    importable, no LM is configured, or the history is empty —
+    callers default to zeros.
+
+    Best-effort. DSPy's history shape changes between minor versions;
+    we accept any dict-shaped record under ``lm.history[-1]`` whose
+    ``usage`` (or ``response.usage``) carries the OpenAI-style keys
+    we already use on the wire.
+    """
+
+    try:
+        import dspy  # noqa: PLC0415
+    except Exception:  # pragma: no cover - dspy not present
+        return {}
+
+    lm = getattr(dspy.settings, "lm", None) if hasattr(dspy, "settings") else None
+    if lm is None:
+        return {}
+    history = getattr(lm, "history", None)
+    if not history:
+        return {}
+    last = history[-1]
+    usage = (
+        last.get("usage")
+        if isinstance(last, dict)
+        else getattr(last, "usage", None)
+    )
+    if usage is None and isinstance(last, dict):
+        resp = last.get("response", {}) or {}
+        usage = resp.get("usage", {}) if isinstance(resp, dict) else None
+    if not isinstance(usage, dict):
+        return {}
+    return {
+        "input": int(usage.get("prompt_tokens") or usage.get("input_tokens") or 0),
+        "output": int(usage.get("completion_tokens") or usage.get("output_tokens") or 0),
+        "cache_read": int(usage.get("cache_read_input_tokens") or 0),
+        "cache_write": int(usage.get("cache_creation_input_tokens") or 0),
+        "cost_usd": float(usage.get("cost_usd") or 0.0),
+    }
 
 
 def _extract_tools_called(pred: Any) -> list[dict[str, Any]]:
@@ -1065,6 +1471,12 @@ def build_app(
         # this after forward() returns so even agents that don't
         # cooperate produce a cancelled-looking turn envelope.
         app.state.cancel_flags.add(sid)
+        # Cooperative-only today: the background turn task checks
+        # cancel_flags after forward() returns so the assistant
+        # message reports error="cancelled" rather than its real
+        # output. True hard-abort during a long forward() is a
+        # follow-up — needs an asyncio.create_task we can grab
+        # back, which BackgroundTasks doesn't expose.
         app.state.sessions.update(sid, status="cancelled")
         app.state.bus.publish(Event(
             type="session.status_changed",
@@ -1086,8 +1498,18 @@ def build_app(
         "/v1/sessions/{sid}/messages", response_model=PostMessageResponse
     )
     async def post_message(
-        sid: str, req: PostMessageRequest
+        sid: str, req: PostMessageRequest, background_tasks: BackgroundTasks
     ) -> PostMessageResponse:
+        """Accept a user message and ack immediately. The agent turn
+        runs in the background; clients consume progress via the SSE
+        channel (message.created, message.part.delta, ..., message.completed).
+
+        Returning early matters: real LM turns can run for minutes
+        (DSPy ReAct loops × 5-15s per Claude call). Holding the POST
+        connection open for the whole turn means TUI timeouts, broken
+        streaming UX, and no way to surface progress to the user.
+        """
+
         sess = app.state.sessions.get(sid)
         if sess is None:
             raise HTTPException(
@@ -1108,8 +1530,8 @@ def build_app(
                     error=ErrorInfo(
                         error="config_error",
                         message=(
-                            "ClioAgent not wired into this build. Launch via "
-                            "`clio-agent-gact` (which constructs a real agent) "
+                            "ClioAgent not wired into this build. Launch "
+                            "`clio-agent-gact` with CLIO_LM_PROVIDER set "
                             "or pass `agent=...` to build_app()."
                         ),
                         details={"session_id": sid},
@@ -1117,20 +1539,6 @@ def build_app(
                     )
                 ).model_dump(exclude_none=True),
             )
-
-        # Mark the session running + stamp updated_at so clients see
-        # the transition even though no SSE stream is live for the
-        # non-streaming path.
-        app.state.sessions.update(sid, status="running")
-        # CLIO-BBBBBBBBBB13: publish so any open SSE subscriber sees
-        # the same lifecycle the non-streaming response will report.
-        app.state.bus.publish(
-            Event(
-                type="session.status_changed",
-                session_id=sid,
-                payload={"session_id": sid, "status": "running", "prev_status": "idle"},
-            )
-        )
 
         user_text = req.extract_text()
         if not user_text:
@@ -1149,6 +1557,7 @@ def build_app(
                     )
                 ).model_dump(exclude_none=True),
             )
+
         now = time.time()
         user_msg = Message(
             id=_new_message_id("user"),
@@ -1160,404 +1569,36 @@ def build_app(
             metadata=req.metadata,
         )
 
-        error_info: Optional[ErrorInfo] = None
-        answer_text = ""
-        selected_agent = ""
-        rationale = ""
-        tools_called: list[dict[str, Any]] = []
-        proposed_diffs: list[Any] = []
-        nanoagents: list[Any] = []
-        turn_tokens: dict[str, int] = {
-            "input": 0, "output": 0, "cache_read": 0, "cache_write": 0,
-        }
-        turn_cost = 0.0
-
-        try:
-            # Run the agent's synchronous forward() in the default
-            # executor so a long turn doesn't block the event loop —
-            # SSE subscribers + the /health probe need to keep
-            # answering while the real ClioAgent is off talking to
-            # Claude via Meridian.
-            loop = asyncio.get_running_loop()
-            pred = await loop.run_in_executor(
-                None,
-                lambda: app.state.agent.forward(user_text, session_id=sid),
-            )
-            answer_text = getattr(pred, "answer", "")
-            selected_agent = getattr(pred, "selected_expert", "") or ""
-            rationale = getattr(pred, "routing_rationale", "")
-            # Optional: the agent may expose ToolCall traces from the
-            # underlying ReAct loop. Normalise whatever shape the
-            # agent emits (ARC ToolCall struct, DSPy trace row, plain
-            # dict) into the v0.2 wire shape `{name, args, ok,
-            # duration_ms, cached}` — all fields optional so the TUI
-            # renders whatever's present.
-            tools_called = _extract_tools_called(pred)
-            # CLIO-BBBBBBBBBB24: cost + token rollup. Agent may hang
-            # `.tokens` (dict or attr-accessible) and `.cost_usd` on
-            # its Prediction; both default to zero if absent.
-            raw_tokens = getattr(pred, "tokens", None)
-            if raw_tokens is not None:
-                for key in turn_tokens:
-                    if isinstance(raw_tokens, dict):
-                        v = raw_tokens.get(key, 0)
-                    else:
-                        v = getattr(raw_tokens, key, 0)
-                    turn_tokens[key] = int(v or 0)
-            turn_cost = float(getattr(pred, "cost_usd", 0.0) or 0.0)
-            proposed_diffs = list(getattr(pred, "file_diffs", None) or [])
-            # CLIO-BBBBBBBBBB25: nanoagents spawned by this turn.
-            # Each spawn: {agent_id, input, answer?, duration_ms?,
-            # tokens?, cost_usd?}. We create a subsession per spawn
-            # so the TUI's hierarchical sidebar renders the tree,
-            # store the spawn's user/assistant exchange under it,
-            # and publish subagent.started/completed events.
-            nanoagents = list(getattr(pred, "nanoagents_spawned", None) or [])
-            # CLIO-BBBBBBBBBB23: register any permission requests the
-            # agent emits onto app.state.permissions + broadcast a
-            # permission.requested event. Each entry is a dict with
-            # at minimum {tool_call: {tool_name, input?, server_id?}}
-            # + optional {summary, id}. Auto-gen missing fields.
-            for req in (getattr(pred, "permissions_requested", None) or []):
-                src = req if isinstance(req, dict) else {
-                    "tool_call": getattr(req, "tool_call", {}),
-                    "summary": getattr(req, "summary", ""),
-                    "id": getattr(req, "id", ""),
-                }
-                pid = src.get("id") or f"perm_{uuid.uuid4().hex[:12]}"
-                row = {
-                    "id": pid,
-                    "session_id": sid,
-                    "tool_call": src.get("tool_call") or {},
-                    "summary": src.get("summary", ""),
-                    "created_at": datetime.now(timezone.utc).isoformat(),
-                    "status": "pending",
-                }
-                app.state.permissions[pid] = row
-                app.state.bus.publish(Event(
-                    type="permission.requested",
-                    session_id=sid,
-                    payload=row,
-                ))
-            # CLIO-BBBBBBBBBB20: if /cancel arrived while the agent
-            # was mid-forward, override the turn as a cancellation.
-            # Agents that cooperate (check an is_cancelled hook) get
-            # here with partial output we discard; agents that don't
-            # (including FakeClioAgent) have their answer_text
-            # thrown away and the turn still reports cancelled —
-            # consistent UX either way.
-            if sid in app.state.cancel_flags:
-                app.state.cancel_flags.discard(sid)
-                error_info = ErrorInfo(
-                    error="cancelled",
-                    message="turn cancelled by client",
-                    details={"session_id": sid},
-                    recoverable=True,
-                )
-                answer_text = ""
-                tools_called = []
-        except Exception as exc:
-            error_info = ErrorInfo(
-                error="agent_error",
-                message=f"agent.forward raised: {exc}",
-                details={"original_error": type(exc).__name__},
-                recoverable=True,
-            )
-            app.state.sessions.update(sid, status="error")
-
-        # Build assistant parts — routing_decision (v0.2) first when
-        # we got a selected_agent, then the text answer.
-        assistant_parts: list[Part] = []
-        if selected_agent:
-            assistant_parts.append(
-                Part(
-                    id=_new_part_id(),
-                    type="routing_decision",
-                    selected_agent=selected_agent,
-                    rationale=rationale,
-                    confidence=0.0,  # unknown at this layer
-                    heuristic=False,
-                )
-            )
-        if answer_text:
-            assistant_parts.append(
-                Part(id=_new_part_id(), type="text", text=answer_text)
-            )
-        # CLIO-BBBBBBBBBB21: turn Prediction.file_diffs into
-        # file_diff Parts + pending_diffs rows so the TUI can render
-        # apply/reject keys and the endpoint can record decisions.
-        for row in proposed_diffs:
-            if isinstance(row, dict):
-                path = row.get("path", "")
-                udiff = row.get("unified_diff", "")
-            else:
-                path = getattr(row, "path", "")
-                udiff = getattr(row, "unified_diff", "")
-            if not path or not udiff:
-                continue
-            pid = _new_part_id()
-            assistant_parts.append(Part(
-                id=pid,
-                type="file_diff",
-                path=path,
-                unified_diff=udiff,
-                status="pending",
-            ))
-
-        assistant_metadata: dict[str, Any] = {}
-        if tools_called:
-            assistant_metadata["tools_called"] = tools_called
-        assistant_msg = Message(
-            id=_new_message_id("asst"),
-            session_id=sid,
-            role="assistant",
-            created_at=_iso_from_epoch(time.time()),
-            updated_at=_iso_from_epoch(time.time()),
-            parts=assistant_parts,
-            tokens=Tokens(**turn_tokens),
-            cost_usd=turn_cost,
-            stop_reason="error" if error_info else "end_turn",
-            error_info=error_info,
-            metadata=assistant_metadata,
-        )
-
-        # CLIO-BBBBBBBBBB21: index any file_diff parts into
-        # pending_diffs so /diffs/apply + /diffs/reject can find them.
-        bucket = app.state.pending_diffs.setdefault(sid, [])
-        for p in assistant_parts:
-            if p.type != "file_diff":
-                continue
-            bucket.append({
-                "path": p.path,
-                "unified_diff": p.unified_diff,
-                "status": "pending",
-                "part_id": p.id,
-                "message_id": assistant_msg.id,
-            })
-
-        # CLIO-BBBBBBBBBB25: materialise each nanoagent spawn as a
-        # child session. Publishes subagent.started/completed so the
-        # TUI's sidebar can render the hierarchy without polling.
-        for spawn in nanoagents:
-            get = spawn.get if isinstance(spawn, dict) else (
-                lambda k, default=None, _s=spawn: getattr(_s, k, default)
-            )
-            agent_id = get("agent_id") or get("agent") or "nanoagent"
-            spawn_input = get("input") or {}
-            answer = get("answer") or ""
-            subsess = app.state.sessions.create(
-                workspace_id=sess.workspace_id,
-                title=f"{agent_id} subagent",
-                parent_session_id=sid,
-            )
-            # Store a user/assistant pair so GET /messages under the
-            # subsession reflects what the nanoagent actually did.
-            sub_now = time.time()
-            sub_user = Message(
-                id=_new_message_id("user"),
-                session_id=subsess.id,
-                role="user",
-                created_at=_iso_from_epoch(sub_now),
-                updated_at=_iso_from_epoch(sub_now),
-                parts=[Part(
-                    id=_new_part_id(),
-                    type="text",
-                    text=str(spawn_input),
-                )],
-            )
-            sub_asst = Message(
-                id=_new_message_id("asst"),
-                session_id=subsess.id,
-                role="assistant",
-                created_at=_iso_from_epoch(sub_now),
-                updated_at=_iso_from_epoch(sub_now),
-                parts=[Part(id=_new_part_id(), type="text", text=answer)] if answer else [],
-                stop_reason="end_turn",
-            )
-            app.state.messages.setdefault(subsess.id, []).extend(
-                [sub_user, sub_asst]
-            )
-            app.state.sessions.update(
-                subsess.id, message_count=2, status="idle"
-            )
-            # Events fire on the PARENT session so the SSE subscriber
-            # sees its children open + settle.
-            app.state.bus.publish(Event(
-                type="subagent.started",
-                session_id=sid,
-                payload={
-                    "parent_session_id": sid,
-                    "child_session_id": subsess.id,
-                    "agent_id": agent_id,
-                    "spawned_by_message_id": assistant_msg.id,
-                },
-            ))
-            app.state.bus.publish(Event(
-                type="subagent.completed",
-                session_id=sid,
-                payload={
-                    "parent_session_id": sid,
-                    "child_session_id": subsess.id,
-                    "agent_id": agent_id,
-                    "duration_ms": float(get("duration_ms", 0.0) or 0.0),
-                    "tokens": get("tokens") or {},
-                    "cost_usd": float(get("cost_usd", 0.0) or 0.0),
-                },
-            ))
-
-        # Settle the session back to idle (or error, if we already
-        # stamped it above). Also accumulate the turn's cost/tokens
-        # onto the session rollup so /v1/sessions and the TUI
-        # sidebar have a running total.
-        app.state.sessions.update(
-            sid,
-            status="idle" if error_info is None else None,
-            message_count=sess.message_count + 2,
-            add_tokens_input=turn_tokens["input"],
-            add_tokens_output=turn_tokens["output"],
-            add_cost_usd=turn_cost,
-        )
-
-        # CLIO-BBBBBBBBBB13: publish per-message events so live
-        # SSE subscribers see the turn unfold. Order mirrors
-        # SPEC §7.4: the user message arrives first, then the
-        # assistant message body grows part-by-part, then completion.
-        # Payload shape: the Message object directly, not wrapped
-        # under a `{"message": ...}` key. Matches what the reference
-        # emulator emits + what the TUI's decodeMessage expects
-        # (the inner payload IS the Message).
-        bus: EventBus = app.state.bus
-        bus.publish(Event(
-            type="message.created", session_id=sid,
-            payload=user_msg.model_dump(exclude_none=True),
-        ))
-        bus.publish(Event(
-            type="message.created", session_id=sid,
-            payload=Message(
-                id=assistant_msg.id,
-                session_id=sid,
-                role="assistant",
-                created_at=assistant_msg.created_at,
-                updated_at=assistant_msg.updated_at,
-                parts=[],  # parts arrive via subsequent .added events
-            ).model_dump(exclude_none=True),
-        ))
-        # CLIO-BBBBBBBBBB19: text parts stream via message.part.added
-        # (empty text) + N message.part.delta events that carry
-        # text_append chunks. Non-text parts (routing_decision,
-        # file_diff) arrive whole. Scaffold chunks synchronous text
-        # into 64-char windows — a real DSPy pass-through would
-        # drive the same delta shape with actual token chunks.
-        _CHUNK = 64
-        for part in assistant_parts:
-            if part.type == "text" and part.text:
-                # Added with empty text + id so subscribers have
-                # something to append into.
-                stub = part.model_copy(deep=True)
-                stub.text = ""
-                bus.publish(Event(
-                    type="message.part.added",
-                    session_id=sid,
-                    payload={
-                        "message_id": assistant_msg.id,
-                        "part": stub.model_dump(exclude_none=True),
-                    },
-                ))
-                full = part.text
-                for i in range(0, len(full), _CHUNK):
-                    bus.publish(Event(
-                        type="message.part.delta",
-                        session_id=sid,
-                        payload={
-                            "message_id": assistant_msg.id,
-                            "part_id": part.id,
-                            "delta": {"text_append": full[i:i + _CHUNK]},
-                        },
-                    ))
-                bus.publish(Event(
-                    type="message.part.completed",
-                    session_id=sid,
-                    payload={
-                        "message_id": assistant_msg.id,
-                        "part_id": part.id,
-                    },
-                ))
-            else:
-                bus.publish(Event(
-                    type="message.part.added",
-                    session_id=sid,
-                    payload={
-                        "message_id": assistant_msg.id,
-                        "part": part.model_dump(exclude_none=True),
-                    },
-                ))
-        # CLIO-BBBBBBBBBB18: per-tool telemetry events. Emit a
-        # started/completed pair for each tool the agent reported.
-        # The fake-agent path derives these from
-        # Prediction.tools_called post-hoc; a real ReAct agent that
-        # instruments MCPToolBridge.call_tool could publish the
-        # events live from within forward() — the wire shape is the
-        # same either way, so the TUI's renderer doesn't care.
-        for idx, call in enumerate(tools_called):
-            call_id = f"call_{assistant_msg.id}_{idx}"
-            bus.publish(Event(
-                type="tool.call.started",
-                session_id=sid,
-                payload={
-                    "message_id": assistant_msg.id,
-                    "call_id": call_id,
-                    "tool": call.get("name", ""),
-                    "args": call.get("args", {}),
-                },
-            ))
-            bus.publish(Event(
-                type="tool.call.completed",
-                session_id=sid,
-                payload={
-                    "message_id": assistant_msg.id,
-                    "call_id": call_id,
-                    "tool": call.get("name", ""),
-                    "ok": call.get("ok", True),
-                    "duration_ms": call.get("duration_ms", 0.0),
-                    "cached": call.get("cached", False),
-                },
-            ))
-        completed_payload: dict[str, Any] = {
-            "message_id": assistant_msg.id,
-            "stop_reason": "error" if error_info else "end_turn",
-            "tokens": dict(turn_tokens),
-            "cost_usd": turn_cost,
-        }
-        if tools_called:
-            # BBB16: the TUI renders a post-hoc gutter under the turn
-            # by reading metadata.tools_called off the completion
-            # event OR the assistant message. We emit both for
-            # redundancy — the emulator only populates it on the
-            # completion event, but downstream consumers of the
-            # persisted message log want it on the message too.
-            completed_payload["metadata"] = {"tools_called": tools_called}
-        bus.publish(Event(
-            type="message.completed",
-            session_id=sid,
-            payload=completed_payload,
-        ))
-        bus.publish(Event(
+        # Persist + publish the user message synchronously so by the
+        # time the ack returns, GET /messages reflects it. Then mark
+        # the session running, then schedule the turn in the
+        # background and return.
+        app.state.messages.setdefault(sid, []).append(user_msg)
+        app.state.sessions.update(sid, status="running")
+        app.state.bus.publish(Event(
             type="session.status_changed",
             session_id=sid,
-            payload={
-                "session_id": sid,
-                "status": "error" if error_info else "idle",
-                "prev_status": "running",
-            },
+            payload={"session_id": sid, "status": "running", "prev_status": "idle"},
+        ))
+        app.state.bus.publish(Event(
+            type="message.created",
+            session_id=sid,
+            payload=user_msg.model_dump(exclude_none=True),
         ))
 
-        log = app.state.messages.setdefault(sid, [])
-        log.append(user_msg)
-        log.append(assistant_msg)
+        # FastAPI runs background_tasks after the response is sent.
+        # That gives us the "ack-and-stream" semantics the TUI wants
+        # — POST returns in milliseconds, SSE delivers progress as
+        # the agent ticks, /cancel can interrupt mid-flight.
+        background_tasks.add_task(
+            _run_turn_in_background, app, sid, user_text, user_msg
+        )
 
         return PostMessageResponse(
-            user_message=user_msg, assistant_message=assistant_msg
+            message_id=user_msg.id,
+            accepted_at=user_msg.created_at,
         )
+
 
     @app.get("/v1/sessions/{sid}/messages")
     async def list_messages(sid: str) -> dict[str, Any]:
