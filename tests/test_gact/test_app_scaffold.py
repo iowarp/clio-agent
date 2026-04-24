@@ -58,9 +58,13 @@ def test_capabilities_advertises_v0_2(client: TestClient) -> None:
     assert caps["integration_health"] is True, (
         "/v1/health returns integrations[], so this must be True"
     )
+    # Sessions capability landed in BBB8.
+    assert caps["sessions"] is True, (
+        "/v1/sessions CRUD shipped — this flag must be True"
+    )
     # Capabilities not yet wired — advertised False so the TUI
     # doesn't try to render them against this backend.
-    for flag in ("agent_routing", "memory", "tool_telemetry", "sessions"):
+    for flag in ("agent_routing", "memory", "tool_telemetry"):
         assert caps[flag] is False, (
             f"{flag} not yet implemented; must advertise False until wired"
         )
@@ -70,10 +74,6 @@ def test_capabilities_advertises_v0_2(client: TestClient) -> None:
     "method,path",
     [
         ("GET", "/v1/workspaces"),
-        ("GET", "/v1/sessions"),
-        ("POST", "/v1/sessions"),
-        ("GET", "/v1/sessions/abc"),
-        ("DELETE", "/v1/sessions/abc"),
         ("POST", "/v1/sessions/abc/messages"),
         ("GET", "/v1/sessions/abc/messages"),
         ("GET", "/v1/sessions/abc/events"),

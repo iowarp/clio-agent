@@ -148,5 +148,30 @@ class ErrorEnvelope(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-# Placeholder for incremental implementation. Workspace / Session /
-# Message / Part models land as their endpoints do (CLIO-BBBBBBBBBB7+).
+class Session(BaseModel):
+    """GACT v0.2 §4.2. Fields CLIO doesn't populate yet are absent
+    on the wire rather than carrying nulls — see SPEC §3.2 on
+    clients tolerating missing-optional fields."""
+
+    id: str
+    workspace_id: str
+    title: str
+    status: Literal["idle", "running", "waiting_permission", "error"] = "idle"
+    created_at: str
+    updated_at: str
+    message_count: int = 0
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class CreateSessionRequest(BaseModel):
+    """POST /v1/sessions body — SPEC §6.2."""
+
+    workspace_id: str = "ws_default"
+    title: str = ""
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ListSessionsResponse(BaseModel):
+    """GET /v1/sessions body."""
+
+    sessions: list[Session]

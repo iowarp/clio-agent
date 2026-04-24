@@ -24,20 +24,25 @@ from __future__ import annotations
 import argparse
 import time
 from contextlib import asynccontextmanager
-from typing import AsyncIterator
+from pathlib import Path
+from typing import AsyncIterator, Optional
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 
+from clio_agent.gact.sessions import SessionStore, _default_store_path
 from clio_agent.gact.types import (
     AuthInfo,
     BackendInfo,
     Capabilities,
     CapabilityFlags,
+    CreateSessionRequest,
     ErrorEnvelope,
     ErrorInfo,
     HealthResponse,
     Integration,
+    ListSessionsResponse,
+    Session,
     TransportFlags,
 )
 
@@ -83,13 +88,18 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     # wired.
 
 
-def build_app() -> FastAPI:
+def build_app(sessions_path: Optional[Path] = None) -> FastAPI:
     """Construct the FastAPI app.
 
     Kept as a factory (not a module-level ``app = FastAPI()``) so
     tests can build fresh instances without singleton state; the
     module-level ``app`` below is for ``uvicorn
     clio_agent.gact.app:app`` invocations.
+
+    ``sessions_path`` overrides where the session registry persists.
+    ``None`` uses the production default (``~/.config/clio-agent/
+    sessions.json``); tests pass ``tmp_path / "sessions.json"`` for
+    isolation.
     """
 
     app = FastAPI(
@@ -101,6 +111,9 @@ def build_app() -> FastAPI:
     # context (TestClient normally runs it, but older FastAPI + some
     # test-utility paths don't).
     app.state.started_at = time.time()
+    app.state.sessions = SessionStore(
+        path=sessions_path if sessions_path is not None else _default_store_path()
+    )
 
     @app.get("/v1/health", response_model=HealthResponse)
     async def health() -> HealthResponse:
@@ -134,11 +147,10 @@ def build_app() -> FastAPI:
                 homepage="https://github.com/iowarp/clio-agent",
             ),
             capabilities=CapabilityFlags(
-                # v0.1 baseline — everything off until implemented
-                # (CLIO-BBBBBBBBBB8 onwards). Honest reporting lets
-                # the TUI disable UI for capabilities we don't
-                # actually provide.
-                sessions=False,
+                # v0.1 baseline — flipped on as each surface lands.
+                # Honest reporting lets the TUI disable UI for
+                # capabilities we don't actually provide.
+                sessions=True,  # BBB8 — /v1/sessions CRUD
                 commands=False,
                 metrics=False,
                 # v0.2 additions — advertised when the scaffold
@@ -160,13 +172,66 @@ def build_app() -> FastAPI:
     # shape v0.2 clients expect, while honestly reporting that the
     # backend doesn't yet implement the endpoint.
 
+    # ---- /v1/sessions CRUD -----------------------------------------
+    # CLIO-BBBBBBBBBB8 — four real handlers against app.state.sessions
+    # (the SessionStore wired above). Kept as nested closures so they
+    # can close over `app` cleanly without passing the store around.
+
+    @app.post("/v1/sessions", response_model=Session)
+    async def create_session(req: CreateSessionRequest) -> Session:
+        sess = app.state.sessions.create(
+            workspace_id=req.workspace_id or "ws_default",
+            title=req.title,
+            metadata=req.metadata,
+        )
+        return Session(**sess.to_wire())
+
+    @app.get("/v1/sessions", response_model=ListSessionsResponse)
+    async def list_sessions(workspace_id: Optional[str] = None) -> ListSessionsResponse:
+        rows = app.state.sessions.list(workspace_id=workspace_id)
+        return ListSessionsResponse(
+            sessions=[Session(**row.to_wire()) for row in rows]
+        )
+
+    @app.get("/v1/sessions/{sid}", response_model=Session)
+    async def get_session(sid: str) -> Session:
+        sess = app.state.sessions.get(sid)
+        if sess is None:
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="internal_error",
+                        message=f"session not found: {sid}",
+                        details={"session_id": sid},
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        return Session(**sess.to_wire())
+
+    @app.delete("/v1/sessions/{sid}")
+    async def delete_session(sid: str) -> JSONResponse:
+        existed = app.state.sessions.delete(sid)
+        if not existed:
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="internal_error",
+                        message=f"session not found: {sid}",
+                        details={"session_id": sid},
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        return JSONResponse(status_code=204, content=None)
+
+    # ---- 501 stubs for the still-unwired v0.2 surface ----------------
+
     _stub_routes: list[tuple[str, str, str]] = [
         # (method, path, capability_name_for_error)
         ("GET", "/v1/workspaces", "workspaces"),
-        ("GET", "/v1/sessions", "sessions"),
-        ("POST", "/v1/sessions", "sessions"),
-        ("GET", "/v1/sessions/{sid}", "sessions"),
-        ("DELETE", "/v1/sessions/{sid}", "sessions"),
         ("POST", "/v1/sessions/{sid}/messages", "sessions"),
         ("GET", "/v1/sessions/{sid}/messages", "sessions"),
         ("GET", "/v1/sessions/{sid}/events", "sessions"),
