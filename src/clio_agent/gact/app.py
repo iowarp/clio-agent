@@ -401,6 +401,10 @@ def build_app(
     # agent returns. Set (not dict) because the flag's presence IS
     # the signal — no payload.
     app.state.cancel_flags: set[str] = set()
+    # CLIO-BBBBBBBBBB22: per-session context files. Keyed by
+    # session_id, each value is an ordered dict of
+    # path -> ContextFile dict.
+    app.state.context_files: dict[str, dict[str, dict[str, Any]]] = {}
 
     @app.get("/v1/health", response_model=HealthResponse)
     async def health() -> HealthResponse:
@@ -515,6 +519,7 @@ def build_app(
                 session_branching=True,  # BBB26 — POST /sessions/{sid}/fork
                 search_messages=True,  # BBB27 — GET /sessions/{sid}/messages/search
                 cost_tracking=True,  # BBB24 — Message.tokens + Session.cost_usd rollup
+                files=True,  # BBB22 — /v1/sessions/{sid}/context/files CRUD
                 # v0.2 additions — advertised when the scaffold
                 # actually emits them. Turned on piecewise as the
                 # follow-on items land.
@@ -587,6 +592,123 @@ def build_app(
                     )
                 ).model_dump(exclude_none=True),
             )
+        return JSONResponse(status_code=204, content=None)
+
+    # ---- /v1/sessions/{sid}/context/files (BBB22) ---------------------
+
+    @app.get("/v1/sessions/{sid}/context/files")
+    async def list_context_files(sid: str) -> dict[str, Any]:
+        if app.state.sessions.get(sid) is None:
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="internal_error",
+                        message=f"session not found: {sid}",
+                        details={"session_id": sid},
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        rows = list(app.state.context_files.get(sid, {}).values())
+        return {"files": rows}
+
+    @app.post("/v1/sessions/{sid}/context/files")
+    async def add_context_file(sid: str, request: Request) -> dict[str, Any]:
+        """Attach a file to the session's context. Body: ``{path,
+        mode?, size?, last_modified?, language?}``. Existing rows
+        for the same path are upserted so the TUI can swap modes
+        without racing an explicit delete.
+        """
+
+        if app.state.sessions.get(sid) is None:
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="internal_error",
+                        message=f"session not found: {sid}",
+                        details={"session_id": sid},
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        body = {}
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        if not isinstance(body, dict):
+            body = {}
+        path = (body.get("path") or "").strip()
+        if not path:
+            raise HTTPException(
+                status_code=422,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="internal_error",
+                        message="missing required field: path",
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        mode = body.get("mode") or "read"
+        if mode not in {"edit", "read", "pin"}:
+            mode = "read"
+        row = {
+            "path": path,
+            "mode": mode,
+            "added_at": datetime.now(timezone.utc).isoformat(),
+            "last_modified": body.get("last_modified") or "",
+            "size": int(body.get("size") or 0),
+            "language": body.get("language") or "",
+        }
+        bucket = app.state.context_files.setdefault(sid, {})
+        bucket[path] = row
+        app.state.bus.publish(Event(
+            type="context.file.added",
+            session_id=sid,
+            payload={"session_id": sid, "file": row},
+        ))
+        return row
+
+    @app.delete("/v1/sessions/{sid}/context/files")
+    async def remove_context_file(
+        sid: str, request: Request
+    ) -> JSONResponse:
+        """Detach a file by path. 204 whether the path was attached
+        — the TUI fires this optimistically on `d` in the context
+        pane and doesn't want to error if the file was already
+        removed."""
+
+        if app.state.sessions.get(sid) is None:
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="internal_error",
+                        message=f"session not found: {sid}",
+                        details={"session_id": sid},
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        body = {}
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        if not isinstance(body, dict):
+            body = {}
+        path = (body.get("path") or "").strip()
+        bucket = app.state.context_files.get(sid, {})
+        removed = bucket.pop(path, None) if path else None
+        if removed is not None:
+            app.state.bus.publish(Event(
+                type="context.file.removed",
+                session_id=sid,
+                payload={"session_id": sid, "path": path},
+            ))
         return JSONResponse(status_code=204, content=None)
 
     # ---- POST /v1/sessions/{sid}/fork (BBB26) -------------------------

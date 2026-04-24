@@ -267,6 +267,17 @@ class Part(BaseModel):
     heuristic: bool = False
 
 
+class ContextFile(BaseModel):
+    """SPEC §6.9 — a file pinned into a session's context."""
+
+    path: str
+    mode: Literal["edit", "read", "pin"] = "read"
+    added_at: str
+    last_modified: str = ""
+    size: int = 0
+    language: str = ""
+
+
 class Tokens(BaseModel):
     """Per-message token counts — SPEC §4.4."""
 
