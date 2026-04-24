@@ -217,6 +217,10 @@ class Session(BaseModel):
     updated_at: str
     message_count: int = 0
     parent_session_id: str = ""
+    # CLIO-BBBBBBBBBB24: cumulative rollups.
+    tokens_input: int = 0
+    tokens_output: int = 0
+    cost_usd: float = 0.0
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -263,6 +267,15 @@ class Part(BaseModel):
     heuristic: bool = False
 
 
+class Tokens(BaseModel):
+    """Per-message token counts — SPEC §4.4."""
+
+    input: int = 0
+    output: int = 0
+    cache_read: int = 0
+    cache_write: int = 0
+
+
 class Message(BaseModel):
     """SPEC §4.4 + v0.2 error_info. Fields outside BBB9's scope
     (model/tokens/cost/stop_reason/parent etc.) default to zero /
@@ -274,6 +287,9 @@ class Message(BaseModel):
     created_at: str
     updated_at: str
     parts: list[Part] = Field(default_factory=list)
+    tokens: Tokens = Field(default_factory=Tokens)
+    cost_usd: float = 0.0
+    stop_reason: str = ""
     error_info: Optional[ErrorInfo] = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 

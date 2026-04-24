@@ -277,6 +277,7 @@ from clio_agent.gact.types import (
     PostMessageResponse,
     Session,
     SessionMemoryStats,
+    Tokens,
     Tool,
     TransportFlags,
 )
@@ -513,6 +514,7 @@ def build_app(
                 metrics=True,  # BBB15 — /v1/metrics returns SPEC §6.16 envelope
                 session_branching=True,  # BBB26 — POST /sessions/{sid}/fork
                 search_messages=True,  # BBB27 — GET /sessions/{sid}/messages/search
+                cost_tracking=True,  # BBB24 — Message.tokens + Session.cost_usd rollup
                 # v0.2 additions — advertised when the scaffold
                 # actually emits them. Turned on piecewise as the
                 # follow-on items land.
@@ -841,6 +843,10 @@ def build_app(
         selected_agent = ""
         rationale = ""
         tools_called: list[dict[str, Any]] = []
+        turn_tokens: dict[str, int] = {
+            "input": 0, "output": 0, "cache_read": 0, "cache_write": 0,
+        }
+        turn_cost = 0.0
 
         try:
             pred = app.state.agent.forward(user_text, session_id=sid)
@@ -854,6 +860,18 @@ def build_app(
             # duration_ms, cached}` — all fields optional so the TUI
             # renders whatever's present.
             tools_called = _extract_tools_called(pred)
+            # CLIO-BBBBBBBBBB24: cost + token rollup. Agent may hang
+            # `.tokens` (dict or attr-accessible) and `.cost_usd` on
+            # its Prediction; both default to zero if absent.
+            raw_tokens = getattr(pred, "tokens", None)
+            if raw_tokens is not None:
+                for key in turn_tokens:
+                    if isinstance(raw_tokens, dict):
+                        v = raw_tokens.get(key, 0)
+                    else:
+                        v = getattr(raw_tokens, key, 0)
+                    turn_tokens[key] = int(v or 0)
+            turn_cost = float(getattr(pred, "cost_usd", 0.0) or 0.0)
             # CLIO-BBBBBBBBBB20: if /cancel arrived while the agent
             # was mid-forward, override the turn as a cancellation.
             # Agents that cooperate (check an is_cancelled hook) get
@@ -909,20 +927,25 @@ def build_app(
             created_at=_iso_from_epoch(time.time()),
             updated_at=_iso_from_epoch(time.time()),
             parts=assistant_parts,
+            tokens=Tokens(**turn_tokens),
+            cost_usd=turn_cost,
+            stop_reason="error" if error_info else "end_turn",
             error_info=error_info,
             metadata=assistant_metadata,
         )
 
         # Settle the session back to idle (or error, if we already
-        # stamped it above).
-        if error_info is None:
-            app.state.sessions.update(
-                sid, status="idle", message_count=sess.message_count + 2
-            )
-        else:
-            app.state.sessions.update(
-                sid, message_count=sess.message_count + 2
-            )
+        # stamped it above). Also accumulate the turn's cost/tokens
+        # onto the session rollup so /v1/sessions and the TUI
+        # sidebar have a running total.
+        app.state.sessions.update(
+            sid,
+            status="idle" if error_info is None else None,
+            message_count=sess.message_count + 2,
+            add_tokens_input=turn_tokens["input"],
+            add_tokens_output=turn_tokens["output"],
+            add_cost_usd=turn_cost,
+        )
 
         # CLIO-BBBBBBBBBB13: publish per-message events so live
         # SSE subscribers see the turn unfold. Order mirrors
@@ -960,8 +983,8 @@ def build_app(
         completed_payload: dict[str, Any] = {
             "message_id": assistant_msg.id,
             "stop_reason": "error" if error_info else "end_turn",
-            "tokens": {"input": 0, "output": 0},
-            "cost_usd": 0.0,
+            "tokens": dict(turn_tokens),
+            "cost_usd": turn_cost,
         }
         if tools_called:
             # BBB16: the TUI renders a post-hoc gutter under the turn
@@ -1213,6 +1236,14 @@ def build_app(
             for m in rows:
                 role_counts[m.role] = role_counts.get(m.role, 0) + 1
 
+        # CLIO-BBBBBBBBBB24: tokens + cost rollup across every
+        # session's cumulative counters.
+        from clio_agent.gact.types import MetricsCost, MetricsTokens
+
+        tokens_input = sum(s.tokens_input for s in all_sessions)
+        tokens_output = sum(s.tokens_output for s in all_sessions)
+        cost_total = sum(s.cost_usd for s in all_sessions)
+
         return Metrics(
             uptime_s=uptime,
             sessions=MetricsSessions(
@@ -1224,6 +1255,11 @@ def build_app(
                 total=message_total,
                 by_role=role_counts,
             ),
+            tokens=MetricsTokens(
+                input_total=tokens_input,
+                output_total=tokens_output,
+            ),
+            cost=MetricsCost(total_usd=cost_total),
         )
 
     # ---- 501 stubs for the still-unwired v0.2 surface ----------------

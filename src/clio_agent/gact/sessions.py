@@ -91,6 +91,11 @@ class Session:
     updated_at: str = field(default_factory=_utcnow_iso)
     message_count: int = 0
     parent_session_id: str = ""
+    # CLIO-BBBBBBBBBB24: cumulative token + cost rollup. Populated
+    # from Prediction.tokens / cost_usd on every turn.
+    tokens_input: int = 0
+    tokens_output: int = 0
+    cost_usd: float = 0.0
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_wire(self) -> dict[str, Any]:
@@ -235,13 +240,19 @@ class SessionStore:
         title: Optional[str] = None,
         status: Optional[str] = None,
         message_count: Optional[int] = None,
+        add_tokens_input: int = 0,
+        add_tokens_output: int = 0,
+        add_cost_usd: float = 0.0,
         metadata_patch: Optional[dict[str, Any]] = None,
     ) -> Optional[Session]:
         """Mutate a session in place.
 
         Any field left ``None`` is untouched. ``metadata_patch``
         merges into the existing metadata (shallow) so callers can
-        stamp additional keys without clobbering the rest.
+        stamp additional keys without clobbering the rest. The
+        ``add_tokens_*`` / ``add_cost_usd`` params accumulate onto
+        the session rollup — pass a turn's numbers after each
+        forward() call.
         """
 
         with self._lock:
@@ -254,6 +265,12 @@ class SessionStore:
                 sess.status = status
             if message_count is not None:
                 sess.message_count = message_count
+            if add_tokens_input:
+                sess.tokens_input += add_tokens_input
+            if add_tokens_output:
+                sess.tokens_output += add_tokens_output
+            if add_cost_usd:
+                sess.cost_usd += add_cost_usd
             if metadata_patch is not None:
                 sess.metadata.update(metadata_patch)
             sess.updated_at = _utcnow_iso()

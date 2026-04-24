@@ -32,10 +32,14 @@ class _Prediction:
     selected_expert: str
     routing_rationale: str = ""
     tools_called: list[dict] = None  # type: ignore[assignment]
+    tokens: dict = None  # type: ignore[assignment]
+    cost_usd: float = 0.0
 
     def __post_init__(self) -> None:
         if self.tools_called is None:
             self.tools_called = []
+        if self.tokens is None:
+            self.tokens = {}
 
 
 class FakeClioAgent:
@@ -95,6 +99,13 @@ class FakeClioAgent:
                                 "cached": False,
                             },
                         ],
+                        tokens={
+                            "input": 342,
+                            "output": 118,
+                            "cache_read": 256,
+                            "cache_write": 0,
+                        },
+                        cost_usd=0.00412,
                     )
         return _Prediction(
             answer=(
