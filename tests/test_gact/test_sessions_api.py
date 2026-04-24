@@ -61,16 +61,21 @@ def test_get_v1_sessions_lists_newest_first(client: TestClient) -> None:
 
 
 def test_get_v1_sessions_filter_by_workspace(client: TestClient) -> None:
-    client.post("/v1/sessions", json={"workspace_id": "ws_a", "title": "a1"})
-    client.post("/v1/sessions", json={"workspace_id": "ws_b", "title": "b1"})
-    client.post("/v1/sessions", json={"workspace_id": "ws_a", "title": "a2"})
+    # Create two ad-hoc workspaces (ws_default already exists so
+    # POSTing to it works without a roundtrip).
+    ws_a = client.post("/v1/workspaces", json={"name": "alpha"}).json()["id"]
+    ws_b = client.post("/v1/workspaces", json={"name": "beta"}).json()["id"]
 
-    resp = client.get("/v1/sessions?workspace_id=ws_a")
+    client.post("/v1/sessions", json={"workspace_id": ws_a, "title": "a1"})
+    client.post("/v1/sessions", json={"workspace_id": ws_b, "title": "b1"})
+    client.post("/v1/sessions", json={"workspace_id": ws_a, "title": "a2"})
+
+    resp = client.get(f"/v1/sessions?workspace_id={ws_a}")
     assert resp.status_code == 200
     ids = [s["id"] for s in resp.json()["sessions"]]
     assert len(ids) == 2
     assert all(
-        s["workspace_id"] == "ws_a" for s in resp.json()["sessions"]
+        s["workspace_id"] == ws_a for s in resp.json()["sessions"]
     )
 
 

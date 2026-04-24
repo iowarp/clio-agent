@@ -202,6 +202,39 @@ class MemoryStats(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+class Workspace(BaseModel):
+    """SPEC §4.1 — a workspace groups related sessions and pins
+    a filesystem root the agent's tools are allowed to touch.
+
+    For CLIO each workspace maps to a directory the user has
+    explicitly added (think "git project root"). The agent's
+    file-policy receives ``root_path`` as part of CLIO_ALLOWED_ROOTS;
+    the ARC namespace + session bucket are scoped to ``id``.
+    """
+
+    id: str
+    name: str
+    root_path: str = ""
+    created_at: str
+    updated_at: str
+    config: dict[str, Any] = Field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class CreateWorkspaceRequest(BaseModel):
+    """POST /v1/workspaces body."""
+
+    name: str
+    root_path: str = ""
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ListWorkspacesResponse(BaseModel):
+    """GET /v1/workspaces body."""
+
+    workspaces: list[Workspace]
+
+
 class Session(BaseModel):
     """GACT v0.2 §4.2. Fields CLIO doesn't populate yet are absent
     on the wire rather than carrying nulls — see SPEC §3.2 on

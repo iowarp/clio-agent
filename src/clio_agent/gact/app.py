@@ -666,6 +666,7 @@ from clio_agent.gact.types import (
     Capabilities,
     CapabilityFlags,
     CreateSessionRequest,
+    CreateWorkspaceRequest,
     ErrorEnvelope,
     ErrorInfo,
     GlobalMemoryStats,
@@ -674,6 +675,7 @@ from clio_agent.gact.types import (
     ListAgentsResponse,
     ListSessionsResponse,
     ListToolsResponse,
+    ListWorkspacesResponse,
     LMProviderInfo,
     LMProviderPreset,
     LMProviderRequest,
@@ -690,6 +692,13 @@ from clio_agent.gact.types import (
     Tokens,
     Tool,
     TransportFlags,
+    Workspace,
+)
+from clio_agent.gact.workspaces import (
+    WorkspaceStore,
+)
+from clio_agent.gact.workspaces import (
+    _default_store_path as _ws_default_store_path,
 )
 
 
@@ -830,6 +839,14 @@ def build_app(
     # us with. Distinct from boot-time env because PUT /providers/lm
     # rebuilds the agent + DSPy config in-place.
     app.state.lm_config: Optional[dict[str, str]] = None
+    # CLIO-BBBBBBBBBB-WS: workspaces store. Persisted alongside
+    # sessions; seeds a default workspace if none exist so the TUI
+    # always has something to render.
+    app.state.workspaces = WorkspaceStore(
+        path=(sessions_path.parent / "workspaces.json")
+        if sessions_path is not None
+        else _ws_default_store_path()
+    )
 
     @app.get("/v1/health", response_model=HealthResponse)
     async def health() -> HealthResponse:
@@ -968,6 +985,7 @@ def build_app(
                 # Honest reporting lets the TUI disable UI for
                 # capabilities we don't actually provide.
                 sessions=True,  # BBB8 — /v1/sessions CRUD
+                workspaces=True,  # CLIO-WS — /v1/workspaces CRUD
                 commands=False,
                 metrics=True,  # BBB15 — /v1/metrics returns SPEC §6.16 envelope
                 session_branching=True,  # BBB26 — POST /sessions/{sid}/fork
@@ -1003,8 +1021,21 @@ def build_app(
 
     @app.post("/v1/sessions", response_model=Session)
     async def create_session(req: CreateSessionRequest) -> Session:
+        wid = req.workspace_id or "ws_default"
+        if app.state.workspaces.get(wid) is None:
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="internal_error",
+                        message=f"workspace not found: {wid}",
+                        details={"workspace_id": wid},
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            )
         sess = app.state.sessions.create(
-            workspace_id=req.workspace_id or "ws_default",
+            workspace_id=wid,
             title=req.title,
             metadata=req.metadata,
         )
@@ -1881,6 +1912,75 @@ def build_app(
             cost=MetricsCost(total_usd=cost_total),
         )
 
+    # ---- /v1/workspaces (CLIO-BBBBBBBBBB-WS) -------------------------
+
+    @app.get("/v1/workspaces", response_model=ListWorkspacesResponse)
+    async def list_workspaces() -> ListWorkspacesResponse:
+        """SPEC §6.1 — list workspaces."""
+
+        rows = app.state.workspaces.list()
+        return ListWorkspacesResponse(
+            workspaces=[Workspace(**w.to_wire()) for w in rows]
+        )
+
+    @app.post("/v1/workspaces", response_model=Workspace, status_code=201)
+    async def create_workspace(req: CreateWorkspaceRequest) -> Workspace:
+        """SPEC §6.1 — create a workspace pinned to ``root_path``."""
+
+        ws = app.state.workspaces.create(
+            name=req.name,
+            root_path=req.root_path,
+            metadata=req.metadata,
+        )
+        return Workspace(**ws.to_wire())
+
+    @app.get("/v1/workspaces/{wid}", response_model=Workspace)
+    async def get_workspace(wid: str) -> Workspace:
+        ws = app.state.workspaces.get(wid)
+        if ws is None:
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="internal_error",
+                        message=f"workspace not found: {wid}",
+                        details={"workspace_id": wid},
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        return Workspace(**ws.to_wire())
+
+    @app.delete("/v1/workspaces/{wid}")
+    async def delete_workspace(wid: str) -> JSONResponse:
+        """Refuses to delete ws_default — every CLIO install needs
+        one workspace alive so sessions have a parent."""
+
+        if wid == "ws_default":
+            raise HTTPException(
+                status_code=409,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="permission_error",
+                        message="ws_default is not deletable",
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        existed = app.state.workspaces.delete(wid)
+        if not existed:
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="internal_error",
+                        message=f"workspace not found: {wid}",
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        return JSONResponse(status_code=204, content=None)
+
     # ---- /v1/providers/lm (CLIO-BBBBBBBBBB-D) ------------------------
 
     _LM_PRESETS: list[LMProviderPreset] = [
@@ -1985,6 +2085,16 @@ def build_app(
                 model=req.model,
                 api_key=req.api_key or "x",
             )
+            # ClioAgent.__init__ reads load_config_from_env() to
+            # wire its router + experts. Stamp the env before
+            # construction so the fresh agent matches what we just
+            # configured for DSPy — otherwise it falls back to the
+            # default provider (lm_studio) and we silently configure
+            # the wrong endpoint.
+            os.environ["CLIO_LM_PROVIDER"] = req.provider
+            os.environ["CLIO_LM_API_BASE"] = req.api_base
+            os.environ["CLIO_LM_MODEL"] = req.model
+            os.environ["CLIO_LM_API_KEY"] = req.api_key or "x"
             dspy.configure(lm=create_lm(cfg))
             agent = await asyncio.get_running_loop().run_in_executor(
                 None, lambda: ClioAgent(verbose=False)
@@ -2024,7 +2134,6 @@ def build_app(
 
     _stub_routes: list[tuple[str, str, str]] = [
         # (method, path, capability_name_for_error)
-        ("GET", "/v1/workspaces", "workspaces"),
         ("GET", "/v1/tools", "tools"),
         ("GET", "/v1/commands", "commands"),
     ]

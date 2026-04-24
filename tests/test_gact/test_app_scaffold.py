@@ -86,7 +86,6 @@ def test_capabilities_advertises_v0_2(client: TestClient) -> None:
 @pytest.mark.parametrize(
     "method,path",
     [
-        ("GET", "/v1/workspaces"),
         ("GET", "/v1/tools"),
         ("GET", "/v1/commands"),
     ],
