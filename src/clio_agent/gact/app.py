@@ -1132,6 +1132,7 @@ async def _try_streamed_forward(
     try:
         import dspy  # noqa: PLC0415
         from dspy.streaming.streamify import streamify
+        from dspy.streaming.streaming_listener import StreamListener  # noqa: PLC0415
         from litellm.types.utils import ModelResponseStream  # noqa: F401
     except Exception:
         return None
@@ -1140,13 +1141,40 @@ async def _try_streamed_forward(
     if agent is None or not isinstance(agent, dspy.Module):
         return None
 
-    streamed = streamify(agent, async_streaming=True)
+    # iowarp/clio-agent#6 + ChatAdapter polish: streamify wraps the
+    # whole agent, so without listeners the stream pumps every LM
+    # call's RAW chunks (ChatAdapter delimiters: ``[[ ## answer ## ]]``,
+    # ``[[ ## reasoning ## ]]``, etc.) into the user-visible part.
+    # StreamListener filters to a single signature output field —
+    # we listen on ``answer`` (the chat agent's output field) so the
+    # router's reasoning stream gets dropped and only the chat
+    # agent's clean answer streams live. When the agent never
+    # produces an ``answer`` field (e.g. expert paths return
+    # ``analysis`` / ``recommendations``), the listener simply
+    # stays silent and the synchronous fallback handles emit.
+    listeners = []
+    try:
+        listeners = [StreamListener(signature_field_name="answer")]
+    except Exception:  # noqa: BLE001
+        listeners = []
+    streamed = streamify(
+        agent, async_streaming=True, stream_listeners=listeners,
+    )
 
     final_pred = None
     try:
+        # StreamListener emits ``StreamResponse`` instances that
+        # carry the cleaned chunk in ``.chunk``. Keep the legacy
+        # ``ModelResponseStream`` / dict / str fallback for backends
+        # that don't surface a typed listener payload.
+        from dspy.streaming.messages import StreamResponse  # noqa: PLC0415
         async for piece in streamed(question=enriched_text, session_id=sid):
             if isinstance(piece, dspy.Prediction):
                 final_pred = piece
+                continue
+            if isinstance(piece, StreamResponse):
+                if piece.chunk:
+                    await emit_chunk(piece.chunk)
                 continue
             text_chunk = _chunk_text(piece)
             if text_chunk:
