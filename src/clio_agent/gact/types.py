@@ -254,6 +254,9 @@ class Session(BaseModel):
     tokens_input: int = 0
     tokens_output: int = 0
     cost_usd: float = 0.0
+    # iowarp/clio-agent — capabilities.plan_mode + edit_modes:
+    mode: Literal["chat", "plan", "edit", "architect"] = "chat"
+    edit_mode: Literal["diff", "whole", "patch"] = "diff"
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -262,7 +265,19 @@ class CreateSessionRequest(BaseModel):
 
     workspace_id: str = "ws_default"
     title: str = ""
+    mode: Literal["chat", "plan", "edit", "architect"] = "chat"
+    edit_mode: Literal["diff", "whole", "patch"] = "diff"
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class UpdateSessionRequest(BaseModel):
+    """PATCH /v1/sessions/{sid} body — only the fields the TUI lets
+    the user toggle live. Everything is optional; missing fields
+    leave the corresponding session attribute alone."""
+
+    title: Optional[str] = None
+    mode: Optional[Literal["chat", "plan", "edit", "architect"]] = None
+    edit_mode: Optional[Literal["diff", "whole", "patch"]] = None
 
 
 class ListSessionsResponse(BaseModel):
@@ -299,10 +314,14 @@ class Part(BaseModel):
     confidence: float = 0.0
     heuristic: bool = False
 
-    # file_diff (BBB21): a proposed edit awaiting apply/reject.
+    # file_diff (BBB21 + #4): a proposed edit awaiting apply/reject.
+    # ``new_content`` (when present) is what the apply path writes
+    # to disk — re-applying a unified diff is fragile so we ship
+    # the whole-file replacement alongside the diff.
     path: str = ""
     unified_diff: str = ""
-    status: str = ""  # "pending" | "applied" | "rejected"
+    new_content: str = ""
+    status: str = ""  # "pending" | "applied" | "rejected" | "apply_failed"
 
 
 class ContextFile(BaseModel):

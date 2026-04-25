@@ -96,6 +96,17 @@ class Session:
     tokens_input: int = 0
     tokens_output: int = 0
     cost_usd: float = 0.0
+    # iowarp/clio-agent — capabilities.plan_mode + edit_modes:
+    # mode controls what the agent can do; edit_mode controls how
+    # it proposes changes when it can. Default {chat, diff} preserves
+    # current behaviour.
+    #
+    #   chat       — answer/respond, no destructive tools
+    #   plan       — read-only; permission gate denies any destructive op
+    #   edit       — full read+write authority; agent can modify files
+    #   architect  — high-level plan + diff proposals; no direct file writes
+    mode: str = "chat"
+    edit_mode: str = "diff"
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_wire(self) -> dict[str, Any]:
@@ -185,6 +196,8 @@ class SessionStore:
         title: str = "",
         metadata: Optional[dict[str, Any]] = None,
         parent_session_id: str = "",
+        mode: str = "chat",
+        edit_mode: str = "diff",
     ) -> Session:
         """Create a new session. Returns the freshly-minted record."""
 
@@ -199,6 +212,8 @@ class SessionStore:
             updated_at=now,
             metadata=dict(metadata or {}),
             parent_session_id=parent_session_id,
+            mode=mode if mode in {"chat", "plan", "edit", "architect"} else "chat",
+            edit_mode=edit_mode if edit_mode in {"diff", "whole", "patch"} else "diff",
         )
         with self._lock:
             self._sessions[sid] = sess
@@ -243,6 +258,8 @@ class SessionStore:
         add_tokens_input: int = 0,
         add_tokens_output: int = 0,
         add_cost_usd: float = 0.0,
+        mode: Optional[str] = None,
+        edit_mode: Optional[str] = None,
         metadata_patch: Optional[dict[str, Any]] = None,
     ) -> Optional[Session]:
         """Mutate a session in place.
@@ -271,6 +288,10 @@ class SessionStore:
                 sess.tokens_output += add_tokens_output
             if add_cost_usd:
                 sess.cost_usd += add_cost_usd
+            if mode is not None and mode in {"chat", "plan", "edit", "architect"}:
+                sess.mode = mode
+            if edit_mode is not None and edit_mode in {"diff", "whole", "patch"}:
+                sess.edit_mode = edit_mode
             if metadata_patch is not None:
                 sess.metadata.update(metadata_patch)
             sess.updated_at = _utcnow_iso()

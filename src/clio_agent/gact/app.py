@@ -299,9 +299,11 @@ async def _run_turn_in_background(
         if isinstance(row, dict):
             path = row.get("path", "")
             udiff = row.get("unified_diff", "")
+            new_content = row.get("new_content", "")
         else:
             path = getattr(row, "path", "")
             udiff = getattr(row, "unified_diff", "")
+            new_content = getattr(row, "new_content", "")
         if not path or not udiff:
             continue
         assistant_parts.append(Part(
@@ -309,6 +311,7 @@ async def _run_turn_in_background(
             type="file_diff",
             path=path,
             unified_diff=udiff,
+            new_content=new_content,
             status="pending",
         ))
 
@@ -353,6 +356,7 @@ async def _run_turn_in_background(
         bucket.append({
             "path": p.path,
             "unified_diff": p.unified_diff,
+            "new_content": p.new_content,
             "status": "pending",
             "part_id": p.id,
             "message_id": assistant_msg.id,
@@ -709,6 +713,39 @@ def _make_permission_gate(app: "FastAPI"):
         sessions_by_recency = app.state.sessions.list()
         if sessions_by_recency:
             sid = sessions_by_recency[0].id
+            current = sessions_by_recency[0]
+            # iowarp/clio-agent — plan_mode + architect mode reject
+            # destructive tool calls without prompting. Read-only
+            # contract is hard, not advisory.
+            if current.mode in {"plan", "architect"}:
+                row = {
+                    "id": f"perm_{uuid.uuid4().hex[:12]}",
+                    "session_id": sid,
+                    "tool_call": {
+                        "tool_name": name,
+                        "input": dict(args),
+                    },
+                    "summary": (
+                        f"destructive tool {name!r} blocked by "
+                        f"session.mode={current.mode!r}"
+                    ),
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                    "status": "auto_denied",
+                    "action": "deny",
+                    "resolved_at": datetime.now(timezone.utc).isoformat(),
+                }
+                app.state.permissions[row["id"]] = row
+                app.state.bus.publish(Event(
+                    type="permission.resolved",
+                    session_id=sid,
+                    payload={
+                        "permission_id": row["id"],
+                        "action": "deny",
+                        "session_id": sid,
+                        "reason": "session_mode_readonly",
+                    },
+                ))
+                return "deny"
         pid = f"perm_{uuid.uuid4().hex[:12]}"
         evt = threading.Event()
         row = {
@@ -870,6 +907,43 @@ def _chunk_text(piece: Any) -> str:
         except (KeyError, IndexError, TypeError):
             return ""
     return ""
+
+
+def _apply_edit_to_disk(
+    *,
+    path: str,
+    new_content: str,
+    session: Any,
+    app: "FastAPI",
+) -> None:
+    """Write ``new_content`` to ``path`` after enforcing the
+    workspace + file_policy boundary.
+
+    The agent's propose_edit tool put the diff together; this is
+    the GACT-side commit step the user explicitly approved via
+    /v1/sessions/{sid}/diffs/apply. We don't go back through the
+    MCP gate (which would re-prompt for permission); the user
+    already said yes by hitting apply.
+    """
+
+    target = Path(path).resolve()
+    # Workspace root scope.
+    ws = app.state.workspaces.get(session.workspace_id)
+    if ws is not None and ws.root_path:
+        try:
+            target.relative_to(Path(ws.root_path).resolve())
+        except ValueError as exc:
+            raise PermissionError(
+                f"refused to write {target} outside workspace root "
+                f"{ws.root_path}"
+            ) from exc
+    # Mode gate — plan + architect can't apply.
+    if session.mode in {"plan", "architect"}:
+        raise PermissionError(
+            f"refused to write under session.mode={session.mode!r}"
+        )
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(new_content, encoding="utf-8")
 
 
 def _enrich_with_context_files(
@@ -1208,6 +1282,7 @@ from clio_agent.gact.types import (
     Tokens,
     Tool,
     TransportFlags,
+    UpdateSessionRequest,
     Workspace,
 )
 from clio_agent.gact.workspaces import (
@@ -1542,6 +1617,8 @@ def build_app(
                 commands=True,  # #14 — /v1/commands + dispatch
                 thinking_blocks=True,  # #17 — DSPy reasoning trace as thinking Parts
                 session_tasks=True,  # #18 — per-session todo CRUD
+                plan_mode=True,  # session.mode=plan blocks destructive tools
+                edit_modes=True,  # session.edit_mode toggles diff/whole/patch
                 # v0.2 additions — advertised when the scaffold
                 # actually emits them. Turned on piecewise as the
                 # follow-on items land.
@@ -1585,7 +1662,45 @@ def build_app(
             workspace_id=wid,
             title=req.title,
             metadata=req.metadata,
+            mode=req.mode,
+            edit_mode=req.edit_mode,
         )
+        return Session(**sess.to_wire())
+
+    @app.patch("/v1/sessions/{sid}", response_model=Session)
+    async def patch_session(
+        sid: str, req: UpdateSessionRequest
+    ) -> Session:
+        """Update mutable session fields (title + mode + edit_mode).
+
+        Lets the TUI flip plan ↔ edit ↔ chat ↔ architect mid-
+        session without recreating, and rename via the existing
+        rename modal.
+        """
+
+        sess = app.state.sessions.update(
+            sid,
+            title=req.title,
+            mode=req.mode,
+            edit_mode=req.edit_mode,
+        )
+        if sess is None:
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="internal_error",
+                        message=f"session not found: {sid}",
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        # Publish so live SSE subscribers see mode flips immediately.
+        app.state.bus.publish(Event(
+            type="session.updated",
+            session_id=sid,
+            payload=Session(**sess.to_wire()).model_dump(exclude_none=True),
+        ))
         return Session(**sess.to_wire())
 
     @app.get("/v1/sessions", response_model=ListSessionsResponse)
@@ -1729,17 +1844,19 @@ def build_app(
     @app.post("/v1/sessions/{sid}/diffs/apply")
     async def diffs_apply(
         sid: str, request: Request
-    ) -> dict[str, list[str]]:
-        """Mark pending diffs as applied + publish events.
+    ) -> dict[str, Any]:
+        """Mark pending diffs as applied + actually write to disk
+        via the fs_apply_edit_write MCP tool.
 
         Body: ``{paths: [...]}`` (optional). If omitted, every
-        pending diff is applied. Returns ``{applied: [...]}``. Does
-        NOT actually touch the filesystem — the agent is responsible
-        for that once it sees the ``file.diff.applied`` event; this
-        endpoint just records the user's decision and broadcasts it.
+        pending diff is applied. Returns ``{applied: [...],
+        write_errors?: {...}}``. iowarp/clio-agent#4: writes are
+        scoped to the session's workspace.root_path; failures
+        per-path go into write_errors but don't block the rest.
         """
 
-        if app.state.sessions.get(sid) is None:
+        sess = app.state.sessions.get(sid)
+        if sess is None:
             raise HTTPException(
                 status_code=404,
                 detail=ErrorEnvelope(
@@ -1761,7 +1878,25 @@ def build_app(
         rows = app.state.pending_diffs.get(sid, [])
         targets = _filter_diff_paths(rows, paths)
         applied: list[str] = []
+        write_errors: dict[str, str] = {}
         for r in targets:
+            # iowarp/clio-agent#4: actually write to disk if the
+            # row carries a `new_content` field. The
+            # propose_edit-driven path always sets it; legacy/test
+            # diffs that don't get the wire event but no write.
+            new_content = r.get("new_content")
+            if new_content is not None:
+                try:
+                    _apply_edit_to_disk(
+                        path=r["path"],
+                        new_content=new_content,
+                        session=sess,
+                        app=app,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    write_errors[r["path"]] = repr(exc)
+                    r["status"] = "apply_failed"
+                    continue
             r["status"] = "applied"
             applied.append(r["path"])
             app.state.bus.publish(Event(
@@ -1774,7 +1909,10 @@ def build_app(
                     "message_id": r.get("message_id", ""),
                 },
             ))
-        return {"applied": applied}
+        out: dict[str, Any] = {"applied": applied}
+        if write_errors:
+            out["write_errors"] = write_errors
+        return out
 
     @app.post("/v1/sessions/{sid}/diffs/reject")
     async def diffs_reject(

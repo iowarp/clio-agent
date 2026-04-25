@@ -24,6 +24,7 @@ from typing import Any, cast
 
 from fastmcp import Client, FastMCP
 
+from clio_agent.tools.servers.fs_server import fs_server
 from clio_agent.tools.servers.hdf5_server import hdf5_server
 from clio_agent.tools.servers.parquet_server import parquet_server
 
@@ -42,6 +43,7 @@ def _mount_with_namespace(parent: FastMCP, server: FastMCP, namespace: str) -> N
 gateway = FastMCP("clio-gateway")
 _mount_with_namespace(gateway, hdf5_server, "hdf5")
 _mount_with_namespace(gateway, parquet_server, "parquet")
+_mount_with_namespace(gateway, fs_server, "fs")
 
 
 def get_gateway() -> FastMCP:
@@ -93,6 +95,8 @@ def list_capabilities() -> list[dict[str, str]]:
             server = "hdf5"
         elif t.name.startswith("parquet_"):
             server = "parquet"
+        elif t.name.startswith("fs_"):
+            server = "fs"
         else:
             server = "unknown"
         capabilities.append({
