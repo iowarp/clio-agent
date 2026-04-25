@@ -3900,6 +3900,20 @@ def build_app(
             description="Direct Anthropic API. Requires an ANTHROPIC_API_KEY.",
         ),
         LMProviderPreset(
+            id="openai",
+            label="OpenAI / ChatGPT",
+            provider="openai",
+            api_base="https://api.openai.com/v1",
+            suggested_model="gpt-4o-mini",
+            requires_api_key=True,
+            description=(
+                "Direct OpenAI API (powers ChatGPT + Codex CLI). "
+                "Requires an OPENAI_API_KEY. Defaults to gpt-4o-mini "
+                "for low cost; swap in gpt-4o or gpt-4-turbo for "
+                "heavier work."
+            ),
+        ),
+        LMProviderPreset(
             id="openrouter",
             label="OpenRouter",
             provider="openai",
