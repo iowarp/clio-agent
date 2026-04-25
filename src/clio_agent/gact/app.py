@@ -217,7 +217,7 @@ async def _run_turn_in_background(
     # unreliable from worker threads), but ``lm.history`` IS shared
     # across threads — list.append under the GIL gives us a clean,
     # thread-safe ledger. We diff history[start:end] post-turn.
-    history_start = _snapshot_lm_history_index()
+    history_start = _snapshot_lm_history_index(app)
 
     try:
         pred = await _try_streamed_forward(
@@ -261,9 +261,12 @@ async def _run_turn_in_background(
             # ``last entry only`` for older code paths, then to a
             # character-based estimate when the upstream proxy
             # reports zero (Meridian quirk on some chunked replies).
-            history_end = _snapshot_lm_history_index()
-            history_made_calls = history_end > history_start
-            usage = _usage_from_history_slice(history_start)
+            history_end = _snapshot_lm_history_index(app)
+            history_made_calls = any(
+                history_end.get(k, 0) > history_start.get(k, 0)
+                for k in {*history_start.keys(), *history_end.keys()}
+            )
+            usage = _usage_from_history_slice(history_start, app)
             if not usage.get("output"):
                 usage = _usage_from_dspy_history()
             for key in turn_tokens:
@@ -649,31 +652,102 @@ def _current_lm_model_id() -> str:
     return getattr(lm, "model", "") if lm else ""
 
 
-def _snapshot_lm_history_index() -> int:
-    """Return current ``lm.history`` length (0 when DSPy or LM
-    aren't ready). Lets the turn handler diff history before/after
-    to attribute every call made during this turn."""
+def _all_known_lms(app: "FastAPI") -> list[Any]:
+    """Return every LM instance the running agent might call —
+    ``dspy.settings.lm`` plus the agent's ``_router_lm`` and any
+    expert-bound LMs. Lets the turn handler diff history across
+    all of them so router + expert + chat token counts roll up."""
+
+    lms: list[Any] = []
+    try:
+        import dspy  # noqa: PLC0415
+        main = getattr(dspy.settings, "lm", None) if hasattr(dspy, "settings") else None
+        if main is not None:
+            lms.append(main)
+    except Exception:  # pragma: no cover
+        pass
+    agent = getattr(getattr(app, "state", None), "agent", None)
+    for attr in ("_router_lm", "router_lm", "_expert_lm"):
+        side = getattr(agent, attr, None) if agent is not None else None
+        if side is not None and side not in lms:
+            lms.append(side)
+    return lms
+
+
+def _snapshot_lm_history_index(app: Optional["FastAPI"] = None) -> dict[int, int]:
+    """Return current ``len(lm.history)`` for every known LM,
+    keyed by ``id(lm)`` so the diff side can find them again
+    even if the agent rebinds attributes mid-turn."""
+
+    if app is None:
+        try:
+            import dspy  # noqa: PLC0415
+        except Exception:  # pragma: no cover
+            return {}
+        lm = getattr(dspy.settings, "lm", None) if hasattr(dspy, "settings") else None
+        return {id(lm): len(getattr(lm, "history", None) or [])} if lm else {}
+    snapshot: dict[int, int] = {}
+    for lm in _all_known_lms(app):
+        history = getattr(lm, "history", None) or []
+        snapshot[id(lm)] = len(history)
+    return snapshot
+
+
+def _usage_from_history_slice(start: Any, app: Optional["FastAPI"] = None) -> dict[str, Any]:
+    """Sum usage from each known LM's ``history[start:]`` — every
+    call this turn made across router + experts + chat. Accepts
+    either a ``dict[id(lm) -> int]`` snapshot (preferred) or a
+    legacy single int for backwards compat with single-LM callers.
+    """
 
     try:
         import dspy  # noqa: PLC0415
     except Exception:  # pragma: no cover
-        return 0
-    lm = getattr(dspy.settings, "lm", None) if hasattr(dspy, "settings") else None
-    if lm is None:
-        return 0
-    history = getattr(lm, "history", None)
-    return len(history) if history else 0
+        return {}
+    if app is not None:
+        lms = _all_known_lms(app)
+    else:
+        lm = getattr(dspy.settings, "lm", None) if hasattr(dspy, "settings") else None
+        lms = [lm] if lm else []
+    if not lms:
+        return {}
+    if isinstance(start, int):
+        # Legacy single-int callers — apply to main LM only.
+        snap = {id(lms[0]): start}
+    else:
+        snap = start
+    input_tok = output_tok = cache_read = cache_write = 0
+    raw_cost = 0.0
+    last_model = ""
+    for lm in lms:
+        start_idx = snap.get(id(lm), 0)
+        history = getattr(lm, "history", None) or []
+        for entry in history[start_idx:]:
+            if not isinstance(entry, dict):
+                continue
+            usage = entry.get("usage") or {}
+            if not isinstance(usage, dict):
+                continue
+            input_tok += int(usage.get("prompt_tokens") or usage.get("input_tokens") or 0)
+            output_tok += int(usage.get("completion_tokens") or usage.get("output_tokens") or 0)
+            cache_read += int(usage.get("cache_read_input_tokens") or 0)
+            cache_write += int(usage.get("cache_creation_input_tokens") or 0)
+            raw_cost += float(usage.get("cost_usd") or usage.get("total_cost") or 0.0)
+            last_model = entry.get("model") or last_model
+    if raw_cost == 0.0:
+        raw_cost = _estimate_cost_usd(last_model, input_tok, output_tok)
+    return {
+        "input": input_tok,
+        "output": output_tok,
+        "cache_read": cache_read,
+        "cache_write": cache_write,
+        "cost_usd": raw_cost,
+    }
 
 
-def _usage_from_history_slice(start: int) -> dict[str, Any]:
-    """Sum usage from ``lm.history[start:]`` — every call this turn
-    made. ``list.append`` is GIL-safe, so the executor-thread
-    appends ARE visible from the main thread; this is more reliable
-    than the per-thread settings.usage_tracker contextvar.
-
-    Falls back to ``_estimate_cost_usd`` for cost when the upstream
-    usage dict reports zero (Meridian quirk).
-    """
+def _usage_from_history_slice_legacy(start: int) -> dict[str, Any]:
+    """Single-LM history diff retained for tests that don't pass
+    an app. Walks dspy.settings.lm only."""
 
     try:
         import dspy  # noqa: PLC0415

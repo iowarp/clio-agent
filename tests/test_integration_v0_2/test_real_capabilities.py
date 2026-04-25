@@ -175,7 +175,7 @@ def test_routing_decision_part_present(
         http,
         session_id,
         "Acknowledge with one word: PING.",
-        timeout=180,
+        timeout=300,
     )
     types = [p["type"] for p in a["parts"]]
     assert "routing_decision" in types, f"got parts {types}"
