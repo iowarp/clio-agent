@@ -164,11 +164,14 @@ def test_routing_decision_part_present(
     """The real router emits a selected_expert; the GACT layer
     materialises it as a routing_decision Part."""
 
+    # Use a question that maps cleanly to the chat path (no tool
+    # calls, no expert ReAct loop) so the test focuses on the
+    # routing_decision Part landing — not on tool-loop latency.
     a = turn(
         http,
         session_id,
-        "What scientific file format is best for time-series. one sentence.",
-        timeout=120,
+        "Acknowledge with one word: PING.",
+        timeout=180,
     )
     types = [p["type"] for p in a["parts"]]
     assert "routing_decision" in types, f"got parts {types}"

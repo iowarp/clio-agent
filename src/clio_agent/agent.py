@@ -283,7 +283,13 @@ class ClioAgent(dspy.Module):
             try:
                 with dspy.context(lm=self._router_lm):
                     routing = self.router(question=question)
-                selected = routing.selected_expert
+                selected = (routing.selected_expert or "chat").strip().lower()
+                # Router LMs sometimes echo back malformed Literal
+                # values ("None", "", quoted strings). Coerce to one
+                # of the known buckets so downstream dispatch always
+                # finds a valid branch.
+                if selected not in {"data", "analysis", "visualization", "none", "chat"}:
+                    selected = "chat"
             except Exception as e:
                 if self.verbose:
                     routing_err = RoutingError(

@@ -194,8 +194,14 @@ def create_lm(config: LMProviderConfig) -> dspy.LM:
     if config.provider in ("openai", "anthropic"):
         model_name = f"{config.provider}/{config.model}"
     else:
-        # lm_studio and ollama are OpenAI-compatible
-        model_name = f"openai/{config.model}"
+        # lm_studio and ollama are OpenAI-compatible. Strip an
+        # already-prefixed model id so callers can send either
+        # ``model: claude-haiku-4-5`` or ``model: openai/...``
+        # without producing the doubled prefix DSPy chokes on.
+        bare = config.model
+        if "/" in bare:
+            bare = bare.split("/", 1)[1]
+        model_name = f"openai/{bare}"
 
     return dspy.LM(
         model=model_name,
@@ -204,6 +210,12 @@ def create_lm(config: LMProviderConfig) -> dspy.LM:
         temperature=config.temperature,
         max_tokens=config.max_tokens,
         model_type="chat",
+        # iowarp/clio-agent#8: disable DSPy LM cache so token usage
+        # always lands in dspy.settings.usage_tracker (cache_hits
+        # short-circuit before add_usage fires). Real serving means
+        # identical prompts should still bill — accounting matters
+        # more than the small spend saved on duplicate questions.
+        cache=False,
     )
 
 
@@ -221,7 +233,10 @@ def create_router_lm(config: LMProviderConfig) -> dspy.LM:
     if config.provider in ("openai", "anthropic"):
         model_name = f"{config.provider}/{config.model}"
     else:
-        model_name = f"openai/{config.model}"
+        bare = config.model
+        if "/" in bare:
+            bare = bare.split("/", 1)[1]
+        model_name = f"openai/{bare}"
 
     return dspy.LM(
         model=model_name,
@@ -230,6 +245,7 @@ def create_router_lm(config: LMProviderConfig) -> dspy.LM:
         temperature=config.router_temperature,
         max_tokens=config.max_tokens,
         model_type="chat",
+        cache=False,  # see create_lm — same rationale
     )
 
 
@@ -421,6 +437,7 @@ def configure_dspy_lm_studio(config: Optional[LMStudioConfig] = None) -> dspy.LM
         temperature=cfg.temperature,
         max_tokens=cfg.max_tokens,
         model_type="chat",
+        cache=False,
     )
 
     return lm
@@ -438,6 +455,7 @@ def configure_dspy_router_lm_studio(config: Optional[RouterLMConfig] = None) -> 
         temperature=cfg.temperature,
         max_tokens=cfg.max_tokens,
         model_type="chat",
+        cache=False,
     )
 
 
@@ -453,6 +471,7 @@ def configure_dspy_reasoner_lm_studio(config: Optional[ReasonerLMConfig] = None)
         temperature=cfg.temperature,
         max_tokens=cfg.max_tokens,
         model_type="chat",
+        cache=False,
     )
 
 

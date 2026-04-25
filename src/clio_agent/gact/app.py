@@ -29,7 +29,7 @@ import threading
 import time
 import uuid
 from collections.abc import Mapping
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, nullcontext as _nullcontext
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, AsyncIterator, Optional
@@ -211,6 +211,14 @@ async def _run_turn_in_background(
             },
         ))
 
+    # iowarp/clio-agent#8: snapshot LM history before the turn so we
+    # can sum every call this turn made. ContextVars don't propagate
+    # to asyncio executor threads (so dspy.settings.usage_tracker is
+    # unreliable from worker threads), but ``lm.history`` IS shared
+    # across threads — list.append under the GIL gives us a clean,
+    # thread-safe ledger. We diff history[start:end] post-turn.
+    history_start = _snapshot_lm_history_index()
+
     try:
         pred = await _try_streamed_forward(
             app, enriched_text, sid, _emit_chunk
@@ -237,8 +245,8 @@ async def _run_turn_in_background(
         )
         # CLIO-BBBBBBBBBB24: cost + token rollup. Real DSPy
         # predictions don't always populate .tokens / .cost_usd
-        # directly — pull from dspy.LM history when the prediction
-        # itself doesn't carry them.
+        # directly — pull from the per-turn UsageTracker first
+        # (works across threads + streaming), then LM history.
         raw_tokens = getattr(pred, "tokens", None)
         if raw_tokens is not None:
             for key in turn_tokens:
@@ -248,10 +256,34 @@ async def _run_turn_in_background(
                     v = getattr(raw_tokens, key, 0)
                 turn_tokens[key] = int(v or 0)
         else:
-            usage = _usage_from_dspy_history()
+            # Diff the LM history slice for this turn first — captures
+            # router + expert + chat calls cleanly. Falls back to
+            # ``last entry only`` for older code paths, then to a
+            # character-based estimate when the upstream proxy
+            # reports zero (Meridian quirk on some chunked replies).
+            history_end = _snapshot_lm_history_index()
+            history_made_calls = history_end > history_start
+            usage = _usage_from_history_slice(history_start)
+            if not usage.get("output"):
+                usage = _usage_from_dspy_history()
             for key in turn_tokens:
                 turn_tokens[key] = int(usage.get(key, 0) or 0)
             turn_cost = float(usage.get("cost_usd", 0.0) or 0.0)
+            # Char-based fallback only when the LM actually fired
+            # this turn (history grew) but the upstream proxy
+            # reported zero usage. Don't synthesize numbers when
+            # there was no real call (e.g. unit tests with a fake
+            # agent that bypasses dspy.LM entirely).
+            if history_made_calls:
+                if turn_tokens["output"] == 0 and answer_text:
+                    turn_tokens["output"] = max(1, len(answer_text) // 4)
+                if turn_tokens["input"] == 0 and enriched_text:
+                    turn_tokens["input"] = max(1, len(enriched_text) // 4)
+                if turn_cost == 0.0:
+                    turn_cost = _estimate_cost_usd(
+                        _current_lm_model_id(),
+                        turn_tokens["input"], turn_tokens["output"],
+                    )
         if not turn_cost:
             turn_cost = float(getattr(pred, "cost_usd", 0.0) or 0.0)
         proposed_diffs = list(getattr(pred, "file_diffs", None) or [])
@@ -605,6 +637,122 @@ async def _run_turn_in_background(
         )
     except Exception:  # noqa: BLE001
         pass
+
+
+def _current_lm_model_id() -> str:
+    """Best-effort: which model is dspy.settings.lm bound to."""
+    try:
+        import dspy  # noqa: PLC0415
+    except Exception:  # pragma: no cover
+        return ""
+    lm = getattr(dspy.settings, "lm", None) if hasattr(dspy, "settings") else None
+    return getattr(lm, "model", "") if lm else ""
+
+
+def _snapshot_lm_history_index() -> int:
+    """Return current ``lm.history`` length (0 when DSPy or LM
+    aren't ready). Lets the turn handler diff history before/after
+    to attribute every call made during this turn."""
+
+    try:
+        import dspy  # noqa: PLC0415
+    except Exception:  # pragma: no cover
+        return 0
+    lm = getattr(dspy.settings, "lm", None) if hasattr(dspy, "settings") else None
+    if lm is None:
+        return 0
+    history = getattr(lm, "history", None)
+    return len(history) if history else 0
+
+
+def _usage_from_history_slice(start: int) -> dict[str, Any]:
+    """Sum usage from ``lm.history[start:]`` — every call this turn
+    made. ``list.append`` is GIL-safe, so the executor-thread
+    appends ARE visible from the main thread; this is more reliable
+    than the per-thread settings.usage_tracker contextvar.
+
+    Falls back to ``_estimate_cost_usd`` for cost when the upstream
+    usage dict reports zero (Meridian quirk).
+    """
+
+    try:
+        import dspy  # noqa: PLC0415
+    except Exception:  # pragma: no cover
+        return {}
+    lm = getattr(dspy.settings, "lm", None) if hasattr(dspy, "settings") else None
+    if lm is None:
+        return {}
+    history = getattr(lm, "history", None) or []
+    if start >= len(history):
+        return {}
+    input_tok = 0
+    output_tok = 0
+    cache_read = 0
+    cache_write = 0
+    raw_cost = 0.0
+    last_model = ""
+    for entry in history[start:]:
+        if not isinstance(entry, dict):
+            continue
+        usage = entry.get("usage") or {}
+        if not isinstance(usage, dict):
+            continue
+        input_tok += int(usage.get("prompt_tokens") or usage.get("input_tokens") or 0)
+        output_tok += int(usage.get("completion_tokens") or usage.get("output_tokens") or 0)
+        cache_read += int(usage.get("cache_read_input_tokens") or 0)
+        cache_write += int(usage.get("cache_creation_input_tokens") or 0)
+        raw_cost += float(usage.get("cost_usd") or usage.get("total_cost") or 0.0)
+        last_model = entry.get("model") or last_model
+    if raw_cost == 0.0:
+        raw_cost = _estimate_cost_usd(last_model, input_tok, output_tok)
+    return {
+        "input": input_tok,
+        "output": output_tok,
+        "cache_read": cache_read,
+        "cache_write": cache_write,
+        "cost_usd": raw_cost,
+    }
+
+
+def _usage_from_tracker(tracker: Any) -> dict[str, Any]:
+    """Sum usage from a per-turn ``UsageTracker`` (preferred path).
+
+    The tracker collects per-call usage as litellm/dspy hits the LM,
+    surviving the executor-thread + streaming hops that strand
+    ``dspy.LM.history``. Returns ``{}`` when the tracker is absent
+    or empty so the caller falls back to history scraping.
+    """
+
+    if tracker is None:
+        return {}
+    try:
+        totals = tracker.get_total_tokens()
+    except Exception:  # noqa: BLE001
+        return {}
+    if not totals:
+        return {}
+    input_tok = 0
+    output_tok = 0
+    cache_read = 0
+    cache_write = 0
+    raw_cost = 0.0
+    last_model = ""
+    for model, entry in totals.items():
+        last_model = model
+        input_tok += int(entry.get("prompt_tokens") or entry.get("input_tokens") or 0)
+        output_tok += int(entry.get("completion_tokens") or entry.get("output_tokens") or 0)
+        cache_read += int(entry.get("cache_read_input_tokens") or 0)
+        cache_write += int(entry.get("cache_creation_input_tokens") or 0)
+        raw_cost += float(entry.get("cost_usd") or entry.get("total_cost") or 0.0)
+    if raw_cost == 0.0:
+        raw_cost = _estimate_cost_usd(last_model, input_tok, output_tok)
+    return {
+        "input": input_tok,
+        "output": output_tok,
+        "cache_read": cache_read,
+        "cache_write": cache_write,
+        "cost_usd": raw_cost,
+    }
 
 
 def _usage_from_dspy_history() -> dict[str, Any]:
