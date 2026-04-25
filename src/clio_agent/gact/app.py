@@ -3961,7 +3961,20 @@ def build_app(
             os.environ["CLIO_LM_API_BASE"] = req.api_base
             os.environ["CLIO_LM_MODEL"] = req.model
             os.environ["CLIO_LM_API_KEY"] = req.api_key or "x"
-            dspy.configure(lm=create_lm(cfg))
+            # iowarp/clio-agent — DSPy 3.x forbids dspy.configure()
+            # being re-called from a different async task than the
+            # first one. PUT /v1/providers/lm comes from the FastAPI
+            # request task, never the boot task, so the second call
+            # always blew up. Side-step the guard by mutating
+            # ``settings.main_thread_config['lm']`` directly — same
+            # underlying state DSPy's __getattr__ reads, no async
+            # task ownership check.
+            new_lm = create_lm(cfg)
+            try:
+                from dspy.dsp.utils.settings import main_thread_config  # noqa: PLC0415
+                main_thread_config["lm"] = new_lm
+            except Exception:  # pragma: no cover - dspy missing
+                dspy.configure(lm=new_lm)
             agent = await asyncio.get_running_loop().run_in_executor(
                 None, lambda: ClioAgent(verbose=False)
             )
