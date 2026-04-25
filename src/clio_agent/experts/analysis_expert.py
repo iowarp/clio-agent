@@ -34,6 +34,41 @@ from clio_agent.tools.gateway import gateway
 logger = logging.getLogger(__name__)
 
 
+_PARALLEL_TRIGGERS = (
+    "validate ",
+    "check ",
+    "analyze ",
+    "compare ",
+    "profile ",
+)
+
+
+def _detect_parallel_items(question: str) -> list[str]:
+    """Pull comma/and-separated items out of a "validate X, Y, and Z"
+    style question. Empty list when the question doesn't match a
+    parallel trigger or has only one item — no spawning in that case.
+
+    Heuristic, not perfect — the goal is to surface obvious fan-out
+    patterns. Tier-2 experts opt in by checking the result.
+    """
+
+    q = question.lower().strip()
+    trigger = next((t for t in _PARALLEL_TRIGGERS if t in q), None)
+    if trigger is None:
+        return []
+    after = q.split(trigger, 1)[1]
+    # Split on " and " then commas.
+    parts: list[str] = []
+    for chunk in after.split(" and "):
+        for piece in chunk.split(","):
+            piece = piece.strip().strip(".")
+            if piece:
+                parts.append(piece)
+    if len(parts) < 2:
+        return []
+    return parts
+
+
 class AnalysisExpert(dspy.Module):
     """Statistical analysis expert with ReAct + real Parquet MCP tools.
 
@@ -97,9 +132,42 @@ class AnalysisExpert(dspy.Module):
             file_context: File information (paths, column names, context)
 
         Returns:
-            dspy.Prediction with analysis and recommendations fields
+            dspy.Prediction with analysis and recommendations fields.
+            iowarp/clio-agent#9: when the question matches a parallel
+            pattern ("validate X and Y" / "check X, Y, and Z"), spawn
+            one Tier-3 nanoagent per item via
+            ``clio_agent.runtime.nanoagent.spawn_many`` and attach
+            the results to ``Prediction.nanoagents_spawned``. The
+            GACT layer materialises them as child sessions.
         """
-        return self.agent(question=question, file_context=file_context)
+
+        nanoagents_spawned: list[dict[str, Any]] = []
+        items = _detect_parallel_items(question)
+        if items:
+            from clio_agent.runtime.nanoagent import spawn_many
+
+            spawns = spawn_many(
+                agent_factory=lambda: self.agent,
+                items=[
+                    {
+                        "agent_id": "analysis_validator",
+                        "input": {"question": f"Validate: {item}"},
+                    }
+                    for item in items
+                ],
+                question_field="question",
+                num_threads=min(4, len(items)),
+            )
+            nanoagents_spawned = [s.to_wire() for s in spawns]
+
+        result = self.agent(question=question, file_context=file_context)
+        if nanoagents_spawned:
+            # dspy.Prediction supports attribute set via __setattr__.
+            try:
+                result.nanoagents_spawned = nanoagents_spawned  # type: ignore[attr-defined]
+            except Exception:
+                pass
+        return result
 
     def close(self) -> None:
         """Release tool execution resources."""
