@@ -516,6 +516,8 @@ class LMProviderInfo(BaseModel):
     provider: str = ""
     api_base: str = ""
     model: str = ""
+    temperature: float = 1.0
+    max_tokens: int = 32000
     presets: list["LMProviderPreset"] = Field(default_factory=list)
 
 
@@ -538,9 +540,17 @@ class LMProviderRequest(BaseModel):
     `openai|anthropic|openrouter|lm_studio|ollama|...` — anything
     LiteLLM understands. ``api_key`` is required for cloud
     providers; locally-OpenAI-compatible backends (LM Studio,
-    Ollama, Meridian) tolerate any non-empty string."""
+    Ollama, Meridian) tolerate any non-empty string.
+
+    ``temperature`` + ``max_tokens`` are forwarded to dspy.LM so
+    the user can tune behaviour from the TUI without touching env
+    vars. Defaults match LMProviderConfig's defaults
+    (temperature=1.0, max_tokens=32000).
+    """
 
     provider: str
     api_base: str
     model: str
     api_key: str = "x"
+    temperature: float = 1.0
+    max_tokens: int = 32000

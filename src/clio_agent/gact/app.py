@@ -1391,15 +1391,69 @@ def _not_implemented(capability: str) -> ErrorEnvelope:
 async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Startup/shutdown hook.
 
-    Today: records the boot timestamp so ``/v1/health`` can report
-    uptime. Future: wire ClioAgent, mount MCP gateway, load config,
-    etc. (CLIO-BBBBBBBBBB7+).
+    Spins the scheduler tick task (#21) at boot if a ScheduleStore
+    is wired; cancels it cleanly on shutdown.
     """
 
     app.state.started_at = time.time()
+    task: Optional[asyncio.Task] = None
+    if getattr(app.state, "schedules", None) is not None:
+        task = asyncio.create_task(_scheduler_tick(app))
+        app.state.scheduler_task = task
     yield
-    # No-op shutdown for now; ClioAgent.shutdown goes here once
-    # wired.
+    if task is not None:
+        task.cancel()
+        try:
+            await task
+        except (asyncio.CancelledError, Exception):
+            pass
+
+
+async def _scheduler_tick(app: "FastAPI") -> None:
+    """Once-a-minute loop: fire any due schedules.
+
+    Each due schedule kicks the same _run_turn_in_background path
+    a regular POST /messages would, so SSE subscribers see the
+    automated turn unfold like any other.
+    """
+
+    while True:
+        try:
+            now = datetime.now(timezone.utc)
+            for sch in list(app.state.schedules.due_now(now)):
+                user_msg = Message(
+                    id=_new_message_id("user"),
+                    session_id=sch.session_id,
+                    role="user",
+                    created_at=_iso_from_epoch(time.time()),
+                    updated_at=_iso_from_epoch(time.time()),
+                    parts=[Part(
+                        id=_new_part_id(),
+                        type="text",
+                        text=sch.question,
+                    )],
+                    metadata={"scheduled": True, "schedule_id": sch.id},
+                )
+                app.state.messages.setdefault(
+                    sch.session_id, []
+                ).append(user_msg)
+                app.state.bus.publish(Event(
+                    type="message.created",
+                    session_id=sch.session_id,
+                    payload=user_msg.model_dump(exclude_none=True),
+                ))
+                app.state.schedules.mark_fired(sch.id)
+                # Fire-and-forget the turn task.
+                asyncio.create_task(
+                    _run_turn_in_background(
+                        app, sch.session_id, sch.question, user_msg,
+                    )
+                )
+        except Exception:  # noqa: BLE001
+            pass
+        # Sleep until just past the next minute boundary so we don't
+        # double-fire on the same minute.
+        await asyncio.sleep(60)
 
 
 class ARCLike(Protocol):
@@ -1553,6 +1607,15 @@ def build_app(
         if sessions_path is not None
         else _ua_default()
     )
+    # iowarp/clio-agent#21: scheduled turns store + tick task.
+    from clio_agent.gact.scheduler import ScheduleStore as _SchedStore
+    app.state.schedules = _SchedStore(
+        path=(sessions_path.parent / "schedules.json")
+        if sessions_path is not None else None
+    )
+    app.state.scheduler_task: Optional[asyncio.Task] = None
+    # iowarp/clio-agent#22: shared session tokens.
+    app.state.shared_tokens: dict[str, dict[str, Any]] = {}
 
     @app.get("/v1/health", response_model=HealthResponse)
     async def health() -> HealthResponse:
@@ -1710,6 +1773,9 @@ def build_app(
                 edit_modes=True,  # session.edit_mode toggles diff/whole/patch
                 agent_write=True,  # #19 — POST/PUT/DELETE /v1/agents
                 hooks=True,  # #20 — pre/post_tool + pre/post_message hooks
+                scheduled_sessions=True,  # #21 — cron schedules
+                session_sharing=True,  # #22 — share tokens
+                skills_extraction=True,  # #23 — POST /v1/agents/extract
                 # v0.2 additions — advertised when the scaffold
                 # actually emits them. Turned on piecewise as the
                 # follow-on items land.
@@ -2542,6 +2608,261 @@ def build_app(
                 "tools": [t["name"] for t in tools],
             })
         return {"servers": rows}
+
+    # ---- /v1/sessions/{sid}/schedules (#21) --------------------------
+
+    @app.get("/v1/sessions/{sid}/schedules")
+    async def list_schedules(sid: str) -> dict[str, Any]:
+        if app.state.sessions.get(sid) is None:
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="internal_error",
+                        message=f"session not found: {sid}",
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        rows = [s.to_wire() for s in app.state.schedules.list(session_id=sid)]
+        return {"schedules": rows}
+
+    @app.post("/v1/sessions/{sid}/schedules")
+    async def add_schedule(
+        sid: str, request: Request
+    ) -> dict[str, Any]:
+        if app.state.sessions.get(sid) is None:
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="internal_error",
+                        message=f"session not found: {sid}",
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        if not isinstance(body, dict):
+            body = {}
+        cron = (body.get("cron") or "").strip()
+        question = (body.get("question") or "").strip()
+        if not cron or not question:
+            raise HTTPException(
+                status_code=422,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="internal_error",
+                        message="missing required fields: cron + question",
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        sch = app.state.schedules.add(
+            session_id=sid, cron=cron, question=question
+        )
+        return sch.to_wire()
+
+    @app.delete("/v1/schedules/{schedule_id}")
+    async def delete_schedule(schedule_id: str) -> JSONResponse:
+        existed = app.state.schedules.delete(schedule_id)
+        if not existed:
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="internal_error",
+                        message=f"schedule not found: {schedule_id}",
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        return JSONResponse(status_code=204, content=None)
+
+    # ---- /v1/sessions/{sid}/share + /v1/shared/{token} (#22) ---------
+
+    @app.post("/v1/sessions/{sid}/share")
+    async def share_session(
+        sid: str, request: Request
+    ) -> dict[str, Any]:
+        sess = app.state.sessions.get(sid)
+        if sess is None:
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="internal_error",
+                        message=f"session not found: {sid}",
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        if not isinstance(body, dict):
+            body = {}
+        ttl_s = int(body.get("ttl_s") or 0)
+        token = "shr_" + uuid.uuid4().hex[:24]
+        expires_at = ""
+        if ttl_s > 0:
+            expires_at = (
+                datetime.now(timezone.utc).timestamp() + ttl_s
+            )
+        app.state.shared_tokens[token] = {
+            "session_id": sid,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "expires_at": expires_at,
+        }
+        return {
+            "token": token,
+            "session_id": sid,
+            "url": f"/v1/shared/{token}",
+            "expires_at": expires_at,
+        }
+
+    @app.get("/v1/shared/{token}")
+    async def get_shared(token: str) -> dict[str, Any]:
+        row = app.state.shared_tokens.get(token)
+        if row is None:
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="internal_error",
+                        message=f"share token not found: {token}",
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        # Expiry check.
+        expires_at = row.get("expires_at") or 0
+        if expires_at and (
+            datetime.now(timezone.utc).timestamp() > float(expires_at)
+        ):
+            app.state.shared_tokens.pop(token, None)
+            raise HTTPException(
+                status_code=410,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="internal_error",
+                        message="share token expired",
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        sid = row["session_id"]
+        sess = app.state.sessions.get(sid)
+        if sess is None:
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="internal_error",
+                        message=(
+                            f"underlying session {sid} no longer exists"
+                        ),
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        msgs = app.state.messages.get(sid, [])
+        return {
+            "session": Session(**sess.to_wire()).model_dump(exclude_none=True),
+            "messages": [m.model_dump(exclude_none=True) for m in msgs],
+            "shared_at": row.get("created_at"),
+        }
+
+    # ---- /v1/agents/extract (#23) -------------------------------------
+
+    @app.post("/v1/agents/extract", response_model=AgentDef, status_code=201)
+    async def extract_agent(request: Request) -> AgentDef:
+        """Extract a new dynamic agent from past sessions.
+
+        Body: ``{session_ids: [..], agent_id: ".."}``. Walks the
+        message logs of the listed sessions, harvests the most-
+        common tool names called, and registers a user agent
+        whose tools list reflects that pattern. Real DSPy SIMBA
+        compilation is deferred — this is the heuristic baseline.
+        """
+
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        if not isinstance(body, dict):
+            body = {}
+        sids = [s for s in (body.get("session_ids") or []) if isinstance(s, str)]
+        new_id = (body.get("agent_id") or "").strip()
+        if not sids or not new_id:
+            raise HTTPException(
+                status_code=422,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="internal_error",
+                        message="required: session_ids[] + agent_id",
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        if new_id in {"main", "data", "analysis", "visualization"}:
+            raise HTTPException(
+                status_code=409,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="permission_error",
+                        message=(
+                            f"agent id {new_id!r} is built-in; "
+                            "pick a different one"
+                        ),
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        # Walk the message logs.
+        from collections import Counter
+        tool_counts: Counter[str] = Counter()
+        sample_questions: list[str] = []
+        for sid in sids:
+            for m in app.state.messages.get(sid, []):
+                if m.role == "user":
+                    text = next(
+                        (p.text for p in m.parts if p.type == "text" and p.text),
+                        "",
+                    )
+                    if text:
+                        sample_questions.append(text)
+                if m.role == "assistant":
+                    md = m.metadata or {}
+                    for call in md.get("tools_called", []) or []:
+                        name = call.get("name") if isinstance(call, dict) else getattr(call, "name", "")
+                        if name:
+                            tool_counts[name] += 1
+        top_tools = [t for t, _ in tool_counts.most_common(5)]
+        keywords = sorted({
+            w.strip(".,").lower()
+            for q in sample_questions[:5]
+            for w in q.split()
+            if len(w) >= 4
+        })[:8]
+        payload = {
+            "id": new_id,
+            "title": f"Extracted from {len(sids)} session(s)",
+            "description": (
+                f"Auto-extracted agent from {len(sids)} session log(s). "
+                f"Common tools: {', '.join(top_tools) if top_tools else '(none)'}"
+            ),
+            "tier": 2,
+            "specialization": "extracted",
+            "keywords": keywords,
+            "tools": top_tools,
+        }
+        agent = app.state.user_agents.upsert(payload)
+        return AgentDef(**agent.to_wire())
 
     # ---- /v1/sessions/{sid}/export + /v1/sessions/import (#16) -------
 
@@ -3378,6 +3699,8 @@ def build_app(
             provider=cfg.get("provider", ""),
             api_base=cfg.get("api_base", ""),
             model=cfg.get("model", ""),
+            temperature=float(cfg.get("temperature", 1.0) or 1.0),
+            max_tokens=int(cfg.get("max_tokens", 32000) or 32000),
             presets=_LM_PRESETS,
         )
 
@@ -3403,6 +3726,8 @@ def build_app(
                 api_base=req.api_base,
                 model=req.model,
                 api_key=req.api_key or "x",
+                temperature=req.temperature,
+                max_tokens=req.max_tokens,
             )
             # ClioAgent.__init__ reads load_config_from_env() to
             # wire its router + experts. Stamp the env before
@@ -3440,12 +3765,29 @@ def build_app(
             "provider": req.provider,
             "api_base": req.api_base,
             "model": req.model,
+            "temperature": req.temperature,
+            "max_tokens": req.max_tokens,
         }
+        # Publish so live SSE subscribers see the swap (TUI updates
+        # its model chip without polling).
+        app.state.bus.publish(Event(
+            type="lm.provider.changed",
+            session_id="",
+            payload={
+                "provider": req.provider,
+                "model": req.model,
+                "api_base": req.api_base,
+                "temperature": req.temperature,
+                "max_tokens": req.max_tokens,
+            },
+        ))
         return LMProviderInfo(
             configured=True,
             provider=req.provider,
             api_base=req.api_base,
             model=req.model,
+            temperature=req.temperature,
+            max_tokens=req.max_tokens,
             presets=_LM_PRESETS,
         )
 
