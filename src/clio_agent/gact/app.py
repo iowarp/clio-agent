@@ -3970,11 +3970,15 @@ def build_app(
             # underlying state DSPy's __getattr__ reads, no async
             # task ownership check.
             new_lm = create_lm(cfg)
+            from clio_agent.config import is_local_openai_compatible_backend  # noqa: PLC0415
+            use_json_fallback = not is_local_openai_compatible_backend(cfg)
+            new_adapter = dspy.ChatAdapter(use_json_adapter_fallback=use_json_fallback)
             try:
                 from dspy.dsp.utils.settings import main_thread_config  # noqa: PLC0415
                 main_thread_config["lm"] = new_lm
+                main_thread_config["adapter"] = new_adapter
             except Exception:  # pragma: no cover - dspy missing
-                dspy.configure(lm=new_lm)
+                dspy.configure(lm=new_lm, adapter=new_adapter)
             agent = await asyncio.get_running_loop().run_in_executor(
                 None, lambda: ClioAgent(verbose=False)
             )
@@ -4126,7 +4130,12 @@ def main() -> None:
             from clio_agent.config import create_lm, load_config_from_env
 
             provider_cfg = load_config_from_env()
-            dspy.configure(lm=create_lm(provider_cfg))
+            from clio_agent.config import is_local_openai_compatible_backend  # noqa: PLC0415
+            use_json_fallback = not is_local_openai_compatible_backend(provider_cfg)
+            dspy.configure(
+                lm=create_lm(provider_cfg),
+                adapter=dspy.ChatAdapter(use_json_adapter_fallback=use_json_fallback),
+            )
             agent = ClioAgent(verbose=False)
             app_to_run = build_app(agent=agent, arc=agent.arc)
         except Exception as exc:  # noqa: BLE001
