@@ -126,6 +126,39 @@ async def _run_turn_in_background(
     enriched_text = _enrich_with_context_files(
         app, sid, user_text
     )
+    # iowarp/clio-agent#20: pre_message hook can transform the
+    # input or veto the turn. PermissionError → cancelled-style
+    # error_info; the caller sees the hook's reason.
+    try:
+        from clio_agent.runtime.hooks import fire as _fire_hook
+
+        _fire_hook("pre_message", sid, enriched_text)
+    except PermissionError as exc:
+        bus.publish(Event(
+            type="message.completed",
+            session_id=sid,
+            payload={
+                "message_id": user_msg.id,
+                "stop_reason": "blocked",
+                "error_info": {
+                    "error": "permission_error",
+                    "message": str(exc),
+                    "recoverable": True,
+                },
+            },
+        ))
+        app.state.sessions.update(sid, status="error")
+        bus.publish(Event(
+            type="session.status_changed",
+            session_id=sid,
+            payload={
+                "session_id": sid,
+                "status": "error",
+                "prev_status": "running",
+                "reason": "pre_message hook blocked turn",
+            },
+        ))
+        return
 
     # iowarp/clio-agent#6: try real per-token streaming via
     # dspy.streamify when the LM supports it; fall back to the
@@ -560,6 +593,18 @@ async def _run_turn_in_background(
             "prev_status": "running",
         },
     ))
+    # iowarp/clio-agent#20: post_message hook runs AFTER persistence
+    # so user audit code sees the settled assistant + can ship to
+    # external systems. Errors are swallowed (post_* contract).
+    try:
+        from clio_agent.runtime.hooks import fire as _fire_hook
+
+        _fire_hook(
+            "post_message", sid,
+            assistant_msg.model_dump(exclude_none=True),
+        )
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _usage_from_dspy_history() -> dict[str, Any]:
@@ -704,6 +749,15 @@ def _make_permission_gate(app: "FastAPI"):
     DEFAULT_TIMEOUT_S = 120.0
 
     def gate(name: str, args: Mapping[str, Any]) -> str:
+        # iowarp/clio-agent#20: user-defined pre_tool hook can veto
+        # the call by raising PermissionError. Returns ignored;
+        # only the raise/no-raise distinction matters.
+        try:
+            from clio_agent.runtime.hooks import fire as _fire_hook
+
+            _fire_hook("pre_tool", name, dict(args))
+        except PermissionError:
+            return "deny"
         if not _is_destructive(name):
             return "allow"
         # Find an active session to attach the permission to.
@@ -1452,6 +1506,26 @@ def build_app(
         set_global_tool_observer(_make_tool_observer(app))
     except Exception:  # pragma: no cover - defensive
         pass
+
+    # iowarp/clio-agent#20: install the user-hooks registry so
+    # pre_tool / post_tool / pre_message / post_message events
+    # route to ~/.config/clio-agent/hooks/<event>.py. Tests pre-
+    # install their own registry; we only install a default if
+    # nothing's currently wired so the test-side hook stays.
+    try:
+        from clio_agent.runtime.hooks import (
+            HookRegistry,
+            install_global_registry,
+        )
+        from clio_agent.runtime.hooks import (
+            _registry as _current_registry,
+        )
+
+        if _current_registry is None:
+            install_global_registry(HookRegistry())
+    except Exception:  # pragma: no cover - defensive
+        pass
+
     # CLIO-BBBBBBBBBB-D: live LM config — what the TUI configured
     # us with. Distinct from boot-time env because PUT /providers/lm
     # rebuilds the agent + DSPy config in-place.
@@ -1635,6 +1709,7 @@ def build_app(
                 plan_mode=True,  # session.mode=plan blocks destructive tools
                 edit_modes=True,  # session.edit_mode toggles diff/whole/patch
                 agent_write=True,  # #19 — POST/PUT/DELETE /v1/agents
+                hooks=True,  # #20 — pre/post_tool + pre/post_message hooks
                 # v0.2 additions — advertised when the scaffold
                 # actually emits them. Turned on piecewise as the
                 # follow-on items land.
