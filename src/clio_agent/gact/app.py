@@ -127,12 +127,67 @@ async def _run_turn_in_background(
         app, sid, user_text
     )
 
+    # iowarp/clio-agent#6: try real per-token streaming via
+    # dspy.streamify when the LM supports it; fall back to the
+    # synchronous executor path otherwise. Streaming produces
+    # message.part.delta events as chunks arrive — without it the
+    # text part lands as one big delta after forward returns.
+    streamed_assistant_part_id: Optional[str] = None
+    streamed_assistant_buffer: list[str] = []
+    streamed_assistant_msg_id: Optional[str] = None
+
+    async def _emit_chunk(text: str) -> None:
+        nonlocal streamed_assistant_part_id, streamed_assistant_msg_id
+        if streamed_assistant_msg_id is None:
+            # Lazily invent ids the moment the first chunk arrives;
+            # the final assistant message will reuse them.
+            streamed_assistant_msg_id = _new_message_id("asst")
+            streamed_assistant_part_id = _new_part_id()
+            bus.publish(Event(
+                type="message.created",
+                session_id=sid,
+                payload=Message(
+                    id=streamed_assistant_msg_id,
+                    session_id=sid,
+                    role="assistant",
+                    created_at=_iso_from_epoch(time.time()),
+                    updated_at=_iso_from_epoch(time.time()),
+                    parts=[],
+                ).model_dump(exclude_none=True),
+            ))
+            bus.publish(Event(
+                type="message.part.added",
+                session_id=sid,
+                payload={
+                    "message_id": streamed_assistant_msg_id,
+                    "part": Part(
+                        id=streamed_assistant_part_id,
+                        type="text",
+                        text="",
+                    ).model_dump(exclude_none=True),
+                },
+            ))
+        streamed_assistant_buffer.append(text)
+        bus.publish(Event(
+            type="message.part.delta",
+            session_id=sid,
+            payload={
+                "message_id": streamed_assistant_msg_id,
+                "part_id": streamed_assistant_part_id,
+                "delta": {"text_append": text},
+            },
+        ))
+
     try:
-        loop = asyncio.get_running_loop()
-        pred = await loop.run_in_executor(
-            None,
-            lambda: app.state.agent.forward(enriched_text, session_id=sid),
+        pred = await _try_streamed_forward(
+            app, enriched_text, sid, _emit_chunk
         )
+        if pred is None:
+            loop = asyncio.get_running_loop()
+            pred = await loop.run_in_executor(
+                None,
+                lambda: app.state.agent.forward(enriched_text, session_id=sid),
+            )
         answer_text = getattr(pred, "answer", "")
         selected_agent = getattr(pred, "selected_expert", "") or ""
         rationale = getattr(pred, "routing_rationale", "")
@@ -260,8 +315,24 @@ async def _run_turn_in_background(
     assistant_metadata: dict[str, Any] = {}
     if tools_called:
         assistant_metadata["tools_called"] = tools_called
+    # iowarp/clio-agent#6: when streaming actually emitted chunks,
+    # reuse its message_id + part_id so the deltas + final
+    # message line up. Otherwise mint a fresh id (existing path).
+    asst_id = streamed_assistant_msg_id or _new_message_id("asst")
+    if streamed_assistant_part_id is not None and answer_text:
+        # Replace the routing/text/diff parts list's text part
+        # with a stub carrying the streamed part_id, so the final
+        # message references the same id the deltas used.
+        for i, p in enumerate(assistant_parts):
+            if p.type == "text":
+                assistant_parts[i] = Part(
+                    id=streamed_assistant_part_id,
+                    type="text",
+                    text=answer_text,
+                )
+                break
     assistant_msg = Message(
-        id=_new_message_id("asst"),
+        id=asst_id,
         session_id=sid,
         role="assistant",
         created_at=_iso_from_epoch(time.time()),
@@ -351,22 +422,41 @@ async def _run_turn_in_background(
 
     # message.created for the assistant message (empty body — parts
     # arrive via subsequent message.part.added/delta events).
-    bus.publish(Event(
-        type="message.created", session_id=sid,
-        payload=Message(
-            id=assistant_msg.id,
-            session_id=sid,
-            role="assistant",
-            created_at=assistant_msg.created_at,
-            updated_at=assistant_msg.updated_at,
-            parts=[],
-        ).model_dump(exclude_none=True),
-    ))
+    # When real streaming already fired the message.created +
+    # message.part.added + N deltas (#6), skip re-issuing them so we
+    # don't duplicate.
+    if streamed_assistant_msg_id is None:
+        bus.publish(Event(
+            type="message.created", session_id=sid,
+            payload=Message(
+                id=assistant_msg.id,
+                session_id=sid,
+                role="assistant",
+                created_at=assistant_msg.created_at,
+                updated_at=assistant_msg.updated_at,
+                parts=[],
+            ).model_dump(exclude_none=True),
+        ))
     # Stream text parts via message.part.added (empty) + N
-    # message.part.delta + message.part.completed.
+    # message.part.delta + message.part.completed. When real
+    # streaming already drained the chunks, just close out with
+    # message.part.completed for the streamed text part.
     _CHUNK = 64
     for part in assistant_parts:
         if part.type == "text" and part.text:
+            if part.id == streamed_assistant_part_id:
+                # Real streaming already pumped deltas; just emit
+                # the close-out event so renderers know the part
+                # is done growing.
+                bus.publish(Event(
+                    type="message.part.completed",
+                    session_id=sid,
+                    payload={
+                        "message_id": assistant_msg.id,
+                        "part_id": part.id,
+                    },
+                ))
+                continue
             stub = part.model_copy(deep=True)
             stub.text = ""
             bus.publish(Event(
@@ -502,13 +592,79 @@ def _usage_from_dspy_history() -> dict[str, Any]:
         usage = resp.get("usage", {}) if isinstance(resp, dict) else None
     if not isinstance(usage, dict):
         return {}
+    input_tok = int(usage.get("prompt_tokens") or usage.get("input_tokens") or 0)
+    output_tok = int(usage.get("completion_tokens") or usage.get("output_tokens") or 0)
+    cache_read = int(usage.get("cache_read_input_tokens") or 0)
+    cache_write = int(usage.get("cache_creation_input_tokens") or 0)
+    raw_cost = float(usage.get("cost_usd") or usage.get("total_cost") or 0.0)
+    # iowarp/clio-agent#8: Meridian (and some other proxies) don't
+    # pass cost_usd through the OpenAI-compatible response shape, so
+    # the upstream usage dict reports zero. Fall back to a per-token
+    # price table keyed by the LM's model id when raw_cost == 0.
+    if raw_cost == 0.0:
+        model = ""
+        if isinstance(last, dict):
+            model = (
+                last.get("model")
+                or last.get("response", {}).get("model", "")
+                or ""
+            )
+        else:
+            model = getattr(last, "model", "") or ""
+        raw_cost = _estimate_cost_usd(model, input_tok, output_tok)
     return {
-        "input": int(usage.get("prompt_tokens") or usage.get("input_tokens") or 0),
-        "output": int(usage.get("completion_tokens") or usage.get("output_tokens") or 0),
-        "cache_read": int(usage.get("cache_read_input_tokens") or 0),
-        "cache_write": int(usage.get("cache_creation_input_tokens") or 0),
-        "cost_usd": float(usage.get("cost_usd") or 0.0),
+        "input": input_tok,
+        "output": output_tok,
+        "cache_read": cache_read,
+        "cache_write": cache_write,
+        "cost_usd": raw_cost,
     }
+
+
+# iowarp/clio-agent#8: per-million-token prices (USD) for models we
+# expect to see through our presets. Best-effort — the LM provider
+# is the source of truth when it actually reports cost; this kicks
+# in only when the upstream usage dict has zero. Keys match the
+# substrings we look for in the reported model id (case-insensitive).
+_PRICE_TABLE_PER_M: dict[str, tuple[float, float]] = {
+    # (input $/M tokens, output $/M tokens) as of model-card pricing.
+    "claude-haiku-4-5": (1.0, 5.0),
+    "claude-sonnet-4": (3.0, 15.0),
+    "claude-sonnet-4-6": (3.0, 15.0),
+    "claude-opus-4": (15.0, 75.0),
+    "claude-opus-4-6": (15.0, 75.0),
+    "claude-3-5-haiku": (0.8, 4.0),
+    "claude-3-5-sonnet": (3.0, 15.0),
+    "claude-3-opus": (15.0, 75.0),
+    # OpenRouter free tier — by definition $0.
+    ":free": (0.0, 0.0),
+    # OpenAI defaults if someone wires direct.
+    "gpt-4o-mini": (0.15, 0.6),
+    "gpt-4o": (2.5, 10.0),
+}
+
+
+def _estimate_cost_usd(
+    model_id: str, input_tokens: int, output_tokens: int
+) -> float:
+    """Best-effort cost estimate when the LM doesn't report one.
+
+    Substring-matches the model id against ``_PRICE_TABLE_PER_M``;
+    returns 0.0 when nothing matches (no false-precision number).
+    """
+
+    if not model_id:
+        return 0.0
+    needle = model_id.lower()
+    match: Optional[tuple[float, float]] = None
+    for key, prices in _PRICE_TABLE_PER_M.items():
+        if key in needle:
+            match = prices
+            break
+    if match is None:
+        return 0.0
+    input_price, output_price = match
+    return (input_tokens * input_price + output_tokens * output_price) / 1_000_000
 
 
 # iowarp/clio-agent#7: tools the gate treats as destructive. Anything
@@ -638,6 +794,82 @@ def _make_tool_observer(app: "FastAPI"):
 
 
 _OBSERVER_CALL_IDS = threading.local()
+
+
+async def _try_streamed_forward(
+    app: "FastAPI",
+    enriched_text: str,
+    sid: str,
+    emit_chunk,
+) -> Optional[Any]:
+    """Run the agent's forward via dspy.streamify, pumping every
+    text chunk through ``emit_chunk(text)`` as it arrives. Returns
+    the final dspy.Prediction on success, or None if streaming is
+    unavailable / fails — caller falls back to the synchronous path.
+
+    Falls through silently when the agent isn't a DSPy module, when
+    streamify import fails, or when the wrapped call doesn't yield
+    parsable text chunks. The fallback synchronous path produces
+    the same wire shape (just no live deltas).
+    """
+
+    try:
+        import dspy  # noqa: PLC0415
+        from dspy.streaming.streamify import streamify
+        from litellm.types.utils import ModelResponseStream  # noqa: F401
+    except Exception:
+        return None
+
+    agent = app.state.agent
+    if agent is None or not isinstance(agent, dspy.Module):
+        return None
+
+    streamed = streamify(agent, async_streaming=True)
+
+    final_pred = None
+    try:
+        async for piece in streamed(question=enriched_text, session_id=sid):
+            if isinstance(piece, dspy.Prediction):
+                final_pred = piece
+                continue
+            text_chunk = _chunk_text(piece)
+            if text_chunk:
+                await emit_chunk(text_chunk)
+    except Exception:
+        # Streaming blew up partway through — bail to the sync
+        # fallback so the user still gets an answer.
+        return None
+    return final_pred
+
+
+def _chunk_text(piece: Any) -> str:
+    """Pull a string out of whatever streamify yielded.
+
+    Handles litellm ModelResponseStream + plain str + dict shapes.
+    Returns "" when nothing's there (status-message-only chunks
+    don't pollute the part body).
+    """
+
+    if isinstance(piece, str):
+        return piece
+    # litellm stream chunks: choices[0].delta.content
+    try:
+        choices = piece.choices  # type: ignore[attr-defined]
+        if choices:
+            delta = getattr(choices[0], "delta", None)
+            if delta is not None:
+                content = getattr(delta, "content", None)
+                if content:
+                    return str(content)
+    except Exception:
+        pass
+    if isinstance(piece, dict):
+        # OpenAI-style dict.
+        try:
+            return piece["choices"][0]["delta"].get("content", "") or ""
+        except (KeyError, IndexError, TypeError):
+            return ""
+    return ""
 
 
 def _enrich_with_context_files(

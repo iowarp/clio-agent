@@ -18,7 +18,6 @@ import pytest
 
 from .conftest import post_user, turn, wait_for_assistant
 
-
 # ---- /v1/health + /v1/capabilities -----------------------------------------
 
 
@@ -301,7 +300,6 @@ def test_streaming_deltas_are_temporally_distributed(
 
     post_user(http, session_id, "Write a 200-word essay on HDF5 chunking.")
     first_delta_t = None
-    last_delta_t = None
     completed_t = None
     t0 = time.monotonic()
     with httpx.stream(
@@ -317,7 +315,6 @@ def test_streaming_deltas_are_temporally_distributed(
             now = time.monotonic() - t0
             if env["type"] == "message.part.delta":
                 first_delta_t = first_delta_t if first_delta_t is not None else now
-                last_delta_t = now
             if env["type"] == "message.completed":
                 completed_t = now
                 break
