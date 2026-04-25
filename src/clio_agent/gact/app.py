@@ -517,15 +517,18 @@ async def _run_turn_in_background(
     for part in assistant_parts:
         if part.type == "text" and part.text:
             if part.id == streamed_assistant_part_id:
-                # Real streaming already pumped deltas; just emit
-                # the close-out event so renderers know the part
-                # is done growing.
+                # Real streaming already pumped deltas — but those
+                # carry raw LM output that includes ChatAdapter format
+                # markers ([[ ## answer ## ]] etc). The final ``part.text``
+                # is the parsed clean answer; ship it on the completed
+                # event so the TUI can replace the buffered text.
                 bus.publish(Event(
                     type="message.part.completed",
                     session_id=sid,
                     payload={
                         "message_id": assistant_msg.id,
                         "part_id": part.id,
+                        "final_text": part.text,
                     },
                 ))
                 continue
