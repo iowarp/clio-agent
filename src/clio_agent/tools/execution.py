@@ -9,7 +9,7 @@ import logging
 import threading
 from collections.abc import Callable, Mapping
 from contextlib import suppress
-from typing import Any, Protocol
+from typing import Any, Optional, Protocol
 
 import dspy
 from fastmcp import Client
@@ -37,6 +37,37 @@ class MCPClientProtocol(Protocol):
 
 
 ClientFactory = Callable[[Any], MCPClientProtocol]
+
+
+# iowarp/clio-agent#7 + #2: process-global hooks. The GACT layer
+# (or any other harness) sets these once and every MCPToolBridge
+# constructed thereafter picks them up. None means "no-op".
+_GLOBAL_PERMISSION_GATE: Optional[
+    Callable[[str, Mapping[str, Any]], str]
+] = None
+_GLOBAL_TOOL_OBSERVER: Optional[
+    Callable[[str, Mapping[str, Any], Optional[str], Optional[str]], None]
+] = None
+
+
+def set_global_permission_gate(
+    gate: Optional[Callable[[str, Mapping[str, Any]], str]],
+) -> None:
+    """Install a process-global permission gate. Pass None to disable."""
+
+    global _GLOBAL_PERMISSION_GATE
+    _GLOBAL_PERMISSION_GATE = gate
+
+
+def set_global_tool_observer(
+    observer: Optional[
+        Callable[[str, Mapping[str, Any], Optional[str], Optional[str]], None]
+    ],
+) -> None:
+    """Install a process-global tool-call observer. Pass None to disable."""
+
+    global _GLOBAL_TOOL_OBSERVER
+    _GLOBAL_TOOL_OBSERVER = observer
 
 
 class ToolExecutor(Protocol):
@@ -74,6 +105,10 @@ class MCPToolBridge:
         timeout: float = 30.0,
         setup_timeout: float = 10.0,
         client_factory: ClientFactory | None = None,
+        permission_gate: Optional[Callable[[str, Mapping[str, Any]], str]] = None,
+        tool_observer: Optional[
+            Callable[[str, Mapping[str, Any], Optional[str], Optional[str]], None]
+        ] = None,
     ):
         if timeout <= 0:
             raise ValueError("timeout must be positive")
@@ -84,6 +119,19 @@ class MCPToolBridge:
         self._timeout = timeout
         self._setup_timeout = setup_timeout
         self._client_factory = client_factory or Client
+        # iowarp/clio-agent#7: optional gate called BEFORE every
+        # tool invocation. Returns one of:
+        #   "allow"  → run the tool unchanged
+        #   "deny"   → raise a PermissionError; the agent sees the
+        #              traceback in its tool_result and reports it.
+        # Defaults to the module-level _GLOBAL_PERMISSION_GATE so the
+        # GACT layer can wire a single check across every expert at
+        # startup without monkey-patching individual bridges.
+        self._permission_gate = permission_gate or _GLOBAL_PERMISSION_GATE
+        # iowarp/clio-agent#2: optional observer called BEFORE
+        # ("started") and AFTER ("completed", error?) every tool
+        # invocation. Same global-fallback story.
+        self._tool_observer = tool_observer or _GLOBAL_TOOL_OBSERVER
         self._client_ctx: MCPClientProtocol | None = None
         self._client: MCPClientProtocol | None = None
         self._mcp_tools: dict[str, Any] = {}
@@ -147,17 +195,62 @@ class MCPToolBridge:
             self._setup_done.set()
 
     def call_tool(self, name: str, args: Mapping[str, Any]) -> str:
-        """Call an MCP tool synchronously via the background event loop."""
+        """Call an MCP tool synchronously via the background event loop.
+
+        Two optional injection points fire around the underlying
+        FastMCP call:
+          1. ``permission_gate(name, args) -> {"allow"|"deny"}`` —
+             when configured, runs first. "deny" raises
+             PermissionError; the ReAct loop sees the traceback in
+             the tool_result and reports it back as the assistant
+             answer.
+          2. ``tool_observer(name, args, phase, error?)`` —
+             non-blocking notifications of "started" + "completed"
+             so the GACT layer can publish tool.call.* events.
+        """
+
         if self._closed:
             raise RuntimeError("MCPToolBridge is closed")
         if self._client is None:
             raise RuntimeError("MCP client not initialized")
 
-        result = self._run_coroutine(
-            self._client.call_tool(name, dict(args)),
-            timeout=self._timeout,
-            action=f"MCP tool {name!r}",
-        )
+        if self._permission_gate is not None:
+            try:
+                decision = self._permission_gate(name, dict(args))
+            except Exception as exc:  # noqa: BLE001
+                raise PermissionError(
+                    f"permission gate raised: {exc!r}"
+                ) from exc
+            if decision != "allow":
+                raise PermissionError(
+                    f"tool call {name!r} denied by permission gate"
+                )
+
+        if self._tool_observer is not None:
+            try:
+                self._tool_observer(name, dict(args), "started", None)
+            except Exception:
+                pass
+
+        try:
+            result = self._run_coroutine(
+                self._client.call_tool(name, dict(args)),
+                timeout=self._timeout,
+                action=f"MCP tool {name!r}",
+            )
+        except Exception as exc:
+            if self._tool_observer is not None:
+                try:
+                    self._tool_observer(name, dict(args), "completed", repr(exc))
+                except Exception:
+                    pass
+            raise
+        if self._tool_observer is not None:
+            try:
+                self._tool_observer(name, dict(args), "completed", None)
+            except Exception:
+                pass
+
         data = result.data
         if isinstance(data, dict):
             return json.dumps(data)

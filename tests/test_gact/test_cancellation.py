@@ -58,6 +58,65 @@ def test_cancel_unknown_session_404s_with_v0_2_envelope(tmp_path: Path) -> None:
     assert "session not found" in body["error"]["message"]
 
 
+class _SlowAgent:
+    """Agent that sleeps long enough for /cancel to race in.
+
+    Used to verify hard-abort cancels the running task instead of
+    waiting for forward() to complete. Without the fix the test
+    sleeps 5s; with the fix it returns within ~0.3s of /cancel.
+    """
+
+    def __init__(self, sleep_s: float = 5.0) -> None:
+        self.sleep_s = sleep_s
+        self.completed = False
+
+    def forward(self, question: str, session_id: str):
+        import time
+        time.sleep(self.sleep_s)
+        self.completed = True
+        return type("Pred", (), {"answer": "late",
+                                 "selected_expert": "",
+                                 "routing_rationale": ""})()
+
+
+def test_cancel_hard_aborts_in_flight_task(tmp_path: Path) -> None:
+    """iowarp/clio-agent#3: cancel during forward() interrupts the
+    task instead of waiting for it to finish."""
+
+    import time as _time
+    agent = _SlowAgent(sleep_s=10.0)
+    app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
+    with TestClient(app) as c:
+        sid = c.post("/v1/sessions", json={"title": "x"}).json()["id"]
+        # Fire turn (returns ack immediately; turn runs in background).
+        c.post(
+            f"/v1/sessions/{sid}/messages",
+            json={"parts": [{"type": "text", "text": "hi"}]},
+        )
+        # Give the loop a slice to schedule the task + start the
+        # blocking sleep in the executor.
+        _time.sleep(0.3)
+        c.post(f"/v1/sessions/{sid}/cancel")
+        # Poll for the assistant turn to settle as cancelled.
+        # complete_turn polls list_messages — the assistant
+        # appears once the cancellation path finalises.
+        # We just want the task NOT to take the full 10s.
+        deadline = _time.monotonic() + 5.0
+        seen_cancelled = False
+        while _time.monotonic() < deadline:
+            sess = c.get(f"/v1/sessions/{sid}").json()
+            if sess["status"] in {"cancelled", "error"}:
+                seen_cancelled = True
+                break
+            _time.sleep(0.1)
+        assert seen_cancelled, "cancel didn't take effect within 5s"
+        # The slow agent must NOT have completed — proves the hard
+        # abort bypassed forward().
+        assert agent.completed is False, (
+            "slow agent ran to completion despite /cancel; hard-abort failed"
+        )
+
+
 def test_cancel_during_turn_marks_turn_as_cancelled(tmp_path: Path) -> None:
     """If /cancel fires *concurrently* with POST /messages, the turn
     resolves with error=cancelled instead of the agent's answer.

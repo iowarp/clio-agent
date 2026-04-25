@@ -25,12 +25,14 @@ import argparse
 import asyncio
 import json
 import os
+import threading
 import time
 import uuid
+from collections.abc import Mapping
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import AsyncIterator, Optional
+from typing import Any, AsyncIterator, Optional
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -117,11 +119,19 @@ async def _run_turn_in_background(
     }
     turn_cost = 0.0
 
+    # iowarp/clio-agent#5: prepend any attached context files to the
+    # user's text so the agent's forward() sees them as primed input.
+    # Plain text concat — keeps the agent.py interface untouched and
+    # works regardless of which expert handles the turn.
+    enriched_text = _enrich_with_context_files(
+        app, sid, user_text
+    )
+
     try:
         loop = asyncio.get_running_loop()
         pred = await loop.run_in_executor(
             None,
-            lambda: app.state.agent.forward(user_text, session_id=sid),
+            lambda: app.state.agent.forward(enriched_text, session_id=sid),
         )
         answer_text = getattr(pred, "answer", "")
         selected_agent = getattr(pred, "selected_expert", "") or ""
@@ -501,6 +511,224 @@ def _usage_from_dspy_history() -> dict[str, Any]:
     }
 
 
+# iowarp/clio-agent#7: tools the gate treats as destructive. Anything
+# matching one of these substrings triggers a permission_requested
+# event + blocks the bridge thread until the user resolves it.
+_DESTRUCTIVE_TOOL_SUBSTRINGS: tuple[str, ...] = (
+    "delete",
+    "remove",
+    "rm_",
+    "drop",
+    "destroy",
+    "exec",
+    "shell",
+    "write",
+)
+
+
+def _is_destructive(tool_name: str) -> bool:
+    n = tool_name.lower()
+    return any(needle in n for needle in _DESTRUCTIVE_TOOL_SUBSTRINGS)
+
+
+def _make_permission_gate(app: "FastAPI"):
+    """Build a callable suitable for MCPToolBridge.permission_gate.
+
+    Non-destructive tools fast-allow. Destructive tools register a
+    permission row, publish permission.requested into the EventBus,
+    block on a threading.Event with a generous timeout, and return
+    "allow" / "deny" based on the user's resolution. Timeouts default
+    to deny — fail-safe.
+    """
+
+    DEFAULT_TIMEOUT_S = 120.0
+
+    def gate(name: str, args: Mapping[str, Any]) -> str:
+        if not _is_destructive(name):
+            return "allow"
+        # Find an active session to attach the permission to.
+        # Bridge calls don't carry session context today, so fall
+        # back to the most-recently-active session.
+        sid = ""
+        sessions_by_recency = app.state.sessions.list()
+        if sessions_by_recency:
+            sid = sessions_by_recency[0].id
+        pid = f"perm_{uuid.uuid4().hex[:12]}"
+        evt = threading.Event()
+        row = {
+            "id": pid,
+            "session_id": sid,
+            "tool_call": {
+                "tool_name": name,
+                "input": dict(args),
+            },
+            "summary": f"destructive tool call: {name}",
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "status": "pending",
+        }
+        app.state.permissions[pid] = row
+        app.state.permission_events[pid] = evt
+        app.state.bus.publish(Event(
+            type="permission.requested",
+            session_id=sid,
+            payload=row,
+        ))
+        # Block the bridge thread until POST /v1/permissions/{pid}
+        # sets the event (or we time out).
+        if not evt.wait(timeout=DEFAULT_TIMEOUT_S):
+            row["status"] = "timeout"
+            return "deny"
+        action = row.get("action", "deny")
+        if action in {"allow", "allow_session", "allow_workspace"}:
+            return "allow"
+        return "deny"
+
+    return gate
+
+
+def _make_tool_observer(app: "FastAPI"):
+    """Build a callable suitable for MCPToolBridge.tool_observer.
+
+    Publishes tool.call.started / tool.call.completed events into
+    the EventBus, attaching to the most-recently-active session
+    (bridge calls don't carry session context).
+    """
+
+    def observe(
+        name: str,
+        args: Mapping[str, Any],
+        phase: Optional[str],
+        error: Optional[str],
+    ) -> None:
+        sessions_by_recency = app.state.sessions.list()
+        if not sessions_by_recency:
+            return
+        sid = sessions_by_recency[0].id
+        if phase == "started":
+            call_id = f"call_{uuid.uuid4().hex[:12]}"
+            # Stash the per-thread call_id so the completion event
+            # uses the same id. Threading-locals works for
+            # MCPToolBridge's worker thread.
+            _OBSERVER_CALL_IDS.value = call_id
+            app.state.bus.publish(Event(
+                type="tool.call.started",
+                session_id=sid,
+                payload={
+                    "call_id": call_id,
+                    "tool": name,
+                    "args": dict(args),
+                },
+            ))
+        elif phase == "completed":
+            call_id = getattr(_OBSERVER_CALL_IDS, "value", "") or ""
+            app.state.bus.publish(Event(
+                type="tool.call.completed",
+                session_id=sid,
+                payload={
+                    "call_id": call_id,
+                    "tool": name,
+                    "ok": error is None,
+                    "duration_ms": 0.0,
+                    "cached": False,
+                    **({"error": error} if error else {}),
+                },
+            ))
+
+    return observe
+
+
+_OBSERVER_CALL_IDS = threading.local()
+
+
+def _enrich_with_context_files(
+    app: "FastAPI", sid: str, user_text: str
+) -> str:
+    """Prepend a "Context:" section to the user's text for every
+    file attached to the session via /v1/sessions/{sid}/context/files.
+
+    Behaviour by mode:
+      - read / pin: read up to ``_CTX_MAX_BYTES`` from disk + inline.
+      - edit: include path + size hint only (the agent fetches via
+        a tool when it needs the body).
+
+    Files outside the workspace's ``root_path`` are skipped silently
+    (file_policy invariant). Files larger than the cap are inlined
+    truncated with a marker.
+
+    Returns the original ``user_text`` unchanged when no files are
+    attached or all are filtered out — caller stays interface-clean.
+    """
+
+    files = (app.state.context_files.get(sid, {}) or {}).values()
+    if not files:
+        return user_text
+
+    sess = app.state.sessions.get(sid)
+    ws = (
+        app.state.workspaces.get(sess.workspace_id)
+        if sess is not None else None
+    )
+    root = (
+        Path(ws.root_path).resolve()
+        if ws is not None and ws.root_path else None
+    )
+
+    blocks: list[str] = []
+    for row in files:
+        path_str = row.get("path") or ""
+        if not path_str:
+            continue
+        mode = row.get("mode") or "read"
+        try:
+            p = Path(path_str).resolve()
+        except (OSError, ValueError):
+            continue
+        # Honor workspace root when one is pinned. CLIO_ALLOWED_ROOTS
+        # widens this server-side; we only check workspace here.
+        if root is not None:
+            try:
+                p.relative_to(root)
+            except ValueError:
+                continue
+        if not p.exists() or not p.is_file():
+            continue
+        size = p.stat().st_size
+        header = f"### Context file: {path_str} (mode={mode}, {size} bytes)"
+        if mode == "edit":
+            blocks.append(header)
+            continue
+        try:
+            data = p.read_bytes()
+        except OSError:
+            continue
+        if len(data) > _CTX_MAX_BYTES:
+            blocks.append(
+                header + "\n```\n" +
+                data[:_CTX_MAX_BYTES].decode(
+                    "utf-8", errors="replace"
+                ) +
+                f"\n... ({len(data) - _CTX_MAX_BYTES} more bytes truncated)\n```"
+            )
+        else:
+            blocks.append(
+                header + "\n```\n" +
+                data.decode("utf-8", errors="replace") +
+                "\n```"
+            )
+
+    if not blocks:
+        return user_text
+    return (
+        "## Attached files (auto-prepended from session context)\n\n"
+        + "\n\n".join(blocks)
+        + "\n\n## User question\n\n"
+        + user_text
+    )
+
+
+_CTX_MAX_BYTES = 32 * 1024  # 32 KB cap per attached file
+
+
 def _format_react_trajectory(traj: Any) -> str:
     """Render a DSPy ReAct trajectory (a list/dict of steps) as a
     human-readable trace. Returns "" when the input doesn't look
@@ -710,7 +938,7 @@ def _builtin_tools() -> list[Tool]:
             )
     return list(seen.values())
 
-from typing import Any, Protocol
+from typing import Protocol
 
 from clio_agent.gact.events import Event, EventBus, heartbeat_payload
 from clio_agent.gact.sessions import SessionStore, _default_store_path
@@ -891,9 +1119,32 @@ def build_app(
     # {id, session_id, tool_call, summary, created_at, status,
     #  action, resolved_at}.
     app.state.permissions: dict[str, dict[str, Any]] = {}
+    # iowarp/clio-agent#7: per-permission threading.Event so the
+    # MCPToolBridge gate (running in a worker thread) can block on
+    # the user's response without polling.
+    app.state.permission_events: dict[str, "threading.Event"] = {}
     # iowarp/clio-agent#18: per-session task list (todo-style).
     # Keyed by session_id -> {task_id -> task dict}. In-memory.
     app.state.session_tasks: dict[str, dict[str, dict[str, Any]]] = {}
+    # iowarp/clio-agent#3: per-session in-flight turn tasks. POST
+    # /messages tracks the asyncio.Task here so /cancel can
+    # hard-abort instead of waiting for the cooperative flag check.
+    app.state.in_flight_turns: dict[str, asyncio.Task] = {}
+
+    # iowarp/clio-agent#7 + #2: install process-global hooks on the
+    # MCPToolBridge so EVERY expert's tool call routes through our
+    # permission gate + telemetry observer. Imported lazily so
+    # build_app stays cheap when the tool layer isn't wanted.
+    try:
+        from clio_agent.tools.execution import (
+            set_global_permission_gate,
+            set_global_tool_observer,
+        )
+
+        set_global_permission_gate(_make_permission_gate(app))
+        set_global_tool_observer(_make_tool_observer(app))
+    except Exception:  # pragma: no cover - defensive
+        pass
     # CLIO-BBBBBBBBBB-D: live LM config — what the TUI configured
     # us with. Distinct from boot-time env because PUT /providers/lm
     # rebuilds the agent + DSPy config in-place.
@@ -1214,6 +1465,11 @@ def build_app(
             row["status"] = "resolved"
             row["action"] = action
             row["resolved_at"] = datetime.now(timezone.utc).isoformat()
+            # iowarp/clio-agent#7: wake any MCPToolBridge thread
+            # waiting on this permission's event.
+            evt = app.state.permission_events.pop(pid, None)
+            if evt is not None:
+                evt.set()
             app.state.bus.publish(Event(
                 type="permission.resolved",
                 session_id=row.get("session_id", ""),
@@ -1999,12 +2255,15 @@ def build_app(
         # this after forward() returns so even agents that don't
         # cooperate produce a cancelled-looking turn envelope.
         app.state.cancel_flags.add(sid)
-        # Cooperative-only today: the background turn task checks
-        # cancel_flags after forward() returns so the assistant
-        # message reports error="cancelled" rather than its real
-        # output. True hard-abort during a long forward() is a
-        # follow-up — needs an asyncio.create_task we can grab
-        # back, which BackgroundTasks doesn't expose.
+        # iowarp/clio-agent#3: hard-abort the in-flight turn task.
+        # The task's coroutine catches asyncio.CancelledError +
+        # finalises with error="cancelled" so the wire still settles
+        # cleanly. Cooperative flag stays set as a belt-and-braces:
+        # if cancel races a finishing turn we still report it as
+        # cancelled rather than a successful answer.
+        in_flight = app.state.in_flight_turns.get(sid)
+        if in_flight is not None and not in_flight.done():
+            in_flight.cancel()
         app.state.sessions.update(sid, status="cancelled")
         app.state.bus.publish(Event(
             type="session.status_changed",
@@ -2114,13 +2373,29 @@ def build_app(
             payload=user_msg.model_dump(exclude_none=True),
         ))
 
-        # FastAPI runs background_tasks after the response is sent.
-        # That gives us the "ack-and-stream" semantics the TUI wants
-        # — POST returns in milliseconds, SSE delivers progress as
-        # the agent ticks, /cancel can interrupt mid-flight.
-        background_tasks.add_task(
-            _run_turn_in_background, app, sid, user_text, user_msg
+        # iowarp/clio-agent#3: switched from BackgroundTasks (which
+        # doesn't expose the task back) to asyncio.create_task so
+        # /v1/sessions/{sid}/cancel can hard-abort mid-flight.
+        # Task is registered in app.state.in_flight_turns; the cancel
+        # handler calls .cancel() on it. We schedule the task on the
+        # running loop AFTER queueing background_tasks (which
+        # FastAPI now runs nothing in, but kept as a hook in case
+        # we want a post-response side-effect later).
+        task = asyncio.create_task(
+            _run_turn_in_background(app, sid, user_text, user_msg)
         )
+        app.state.in_flight_turns[sid] = task
+
+        def _drop_task(_t, _sid=sid) -> None:
+            cur = app.state.in_flight_turns.get(_sid)
+            if cur is _t:
+                app.state.in_flight_turns.pop(_sid, None)
+
+        task.add_done_callback(_drop_task)
+        # background_tasks parameter is unused but kept on the
+        # signature so existing callers (and FastAPI's docs) don't
+        # change shape.
+        del background_tasks
 
         return PostMessageResponse(
             message_id=user_msg.id,
