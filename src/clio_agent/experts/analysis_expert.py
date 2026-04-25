@@ -160,7 +160,25 @@ class AnalysisExpert(dspy.Module):
             )
             nanoagents_spawned = [s.to_wire() for s in spawns]
 
-        result = self.agent(question=question, file_context=file_context)
+        # iowarp/clio-agent#9: spawns are valuable signal even when
+        # the main ReAct call fails — surface them on a stub
+        # Prediction so the GACT layer still publishes
+        # subagent.started/completed and renders the child sessions.
+        try:
+            result = self.agent(question=question, file_context=file_context)
+        except Exception as exc:  # noqa: BLE001
+            if nanoagents_spawned:
+                result = dspy.Prediction(
+                    analysis=(
+                        f"Spawned {len(nanoagents_spawned)} nanoagent(s) "
+                        f"to {', '.join(s['input'].get('question', '') for s in nanoagents_spawned)[:200]}. "
+                        f"The aggregator step failed ({type(exc).__name__}); "
+                        "see child sessions for individual results."
+                    ),
+                    recommendations="Inspect each child session for the per-item finding.",
+                )
+            else:
+                raise
         if nanoagents_spawned:
             # dspy.Prediction supports attribute set via __setattr__.
             try:

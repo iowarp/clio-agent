@@ -378,7 +378,12 @@ class ClioAgent(dspy.Module):
         self._store_routing_decision(question, selected, session_id)
         self._store_metrics(question, session_id, selected, duration_ms, success, error_msg)
 
-        return dspy.Prediction(
+        # iowarp/clio-agent#9: forward nanoagents_spawned from the
+        # expert's prediction up to the main one so the GACT layer
+        # materialises them as child sessions. Same pattern for any
+        # other expert-only attributes the GACT layer consumes
+        # (file_diffs, permissions_requested, thinking_blocks).
+        out = dspy.Prediction(
             answer=answer,
             selected_expert=selected,
             session_id=session_id,
@@ -387,6 +392,22 @@ class ClioAgent(dspy.Module):
             lsm_stats=self.lsm.get_stats(),
             error_info=error_info,
         )
+        if expert_result is not None:
+            for forwarded in (
+                "nanoagents_spawned",
+                "file_diffs",
+                "permissions_requested",
+                "tools_called",
+                "reasoning",
+                "trajectory",
+            ):
+                val = getattr(expert_result, forwarded, None)
+                if val:
+                    try:
+                        setattr(out, forwarded, val)
+                    except Exception:
+                        pass
+        return out
 
     @staticmethod
     def _route_with_heuristics(question: str) -> str | None:
