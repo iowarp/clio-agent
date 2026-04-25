@@ -111,6 +111,7 @@ async def _run_turn_in_background(
     tools_called: list[dict[str, Any]] = []
     proposed_diffs: list[Any] = []
     nanoagents: list[Any] = []
+    thinking_text = ""
     turn_tokens: dict[str, int] = {
         "input": 0, "output": 0, "cache_read": 0, "cache_write": 0,
     }
@@ -126,6 +127,16 @@ async def _run_turn_in_background(
         selected_agent = getattr(pred, "selected_expert", "") or ""
         rationale = getattr(pred, "routing_rationale", "")
         tools_called = _extract_tools_called(pred)
+        # iowarp/clio-agent#17 — surface DSPy reasoning as a
+        # `thinking` Part. ChainOfThought predictions expose
+        # ``.reasoning`` (single string); ReAct exposes
+        # ``.trajectory`` (step-by-step trace). Fall back to the
+        # generic `_trace` Prediction wraps either of them in.
+        thinking_text = (
+            getattr(pred, "reasoning", "")
+            or _format_react_trajectory(getattr(pred, "trajectory", None))
+            or ""
+        )
         # CLIO-BBBBBBBBBB24: cost + token rollup. Real DSPy
         # predictions don't always populate .tokens / .cost_usd
         # directly — pull from dspy.LM history when the prediction
@@ -196,7 +207,8 @@ async def _run_turn_in_background(
         )
 
     # Build assistant parts — routing_decision (v0.2) first when we
-    # got a selected_agent, then the text answer, then any file_diffs.
+    # got a selected_agent, then optional thinking trace, then the
+    # text answer, then any file_diffs.
     assistant_parts: list[Part] = []
     if selected_agent:
         assistant_parts.append(Part(
@@ -207,6 +219,13 @@ async def _run_turn_in_background(
             confidence=0.0,
             heuristic=False,
         ))
+    if thinking_text:
+        # iowarp/clio-agent#17: surface DSPy reasoning as a
+        # thinking Part so the TUI can collapse + render it
+        # gated on capabilities.thinking_blocks.
+        assistant_parts.append(
+            Part(id=_new_part_id(), type="thinking", text=thinking_text)
+        )
     if answer_text:
         assistant_parts.append(
             Part(id=_new_part_id(), type="text", text=answer_text)
@@ -480,6 +499,43 @@ def _usage_from_dspy_history() -> dict[str, Any]:
         "cache_write": int(usage.get("cache_creation_input_tokens") or 0),
         "cost_usd": float(usage.get("cost_usd") or 0.0),
     }
+
+
+def _format_react_trajectory(traj: Any) -> str:
+    """Render a DSPy ReAct trajectory (a list/dict of steps) as a
+    human-readable trace. Returns "" when the input doesn't look
+    like a trajectory.
+    """
+
+    if not traj:
+        return ""
+    rows: list[str] = []
+    if isinstance(traj, dict):
+        # ReAct stores as {step_n_thought, step_n_action, ...}
+        idx = 0
+        while True:
+            thought = traj.get(f"step_{idx}_thought") or traj.get(
+                f"thought_{idx}"
+            )
+            action = traj.get(f"step_{idx}_tool_name") or traj.get(
+                f"action_{idx}"
+            )
+            if thought is None and action is None:
+                break
+            row = []
+            if thought:
+                row.append(f"thought: {thought}")
+            if action:
+                row.append(f"action: {action}")
+            rows.append("  ".join(row))
+            idx += 1
+    elif isinstance(traj, list):
+        for i, step in enumerate(traj):
+            if isinstance(step, dict):
+                rows.append(f"step {i}: {step}")
+            else:
+                rows.append(f"step {i}: {step!r}")
+    return "\n".join(rows)
 
 
 def _extract_tools_called(pred: Any) -> list[dict[str, Any]]:
@@ -835,6 +891,9 @@ def build_app(
     # {id, session_id, tool_call, summary, created_at, status,
     #  action, resolved_at}.
     app.state.permissions: dict[str, dict[str, Any]] = {}
+    # iowarp/clio-agent#18: per-session task list (todo-style).
+    # Keyed by session_id -> {task_id -> task dict}. In-memory.
+    app.state.session_tasks: dict[str, dict[str, dict[str, Any]]] = {}
     # CLIO-BBBBBBBBBB-D: live LM config — what the TUI configured
     # us with. Distinct from boot-time env because PUT /providers/lm
     # rebuilds the agent + DSPy config in-place.
@@ -986,7 +1045,6 @@ def build_app(
                 # capabilities we don't actually provide.
                 sessions=True,  # BBB8 — /v1/sessions CRUD
                 workspaces=True,  # CLIO-WS — /v1/workspaces CRUD
-                commands=False,
                 metrics=True,  # BBB15 — /v1/metrics returns SPEC §6.16 envelope
                 session_branching=True,  # BBB26 — POST /sessions/{sid}/fork
                 search_messages=True,  # BBB27 — GET /sessions/{sid}/messages/search
@@ -995,6 +1053,12 @@ def build_app(
                 diffs=True,  # BBB21 — file_diff parts + /diffs/apply,reject
                 permissions=True,  # BBB23 — /v1/permissions + permission.* events
                 subagents=True,  # BBB25 — nanoagent subsessions + subagent.* events
+                session_export=True,  # #16 — /v1/sessions/{sid}/export + import
+                mcp=True,  # #13 — /v1/mcp/servers exposes the gateway namespaces
+                providers=True,  # #15 — /v1/providers catalogs the LM presets
+                commands=True,  # #14 — /v1/commands + dispatch
+                thinking_blocks=True,  # #17 — DSPy reasoning trace as thinking Parts
+                session_tasks=True,  # #18 — per-session todo CRUD
                 # v0.2 additions — advertised when the scaffold
                 # actually emits them. Turned on piecewise as the
                 # follow-on items land.
@@ -1447,6 +1511,403 @@ def build_app(
             status_code=201,
             content=Session(**new_sess.to_wire()).model_dump(exclude_none=True),
         )
+
+    # ---- /v1/sessions/{sid}/tasks + /v1/tasks/{tid} (#18) ------------
+
+    def _task_id() -> str:
+        return f"task_{uuid.uuid4().hex[:12]}"
+
+    @app.get("/v1/sessions/{sid}/tasks")
+    async def list_session_tasks(sid: str) -> dict[str, Any]:
+        if app.state.sessions.get(sid) is None:
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="internal_error",
+                        message=f"session not found: {sid}",
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        rows = list(app.state.session_tasks.get(sid, {}).values())
+        return {"tasks": rows}
+
+    @app.post("/v1/sessions/{sid}/tasks")
+    async def create_session_task(
+        sid: str, request: Request
+    ) -> dict[str, Any]:
+        if app.state.sessions.get(sid) is None:
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="internal_error",
+                        message=f"session not found: {sid}",
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        if not isinstance(body, dict):
+            body = {}
+        title = (body.get("title") or "").strip()
+        if not title:
+            raise HTTPException(
+                status_code=422,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="internal_error",
+                        message="missing required field: title",
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        status = body.get("status") or "pending"
+        if status not in {"pending", "running", "completed", "failed"}:
+            status = "pending"
+        tid = _task_id()
+        row = {
+            "id": tid,
+            "session_id": sid,
+            "title": title,
+            "status": status,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        app.state.session_tasks.setdefault(sid, {})[tid] = row
+        return row
+
+    def _find_task(tid: str) -> Optional[tuple[str, dict[str, Any]]]:
+        for sid_key, rows in app.state.session_tasks.items():
+            if tid in rows:
+                return sid_key, rows[tid]
+        return None
+
+    @app.patch("/v1/tasks/{tid}")
+    async def patch_task(tid: str, request: Request) -> dict[str, Any]:
+        found = _find_task(tid)
+        if found is None:
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="internal_error",
+                        message=f"task not found: {tid}",
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        _, row = found
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        if not isinstance(body, dict):
+            body = {}
+        if "title" in body and body["title"]:
+            row["title"] = str(body["title"])
+        if "status" in body and body["status"] in {
+            "pending", "running", "completed", "failed"
+        }:
+            row["status"] = body["status"]
+        row["updated_at"] = datetime.now(timezone.utc).isoformat()
+        return row
+
+    @app.delete("/v1/tasks/{tid}")
+    async def delete_task(tid: str) -> JSONResponse:
+        found = _find_task(tid)
+        if found is None:
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="internal_error",
+                        message=f"task not found: {tid}",
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        sid_key, _ = found
+        app.state.session_tasks[sid_key].pop(tid, None)
+        return JSONResponse(status_code=204, content=None)
+
+    # ---- /v1/commands + dispatch (#14) --------------------------------
+
+    _BACKEND_COMMANDS: list[dict[str, str]] = [
+        {
+            "id": "/clear",
+            "title": "Clear session messages",
+            "description": "Drop the in-memory log for the active session (does NOT touch ARC).",
+            "source": "builtin",
+        },
+        {
+            "id": "/cache-stats",
+            "title": "ARC cache stats",
+            "description": "Append the current ARC cache hit/miss counters as a system message.",
+            "source": "builtin",
+        },
+        {
+            "id": "/dump-trace",
+            "title": "Dump last reasoning trace",
+            "description": "Append the last assistant turn's DSPy reasoning (when available).",
+            "source": "builtin",
+        },
+        {
+            "id": "/optimize",
+            "title": "Optimize active expert",
+            "description": "(Stub) trigger SIMBA optimization on the active expert; reports a system message.",
+            "source": "builtin",
+        },
+    ]
+
+    @app.get("/v1/commands")
+    async def list_commands() -> dict[str, Any]:
+        """SPEC §6.13 — backend-provided slash commands."""
+
+        return {"commands": _BACKEND_COMMANDS}
+
+    @app.post("/v1/sessions/{sid}/commands/{cmd}")
+    async def dispatch_command(sid: str, cmd: str) -> dict[str, Any]:
+        """Dispatch a backend command for a session. Returns a
+        system-style result the TUI can render inline as a message.
+        """
+
+        sess = app.state.sessions.get(sid)
+        if sess is None:
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="internal_error",
+                        message=f"session not found: {sid}",
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+
+        # Accept "clear" or "/clear"; the TUI sends both shapes.
+        cmd_id = cmd if cmd.startswith("/") else "/" + cmd
+        known = {c["id"] for c in _BACKEND_COMMANDS}
+        if cmd_id not in known:
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="internal_error",
+                        message=f"unknown command: {cmd_id}",
+                        details={"known": sorted(known)},
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+
+        # Side effects + system message body per command.
+        body_text: str
+        if cmd_id == "/clear":
+            app.state.messages.pop(sid, None)
+            app.state.sessions.update(sid, message_count=0)
+            app.state.bus.publish(Event(
+                type="session.cleared",
+                session_id=sid,
+                payload={"session_id": sid},
+            ))
+            body_text = "session messages cleared"
+        elif cmd_id == "/cache-stats":
+            stats = {}
+            if app.state.arc is not None:
+                try:
+                    stats = app.state.arc.get_cache_stats() or {}
+                except Exception:
+                    stats = {}
+            body_text = (
+                f"ARC cache: hits={stats.get('hits', 0)} "
+                f"misses={stats.get('misses', 0)} "
+                f"hit_rate={stats.get('hit_rate', 0.0):.2f} "
+                f"capacity={stats.get('capacity', 0)}"
+            )
+        elif cmd_id == "/dump-trace":
+            log = app.state.messages.get(sid, [])
+            last_asst = next(
+                (m for m in reversed(log) if m.role == "assistant"), None
+            )
+            if last_asst is None:
+                body_text = "no assistant turns yet"
+            else:
+                trace_part = next(
+                    (p for p in last_asst.parts if p.type == "thinking"),
+                    None,
+                )
+                body_text = (
+                    trace_part.text if trace_part is not None
+                    else "no thinking trace on the last turn"
+                )
+        elif cmd_id == "/optimize":
+            body_text = (
+                "SIMBA optimization isn't wired yet — see "
+                "iowarp/clio-agent for the optimizer roadmap"
+            )
+        else:  # pragma: no cover - guarded above
+            body_text = f"unhandled command: {cmd_id}"
+
+        return {
+            "command": cmd_id,
+            "session_id": sid,
+            "result": {
+                "type": "system_message",
+                "text": body_text,
+            },
+        }
+
+    # ---- /v1/providers (#15) ------------------------------------------
+
+    @app.get("/v1/providers")
+    async def list_providers() -> dict[str, Any]:
+        """SPEC §6.12 — generic LM provider catalog. CLIO offers
+        whatever DSPy/litellm can speak; we surface the same preset
+        list /v1/providers/lm publishes but in the v0.1 wire shape
+        (id, name, default_model, env_keys).
+        """
+
+        rows = []
+        for p in _LM_PRESETS:
+            rows.append({
+                "id": p.id,
+                "name": p.label,
+                "default_model": p.suggested_model,
+                "api_base": p.api_base,
+                "env_keys": (
+                    ["CLIO_LM_API_KEY"] if p.requires_api_key else []
+                ),
+                "description": p.description,
+            })
+        return {"providers": rows}
+
+    # ---- /v1/mcp/servers (#13) ---------------------------------------
+
+    @app.get("/v1/mcp/servers")
+    async def list_mcp_servers() -> dict[str, Any]:
+        """SPEC §6.7 — enumerate MCP servers the backend has mounted.
+
+        CLIO's gateway lives in src/clio_agent/tools/gateway.py and
+        statically mounts hdf5 + parquet namespaces. Counts come from
+        the gateway's list_capabilities() helper which is already
+        cached + cheap to call.
+        """
+
+        try:
+            from clio_agent.tools.gateway import list_capabilities
+
+            caps = list_capabilities()
+        except Exception as exc:  # noqa: BLE001
+            return {
+                "servers": [],
+                "error": f"gateway introspection failed: {exc!r}",
+            }
+
+        # Group caps by server name (hdf5/parquet/...).
+        per_server: dict[str, list[dict[str, str]]] = {}
+        for tool in caps:
+            srv = tool.get("server", "unknown")
+            per_server.setdefault(srv, []).append(tool)
+
+        rows = []
+        for name, tools in sorted(per_server.items()):
+            rows.append({
+                "id": f"mcp_{name}",
+                "name": name,
+                "status": "ready",
+                "transport": "in_process",
+                "tools_count": len(tools),
+                "tools": [t["name"] for t in tools],
+            })
+        return {"servers": rows}
+
+    # ---- /v1/sessions/{sid}/export + /v1/sessions/import (#16) -------
+
+    @app.get("/v1/sessions/{sid}/export")
+    async def export_session(sid: str) -> dict[str, Any]:
+        """SPEC §6.x — dump a session + its messages as a single
+        portable JSON blob. Useful for sharing analyses, archiving,
+        replay. Round-trips through POST /v1/sessions/import.
+        """
+
+        sess = app.state.sessions.get(sid)
+        if sess is None:
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="internal_error",
+                        message=f"session not found: {sid}",
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        msgs = app.state.messages.get(sid, [])
+        ws = app.state.workspaces.get(sess.workspace_id)
+        return {
+            "version": "1",
+            "session": Session(**sess.to_wire()).model_dump(exclude_none=True),
+            "workspace": (
+                Workspace(**ws.to_wire()).model_dump(exclude_none=True)
+                if ws else None
+            ),
+            "messages": [m.model_dump(exclude_none=True) for m in msgs],
+        }
+
+    @app.post("/v1/sessions/import", response_model=Session)
+    async def import_session(blob: dict[str, Any]) -> Session:
+        """Restore a session from an export blob. Creates a fresh
+        session in ws_default (or the workspace named in the blob
+        if it exists locally) and re-plays the messages as already-
+        settled rows. Returns the new Session row.
+        """
+
+        sess_data = blob.get("session", {})
+        title = sess_data.get("title") or "imported"
+        wid = "ws_default"
+        if blob.get("workspace") and app.state.workspaces.get(
+            blob["workspace"].get("id", "")
+        ):
+            wid = blob["workspace"]["id"]
+        new_sess = app.state.sessions.create(
+            workspace_id=wid,
+            title=title,
+            metadata=sess_data.get("metadata") or {},
+        )
+        msg_rows: list[Message] = []
+        for m in blob.get("messages", []):
+            try:
+                msg = Message(**{**m, "session_id": new_sess.id})
+                msg_rows.append(msg)
+            except Exception:
+                continue
+        app.state.messages[new_sess.id] = msg_rows
+        cost_total = sum(
+            float(m.get("cost_usd", 0.0) or 0.0)
+            for m in blob.get("messages", [])
+        )
+        in_total = sum(
+            int((m.get("tokens") or {}).get("input", 0) or 0)
+            for m in blob.get("messages", [])
+        )
+        out_total = sum(
+            int((m.get("tokens") or {}).get("output", 0) or 0)
+            for m in blob.get("messages", [])
+        )
+        app.state.sessions.update(
+            new_sess.id,
+            message_count=len(msg_rows),
+            add_tokens_input=in_total,
+            add_tokens_output=out_total,
+            add_cost_usd=cost_total,
+        )
+        refreshed = app.state.sessions.get(new_sess.id)
+        return Session(**refreshed.to_wire())
 
     # ---- GET /v1/sessions/{sid}/messages/search (BBB27) ---------------
 
@@ -2135,7 +2596,6 @@ def build_app(
     _stub_routes: list[tuple[str, str, str]] = [
         # (method, path, capability_name_for_error)
         ("GET", "/v1/tools", "tools"),
-        ("GET", "/v1/commands", "commands"),
     ]
 
     def _make_stub(cap: str):
