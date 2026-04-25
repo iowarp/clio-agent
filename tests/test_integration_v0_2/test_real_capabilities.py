@@ -82,7 +82,11 @@ def test_session_fork_copies_messages(
 ) -> None:
     """Fork a settled turn, assert child gets the same messages."""
 
-    turn(http, session_id, "Reply with the single word PING.", timeout=120)
+    # Prompts that don't hit the heuristic router fall back to the
+    # router LM + chat agent, which can take 30-60s through
+    # Meridian. 300s gives us tail-latency headroom without making
+    # the test feel hung.
+    turn(http, session_id, "Reply with the single word PING.", timeout=300)
     fork = http.post(
         f"/v1/sessions/{session_id}/fork", json={"title": "forked"}
     ).json()
@@ -102,7 +106,7 @@ def test_message_search_finds_user_text(
     """Substring search finds the user message we just posted."""
 
     needle = "magic-needle-12345"
-    turn(http, session_id, f"Acknowledge with PING. Marker: {needle}.", timeout=120)
+    turn(http, session_id, f"Acknowledge with PING. Marker: {needle}.", timeout=300)
     body = http.get(
         f"/v1/sessions/{session_id}/messages/search",
         params={"q": needle},
@@ -120,7 +124,7 @@ def test_real_turn_populates_tokens(
     """A real LM turn lands tokens.input + tokens.output > 0 from
     DSPy LM history (cost may be 0 from Meridian — see #8)."""
 
-    a = turn(http, session_id, "Reply with just the word PING.", timeout=120)
+    a = turn(http, session_id, "Reply with just the word PING.", timeout=300)
     assert a["tokens"]["input"] >= 0
     assert a["tokens"]["output"] > 0, (
         f"expected >0 output tokens from real Claude turn, got {a['tokens']}"
@@ -133,7 +137,7 @@ def test_metrics_reflects_session_activity(
     """/v1/metrics rolls up session counts + tokens after a turn."""
 
     before = http.get("/v1/metrics").json()
-    turn(http, session_id, "Reply with PING.", timeout=120)
+    turn(http, session_id, "Reply with PING.", timeout=300)
     after = http.get("/v1/metrics").json()
 
     assert after["sessions"]["total"] >= before["sessions"]["total"]
@@ -190,13 +194,13 @@ def test_sse_emits_message_lifecycle(
     transport too)."""
 
     user_id = post_user(http, session_id, "Reply with PING.")
-    deadline = time.monotonic() + 120
+    deadline = time.monotonic() + 300
     seen_completed = False
     seen_created = False
     with httpx.stream(
         "GET",
         f"{http.base_url}/v1/sessions/{session_id}/events",
-        timeout=120.0,
+        timeout=300.0,
     ) as resp:
         for line in resp.iter_lines():
             if not line.startswith("data: "):
