@@ -1464,6 +1464,21 @@ def build_app(
         if sessions_path is not None
         else _ws_default_store_path()
     )
+    # iowarp/clio-agent#19: dynamic agent registry. Persists user-
+    # registered Tier-2 specialists alongside sessions/workspaces;
+    # built-ins always take precedence on id clash (rejected at
+    # the HTTP layer).
+    from clio_agent.gact.user_agents import (
+        UserAgentStore,
+    )
+    from clio_agent.gact.user_agents import (
+        _default_store_path as _ua_default,
+    )
+    app.state.user_agents = UserAgentStore(
+        path=(sessions_path.parent / "agents.json")
+        if sessions_path is not None
+        else _ua_default()
+    )
 
     @app.get("/v1/health", response_model=HealthResponse)
     async def health() -> HealthResponse:
@@ -1619,6 +1634,7 @@ def build_app(
                 session_tasks=True,  # #18 — per-session todo CRUD
                 plan_mode=True,  # session.mode=plan blocks destructive tools
                 edit_modes=True,  # session.edit_mode toggles diff/whole/patch
+                agent_write=True,  # #19 — POST/PUT/DELETE /v1/agents
                 # v0.2 additions — advertised when the scaffold
                 # actually emits them. Turned on piecewise as the
                 # follow-on items land.
@@ -2805,15 +2821,137 @@ def build_app(
             "next_cursor": None,
         }
 
-    # ---- /v1/agents catalog (BBB10) ----------------------------------
+    # ---- /v1/agents catalog (BBB10) + dynamic registry (#19) ---------
 
     @app.get("/v1/agents", response_model=ListAgentsResponse)
     async def list_agents(tier: Optional[int] = None) -> ListAgentsResponse:
-        """SPEC §6.5 + v0.2 §4.3.1: optional ?tier=N filter."""
-        rows = _builtin_agents()
+        """SPEC §6.5 + v0.2 §4.3.1: optional ?tier=N filter.
+
+        Combines built-in tier-1/2 experts with any user-registered
+        agents (iowarp/clio-agent#19). Built-ins always come first
+        so the TUI's sidebar groups consistently.
+        """
+
+        rows = _builtin_agents() + [
+            AgentDef(**row.to_wire())
+            for row in app.state.user_agents.list()
+        ]
         if tier is not None:
             rows = [a for a in rows if a.tier == tier]
         return ListAgentsResponse(agents=rows)
+
+    @app.post(
+        "/v1/agents", response_model=AgentDef, status_code=201
+    )
+    async def create_agent(req: dict[str, Any]) -> AgentDef:
+        """iowarp/clio-agent#19: register a new dynamic agent.
+
+        The agent is stored as an AgentDef row + persisted to disk;
+        future GET /v1/agents calls include it. Built-in id collision
+        is rejected so users can't shadow CLIO's core experts.
+        Source is forced to "user" regardless of what the client sent.
+        """
+
+        agent_id = req.get("id", "")
+        if agent_id in {"main", "data", "analysis", "visualization"}:
+            raise HTTPException(
+                status_code=409,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="permission_error",
+                        message=(
+                            f"agent id {agent_id!r} is reserved for a "
+                            "built-in expert; pick a different id"
+                        ),
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        if not agent_id:
+            raise HTTPException(
+                status_code=422,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="internal_error",
+                        message="missing required field: id",
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        # Force user-source so a malicious client can't claim builtin.
+        req = dict(req)
+        req["source"] = "user"
+        agent = app.state.user_agents.upsert(req)
+        return AgentDef(**agent.to_wire())
+
+    @app.put("/v1/agents/{agent_id}", response_model=AgentDef)
+    async def update_agent(agent_id: str, req: dict[str, Any]) -> AgentDef:
+        """Replace an existing user agent. Built-ins are immutable."""
+
+        if agent_id in {"main", "data", "analysis", "visualization"}:
+            raise HTTPException(
+                status_code=409,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="permission_error",
+                        message=(
+                            f"agent id {agent_id!r} is a built-in; "
+                            "rebuild CLIO to change its definition"
+                        ),
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        if app.state.user_agents.get(agent_id) is None:
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="internal_error",
+                        message=f"agent not found: {agent_id}",
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        # Force the URL id to win over the body to avoid the user
+        # silently renaming via PUT. Force user source.
+        body = dict(req)
+        body["id"] = agent_id
+        body["source"] = "user"
+        agent = app.state.user_agents.upsert(body)
+        return AgentDef(**agent.to_wire())
+
+    @app.delete("/v1/agents/{agent_id}")
+    async def delete_agent(agent_id: str) -> JSONResponse:
+        """Drop a user-registered agent. Built-ins are immutable."""
+
+        if agent_id in {"main", "data", "analysis", "visualization"}:
+            raise HTTPException(
+                status_code=409,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="permission_error",
+                        message=(
+                            f"agent id {agent_id!r} is a built-in and "
+                            "cannot be removed"
+                        ),
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        existed = app.state.user_agents.delete(agent_id)
+        if not existed:
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="internal_error",
+                        message=f"agent not found: {agent_id}",
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        return JSONResponse(status_code=204, content=None)
 
     @app.get("/v1/catalog/tools", response_model=ListToolsResponse)
     async def list_tools() -> ListToolsResponse:
