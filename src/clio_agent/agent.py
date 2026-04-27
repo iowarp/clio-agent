@@ -506,18 +506,72 @@ class ClioAgent(dspy.Module):
             return self._direct_visualization_answer(question, file_context)
         return None
 
+    _IDENTITY_PATTERNS = (
+        "who are you", "what are you", "what is this", "what's this",
+        "introduce yourself", "your name", "tell me about yourself",
+        "what can you do", "what do you do", "what are your capabilities",
+        "help me understand what you", "what is clio", "what's clio",
+    )
+
+    _IDENTITY_REPLY = (
+        "I am CLIO — an autonomous scientific-data agent from the IOWarp "
+        "project. I help with:\n\n"
+        "  • HDF5 inspection + I/O optimisation (DataExpert)\n"
+        "  • Parquet analysis + statistical profiling (AnalysisExpert)\n"
+        "  • Plotting + chart generation (VisualizationExpert)\n\n"
+        "Drop a /path/to/file.h5 or /path/to/file.parquet into a question and "
+        "I'll route to the right expert. I can also propose code edits "
+        "(\"propose an edit to /path/to/file.py — switch to f-string\") and "
+        "spawn nanoagents for parallel sub-tasks."
+    )
+
+    def _identity_intercept(self, question: str) -> str | None:
+        """Return a hardcoded CLIO identity reply for identity questions.
+
+        Some configured providers (notably Meridian, which proxies to
+        claude.ai's Claude Code persona) ignore the system prompt and
+        always identify as Claude Code. To keep CLIO's identity stable
+        regardless of provider, intercept identity-shaped questions
+        before they reach the LM and answer them locally."""
+        q = question.lower().strip().rstrip("?!.").strip()
+        for pat in self._IDENTITY_PATTERNS:
+            if pat in q:
+                return self._IDENTITY_REPLY
+        return None
+
     def _run_chat_agent(self, question: str, session_context: str) -> str:
-        """Generate a conversational reply, falling back to direct HTTP
-        when the DSPy chat agent's structured-output adapter chokes on
-        the LM's reply (e.g. plain-text responses from Claude that don't
-        match the JSONAdapter shape).
+        """Generate a conversational reply.
 
-        Used to gate the fallback by ``is_local_openai_compatible_backend``,
-        but cloud backends + OpenAI-compatible proxies (Meridian,
-        OpenRouter) all benefit from the same recovery path. The
-        fallback uses requests.post against the configured api_base —
-        works for any openai-compatible endpoint."""
+        For identity-shaped questions (who are you / what can you do /
+        introduce yourself / etc.) we short-circuit and answer locally;
+        this guards against providers like Meridian that strip the
+        system prompt and would otherwise reply as Claude Code.
 
+        The remaining chat path goes through ``_direct_chat_completion``
+        for every openai-compatible provider (Meridian, OpenRouter,
+        OpenAI, LM Studio, Ollama, …). Reasons:
+
+        - DSPy's ChatAdapter wraps the system prompt with format
+          instructions that some upstreams (notably Meridian, which
+          proxies to claude.ai) interpret as a Claude Code agent
+          invocation and override our identity. Direct chat keeps full
+          control of the system prompt → CLIO identity stays intact.
+        - One round-trip per turn instead of adapter → parse → retry.
+
+        Falls back to the wrapped DSPy chat agent only when no api_base
+        is configured (e.g. anthropic native client)."""
+
+        identity = self._identity_intercept(question)
+        if identity is not None:
+            return identity
+
+        api_base = (self._provider_config.api_base or "").strip()
+        if api_base:
+            try:
+                return self._direct_chat_completion(question, session_context)
+            except Exception as direct_err:
+                if self.verbose:
+                    print(f"[ClioAgent] Direct chat failed: {direct_err}; trying DSPy chat agent")
         try:
             result = self.chat_agent(question=question, session_context=session_context)
             answer = self._coerce_text(getattr(result, "answer", None)).strip()
@@ -525,14 +579,7 @@ class ClioAgent(dspy.Module):
                 return answer
             raise ValueError("Chat agent returned an empty answer.")
         except Exception as chat_error:
-            if self.verbose:
-                print(f"[ClioAgent] ChatAgent failed, trying direct fallback: {chat_error}")
-            try:
-                return self._direct_chat_completion(question, session_context)
-            except Exception as fallback_error:
-                raise RuntimeError(
-                    f"ChatAgent failed ({chat_error}); direct fallback failed ({fallback_error})"
-                ) from fallback_error
+            raise RuntimeError(f"Chat agent failed: {chat_error}") from chat_error
 
     def _direct_edit_answer(
         self, question: str, edit_mode: str = "diff",

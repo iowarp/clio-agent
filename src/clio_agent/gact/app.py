@@ -2155,24 +2155,24 @@ def build_app(
 
         if app.state.arc is None:
             rows.append(Integration(
-                name="arc",
+                name="memory",
                 status="degraded",
-                detail="no ARC wired; /v1/memory/stats returns zeros",
+                detail="memory layer not wired; /v1/memory/stats returns zeros",
             ))
         else:
             try:
                 stats = app.state.arc.get_cache_stats()
                 hr = stats.get("hit_rate", 0.0)
                 rows.append(Integration(
-                    name="arc",
+                    name="memory",
                     status="ready",
                     detail=f"cache {int(hr * 100)}% hit rate",
                 ))
             except Exception as exc:
                 rows.append(Integration(
-                    name="arc",
+                    name="memory",
                     status="unavailable",
-                    detail=f"ARC.get_cache_stats raised: {exc!r}",
+                    detail=f"memory cache stats raised: {exc!r}",
                 ))
 
         # LM row drives the TUI's "configure provider on connect"
@@ -3050,6 +3050,67 @@ def build_app(
             })
         return {"providers": rows}
 
+    # Per-provider model catalogs. Hand-curated rather than introspected
+    # because most upstreams either don't expose a /models endpoint or
+    # return hundreds of irrelevant entries. The TUI's Settings → Model
+    # picker calls this once per provider and lists the rows verbatim.
+    _PROVIDER_MODELS: dict[str, list[dict[str, str]]] = {
+        "meridian": [
+            {"id": "claude-haiku-4-5",  "name": "Claude Haiku 4.5",
+             "description": "Fast + cheap. Default for CLIO development."},
+            {"id": "claude-sonnet-4-6", "name": "Claude Sonnet 4.6",
+             "description": "Balanced; better reasoning at moderate cost."},
+            {"id": "claude-opus-4-6",   "name": "Claude Opus 4.6",
+             "description": "Highest-capability Anthropic model. Slow + expensive."},
+        ],
+        "anthropic": [
+            {"id": "claude-haiku-4-5-20251001",  "name": "Claude Haiku 4.5",
+             "description": "Direct Anthropic. Fast + cheap."},
+            {"id": "claude-sonnet-4-6-20251001", "name": "Claude Sonnet 4.6",
+             "description": "Direct Anthropic. Balanced."},
+            {"id": "claude-opus-4-6-20251001",   "name": "Claude Opus 4.6",
+             "description": "Direct Anthropic. Highest capability."},
+        ],
+        "openai": [
+            {"id": "gpt-4o-mini", "name": "GPT-4o mini",
+             "description": "OpenAI's cheap fast model. Good default."},
+            {"id": "gpt-4o",      "name": "GPT-4o",
+             "description": "OpenAI's flagship multimodal model."},
+            {"id": "gpt-4-turbo", "name": "GPT-4 Turbo",
+             "description": "Higher capability, slower + pricier."},
+        ],
+        "openrouter": [
+            {"id": "openai/gpt-oss-120b:free",
+             "name": "GPT-OSS 120B (free)",
+             "description": "Free tier. Heavily rate-limited."},
+            {"id": "anthropic/claude-haiku-4-5",
+             "name": "Claude Haiku 4.5 via OpenRouter",
+             "description": "Pay-per-token via OpenRouter."},
+            {"id": "anthropic/claude-sonnet-4-6",
+             "name": "Claude Sonnet 4.6 via OpenRouter",
+             "description": "Pay-per-token via OpenRouter."},
+        ],
+        "lm_studio": [
+            {"id": "", "name": "(auto-discovered)",
+             "description": "LM Studio reports the loaded model on /v1/models."},
+        ],
+        "ollama": [
+            {"id": "llama3.2", "name": "Llama 3.2",
+             "description": "Default Ollama model. Local."},
+            {"id": "qwen2.5-coder:14b", "name": "Qwen2.5 Coder 14B",
+             "description": "Better at code than llama3.2; same speed band."},
+        ],
+    }
+
+    @app.get("/v1/providers/{provider_id}/models")
+    async def list_provider_models(provider_id: str) -> dict[str, Any]:
+        """Per-provider curated model catalog. The TUI Settings →
+        Model tab reads this for each provider it knows about. Returns
+        an empty list (200, not 404) for unknown providers so the TUI
+        can keep loading the rest of the catalog."""
+        models = _PROVIDER_MODELS.get(provider_id, [])
+        return {"models": models}
+
     # ---- /v1/mcp/servers (#13) ---------------------------------------
 
     @app.get("/v1/mcp/servers")
@@ -3370,6 +3431,142 @@ def build_app(
             )
         installed.pop(sid, None)
         return None
+
+    # ---- /v1/mcp/servers/{sid}/(tools|resources|prompts) ----------------
+    # Detail enumeration for the TUI MCP browser. Bundled servers are
+    # introspected via the in-process gateway; external servers via a
+    # short-lived fastmcp.Client connection (same transport spec used at
+    # install time).
+
+    def _bundled_server_tools(short_name: str) -> list[dict[str, Any]]:
+        """Return tools for a bundled in-process server, shaped for the
+        TUI's catalog detail rows (id/name/description)."""
+        try:
+            from clio_agent.tools.gateway import list_capabilities
+            caps = list_capabilities()
+        except Exception:
+            return []
+        out = []
+        for tool in caps:
+            if tool.get("server") != short_name:
+                continue
+            out.append({
+                "id": tool.get("name", ""),
+                "name": tool.get("name", ""),
+                "description": tool.get("description") or "",
+            })
+        return out
+
+    async def _external_mcp_inventory(
+        sid: str, kind: str
+    ) -> list[dict[str, Any]]:
+        """Fetch tools|resources|prompts from a third-party MCP server."""
+        installed = getattr(app.state, "external_mcp_servers", {}) or {}
+        info = installed.get(sid)
+        if info is None:
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(error=ErrorInfo(
+                    error="not_found",
+                    message=f"no installed MCP server: {sid}",
+                    recoverable=True,
+                )).model_dump(exclude_none=True),
+            )
+        try:
+            from fastmcp import Client
+            from fastmcp.client.transports import (
+                StdioTransport, StreamableHttpTransport,
+            )
+        except Exception as exc:
+            raise HTTPException(
+                status_code=503,
+                detail=ErrorEnvelope(error=ErrorInfo(
+                    error="dependency_missing",
+                    message=f"fastmcp Client unavailable: {exc!r}",
+                    recoverable=False,
+                )).model_dump(exclude_none=True),
+            ) from exc
+        spec = info.get("spec", {})
+        if spec.get("transport") == "stdio":
+            transport = StdioTransport(
+                command=spec["command"],
+                args=spec.get("args") or [],
+            )
+        elif spec.get("transport") == "http":
+            transport = StreamableHttpTransport(url=spec["url"])
+        else:
+            return []
+        rows: list[dict[str, Any]] = []
+        try:
+            async with Client(transport) as client:
+                if kind == "tools":
+                    items = await client.list_tools()
+                    for t in items:
+                        rows.append({
+                            "id": t.name,
+                            "name": t.name,
+                            "description": getattr(t, "description", "") or "",
+                        })
+                elif kind == "resources":
+                    items = await client.list_resources()
+                    for r in items:
+                        uri = str(getattr(r, "uri", ""))
+                        rows.append({
+                            "id": uri or getattr(r, "name", ""),
+                            "name": getattr(r, "name", "") or uri,
+                            "description": getattr(r, "description", "") or "",
+                        })
+                elif kind == "prompts":
+                    items = await client.list_prompts()
+                    for p in items:
+                        rows.append({
+                            "id": p.name,
+                            "name": p.name,
+                            "description": getattr(p, "description", "") or "",
+                        })
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(
+                status_code=502,
+                detail=ErrorEnvelope(error=ErrorInfo(
+                    error="upstream_error",
+                    message=f"MCP {kind} listing failed: {exc!r}",
+                    recoverable=True,
+                )).model_dump(exclude_none=True),
+            ) from exc
+        return rows
+
+    @app.get("/v1/mcp/servers/{sid}/tools")
+    async def get_mcp_tools(sid: str) -> dict[str, Any]:
+        """List tools for an MCP server. Bundled servers report what the
+        in-process gateway has registered; third-party servers connect
+        via fastmcp.Client and call tools/list."""
+        if sid.startswith("mcp_") and sid not in (
+            getattr(app.state, "external_mcp_servers", {}) or {}
+        ):
+            return {"tools": _bundled_server_tools(sid[len("mcp_"):])}
+        return {"tools": await _external_mcp_inventory(sid, "tools")}
+
+    @app.get("/v1/mcp/servers/{sid}/resources")
+    async def get_mcp_resources(sid: str) -> dict[str, Any]:
+        """List resources for an MCP server. Bundled servers don't
+        expose resources today (return empty); external servers query
+        resources/list via fastmcp.Client."""
+        if sid.startswith("mcp_") and sid not in (
+            getattr(app.state, "external_mcp_servers", {}) or {}
+        ):
+            return {"resources": []}
+        return {"resources": await _external_mcp_inventory(sid, "resources")}
+
+    @app.get("/v1/mcp/servers/{sid}/prompts")
+    async def get_mcp_prompts(sid: str) -> dict[str, Any]:
+        """List prompts for an MCP server. Bundled servers don't expose
+        prompts today (return empty); external servers query
+        prompts/list via fastmcp.Client."""
+        if sid.startswith("mcp_") and sid not in (
+            getattr(app.state, "external_mcp_servers", {}) or {}
+        ):
+            return {"prompts": []}
+        return {"prompts": await _external_mcp_inventory(sid, "prompts")}
 
     # ---- /v1/sessions/{sid}/schedules (#21) --------------------------
 

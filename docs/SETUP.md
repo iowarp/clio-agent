@@ -32,7 +32,26 @@ client. This guide covers the common case: both together.
     tier models for testing).
   - **Local: LM Studio / Ollama** — fully on-device.
 
-## Install
+## Install — one-line script (recommended)
+
+```sh
+# Linux / macOS
+curl -fsSL https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.sh | sh
+
+# Windows (PowerShell)
+irm https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.ps1 | iex
+```
+
+Installs both repos under `~/.local/share/clio` (or `%LOCALAPPDATA%\clio`),
+builds the TUI, and drops a `clio` launcher into `~/.local/bin`. The
+launcher boots the server on `:17800` if it isn't already running and
+attaches the TUI. Run `clio` and you're chatting.
+
+Pin a specific tag: `CLIO_REF=v0.3.1 GACT_REF=v0.2.1 curl … | sh`. See
+[install/README.md](../install/README.md) for the full env-override
+table.
+
+## Install — manual (if you want to control where everything lives)
 
 ```bash
 # Pull both repos somewhere convenient.
@@ -47,6 +66,18 @@ uv pip install -e '.[api]'
 cd ../gact-tui/tui
 go build -o gact .
 ```
+
+## Configure providers from inside the TUI (no env vars needed)
+
+The first time you run the TUI against an unconfigured backend, the
+**LM Provider** modal pops automatically — pick a preset (Meridian /
+Claude Max via Meridian / Anthropic API / OpenAI / OpenRouter / LM
+Studio / Ollama), paste an API key if needed, save. CLIO is wired
+in-place; the next message uses the new provider.
+
+To swap mid-session: **Ctrl+S** → Settings → Model → **Change provider…**
+The same modal opens, you re-pick, save, and the next turn uses the new
+provider. No restart, no env-var dance.
 
 ## Boot CLIO
 
