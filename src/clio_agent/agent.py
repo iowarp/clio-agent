@@ -22,6 +22,7 @@ Usage:
     >>> print(result.selected_expert)
 """
 
+import asyncio
 import json
 import re
 import time
@@ -253,19 +254,35 @@ class ClioAgent(dspy.Module):
     ) -> dspy.Prediction:
         """Async call wrapper for dspy.streamify compatibility.
 
-        streamify wraps sync ``forward`` in ``asyncify`` which runs
-        the call in an executor thread — but ``send_stream`` lives in
-        a ContextVar that doesn't propagate across that boundary, so
-        live token streaming breaks. Implementing acall here keeps
-        the call in the running task so the streaming context survives.
+        Offloads the synchronous ``forward`` to a thread executor so
+        the asyncio event loop stays free during long LM calls.
+        Without this, the loop blocks for the whole turn duration —
+        every other HTTP request to CLIO (/v1/providers, /v1/health,
+        even the SSE stream) stalls until the turn completes, which
+        from the TUI feels like a complete UI freeze.
+
+        Streaming context survival: ``contextvars.copy_context()`` +
+        ``ctx.run`` propagates dspy's ``send_stream`` ContextVar into
+        the executor thread, so streamify's per-token chunks still
+        reach the listener. Without this propagation, the offload
+        would silently break live streaming.
         """
 
-        return self.forward(
-            question,
-            session_id=session_id,
-            session_mode=session_mode,
-            session_edit_mode=session_edit_mode,
-        )
+        import contextvars  # noqa: PLC0415
+
+        loop = asyncio.get_running_loop()
+        ctx = contextvars.copy_context()
+
+        def _run() -> dspy.Prediction:
+            return ctx.run(
+                self.forward,
+                question,
+                session_id=session_id,
+                session_mode=session_mode,
+                session_edit_mode=session_edit_mode,
+            )
+
+        return await loop.run_in_executor(None, _run)
 
     def forward(
         self,
