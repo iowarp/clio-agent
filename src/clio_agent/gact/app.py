@@ -2877,39 +2877,320 @@ def build_app(
     async def list_mcp_servers() -> dict[str, Any]:
         """SPEC §6.7 — enumerate MCP servers the backend has mounted.
 
-        CLIO's gateway lives in src/clio_agent/tools/gateway.py and
-        statically mounts hdf5 + parquet namespaces. Counts come from
-        the gateway's list_capabilities() helper which is already
-        cached + cheap to call.
+        Returns BOTH the bundled in-process servers (fs/hdf5/parquet)
+        AND any third-party servers installed via POST /v1/mcp/servers.
+        Each row carries id/name/status/transport/tools_count/tools.
+        """
+
+        rows = []
+
+        # In-process bundled servers (fs/hdf5/parquet via gateway).
+        try:
+            from clio_agent.tools.gateway import list_capabilities
+            caps = list_capabilities()
+            per_server: dict[str, list[dict[str, str]]] = {}
+            for tool in caps:
+                srv = tool.get("server", "unknown")
+                per_server.setdefault(srv, []).append(tool)
+            for name, tools in sorted(per_server.items()):
+                rows.append({
+                    "id": f"mcp_{name}",
+                    "name": name,
+                    "status": "ready",
+                    "transport": "in_process",
+                    "tools_count": len(tools),
+                    "tools": [t["name"] for t in tools],
+                })
+        except Exception as exc:  # noqa: BLE001
+            rows.append({
+                "id": "mcp_bundled_error",
+                "name": "bundled-gateway",
+                "status": "error",
+                "transport": "in_process",
+                "tools_count": 0,
+                "tools": [],
+                "error": f"gateway introspection failed: {exc!r}",
+            })
+
+        # Third-party servers installed at runtime.
+        installed = getattr(app.state, "external_mcp_servers", {})
+        for sid, info in sorted(installed.items()):
+            rows.append({
+                "id": sid,
+                "name": info.get("name", sid),
+                "status": info.get("status", "unknown"),
+                "transport": info.get("transport", "unknown"),
+                "tools_count": len(info.get("tools") or []),
+                "tools": list(info.get("tools") or []),
+                "spec": info.get("spec", {}),
+            })
+        return {"servers": rows}
+
+    @app.post("/v1/mcp/servers", status_code=201)
+    async def install_mcp_server(request: Request) -> dict[str, Any]:
+        """Install + connect to a third-party MCP server.
+
+        Body shapes:
+        - stdio:  {"name": "everything", "transport": "stdio",
+                   "command": "npx", "args": ["-y", "@modelcontextprotocol/server-everything"],
+                   "env": {...}}
+        - http:   {"name": "remote", "transport": "http",
+                   "url": "https://mcp.example.com"}
+
+        Connects via fastmcp.Client, lists the server's tools, and
+        records the server in ``app.state.external_mcp_servers`` so
+        subsequent /v1/mcp/servers GETs and tool dispatch can see it.
+
+        Returns the same row shape /v1/mcp/servers does.
         """
 
         try:
-            from clio_agent.tools.gateway import list_capabilities
+            body = await request.json()
+        except Exception:
+            body = {}
+        name = body.get("name") or body.get("id") or "unnamed"
+        transport_kind = (body.get("transport") or "stdio").lower()
 
-            caps = list_capabilities()
+        try:
+            from fastmcp import Client
+            from fastmcp.client.transports import (
+                StdioTransport, StreamableHttpTransport,
+            )
+        except Exception as exc:
+            raise HTTPException(
+                status_code=503,
+                detail=ErrorEnvelope(error=ErrorInfo(
+                    error="dependency_missing",
+                    message=f"fastmcp Client unavailable: {exc!r}",
+                    recoverable=False,
+                )).model_dump(exclude_none=True),
+            ) from exc
+
+        if transport_kind == "stdio":
+            command = body.get("command")
+            args = body.get("args") or []
+            env = body.get("env") or {}
+            if not command:
+                raise HTTPException(
+                    status_code=422,
+                    detail=ErrorEnvelope(error=ErrorInfo(
+                        error="bad_request",
+                        message="stdio transport requires 'command'",
+                        recoverable=True,
+                    )).model_dump(exclude_none=True),
+                )
+            transport = StdioTransport(command=command, args=list(args), env=dict(env) or None)
+            spec = {"transport": "stdio", "command": command, "args": list(args)}
+        elif transport_kind in {"http", "streamable-http"}:
+            url = body.get("url")
+            if not url:
+                raise HTTPException(
+                    status_code=422,
+                    detail=ErrorEnvelope(error=ErrorInfo(
+                        error="bad_request",
+                        message="http transport requires 'url'",
+                        recoverable=True,
+                    )).model_dump(exclude_none=True),
+                )
+            transport = StreamableHttpTransport(url=url)
+            spec = {"transport": "http", "url": url}
+        else:
+            raise HTTPException(
+                status_code=422,
+                detail=ErrorEnvelope(error=ErrorInfo(
+                    error="bad_request",
+                    message=f"unknown transport: {transport_kind!r} (use stdio|http)",
+                    recoverable=True,
+                )).model_dump(exclude_none=True),
+            )
+
+        # Probe the server: connect, list tools, disconnect cleanly.
+        # We re-create the Client per dispatch later (cheap for stdio,
+        # no shared global state to worry about).
+        tool_names: list[str] = []
+        connect_error: Optional[str] = None
+        try:
+            async with Client(transport) as client:
+                tools = await client.list_tools()
+                tool_names = [t.name for t in tools]
         except Exception as exc:  # noqa: BLE001
-            return {
-                "servers": [],
-                "error": f"gateway introspection failed: {exc!r}",
-            }
+            connect_error = repr(exc)
 
-        # Group caps by server name (hdf5/parquet/...).
-        per_server: dict[str, list[dict[str, str]]] = {}
-        for tool in caps:
-            srv = tool.get("server", "unknown")
-            per_server.setdefault(srv, []).append(tool)
+        sid = f"mcp_ext_{uuid.uuid4().hex[:10]}"
+        if not hasattr(app.state, "external_mcp_servers"):
+            app.state.external_mcp_servers: dict[str, dict[str, Any]] = {}
+        info = {
+            "id": sid,
+            "name": name,
+            "status": "ready" if connect_error is None else "error",
+            "transport": transport_kind,
+            "tools": tool_names,
+            "spec": spec,
+        }
+        if connect_error:
+            info["error"] = connect_error
+        app.state.external_mcp_servers[sid] = info
 
-        rows = []
-        for name, tools in sorted(per_server.items()):
-            rows.append({
-                "id": f"mcp_{name}",
-                "name": name,
-                "status": "ready",
-                "transport": "in_process",
-                "tools_count": len(tools),
-                "tools": [t["name"] for t in tools],
-            })
-        return {"servers": rows}
+        if connect_error is not None:
+            raise HTTPException(
+                status_code=502,
+                detail=ErrorEnvelope(error=ErrorInfo(
+                    error="upstream_unavailable",
+                    message=f"MCP server probe failed: {connect_error}",
+                    details={"id": sid, "spec": spec},
+                    recoverable=True,
+                )).model_dump(exclude_none=True),
+            )
+        return {
+            "id": sid,
+            "name": name,
+            "status": "ready",
+            "transport": transport_kind,
+            "tools_count": len(tool_names),
+            "tools": tool_names,
+            "spec": spec,
+        }
+
+    @app.post("/v1/mcp/servers/{sid}/call")
+    async def call_external_mcp_tool(sid: str, request: Request) -> dict[str, Any]:
+        """Invoke a tool on an installed third-party MCP server.
+
+        Body: {"tool": "<tool_name>", "args": {...}}
+
+        Connects via fastmcp.Client using the spec recorded at
+        install time, calls the tool, fires the same global
+        tool_observer the agent uses (so SSE events + tools_called
+        ledger entries land identically to in-process tools), and
+        returns the structured result.
+        """
+
+        installed = getattr(app.state, "external_mcp_servers", {}) or {}
+        info = installed.get(sid)
+        if info is None:
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(error=ErrorInfo(
+                    error="not_found",
+                    message=f"no installed MCP server: {sid}",
+                    recoverable=True,
+                )).model_dump(exclude_none=True),
+            )
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        tool_name = body.get("tool")
+        tool_args = body.get("args") or {}
+        if not tool_name:
+            raise HTTPException(
+                status_code=422,
+                detail=ErrorEnvelope(error=ErrorInfo(
+                    error="bad_request",
+                    message="missing 'tool' in request body",
+                    recoverable=True,
+                )).model_dump(exclude_none=True),
+            )
+
+        try:
+            from fastmcp import Client
+            from fastmcp.client.transports import (
+                StdioTransport, StreamableHttpTransport,
+            )
+        except Exception as exc:
+            raise HTTPException(
+                status_code=503,
+                detail=ErrorEnvelope(error=ErrorInfo(
+                    error="dependency_missing",
+                    message=f"fastmcp Client unavailable: {exc!r}",
+                    recoverable=False,
+                )).model_dump(exclude_none=True),
+            ) from exc
+
+        spec = info.get("spec", {})
+        if spec.get("transport") == "stdio":
+            transport = StdioTransport(
+                command=spec["command"],
+                args=spec.get("args") or [],
+            )
+        elif spec.get("transport") == "http":
+            transport = StreamableHttpTransport(url=spec["url"])
+        else:
+            raise HTTPException(
+                status_code=500,
+                detail=ErrorEnvelope(error=ErrorInfo(
+                    error="internal_error",
+                    message=f"unknown stored transport: {spec!r}",
+                    recoverable=False,
+                )).model_dump(exclude_none=True),
+            )
+
+        # Fire tool observer manually so this call shows up in
+        # tools_called + tool.call.* SSE events identically to an
+        # agent-driven tool call. Same observer, no special path.
+        try:
+            from clio_agent.tools.execution import _GLOBAL_TOOL_OBSERVER
+        except Exception:
+            _GLOBAL_TOOL_OBSERVER = None
+        observer_name = f"{info.get('name','ext')}.{tool_name}"
+        if _GLOBAL_TOOL_OBSERVER is not None:
+            try:
+                _GLOBAL_TOOL_OBSERVER(observer_name, tool_args, "started", None)
+            except Exception:
+                pass
+        try:
+            async with Client(transport) as client:
+                result = await client.call_tool(tool_name, tool_args)
+            content = []
+            for c in (getattr(result, "content", None) or []):
+                content.append({
+                    "type": getattr(c, "type", "text"),
+                    "text": getattr(c, "text", str(c)),
+                })
+        except Exception as exc:  # noqa: BLE001
+            if _GLOBAL_TOOL_OBSERVER is not None:
+                try:
+                    _GLOBAL_TOOL_OBSERVER(observer_name, tool_args, "completed", repr(exc))
+                except Exception:
+                    pass
+            raise HTTPException(
+                status_code=502,
+                detail=ErrorEnvelope(error=ErrorInfo(
+                    error="upstream_error",
+                    message=f"tool call failed: {exc!r}",
+                    recoverable=True,
+                )).model_dump(exclude_none=True),
+            ) from exc
+        if _GLOBAL_TOOL_OBSERVER is not None:
+            try:
+                _GLOBAL_TOOL_OBSERVER(observer_name, tool_args, "completed", None)
+            except Exception:
+                pass
+        return {
+            "server_id": sid,
+            "tool": tool_name,
+            "args": tool_args,
+            "content": content,
+            "is_error": getattr(result, "isError", False),
+        }
+
+    @app.delete("/v1/mcp/servers/{sid}", status_code=204)
+    async def uninstall_mcp_server(sid: str) -> None:
+        """Drop a third-party MCP server registration. Bundled
+        in-process servers (mcp_fs/mcp_hdf5/mcp_parquet) cannot be
+        removed at runtime — return 404 for those."""
+
+        installed = getattr(app.state, "external_mcp_servers", {}) or {}
+        if sid not in installed:
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(error=ErrorInfo(
+                    error="not_found",
+                    message=f"no externally-installed MCP server: {sid}",
+                    recoverable=True,
+                )).model_dump(exclude_none=True),
+            )
+        installed.pop(sid, None)
+        return None
 
     # ---- /v1/sessions/{sid}/schedules (#21) --------------------------
 
