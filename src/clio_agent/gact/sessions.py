@@ -107,6 +107,12 @@ class Session:
     #   architect  — high-level plan + diff proposals; no direct file writes
     mode: str = "chat"
     edit_mode: str = "diff"
+    # Routing override. "auto" runs the LM-based router; "chat" forces
+    # every turn through the chat path; "experts" rejects chat/none
+    # routes (raises a routing error) so users can lock the session
+    # to data/analysis/visualization work. Default "auto" preserves
+    # historical behaviour.
+    routing_mode: str = "auto"
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_wire(self) -> dict[str, Any]:
@@ -260,6 +266,7 @@ class SessionStore:
         add_cost_usd: float = 0.0,
         mode: Optional[str] = None,
         edit_mode: Optional[str] = None,
+        routing_mode: Optional[str] = None,
         metadata_patch: Optional[dict[str, Any]] = None,
     ) -> Optional[Session]:
         """Mutate a session in place.
@@ -292,6 +299,8 @@ class SessionStore:
                 sess.mode = mode
             if edit_mode is not None and edit_mode in {"diff", "whole", "patch"}:
                 sess.edit_mode = edit_mode
+            if routing_mode is not None and routing_mode in {"auto", "chat", "experts"}:
+                sess.routing_mode = routing_mode
             if metadata_patch is not None:
                 sess.metadata.update(metadata_patch)
             sess.updated_at = _utcnow_iso()

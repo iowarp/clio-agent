@@ -257,6 +257,7 @@ class Session(BaseModel):
     # iowarp/clio-agent — capabilities.plan_mode + edit_modes:
     mode: Literal["chat", "plan", "edit", "architect"] = "chat"
     edit_mode: Literal["diff", "whole", "patch"] = "diff"
+    routing_mode: Literal["auto", "chat", "experts"] = "auto"
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -267,6 +268,7 @@ class CreateSessionRequest(BaseModel):
     title: str = ""
     mode: Literal["chat", "plan", "edit", "architect"] = "chat"
     edit_mode: Literal["diff", "whole", "patch"] = "diff"
+    routing_mode: Literal["auto", "chat", "experts"] = "auto"
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -278,6 +280,10 @@ class UpdateSessionRequest(BaseModel):
     title: Optional[str] = None
     mode: Optional[Literal["chat", "plan", "edit", "architect"]] = None
     edit_mode: Optional[Literal["diff", "whole", "patch"]] = None
+    # routing_mode overrides the LM-based router. "auto" runs the
+    # router; "chat" forces every turn through the chat path so users
+    # don't need a /chat prefix; "experts" rejects chat/none routes.
+    routing_mode: Optional[Literal["auto", "chat", "experts"]] = None
 
 
 class ListSessionsResponse(BaseModel):

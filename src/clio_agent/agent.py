@@ -339,13 +339,25 @@ class ClioAgent(dspy.Module):
         error_msg = None
         selected = "chat"  # default fallback
 
-        # Edit-intent short-circuit: when the user explicitly says
-        # "propose an edit to /path/...", route straight to the chat
-        # path's _direct_edit_answer regardless of router. The
-        # router otherwise picks data/analysis based on the file
-        # extension and never invokes the edit handler. Saves a
-        # router LM call too.
-        if self._looks_like_explicit_edit(question):
+        # Routing override (set by the GACT layer from the session's
+        # routing_mode field). "chat" forces every turn through the
+        # chat path so users can avoid typing /chat. "experts" makes
+        # the router skip the chat/none classes — handy when the user
+        # wants to lock the session to data/analysis/visualization
+        # work. "auto" (default) keeps current behaviour.
+        routing_override = getattr(self, "_routing_mode_override", "auto") or "auto"
+
+        if routing_override == "chat":
+            if self.verbose:
+                print("[Router] forced chat (session.routing_mode=chat)")
+            selected = "chat"
+        elif self._looks_like_explicit_edit(question):
+            # Edit-intent short-circuit: when the user explicitly says
+            # "propose an edit to /path/...", route straight to the chat
+            # path's _direct_edit_answer regardless of router. The
+            # router otherwise picks data/analysis based on the file
+            # extension and never invokes the edit handler. Saves a
+            # router LM call too.
             selected = "chat"
             if self.verbose:
                 print(f"[Router] explicit-edit route: chat")
@@ -374,6 +386,22 @@ class ClioAgent(dspy.Module):
                         )
                         print(f"[Router] {routing_err.to_dict()}")
                     selected = "chat"
+
+        # Experts-only mode: refuse to fall back to chat. If routing
+        # picked chat (or none), surface a routing notification so the
+        # user knows the question wasn't experty enough.
+        if routing_override == "experts" and selected in {"chat", "none"}:
+            raise RoutingError(
+                f"experts-only mode: router classified as '{selected}' "
+                "but routing_mode is locked to experts. Switch to "
+                "auto/chat in Settings, or rephrase to target "
+                "data / analysis / visualization.",
+                details={
+                    "selected_expert": selected,
+                    "routing_mode": "experts",
+                    "question": question[:200],
+                },
+            )
 
         if self.verbose:
             print(f"[Router] {question[:50]}... -> {selected}")

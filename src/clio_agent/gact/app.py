@@ -220,6 +220,20 @@ async def _run_turn_in_background(
     history_start = _snapshot_lm_history_index(app)
 
     try:
+        # Honour the session's routing override. routing_mode "chat"
+        # forces the chat path (no /chat prefix needed); "experts"
+        # rejects chat/none classifications. We mutate the agent's
+        # ProviderConfig.routing_mode for the duration of the call so
+        # ClioAgent.forward can see it without changing its public
+        # signature.
+        routing_override = getattr(sess, "routing_mode", "auto") or "auto"
+        agent_obj = app.state.agent
+        prev_routing = getattr(agent_obj, "_routing_mode_override", "auto")
+        try:
+            agent_obj._routing_mode_override = routing_override  # type: ignore[attr-defined]
+        except Exception:  # noqa: BLE001
+            pass
+
         pred = await _try_streamed_forward(
             app, enriched_text, sid, _emit_chunk,
             session_mode=getattr(sess, "mode", "chat"),
@@ -237,6 +251,10 @@ async def _run_turn_in_background(
                     getattr(sess, "edit_mode", "diff"),
                 ),
             )
+        try:
+            agent_obj._routing_mode_override = prev_routing  # type: ignore[attr-defined]
+        except Exception:  # noqa: BLE001
+            pass
         answer_text = getattr(pred, "answer", "")
         selected_agent = getattr(pred, "selected_expert", "") or ""
         rationale = getattr(pred, "routing_rationale", "")
@@ -2321,6 +2339,7 @@ def build_app(
             title=req.title,
             mode=req.mode,
             edit_mode=req.edit_mode,
+            routing_mode=req.routing_mode,
         )
         if sess is None:
             raise HTTPException(
