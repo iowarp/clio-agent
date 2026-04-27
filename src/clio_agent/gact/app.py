@@ -4980,8 +4980,94 @@ def build_app(
 
     _stub_routes: list[tuple[str, str, str]] = [
         # (method, path, capability_name_for_error)
-        ("GET", "/v1/tools", "tools"),
+        # /v1/tools moved out of stubs — implemented below.
     ]
+
+    # ---- /v1/tools (unified catalog across all MCP servers) ----------
+    # Aggregates bundled (in_process) + installed (third-party) MCP
+    # servers into a single flat list keyed by tool name. Each row
+    # carries the source server id so the TUI can group/filter.
+    @app.get("/v1/tools")
+    async def list_tools_unified() -> dict[str, Any]:
+        """SPEC §6.5 — unified tool catalog.
+
+        Walks every MCP server the backend has mounted (bundled fs/
+        hdf5/parquet via the in-process gateway, plus any third-party
+        servers installed via POST /v1/mcp/servers) and returns a
+        single flat list of tools. Each tool row carries:
+        - id / name: the tool name (namespaced where the gateway
+          namespaces them, e.g. "fs_read_file")
+        - description: from the tool's docstring or schema
+        - server_id / source: which MCP server exposes it
+        - input_schema: JSON Schema (when available)
+        """
+        rows: list[dict[str, Any]] = []
+        # Bundled in-process tools.
+        try:
+            from clio_agent.tools.gateway import list_capabilities  # noqa: PLC0415
+            for tool in list_capabilities():
+                srv = tool.get("server", "")
+                rows.append({
+                    "id": tool.get("name", ""),
+                    "name": tool.get("name", ""),
+                    "description": tool.get("description") or "",
+                    "server_id": f"mcp_{srv}" if srv else "",
+                    "source": "mcp",
+                    "input_schema": tool.get("input_schema") or {},
+                })
+        except Exception as exc:  # noqa: BLE001
+            rows.append({
+                "id": "_bundled_error",
+                "name": "_bundled_error",
+                "description": f"bundled gateway introspection failed: {exc!r}",
+                "source": "error",
+            })
+
+        # Third-party installed servers — query each via fastmcp.Client.
+        installed = getattr(app.state, "external_mcp_servers", {}) or {}
+        if installed:
+            try:
+                from fastmcp import Client  # noqa: PLC0415
+                from fastmcp.client.transports import (  # noqa: PLC0415
+                    StdioTransport, StreamableHttpTransport,
+                )
+            except Exception:  # noqa: BLE001
+                Client = None  # type: ignore
+            for sid, info in sorted(installed.items()):
+                spec = info.get("spec", {})
+                if Client is None:
+                    continue
+                if spec.get("transport") == "stdio":
+                    transport = StdioTransport(
+                        command=spec["command"],
+                        args=spec.get("args") or [],
+                    )
+                elif spec.get("transport") == "http":
+                    transport = StreamableHttpTransport(url=spec["url"])
+                else:
+                    continue
+                try:
+                    async with Client(transport) as client:
+                        tools = await client.list_tools()
+                    for t in tools:
+                        rows.append({
+                            "id": t.name,
+                            "name": t.name,
+                            "description": getattr(t, "description", "") or "",
+                            "server_id": sid,
+                            "source": "mcp",
+                            "input_schema": getattr(t, "inputSchema", None)
+                                or getattr(t, "input_schema", None) or {},
+                        })
+                except Exception as exc:  # noqa: BLE001
+                    rows.append({
+                        "id": f"{sid}_error",
+                        "name": f"{sid}_error",
+                        "description": f"failed to list {sid} tools: {exc!r}",
+                        "server_id": sid,
+                        "source": "error",
+                    })
+        return {"tools": rows}
 
     def _make_stub(cap: str):
         # Use a Request param so FastAPI doesn't try to validate
