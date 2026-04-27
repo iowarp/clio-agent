@@ -233,6 +233,22 @@ async def _run_turn_in_background(
         selected_agent = getattr(pred, "selected_expert", "") or ""
         rationale = getattr(pred, "routing_rationale", "")
         tools_called = _extract_tools_called(pred)
+        # Drain the per-session observer ledger so direct-tool short-
+        # circuits (HDF5/Parquet/fs experts that bypass ReAct) still
+        # report tools_called on the assistant message metadata.
+        ledger = getattr(app.state, "tool_call_ledger", None)
+        if ledger is not None:
+            observed = ledger.pop(sid, [])
+            if observed and not tools_called:
+                tools_called = observed
+            elif observed:
+                # Both populated — the expert's own list takes
+                # precedence (richer payload), but append any
+                # observed-only calls the expert didn't enumerate.
+                seen = {(t.get("name"), str(t.get("args"))) for t in tools_called}
+                for o in observed:
+                    if (o.get("name"), str(o.get("args"))) not in seen:
+                        tools_called.append(o)
         # iowarp/clio-agent#17 — surface DSPy reasoning as a
         # `thinking` Part. ChainOfThought predictions expose
         # ``.reasoning`` (single string); ReAct exposes
@@ -1063,7 +1079,12 @@ def _make_tool_observer(app: "FastAPI"):
 
     Publishes tool.call.started / tool.call.completed events into
     the EventBus, attaching to the most-recently-active session
-    (bridge calls don't carry session context).
+    (bridge calls don't carry session context). Also appends each
+    completed call into ``app.state.tool_call_ledger[sid]`` so the
+    turn handler can attach a per-turn ``tools_called`` list to the
+    assistant message metadata even when the underlying expert
+    didn't populate ``pred.tools_called`` itself (e.g. the
+    deterministic short-circuit paths).
     """
 
     def observe(
@@ -1082,6 +1103,8 @@ def _make_tool_observer(app: "FastAPI"):
             # uses the same id. Threading-locals works for
             # MCPToolBridge's worker thread.
             _OBSERVER_CALL_IDS.value = call_id
+            # Stamp the start time so completion can compute duration.
+            _OBSERVER_CALL_T0.value = time.time()
             app.state.bus.publish(Event(
                 type="tool.call.started",
                 session_id=sid,
@@ -1093,20 +1116,40 @@ def _make_tool_observer(app: "FastAPI"):
             ))
         elif phase == "completed":
             call_id = getattr(_OBSERVER_CALL_IDS, "value", "") or ""
+            t0 = getattr(_OBSERVER_CALL_T0, "value", None)
+            duration_ms = (time.time() - t0) * 1000 if t0 else 0.0
+            ok = error is None
+            payload = {
+                "call_id": call_id,
+                "tool": name,
+                "ok": ok,
+                "duration_ms": duration_ms,
+                "cached": False,
+                **({"error": error} if error else {}),
+            }
             app.state.bus.publish(Event(
                 type="tool.call.completed",
                 session_id=sid,
-                payload={
-                    "call_id": call_id,
-                    "tool": name,
-                    "ok": error is None,
-                    "duration_ms": 0.0,
+                payload=payload,
+            ))
+            # Append to the per-session ledger so the turn handler
+            # finds it post-forward and attaches to the assistant
+            # message metadata.
+            ledger = getattr(app.state, "tool_call_ledger", None)
+            if ledger is not None:
+                ledger.setdefault(sid, []).append({
+                    "name": name,
+                    "args": dict(args),
+                    "ok": ok,
+                    "duration_ms": duration_ms,
                     "cached": False,
                     **({"error": error} if error else {}),
-                },
-            ))
+                })
 
     return observe
+
+
+_OBSERVER_CALL_T0 = threading.local()
 
 
 _OBSERVER_CALL_IDS = threading.local()
@@ -1798,6 +1841,12 @@ def build_app(
     # /messages tracks the asyncio.Task here so /cancel can
     # hard-abort instead of waiting for the cooperative flag check.
     app.state.in_flight_turns: dict[str, asyncio.Task] = {}
+    # iowarp/clio-agent#2: per-session ledger of tool calls observed
+    # during the in-flight turn. The global tool_observer appends
+    # here; _run_turn_in_background drains it post-forward to attach
+    # tools_called metadata even when the underlying expert
+    # didn't populate ``pred.tools_called`` itself.
+    app.state.tool_call_ledger: dict[str, list[dict[str, Any]]] = {}
 
     # iowarp/clio-agent#7 + #2: install process-global hooks on the
     # MCPToolBridge so EVERY expert's tool call routes through our

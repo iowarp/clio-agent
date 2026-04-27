@@ -340,7 +340,17 @@ class ClioAgent(dspy.Module):
                     "Could you rephrase your question in terms of data analysis?"
                 )
             else:  # "chat"
-                answer = self._run_chat_agent(question, session_context)
+                # iowarp/clio-agent#4: detect explicit edit requests
+                # ("propose an edit to /path/to/file …") and short-
+                # circuit through the fs MCP server's propose_edit
+                # tool. Returns a Prediction with file_diffs= already
+                # populated; main forward forwards them up.
+                edit_pred = self._direct_edit_answer(question)
+                if edit_pred is not None:
+                    expert_result = edit_pred
+                    answer = getattr(edit_pred, "analysis", "") or "Proposed edit ready for review."
+                else:
+                    answer = self._run_chat_agent(question, session_context)
             success = True
         except Exception as e:
             success = False
@@ -464,6 +474,103 @@ class ClioAgent(dspy.Module):
                     f"ChatAgent failed ({chat_error}); direct fallback failed ({fallback_error})"
                 ) from fallback_error
 
+    def _direct_edit_answer(self, question: str) -> dspy.Prediction | None:
+        """Drive the fs.propose_edit tool directly when the user
+        asks for an edit by file path.
+
+        Recognised shapes:
+        - "propose an edit to /path/to/file [— description]"
+        - "edit /path/to/file [to ...]"
+        - "modify /path/to/file [to ...]"
+
+        Returns a Prediction with ``file_diffs=[{path, unified_diff,
+        ...}]`` populated when we both (a) parsed a real file path
+        from the question and (b) the LM produced parsable new
+        content. Falls back to ``None`` for the chat agent to
+        handle when either step misses — preserves the existing
+        chat path for non-edit questions.
+        """
+
+        q = question.lower().strip()
+        triggers = ("propose an edit", "propose edit", "edit ", "modify ")
+        if not any(t in q for t in triggers):
+            return None
+
+        import re
+        # Pull the first /path/to/something token out of the question.
+        path_match = re.search(r"(/[\w./_-]+\.\w+)", question)
+        if not path_match:
+            return None
+        filepath = path_match.group(1)
+
+        try:
+            from clio_agent.tools.servers.fs_server import (
+                propose_edit, read_file,
+            )
+        except Exception:
+            return None
+
+        try:
+            current = self._call_tool_function(read_file, filepath)
+        except Exception as exc:  # noqa: BLE001
+            return dspy.Prediction(
+                analysis=f"Could not read {filepath}: {exc}",
+                recommendations="Check that the path is inside the allowed roots.",
+            )
+
+        old = current.get("content", "")
+        # Ask the LM to produce ONLY the new file contents — no
+        # prose, no fences. Keep the prompt small + explicit so
+        # the response is easy to parse.
+        prompt = (
+            "You are editing a file. Return ONLY the new file "
+            "contents, with no prose, no markdown fences, no "
+            "explanations.\n\n"
+            f"Edit instruction: {question}\n\n"
+            f"--- {filepath} (current contents) ---\n"
+            f"{old}\n"
+            f"--- end ---\n"
+        )
+        try:
+            new_content = self._direct_chat_completion(prompt, "")
+        except Exception as exc:  # noqa: BLE001
+            return dspy.Prediction(
+                analysis=f"LM failed to produce edit for {filepath}: {exc}",
+                recommendations="Try again with a simpler edit instruction.",
+            )
+
+        # Strip stray markdown fences if the LM ignored the prompt.
+        new_content = new_content.strip()
+        if new_content.startswith("```"):
+            lines = new_content.splitlines()
+            if lines[0].startswith("```"):
+                lines = lines[1:]
+            if lines and lines[-1].startswith("```"):
+                lines = lines[:-1]
+            new_content = "\n".join(lines)
+
+        diff = self._call_tool_function(propose_edit, filepath, new_content)
+        file_diff = {
+            "path": diff["path"],
+            "unified_diff": diff["unified_diff"],
+            "new_content": new_content,
+            "lines_added": diff["lines_added"],
+            "lines_removed": diff["lines_removed"],
+        }
+        pred = dspy.Prediction(
+            analysis=(
+                f"Proposed edit for {filepath}: "
+                f"+{diff['lines_added']} / -{diff['lines_removed']} lines. "
+                "Apply via /v1/sessions/{sid}/diffs/apply or reject via /reject."
+            ),
+            recommendations="Review the diff in the body, then apply or reject.",
+        )
+        try:
+            pred.file_diffs = [file_diff]  # type: ignore[attr-defined]
+        except Exception:
+            pass
+        return pred
+
     def _direct_chat_completion(self, question: str, session_context: str) -> str:
         """Call the configured OpenAI-compatible chat endpoint directly."""
         headers = {"Content-Type": "application/json"}
@@ -485,7 +592,7 @@ class ClioAgent(dspy.Module):
             f"{self._provider_config.api_base.rstrip('/')}/chat/completions",
             json=payload,
             headers=headers,
-            timeout=60,
+            timeout=180,
         )
         response.raise_for_status()
         data = response.json()
@@ -578,6 +685,8 @@ class ClioAgent(dspy.Module):
                 "read pattern before changing the file layout."
             )
 
+        # tools_called is populated automatically by the observer
+        # hook in _call_tool_function, so we don't hand-code it here.
         return dspy.Prediction(analysis=analysis, recommendations=recommendations)
 
     def _direct_parquet_answer(self, question: str, file_context: str) -> dspy.Prediction | None:
@@ -635,6 +744,8 @@ class ClioAgent(dspy.Module):
             "of scanning every column."
         )
 
+        # tools_called is populated automatically by the observer
+        # hook in _call_tool_function (see _direct_hdf5_answer note).
         return dspy.Prediction(analysis=analysis, recommendations=recommendations)
 
     def _direct_csv_answer(self, question: str, file_context: str) -> dspy.Prediction | None:
@@ -751,9 +862,59 @@ class ClioAgent(dspy.Module):
 
     @staticmethod
     def _call_tool_function(tool: Any, *args: Any, **kwargs: Any) -> Any:
-        """Call either a FastMCP FunctionTool or a plain Python helper."""
+        """Call either a FastMCP FunctionTool or a plain Python helper.
+
+        Fires the global tool_observer (same callback the MCPToolBridge
+        uses) before + after the call so direct-tool short-circuits in
+        the experts produce the same tool.call.* SSE events + populate
+        the same tools_called ledger as ReAct-driven tool calls.
+        Generic — works with any FastMCP tool, including third-party
+        MCP servers mounted by the gateway.
+        """
+
         fn = getattr(tool, "fn", tool)
-        return fn(*args, **kwargs)
+        # Pull a stable name from the FunctionTool wrapper, falling back
+        # to the underlying function's __name__.
+        name = (
+            getattr(tool, "name", None)
+            or getattr(tool, "__name__", None)
+            or getattr(fn, "__name__", "tool")
+        )
+        # Best-effort args-as-mapping for the observer payload.
+        observer_args: dict[str, Any] = {}
+        if kwargs:
+            observer_args.update(kwargs)
+        if args:
+            # Positional args don't have names here — index them so the
+            # observer payload is at least lossless.
+            for i, val in enumerate(args):
+                observer_args.setdefault(f"arg{i}", val)
+
+        try:
+            from clio_agent.tools.execution import _GLOBAL_TOOL_OBSERVER  # noqa: PLC0415
+        except Exception:
+            _GLOBAL_TOOL_OBSERVER = None
+
+        if _GLOBAL_TOOL_OBSERVER is not None:
+            try:
+                _GLOBAL_TOOL_OBSERVER(name, observer_args, "started", None)
+            except Exception:
+                pass
+        try:
+            result = fn(*args, **kwargs)
+        except Exception as exc:
+            if _GLOBAL_TOOL_OBSERVER is not None:
+                try:
+                    _GLOBAL_TOOL_OBSERVER(name, observer_args, "completed", repr(exc))
+                except Exception:
+                    pass
+            raise
+        if _GLOBAL_TOOL_OBSERVER is not None:
+            try:
+                _GLOBAL_TOOL_OBSERVER(name, observer_args, "completed", None)
+            except Exception:
+                pass
+        return result
 
     @staticmethod
     def _format_tool_error(error: Any) -> str:

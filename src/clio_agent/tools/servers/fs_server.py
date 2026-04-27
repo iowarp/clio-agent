@@ -49,7 +49,7 @@ def read_file(filepath: str) -> dict[str, Any]:
     configured allowed roots are readable.
     """
 
-    validate_non_empty_string(filepath, "filepath")
+    validate_non_empty_string(filepath, field="filepath")
     safe = validate_read_path(filepath)
     p = Path(safe)
     raw = p.read_bytes()
@@ -77,7 +77,7 @@ def propose_edit(filepath: str, new_content: str) -> dict[str, Any]:
     Returns ``{path, unified_diff, lines_added, lines_removed}``.
     """
 
-    validate_non_empty_string(filepath, "filepath")
+    validate_non_empty_string(filepath, field="filepath")
     safe = validate_read_path(filepath)
     p = Path(safe)
     if not p.exists():
@@ -119,7 +119,7 @@ def apply_edit_write(filepath: str, new_content: str) -> dict[str, Any]:
     fragile; we always write the whole file.)
     """
 
-    validate_non_empty_string(filepath, "filepath")
+    validate_non_empty_string(filepath, field="filepath")
     safe = validate_read_path(filepath)
     p = Path(safe)
     p.parent.mkdir(parents=True, exist_ok=True)
