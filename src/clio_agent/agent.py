@@ -244,6 +244,29 @@ class ClioAgent(dspy.Module):
             print(f"[ClioAgent] ARC Memory initialized at {data_dir}/arc")
             print(f"[ClioAgent] LSM Tree initialized at {data_dir}/arc/lsm")
 
+    async def acall(
+        self,
+        question: str,
+        session_id: str = "default",
+        session_mode: str = "chat",
+        session_edit_mode: str = "diff",
+    ) -> dspy.Prediction:
+        """Async call wrapper for dspy.streamify compatibility.
+
+        streamify wraps sync ``forward`` in ``asyncify`` which runs
+        the call in an executor thread — but ``send_stream`` lives in
+        a ContextVar that doesn't propagate across that boundary, so
+        live token streaming breaks. Implementing acall here keeps
+        the call in the running task so the streaming context survives.
+        """
+
+        return self.forward(
+            question,
+            session_id=session_id,
+            session_mode=session_mode,
+            session_edit_mode=session_edit_mode,
+        )
+
     def forward(
         self,
         question: str,

@@ -1241,13 +1241,30 @@ async def _try_streamed_forward(
     # produces an ``answer`` field (e.g. expert paths return
     # ``analysis`` / ``recommendations``), the listener simply
     # stays silent and the synchronous fallback handles emit.
+    # Single listener on the chat agent's "answer" field. Adding
+    # listeners for other expert outputs (analysis/recommendations)
+    # broke streaming entirely because find_predictor_for_stream_listeners
+    # walks the program tree looking for matching Predicts and gets
+    # confused by ClioAgent's complex dispatch — net result was zero
+    # deltas. With one listener bound to "answer", the chat path
+    # streams cleanly; expert paths fall back to the post-hoc
+    # chunked emission already in the GACT layer.
     listeners = []
     try:
         listeners = [StreamListener(signature_field_name="answer")]
     except Exception:  # noqa: BLE001
         listeners = []
+    # is_async_program=True keeps the agent call in the running
+    # asyncio task so dspy's send_stream ContextVar propagates.
+    # Without this, streamify wraps sync forward() in asyncify ->
+    # runs in an executor thread -> ContextVar lost -> zero live
+    # chunks. Requires the agent expose acall.
+    has_acall = hasattr(agent, "acall") and callable(getattr(agent, "acall"))
     streamed = streamify(
-        agent, async_streaming=True, stream_listeners=listeners,
+        agent,
+        async_streaming=True,
+        stream_listeners=listeners,
+        is_async_program=has_acall,
     )
 
     final_pred = None
@@ -1329,10 +1346,46 @@ def _apply_edit_to_disk(
 
     The agent's propose_edit tool put the diff together; this is
     the GACT-side commit step the user explicitly approved via
-    /v1/sessions/{sid}/diffs/apply. We don't go back through the
-    MCP gate (which would re-prompt for permission); the user
-    already said yes by hitting apply.
+    /v1/sessions/{sid}/diffs/apply. We don't ASK for permission
+    (the user already clicked apply) but we DO record an
+    auto-approved permission row so /v1/permissions has a
+    complete audit trail of every destructive operation.
     """
+
+    # Audit row for the apply (auto-approved by the user's explicit
+    # POST to /diffs/apply). Every destructive call lands in
+    # /v1/permissions for compliance / replay.
+    pid = f"perm_{uuid.uuid4().hex[:12]}"
+    now_iso = datetime.now(timezone.utc).isoformat()
+    audit_row = {
+        "id": pid,
+        "session_id": session.id,
+        "tool_call": {
+            "tool_name": "fs_apply_edit_write",
+            "input": {"filepath": path, "new_content_bytes": len(new_content)},
+        },
+        "summary": (
+            f"diffs/apply: write {len(new_content)} bytes to {path}"
+        ),
+        "created_at": now_iso,
+        "status": "auto_approved",
+        "action": "allow",
+        "resolved_at": now_iso,
+        "reason": "user clicked /diffs/apply",
+    }
+    if hasattr(app.state, "permissions"):
+        app.state.permissions[pid] = audit_row
+    if hasattr(app.state, "bus"):
+        app.state.bus.publish(Event(
+            type="permission.resolved",
+            session_id=session.id,
+            payload={
+                "permission_id": pid,
+                "action": "allow",
+                "session_id": session.id,
+                "reason": "user_clicked_apply",
+            },
+        ))
 
     target = Path(path).resolve()
     # Workspace root scope.
@@ -1377,16 +1430,6 @@ def _enrich_with_context_files(
     if not files:
         return user_text
 
-    sess = app.state.sessions.get(sid)
-    ws = (
-        app.state.workspaces.get(sess.workspace_id)
-        if sess is not None else None
-    )
-    root = (
-        Path(ws.root_path).resolve()
-        if ws is not None and ws.root_path else None
-    )
-
     blocks: list[str] = []
     for row in files:
         path_str = row.get("path") or ""
@@ -1397,13 +1440,12 @@ def _enrich_with_context_files(
             p = Path(path_str).resolve()
         except (OSError, ValueError):
             continue
-        # Honor workspace root when one is pinned. CLIO_ALLOWED_ROOTS
-        # widens this server-side; we only check workspace here.
-        if root is not None:
-            try:
-                p.relative_to(root)
-            except ValueError:
-                continue
+        # iowarp/clio-agent#5: do NOT silently skip files outside the
+        # workspace root — the user explicitly attached this file via
+        # POST /v1/sessions/{sid}/context/files, so they know what
+        # they're doing. The destructive-write gates (workspace root
+        # in _apply_edit_to_disk, plus mode=plan/architect) still
+        # protect against unintended writes.
         if not p.exists() or not p.is_file():
             continue
         size = p.stat().st_size
@@ -1411,6 +1453,24 @@ def _enrich_with_context_files(
         if mode == "edit":
             blocks.append(header)
             continue
+        # Scientific binary files (parquet/hdf5) don't decode as
+        # useful text — dumping raw bytes leaves the LM blind. Run
+        # the bundled inspection tool and inline the structured
+        # summary instead. Generic mechanism: an extension → fn map.
+        suffix = p.suffix.lower()
+        binary_inspector = _BINARY_CONTEXT_INSPECTORS.get(suffix)
+        if binary_inspector is not None:
+            try:
+                summary = binary_inspector(str(p))
+                blocks.append(
+                    header + "\n```\n" + summary + "\n```"
+                )
+                continue
+            except Exception as exc:  # noqa: BLE001
+                blocks.append(
+                    header + f"\n(inspector failed: {exc!r})"
+                )
+                continue
         try:
             data = p.read_bytes()
         except OSError:
@@ -1441,6 +1501,67 @@ def _enrich_with_context_files(
 
 
 _CTX_MAX_BYTES = 32 * 1024  # 32 KB cap per attached file
+
+
+def _inspect_parquet_for_context(path: str) -> str:
+    """Run analyze_schema on a Parquet file + return a one-paragraph
+    summary the LM can quote when answering 'what's in this file'."""
+
+    from clio_agent.tools.servers.parquet_server import analyze_schema
+    fn = getattr(analyze_schema, "fn", analyze_schema)
+    schema = fn(path)
+    if "error" in schema:
+        return f"Could not inspect Parquet file: {schema['error']}"
+    cols = schema.get("columns", []) or []
+    col_lines = [
+        f"  - {c.get('name')}: {c.get('type')}, nullable={c.get('nullable')}"
+        for c in cols[:24]
+    ]
+    body = (
+        f"Parquet file with {schema.get('num_rows', '?')} rows, "
+        f"{schema.get('num_columns', '?')} columns, "
+        f"{schema.get('num_row_groups', '?')} row groups.\n"
+        "Schema:\n" + "\n".join(col_lines)
+    )
+    if len(cols) > 24:
+        body += f"\n  - ... {len(cols) - 24} more columns"
+    return body
+
+
+def _inspect_hdf5_for_context(path: str) -> str:
+    """Run analyze_file + list_datasets on an HDF5 file + return a
+    one-paragraph summary."""
+
+    from clio_agent.tools.servers.hdf5_server import (
+        analyze_file, list_datasets,
+    )
+    af = getattr(analyze_file, "fn", analyze_file)
+    ld = getattr(list_datasets, "fn", list_datasets)
+    overview = af(path)
+    datasets = ld(path)
+    if "error" in overview:
+        return f"Could not inspect HDF5 file: {overview['error']}"
+    rows = (datasets.get("datasets", []) if isinstance(datasets, dict) else []) or []
+    ds_lines = [
+        f"  - {d.get('path')}: shape={d.get('shape')} dtype={d.get('dtype')}"
+        for d in rows[:24]
+    ]
+    body = (
+        f"HDF5 file with {overview.get('total_datasets', len(rows))} datasets "
+        f"in {overview.get('total_groups', 0)} groups.\n"
+        "Datasets:\n" + "\n".join(ds_lines)
+    )
+    if len(rows) > 24:
+        body += f"\n  - ... {len(rows) - 24} more datasets"
+    return body
+
+
+_BINARY_CONTEXT_INSPECTORS = {
+    ".parquet": _inspect_parquet_for_context,
+    ".pq": _inspect_parquet_for_context,
+    ".h5": _inspect_hdf5_for_context,
+    ".hdf5": _inspect_hdf5_for_context,
+}
 
 
 def _format_react_trajectory(traj: Any) -> str:

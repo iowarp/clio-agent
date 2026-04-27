@@ -91,17 +91,21 @@ def test_edit_mode_includes_only_header(setup) -> None:
     assert "def f()" not in seen
 
 
-def test_path_outside_workspace_root_is_skipped(
+def test_path_outside_workspace_root_is_inlined_for_reads(
     setup, tmp_path: Path
 ) -> None:
+    """iowarp/clio-agent#5 (revised): the workspace-root check used to
+    silently skip context_files outside the root, but the user
+    explicitly attaches via the API — they know what they're doing.
+    Reads are trusted; writes still gated by _apply_edit_to_disk +
+    plan_mode. Verify the body of an outside-root file IS visible."""
+
     from .conftest import complete_turn
 
     app, c, agent, _ = setup
     sid = c.post("/v1/sessions", json={"title": "t"}).json()["id"]
-    # File under /tmp is outside the workspace root (also tmp_path
-    # but a different subtree — TempPathFactory).
-    outside = Path("/tmp") / "definitely-outside.txt"
-    outside.write_text("secret")
+    outside = Path("/tmp") / "v031-outside-marker.txt"
+    outside.write_text("MAGIC-MARKER-FROM-OUTSIDE-ROOT")
     try:
         c.post(
             f"/v1/sessions/{sid}/context/files",
@@ -114,8 +118,8 @@ def test_path_outside_workspace_root_is_skipped(
         except FileNotFoundError:
             pass
     seen, _ = agent.calls[-1]
-    # Either no Context section at all (file rejected) or no body inlined.
-    assert "secret" not in seen
+    # File body IS inlined now (no silent skip).
+    assert "MAGIC-MARKER-FROM-OUTSIDE-ROOT" in seen
 
 
 def test_large_file_is_truncated(setup) -> None:
