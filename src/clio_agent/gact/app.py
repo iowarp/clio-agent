@@ -1769,6 +1769,136 @@ def _builtin_agents() -> list[AgentDef]:
     return rows
 
 
+def _load_skills_from_disk() -> list[AgentDef]:
+    """Scan the Claude Code skills directories for SKILL.md files and
+    register each as an AgentDef row with source="skill".
+
+    Discovery follows Claude Code's semantics:
+    - User-global:   $HOME/.claude/skills/*.md
+    - Project-local: $CWD/.claude/skills/*.md
+    Project entries override user-global on duplicate id.
+
+    Each SKILL.md may carry YAML frontmatter delimited by ``---``:
+
+        ---
+        name: my-skill
+        description: short summary
+        model: optional model hint
+        allowed-tools: comma,or,yaml-list
+        ---
+        <system prompt body>
+
+    Bodies without frontmatter are still loaded; the file stem becomes
+    the id and the first line becomes the description.
+
+    Errors are tolerated — a malformed file logs and is skipped so a
+    bad skill doesn't take down the whole catalog.
+    """
+    import os
+    from pathlib import Path
+
+    skill_dirs = [
+        Path.home() / ".claude" / "skills",
+        Path(os.getcwd()) / ".claude" / "skills",
+    ]
+
+    rows: dict[str, AgentDef] = {}
+    for sdir in skill_dirs:
+        if not sdir.exists() or not sdir.is_dir():
+            continue
+        for md in sorted(sdir.glob("*.md")):
+            try:
+                text = md.read_text(encoding="utf-8")
+            except Exception:
+                continue
+            meta, body = _parse_skill_frontmatter(text)
+            sid = (meta.get("name") or md.stem).strip()
+            if not sid:
+                continue
+            description = (meta.get("description") or "").strip()
+            if not description and body:
+                # Fall back to the first non-blank line of the body.
+                for line in body.splitlines():
+                    line = line.strip()
+                    if line:
+                        description = line[:240]
+                        break
+
+            tools_field = meta.get("allowed-tools") or meta.get("allowed_tools")
+            tools: list[str] = []
+            if isinstance(tools_field, list):
+                tools = [str(t).strip() for t in tools_field if str(t).strip()]
+            elif isinstance(tools_field, str):
+                tools = [t.strip() for t in tools_field.split(",") if t.strip()]
+
+            metadata = {
+                "skill_path": str(md),
+                "skill_dir": str(sdir),
+            }
+            if meta.get("model"):
+                metadata["model"] = str(meta["model"]).strip()
+            if body:
+                # Stash the system-prompt body so future /v1/agents/{id}
+                # can return the full prompt without re-reading the file.
+                metadata["system_prompt"] = body
+
+            rows[sid] = AgentDef(
+                id=sid,
+                source="skill",
+                title=sid,
+                description=description,
+                tools=tools,
+                tier=2,
+                specialization="skill",
+                keywords=[],
+                metadata=metadata,
+            )
+    return list(rows.values())
+
+
+def _parse_skill_frontmatter(text: str) -> tuple[dict[str, Any], str]:
+    """Return (frontmatter_dict, body) for a SKILL.md.
+
+    Recognises the standard ``---``-delimited block at the head of the
+    file. Falls back to ({}, text) when no frontmatter is present.
+    Uses a tiny line-by-line parser instead of pulling PyYAML in as a
+    dep — frontmatter shapes we care about are flat key:value plus
+    optional ``- item`` lists, well within hand-rolling distance.
+    """
+    lines = text.splitlines()
+    if not lines or lines[0].strip() != "---":
+        return {}, text
+    end = -1
+    for i in range(1, len(lines)):
+        if lines[i].strip() == "---":
+            end = i
+            break
+    if end < 0:
+        return {}, text
+    meta: dict[str, Any] = {}
+    cur_key: Optional[str] = None
+    for raw in lines[1:end]:
+        if raw.startswith("- "):
+            if cur_key and isinstance(meta.get(cur_key), list):
+                meta[cur_key].append(raw[2:].strip())
+            continue
+        if ":" not in raw:
+            continue
+        key, _, value = raw.partition(":")
+        key = key.strip()
+        value = value.strip()
+        if not key:
+            continue
+        if not value:
+            meta[key] = []
+            cur_key = key
+        else:
+            meta[key] = value.strip("\"'")
+            cur_key = None
+    body = "\n".join(lines[end + 1:]).strip()
+    return meta, body
+
+
 def _builtin_tools() -> list[Tool]:
     """Flatten the experts' curated tool lists into a single GACT
     Tool catalog. Stable ids (same strings the experts reference),
@@ -4383,10 +4513,11 @@ def build_app(
         so the TUI's sidebar groups consistently.
         """
 
-        rows = _builtin_agents() + [
-            AgentDef(**row.to_wire())
-            for row in app.state.user_agents.list()
-        ]
+        rows = (
+            _builtin_agents()
+            + [AgentDef(**row.to_wire()) for row in app.state.user_agents.list()]
+            + _load_skills_from_disk()
+        )
         if tier is not None:
             rows = [a for a in rows if a.tier == tier]
         return ListAgentsResponse(agents=rows)
