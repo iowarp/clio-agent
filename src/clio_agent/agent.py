@@ -649,8 +649,17 @@ class ClioAgent(dspy.Module):
             headers["Authorization"] = f"Bearer {self._provider_config.api_key}"
 
         system_prompt = self._build_direct_chat_system_prompt(session_context)
+        # Some openai-compatible proxies (Meridian) expect the bare model
+        # id without the "openai/" prefix the LM client adds. Strip when
+        # present so the direct fallback works against the same backend
+        # the wrapped LM is using.
+        model_id = self._provider_config.model
+        if "/" in model_id:
+            head, tail = model_id.split("/", 1)
+            if head in {"openai", "anthropic"} and "/" not in tail:
+                model_id = tail
         payload = {
-            "model": self._provider_config.model,
+            "model": model_id,
             "messages": [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": question},
