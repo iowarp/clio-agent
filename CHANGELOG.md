@@ -4,6 +4,75 @@ All notable changes to clio-agent's GACT-contract surface are
 documented in this file. Internal changes that don't affect the
 TUI/HTTP surface aren't tracked here.
 
+## [0.3.1] — 2026-04-27
+
+The "every advertised capability actually works" release. Every flag
+in `/v1/capabilities` that's `true` has been verified end-to-end with
+either an integration test, a curl trace, or a screenshot — see
+`docs/CAPABILITIES_MATRIX.md` for the full matrix. **No silent
+downgrades anywhere; if a flag is true, it works.**
+
+### Added
+- **Third-party MCP install + use endpoints** (#13).
+  - `POST /v1/mcp/servers` (stdio: npx/uvx/raw command, OR http URL).
+  - `POST /v1/mcp/servers/{id}/call` (invoke a tool on the installed server).
+  - `DELETE /v1/mcp/servers/{id}` (uninstall).
+  - `GET /v1/mcp/servers` returns BOTH bundled (fs/hdf5/parquet) AND
+    installed third-party servers in one list.
+  - Verified end-to-end against `@modelcontextprotocol/server-everything`:
+    13 tools enumerated, `echo` + `get-sum` round-tripped via stdio.
+- `docs/CAPABILITIES_MATRIX.md` — one row per advertised capability with
+  the proof for each (curl evidence / screenshot / integration test).
+- New screenshots: `clio_mcp_servers.png` (bundled + third-party), 
+  `clio_diff.png` (apply/reject path).
+
+### Fixed
+- **Generic tool observer (#2 closed strict).** `_call_tool_function`
+  fires the global tool_observer for EVERY tool path — bundled
+  in-process, ReAct via MCPToolBridge, AND third-party MCPs. SSE
+  events `tool.call.started`/`completed` now arrive before
+  `message.completed` for every tool call. `tools_called` metadata
+  populated automatically.
+- **Context files actually influence answers (#5 closed strict).**
+  Removed silent workspace-root filter on attached files (user
+  explicitly attached → trust them; write gates still apply via
+  `_apply_edit_to_disk`). Binary files (parquet/hdf5) now inlined as
+  schema summaries via the bundled tool inspectors instead of useless
+  raw bytes.
+- **Streaming deltas verified arriving in lifecycle order (#6 closed strict).**
+  ClioAgent.acall added so streamify uses `is_async_program=True`
+  instead of asyncify-in-executor (which was stripping the send_stream
+  ContextVar). Single StreamListener bound to `answer` for clean chat
+  output. Live per-token timing depends on the upstream provider —
+  Meridian buffers, OpenRouter passes through.
+- **Permission audit trail (#7 closed strict).** `_apply_edit_to_disk`
+  records an auto-approved permission row (action=allow,
+  reason=`user_clicked_apply`) for every diff/apply. `/v1/permissions`
+  has a complete audit trail of every destructive operation.
+- **Plan mode + edit_modes thread into agent.** `ClioAgent.forward`
+  gains `session_mode` + `session_edit_mode` kwargs; `_direct_edit_answer`
+  shapes the file_diff Part by mode (diff: unified_diff,
+  whole: new_content only, patch: both).
+- **Explicit-edit short-circuit.** `_looks_like_explicit_edit` detects
+  "propose an edit to /path/file.ext" and bypasses the router so the
+  edit handler always fires regardless of which expert the file's
+  extension would otherwise pick.
+- **fs_server validate signature.** `validate_non_empty_string` was
+  being called positionally where it declared `field` as keyword-only.
+- **Edit-intent honored across providers.** `_direct_chat_completion`
+  timeout 60s → 180s for slower providers.
+- **Test infra reliability.** `tests/test_integration_v0_2/conftest.py`
+  httpx client timeout 30s → 90s to absorb Meridian tail latency.
+
+### Performance
+- Full integration_v0_2 suite is 16/16 strict in ~95s (was ~25min before
+  the streaming + adapter fixes earlier in this release cycle).
+
+### Removed
+- All `@pytest.mark.xfail` decorators in
+  `tests/test_integration_v0_2/test_real_capabilities.py`. Suite is
+  now strict-only.
+
 ## [0.3.0] — 2026-04-25
 
 ### Added

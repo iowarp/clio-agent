@@ -161,6 +161,53 @@ curl -s "http://127.0.0.1:17800/v1/sessions/$SID/messages" | python3 -m json.too
 You should see the assistant's reply with a populated `tokens` and
 `cost_usd` envelope.
 
+## Try one of these to see CLIO routing in action
+
+Each prompt below exercises a different code path. Run them through
+the TUI (or via curl) once you have the LM configured. Each should
+produce the documented behaviour — see
+[`docs/CAPABILITIES_MATRIX.md`](CAPABILITIES_MATRIX.md) for the full
+end-to-end verification matrix.
+
+| Prompt | What it exercises |
+|---|---|
+| `"What is the schema of /tmp/clio-demo/clio_demo.parquet?"` | analysis expert (direct Parquet inspection) |
+| `"Inspect /tmp/clio-demo/clio_demo.h5"` | data expert (direct HDF5 inspection) |
+| `"validate parquet schema and statistics in parallel"` | analysis expert spawns 2 nanoagents (#9) — child sessions appear under the parent in the sidebar |
+| `"propose an edit to /path/to/file.py — replace string concat with f-string"` | chat path → fs.propose_edit → file_diff Part rendered inline |
+| `"hello, who are you?"` | chat agent (CLIO identity reply) |
+
+## Try a third-party MCP server
+
+CLIO can install + call any MCP from npm/pypi/wherever. Example with
+the canonical "everything" server:
+
+```bash
+# Install (npx auto-resolves the package).
+curl -X POST http://127.0.0.1:17800/v1/mcp/servers \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "everything",
+    "transport": "stdio",
+    "command": "npx",
+    "args": ["-y", "@modelcontextprotocol/server-everything", "stdio"]
+  }'
+
+# Call a tool on it.
+curl -X POST "http://127.0.0.1:17800/v1/mcp/servers/<id-from-install>/call" \
+  -H "Content-Type: application/json" \
+  -d '{"tool": "echo", "args": {"message": "hi from CLIO"}}'
+
+# Confirm it shows in the catalog (TUI: type `/mcp`).
+curl -s http://127.0.0.1:17800/v1/mcp/servers | python3 -m json.tool
+```
+
+The TUI's `/mcp` slash command shows bundled (fs/hdf5/parquet) AND
+any installed third-party server in one list. Tools called through
+the TUI's interactive chat OR via the `/v1/mcp/servers/{id}/call`
+endpoint both register in `tools_called` metadata + emit
+`tool.call.started/completed` SSE events.
+
 ## Troubleshooting
 
 - **TUI shows "no LM configured"** — open the modal: `Ctrl+S` →
