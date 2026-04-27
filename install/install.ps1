@@ -20,8 +20,23 @@ $Prefix    = if ($env:CLIO_PREFIX)  { $env:CLIO_PREFIX }  else { Join-Path $HOME
 $BinDir    = if ($env:CLIO_BIN_DIR) { $env:CLIO_BIN_DIR } else { Join-Path $HOME 'AppData\Local\Microsoft\WindowsApps' }
 $ClioRef   = if ($env:CLIO_REF)     { $env:CLIO_REF }     else { 'v0.3.1' }
 $GactRef   = if ($env:GACT_REF)     { $env:GACT_REF }     else { 'v0.2.1' }
-$ClioRepo  = 'https://github.com/iowarp/clio-agent.git'
-$GactRepo  = 'https://github.com/JaimeCernuda/gact-tui.git'
+# Default to HTTPS for the one-liner UX, but allow override to SSH for
+# users who only have SSH access (and for the period while the repos
+# are still private — anonymous HTTPS returns 404). Set
+#   $env:CLIO_GIT_PROTOCOL = 'ssh'
+# to switch both URLs to git@github.com:.../...git form.
+$Protocol = if ($env:CLIO_GIT_PROTOCOL) { $env:CLIO_GIT_PROTOCOL } else { 'https' }
+switch ($Protocol) {
+    'https' {
+        $ClioRepo = 'https://github.com/iowarp/clio-agent.git'
+        $GactRepo = 'https://github.com/JaimeCernuda/gact-tui.git'
+    }
+    'ssh' {
+        $ClioRepo = 'git@github.com:iowarp/clio-agent.git'
+        $GactRepo = 'git@github.com:JaimeCernuda/gact-tui.git'
+    }
+    default { Die "CLIO_GIT_PROTOCOL must be 'https' or 'ssh' (got: $Protocol)" }
+}
 
 # ---------- prerequisite checks ---------------------------------------
 function Have($cmd) {

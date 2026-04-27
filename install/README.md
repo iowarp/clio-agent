@@ -19,6 +19,27 @@ Installs to `$HOME\AppData\Local\clio`, drops `clio.cmd` into
 `$HOME\AppData\Local\Microsoft\WindowsApps` (already on PATH on
 Windows 10/11).
 
+## Private repo? Use SSH
+
+Both repos are currently private. Until they're public, the HTTPS clone
+in the one-liner above returns 404. Use SSH instead:
+
+```sh
+# Linux / macOS
+CLIO_GIT_PROTOCOL=ssh \
+  bash <(curl -fsSL https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.sh)
+
+# Windows (PowerShell)
+$env:CLIO_GIT_PROTOCOL = 'ssh'
+irm https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.ps1 | iex
+```
+
+(Note: if `raw.githubusercontent.com/iowarp/clio-agent/...` itself
+returns 404, the script file is unreachable too. In that case fetch the
+script via `gh api repos/iowarp/clio-agent/contents/install/install.sh
+--jq .content | base64 -d > install.sh && bash install.sh` — your `gh`
+auth token gets you through.)
+
 ## What gets installed
 
 - `clio-agent` (server, Python) — the v0.3.1 release

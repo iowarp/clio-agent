@@ -27,8 +27,25 @@ PREFIX="${CLIO_PREFIX:-$HOME/.local/share/clio}"
 BIN_DIR="${CLIO_BIN_DIR:-$HOME/.local/bin}"
 CLIO_REF="${CLIO_REF:-v0.3.1}"
 GACT_REF="${GACT_REF:-v0.2.1}"
-CLIO_REPO="https://github.com/iowarp/clio-agent.git"
-GACT_REPO="https://github.com/JaimeCernuda/gact-tui.git"
+# Default to HTTPS for the one-liner UX, but allow override to SSH for
+# users who only have SSH access (and for the period while the repos
+# are still private — anonymous HTTPS returns 404). Set
+#   CLIO_GIT_PROTOCOL=ssh
+# to switch both URLs to git@github.com:.../...git form.
+CLIO_GIT_PROTOCOL="${CLIO_GIT_PROTOCOL:-https}"
+case "$CLIO_GIT_PROTOCOL" in
+  https)
+    CLIO_REPO="https://github.com/iowarp/clio-agent.git"
+    GACT_REPO="https://github.com/JaimeCernuda/gact-tui.git"
+    ;;
+  ssh)
+    CLIO_REPO="git@github.com:iowarp/clio-agent.git"
+    GACT_REPO="git@github.com:JaimeCernuda/gact-tui.git"
+    ;;
+  *)
+    die "CLIO_GIT_PROTOCOL must be 'https' or 'ssh' (got: $CLIO_GIT_PROTOCOL)"
+    ;;
+esac
 
 # ---------- platform detection ----------------------------------------
 OS="$(uname -s)"
@@ -87,7 +104,21 @@ clone_or_update() {
     git -C "$dir" checkout --quiet "$ref"
   else
     say "Cloning $dir → $ref"
-    git clone --quiet --branch "$ref" --depth 1 "$repo" "$dir"
+    if ! GIT_TERMINAL_PROMPT=0 git clone --quiet --branch "$ref" --depth 1 "$repo" "$dir" 2>/tmp/clio-clone-err.log; then
+      cat /tmp/clio-clone-err.log >&2
+      cat <<EOF >&2
+
+clone failed for $repo
+
+If the repo is private, retry over SSH:
+  CLIO_GIT_PROTOCOL=ssh \\
+    curl -fsSL https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.sh | sh
+
+(SSH needs an authenticated GitHub key on this machine.)
+
+EOF
+      exit 1
+    fi
   fi
 }
 
