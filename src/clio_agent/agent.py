@@ -507,7 +507,17 @@ class ClioAgent(dspy.Module):
         return None
 
     def _run_chat_agent(self, question: str, session_context: str) -> str:
-        """Generate a conversational reply, falling back for local backends."""
+        """Generate a conversational reply, falling back to direct HTTP
+        when the DSPy chat agent's structured-output adapter chokes on
+        the LM's reply (e.g. plain-text responses from Claude that don't
+        match the JSONAdapter shape).
+
+        Used to gate the fallback by ``is_local_openai_compatible_backend``,
+        but cloud backends + OpenAI-compatible proxies (Meridian,
+        OpenRouter) all benefit from the same recovery path. The
+        fallback uses requests.post against the configured api_base —
+        works for any openai-compatible endpoint."""
+
         try:
             result = self.chat_agent(question=question, session_context=session_context)
             answer = self._coerce_text(getattr(result, "answer", None)).strip()
@@ -517,10 +527,6 @@ class ClioAgent(dspy.Module):
         except Exception as chat_error:
             if self.verbose:
                 print(f"[ClioAgent] ChatAgent failed, trying direct fallback: {chat_error}")
-
-            if not is_local_openai_compatible_backend(self._provider_config):
-                raise
-
             try:
                 return self._direct_chat_completion(question, session_context)
             except Exception as fallback_error:
