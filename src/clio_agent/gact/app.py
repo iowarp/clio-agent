@@ -3100,6 +3100,14 @@ def build_app(
             {"id": "qwen2.5-coder:14b", "name": "Qwen2.5 Coder 14B",
              "description": "Better at code than llama3.2; same speed band."},
         ],
+        "codex": [
+            {"id": "gpt-5.4", "name": "GPT-5.4 (via Codex)",
+             "description": "Codex's reasoning-tuned default."},
+            {"id": "gpt-5", "name": "GPT-5 (via Codex)",
+             "description": "Standard GPT-5 through the Codex app-server."},
+            {"id": "gpt-4.1", "name": "GPT-4.1 (via Codex)",
+             "description": "Older GPT-4.1 routed through Codex."},
+        ],
     }
 
     @app.get("/v1/providers/{provider_id}/models")
@@ -3411,6 +3419,144 @@ def build_app(
             "args": tool_args,
             "content": content,
             "is_error": getattr(result, "isError", False),
+        }
+
+    # ---- /v1/sessions/{sid}/compact (Codex/CC parity) -----------------
+    # Summarise the in-memory conversation transcript and replace it with
+    # a compact synopsis to reclaim context. The TUI's /compact slash
+    # command POSTs here. Today this is opportunistic: we ask the chat
+    # agent to produce a one-paragraph summary and store it as a new
+    # synthetic system message; the original transcript is preserved for
+    # any future /resume work.
+
+    @app.post("/v1/sessions/{sid}/compact")
+    async def compact_session(sid: str, request: Request) -> dict[str, Any]:
+        sess = app.state.sessions.get(sid)
+        if sess is None:
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(error=ErrorInfo(
+                    error="not_found",
+                    message=f"session not found: {sid}",
+                    recoverable=True,
+                )).model_dump(exclude_none=True),
+            )
+        ledger = app.state.messages.get(sid, [])
+        if not ledger:
+            return {"session_id": sid, "compacted": False,
+                    "reason": "session has no messages to compact"}
+
+        # Build a transcript blob. Cap each message at 800 chars so a
+        # huge tool-result payload doesn't dominate the prompt.
+        # ledger entries are Pydantic Message models (see types.py); use
+        # attribute access + model_dump() defensively for dict-shaped
+        # entries the older code paths still produce.
+        def _attr(o, name, default=None):
+            if hasattr(o, name):
+                return getattr(o, name)
+            if isinstance(o, dict):
+                return o.get(name, default)
+            return default
+
+        chunks: list[str] = []
+        for m in ledger[-50:]:  # last 50 messages should be enough context
+            role = (_attr(m, "role", "user") or "user").upper()
+            for p in (_attr(m, "parts", []) or []):
+                txt = (_attr(p, "text", "") or "")[:800]
+                if txt.strip():
+                    chunks.append(f"{role}: {txt}")
+        transcript = "\n".join(chunks)
+        if not transcript.strip():
+            return {"session_id": sid, "compacted": False,
+                    "reason": "transcript is empty after part filtering"}
+
+        agent = app.state.agent
+        if agent is None:
+            raise HTTPException(
+                status_code=503,
+                detail=ErrorEnvelope(error=ErrorInfo(
+                    error="agent_unavailable",
+                    message="no LM agent wired; configure one via PUT /v1/providers/lm",
+                    recoverable=True,
+                )).model_dump(exclude_none=True),
+            )
+
+        # Try to extract optional focus instructions from the body.
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        focus = (body.get("focus") or "").strip()
+
+        prompt = (
+            "Summarise the following CLIO conversation transcript into a "
+            "single paragraph (max 6 sentences). Capture the user's goal, "
+            "any open questions, decisions made, and next steps. Drop "
+            "minutiae and tool-call mechanics."
+        )
+        if focus:
+            prompt += f"\n\nFocus the summary on: {focus}"
+        prompt += f"\n\n--- transcript ---\n{transcript}\n--- end ---"
+
+        try:
+            summary = await asyncio.get_running_loop().run_in_executor(
+                None,
+                lambda: agent._run_chat_agent(prompt, ""),
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(
+                status_code=502,
+                detail=ErrorEnvelope(error=ErrorInfo(
+                    error="upstream_error",
+                    message=f"compact summarisation failed: {exc!r}",
+                    recoverable=True,
+                )).model_dump(exclude_none=True),
+            ) from exc
+
+        # Insert the summary as a new assistant message at the head of the
+        # ledger (after archiving the originals to a parallel list so a
+        # future /resume can recover full history). The TUI doesn't see
+        # archived messages — only the compact summary + anything that
+        # comes after it.
+        archive = app.state.__dict__.setdefault("session_archives", {})
+        archive.setdefault(sid, []).append({
+            "compacted_at": time.time(),
+            "messages": list(ledger),
+        })
+        from clio_agent.gact.types import Message, Part, Tokens  # noqa: PLC0415
+        compact_message = Message(
+            id=f"msg_compact_{uuid.uuid4().hex[:10]}",
+            session_id=sid,
+            role="assistant",
+            created_at=datetime.now(timezone.utc).isoformat(),
+            updated_at=datetime.now(timezone.utc).isoformat(),
+            parts=[Part(
+                id=f"part_compact_{uuid.uuid4().hex[:10]}",
+                type="text",
+                metadata={"synthetic": "compact_summary"},
+                text="[compact summary]\n" + (summary or "").strip(),
+            )],
+            tokens=Tokens(input=0, output=0, cache_read=0, cache_write=0),
+            cost_usd=0.0,
+            stop_reason="end_turn",
+            metadata={"synthetic": "compact_summary"},
+        )
+        app.state.messages[sid] = [compact_message]
+
+        # Publish so any open SSE stream redraws.
+        app.state.bus.publish(Event(
+            type="session.compacted",
+            session_id=sid,
+            payload={
+                "archived_count": len(ledger),
+                "summary_chars": len((summary or "")),
+            },
+        ))
+        return {
+            "session_id": sid,
+            "compacted": True,
+            "archived_count": len(ledger),
+            "summary": summary,
         }
 
     @app.delete("/v1/mcp/servers/{sid}", status_code=204)
@@ -4652,6 +4798,20 @@ def build_app(
             suggested_model="llama3.2",
             requires_api_key=False,
             description="Locally-hosted models via Ollama.",
+        ),
+        LMProviderPreset(
+            id="codex",
+            label="OpenAI Codex (via bridge)",
+            provider="openai",
+            api_base="http://127.0.0.1:18900/v1",
+            suggested_model="gpt-5.4",
+            requires_api_key=False,
+            description=(
+                "Routes through scripts/codex_bridge.py which fronts the "
+                "Codex app-server SDK with an OpenAI-compatible HTTP "
+                "interface. Requires the bridge running locally (default "
+                "port 18900) and the `codex` binary on PATH."
+            ),
         ),
     ]
 
