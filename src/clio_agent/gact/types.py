@@ -322,6 +322,13 @@ class Part(BaseModel):
     unified_diff: str = ""
     new_content: str = ""
     status: str = ""  # "pending" | "applied" | "rejected" | "apply_failed"
+    # iowarp/clio-agent — capabilities.edit_modes: which mode the
+    # session was in when this diff was produced. "diff" = unified_diff
+    # is the canonical view; "whole" = render new_content full;
+    # "patch" = both fields meaningful. Read by the TUI for rendering.
+    edit_mode: str = ""
+    lines_added: int = 0
+    lines_removed: int = 0
 
 
 class ContextFile(BaseModel):

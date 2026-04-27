@@ -221,13 +221,21 @@ async def _run_turn_in_background(
 
     try:
         pred = await _try_streamed_forward(
-            app, enriched_text, sid, _emit_chunk
+            app, enriched_text, sid, _emit_chunk,
+            session_mode=getattr(sess, "mode", "chat"),
+            session_edit_mode=getattr(sess, "edit_mode", "diff"),
         )
         if pred is None:
             loop = asyncio.get_running_loop()
             pred = await loop.run_in_executor(
                 None,
-                lambda: app.state.agent.forward(enriched_text, session_id=sid),
+                lambda: _agent_forward_compat(
+                    app.state.agent,
+                    enriched_text,
+                    sid,
+                    getattr(sess, "mode", "chat"),
+                    getattr(sess, "edit_mode", "diff"),
+                ),
             )
         answer_text = getattr(pred, "answer", "")
         selected_agent = getattr(pred, "selected_expert", "") or ""
@@ -381,14 +389,21 @@ async def _run_turn_in_background(
         )
     for row in proposed_diffs:
         if isinstance(row, dict):
-            path = row.get("path", "")
-            udiff = row.get("unified_diff", "")
-            new_content = row.get("new_content", "")
+            getf = row.get
         else:
-            path = getattr(row, "path", "")
-            udiff = getattr(row, "unified_diff", "")
-            new_content = getattr(row, "new_content", "")
-        if not path or not udiff:
+            getf = lambda k, default=None, _r=row: getattr(_r, k, default)
+        path = getf("path", "") or ""
+        udiff = getf("unified_diff", "") or ""
+        new_content = getf("new_content", "") or ""
+        edit_mode = getf("edit_mode", "") or ""
+        lines_added = int(getf("lines_added", 0) or 0)
+        lines_removed = int(getf("lines_removed", 0) or 0)
+        if not path:
+            continue
+        # In "whole" mode the unified_diff may be empty by design;
+        # the new_content carries the full replacement. Accept either
+        # so the Part lands instead of being dropped.
+        if not udiff and not new_content:
             continue
         assistant_parts.append(Part(
             id=_new_part_id(),
@@ -397,6 +412,9 @@ async def _run_turn_in_background(
             unified_diff=udiff,
             new_content=new_content,
             status="pending",
+            edit_mode=edit_mode,
+            lines_added=lines_added,
+            lines_removed=lines_removed,
         ))
 
     assistant_metadata: dict[str, Any] = {}
@@ -1152,6 +1170,32 @@ def _make_tool_observer(app: "FastAPI"):
 _OBSERVER_CALL_T0 = threading.local()
 
 
+def _agent_forward_compat(
+    agent: Any,
+    question: str,
+    session_id: str,
+    session_mode: str,
+    session_edit_mode: str,
+) -> Any:
+    """Call agent.forward, threading session_mode + session_edit_mode
+    when the agent accepts them, falling back to the legacy
+    ``(question, session_id)`` signature for fakes / older builds.
+
+    Lets us add new optional kwargs to the contract without breaking
+    every test fixture that hand-rolled a minimal forward signature.
+    """
+
+    try:
+        return agent.forward(
+            question,
+            session_id=session_id,
+            session_mode=session_mode,
+            session_edit_mode=session_edit_mode,
+        )
+    except TypeError:
+        return agent.forward(question, session_id=session_id)
+
+
 _OBSERVER_CALL_IDS = threading.local()
 
 
@@ -1160,6 +1204,8 @@ async def _try_streamed_forward(
     enriched_text: str,
     sid: str,
     emit_chunk,
+    session_mode: str = "chat",
+    session_edit_mode: str = "diff",
 ) -> Optional[Any]:
     """Run the agent's forward via dspy.streamify, pumping every
     text chunk through ``emit_chunk(text)`` as it arrives. Returns
@@ -1211,7 +1257,19 @@ async def _try_streamed_forward(
         # ``ModelResponseStream`` / dict / str fallback for backends
         # that don't surface a typed listener payload.
         from dspy.streaming.messages import StreamResponse  # noqa: PLC0415
-        async for piece in streamed(question=enriched_text, session_id=sid):
+        # Pass session_mode + session_edit_mode if the agent's
+        # forward signature accepts them (newer ClioAgent does;
+        # older / fake agents fall back via TypeError catch).
+        try:
+            stream_iter = streamed(
+                question=enriched_text,
+                session_id=sid,
+                session_mode=session_mode,
+                session_edit_mode=session_edit_mode,
+            )
+        except TypeError:
+            stream_iter = streamed(question=enriched_text, session_id=sid)
+        async for piece in stream_iter:
             if isinstance(piece, dspy.Prediction):
                 final_pred = piece
                 continue

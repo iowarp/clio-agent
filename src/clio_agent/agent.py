@@ -244,7 +244,13 @@ class ClioAgent(dspy.Module):
             print(f"[ClioAgent] ARC Memory initialized at {data_dir}/arc")
             print(f"[ClioAgent] LSM Tree initialized at {data_dir}/arc/lsm")
 
-    def forward(self, question: str, session_id: str = "default") -> dspy.Prediction:
+    def forward(
+        self,
+        question: str,
+        session_id: str = "default",
+        session_mode: str = "chat",
+        session_edit_mode: str = "diff",
+    ) -> dspy.Prediction:
         """Process question through Router -> Expert/Chat dispatch.
 
         Flow:
@@ -345,7 +351,7 @@ class ClioAgent(dspy.Module):
                 # circuit through the fs MCP server's propose_edit
                 # tool. Returns a Prediction with file_diffs= already
                 # populated; main forward forwards them up.
-                edit_pred = self._direct_edit_answer(question)
+                edit_pred = self._direct_edit_answer(question, edit_mode=session_edit_mode)
                 if edit_pred is not None:
                     expert_result = edit_pred
                     answer = getattr(edit_pred, "analysis", "") or "Proposed edit ready for review."
@@ -474,7 +480,9 @@ class ClioAgent(dspy.Module):
                     f"ChatAgent failed ({chat_error}); direct fallback failed ({fallback_error})"
                 ) from fallback_error
 
-    def _direct_edit_answer(self, question: str) -> dspy.Prediction | None:
+    def _direct_edit_answer(
+        self, question: str, edit_mode: str = "diff",
+    ) -> dspy.Prediction | None:
         """Drive the fs.propose_edit tool directly when the user
         asks for an edit by file path.
 
@@ -550,13 +558,28 @@ class ClioAgent(dspy.Module):
             new_content = "\n".join(lines)
 
         diff = self._call_tool_function(propose_edit, filepath, new_content)
+        # Shape the file_diff Part by session.edit_mode:
+        # - "diff": unified_diff only (compact, reviewer-friendly)
+        # - "whole": new_content only (preview the full new file)
+        # - "patch": both fields (richest; consumer picks)
         file_diff = {
             "path": diff["path"],
-            "unified_diff": diff["unified_diff"],
-            "new_content": new_content,
             "lines_added": diff["lines_added"],
             "lines_removed": diff["lines_removed"],
+            "edit_mode": edit_mode,
         }
+        if edit_mode == "whole":
+            file_diff["new_content"] = new_content
+        elif edit_mode == "patch":
+            file_diff["unified_diff"] = diff["unified_diff"]
+            file_diff["new_content"] = new_content
+        else:  # "diff" (default)
+            file_diff["unified_diff"] = diff["unified_diff"]
+            # new_content still needed for the apply path — it writes
+            # the whole file, not a diff. Carry it but not as a wire-
+            # surface field; the GACT layer reads it from a private
+            # _new_content key the TUI doesn't render.
+            file_diff["new_content"] = new_content
         pred = dspy.Prediction(
             analysis=(
                 f"Proposed edit for {filepath}: "
