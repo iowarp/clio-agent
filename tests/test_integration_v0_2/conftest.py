@@ -49,7 +49,8 @@ def base() -> str:
 
 @pytest.fixture()
 def http(base: str) -> Iterator[httpx.Client]:
-    with httpx.Client(base_url=base, timeout=30.0) as c:
+    # 30s was too tight under Meridian tail latency — bumped to 90.
+    with httpx.Client(base_url=base, timeout=90.0) as c:
         yield c
 
 

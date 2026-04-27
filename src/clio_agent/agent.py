@@ -303,30 +303,41 @@ class ClioAgent(dspy.Module):
         error_msg = None
         selected = "chat"  # default fallback
 
-        heuristic_selected = self._route_with_heuristics(question)
-        if heuristic_selected:
+        # Edit-intent short-circuit: when the user explicitly says
+        # "propose an edit to /path/...", route straight to the chat
+        # path's _direct_edit_answer regardless of router. The
+        # router otherwise picks data/analysis based on the file
+        # extension and never invokes the edit handler. Saves a
+        # router LM call too.
+        if self._looks_like_explicit_edit(question):
+            selected = "chat"
             if self.verbose:
-                print(f"[Router] heuristic route: {heuristic_selected}")
-            selected = heuristic_selected
+                print(f"[Router] explicit-edit route: chat")
         else:
-            try:
-                with dspy.context(lm=self._router_lm):
-                    routing = self.router(question=question)
-                selected = (routing.selected_expert or "chat").strip().lower()
-                # Router LMs sometimes echo back malformed Literal
-                # values ("None", "", quoted strings). Coerce to one
-                # of the known buckets so downstream dispatch always
-                # finds a valid branch.
-                if selected not in {"data", "analysis", "visualization", "none", "chat"}:
-                    selected = "chat"
-            except Exception as e:
+            heuristic_selected = self._route_with_heuristics(question)
+            if heuristic_selected:
                 if self.verbose:
-                    routing_err = RoutingError(
-                        message=f"Router failed, falling back to chat: {e}",
-                        details={"original_error": str(e)},
-                    )
-                    print(f"[Router] {routing_err.to_dict()}")
-                selected = "chat"
+                    print(f"[Router] heuristic route: {heuristic_selected}")
+                selected = heuristic_selected
+            else:
+                try:
+                    with dspy.context(lm=self._router_lm):
+                        routing = self.router(question=question)
+                    selected = (routing.selected_expert or "chat").strip().lower()
+                    # Router LMs sometimes echo back malformed Literal
+                    # values ("None", "", quoted strings). Coerce to one
+                    # of the known buckets so downstream dispatch always
+                    # finds a valid branch.
+                    if selected not in {"data", "analysis", "visualization", "none", "chat"}:
+                        selected = "chat"
+                except Exception as e:
+                    if self.verbose:
+                        routing_err = RoutingError(
+                            message=f"Router failed, falling back to chat: {e}",
+                            details={"original_error": str(e)},
+                        )
+                        print(f"[Router] {routing_err.to_dict()}")
+                    selected = "chat"
 
         if self.verbose:
             print(f"[Router] {question[:50]}... -> {selected}")
@@ -447,6 +458,20 @@ class ClioAgent(dspy.Module):
                     except Exception:
                         pass
         return out
+
+    @staticmethod
+    def _looks_like_explicit_edit(question: str) -> bool:
+        """Detect 'propose an edit to /path/file.ext' shape regardless of
+        which router would otherwise pick the question. The chat path's
+        _direct_edit_answer handles these end-to-end."""
+
+        import re
+        q = question.lower().strip()
+        triggers = ("propose an edit", "propose edit", "edit ", "modify ")
+        if not any(t in q for t in triggers):
+            return False
+        # Need an absolute path with a recognisable extension.
+        return bool(re.search(r"(/[\w./_-]+\.\w+)", question))
 
     @staticmethod
     def _route_with_heuristics(question: str) -> str | None:
