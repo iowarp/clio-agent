@@ -517,7 +517,12 @@ class LMProviderInfo(BaseModel):
     """GET /v1/providers/lm body. Reports current LM config state
     + an enumerated list of presets the TUI can show in its
     provider picker. ``api_key`` is never echoed back; the TUI
-    asks the user fresh on every change."""
+    asks the user fresh on every change.
+
+    ``thinking_budget`` controls reasoning effort/budget on providers
+    that support it (Anthropic Sonnet 4.6+ extended thinking,
+    OpenAI/Codex `model_reasoning_effort`). 0 means default / disabled.
+    """
 
     configured: bool
     provider: str = ""
@@ -525,6 +530,7 @@ class LMProviderInfo(BaseModel):
     model: str = ""
     temperature: float = 1.0
     max_tokens: int = 32000
+    thinking_budget: int = 0
     presets: list["LMProviderPreset"] = Field(default_factory=list)
 
 
@@ -561,3 +567,11 @@ class LMProviderRequest(BaseModel):
     api_key: str = "x"
     temperature: float = 1.0
     max_tokens: int = 32000
+    # Reasoning/thinking budget. Mapped per-provider:
+    # - Anthropic (haiku/sonnet/opus 4.6+): used as
+    #   thinking.budget_tokens in the API call. 0 disables extended
+    #   thinking. Range: ~1024..32000 typically.
+    # - OpenAI/Codex: mapped to model_reasoning_effort by bucketing
+    #   (0 = none, <2000 = low, <8000 = medium, >=8000 = high).
+    # - Other providers: ignored.
+    thinking_budget: int = 0

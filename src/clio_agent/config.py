@@ -98,6 +98,11 @@ class LMProviderConfig:
     max_tokens: int = 32000
     router_temperature: float = 0.3
     environment: str = "dev"
+    # Reasoning/thinking budget. Mapped per-provider in create_lm:
+    #   anthropic → thinking={"type":"enabled","budget_tokens":N}
+    #   openai/openai-compat → reasoning_effort bucketed from N
+    # 0 disables.
+    thinking_budget: int = 0
 
     def __post_init__(self) -> None:
         """Fill empty fields from provider defaults."""
@@ -203,6 +208,7 @@ def create_lm(config: LMProviderConfig) -> dspy.LM:
             bare = bare.split("/", 1)[1]
         model_name = f"openai/{bare}"
 
+    extras = _thinking_kwargs(config)
     return dspy.LM(
         model=model_name,
         api_base=config.api_base,
@@ -216,7 +222,38 @@ def create_lm(config: LMProviderConfig) -> dspy.LM:
         # identical prompts should still bill — accounting matters
         # more than the small spend saved on duplicate questions.
         cache=False,
+        **extras,
     )
+
+
+def _thinking_kwargs(config: LMProviderConfig) -> dict:
+    """Translate thinking_budget to provider-specific litellm kwargs.
+
+    Anthropic: extended-thinking is configured via the ``thinking``
+    parameter (budget_tokens controls how much reasoning the model
+    spends). DSPy/litellm pass it through as a kwarg.
+
+    OpenAI / openai-compatible: rough mapping of token budget to
+    `reasoning_effort` ('low' | 'medium' | 'high'). Most openai-compat
+    proxies ignore unknown kwargs gracefully.
+
+    All other providers: returns {} so we don't trip on unsupported
+    parameters.
+    """
+    n = int(getattr(config, "thinking_budget", 0) or 0)
+    if n <= 0:
+        return {}
+    if config.provider == "anthropic":
+        return {"thinking": {"type": "enabled", "budget_tokens": n}}
+    if config.provider in ("openai", "lm_studio", "ollama"):
+        if n < 2000:
+            effort = "low"
+        elif n < 8000:
+            effort = "medium"
+        else:
+            effort = "high"
+        return {"reasoning_effort": effort}
+    return {}
 
 
 def create_router_lm(config: LMProviderConfig) -> dspy.LM:
@@ -246,6 +283,7 @@ def create_router_lm(config: LMProviderConfig) -> dspy.LM:
         max_tokens=config.max_tokens,
         model_type="chat",
         cache=False,  # see create_lm — same rationale
+        **_thinking_kwargs(config),
     )
 
 

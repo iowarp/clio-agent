@@ -4834,6 +4834,7 @@ def build_app(
             model=cfg.get("model", ""),
             temperature=float(cfg.get("temperature", 1.0) or 1.0),
             max_tokens=int(cfg.get("max_tokens", 32000) or 32000),
+            thinking_budget=int(cfg.get("thinking_budget", 0) or 0),
             presets=_LM_PRESETS,
         )
 
@@ -4861,6 +4862,7 @@ def build_app(
                 api_key=req.api_key or "x",
                 temperature=req.temperature,
                 max_tokens=req.max_tokens,
+                thinking_budget=req.thinking_budget,
             )
             # ClioAgent.__init__ reads load_config_from_env() to
             # wire its router + experts. Stamp the env before
@@ -4917,6 +4919,7 @@ def build_app(
             "model": req.model,
             "temperature": req.temperature,
             "max_tokens": req.max_tokens,
+            "thinking_budget": req.thinking_budget,
         }
         # Publish so live SSE subscribers see the swap (TUI updates
         # its model chip without polling).
@@ -4938,6 +4941,7 @@ def build_app(
             model=req.model,
             temperature=req.temperature,
             max_tokens=req.max_tokens,
+            thinking_budget=req.thinking_budget,
             presets=_LM_PRESETS,
         )
 
