@@ -3017,6 +3017,37 @@ def build_app(
         else:  # pragma: no cover - guarded above
             body_text = f"unhandled command: {cmd_id}"
 
+        # Materialise body_text as a real assistant message so the TUI
+        # actually shows the result. Previously the body_text was only
+        # in the POST response — the TUI's runCommandCmd discards that,
+        # so /cache-stats, /dump-trace, /optimize, and /clear all looked
+        # like they did nothing. Persist + publish so SSE redraws and
+        # GET /messages reflects.
+        from clio_agent.gact.types import Message, Part, Tokens  # noqa: PLC0415
+        sys_msg = Message(
+            id=f"msg_cmd_{uuid.uuid4().hex[:10]}",
+            session_id=sid,
+            role="assistant",
+            created_at=datetime.now(timezone.utc).isoformat(),
+            updated_at=datetime.now(timezone.utc).isoformat(),
+            parts=[Part(
+                id=f"part_cmd_{uuid.uuid4().hex[:10]}",
+                type="text",
+                metadata={"synthetic": "command_result", "command": cmd_id},
+                text=f"[{cmd_id}] {body_text}",
+            )],
+            tokens=Tokens(input=0, output=0, cache_read=0, cache_write=0),
+            cost_usd=0.0,
+            stop_reason="end_turn",
+            metadata={"synthetic": "command_result", "command": cmd_id},
+        )
+        app.state.messages.setdefault(sid, []).append(sys_msg)
+        app.state.bus.publish(Event(
+            type="message.created",
+            session_id=sid,
+            payload=sys_msg.model_dump(exclude_none=True),
+        ))
+
         return {
             "command": cmd_id,
             "session_id": sid,

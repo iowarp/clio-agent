@@ -311,6 +311,25 @@ class ClioAgent(dspy.Module):
         """
         start_time = time.time()
 
+        # Step 0: Identity short-circuit — answer "who/what are you?" and
+        # "what model is this?" locally before anything else. These
+        # questions are deterministic; involving the router or LM at all
+        # is wasteful AND unreliable (some providers strip our system
+        # prompt and answer with their own identity, or the router
+        # classifies the question as `none` and the user gets a routing
+        # error for what should be a trivial answer).
+        identity_reply = self._identity_intercept(question)
+        if identity_reply is not None:
+            return dspy.Prediction(
+                answer=identity_reply,
+                selected_expert="chat",
+                session_id=session_id,
+                duration_ms=(time.time() - start_time) * 1000,
+                arc_stats=self.arc.get_cache_stats(),
+                lsm_stats=self.lsm.get_stats(),
+                error_info=None,
+            )
+
         # Step 1: Retrieve context from ARC Memory
         session_context = self._get_session_context(question, session_id)
 
@@ -391,10 +410,24 @@ class ClioAgent(dspy.Module):
                     )
                 answer = f"Visualization: {expert_result.visualization_description}\n\nFile: {expert_result.file_path}"
             elif selected == "none":
-                answer = (
-                    "I'm CLIO, specialized in scientific data. I can help with "
-                    "HDF5/Parquet analysis, statistical analysis, and data visualization. "
-                    "Could you rephrase your question in terms of data analysis?"
+                # Surface this as a real user-visible notification, NOT
+                # a canned fake-conversational reply. The router said
+                # "I don't have a handler for this" — that's a routing
+                # outcome the user deserves to see clearly, not hidden
+                # behind a conversational mask. Raise so the GACT layer
+                # can attach error_info to the assistant message and
+                # render it as a notification part instead of prose.
+                raise RoutingError(
+                    "router classified the question as out-of-scope "
+                    "for CLIO's experts (data / analysis / visualization / chat). "
+                    "Rephrase to target one of those domains.",
+                    details={
+                        "selected_expert": "none",
+                        "available_experts": [
+                            "data", "analysis", "visualization", "chat",
+                        ],
+                        "question": question[:200],
+                    },
                 )
             else:  # "chat"
                 # iowarp/clio-agent#4: detect explicit edit requests
@@ -409,6 +442,24 @@ class ClioAgent(dspy.Module):
                 else:
                     answer = self._run_chat_agent(question, session_context)
             success = True
+        except RoutingError as e:
+            # Router said "no expert matches" — surface the actual
+            # routing detail to the user so they understand WHY their
+            # question wasn't answered (not "an error happened" prose).
+            success = False
+            error_info = e.to_dict()
+            error_msg = str(e)
+            if self.verbose:
+                print(f"[ClioAgent] Routing error: {e}")
+            answer = (
+                f"⚠ {e}\n\nCLIO can engage with:\n"
+                "  • HDF5 / I/O optimisation (data expert)\n"
+                "  • Parquet / statistical profiling (analysis expert)\n"
+                "  • Plots / charts (visualization expert)\n"
+                "  • Conversational chat (general questions)\n\n"
+                "If you wanted a chat reply, try prefixing your question with "
+                "'tell me about' or 'explain' so the router classifies it as chat."
+            )
         except Exception as e:
             success = False
             expert_err = ExpertError(
@@ -420,8 +471,8 @@ class ClioAgent(dspy.Module):
             if self.verbose:
                 print(f"[ClioAgent] Error in {selected} dispatch: {e}")
             answer = (
-                f"I encountered an issue with the {selected} expert. "
-                "Please try rephrasing your question or try again later."
+                f"⚠ {selected} expert failed: {e}\n\n"
+                "Try rephrasing your question, or check /doctor for backend status."
             )
 
         # Step 4b: Store tier-2 expert invocation for optimizer training data
@@ -542,6 +593,14 @@ class ClioAgent(dspy.Module):
         "spawn nanoagents for parallel sub-tasks."
     )
 
+    _MODEL_IDENTITY_PATTERNS = (
+        "what model", "which model", "what llm", "which llm",
+        "what language model", "which language model",
+        "what is the model", "what's the model",
+        "what is the underlying", "underlying model",
+        "what version of you", "what's powering you", "what powers you",
+    )
+
     def _identity_intercept(self, question: str) -> str | None:
         """Return a hardcoded CLIO identity reply for identity questions.
 
@@ -549,8 +608,38 @@ class ClioAgent(dspy.Module):
         claude.ai's Claude Code persona) ignore the system prompt and
         always identify as Claude Code. To keep CLIO's identity stable
         regardless of provider, intercept identity-shaped questions
-        before they reach the LM and answer them locally."""
+        before they reach the LM and answer them locally.
+
+        Two intercept buckets:
+        - CLIO identity ("who are you" / "what can you do") → CLIO bio
+        - Model identity ("what model are you" / "what LM is this") →
+          actual provider/model from the live ProviderConfig (no LM
+          round-trip; the LM would lie or refuse anyway).
+        """
         q = question.lower().strip().rstrip("?!.").strip()
+        # Model-identity questions take precedence — "what model are
+        # you?" overlaps "what are you?" but the user asking about the
+        # model wants the model id, not the CLIO bio.
+        for pat in self._MODEL_IDENTITY_PATTERNS:
+            if pat in q:
+                cfg = self._provider_config
+                provider = (cfg.provider or "?").strip()
+                model = (cfg.model or "?").strip()
+                api_base = (cfg.api_base or "").strip()
+                # Strip any leading "openai/" or "anthropic/" prefix the
+                # LM client adds — users care about the bare model name.
+                bare = model.split("/", 1)[1] if "/" in model else model
+                lines = [
+                    f"I'm CLIO. The underlying language model is **{bare}** "
+                    f"(provider: `{provider}`).",
+                ]
+                if api_base:
+                    lines.append(f"Routed via `{api_base}`.")
+                lines.append(
+                    "You can swap providers/models from the TUI at "
+                    "Ctrl+S → Settings → Model → Change provider…"
+                )
+                return "\n\n".join(lines)
         for pat in self._IDENTITY_PATTERNS:
             if pat in q:
                 return self._IDENTITY_REPLY
