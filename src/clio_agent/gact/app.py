@@ -2681,8 +2681,25 @@ def build_app(
                         app=app,
                     )
                 except Exception as exc:  # noqa: BLE001
-                    write_errors[r["path"]] = repr(exc)
+                    err = repr(exc)
+                    write_errors[r["path"]] = err
                     r["status"] = "apply_failed"
+                    # Publish a failure event so the TUI sees the write
+                    # error live (was a silent failure: the response
+                    # body carried write_errors but the TUI's apply-
+                    # button path discards it). file.diff.write_failed
+                    # mirrors file.diff.applied for parity.
+                    app.state.bus.publish(Event(
+                        type="file.diff.write_failed",
+                        session_id=sid,
+                        payload={
+                            "session_id": sid,
+                            "path": r["path"],
+                            "part_id": r.get("part_id", ""),
+                            "message_id": r.get("message_id", ""),
+                            "error": err,
+                        },
+                    ))
                     continue
             r["status"] = "applied"
             applied.append(r["path"])
