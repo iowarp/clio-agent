@@ -792,6 +792,49 @@ class ClioAgent(dspy.Module):
                 lines = lines[:-1]
             new_content = "\n".join(lines)
 
+        # Some providers (notably Meridian, which proxies to claude.ai's
+        # Claude Code persona) ignore edit instructions and return a
+        # generic non-answer. Writing that text to disk silently
+        # destroys the file. Detect a few canonical non-answer prefixes
+        # AND any reply that's drastically shorter than the original
+        # while looking nothing like file content.
+        non_answer_prefixes = (
+            "i can help with that",
+            "i'm happy to help",
+            "could you provide more details",
+            "i'd be happy to help",
+            "what specifically",
+        )
+        lc = new_content.lower().strip()
+        looks_like_non_answer = any(lc.startswith(p) for p in non_answer_prefixes)
+        # An edit reply shorter than 20% of the original AND under 200
+        # chars is almost certainly a refusal rather than a real edit.
+        suspiciously_short = (
+            len(new_content) < 200
+            and len(old) > 100
+            and len(new_content) < 0.2 * len(old)
+        )
+        if looks_like_non_answer or suspiciously_short:
+            cfg = self._provider_config
+            return dspy.Prediction(
+                analysis=(
+                    f"⚠ The configured LM ({cfg.provider}/{cfg.model}) "
+                    f"produced a generic non-answer for the edit prompt "
+                    f"instead of the new file content. The edit was NOT "
+                    f"applied — your file is unchanged.\n\n"
+                    f"LM reply:\n  {new_content[:200]!r}\n\n"
+                    f"This is a known Meridian limitation (it ignores "
+                    f"edit prompts and replies with a stock 'I can help' "
+                    f"line). Swap to a provider that honours the system "
+                    f"prompt (Anthropic direct, OpenRouter, Codex bridge) "
+                    f"via Ctrl+S → Settings → Change provider…, then retry."
+                ),
+                recommendations=(
+                    "Switch providers via the TUI's Settings → Change "
+                    "provider… modal and re-issue the propose-edit."
+                ),
+            )
+
         diff = self._call_tool_function(propose_edit, filepath, new_content)
         # Shape the file_diff Part by session.edit_mode:
         # - "diff": unified_diff only (compact, reviewer-friendly)
