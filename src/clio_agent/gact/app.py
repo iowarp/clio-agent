@@ -2017,6 +2017,14 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     Spins the scheduler tick task (#21) at boot if a ScheduleStore
     is wired; cancels it cleanly on shutdown.
+
+    Also kicks off deferred ClioAgent construction when the runner
+    set ``app.state.want_agent`` (see ``main()``). The agent's heavy
+    init (DSPy + ARC + experts) used to block uvicorn's startup, which
+    pushed first /v1/capabilities response past gact-tui's 3-second
+    deploy probe. Now we bind the port immediately, finish boot in a
+    background task, and POST /messages keeps 503-ing until
+    ``app.state.agent`` is stamped.
     """
 
     app.state.started_at = time.time()
@@ -2024,13 +2032,91 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     if getattr(app.state, "schedules", None) is not None:
         task = asyncio.create_task(_scheduler_tick(app))
         app.state.scheduler_task = task
+
+    agent_task: Optional[asyncio.Task] = None
+    if getattr(app.state, "want_agent", False) and app.state.agent is None:
+        agent_task = asyncio.create_task(_construct_agent_async(app))
+        app.state.agent_construction_task = agent_task
+
     yield
-    if task is not None:
-        task.cancel()
+
+    for t in (task, agent_task):
+        if t is None:
+            continue
+        t.cancel()
         try:
-            await task
+            await t
         except (asyncio.CancelledError, Exception):
             pass
+
+
+async def _construct_agent_async(app: "FastAPI") -> None:
+    """Build the real ClioAgent off the lifespan hot path.
+
+    DSPy import + ARC hydration + expert wiring takes ~10 s on Aurora's
+    frameworks Python (beartype import hook + Lustre cold reads). We
+    run it via ``run_in_executor`` so the event loop stays free for
+    /v1/capabilities, /v1/health, and the rest of the catalog while
+    the agent constructs. On success, stamps ``app.state.agent`` +
+    ``app.state.arc`` so the next POST /messages dispatches normally;
+    on failure, logs and leaves ``agent=None`` so /messages keeps
+    surfacing a structured 503 instead of a corrupted half-built
+    agent.
+    """
+
+    loop = asyncio.get_running_loop()
+
+    def _build() -> Any:
+        import dspy  # noqa: PLC0415
+
+        from clio_agent.agent import ClioAgent  # noqa: PLC0415
+        from clio_agent.config import (  # noqa: PLC0415
+            create_lm,
+            is_local_openai_compatible_backend,
+            load_config_from_env,
+        )
+
+        cfg = load_config_from_env()
+        use_json_fallback = not is_local_openai_compatible_backend(cfg)
+        dspy.configure(
+            lm=create_lm(cfg),
+            adapter=dspy.ChatAdapter(use_json_adapter_fallback=use_json_fallback),
+        )
+        return ClioAgent(verbose=False)
+
+    try:
+        agent = await loop.run_in_executor(None, _build)
+    except Exception as exc:  # noqa: BLE001
+        print(
+            f"[clio-agent-gact] deferred agent init failed ({exc!r}); "
+            "POST /messages will keep returning 503.",
+            flush=True,
+        )
+        app.state.agent_init_error = repr(exc)
+        return
+
+    app.state.agent = agent
+    app.state.arc = agent.arc
+
+    # Install the deferred permission gate + tool observer now that we
+    # know an agent exists to gate. See build_app for why these aren't
+    # installed at construction time.
+    try:
+        from clio_agent.tools.execution import (  # noqa: PLC0415
+            set_global_permission_gate,
+            set_global_tool_observer,
+        )
+
+        gate = getattr(app.state, "pending_permission_gate", None)
+        observer = getattr(app.state, "pending_tool_observer", None)
+        if gate is not None:
+            set_global_permission_gate(gate)
+        if observer is not None:
+            set_global_tool_observer(observer)
+    except Exception:  # pragma: no cover - defensive
+        pass
+
+    print("[clio-agent-gact] agent ready.", flush=True)
 
 
 async def _scheduler_tick(app: "FastAPI") -> None:
@@ -2178,18 +2264,30 @@ def build_app(
 
     # iowarp/clio-agent#7 + #2: install process-global hooks on the
     # MCPToolBridge so EVERY expert's tool call routes through our
-    # permission gate + telemetry observer. Imported lazily so
-    # build_app stays cheap when the tool layer isn't wanted.
-    try:
-        from clio_agent.tools.execution import (
-            set_global_permission_gate,
-            set_global_tool_observer,
-        )
+    # permission gate + telemetry observer.
+    #
+    # When an agent is already in hand we install eagerly — that's
+    # the legacy build_app(agent=X) path tests use. When the caller
+    # left agent=None (the production main() flow that defers
+    # ClioAgent construction to the lifespan task) we stash the
+    # closures on app.state and install them right after the agent
+    # finishes constructing — importing clio_agent.tools.execution
+    # transitively pulls litellm + dspy (~4 s) and we need build_app
+    # to stay cheap enough for gact-tui's 3-second deploy probe.
+    if agent is not None:
+        try:
+            from clio_agent.tools.execution import (
+                set_global_permission_gate,
+                set_global_tool_observer,
+            )
 
-        set_global_permission_gate(_make_permission_gate(app))
-        set_global_tool_observer(_make_tool_observer(app))
-    except Exception:  # pragma: no cover - defensive
-        pass
+            set_global_permission_gate(_make_permission_gate(app))
+            set_global_tool_observer(_make_tool_observer(app))
+        except Exception:  # pragma: no cover - defensive
+            pass
+    else:
+        app.state.pending_permission_gate = _make_permission_gate(app)
+        app.state.pending_tool_observer = _make_tool_observer(app)
 
     # iowarp/clio-agent#20: install the user-hooks registry so
     # pre_tool / post_tool / pre_message / post_message events
@@ -5539,9 +5637,26 @@ def build_app(
     return app
 
 
-# Module-level app for uvicorn-style invocations:
+# Module-level ``app`` for uvicorn-style invocations:
 #   uvicorn clio_agent.gact.app:app
-app = build_app()
+#
+# Built lazily via PEP 562 module ``__getattr__`` so that ``import
+# clio_agent.gact.app`` (which the ``clio-agent-gact`` console script
+# triggers) doesn't pay build_app's cost — that includes pulling in
+# clio_agent.tools.execution + litellm (~4 s on Aurora's frameworks
+# Python). main() constructs its own app explicitly, so the only
+# consumer of this attribute is the ``uvicorn …:app`` form, which
+# always materialises it on first request anyway.
+_lazy_app: Optional[FastAPI] = None
+
+
+def __getattr__(name: str):
+    global _lazy_app  # noqa: PLW0603
+    if name == "app":
+        if _lazy_app is None:
+            _lazy_app = build_app()
+        return _lazy_app
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def main() -> None:
@@ -5575,35 +5690,31 @@ def main() -> None:
             "gets in the way of a capability-only smoke."
         ),
     )
+    # gact-tui's `agent deploy` invokes adapters with --cwd; we don't
+    # care about the value (CLIO reads file paths from CLIO_ALLOWED_ROOTS
+    # / its own config), but the flag has to be accepted or argparse
+    # bails with exit 2 and the deploy probe sees an instant zombie.
+    parser.add_argument(
+        "--cwd",
+        default=None,
+        help=(
+            "ignored — accepted for compatibility with `gact agent "
+            "deploy clio`, which always passes --cwd."
+        ),
+    )
     args = parser.parse_args()
 
-    # CLIO-BBBBBBBBBB-D2: auto-wire the real ClioAgent when the env
-    # gives us an LM endpoint. Falls back to the no-agent module-
-    # level app on import / construction failures — a bootable GACT
-    # surface is strictly better than a stack trace.
-    app_to_run: FastAPI = app
+    # Always build a fresh app inside main() — the module-level
+    # ``app`` symbol is intentionally lazy (see __getattr__ above) so
+    # that just importing ``clio_agent.gact.app`` doesn't pay
+    # build_app's cost. When the env requests an agent we set
+    # want_agent so the lifespan startup task constructs ClioAgent
+    # in the background — uvicorn binds the port immediately, beating
+    # gact-tui's 3-second deploy probe. POST /messages 503s until
+    # app.state.agent is stamped by the background task.
+    app_to_run: FastAPI = build_app()
     if not args.no_agent and os.environ.get("CLIO_LM_PROVIDER"):
-        try:
-            import dspy
-
-            from clio_agent.agent import ClioAgent
-            from clio_agent.config import create_lm, load_config_from_env
-
-            provider_cfg = load_config_from_env()
-            from clio_agent.config import is_local_openai_compatible_backend  # noqa: PLC0415
-            use_json_fallback = not is_local_openai_compatible_backend(provider_cfg)
-            dspy.configure(
-                lm=create_lm(provider_cfg),
-                adapter=dspy.ChatAdapter(use_json_adapter_fallback=use_json_fallback),
-            )
-            agent = ClioAgent(verbose=False)
-            app_to_run = build_app(agent=agent, arc=agent.arc)
-        except Exception as exc:  # noqa: BLE001
-            print(
-                f"[clio-agent-gact] ClioAgent init failed ({exc!r}); "
-                "running with no agent wired. POST /messages will 503.",
-                flush=True,
-            )
+        app_to_run.state.want_agent = True
 
     uvicorn.run(
         app_to_run,

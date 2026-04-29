@@ -24,14 +24,42 @@ Usage:
     >>> lm = create_lm(config)
 """
 
+from __future__ import annotations
+
 import os
 from dataclasses import dataclass
 from ipaddress import ip_address
-from typing import List, Literal, Mapping, Optional
+from typing import TYPE_CHECKING, List, Literal, Mapping, Optional
 from urllib.parse import urlparse
 
-import dspy
 import requests
+
+# dspy lives behind a lazy import — top-level ``import dspy`` costs
+# ~4 s on Aurora's frameworks Python (litellm + transitive deps), and
+# every ``runtime.status`` / ``gact.app`` boot path imports config.py
+# transitively. Functions that actually need dspy import it inside
+# their body via ``_dspy()`` below; type-only references stay valid
+# thanks to ``from __future__ import annotations`` (PEP 563).
+if TYPE_CHECKING:  # pragma: no cover
+    import dspy as dspy_typing
+
+
+_dspy_cache = None
+
+
+def _dspy():
+    """Return the dspy module, importing it on first call.
+
+    Memoised in the module so subsequent calls are free. All callers
+    inside this module funnel through here so we don't accidentally
+    re-add a top-level ``import dspy`` later.
+    """
+    global _dspy_cache  # noqa: PLW0603
+    if _dspy_cache is None:
+        import dspy  # noqa: PLC0415
+
+        _dspy_cache = dspy
+    return _dspy_cache
 
 # ============================================================================
 # PROVIDER DEFAULTS
@@ -275,6 +303,7 @@ def create_lm(config: LMProviderConfig) -> dspy.LM:
     Returns:
         Configured dspy.LM instance
     """
+    dspy = _dspy()
     model_name = _resolve_model_name(config)
 
     extras = _thinking_kwargs(config)
@@ -358,6 +387,7 @@ def create_router_lm(config: LMProviderConfig) -> dspy.LM:
     Returns:
         Configured dspy.LM instance with lower temperature
     """
+    dspy = _dspy()
     model_name = _resolve_model_name(config)
 
     return dspy.LM(
@@ -548,6 +578,7 @@ def configure_dspy_lm_studio(config: Optional[LMStudioConfig] = None) -> dspy.LM
         >>> custom_config = LMStudioConfig(base_url="http://100.127.255.172:1234")
         >>> lm = configure_dspy_lm_studio(custom_config)
     """
+    dspy = _dspy()
     cfg = config or LMStudioConfig()
 
     # Use openai/ prefix - LM Studio is OpenAI-compatible
@@ -568,6 +599,7 @@ def configure_dspy_lm_studio(config: Optional[LMStudioConfig] = None) -> dspy.LM
 
 def configure_dspy_router_lm_studio(config: Optional[RouterLMConfig] = None) -> dspy.LM:
     """Configure DSPy to use LM Studio for router (deterministic)."""
+    dspy = _dspy()
     cfg = config or RouterLMConfig()
     model_name = f"openai/{cfg.model}"
 
@@ -584,6 +616,7 @@ def configure_dspy_router_lm_studio(config: Optional[RouterLMConfig] = None) -> 
 
 def configure_dspy_reasoner_lm_studio(config: Optional[ReasonerLMConfig] = None) -> dspy.LM:
     """Configure DSPy to use LM Studio for reasoner (creative)."""
+    dspy = _dspy()
     cfg = config or ReasonerLMConfig()
     model_name = f"openai/{cfg.model}"
 
@@ -646,6 +679,7 @@ def setup_dspy(model: Optional[str] = None, verbose: bool = True) -> dspy.LM:
     # (`response_format={"type": "json_object"}`). Keep them on text chat
     # formatting; cloud providers can still use DSPy's JSON fallback.
     use_json_fallback = not is_local_openai_compatible_backend(config)
+    dspy = _dspy()
     dspy.configure(
         lm=lm,
         adapter=dspy.ChatAdapter(use_json_adapter_fallback=use_json_fallback),
@@ -696,7 +730,7 @@ if __name__ == "__main__":
 
         # Simple test prediction
         print("\n2. Testing simple prediction...")
-        predictor = dspy.Predict("question -> answer")
+        predictor = _dspy().Predict("question -> answer")
         result = predictor(question="What is 2+2?")
         print(f"Answer: {result.answer}")
 
