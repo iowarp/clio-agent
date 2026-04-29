@@ -2248,6 +2248,18 @@ def build_app(
     # MCPToolBridge gate (running in a worker thread) can block on
     # the user's response without polling.
     app.state.permission_events: dict[str, "threading.Event"] = {}
+    # SPEC §6.17 hooks (declarative event→command/url callouts that
+    # gact-tui drives via /v1/hooks). Distinct from CLIO's runtime
+    # in-process Python hooks (clio_agent.runtime.hooks) — these are
+    # user-configurable callouts the agent fires during the turn
+    # lifecycle, while the Python runtime hooks are framework-level
+    # extension points. In-memory; not persisted across restarts.
+    app.state.declarative_hooks: dict[str, dict[str, Any]] = {}
+    # SPEC §6.11.b permission policies — list, not dict. Backends
+    # consult this on every tool call to decide allow/deny/ask before
+    # falling back to the per-tool permission_default. PUT replaces
+    # the whole list; in-memory.
+    app.state.permission_policies: list[dict[str, Any]] = []
     # iowarp/clio-agent#18: per-session task list (todo-style).
     # Keyed by session_id -> {task_id -> task dict}. In-memory.
     app.state.session_tasks: dict[str, dict[str, dict[str, Any]]] = {}
@@ -5804,6 +5816,215 @@ def build_app(
                         "source": "error",
                     })
         return {"tools": rows}
+
+    @app.get("/v1/tools/{tool_id}")
+    async def get_tool_detail(tool_id: str) -> dict[str, Any]:
+        """SPEC §6.6 — single-tool detail. The TUI's tool-detail
+        modal calls this when the user opens a row from the /tools
+        catalog. Walks the same source as list_tools_unified() and
+        returns the matching row, or 404 if no tool registers under
+        ``tool_id``."""
+
+        # Bundled in-process tools first — cheap.
+        try:
+            from clio_agent.tools.gateway import list_capabilities  # noqa: PLC0415
+            for tool in list_capabilities():
+                if tool.get("name") == tool_id:
+                    srv = tool.get("server", "")
+                    return {
+                        "id": tool_id,
+                        "name": tool_id,
+                        "description": tool.get("description") or "",
+                        "server_id": f"mcp_{srv}" if srv else "",
+                        "source": "mcp",
+                        "input_schema": tool.get("input_schema") or {},
+                    }
+        except Exception:
+            pass
+
+        # Fall back to installed third-party MCP servers — heavier
+        # because each lookup spawns a Client; cache could come later.
+        installed = getattr(app.state, "external_mcp_servers", {}) or {}
+        if installed:
+            try:
+                from fastmcp import Client  # noqa: PLC0415
+                from fastmcp.client.transports import (  # noqa: PLC0415
+                    StdioTransport, StreamableHttpTransport,
+                )
+            except Exception:
+                Client = None  # type: ignore
+            for sid, info in installed.items():
+                if Client is None:
+                    break
+                try:
+                    transport = info.get("transport") or "stdio"
+                    if transport == "stdio":
+                        t = StdioTransport(
+                            command=info.get("command") or "",
+                            args=info.get("args") or [],
+                            env=info.get("env") or None,
+                        )
+                    else:
+                        t = StreamableHttpTransport(url=info.get("url") or "")
+                    async with Client(t) as cli:
+                        tools = await cli.list_tools()
+                    for tt in tools:
+                        if getattr(tt, "name", "") == tool_id:
+                            return {
+                                "id": tool_id,
+                                "name": tool_id,
+                                "description": getattr(tt, "description", "") or "",
+                                "server_id": sid,
+                                "source": "mcp",
+                                "input_schema": getattr(tt, "inputSchema", None)
+                                    or getattr(tt, "input_schema", None) or {},
+                            }
+                except Exception:
+                    continue
+
+        raise HTTPException(
+            status_code=404,
+            detail=ErrorEnvelope(error=ErrorInfo(
+                error="not_found",
+                message=f"tool not found: {tool_id}",
+                recoverable=False,
+            )).model_dump(exclude_none=True),
+        )
+
+    # ---- /v1/hooks (SPEC §6.17 declarative hooks) --------------------
+    #
+    # Distinct from clio_agent.runtime.hooks (in-process Python hooks
+    # the framework fires on tool/message events). These are the
+    # gact-tui-driven declarative hooks: id + event + (command|url) +
+    # optional session_id/workspace_id scope. The TUI's `gact hook`
+    # subcommand reads/writes them. In-memory; no persistence.
+
+    @app.get("/v1/hooks")
+    async def list_hooks() -> dict[str, Any]:
+        return {"hooks": list(app.state.declarative_hooks.values())}
+
+    @app.post("/v1/hooks")
+    async def create_hook(request: Request) -> dict[str, Any]:
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        if not isinstance(body, dict):
+            body = {}
+        event = (body.get("event") or "").strip()
+        if not event:
+            raise HTTPException(
+                status_code=400,
+                detail=ErrorEnvelope(error=ErrorInfo(
+                    error="invalid_request",
+                    message="hook missing required field: event",
+                    recoverable=False,
+                )).model_dump(exclude_none=True),
+            )
+        if not (body.get("command") or body.get("url")):
+            raise HTTPException(
+                status_code=400,
+                detail=ErrorEnvelope(error=ErrorInfo(
+                    error="invalid_request",
+                    message="hook needs command or url",
+                    recoverable=False,
+                )).model_dump(exclude_none=True),
+            )
+        hid = body.get("id") or f"hook_{uuid.uuid4().hex[:12]}"
+        row = {
+            "id": hid,
+            "event": event,
+            "command": body.get("command") or "",
+            "url": body.get("url") or "",
+            "session_id": body.get("session_id") or "",
+            "workspace_id": body.get("workspace_id") or "",
+        }
+        app.state.declarative_hooks[hid] = row
+        return row
+
+    @app.delete("/v1/hooks/{hook_id}")
+    async def delete_hook(hook_id: str) -> JSONResponse:
+        if app.state.declarative_hooks.pop(hook_id, None) is None:
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(error=ErrorInfo(
+                    error="not_found",
+                    message=f"hook not found: {hook_id}",
+                    recoverable=False,
+                )).model_dump(exclude_none=True),
+            )
+        return JSONResponse(status_code=204, content=None)
+
+    # ---- /v1/policies (SPEC §6.11.b permission policies) -------------
+    #
+    # Declarative allow/deny/ask rules consulted before the per-tool
+    # permission_default. PUT replaces the whole list (matches the
+    # gact-tui client's PutPolicies shape). In-memory; no persistence.
+
+    @app.get("/v1/policies")
+    async def list_policies() -> dict[str, Any]:
+        return {"policies": list(app.state.permission_policies)}
+
+    @app.put("/v1/policies")
+    async def put_policies(request: Request) -> dict[str, Any]:
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        if not isinstance(body, dict):
+            body = {}
+        policies = body.get("policies")
+        if not isinstance(policies, list):
+            raise HTTPException(
+                status_code=400,
+                detail=ErrorEnvelope(error=ErrorInfo(
+                    error="invalid_request",
+                    message="body must be {'policies': [...]}",
+                    recoverable=False,
+                )).model_dump(exclude_none=True),
+            )
+        # Light validation — keep unknown fields so future spec
+        # additions round-trip; require the two fields the SPEC
+        # mandates so a malformed config doesn't silently disable
+        # permission gating.
+        clean: list[dict[str, Any]] = []
+        for p in policies:
+            if not isinstance(p, dict):
+                continue
+            if not p.get("scope") or not p.get("action"):
+                continue
+            clean.append(p)
+        app.state.permission_policies = clean
+        return {"policies": clean}
+
+    # ---- DELETE /v1/messages/{id} ------------------------------------
+    #
+    # gact-tui's "delete this message" gesture (used in the search
+    # palette + the per-message context menu) hits this. We scan every
+    # session's in-memory log for a matching id; not indexed because
+    # message lists are short and deletion is rare. Publishes
+    # message.deleted so SSE subscribers can redraw without polling.
+
+    @app.delete("/v1/messages/{message_id}")
+    async def delete_message(message_id: str) -> JSONResponse:
+        for sid, msgs in app.state.messages.items():
+            for i, m in enumerate(msgs):
+                if m.id == message_id:
+                    msgs.pop(i)
+                    app.state.bus.publish(Event(
+                        type="message.deleted",
+                        session_id=sid,
+                        payload={"message_id": message_id, "session_id": sid},
+                    ))
+                    return JSONResponse(status_code=204, content=None)
+        raise HTTPException(
+            status_code=404,
+            detail=ErrorEnvelope(error=ErrorInfo(
+                error="not_found",
+                message=f"message not found: {message_id}",
+                recoverable=False,
+            )).model_dump(exclude_none=True),
+        )
 
     def _make_stub(cap: str):
         # Use a Request param so FastAPI doesn't try to validate
