@@ -65,7 +65,7 @@ def _dspy():
 # PROVIDER DEFAULTS
 # ============================================================================
 
-PROVIDER_DEFAULTS: dict[str, dict[str, str]] = {
+PROVIDER_DEFAULTS: dict[str, dict[str, Any]] = {
     "lm_studio": {
         "api_base": "http://127.0.0.1:1234/v1",
         "model": "ibm/granite-4-h-tiny",
@@ -92,10 +92,20 @@ PROVIDER_DEFAULTS: dict[str, dict[str, str]] = {
     # to fetch (or refresh) a real token only when the user actually
     # selects this provider, so installs without ``globus-sdk`` keep
     # importing cleanly.
+    #
+    # ``max_tokens`` is overridden to 4096 because Sophia's default
+    # Llama 3.1-8B has a 32 768-token context window. The shared
+    # LMProviderConfig default of 32 000 leaves only ~768 tokens for
+    # input + system prompt, which the gateway 400s on as soon as the
+    # router/expert prompts run (they alone are >2 k tokens). 4 k is a
+    # comfortable answer length while leaving 28 k for the prompt;
+    # users can override with CLIO_LM_MAX_TOKENS for larger-context
+    # models like Llama-405B or Mistral-Large.
     "argonne": {
         "api_base": "https://inference-api.alcf.anl.gov/resource_server/sophia/vllm/v1",
         "model": "meta-llama/Meta-Llama-3.1-8B-Instruct",
         "api_key": "",  # Lazy: minted via Globus Auth on demand.
+        "max_tokens": 4096,
     },
 }
 
@@ -134,7 +144,10 @@ class LMProviderConfig:
     model: str = ""
     api_key: str = ""
     temperature: float = 1.0
-    max_tokens: int = 32000
+    # 0 is a sentinel "use the provider's max_tokens override (see
+    # PROVIDER_DEFAULTS) if it has one, else 32000". Callers who
+    # explicitly pass any non-zero value win.
+    max_tokens: int = 0
     router_temperature: float = 0.3
     environment: str = "dev"
     # Reasoning/thinking budget. Mapped per-provider in create_lm:
@@ -161,6 +174,12 @@ class LMProviderConfig:
                 self.api_key = _resolve_argonne_api_key()
             else:
                 self.api_key = defaults["api_key"]
+        # max_tokens=0 is the sentinel "pick a sensible default for
+        # this provider" — argonne's Sophia gateway 400s on the
+        # global default of 32000 because Llama 3.1-8B has only a
+        # 32 768-token context window.
+        if self.max_tokens == 0:
+            self.max_tokens = int(defaults.get("max_tokens", 32000))
 
 
 def _resolve_argonne_api_key() -> str:
