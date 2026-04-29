@@ -3594,7 +3594,19 @@ def build_app(
         """Per-provider curated model catalog. The TUI Settings →
         Model tab reads this for each provider it knows about. Returns
         an empty list (200, not 404) for unknown providers so the TUI
-        can keep loading the rest of the catalog."""
+        can keep loading the rest of the catalog.
+
+        Resolution order: try the path component as a preset id first
+        (e.g. ``argonne_sophia`` resolves to its preset → provider kind
+        → catalog row), then fall back to a direct kind lookup
+        (``argonne``). Both shapes work; gact-tui's settings flow
+        passes preset id, the LM-config picker passes provider kind.
+        """
+        # Map preset id → provider kind when the path uses a preset id.
+        for p in _LM_PRESETS:
+            if p.id == provider_id:
+                models = _PROVIDER_MODELS.get(p.provider, [])
+                return {"models": models}
         models = _PROVIDER_MODELS.get(provider_id, [])
         return {"models": models}
 
