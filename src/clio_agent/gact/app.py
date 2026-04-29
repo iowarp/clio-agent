@@ -3305,6 +3305,25 @@ def build_app(
             {"id": "gpt-4.1", "name": "GPT-4.1 (via Codex)",
              "description": "Older GPT-4.1 routed through Codex."},
         ],
+        # ALCF / Argonne — model availability is dynamic (jobs spin up
+        # and tear down behind the gateway). These are the models we've
+        # observed loaded on Sophia + Polaris in 2025–2026; the actual
+        # live set can be queried with
+        # `scripts/list_active_models.sh` in alcf-agentics-workflow.
+        "argonne": [
+            {"id": "meta-llama/Meta-Llama-3.1-8B-Instruct",
+             "name": "Llama 3.1 8B Instruct (Sophia/Polaris)",
+             "description": "Default ALCF demo model. Fastest of the lot."},
+            {"id": "meta-llama/Meta-Llama-3.1-70B-Instruct",
+             "name": "Llama 3.1 70B Instruct",
+             "description": "Heavier reasoning; jobs may need to warm up."},
+            {"id": "meta-llama/Meta-Llama-3.1-405B-Instruct",
+             "name": "Llama 3.1 405B Instruct",
+             "description": "Frontier-class. Often offline; check active models first."},
+            {"id": "mistralai/Mistral-7B-Instruct-v0.3",
+             "name": "Mistral 7B Instruct v0.3",
+             "description": "Lightweight alternative to Llama."},
+        ],
     }
 
     @app.get("/v1/providers/{provider_id}/models")
@@ -5011,6 +5030,53 @@ def build_app(
                 "port 18900) and the `codex` binary on PATH."
             ),
         ),
+        # ALCF inference endpoints. The api_key is left blank in the
+        # preset and resolved by the PUT /v1/providers/lm handler via
+        # Globus Auth (providers.argonne_auth) — that's why
+        # requires_api_key=False even though this is a remote service.
+        LMProviderPreset(
+            id="argonne_sophia",
+            label="ALCF Sophia (Globus Auth)",
+            provider="argonne",
+            api_base="https://inference-api.alcf.anl.gov/resource_server/sophia/vllm/v1",
+            suggested_model="meta-llama/Meta-Llama-3.1-8B-Instruct",
+            requires_api_key=False,
+            description=(
+                "Argonne's Sophia inference gateway (vLLM, OpenAI-"
+                "compatible). Auth is a Globus access token minted on "
+                "demand from the user's anl.gov / alcf.anl.gov identity. "
+                "Run `python -m clio_agent.providers.argonne_auth "
+                "authenticate` once per machine; tokens auto-refresh."
+            ),
+        ),
+        LMProviderPreset(
+            id="argonne_polaris",
+            label="ALCF Polaris (Globus Auth)",
+            provider="argonne",
+            api_base="https://inference-api.alcf.anl.gov/resource_server/polaris/vllm/v1",
+            suggested_model="meta-llama/Meta-Llama-3.1-8B-Instruct",
+            requires_api_key=False,
+            description=(
+                "Argonne's Polaris inference gateway. Same auth + wire "
+                "format as Sophia; pick whichever cluster currently has "
+                "the model you want loaded (see `list_active_models.sh` "
+                "in alcf-agentics-workflow)."
+            ),
+        ),
+        LMProviderPreset(
+            id="argonne_local_vllm",
+            label="ALCF local vLLM (compute-node)",
+            provider="openai",
+            api_base="http://127.0.0.1:8000/v1",
+            suggested_model="meta-llama/Llama-3.1-8B-Instruct",
+            requires_api_key=False,
+            description=(
+                "vLLM running co-located on an Aurora / Polaris compute "
+                "node (see localWorkflow/scripts/vllm_setup.sh). No "
+                "Globus needed — the server accepts the literal "
+                "'EMPTY' API key. Override api_base with the bound port."
+            ),
+        ),
     ]
 
     @app.get("/v1/providers/lm", response_model=LMProviderInfo)
@@ -5053,11 +5119,37 @@ def build_app(
                 create_lm,
             )
 
+            # Argonne / ALCF: if the TUI didn't ship an api_key, mint
+            # one from the user's stored Globus session. ``LMProviderConfig``
+            # will do this lazily inside __post_init__ too, but we resolve
+            # eagerly here so the env mirror below carries the real token
+            # for ClioAgent's reconstruction (load_config_from_env reads
+            # CLIO_LM_API_KEY first, before LMProviderConfig defaults run).
+            resolved_api_key = req.api_key
+            if req.provider == "argonne" and not resolved_api_key:
+                from clio_agent.config import _resolve_argonne_api_key  # noqa: PLC0415
+                resolved_api_key = _resolve_argonne_api_key()
+                if not resolved_api_key:
+                    raise HTTPException(
+                        status_code=401,
+                        detail=ErrorEnvelope(error=ErrorInfo(
+                            error="argonne_auth_required",
+                            message=(
+                                "ALCF provider selected but no Globus token "
+                                "is available. Run "
+                                "`python -m clio_agent.providers.argonne_auth "
+                                "authenticate` once, or pass api_key in this "
+                                "request."
+                            ),
+                            recoverable=True,
+                        )).model_dump(exclude_none=True),
+                    )
+
             cfg = LMProviderConfig(
                 provider=req.provider,
                 api_base=req.api_base,
                 model=req.model,
-                api_key=req.api_key or "x",
+                api_key=resolved_api_key or "x",
                 temperature=req.temperature,
                 max_tokens=req.max_tokens,
                 thinking_budget=req.thinking_budget,
@@ -5071,7 +5163,7 @@ def build_app(
             os.environ["CLIO_LM_PROVIDER"] = req.provider
             os.environ["CLIO_LM_API_BASE"] = req.api_base
             os.environ["CLIO_LM_MODEL"] = req.model
-            os.environ["CLIO_LM_API_KEY"] = req.api_key or "x"
+            os.environ["CLIO_LM_API_KEY"] = resolved_api_key or "x"
             # iowarp/clio-agent — DSPy 3.x forbids dspy.configure()
             # being re-called from a different async task than the
             # first one. PUT /v1/providers/lm comes from the FastAPI
@@ -5093,6 +5185,10 @@ def build_app(
             agent = await asyncio.get_running_loop().run_in_executor(
                 None, lambda: ClioAgent(verbose=False)
             )
+        except HTTPException:
+            # Argonne auth path raises a structured 401 above; keep its
+            # error code intact instead of flattening to a generic 400.
+            raise
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(
                 status_code=400,

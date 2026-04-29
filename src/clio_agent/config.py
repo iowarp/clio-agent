@@ -58,6 +58,17 @@ PROVIDER_DEFAULTS: dict[str, dict[str, str]] = {
         "model": "claude-sonnet-4-20250514",
         "api_key": "",  # Must come from ANTHROPIC_API_KEY env
     },
+    # Argonne / ALCF inference endpoints. The gateway is OpenAI-compatible
+    # vLLM behind a Globus Auth bearer. ``api_key`` is intentionally empty:
+    # ``__post_init__`` calls ``providers.argonne_auth.get_access_token``
+    # to fetch (or refresh) a real token only when the user actually
+    # selects this provider, so installs without ``globus-sdk`` keep
+    # importing cleanly.
+    "argonne": {
+        "api_base": "https://inference-api.alcf.anl.gov/resource_server/sophia/vllm/v1",
+        "model": "meta-llama/Meta-Llama-3.1-8B-Instruct",
+        "api_key": "",  # Lazy: minted via Globus Auth on demand.
+    },
 }
 
 # Environment variable names for cloud provider API keys
@@ -90,7 +101,7 @@ class LMProviderConfig:
         environment: Deployment environment (dev/staging/production)
     """
 
-    provider: Literal["lm_studio", "ollama", "openai", "anthropic"] = "lm_studio"
+    provider: Literal["lm_studio", "ollama", "openai", "anthropic", "argonne"] = "lm_studio"
     api_base: str = ""
     model: str = ""
     api_key: str = ""
@@ -112,12 +123,67 @@ class LMProviderConfig:
         if not self.model:
             self.model = defaults["model"]
         if not self.api_key:
-            # For cloud providers, try environment variable
+            # Cloud providers source from a well-known env var. Argonne /
+            # ALCF mints a fresh Globus bearer token on demand — kept lazy
+            # so installs without globus-sdk don't need the dep.
             env_var = _CLOUD_API_KEY_ENV.get(self.provider)
             if env_var:
                 self.api_key = os.environ.get(env_var, "")
+            elif self.provider == "argonne":
+                self.api_key = _resolve_argonne_api_key()
             else:
                 self.api_key = defaults["api_key"]
+
+
+def _resolve_argonne_api_key() -> str:
+    """Return a Globus bearer token for the ALCF inference gateway.
+
+    Two escape hatches before we touch globus-sdk:
+
+    1. ``CLIO_ARGONNE_TOKEN`` — explicit override. Set by automation
+       that already has a token (e.g. a parent agent that ran
+       ``argonne_auth.get_access_token`` and exports the result).
+    2. ``CLIO_LM_API_KEY`` — already handled in ``load_config_from_env``;
+       only see ``__post_init__`` if the user really left it blank.
+
+    Otherwise we go through ``providers.argonne_auth``. The import is
+    deferred so ``globus-sdk`` is only required when this provider is
+    actually selected. We swallow ``GlobusUnavailable`` and return ""
+    so ``__post_init__`` doesn't crash on machines without the dep —
+    the LM call itself will surface the missing-dep error with
+    actionable text once the user issues a query.
+    """
+    override = os.environ.get("CLIO_ARGONNE_TOKEN", "").strip()
+    if override:
+        return override
+
+    try:
+        from clio_agent.providers.argonne_auth import (  # noqa: PLC0415
+            GlobusUnavailable,
+            get_access_token,
+            tokens_exist,
+        )
+    except Exception:  # pragma: no cover - import-time error
+        return ""
+
+    # Don't trigger an interactive OAuth flow from inside the config
+    # constructor — that path runs from /health, /doctor, and TUI
+    # introspection where blocking on a browser would be hostile.
+    # If there's no stored token, surface "" and let the upstream
+    # validator emit the actionable "run authenticate" message.
+    if not tokens_exist():
+        return ""
+
+    try:
+        return get_access_token()
+    except GlobusUnavailable:
+        # Logged elsewhere; let downstream error message guide the user.
+        return ""
+    except Exception:
+        # OAuth could not complete (network, refresh expired, etc).
+        # Returning "" lets the LM call fail with a clean 401 rather
+        # than masking it behind config-load tracebacks.
+        return ""
 
 
 def load_config_from_env() -> LMProviderConfig:
@@ -175,6 +241,19 @@ def load_config_from_env() -> LMProviderConfig:
             f"Set CLIO_LM_API_KEY or {env_var} environment variable."
         )
 
+    # Argonne / ALCF — token comes from Globus Auth on demand. If
+    # both the lazy resolver and the explicit env var came up empty,
+    # the user needs to either install globus-sdk + run the OAuth
+    # flow once, or pre-mint a token and export it as CLIO_ARGONNE_TOKEN.
+    if config.provider == "argonne" and not config.api_key:
+        raise ValueError(
+            "Argonne / ALCF provider could not obtain a Globus access "
+            "token. Either:\n"
+            "  1. Install:  pip install 'clio-agent[argonne]'  and run\n"
+            "       python -m clio_agent.providers.argonne_auth authenticate\n"
+            "  2. Or export CLIO_ARGONNE_TOKEN=<token> directly."
+        )
+
     return config
 
 
@@ -196,17 +275,7 @@ def create_lm(config: LMProviderConfig) -> dspy.LM:
     Returns:
         Configured dspy.LM instance
     """
-    if config.provider in ("openai", "anthropic"):
-        model_name = f"{config.provider}/{config.model}"
-    else:
-        # lm_studio and ollama are OpenAI-compatible. Strip an
-        # already-prefixed model id so callers can send either
-        # ``model: claude-haiku-4-5`` or ``model: openai/...``
-        # without producing the doubled prefix DSPy chokes on.
-        bare = config.model
-        if "/" in bare:
-            bare = bare.split("/", 1)[1]
-        model_name = f"openai/{bare}"
+    model_name = _resolve_model_name(config)
 
     extras = _thinking_kwargs(config)
     return dspy.LM(
@@ -224,6 +293,28 @@ def create_lm(config: LMProviderConfig) -> dspy.LM:
         cache=False,
         **extras,
     )
+
+
+def _resolve_model_name(config: LMProviderConfig) -> str:
+    """Prefix the configured model id for litellm.
+
+    - ``openai`` / ``anthropic``: native litellm prefix.
+    - everything else (lm_studio, ollama, argonne, …): treated as
+      OpenAI-compatible by litellm, so we prefix with ``openai/``.
+
+    The only id we rewrite is ``openai/<rest>`` — strip the leading
+    ``openai/`` to avoid the ``openai/openai/claude-haiku-4-5`` shape
+    DSPy/litellm rejects (commit a2bac1a). HuggingFace-style ids like
+    ``ibm/granite-4-h-tiny`` or ``meta-llama/Meta-Llama-3.1-8B-Instruct``
+    pass through intact — the earlier "split at first slash" was too
+    eager and silently mangled them.
+    """
+    if config.provider in ("openai", "anthropic"):
+        return f"{config.provider}/{config.model}"
+    bare = config.model
+    if bare.startswith("openai/"):
+        bare = bare[len("openai/"):]
+    return f"openai/{bare}"
 
 
 def _thinking_kwargs(config: LMProviderConfig) -> dict:
@@ -245,7 +336,7 @@ def _thinking_kwargs(config: LMProviderConfig) -> dict:
         return {}
     if config.provider == "anthropic":
         return {"thinking": {"type": "enabled", "budget_tokens": n}}
-    if config.provider in ("openai", "lm_studio", "ollama"):
+    if config.provider in ("openai", "lm_studio", "ollama", "argonne"):
         if n < 2000:
             effort = "low"
         elif n < 8000:
@@ -267,13 +358,7 @@ def create_router_lm(config: LMProviderConfig) -> dspy.LM:
     Returns:
         Configured dspy.LM instance with lower temperature
     """
-    if config.provider in ("openai", "anthropic"):
-        model_name = f"{config.provider}/{config.model}"
-    else:
-        bare = config.model
-        if "/" in bare:
-            bare = bare.split("/", 1)[1]
-        model_name = f"openai/{bare}"
+    model_name = _resolve_model_name(config)
 
     return dspy.LM(
         model=model_name,

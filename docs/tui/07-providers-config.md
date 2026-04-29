@@ -12,8 +12,44 @@ CLIO's `LMProviderConfig` (`config.py:75-115`) ships with four built-in provider
 | `ollama` | `http://127.0.0.1:11434/v1` | `granite3.1-dense:8b` | literal `"ollama"` |
 | `openai` | `https://api.openai.com/v1` | `gpt-4o-mini` | `OPENAI_API_KEY` env |
 | `anthropic` | `https://api.anthropic.com/v1` | `claude-sonnet-4-20250514` | `ANTHROPIC_API_KEY` env |
+| `argonne` | `https://inference-api.alcf.anl.gov/resource_server/sophia/vllm/v1` | `meta-llama/Meta-Llama-3.1-8B-Instruct` | Globus Auth (lazy) or `CLIO_ARGONNE_TOKEN` env |
 
-(`config.py:40-61`)
+(`config.py:40-72`)
+
+### Argonne / ALCF native models
+
+Set `CLIO_LM_PROVIDER=argonne` to talk to ALCF's hosted vLLM gateway
+(Sophia / Polaris). Authentication is a Globus Auth bearer token tied
+to the user's `anl.gov` / `alcf.anl.gov` identity, minted on demand and
+refreshed for ~6 months from a single OAuth flow.
+
+```sh
+# 1. Install the optional dep:
+pip install 'clio-agent[argonne]'
+
+# 2. Run the OAuth flow once per machine:
+python -m clio_agent.providers.argonne_auth authenticate
+
+# 3. Point CLIO at Sophia (default) — or Polaris:
+export CLIO_LM_PROVIDER=argonne
+export CLIO_LM_API_BASE=https://inference-api.alcf.anl.gov/resource_server/sophia/vllm/v1
+export CLIO_LM_MODEL=meta-llama/Meta-Llama-3.1-8B-Instruct
+clio-agent
+```
+
+The TUI's Settings → Model picker also exposes "ALCF Sophia (Globus
+Auth)", "ALCF Polaris (Globus Auth)", and "ALCF local vLLM (compute-
+node)" presets — picking one issues `PUT /v1/providers/lm` with
+`provider=argonne`, and the backend resolves a token via
+`providers.argonne_auth` if the request body leaves `api_key` blank.
+
+`/health` and `/doctor` report on Argonne separately:
+
+- `globus-sdk` not installed → `unavailable`, with a `pip install`
+  hint.
+- No tokens on disk → `misconfigured`, with the `authenticate` hint.
+- Tokens present → `skipped` (we don't live-probe the gateway since
+  that would refresh tokens on every health hit).
 
 All overridable with `CLIO_LM_API_BASE`, `CLIO_LM_MODEL`, `CLIO_LM_API_KEY`.
 
