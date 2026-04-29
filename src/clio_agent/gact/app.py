@@ -3601,26 +3601,232 @@ def build_app(
         ],
     }
 
+    # Cache for live model discovery. Keyed by preset id (or
+    # "argonne:<cluster>" for the cluster-aware argonne path); value
+    # is (epoch_seconds, [models]). 30 s TTL keeps the picker snappy
+    # if the user spams ←/→ but doesn't mask backend churn (ALCF
+    # rotates loaded models as PBS jobs come and go; LM Studio swaps
+    # models on user action).
+    _LIVE_MODELS_TTL_S = 30.0
+    _live_models_cache: dict[str, tuple[float, list[dict[str, str]]]] = {}
+
+    def _argonne_live_models(cluster: str) -> list[dict[str, str]]:
+        """Hit the ALCF jobs endpoint and return models currently
+        loaded behind the gateway for ``cluster`` (sophia/polaris).
+
+        Falls back to _PROVIDER_MODELS["argonne"]'s static list when
+        the call fails (no token, network down, gateway 5xx). Cached
+        per cluster for _LIVE_MODELS_TTL_S seconds.
+        """
+        cache_key = f"argonne:{cluster}"
+        now = time.time()
+        cached = _live_models_cache.get(cache_key)
+        if cached is not None and now - cached[0] < _LIVE_MODELS_TTL_S:
+            return cached[1]
+
+        token = os.environ.get("CLIO_ARGONNE_TOKEN", "").strip()
+        if not token:
+            try:
+                from clio_agent.providers.argonne_auth import (  # noqa: PLC0415
+                    get_access_token,
+                    tokens_exist,
+                )
+                if tokens_exist():
+                    token = get_access_token()
+            except Exception:
+                token = ""
+        if not token:
+            return list(_PROVIDER_MODELS.get("argonne", []))
+
+        try:
+            import requests  # noqa: PLC0415
+
+            r = requests.get(
+                f"https://inference-api.alcf.anl.gov/resource_server/{cluster}/jobs",
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=4,
+            )
+            r.raise_for_status()
+            payload = r.json()
+        except Exception:
+            return list(_PROVIDER_MODELS.get("argonne", []))
+
+        seen: set[str] = set()
+        models: list[dict[str, str]] = []
+        for job in payload.get("running") or []:
+            for raw in (job.get("Models") or "").split(","):
+                mid = raw.strip()
+                if not mid or mid in seen:
+                    continue
+                seen.add(mid)
+                # Friendly label keeps the HF-style id for unambiguous
+                # selection but trims the org prefix for the visible
+                # "name" field. Description carries the loaded job's
+                # node count + walltime so the user can tell long-
+                # running production loadouts from short benchmark jobs.
+                name = mid.split("/", 1)[-1] if "/" in mid else mid
+                walltime = (job.get("Walltime") or "").strip()
+                nodes = (job.get("Nodes Reserved") or "").strip()
+                desc = f"loaded on {cluster}"
+                if nodes:
+                    desc += f" ({nodes} node{'s' if nodes != '1' else ''})"
+                if walltime:
+                    desc += f", walltime {walltime}"
+                models.append({"id": mid, "name": name, "description": desc})
+
+        # If the API returned a successful but empty list (rare —
+        # cluster has no running models), keep the static fallback so
+        # the picker isn't left empty.
+        if not models:
+            models = list(_PROVIDER_MODELS.get("argonne", []))
+
+        _live_models_cache[cache_key] = (now, models)
+        return models
+
+    def _openai_compat_live_models(preset: "LMProviderPreset") -> list[dict[str, str]]:
+        """Discover models for any OpenAI-compatible preset by hitting
+        ``GET {api_base}/models`` (the OpenAI catalog endpoint, also
+        spoken by LM Studio, Ollama, OpenRouter, vLLM-direct, and
+        Anthropic's own API).
+
+        Auth is per-provider:
+          - anthropic uses ``x-api-key`` + ``anthropic-version``
+          - everyone else uses ``Authorization: Bearer …`` from
+            ANTHROPIC_API_KEY / OPENAI_API_KEY / CLIO_LM_API_KEY,
+            in that order.
+          - lm_studio / ollama / meridian don't validate, so the
+            literal ``"lm-studio"``/``"ollama"`` placeholders work.
+
+        Cached per preset id for _LIVE_MODELS_TTL_S so the picker stays
+        snappy on ←/→. Falls back to ``_PROVIDER_MODELS[preset.provider]``
+        when the call fails (offline, missing key, 5xx).
+        """
+        cache_key = f"preset:{preset.id}"
+        now = time.time()
+        cached = _live_models_cache.get(cache_key)
+        if cached is not None and now - cached[0] < _LIVE_MODELS_TTL_S:
+            return cached[1]
+
+        # Compose URL: api_base usually ends in /v1, OpenAI-spec
+        # /models hangs off /v1. Some bases include /v1 already, some
+        # don't — be tolerant.
+        base = (preset.api_base or "").rstrip("/")
+        if not base:
+            return list(_PROVIDER_MODELS.get(preset.provider, []))
+        url = base + "/models"
+
+        # Provider-specific auth header.
+        headers: dict[str, str] = {}
+        if preset.provider == "anthropic":
+            key = (
+                os.environ.get("ANTHROPIC_API_KEY")
+                or os.environ.get("CLIO_LM_API_KEY")
+                or ""
+            )
+            if not key:
+                return list(_PROVIDER_MODELS.get(preset.provider, []))
+            headers["x-api-key"] = key
+            headers["anthropic-version"] = "2023-06-01"
+        else:
+            key = (
+                os.environ.get("OPENAI_API_KEY")
+                or os.environ.get("CLIO_LM_API_KEY")
+                or {"lm_studio": "lm-studio", "ollama": "ollama"}.get(
+                    preset.provider, ""
+                )
+            )
+            if key:
+                headers["Authorization"] = f"Bearer {key}"
+
+        try:
+            import requests  # noqa: PLC0415
+
+            r = requests.get(url, headers=headers, timeout=4)
+            r.raise_for_status()
+            payload = r.json()
+        except Exception:
+            return list(_PROVIDER_MODELS.get(preset.provider, []))
+
+        # OpenAI shape: {data: [{id, ...}]}. Anthropic uses the same
+        # shape. Tolerate either {data:[…]} or a bare list.
+        raw = payload.get("data") if isinstance(payload, dict) else payload
+        if not isinstance(raw, list):
+            return list(_PROVIDER_MODELS.get(preset.provider, []))
+
+        seen: set[str] = set()
+        models: list[dict[str, str]] = []
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            mid = (item.get("id") or item.get("name") or "").strip()
+            if not mid or mid in seen:
+                continue
+            seen.add(mid)
+            name = mid.split("/", 1)[-1] if "/" in mid else mid
+            owner = item.get("owned_by") or ""
+            desc = f"live from {preset.label}"
+            if owner and owner.lower() not in {"system", "openai-internal"}:
+                desc += f" (owned_by {owner})"
+            models.append({"id": mid, "name": name, "description": desc})
+
+        if not models:
+            models = list(_PROVIDER_MODELS.get(preset.provider, []))
+        _live_models_cache[cache_key] = (now, models)
+        return models
+
     @app.get("/v1/providers/{provider_id}/models")
     async def list_provider_models(provider_id: str) -> dict[str, Any]:
-        """Per-provider curated model catalog. The TUI Settings →
-        Model tab reads this for each provider it knows about. Returns
-        an empty list (200, not 404) for unknown providers so the TUI
-        can keep loading the rest of the catalog.
+        """Per-provider model catalog — live where possible.
 
-        Resolution order: try the path component as a preset id first
-        (e.g. ``argonne_sophia`` resolves to its preset → provider kind
-        → catalog row), then fall back to a direct kind lookup
-        (``argonne``). Both shapes work; gact-tui's settings flow
-        passes preset id, the LM-config picker passes provider kind.
+        Resolution:
+        - Path is a preset id (``argonne_sophia``, ``anthropic``,
+          ``lm_studio``, …): look the preset up. Argonne presets hit
+          ALCF's /jobs endpoint (the vLLM /models proxy 405s on the
+          gateway). Everyone else uses the OpenAI-compatible
+          ``GET {api_base}/models`` discovery (Anthropic, OpenAI,
+          OpenRouter, LM Studio, Ollama, Meridian, vLLM-direct all
+          implement that shape).
+        - Path is a bare provider kind (``argonne``, ``openai``):
+          live-fetch using the kind's first registered preset's
+          api_base + auth.
+        - Fall through to the static catalog for anything else.
+
+        Live fetches are cached for _LIVE_MODELS_TTL_S so spamming
+        ←/→ in the picker doesn't hammer the upstream. Failures
+        (no key, network down, 5xx) silently fall back to the static
+        catalog so the picker is never empty.
         """
-        # Map preset id → provider kind when the path uses a preset id.
+        # Match a preset id first.
         for p in _LM_PRESETS:
             if p.id == provider_id:
-                models = _PROVIDER_MODELS.get(p.provider, [])
-                return {"models": models}
+                if p.provider == "argonne":
+                    cluster = _argonne_cluster_from_preset(p)
+                    return {"models": _argonne_live_models(cluster)}
+                return {"models": _openai_compat_live_models(p)}
+        # Bare provider kind — pick the first preset that uses this
+        # kind so we have an api_base + label to drive discovery.
+        if provider_id == "argonne":
+            return {"models": _argonne_live_models("sophia")}
+        for p in _LM_PRESETS:
+            if p.provider == provider_id:
+                return {"models": _openai_compat_live_models(p)}
+        # Last-ditch static.
         models = _PROVIDER_MODELS.get(provider_id, [])
         return {"models": models}
+
+    def _argonne_cluster_from_preset(preset: "LMProviderPreset") -> str:
+        """Pull the cluster slug ("sophia"/"polaris") out of an
+        argonne preset's api_base. Argonne presets all point at
+        ``…/resource_server/<cluster>/vllm/v1`` so the slug is the
+        path component immediately after ``resource_server``."""
+        base = (preset.api_base or "").rstrip("/")
+        marker = "/resource_server/"
+        idx = base.find(marker)
+        if idx == -1:
+            return "sophia"
+        tail = base[idx + len(marker):]
+        slug = tail.split("/", 1)[0]
+        return slug or "sophia"
 
     # ---- /v1/mcp/servers (#13) ---------------------------------------
 
