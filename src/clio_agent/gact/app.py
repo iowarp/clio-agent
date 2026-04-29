@@ -5218,6 +5218,204 @@ def build_app(
             )
         return JSONResponse(status_code=204, content=None)
 
+    # ---- /v1/workspaces/{wid}/files (gact-tui @-picker) -------------
+    #
+    # gact-tui's `@`-trigger file picker calls
+    # /v1/workspaces/{wid}/files expecting a flat list of FileEntry
+    # rooted at the workspace's root_path. Until this endpoint existed
+    # the picker rendered as 404 ("file-picker: gact: 404"). We walk
+    # the workspace root, skip cost-walking dirs (.git, __pycache__,
+    # node_modules, .venv, build/), respect the file policy's
+    # allow-symlinks flag, and cap at _FILE_PICKER_LIMIT entries so a
+    # giant repo doesn't lock the picker for seconds while the
+    # filesystem walk runs.
+    _FILE_PICKER_LIMIT = 5000
+    _FILE_PICKER_SKIP_DIRS = {
+        ".git", ".hg", ".svn",
+        "__pycache__", ".mypy_cache", ".pytest_cache", ".ruff_cache",
+        "node_modules", ".npm",
+        ".venv", "venv", ".tox",
+        "build", "dist", ".egg-info",
+        ".clio_agent",  # ARC's local persistence
+    }
+
+    @app.get("/v1/workspaces/{wid}/files")
+    async def list_workspace_files(wid: str) -> dict[str, Any]:
+        """SPEC §6.9 — list files under a workspace's root_path.
+
+        Returns ``{"entries": [{"path", "type", "size", "modified"}, …]}``
+        with paths relative to root_path so the TUI can show short
+        labels. Type is "file" or "dir"; the picker filters dirs
+        client-side. Hard-capped at _FILE_PICKER_LIMIT to keep large
+        repos from blocking the modal.
+        """
+
+        ws = app.state.workspaces.get(wid)
+        if ws is None:
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(error=ErrorInfo(
+                    error="not_found",
+                    message=f"workspace not found: {wid}",
+                    recoverable=False,
+                )).model_dump(exclude_none=True),
+            )
+        root = Path(ws.root_path or os.getcwd()).expanduser()
+        if not root.is_dir():
+            return {"entries": []}
+
+        # File policy decides whether symlinks are walkable; everything
+        # else (size cap, allowed-roots) is enforced at read-time, not
+        # listing-time.
+        allow_symlinks = False
+        try:
+            from clio_agent.tools.file_policy import FileAccessPolicy  # noqa: PLC0415
+
+            policy = FileAccessPolicy.from_mapping(os.environ)
+            allow_symlinks = policy.allow_symlinks
+        except Exception:
+            pass
+
+        entries: list[dict[str, Any]] = []
+        cap = _FILE_PICKER_LIMIT
+
+        def _walk(d: Path) -> None:
+            nonlocal cap
+            if cap <= 0:
+                return
+            try:
+                raw_children = list(d.iterdir())
+            except (OSError, PermissionError):
+                return
+            # Don't stat-sort up front — a single un-statable child
+            # (broken symlink, restricted unix socket in /tmp) raises
+            # mid-key-eval and drops the entire list. Sort by name only;
+            # we'll check is_dir per-entry behind a try.
+            raw_children.sort(key=lambda p: p.name)
+            for child in raw_children:
+                if cap <= 0:
+                    return
+                name = child.name
+                if name in _FILE_PICKER_SKIP_DIRS:
+                    continue
+                try:
+                    if child.is_symlink() and not allow_symlinks:
+                        continue
+                    is_dir = child.is_dir()
+                except OSError:
+                    # Unreadable entry — skip rather than abort the whole
+                    # walk. Common in /tmp where other users' sockets
+                    # are 0600 and trip stat's permission check.
+                    continue
+                rel = str(child.relative_to(root))
+                entry: dict[str, Any] = {
+                    "path": rel,
+                    "type": "dir" if is_dir else "file",
+                }
+                if not is_dir:
+                    try:
+                        st = child.stat()
+                        entry["size"] = st.st_size
+                        entry["modified"] = datetime.fromtimestamp(
+                            st.st_mtime, tz=timezone.utc
+                        ).isoformat().replace("+00:00", "Z")
+                    except OSError:
+                        pass
+                entries.append(entry)
+                cap -= 1
+                if is_dir:
+                    _walk(child)
+
+        _walk(root)
+        return {"entries": entries}
+
+    @app.get("/v1/workspaces/{wid}/files/read")
+    async def read_workspace_file(wid: str, path: str) -> JSONResponse:
+        """SPEC §6.9 — read one file's content.
+
+        Serves the raw bytes (text/plain) so the TUI's preview panel
+        can render code without a base64 decode. Refuses paths that
+        escape the workspace root (``..`` segments) and paths beyond
+        the file policy's max_file_size_bytes.
+        """
+
+        ws = app.state.workspaces.get(wid)
+        if ws is None:
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(error=ErrorInfo(
+                    error="not_found",
+                    message=f"workspace not found: {wid}",
+                    recoverable=False,
+                )).model_dump(exclude_none=True),
+            )
+        root = Path(ws.root_path or os.getcwd()).expanduser().resolve()
+        try:
+            target = (root / path).resolve()
+        except Exception:
+            raise HTTPException(
+                status_code=400,
+                detail=ErrorEnvelope(error=ErrorInfo(
+                    error="invalid_path",
+                    message=f"could not resolve path: {path}",
+                    recoverable=False,
+                )).model_dump(exclude_none=True),
+            )
+        # Refuse path-traversal: target must be at-or-below root.
+        try:
+            target.relative_to(root)
+        except ValueError:
+            raise HTTPException(
+                status_code=403,
+                detail=ErrorEnvelope(error=ErrorInfo(
+                    error="path_outside_workspace",
+                    message=f"path escapes workspace: {path}",
+                    recoverable=False,
+                )).model_dump(exclude_none=True),
+            )
+        if not target.is_file():
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(error=ErrorInfo(
+                    error="not_found",
+                    message=f"file not found: {path}",
+                    recoverable=False,
+                )).model_dump(exclude_none=True),
+            )
+        # Enforce file-policy size cap so a 50 GB log doesn't OOM.
+        try:
+            from clio_agent.tools.file_policy import FileAccessPolicy  # noqa: PLC0415
+
+            policy = FileAccessPolicy.from_mapping(os.environ)
+            max_bytes = policy.max_file_size_bytes
+        except Exception:
+            max_bytes = 1024 * 1024 * 1024  # 1 GiB fallback
+        size = target.stat().st_size
+        if size > max_bytes:
+            raise HTTPException(
+                status_code=413,
+                detail=ErrorEnvelope(error=ErrorInfo(
+                    error="file_too_large",
+                    message=f"file exceeds policy cap ({size} > {max_bytes} bytes)",
+                    recoverable=False,
+                )).model_dump(exclude_none=True),
+            )
+        try:
+            data = target.read_bytes()
+        except Exception as exc:
+            raise HTTPException(
+                status_code=500,
+                detail=ErrorEnvelope(error=ErrorInfo(
+                    error="read_failed",
+                    message=f"could not read file: {exc}",
+                    recoverable=False,
+                )).model_dump(exclude_none=True),
+            )
+        return JSONResponse(
+            content=data.decode("utf-8", errors="replace"),
+            media_type="text/plain; charset=utf-8",
+        )
+
     # ---- /v1/providers/lm (CLIO-BBBBBBBBBB-D) ------------------------
 
     _LM_PRESETS: list[LMProviderPreset] = [
