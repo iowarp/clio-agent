@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import importlib.util
 import json
 import os
 import threading
@@ -3225,27 +3226,191 @@ def build_app(
 
     # ---- /v1/providers (#15) ------------------------------------------
 
+    def _provider_auth_state(preset: "LMProviderPreset") -> tuple[list[str], bool]:
+        """Return (auth_methods, is_authenticated) for a preset.
+
+        Maps CLIO's preset flags to the GACT v0.1 §6.12 Provider shape so
+        the TUI's settings picker can render the right state badge:
+
+        - argonne_*: globus oauth; authenticated when tokens are on disk
+          AND globus-sdk is importable.
+        - cloud (requires_api_key=True): api_key auth; authenticated when
+          the matching env var is set.
+        - local (lm_studio/ollama/meridian/codex): no auth required;
+          surface as ``["none"]``, always authenticated.
+        """
+        if preset.provider == "argonne":
+            authed = False
+            try:
+                from clio_agent.providers import argonne_auth  # noqa: PLC0415
+                authed = (
+                    argonne_auth.tokens_exist()
+                    and importlib.util.find_spec("globus_sdk") is not None
+                )
+            except Exception:
+                authed = False
+            return ["oauth"], authed
+
+        if preset.requires_api_key:
+            env_var = {
+                "anthropic": "ANTHROPIC_API_KEY",
+                "openai": "OPENAI_API_KEY",
+            }.get(preset.provider, "CLIO_LM_API_KEY")
+            return ["api_key"], bool(os.environ.get(env_var) or os.environ.get("CLIO_LM_API_KEY"))
+
+        return ["none"], True
+
     @app.get("/v1/providers")
     async def list_providers() -> dict[str, Any]:
-        """SPEC §6.12 — generic LM provider catalog. CLIO offers
-        whatever DSPy/litellm can speak; we surface the same preset
-        list /v1/providers/lm publishes but in the v0.1 wire shape
-        (id, name, default_model, env_keys).
+        """SPEC §6.12 — generic LM provider catalog.
+
+        Returns one row per preset with the v0.1 fields (id, name,
+        auth_methods, is_authenticated, default_model) so the TUI's
+        settings picker can render the right state badge per provider
+        and decide whether to surface a "Login" affordance.
         """
 
         rows = []
         for p in _LM_PRESETS:
+            auth_methods, is_authed = _provider_auth_state(p)
             rows.append({
                 "id": p.id,
                 "name": p.label,
+                "auth_methods": auth_methods,
+                "is_authenticated": is_authed,
                 "default_model": p.suggested_model,
                 "api_base": p.api_base,
                 "env_keys": (
                     ["CLIO_LM_API_KEY"] if p.requires_api_key else []
                 ),
                 "description": p.description,
+                "metadata": {
+                    "provider_kind": p.provider,
+                    "requires_api_key": p.requires_api_key,
+                },
             })
         return {"providers": rows}
+
+    # NOTE: GET /v1/providers/{provider_id} is in the v0.1 spec but
+    # we deliberately don't register it — it would shadow the literal
+    # /v1/providers/lm route (FastAPI matches by registration order),
+    # and the gact-tui client only uses ListProviders + ListProviderModels
+    # so the per-id GET has no real consumer. If a consumer appears,
+    # move the lm route registration earlier than the dynamic match.
+
+    @app.post("/v1/providers/{provider_id}/auth")
+    async def auth_provider(provider_id: str, request: Request) -> dict[str, Any]:
+        """SPEC §6.12 — kick off provider-specific auth.
+
+        For argonne_*, this drives the Globus OAuth flow. The Globus
+        SDK prints a URL to the *backend's* stdout that the user must
+        visit; we report the status back to the TUI so it can render a
+        "check your terminal" banner. If tokens already exist and
+        validate, we return is_authenticated=true immediately and the
+        TUI can skip its banner.
+
+        Other providers (cloud / local) use api_key / no-auth and
+        return 405 with a hint pointing to PUT /v1/providers/lm.
+        """
+
+        preset = next((p for p in _LM_PRESETS if p.id == provider_id), None)
+        if preset is None:
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(error=ErrorInfo(
+                    error="not_found",
+                    message=f"unknown provider: {provider_id}",
+                    recoverable=False,
+                )).model_dump(exclude_none=True),
+            )
+
+        if preset.provider != "argonne":
+            raise HTTPException(
+                status_code=405,
+                detail=ErrorEnvelope(error=ErrorInfo(
+                    error="unsupported",
+                    message=(
+                        f"provider '{provider_id}' uses "
+                        f"{'api_key' if preset.requires_api_key else 'no'} "
+                        "auth; pass api_key directly to PUT /v1/providers/lm."
+                    ),
+                    recoverable=False,
+                )).model_dump(exclude_none=True),
+            )
+
+        # Argonne / ALCF: invoke the Globus authenticate flow. Run in a
+        # thread because the SDK's login_flow is blocking (prints a URL
+        # and waits for the user to paste a code).
+        try:
+            from clio_agent.providers import argonne_auth  # noqa: PLC0415
+        except Exception as exc:
+            raise HTTPException(
+                status_code=503,
+                detail=ErrorEnvelope(error=ErrorInfo(
+                    error="dependency_missing",
+                    message=f"argonne_auth import failed: {exc}",
+                    recoverable=False,
+                )).model_dump(exclude_none=True),
+            ) from exc
+
+        if importlib.util.find_spec("globus_sdk") is None:
+            raise HTTPException(
+                status_code=503,
+                detail=ErrorEnvelope(error=ErrorInfo(
+                    error="dependency_missing",
+                    message=(
+                        "globus-sdk not installed. Install with "
+                        "'pip install clio-agent[argonne]' on the "
+                        "backend host and retry."
+                    ),
+                    recoverable=True,
+                )).model_dump(exclude_none=True),
+            )
+
+        body = {}
+        try:
+            body = await request.json()
+        except Exception:
+            pass
+        force = bool(body.get("force", False))
+
+        # Fast path: tokens already valid → no terminal interaction needed.
+        if not force and argonne_auth.check_auth_status():
+            return {
+                "is_authenticated": True,
+                "provider_id": provider_id,
+                "instructions": "",
+            }
+
+        loop = asyncio.get_running_loop()
+        try:
+            await loop.run_in_executor(
+                None, lambda: argonne_auth.authenticate(force=force)
+            )
+        except Exception as exc:
+            raise HTTPException(
+                status_code=502,
+                detail=ErrorEnvelope(error=ErrorInfo(
+                    error="argonne_auth_failed",
+                    message=f"Globus authentication failed: {exc}",
+                    recoverable=True,
+                )).model_dump(exclude_none=True),
+            ) from exc
+
+        is_authed = argonne_auth.check_auth_status()
+        return {
+            "is_authenticated": is_authed,
+            "provider_id": provider_id,
+            "instructions": (
+                ""
+                if is_authed
+                else (
+                    "Globus printed an OAuth URL to the backend host's "
+                    "terminal — visit it and paste the code there to "
+                    "complete login, then retry."
+                )
+            ),
+        }
 
     # Per-provider model catalogs. Hand-curated rather than introspected
     # because most upstreams either don't expose a /models endpoint or
