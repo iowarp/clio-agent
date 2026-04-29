@@ -41,7 +41,7 @@ def test_no_agent_no_arc_overall_is_unavailable(tmp_path: Path) -> None:
     body = _health(build_app(sessions_path=tmp_path / "s.json"))
     rows = {r["name"]: r for r in body["integrations"]}
     assert rows["agent"]["status"] == "unavailable"
-    assert rows["arc"]["status"] == "degraded"
+    assert rows["memory"]["status"] == "degraded"
     # `unavailable` beats `degraded` beats `ready`.
     assert body["overall_status"] == "unavailable"
     assert body["healthy"] is False
@@ -56,8 +56,8 @@ def test_fake_agent_flagged_degraded(tmp_path: Path) -> None:
     rows = {r["name"]: r for r in body["integrations"]}
     assert rows["agent"]["status"] == "degraded"  # tests module -> fake
     assert "fake" in rows["agent"]["detail"].lower()
-    assert rows["arc"]["status"] == "ready"
-    assert "hit rate" in rows["arc"]["detail"]
+    assert rows["memory"]["status"] == "ready"
+    assert "hit rate" in rows["memory"]["detail"]
     # Degraded because the agent is fake; nothing unavailable.
     assert body["overall_status"] == "degraded"
     assert body["healthy"] is True
@@ -70,5 +70,5 @@ def test_broken_arc_reports_unavailable(tmp_path: Path) -> None:
         arc=_BrokenARC(),
     ))
     rows = {r["name"]: r for r in body["integrations"]}
-    assert rows["arc"]["status"] == "unavailable"
-    assert "raised" in rows["arc"]["detail"]
+    assert rows["memory"]["status"] == "unavailable"
+    assert "raised" in rows["memory"]["detail"]

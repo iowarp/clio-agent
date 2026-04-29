@@ -148,7 +148,11 @@ class TestForwardDispatch:
         result = agent.forward(question="What is the meaning of life?", session_id="test_session")
 
         assert result.selected_expert == "none"
-        assert "specialized in scientific data" in result.answer
+        # Out-of-scope answer should explicitly say so and name the available
+        # experts so the user knows how to rephrase. (Message rewritten in
+        # commit 6b01c39 to surface the routing decision visibly.)
+        assert "out-of-scope" in result.answer.lower()
+        assert "experts" in result.answer.lower()
 
     def test_expert_failure_logs_status(self, agent):
         """Test that expert failure results in structured error."""
@@ -161,8 +165,10 @@ class TestForwardDispatch:
         result = agent.forward(question="Analyze HDF5", session_id="test_session")
 
         assert result.selected_expert == "data"
-        # User-facing answer should be friendly (no raw traceback)
-        assert "issue" in result.answer.lower()
+        # User-facing answer should be friendly (no raw traceback) and
+        # name which expert tripped so the user can decide whether to retry.
+        assert "data expert" in result.answer.lower()
+        assert "Traceback" not in result.answer
         # Structured error_info should be present
         assert result.error_info is not None
         assert result.error_info["error"] == "expert_error"

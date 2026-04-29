@@ -54,9 +54,14 @@ def test_dispatch_clear_drops_messages(client: TestClient) -> None:
     resp = client.post(f"/v1/sessions/{sid}/commands/clear").json()
     assert resp["command"] == "/clear"
     assert "cleared" in resp["result"]["text"]
-    assert (
-        len(client.get(f"/v1/sessions/{sid}/messages").json()["messages"]) == 0
-    )
+    # /clear drops the conversation but leaves a synthetic command_result
+    # message so the TUI shows visible "Cleared." confirmation
+    # (commit 6b01c39 — "backend cmds materialise"). Real user/assistant
+    # turns must be gone; only the synthetic confirmation may remain.
+    msgs = client.get(f"/v1/sessions/{sid}/messages").json()["messages"]
+    real_msgs = [m for m in msgs if m.get("metadata", {}).get("synthetic") != "command_result"]
+    assert real_msgs == [], f"non-synthetic messages survived /clear: {real_msgs}"
+    # message_count tracks real turns; synthetic confirmations don't count.
     sess = client.get(f"/v1/sessions/{sid}").json()
     assert sess["message_count"] == 0
 

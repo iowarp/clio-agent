@@ -83,15 +83,7 @@ def test_capabilities_advertises_v0_2(client: TestClient) -> None:
         )
 
 
-@pytest.mark.parametrize(
-    "method,path",
-    [
-        ("GET", "/v1/tools"),
-    ],
-)
-def test_stubbed_routes_return_501_with_v0_2_envelope(
-    client: TestClient, method: str, path: str
-) -> None:
+def test_stubbed_routes_return_501_with_v0_2_envelope() -> None:
     """Every scaffolded-but-not-wired route MUST return the v0.2
     error envelope with a 501, not a plain FastAPI 404 or bare
     string body.
@@ -99,17 +91,42 @@ def test_stubbed_routes_return_501_with_v0_2_envelope(
     The envelope shape (${error: {error, message, details,
     recoverable}}$) is what a v0.2 client expects — honest reporting
     means the client can disable the affordance rather than error
-    out mid-request."""
+    out mid-request.
 
-    resp = client.request(method, path, json={} if method == "POST" else None)
-    assert resp.status_code == 501, f"{method} {path}: status {resp.status_code}"
-    body = resp.json()
-    assert "error" in body, f"{method} {path}: missing `error` wrapper: {body}"
-    inner = body["error"]
-    assert isinstance(inner, dict), f"{method} {path}: error is not an object: {inner}"
-    for required in ("error", "message"):
-        assert required in inner, f"{method} {path}: error missing {required}: {inner}"
-    # The taxonomy is a typed string; not_implemented stubs use
-    # "config_error" (the endpoint is configurable / not ready).
+    The build_app() stub list drained as the surface filled in
+    (/v1/tools moved into a real catalog endpoint in commit 6199e9e),
+    so we exercise the *envelope-builder* directly + stand up a
+    throwaway FastAPI app wired the same way build_app does. Future
+    re-stubs are covered automatically without parametrize churn.
+    """
+
+    from fastapi import FastAPI  # noqa: PLC0415
+    from fastapi.responses import JSONResponse  # noqa: PLC0415
+
+    from clio_agent.gact.app import _not_implemented  # noqa: PLC0415
+
+    # 1. Envelope-builder shape — this is what every stub route returns.
+    envelope = _not_implemented("probe_capability").model_dump(exclude_none=True)
+    assert "error" in envelope
+    inner = envelope["error"]
     assert inner["error"] == "config_error"
     assert "capability not yet implemented" in inner["message"]
+    assert inner["details"]["capability"] == "probe_capability"
+    assert inner["recoverable"] is False
+
+    # 2. Wire-format check — register a route via the same pattern
+    # build_app() uses for stubs and verify the HTTP response shape.
+    probe_app = FastAPI()
+
+    async def _probe_stub() -> JSONResponse:
+        body = _not_implemented("probe_capability").model_dump(exclude_none=True)
+        return JSONResponse(status_code=501, content=body)
+
+    probe_app.add_api_route(
+        "/v1/_probe_stub", _probe_stub, methods=["GET"], include_in_schema=False
+    )
+    resp = TestClient(probe_app).get("/v1/_probe_stub")
+    assert resp.status_code == 501
+    body = resp.json()
+    assert body["error"]["error"] == "config_error"
+    assert "capability not yet implemented" in body["error"]["message"]
