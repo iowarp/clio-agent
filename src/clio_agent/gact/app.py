@@ -3608,30 +3608,46 @@ def build_app(
     # rotates loaded models as PBS jobs come and go; LM Studio swaps
     # models on user action).
     _LIVE_MODELS_TTL_S = 30.0
-    _live_models_cache: dict[str, tuple[float, list[dict[str, str]]]] = {}
+    # Cache value: (epoch_seconds, models, source, error_message). Source
+    # is "live" / "static_fallback"; error_message is the human-readable
+    # reason live failed (empty when source=="live"). Surfacing this on
+    # /v1/providers/{id}/models lets the TUI render a banner instead of
+    # silently lying with a stale catalog.
+    _live_models_cache: dict[
+        str, tuple[float, list[dict[str, str]], str, str]
+    ] = {}
 
-    def _argonne_live_models(cluster: str) -> list[dict[str, str]]:
-        """Hit the ALCF jobs endpoint and return models currently
-        loaded behind the gateway for ``cluster`` (sophia/polaris).
+    def _argonne_live_models(
+        cluster: str,
+    ) -> tuple[list[dict[str, str]], str, str]:
+        """Hit the ALCF jobs endpoint and return ``(models, source,
+        error_message)`` for the catalog endpoint.
 
-        Falls back to _PROVIDER_MODELS["argonne"]'s static list when
-        the call fails (no token, network down, gateway 5xx). Cached
-        per cluster for _LIVE_MODELS_TTL_S seconds.
+        On any failure we still return the static fallback so the
+        picker isn't empty, BUT the error is surfaced verbatim
+        (with an actionable hint when known) so the TUI can warn
+        the user. Caller decides whether to render the warning.
         """
         cache_key = f"argonne:{cluster}"
         now = time.time()
         cached = _live_models_cache.get(cache_key)
         if cached is not None and now - cached[0] < _LIVE_MODELS_TTL_S:
-            return cached[1]
+            return cached[1], cached[2], cached[3]
+
+        static = list(_PROVIDER_MODELS.get("argonne", []))
+
+        def _fallback(reason: str) -> tuple[list[dict[str, str]], str, str]:
+            _live_models_cache[cache_key] = (now, static, "static_fallback", reason)
+            return static, "static_fallback", reason
 
         # Accept CLIO's own override OR the env var alcf-agentics-
-        # workflow uses (ALCF_INFERENCE_TOKEN / access_token) since
-        # users on Aurora often already have one of those exported.
+        # workflow uses (ALCF_INFERENCE_TOKEN / access_token).
         token = (
             os.environ.get("CLIO_ARGONNE_TOKEN", "").strip()
             or os.environ.get("ALCF_INFERENCE_TOKEN", "").strip()
             or os.environ.get("access_token", "").strip()
         )
+        token_source = "env"
         if not token:
             try:
                 from clio_agent.providers.argonne_auth import (  # noqa: PLC0415
@@ -3640,10 +3656,20 @@ def build_app(
                 )
                 if tokens_exist():
                     token = get_access_token()
-            except Exception:
-                token = ""
+                    token_source = "globus_disk"
+            except Exception as exc:
+                return _fallback(
+                    "no token available — globus refresh failed: "
+                    f"{exc}. Re-auth: `python -m clio_agent.providers"
+                    ".argonne_auth authenticate -f`"
+                )
         if not token:
-            return list(_PROVIDER_MODELS.get("argonne", []))
+            return _fallback(
+                "no token available. Set CLIO_ARGONNE_TOKEN / "
+                "ALCF_INFERENCE_TOKEN, or run `python -m clio_agent."
+                "providers.argonne_auth authenticate -f` once to "
+                "store one in ~/.globus."
+            )
 
         try:
             import requests  # noqa: PLC0415
@@ -3653,10 +3679,28 @@ def build_app(
                 headers={"Authorization": f"Bearer {token}"},
                 timeout=4,
             )
-            r.raise_for_status()
+        except Exception as exc:
+            return _fallback(
+                f"ALCF gateway unreachable: {exc}. Check network / proxy."
+            )
+
+        if r.status_code == 401:
+            return _fallback(
+                f"ALCF token rejected (401, source={token_source}). "
+                "Token likely expired — re-auth: `python -m "
+                "clio_agent.providers.argonne_auth authenticate -f` "
+                "and re-export ALCF_INFERENCE_TOKEN before redeploying."
+            )
+        if r.status_code >= 400:
+            return _fallback(
+                f"ALCF gateway returned HTTP {r.status_code}: "
+                f"{(r.text or '')[:200]}"
+            )
+
+        try:
             payload = r.json()
-        except Exception:
-            return list(_PROVIDER_MODELS.get("argonne", []))
+        except Exception as exc:
+            return _fallback(f"ALCF response not JSON: {exc}")
 
         seen: set[str] = set()
         models: list[dict[str, str]] = []
@@ -3666,11 +3710,6 @@ def build_app(
                 if not mid or mid in seen:
                     continue
                 seen.add(mid)
-                # Friendly label keeps the HF-style id for unambiguous
-                # selection but trims the org prefix for the visible
-                # "name" field. Description carries the loaded job's
-                # node count + walltime so the user can tell long-
-                # running production loadouts from short benchmark jobs.
                 name = mid.split("/", 1)[-1] if "/" in mid else mid
                 walltime = (job.get("Walltime") or "").strip()
                 nodes = (job.get("Nodes Reserved") or "").strip()
@@ -3681,48 +3720,40 @@ def build_app(
                     desc += f", walltime {walltime}"
                 models.append({"id": mid, "name": name, "description": desc})
 
-        # If the API returned a successful but empty list (rare —
-        # cluster has no running models), keep the static fallback so
-        # the picker isn't left empty.
         if not models:
-            models = list(_PROVIDER_MODELS.get("argonne", []))
+            return _fallback(
+                f"ALCF /{cluster}/jobs returned no running models — "
+                "cluster idle? showing static catalog as a hint."
+            )
 
-        _live_models_cache[cache_key] = (now, models)
-        return models
+        _live_models_cache[cache_key] = (now, models, "live", "")
+        return models, "live", ""
 
-    def _openai_compat_live_models(preset: "LMProviderPreset") -> list[dict[str, str]]:
-        """Discover models for any OpenAI-compatible preset by hitting
-        ``GET {api_base}/models`` (the OpenAI catalog endpoint, also
-        spoken by LM Studio, Ollama, OpenRouter, vLLM-direct, and
-        Anthropic's own API).
+    def _openai_compat_live_models(
+        preset: "LMProviderPreset",
+    ) -> tuple[list[dict[str, str]], str, str]:
+        """Discover models for any OpenAI-compatible preset.
 
-        Auth is per-provider:
-          - anthropic uses ``x-api-key`` + ``anthropic-version``
-          - everyone else uses ``Authorization: Bearer …`` from
-            ANTHROPIC_API_KEY / OPENAI_API_KEY / CLIO_LM_API_KEY,
-            in that order.
-          - lm_studio / ollama / meridian don't validate, so the
-            literal ``"lm-studio"``/``"ollama"`` placeholders work.
-
-        Cached per preset id for _LIVE_MODELS_TTL_S so the picker stays
-        snappy on ←/→. Falls back to ``_PROVIDER_MODELS[preset.provider]``
-        when the call fails (offline, missing key, 5xx).
+        Returns ``(models, source, error_message)`` so the TUI can
+        render an actionable warning when live discovery fell back.
         """
         cache_key = f"preset:{preset.id}"
         now = time.time()
         cached = _live_models_cache.get(cache_key)
         if cached is not None and now - cached[0] < _LIVE_MODELS_TTL_S:
-            return cached[1]
+            return cached[1], cached[2], cached[3]
 
-        # Compose URL: api_base usually ends in /v1, OpenAI-spec
-        # /models hangs off /v1. Some bases include /v1 already, some
-        # don't — be tolerant.
+        static = list(_PROVIDER_MODELS.get(preset.provider, []))
+
+        def _fallback(reason: str) -> tuple[list[dict[str, str]], str, str]:
+            _live_models_cache[cache_key] = (now, static, "static_fallback", reason)
+            return static, "static_fallback", reason
+
         base = (preset.api_base or "").rstrip("/")
         if not base:
-            return list(_PROVIDER_MODELS.get(preset.provider, []))
+            return _fallback("preset has no api_base — nothing to query")
         url = base + "/models"
 
-        # Provider-specific auth header.
         headers: dict[str, str] = {}
         if preset.provider == "anthropic":
             key = (
@@ -3731,7 +3762,10 @@ def build_app(
                 or ""
             )
             if not key:
-                return list(_PROVIDER_MODELS.get(preset.provider, []))
+                return _fallback(
+                    "no API key — set ANTHROPIC_API_KEY (or "
+                    "CLIO_LM_API_KEY) in the backend's env."
+                )
             headers["x-api-key"] = key
             headers["anthropic-version"] = "2023-06-01"
         else:
@@ -3749,16 +3783,32 @@ def build_app(
             import requests  # noqa: PLC0415
 
             r = requests.get(url, headers=headers, timeout=4)
-            r.raise_for_status()
-            payload = r.json()
-        except Exception:
-            return list(_PROVIDER_MODELS.get(preset.provider, []))
+        except Exception as exc:
+            return _fallback(f"{preset.label} unreachable: {exc}")
 
-        # OpenAI shape: {data: [{id, ...}]}. Anthropic uses the same
-        # shape. Tolerate either {data:[…]} or a bare list.
+        if r.status_code == 401:
+            return _fallback(
+                f"{preset.label} rejected the API key (401). "
+                "Check the env var on the backend host."
+            )
+        if r.status_code >= 400:
+            return _fallback(
+                f"{preset.label} returned HTTP {r.status_code}: "
+                f"{(r.text or '')[:200]}"
+            )
+
+        try:
+            payload = r.json()
+        except Exception as exc:
+            return _fallback(
+                f"{preset.label} response not JSON: {exc}"
+            )
+
         raw = payload.get("data") if isinstance(payload, dict) else payload
         if not isinstance(raw, list):
-            return list(_PROVIDER_MODELS.get(preset.provider, []))
+            return _fallback(
+                f"{preset.label} response missing data[] array"
+            )
 
         seen: set[str] = set()
         models: list[dict[str, str]] = []
@@ -3777,9 +3827,11 @@ def build_app(
             models.append({"id": mid, "name": name, "description": desc})
 
         if not models:
-            models = list(_PROVIDER_MODELS.get(preset.provider, []))
-        _live_models_cache[cache_key] = (now, models)
-        return models
+            return _fallback(
+                f"{preset.label} returned an empty model list"
+            )
+        _live_models_cache[cache_key] = (now, models, "live", "")
+        return models, "live", ""
 
     @app.get("/v1/providers/{provider_id}/models")
     async def list_provider_models(provider_id: str) -> dict[str, Any]:
@@ -3804,22 +3856,29 @@ def build_app(
         catalog so the picker is never empty.
         """
         # Match a preset id first.
+        def _wrap(triple: tuple[list[dict[str, str]], str, str]) -> dict[str, Any]:
+            models, source, err = triple
+            out: dict[str, Any] = {"models": models, "source": source}
+            if err:
+                out["error"] = err
+            return out
+
         for p in _LM_PRESETS:
             if p.id == provider_id:
                 if p.provider == "argonne":
                     cluster = _argonne_cluster_from_preset(p)
-                    return {"models": _argonne_live_models(cluster)}
-                return {"models": _openai_compat_live_models(p)}
+                    return _wrap(_argonne_live_models(cluster))
+                return _wrap(_openai_compat_live_models(p))
         # Bare provider kind — pick the first preset that uses this
         # kind so we have an api_base + label to drive discovery.
         if provider_id == "argonne":
-            return {"models": _argonne_live_models("sophia")}
+            return _wrap(_argonne_live_models("sophia"))
         for p in _LM_PRESETS:
             if p.provider == provider_id:
-                return {"models": _openai_compat_live_models(p)}
+                return _wrap(_openai_compat_live_models(p))
         # Last-ditch static.
         models = _PROVIDER_MODELS.get(provider_id, [])
-        return {"models": models}
+        return {"models": models, "source": "static_fallback"}
 
     def _argonne_cluster_from_preset(preset: "LMProviderPreset") -> str:
         """Pull the cluster slug ("sophia"/"polaris") out of an
