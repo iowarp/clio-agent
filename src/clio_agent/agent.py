@@ -701,11 +701,32 @@ class ClioAgent(dspy.Module):
 
         api_base = (self._provider_config.api_base or "").strip()
         if api_base:
+            # When an api_base is configured (the common openai-compat
+            # path: argonne, openai, anthropic-via-meridian, lm_studio,
+            # ollama, openrouter, …), the direct HTTP path is the
+            # ONLY supported path. Don't silently swallow its error
+            # and fall back to DSPy/litellm — DSPy's async-bridging
+            # via httpx + anyio is broken when invoked from a
+            # ThreadPoolExecutor worker (AnyIO worker thread guard
+            # fails), so the fallback reliably trades a real,
+            # actionable error ("Sophia in maintenance until 3pm")
+            # for a confusing one ("Not running inside an AnyIO
+            # worker thread"). Surface direct's failure verbatim;
+            # the TUI's chat-error renderer will show it to the user.
             try:
                 return self._direct_chat_completion(question, session_context)
             except Exception as direct_err:
-                if self.verbose:
-                    print(f"[ClioAgent] Direct chat failed: {direct_err}; trying DSPy chat agent")
+                # Translate well-known upstream errors to user-friendly
+                # text where we can. Otherwise pass through.
+                msg = str(direct_err)
+                if "maintenance" in msg.lower():
+                    raise RuntimeError(
+                        f"upstream provider unavailable: {msg.strip()} "
+                        f"(api_base={api_base})"
+                    ) from direct_err
+                raise
+
+        # No api_base → use DSPy chat agent (anthropic native path).
         try:
             result = self.chat_agent(question=question, session_context=session_context)
             answer = self._coerce_text(getattr(result, "answer", None)).strip()
