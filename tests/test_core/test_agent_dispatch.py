@@ -78,13 +78,22 @@ class TestForwardDispatch:
         assert "Histogram" in result.answer
 
     def test_dispatch_chat(self, agent):
-        """Test routing to chat agent."""
+        """Test routing to chat agent.
+
+        Mocks _direct_chat_completion (the canonical chat path for any
+        backend with an api_base configured) instead of agent.chat_agent
+        (the DSPy/litellm fallback used only for native anthropic).
+        Previously this test depended on the silent-fallback-to-DSPy
+        path that was removed because it masked real upstream errors
+        with confusing AnyIO worker-thread crashes.
+        """
         mock_prediction = MagicMock()
         mock_prediction.selected_expert = "chat"
         agent.router = MagicMock(return_value=mock_prediction)
 
-        chat_result = dspy.Prediction(answer="I can help with data analysis.")
-        agent.chat_agent = MagicMock(return_value=chat_result)
+        agent._direct_chat_completion = MagicMock(
+            return_value="I can help with data analysis."
+        )
 
         result = agent.forward(question="Hello!", session_id="test_session")
 
