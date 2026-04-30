@@ -932,7 +932,11 @@ class ClioAgent(dspy.Module):
             return requests.post(url, json=payload, headers=headers, timeout=180)
 
         response = _do(self._provider_config.api_key)
-        if response.status_code == 401 and self._provider_config.provider == "argonne":
+        # Defensive: real requests.Response always has status_code, but tests
+        # and exotic response-likes may not. Tolerate missing attribute so we
+        # only retry on a *real* 401 and never crash the chat path.
+        status = getattr(response, "status_code", None)
+        if status == 401 and self._provider_config.provider == "argonne":
             fresh = self._refresh_argonne_token()
             if fresh and fresh != self._provider_config.api_key:
                 self._provider_config.api_key = fresh
