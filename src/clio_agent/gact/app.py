@@ -3619,6 +3619,7 @@ def build_app(
 
     def _argonne_live_models(
         cluster: str,
+        chat_base: str = "",
     ) -> tuple[list[dict[str, str]], str, str]:
         """Hit the ALCF jobs endpoint and return ``(models, source,
         error_message)`` for the catalog endpoint.
@@ -3721,27 +3722,75 @@ def build_app(
                 models.append({"id": mid, "name": name, "description": desc})
 
         if not models:
-            # Cluster IS reachable + token is valid + the call returned
-            # cleanly; just nothing currently loaded behind the gateway.
-            # Don't show the static catalog — that's a list of models
-            # the user can't actually serve right now, and pretending
-            # otherwise just gets them a 5xx on first chat. Empty list +
-            # honest message is the right answer.
+            # /jobs returned 0 running — could be "cluster idle (PBS
+            # jobs cycle)" OR "cluster in maintenance". The maintenance
+            # signal lives behind /chat/completions, not /jobs:
+            #
+            #   "Error: Sophia cluster currently unavailable due to
+            #    maintenance. Expected to come back online around 3pm
+            #    Central."
+            #
+            # Probe that endpoint with a 1-token payload to discover
+            # the gateway's actual status message and surface it
+            # verbatim, instead of guessing at "idle". 2-second budget
+            # so a hung gateway doesn't stall the picker.
             queued = len(payload.get("queued") or [])
             stopped = len(payload.get("stopped") or [])
-            details = []
-            if queued:
-                details.append(f"{queued} queued")
-            if stopped:
-                details.append(f"{stopped} recently stopped")
-            tail = f" ({', '.join(details)})" if details else ""
             empty: list[dict[str, str]] = []
-            msg = (
-                f"ALCF {cluster} has no models loaded right now"
-                f"{tail}. PBS jobs cycle — check back in a few minutes, "
-                f"or visit https://docs.alcf.anl.gov/services/inference-endpoints/ "
-                f"for current status."
+            maintenance_msg = ""
+            # Sophia hangs the framework path off /vllm/v1; Metis off
+            # /api/v1; future clusters could differ again. Use the
+            # preset's api_base when supplied (it already encodes the
+            # right framework path); fall back to the sophia layout
+            # for the bare-kind call site.
+            probe_base = chat_base.rstrip("/") if chat_base else (
+                f"https://inference-api.alcf.anl.gov/resource_server/{cluster}/vllm/v1"
             )
+            try:
+                probe = requests.post(
+                    f"{probe_base}/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {token}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "model": "meta-llama/Meta-Llama-3.1-8B-Instruct",
+                        "messages": [{"role": "user", "content": "ping"}],
+                        "max_tokens": 1,
+                        "temperature": 0,
+                    },
+                    timeout=2,
+                )
+                # Gateway returns maintenance text as a JSON-encoded
+                # bare string body. Tolerate either bare string or
+                # {"detail": "..."} envelope.
+                try:
+                    body = probe.json()
+                except Exception:
+                    body = probe.text
+                text = body if isinstance(body, str) else (
+                    body.get("detail") if isinstance(body, dict) else ""
+                ) or ""
+                if isinstance(text, str) and text.lower().startswith("error:"):
+                    maintenance_msg = text
+            except Exception:
+                pass
+
+            if maintenance_msg:
+                msg = f"ALCF {cluster}: {maintenance_msg}"
+            else:
+                details = []
+                if queued:
+                    details.append(f"{queued} queued")
+                if stopped:
+                    details.append(f"{stopped} recently stopped")
+                tail = f" ({', '.join(details)})" if details else ""
+                msg = (
+                    f"ALCF {cluster} has no models loaded right now"
+                    f"{tail}. PBS jobs cycle — check back in a few minutes, "
+                    f"or visit https://docs.alcf.anl.gov/services/inference-endpoints/ "
+                    f"for current status."
+                )
             _live_models_cache[cache_key] = (now, empty, "static_fallback", msg)
             return empty, "static_fallback", msg
 
@@ -3886,11 +3935,15 @@ def build_app(
             if p.id == provider_id:
                 if p.provider == "argonne":
                     cluster = _argonne_cluster_from_preset(p)
-                    return _wrap(_argonne_live_models(cluster))
+                    return _wrap(_argonne_live_models(cluster, p.api_base))
                 return _wrap(_openai_compat_live_models(p))
         # Bare provider kind — pick the first preset that uses this
         # kind so we have an api_base + label to drive discovery.
         if provider_id == "argonne":
+            for p in _LM_PRESETS:
+                if p.provider == "argonne":
+                    cluster = _argonne_cluster_from_preset(p)
+                    return _wrap(_argonne_live_models(cluster, p.api_base))
             return _wrap(_argonne_live_models("sophia"))
         for p in _LM_PRESETS:
             if p.provider == provider_id:
@@ -5830,6 +5883,24 @@ def build_app(
         # polaris/vllm/v1, so the preset was just a guaranteed dead end
         # for users. If/when ALCF brings Polaris-side inference back
         # online, restore this entry.
+        LMProviderPreset(
+            id="argonne_metis",
+            label="ALCF Metis (Globus Auth)",
+            provider="argonne",
+            # Metis hangs framework="api" off /api/v1, not /vllm/v1
+            # the way Sophia does. Same Globus auth, same /jobs schema
+            # for live model discovery, different chat-completions path.
+            api_base="https://inference-api.alcf.anl.gov/resource_server/metis/api/v1",
+            suggested_model="gpt-oss-120b",
+            requires_api_key=False,
+            description=(
+                "Argonne's Metis inference gateway (FastCoE 'api' "
+                "framework, OpenAI-compatible chat-completions). Useful "
+                "fallback when Sophia is in maintenance — typically "
+                "loads gpt-oss-120b and Llama-4-Maverick. Same Globus "
+                "tokens as Sophia/Polaris."
+            ),
+        ),
         LMProviderPreset(
             id="argonne_local_vllm",
             label="ALCF local vLLM (compute-node)",
