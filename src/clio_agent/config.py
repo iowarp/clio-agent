@@ -27,7 +27,7 @@ Usage:
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from ipaddress import ip_address
 from typing import TYPE_CHECKING, List, Literal, Mapping, Optional
 from urllib.parse import urlparse
@@ -65,6 +65,24 @@ def _dspy():
 # PROVIDER DEFAULTS
 # ============================================================================
 
+#
+# Per-provider capability flags (in addition to api_base/model/api_key
+# overrides). New traits go here, and LMProviderConfig.__post_init__
+# materializes them onto the config so the agent code reads
+# `cfg.strip_openai_prefix` instead of branching on `cfg.provider ==
+# "argonne"`. Adding a new provider with a new wire-protocol quirk =
+# one entry here, no new branches in agent.py.
+#
+# Currently tracked traits:
+#   strip_openai_prefix : strip leading "openai/"/"anthropic/" from the
+#                         configured model id before sending. Defaults
+#                         to True (matches Meridian and most generic
+#                         openai-compat proxies). False for backends
+#                         that use HuggingFace-style ids verbatim
+#                         (Argonne / ALCF — `openai/gpt-oss-120b` IS
+#                         the gateway's model id; stripping it makes
+#                         the request resolve to a non-existent
+#                         endpoint).
 PROVIDER_DEFAULTS: dict[str, dict[str, Any]] = {
     "lm_studio": {
         "api_base": "http://127.0.0.1:1234/v1",
@@ -106,6 +124,11 @@ PROVIDER_DEFAULTS: dict[str, dict[str, Any]] = {
         "model": "meta-llama/Meta-Llama-3.1-8B-Instruct",
         "api_key": "",  # Lazy: minted via Globus Auth on demand.
         "max_tokens": 4096,
+        # ALCF gateway uses HF-style ids verbatim — `openai/gpt-oss-120b`
+        # IS the model id. Stripping the org prefix turns it into
+        # `gpt-oss-120b`, which the gateway maps to backend endpoint
+        # `sophia-vllm-gpt-oss-120b` that doesn't exist (400).
+        "strip_openai_prefix": False,
     },
 }
 
@@ -155,9 +178,14 @@ class LMProviderConfig:
     #   openai/openai-compat → reasoning_effort bucketed from N
     # 0 disables.
     thinking_budget: int = 0
+    # Per-provider capability flags. init=False so callers don't need
+    # to know they exist; __post_init__ populates them from
+    # PROVIDER_DEFAULTS so adding a new wire-protocol quirk = one
+    # entry in the defaults dict, no agent.py branches.
+    strip_openai_prefix: bool = field(init=False, default=True)
 
     def __post_init__(self) -> None:
-        """Fill empty fields from provider defaults."""
+        """Fill empty fields + capability flags from provider defaults."""
         defaults = PROVIDER_DEFAULTS.get(self.provider, PROVIDER_DEFAULTS["lm_studio"])
         if not self.api_base:
             self.api_base = defaults["api_base"]
@@ -180,6 +208,10 @@ class LMProviderConfig:
         # 32 768-token context window.
         if self.max_tokens == 0:
             self.max_tokens = int(defaults.get("max_tokens", 32000))
+        # Capability flags. defaults dict wins — these aren't user-set
+        # via env vars (they're wire-protocol facts about the provider),
+        # so re-reading on every config load is safe.
+        self.strip_openai_prefix = bool(defaults.get("strip_openai_prefix", True))
 
 
 def _resolve_argonne_api_key() -> str:

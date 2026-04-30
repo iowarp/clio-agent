@@ -905,12 +905,18 @@ class ClioAgent(dspy.Module):
         skip the round-trip.
         """
         system_prompt = self._build_direct_chat_system_prompt(session_context)
-        # Some openai-compatible proxies (Meridian) expect the bare model
-        # id without the "openai/" prefix the LM client adds. Strip when
-        # present so the direct fallback works against the same backend
-        # the wrapped LM is using.
+        # Model-id normalization is a per-provider capability driven by
+        # config.PROVIDER_DEFAULTS[provider]["strip_openai_prefix"]:
+        #   - True (default, Meridian/generic openai-compat proxies):
+        #     strip leading "openai/" so the proxy's bare-id schema
+        #     accepts the request.
+        #   - False (Argonne / ALCF, anything using HF-style ids
+        #     verbatim): the org prefix IS part of the model id and
+        #     stripping it produces a non-existent endpoint.
+        # New providers with new wire-protocol quirks add a flag in the
+        # defaults dict, not a branch here.
         model_id = self._provider_config.model
-        if "/" in model_id:
+        if self._provider_config.strip_openai_prefix and "/" in model_id:
             head, tail = model_id.split("/", 1)
             if head in {"openai", "anthropic"} and "/" not in tail:
                 model_id = tail
