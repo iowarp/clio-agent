@@ -6011,7 +6011,10 @@ def build_app(
             # underlying state DSPy's __getattr__ reads, no async
             # task ownership check.
             new_lm = create_lm(cfg)
-            from clio_agent.config import is_local_openai_compatible_backend  # noqa: PLC0415
+            from clio_agent.config import (  # noqa: PLC0415
+                create_router_lm,
+                is_local_openai_compatible_backend,
+            )
             use_json_fallback = not is_local_openai_compatible_backend(cfg)
             new_adapter = dspy.ChatAdapter(use_json_adapter_fallback=use_json_fallback)
             try:
@@ -6020,9 +6023,29 @@ def build_app(
                 main_thread_config["adapter"] = new_adapter
             except Exception:  # pragma: no cover - dspy missing
                 dspy.configure(lm=new_lm, adapter=new_adapter)
-            agent = await asyncio.get_running_loop().run_in_executor(
-                None, lambda: ClioAgent(verbose=False)
-            )
+            # Hot-swap the LM on the existing agent instead of
+            # rebuilding from scratch. ClioAgent's expensive state
+            # (ARC retriever, LSM tree, registry, expert instances,
+            # tool gateways) is LM-independent — rebuilding it for
+            # every Save+Connect costs ~5-10 s and is exactly the
+            # latency the user complained about. Three attribute
+            # swaps cover the LM-dependent surface:
+            #   * _provider_config   → direct-chat fallback uses it
+            #   * _router_lm         → router runs with new lm
+            #   * dspy.settings.lm   → experts pick it up via
+            #                          dspy.context()
+            # Only rebuild from scratch when no agent yet exists
+            # (first-connect lifecycle: the deferred-construction
+            # task hasn't completed).
+            existing = app.state.agent
+            if existing is not None:
+                existing._provider_config = cfg
+                existing._router_lm = create_router_lm(cfg)
+                agent = existing
+            else:
+                agent = await asyncio.get_running_loop().run_in_executor(
+                    None, lambda: ClioAgent(verbose=False)
+                )
         except HTTPException:
             # Argonne auth path raises a structured 401 above; keep its
             # error code intact instead of flattening to a generic 400.
