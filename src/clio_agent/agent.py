@@ -941,6 +941,25 @@ class ClioAgent(dspy.Module):
             if fresh and fresh != self._provider_config.api_key:
                 self._provider_config.api_key = fresh
                 response = _do(fresh)
+        # Surface the upstream response body in the error. requests'
+        # default raise_for_status() prints only the URL + status code,
+        # which hides per-model quirks (gpt-oss returning "extra inputs
+        # are not permitted" for fields vLLM rejects, Sophia's
+        # "maintenance" body, etc.). The user explicitly called out
+        # that silent error masking is unacceptable — surface the real
+        # diagnostic so they can act on it.
+        if status is not None and status >= 400:
+            body = ""
+            try:
+                body = (response.text or "").strip()
+            except Exception:
+                pass
+            snippet = body[:600] + ("…" if len(body) > 600 else "")
+            raise RuntimeError(
+                f"{status} from {self._provider_config.provider} "
+                f"({self._provider_config.model}) at {url}: "
+                f"{snippet or '(empty response body)'}"
+            )
         response.raise_for_status()
         data = response.json()
         answer = self._extract_chat_completion_text(data).strip()
