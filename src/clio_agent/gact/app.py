@@ -3721,10 +3721,29 @@ def build_app(
                 models.append({"id": mid, "name": name, "description": desc})
 
         if not models:
-            return _fallback(
-                f"ALCF /{cluster}/jobs returned no running models — "
-                "cluster idle? showing static catalog as a hint."
+            # Cluster IS reachable + token is valid + the call returned
+            # cleanly; just nothing currently loaded behind the gateway.
+            # Don't show the static catalog — that's a list of models
+            # the user can't actually serve right now, and pretending
+            # otherwise just gets them a 5xx on first chat. Empty list +
+            # honest message is the right answer.
+            queued = len(payload.get("queued") or [])
+            stopped = len(payload.get("stopped") or [])
+            details = []
+            if queued:
+                details.append(f"{queued} queued")
+            if stopped:
+                details.append(f"{stopped} recently stopped")
+            tail = f" ({', '.join(details)})" if details else ""
+            empty: list[dict[str, str]] = []
+            msg = (
+                f"ALCF {cluster} has no models loaded right now"
+                f"{tail}. PBS jobs cycle — check back in a few minutes, "
+                f"or visit https://docs.alcf.anl.gov/services/inference-endpoints/ "
+                f"for current status."
             )
+            _live_models_cache[cache_key] = (now, empty, "static_fallback", msg)
+            return empty, "static_fallback", msg
 
         _live_models_cache[cache_key] = (now, models, "live", "")
         return models, "live", ""
@@ -5806,20 +5825,11 @@ def build_app(
                 "authenticate` once per machine; tokens auto-refresh."
             ),
         ),
-        LMProviderPreset(
-            id="argonne_polaris",
-            label="ALCF Polaris (Globus Auth)",
-            provider="argonne",
-            api_base="https://inference-api.alcf.anl.gov/resource_server/polaris/vllm/v1",
-            suggested_model="meta-llama/Meta-Llama-3.1-8B-Instruct",
-            requires_api_key=False,
-            description=(
-                "Argonne's Polaris inference gateway. Same auth + wire "
-                "format as Sophia; pick whichever cluster currently has "
-                "the model you want loaded (see `list_active_models.sh` "
-                "in alcf-agentics-workflow)."
-            ),
-        ),
+        # Polaris preset removed — the inference-api gateway returns
+        # 400 'cluster polaris does not exist' for /resource_server/
+        # polaris/vllm/v1, so the preset was just a guaranteed dead end
+        # for users. If/when ALCF brings Polaris-side inference back
+        # online, restore this entry.
         LMProviderPreset(
             id="argonne_local_vllm",
             label="ALCF local vLLM (compute-node)",
