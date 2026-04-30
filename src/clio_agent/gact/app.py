@@ -3624,7 +3624,14 @@ def build_app(
         if cached is not None and now - cached[0] < _LIVE_MODELS_TTL_S:
             return cached[1]
 
-        token = os.environ.get("CLIO_ARGONNE_TOKEN", "").strip()
+        # Accept CLIO's own override OR the env var alcf-agentics-
+        # workflow uses (ALCF_INFERENCE_TOKEN / access_token) since
+        # users on Aurora often already have one of those exported.
+        token = (
+            os.environ.get("CLIO_ARGONNE_TOKEN", "").strip()
+            or os.environ.get("ALCF_INFERENCE_TOKEN", "").strip()
+            or os.environ.get("access_token", "").strip()
+        )
         if not token:
             try:
                 from clio_agent.providers.argonne_auth import (  # noqa: PLC0415

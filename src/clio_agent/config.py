@@ -200,7 +200,15 @@ def _resolve_argonne_api_key() -> str:
     the LM call itself will surface the missing-dep error with
     actionable text once the user issues a query.
     """
-    override = os.environ.get("CLIO_ARGONNE_TOKEN", "").strip()
+    # Accept either CLIO's own override OR the env var ALCF's own
+    # ecosystem (alcf-agentics-workflow, list_active_models.sh) uses,
+    # since users often already have one of those exported. CLIO_*
+    # wins when both are set so deliberate overrides don't surprise.
+    override = (
+        os.environ.get("CLIO_ARGONNE_TOKEN", "").strip()
+        or os.environ.get("ALCF_INFERENCE_TOKEN", "").strip()
+        or os.environ.get("access_token", "").strip()
+    )
     if override:
         return override
 
