@@ -921,11 +921,27 @@ class ClioAgent(dspy.Module):
 
     @staticmethod
     def _extract_chat_completion_text(payload: Dict[str, Any]) -> str:
-        """Extract assistant text from an OpenAI-compatible chat response."""
+        """Extract assistant text from an OpenAI-compatible chat response.
+
+        Handles three real-world shapes:
+
+        1. Standard OpenAI / Anthropic / vLLM:
+           ``message.content = "answer text"``
+        2. Anthropic-style content blocks (when the proxy passes
+           through):  ``message.content = [{"type":"text","text":"..."}]``
+        3. OpenAI gpt-oss-style "reasoning" models (Metis, etc.):
+           ``message.content = null`` and the answer lives in
+           ``message.reasoning`` or ``message.reasoning_content``.
+           Without this fallback, gpt-oss-120b on Argonne Metis would
+           always return empty + drop us into the DSPy/litellm fallback
+           which then hits AnyIO worker-thread errors.
+        """
         try:
-            content = payload["choices"][0]["message"]["content"]
+            message = payload["choices"][0]["message"]
         except (KeyError, IndexError, TypeError) as exc:
             raise ValueError(f"Unexpected chat completion payload: {payload}") from exc
+
+        content = message.get("content") if isinstance(message, dict) else None
 
         if isinstance(content, list):
             text_parts = [
@@ -933,9 +949,24 @@ class ClioAgent(dspy.Module):
                 for part in content
                 if isinstance(part, dict) and isinstance(part.get("text"), str)
             ]
-            return "\n".join(part for part in text_parts if part).strip()
+            joined = "\n".join(part for part in text_parts if part).strip()
+            if joined:
+                return joined
+            # Fall through to reasoning lookup if list-form content is empty.
 
-        return ClioAgent._coerce_text(content)
+        if isinstance(content, str) and content.strip():
+            return ClioAgent._coerce_text(content)
+
+        # gpt-oss-shape fallback: content is null/empty, real text in
+        # reasoning_content (newer field) or reasoning (older field).
+        if isinstance(message, dict):
+            for key in ("reasoning_content", "reasoning"):
+                rc = message.get(key)
+                if isinstance(rc, str) and rc.strip():
+                    return ClioAgent._coerce_text(rc)
+
+        # Nothing usable — surface the empty so the caller knows.
+        return ""
 
     def _direct_hdf5_answer(self, question: str, file_context: str) -> dspy.Prediction | None:
         """Inspect an explicit HDF5 path without relying on ReAct planning."""
