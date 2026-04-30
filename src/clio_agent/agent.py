@@ -894,11 +894,16 @@ class ClioAgent(dspy.Module):
         return pred
 
     def _direct_chat_completion(self, question: str, session_context: str) -> str:
-        """Call the configured OpenAI-compatible chat endpoint directly."""
-        headers = {"Content-Type": "application/json"}
-        if self._provider_config.api_key:
-            headers["Authorization"] = f"Bearer {self._provider_config.api_key}"
+        """Call the configured OpenAI-compatible chat endpoint directly.
 
+        For argonne providers: ALCF Globus tokens have a ~1-hour
+        access-token lifetime. Long-running CLIO sessions outlive
+        that, so on 401 we re-resolve the token (env vars first, then
+        ~/.globus refresh-token mint via providers.argonne_auth) and
+        retry once. The refreshed token is stamped back onto
+        self._provider_config.api_key + the env so subsequent calls
+        skip the round-trip.
+        """
         system_prompt = self._build_direct_chat_system_prompt(session_context)
         # Some openai-compatible proxies (Meridian) expect the bare model
         # id without the "openai/" prefix the LM client adds. Strip when
@@ -918,19 +923,54 @@ class ClioAgent(dspy.Module):
             "temperature": self._provider_config.temperature,
             "max_tokens": self._provider_config.max_tokens,
         }
+        url = f"{self._provider_config.api_base.rstrip('/')}/chat/completions"
 
-        response = requests.post(
-            f"{self._provider_config.api_base.rstrip('/')}/chat/completions",
-            json=payload,
-            headers=headers,
-            timeout=180,
-        )
+        def _do(api_key: str) -> requests.Response:
+            headers = {"Content-Type": "application/json"}
+            if api_key:
+                headers["Authorization"] = f"Bearer {api_key}"
+            return requests.post(url, json=payload, headers=headers, timeout=180)
+
+        response = _do(self._provider_config.api_key)
+        if response.status_code == 401 and self._provider_config.provider == "argonne":
+            fresh = self._refresh_argonne_token()
+            if fresh and fresh != self._provider_config.api_key:
+                self._provider_config.api_key = fresh
+                response = _do(fresh)
         response.raise_for_status()
         data = response.json()
         answer = self._extract_chat_completion_text(data).strip()
         if not answer:
             raise ValueError("Direct chat completion returned empty content.")
         return answer
+
+    def _refresh_argonne_token(self) -> str:
+        """Re-resolve the ALCF bearer when a 401 hits mid-session.
+
+        Resolution order matches config._resolve_argonne_api_key:
+        explicit env override → alcf-agentics-workflow env var →
+        legacy `access_token` → ~/.globus refresh-token mint via
+        providers.argonne_auth. Returns "" when nothing fresh is
+        available; caller then surfaces the original 401 so the user
+        sees an actionable error instead of looping silently.
+        """
+        import os as _os
+
+        for env_name in ("CLIO_ARGONNE_TOKEN", "ALCF_INFERENCE_TOKEN", "access_token"):
+            v = (_os.environ.get(env_name, "") or "").strip()
+            if v:
+                return v
+
+        try:
+            from clio_agent.providers.argonne_auth import (  # noqa: PLC0415
+                get_access_token,
+                tokens_exist,
+            )
+            if tokens_exist():
+                return get_access_token() or ""
+        except Exception:
+            pass
+        return ""
 
     @staticmethod
     def _build_direct_chat_system_prompt(session_context: str) -> str:
