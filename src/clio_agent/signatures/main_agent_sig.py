@@ -4,6 +4,9 @@ ClioAgent Router and Chat Agent Signatures
 Defines the input/output interfaces for:
 - RouterSignature: Lightweight routing with Literal typed output
 - ChatAgentSignature: Conversational responses for non-data queries
+- DataIntentSig: Tier-2 ambiguity resolver inside the data branch
+  (issue #25 — decides whether to take the deterministic fast path
+  or escalate to the DataExpert ReAct loop)
 """
 
 from typing import Literal
@@ -77,3 +80,38 @@ class ChatAgentSignature(dspy.Signature):
         desc="Relevant context from conversation history"
     )
     answer: str = dspy.OutputField(desc="CLIO's conversational response")
+
+
+class DataIntentSig(dspy.Signature):
+    """You classify a user question about a scientific data file (HDF5,
+    Parquet, CSV, ADIOS) into one of two execution paths.
+
+    Return "inspect" when the user wants a structural summary that can
+    be answered by running one or two pre-defined inspection tools and
+    reporting the result verbatim. Typical wording: list datasets,
+    what is in this file, show me the schema, summarise the file,
+    describe the columns, preview, head of.
+
+    Return "reason" when the user wants something that requires
+    composing multiple tool calls, comparing values across datasets,
+    explaining trends, recommending an optimisation, computing
+    derived statistics, or any other interpretation that depends on
+    the answer to the previous tool result. Typical wording: compare,
+    correlate, why, how, explain, recommend, optimise, is there an
+    anomaly, which is larger, distribution of, trend.
+
+    When the question is ambiguous, prefer "reason" — the slower path
+    can always produce a structural summary, but the fast path cannot
+    produce a comparison or explanation."""
+
+    question: str = dspy.InputField(
+        desc="The user's question about a scientific data file."
+    )
+    intent: Literal["inspect", "reason"] = dspy.OutputField(
+        desc=(
+            "'inspect' for a structural summary from one or two pre-"
+            "defined tool calls; 'reason' for cross-dataset comparison, "
+            "explanation, recommendation, or anything requiring "
+            "interpretation."
+        )
+    )

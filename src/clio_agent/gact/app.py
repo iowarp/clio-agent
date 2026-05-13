@@ -259,6 +259,11 @@ async def _run_turn_in_background(
         answer_text = getattr(pred, "answer", "")
         selected_agent = getattr(pred, "selected_expert", "") or ""
         rationale = getattr(pred, "routing_rationale", "")
+        # iowarp/clio-agent#25: data branch reports which execution
+        # path it took ("fast" or "expert_loop"). Empty when not
+        # populated by ClioAgent.forward (older code paths, non-data
+        # branches not yet migrated).
+        execution_path = getattr(pred, "execution_path", "") or ""
         tools_called = _extract_tools_called(pred)
         # Drain the per-session observer ledger so direct-tool short-
         # circuits (HDF5/Parquet/fs experts that bypass ReAct) still
@@ -394,6 +399,7 @@ async def _run_turn_in_background(
             rationale=rationale,
             confidence=0.0,
             heuristic=False,
+            execution_path=execution_path,
         ))
     if thinking_text:
         # iowarp/clio-agent#17: surface DSPy reasoning as a
@@ -2561,6 +2567,7 @@ def build_app(
             metadata=req.metadata,
             mode=req.mode,
             edit_mode=req.edit_mode,
+            routing_mode=req.routing_mode,
         )
         return Session(**sess.to_wire())
 

@@ -28,7 +28,7 @@ import re
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Literal
 
 import dspy
 import requests
@@ -57,7 +57,11 @@ from clio_agent.errors import (
 from clio_agent.experts import AnalysisExpert, DataExpert, VisualizationExpert
 from clio_agent.optimizer.instrumentation import _extract_output
 from clio_agent.registry.registry import AgentCapability, AgentRegistry
-from clio_agent.signatures.main_agent_sig import ChatAgentSignature, RouterSignature
+from clio_agent.signatures.main_agent_sig import (
+    ChatAgentSignature,
+    DataIntentSig,
+    RouterSignature,
+)
 
 _FILE_PATH_RE = re.compile(
     r"(?P<path>(?:~|/|\.{1,2}/)?[^\s'\"`]+?\.(?:h5|hdf5|parquet|csv))",
@@ -143,6 +147,12 @@ class ClioAgent(dspy.Module):
         # Router: ChainOfThought with Literal output on fast model
         self._router_lm = create_router_lm(self._provider_config)
         self.router = dspy.ChainOfThought(RouterSignature)
+
+        # iowarp/clio-agent#25: tier-2 ambiguity resolver inside the
+        # data branch. Only fires when keyword-based intent
+        # classification returns "ambiguous"; runs on the same low-
+        # temperature router LM via dspy.context(...) at call time.
+        self.data_intent_classifier = dspy.ChainOfThought(DataIntentSig)
 
         # Chat Agent: Predict for conversational responses. This keeps the
         # structured output surface smaller than ChainOfThought, which is more
@@ -413,11 +423,51 @@ class ClioAgent(dspy.Module):
         answer = ""
         expert_result = None
         error_info = None
+        # iowarp/clio-agent#25: track which execution path the data
+        # branch actually took so it can be surfaced on the routing
+        # decision Part. Empty string when the field isn't applicable
+        # (chat path, error branches, or non-data experts which have
+        # not been migrated yet).
+        execution_path = ""
         try:
             if selected == "data":
-                expert_result = self._direct_tool_answer(selected, question, file_context)
+                # iowarp/clio-agent#25 — hybrid routing for the data
+                # branch:
+                #   Tier 3 (session): routing_mode == "reasoning_only"
+                #     skips the fast path entirely; every turn reaches
+                #     the DataExpert ReAct loop.
+                #   Tier 1 (keyword): _classify_data_intent picks
+                #     "inspect" -> fast path, "reason" -> ReAct.
+                #   Tier 2 (LM): on "ambiguous", a low-temperature LM
+                #     classifier (DataIntentSig) decides between the
+                #     same two paths.
+                # When the keyword/LM verdict is "inspect" we still
+                # fall through to the ReAct path if _direct_tool_answer
+                # returns None (no file path to inspect): the
+                # deterministic template needs a concrete file to
+                # describe.
+                use_fast_path = False
+                if routing_override != "reasoning_only":
+                    intent = self._classify_data_intent(question)
+                    if intent == "ambiguous":
+                        intent = self._resolve_ambiguous_data_intent(question)
+                    use_fast_path = intent == "inspect"
+                if use_fast_path:
+                    expert_result = self._direct_tool_answer(
+                        selected, question, file_context
+                    )
+                # Stamp execution_path BEFORE calling data_expert so the
+                # routing Part records which path we attempted even when
+                # the ReAct loop raises (e.g. a provider adapter parse
+                # failure). Empty execution_path on a "data" route now
+                # implies a bug, not a degraded turn.
                 if expert_result is None:
-                    expert_result = self.data_expert(question=question, file_context=file_context)
+                    execution_path = "expert_loop"
+                    expert_result = self.data_expert(
+                        question=question, file_context=file_context
+                    )
+                else:
+                    execution_path = "fast"
                 answer = (
                     f"{expert_result.analysis}\n\nRecommendations:\n{expert_result.recommendations}"
                 )
@@ -537,6 +587,11 @@ class ClioAgent(dspy.Module):
             arc_stats=self.arc.get_cache_stats(),
             lsm_stats=self.lsm.get_stats(),
             error_info=error_info,
+            # iowarp/clio-agent#25: which path the data branch ran on.
+            # "fast" when the deterministic template fired; "expert_loop"
+            # when the DataExpert ReAct loop ran. Empty for non-data
+            # selections until follow-up issues migrate them.
+            execution_path=execution_path,
         )
         if expert_result is not None:
             for forwarded in (
@@ -568,6 +623,104 @@ class ClioAgent(dspy.Module):
             return False
         # Need an absolute path with a recognisable extension.
         return bool(re.search(r"(/[\w./_-]+\.\w+)", question))
+
+    # iowarp/clio-agent#25 — intent classification inside the data
+    # branch. Tier 1 = keyword whitelist (instant, no LM). Tier 2 =
+    # DataIntentSig LM resolver, invoked only when tier 1 returns
+    # "ambiguous". Tier 3 (session.routing_mode == "reasoning_only")
+    # is checked in forward() — it bypasses tier 1+2 entirely.
+    #
+    # The wording lists are deliberately short. False negatives just
+    # mean "ambiguous" which falls through to the LM resolver — that
+    # path is correct by construction. False positives in the
+    # _INSPECT bucket are the failure mode that produced the original
+    # bug, so the bar for adding a verb here is high: the user must
+    # be asking for a structural summary that hdf5_analyze_file +
+    # hdf5_list_datasets can answer verbatim.
+    _INSPECT_VERBS: tuple[str, ...] = (
+        "list",
+        "what's in",
+        "what is in",
+        "show me the datasets",
+        "show me the schema",
+        "what datasets",
+        "what columns",
+        "inspect",
+        "analyze",
+        "analyse",
+        "summarize file",
+        "summarise file",
+        "summarize the file",
+        "summarise the file",
+        "describe the file",
+        "preview",
+        "head of",
+        "schema of",
+    )
+    _REASON_VERBS: tuple[str, ...] = (
+        "compare",
+        "contrast",
+        "correlate",
+        "compute",
+        "calculate",
+        "explain",
+        "why",
+        "how does",
+        "diff",
+        "anomal",
+        "outlier",
+        "distribution of",
+        "is there",
+        "are there",
+        "which is",
+        "do they",
+        "trend",
+        "recommend a",
+        "recommend ",
+        "optimize",
+        "optimise",
+        "what should i",
+    )
+
+    @classmethod
+    def _classify_data_intent(cls, question: str) -> Literal["inspect", "reason", "ambiguous"]:
+        """Classify a question routed to the data expert by keyword.
+
+        Returns ``"inspect"`` if the question matches the inspect verb
+        list and no reason verb, ``"reason"`` if it matches the reason
+        verb list and no inspect verb, ``"ambiguous"`` otherwise. The
+        caller decides what to do with ``"ambiguous"`` (issue #25's
+        tier 2 escalates to the LM resolver).
+        """
+
+        q = question.lower()
+        inspect_hit = any(v in q for v in cls._INSPECT_VERBS)
+        reason_hit = any(v in q for v in cls._REASON_VERBS)
+        if inspect_hit and not reason_hit:
+            return "inspect"
+        if reason_hit and not inspect_hit:
+            return "reason"
+        return "ambiguous"
+
+    def _resolve_ambiguous_data_intent(self, question: str) -> Literal["inspect", "reason"]:
+        """Ask the LM classifier to disambiguate a data-branch question.
+
+        Runs on the router LM (low temperature) via dspy.context, so the
+        global LM state is untouched. Falls back to ``"reason"`` on any
+        error — the slower path is the safe default per
+        ``DataIntentSig`` docstring.
+        """
+
+        try:
+            with dspy.context(lm=self._router_lm):
+                pred = self.data_intent_classifier(question=question)
+            intent = (getattr(pred, "intent", "") or "").strip().lower()
+            if intent in {"inspect", "reason"}:
+                return intent  # type: ignore[return-value]
+        except Exception as e:  # noqa: BLE001
+            if self.verbose:
+                print(f"[ClioAgent] data intent resolver failed, defaulting to 'reason': {e}")
+        return "reason"
 
     @staticmethod
     def _route_with_heuristics(question: str) -> str | None:
