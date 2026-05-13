@@ -56,7 +56,7 @@ table.
 ```bash
 # Pull both repos somewhere convenient.
 git clone https://github.com/iowarp/clio-agent.git
-git clone https://github.com/JaimeCernuda/gact-tui.git
+git clone https://github.com/iowarp/gact-tui.git
 
 # Install CLIO with the API extra (pulls FastAPI + uvicorn).
 cd clio-agent

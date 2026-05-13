@@ -1,6 +1,6 @@
 # GAPS — v0.1 ↔ CLIO coverage map
 
-Bookkeeping document. Each gap corresponds to a native-merit GitHub issue on this repo that describes the capability as it benefits CLIO's mission. Rows include the issue number + which downstream TUI-integration PLAN item each unblocks (tracked in [gact-tui's PLAN.md](https://github.com/JaimeCernuda/gact-tui/blob/clio/PLAN.md), phase `CLIO-BBBBBBBBBB`).
+Bookkeeping document. Each gap corresponds to a native-merit GitHub issue on this repo that describes the capability as it benefits CLIO's mission. Rows include the issue number + which downstream TUI-integration PLAN item each unblocks (tracked in [gact-tui's PLAN.md](https://github.com/iowarp/gact-tui/blob/clio/PLAN.md), phase `CLIO-BBBBBBBBBB`).
 
 This document is **bookkeeping only** — the canonical artefacts are the issues themselves. If an entry here diverges from an issue's scope, the issue wins. If a row here is missing an issue reference, it means we haven't filed one yet.
 
@@ -21,7 +21,7 @@ This document is **bookkeeping only** — the canonical artefacts are the issues
 
 ## v0.2 additions CLIO supports natively
 
-The v0.2 bump in the GACT contract ([gact-tui/contract/SPEC.md](https://github.com/JaimeCernuda/gact-tui/blob/clio/contract/SPEC.md)) promotes several CLIO-native primitives to first-class. CLIO implements them by default — no new issue needed on this side:
+The v0.2 bump in the GACT contract ([gact-tui/contract/SPEC.md](https://github.com/iowarp/gact-tui/blob/clio/contract/SPEC.md)) promotes several CLIO-native primitives to first-class. CLIO implements them by default — no new issue needed on this side:
 
 | v0.2 capability | CLIO's native implementation |
 |---|---|
@@ -51,4 +51,4 @@ These stay `false` in CLIO's capabilities response; the TUI hides UI for them wh
 - When a new gap is discovered, file an issue framed around CLIO's mission + add a row here pointing at it.
 - When an issue closes, strike through the row (don't delete — keeps the trail intact).
 - When v0.3+ lands on the spec side, add a section above "v0.2 additions CLIO supports natively" summarising what the new version covers.
-- Cross-check against [gact-tui's PLAN.md](https://github.com/JaimeCernuda/gact-tui/blob/clio/PLAN.md) on each iteration.
+- Cross-check against [gact-tui's PLAN.md](https://github.com/iowarp/gact-tui/blob/clio/PLAN.md) on each iteration.

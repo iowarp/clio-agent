@@ -9,7 +9,7 @@ discovered.
 | Step | Time | Notes |
 |---|---|---|
 | `git clone iowarp/clio-agent` (`tui-integration` branch, --depth 1) | <2s | nothing surprising |
-| `git clone JaimeCernuda/gact-tui` (`clio` branch, --depth 1) | <2s | |
+| `git clone iowarp/gact-tui` (`clio` branch, --depth 1) | <2s | |
 | `cd clio-agent && uv sync --extra api` | ~3s | uv has the wheel cache warm; first-time install on a fresh box may take longer (lots of LM/MCP deps) |
 | `cd ../gact-tui/tui && go build -o gact .` | ~3s | |
 | `clio-agent-gact --port 17900` (boot) | ~3-5s | clean boot; `/v1/health` returns 28/30 caps before LM is wired |
@@ -48,7 +48,7 @@ discovered.
 
 ```bash
 git clone --branch tui-integration --depth 1 git@github.com:iowarp/clio-agent.git
-git clone --branch clio --depth 1 git@github.com:JaimeCernuda/gact-tui.git
+git clone --branch clio --depth 1 git@github.com:iowarp/gact-tui.git
 cd clio-agent && uv sync --extra api
 cd ../gact-tui/tui && go build -o /tmp/gact-smoke .
 

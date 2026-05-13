@@ -254,7 +254,7 @@ Verify: `which clio-agent-gact` should point inside the venv you just created.
 
 ```sh
 cd ..
-git clone -b clio https://github.com/JaimeCernuda/gact-tui
+git clone -b clio https://github.com/iowarp/gact-tui
 cd gact-tui
 make build && make install            # → ~/.local/bin/{gact,emulator-server}
 gact version

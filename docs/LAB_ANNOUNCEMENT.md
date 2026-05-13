@@ -19,7 +19,7 @@ Release date: 2026-04-27
 > ```sh
 > # 1. Clone + install both pieces (one-time setup).
 > git clone --branch v0.3.1 https://github.com/iowarp/clio-agent
-> git clone --branch v0.2.1 https://github.com/JaimeCernuda/gact-tui
+> git clone --branch v0.2.1 https://github.com/iowarp/gact-tui
 > cd clio-agent && uv pip install -e '.[api]'
 > cd ../gact-tui/tui && go build -o gact .
 >
@@ -57,7 +57,7 @@ Release date: 2026-04-27
 > **File bugs at**
 > https://github.com/iowarp/clio-agent/issues — tag with `v0.3.1`.
 >
-> The TUI side is at https://github.com/JaimeCernuda/gact-tui/issues
+> The TUI side is at https://github.com/iowarp/gact-tui/issues
 > for UI-specific things (rendering, key bindings, etc.).
 
 ---
