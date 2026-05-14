@@ -298,7 +298,10 @@ class TestSetupDspy:
             "CLIO_LM_MODEL": "nemotron-cascade-2-30b-a3b-i1",
         }
         with patch.dict("os.environ", env, clear=True):
-            with patch("clio_agent.config.dspy.configure") as mock_configure:
+            # config.py imports dspy lazily via _dspy() — patch the
+            # underlying dspy.configure directly rather than the
+            # (no-longer-existent) module-level alias.
+            with patch("dspy.configure") as mock_configure:
                 setup_dspy(verbose=False)
 
         adapter = mock_configure.call_args.kwargs["adapter"]
@@ -313,7 +316,10 @@ class TestSetupDspy:
             "CLIO_LM_API_KEY": "sk-test",
         }
         with patch.dict("os.environ", env, clear=True):
-            with patch("clio_agent.config.dspy.configure") as mock_configure:
+            # config.py imports dspy lazily via _dspy() — patch the
+            # underlying dspy.configure directly rather than the
+            # (no-longer-existent) module-level alias.
+            with patch("dspy.configure") as mock_configure:
                 setup_dspy(verbose=False)
 
         adapter = mock_configure.call_args.kwargs["adapter"]

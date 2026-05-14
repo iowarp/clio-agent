@@ -24,21 +24,67 @@ Usage:
     >>> lm = create_lm(config)
 """
 
+from __future__ import annotations
+
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from ipaddress import ip_address
 from pathlib import Path
-from typing import List, Literal, Mapping, Optional
+from typing import TYPE_CHECKING, List, Literal, Mapping, Optional
 from urllib.parse import urlparse
 
-import dspy
 import requests
+
+# dspy lives behind a lazy import — top-level ``import dspy`` costs
+# ~4 s on Aurora's frameworks Python (litellm + transitive deps), and
+# every ``runtime.status`` / ``gact.app`` boot path imports config.py
+# transitively. Functions that actually need dspy import it inside
+# their body via ``_dspy()`` below; type-only references stay valid
+# thanks to ``from __future__ import annotations`` (PEP 563).
+if TYPE_CHECKING:  # pragma: no cover
+    import dspy as dspy_typing
+
+
+_dspy_cache = None
+
+
+def _dspy():
+    """Return the dspy module, importing it on first call.
+
+    Memoised in the module so subsequent calls are free. All callers
+    inside this module funnel through here so we don't accidentally
+    re-add a top-level ``import dspy`` later.
+    """
+    global _dspy_cache  # noqa: PLW0603
+    if _dspy_cache is None:
+        import dspy  # noqa: PLC0415
+
+        _dspy_cache = dspy
+    return _dspy_cache
 
 # ============================================================================
 # PROVIDER DEFAULTS
 # ============================================================================
 
-PROVIDER_DEFAULTS: dict[str, dict[str, str]] = {
+#
+# Per-provider capability flags (in addition to api_base/model/api_key
+# overrides). New traits go here, and LMProviderConfig.__post_init__
+# materializes them onto the config so the agent code reads
+# `cfg.strip_openai_prefix` instead of branching on `cfg.provider ==
+# "argonne"`. Adding a new provider with a new wire-protocol quirk =
+# one entry here, no new branches in agent.py.
+#
+# Currently tracked traits:
+#   strip_openai_prefix : strip leading "openai/"/"anthropic/" from the
+#                         configured model id before sending. Defaults
+#                         to True (matches Meridian and most generic
+#                         openai-compat proxies). False for backends
+#                         that use HuggingFace-style ids verbatim
+#                         (Argonne / ALCF — `openai/gpt-oss-120b` IS
+#                         the gateway's model id; stripping it makes
+#                         the request resolve to a non-existent
+#                         endpoint).
+PROVIDER_DEFAULTS: dict[str, dict[str, Any]] = {
     "lm_studio": {
         "api_base": "http://127.0.0.1:1234/v1",
         "model": "ibm/granite-4-h-tiny",
@@ -58,6 +104,32 @@ PROVIDER_DEFAULTS: dict[str, dict[str, str]] = {
         "api_base": "https://api.anthropic.com/v1",
         "model": "claude-sonnet-4-20250514",
         "api_key": "",  # Must come from ANTHROPIC_API_KEY env
+    },
+    # Argonne / ALCF inference endpoints. The gateway is OpenAI-compatible
+    # vLLM behind a Globus Auth bearer. ``api_key`` is intentionally empty:
+    # ``__post_init__`` calls ``providers.argonne_auth.get_access_token``
+    # to fetch (or refresh) a real token only when the user actually
+    # selects this provider, so installs without ``globus-sdk`` keep
+    # importing cleanly.
+    #
+    # ``max_tokens`` is overridden to 4096 because Sophia's default
+    # Llama 3.1-8B has a 32 768-token context window. The shared
+    # LMProviderConfig default of 32 000 leaves only ~768 tokens for
+    # input + system prompt, which the gateway 400s on as soon as the
+    # router/expert prompts run (they alone are >2 k tokens). 4 k is a
+    # comfortable answer length while leaving 28 k for the prompt;
+    # users can override with CLIO_LM_MAX_TOKENS for larger-context
+    # models like Llama-405B or Mistral-Large.
+    "argonne": {
+        "api_base": "https://inference-api.alcf.anl.gov/resource_server/sophia/vllm/v1",
+        "model": "meta-llama/Meta-Llama-3.1-8B-Instruct",
+        "api_key": "",  # Lazy: minted via Globus Auth on demand.
+        "max_tokens": 4096,
+        # ALCF gateway uses HF-style ids verbatim — `openai/gpt-oss-120b`
+        # IS the model id. Stripping the org prefix turns it into
+        # `gpt-oss-120b`, which the gateway maps to backend endpoint
+        # `sophia-vllm-gpt-oss-120b` that doesn't exist (400).
+        "strip_openai_prefix": False,
     },
 }
 
@@ -160,29 +232,115 @@ class LMProviderConfig:
         environment: Deployment environment (dev/staging/production)
     """
 
-    provider: Literal["lm_studio", "ollama", "openai", "anthropic"] = "lm_studio"
+    provider: Literal["lm_studio", "ollama", "openai", "anthropic", "argonne"] = "lm_studio"
     api_base: str = ""
     model: str = ""
     api_key: str = ""
     temperature: float = 1.0
-    max_tokens: int = 32000
+    # 0 is a sentinel "use the provider's max_tokens override (see
+    # PROVIDER_DEFAULTS) if it has one, else 32000". Callers who
+    # explicitly pass any non-zero value win.
+    max_tokens: int = 0
     router_temperature: float = 0.3
     environment: str = "dev"
+    # Reasoning/thinking budget. Mapped per-provider in create_lm:
+    #   anthropic → thinking={"type":"enabled","budget_tokens":N}
+    #   openai/openai-compat → reasoning_effort bucketed from N
+    # 0 disables.
+    thinking_budget: int = 0
+    # Per-provider capability flags. init=False so callers don't need
+    # to know they exist; __post_init__ populates them from
+    # PROVIDER_DEFAULTS so adding a new wire-protocol quirk = one
+    # entry in the defaults dict, no agent.py branches.
+    strip_openai_prefix: bool = field(init=False, default=True)
 
     def __post_init__(self) -> None:
-        """Fill empty fields from provider defaults."""
+        """Fill empty fields + capability flags from provider defaults."""
         defaults = PROVIDER_DEFAULTS.get(self.provider, PROVIDER_DEFAULTS["lm_studio"])
         if not self.api_base:
             self.api_base = defaults["api_base"]
         if not self.model:
             self.model = defaults["model"]
         if not self.api_key:
-            # For cloud providers, try environment variable
+            # Cloud providers source from a well-known env var. Argonne /
+            # ALCF mints a fresh Globus bearer token on demand — kept lazy
+            # so installs without globus-sdk don't need the dep.
             env_var = _CLOUD_API_KEY_ENV.get(self.provider)
             if env_var:
                 self.api_key = os.environ.get(env_var, "")
+            elif self.provider == "argonne":
+                self.api_key = _resolve_argonne_api_key()
             else:
                 self.api_key = defaults["api_key"]
+        # max_tokens=0 is the sentinel "pick a sensible default for
+        # this provider" — argonne's Sophia gateway 400s on the
+        # global default of 32000 because Llama 3.1-8B has only a
+        # 32 768-token context window.
+        if self.max_tokens == 0:
+            self.max_tokens = int(defaults.get("max_tokens", 32000))
+        # Capability flags. defaults dict wins — these aren't user-set
+        # via env vars (they're wire-protocol facts about the provider),
+        # so re-reading on every config load is safe.
+        self.strip_openai_prefix = bool(defaults.get("strip_openai_prefix", True))
+
+
+def _resolve_argonne_api_key() -> str:
+    """Return a Globus bearer token for the ALCF inference gateway.
+
+    Two escape hatches before we touch globus-sdk:
+
+    1. ``CLIO_ARGONNE_TOKEN`` — explicit override. Set by automation
+       that already has a token (e.g. a parent agent that ran
+       ``argonne_auth.get_access_token`` and exports the result).
+    2. ``CLIO_LM_API_KEY`` — already handled in ``load_config_from_env``;
+       only see ``__post_init__`` if the user really left it blank.
+
+    Otherwise we go through ``providers.argonne_auth``. The import is
+    deferred so ``globus-sdk`` is only required when this provider is
+    actually selected. We swallow ``GlobusUnavailable`` and return ""
+    so ``__post_init__`` doesn't crash on machines without the dep —
+    the LM call itself will surface the missing-dep error with
+    actionable text once the user issues a query.
+    """
+    # Accept either CLIO's own override OR the env var ALCF's own
+    # ecosystem (alcf-agentics-workflow, list_active_models.sh) uses,
+    # since users often already have one of those exported. CLIO_*
+    # wins when both are set so deliberate overrides don't surprise.
+    override = (
+        os.environ.get("CLIO_ARGONNE_TOKEN", "").strip()
+        or os.environ.get("ALCF_INFERENCE_TOKEN", "").strip()
+        or os.environ.get("access_token", "").strip()
+    )
+    if override:
+        return override
+
+    try:
+        from clio_agent.providers.argonne_auth import (  # noqa: PLC0415
+            GlobusUnavailable,
+            get_access_token,
+            tokens_exist,
+        )
+    except Exception:  # pragma: no cover - import-time error
+        return ""
+
+    # Don't trigger an interactive OAuth flow from inside the config
+    # constructor — that path runs from /health, /doctor, and TUI
+    # introspection where blocking on a browser would be hostile.
+    # If there's no stored token, surface "" and let the upstream
+    # validator emit the actionable "run authenticate" message.
+    if not tokens_exist():
+        return ""
+
+    try:
+        return get_access_token()
+    except GlobusUnavailable:
+        # Logged elsewhere; let downstream error message guide the user.
+        return ""
+    except Exception:
+        # OAuth could not complete (network, refresh expired, etc).
+        # Returning "" lets the LM call fail with a clean 401 rather
+        # than masking it behind config-load tracebacks.
+        return ""
 
 
 def load_config_from_env() -> LMProviderConfig:
@@ -240,6 +398,19 @@ def load_config_from_env() -> LMProviderConfig:
             f"Set CLIO_LM_API_KEY or {env_var} environment variable."
         )
 
+    # Argonne / ALCF — token comes from Globus Auth on demand. If
+    # both the lazy resolver and the explicit env var came up empty,
+    # the user needs to either install globus-sdk + run the OAuth
+    # flow once, or pre-mint a token and export it as CLIO_ARGONNE_TOKEN.
+    if config.provider == "argonne" and not config.api_key:
+        raise ValueError(
+            "Argonne / ALCF provider could not obtain a Globus access "
+            "token. Either:\n"
+            "  1. Install:  pip install 'clio-agent[argonne]'  and run\n"
+            "       python -m clio_agent.providers.argonne_auth authenticate\n"
+            "  2. Or export CLIO_ARGONNE_TOKEN=<token> directly."
+        )
+
     return config
 
 
@@ -261,12 +432,10 @@ def create_lm(config: LMProviderConfig) -> dspy.LM:
     Returns:
         Configured dspy.LM instance
     """
-    if config.provider in ("openai", "anthropic"):
-        model_name = f"{config.provider}/{config.model}"
-    else:
-        # lm_studio and ollama are OpenAI-compatible
-        model_name = f"openai/{config.model}"
+    dspy = _dspy()
+    model_name = _resolve_model_name(config)
 
+    extras = _thinking_kwargs(config)
     return dspy.LM(
         model=model_name,
         api_base=config.api_base,
@@ -274,7 +443,66 @@ def create_lm(config: LMProviderConfig) -> dspy.LM:
         temperature=config.temperature,
         max_tokens=config.max_tokens,
         model_type="chat",
+        # iowarp/clio-agent#8: disable DSPy LM cache so token usage
+        # always lands in dspy.settings.usage_tracker (cache_hits
+        # short-circuit before add_usage fires). Real serving means
+        # identical prompts should still bill — accounting matters
+        # more than the small spend saved on duplicate questions.
+        cache=False,
+        **extras,
     )
+
+
+def _resolve_model_name(config: LMProviderConfig) -> str:
+    """Prefix the configured model id for litellm.
+
+    - ``openai`` / ``anthropic``: native litellm prefix.
+    - everything else (lm_studio, ollama, argonne, …): treated as
+      OpenAI-compatible by litellm, so we prefix with ``openai/``.
+
+    The only id we rewrite is ``openai/<rest>`` — strip the leading
+    ``openai/`` to avoid the ``openai/openai/claude-haiku-4-5`` shape
+    DSPy/litellm rejects (commit a2bac1a). HuggingFace-style ids like
+    ``ibm/granite-4-h-tiny`` or ``meta-llama/Meta-Llama-3.1-8B-Instruct``
+    pass through intact — the earlier "split at first slash" was too
+    eager and silently mangled them.
+    """
+    if config.provider in ("openai", "anthropic"):
+        return f"{config.provider}/{config.model}"
+    bare = config.model
+    if bare.startswith("openai/"):
+        bare = bare[len("openai/"):]
+    return f"openai/{bare}"
+
+
+def _thinking_kwargs(config: LMProviderConfig) -> dict:
+    """Translate thinking_budget to provider-specific litellm kwargs.
+
+    Anthropic: extended-thinking is configured via the ``thinking``
+    parameter (budget_tokens controls how much reasoning the model
+    spends). DSPy/litellm pass it through as a kwarg.
+
+    OpenAI / openai-compatible: rough mapping of token budget to
+    `reasoning_effort` ('low' | 'medium' | 'high'). Most openai-compat
+    proxies ignore unknown kwargs gracefully.
+
+    All other providers: returns {} so we don't trip on unsupported
+    parameters.
+    """
+    n = int(getattr(config, "thinking_budget", 0) or 0)
+    if n <= 0:
+        return {}
+    if config.provider == "anthropic":
+        return {"thinking": {"type": "enabled", "budget_tokens": n}}
+    if config.provider in ("openai", "lm_studio", "ollama", "argonne"):
+        if n < 2000:
+            effort = "low"
+        elif n < 8000:
+            effort = "medium"
+        else:
+            effort = "high"
+        return {"reasoning_effort": effort}
+    return {}
 
 
 def create_router_lm(config: LMProviderConfig) -> dspy.LM:
@@ -288,10 +516,8 @@ def create_router_lm(config: LMProviderConfig) -> dspy.LM:
     Returns:
         Configured dspy.LM instance with lower temperature
     """
-    if config.provider in ("openai", "anthropic"):
-        model_name = f"{config.provider}/{config.model}"
-    else:
-        model_name = f"openai/{config.model}"
+    dspy = _dspy()
+    model_name = _resolve_model_name(config)
 
     return dspy.LM(
         model=model_name,
@@ -300,6 +526,8 @@ def create_router_lm(config: LMProviderConfig) -> dspy.LM:
         temperature=config.router_temperature,
         max_tokens=config.max_tokens,
         model_type="chat",
+        cache=False,  # see create_lm — same rationale
+        **_thinking_kwargs(config),
     )
 
 
@@ -487,6 +715,7 @@ def configure_dspy_lm_studio(config: Optional[LMStudioConfig] = None) -> dspy.LM
         >>> custom_config = LMStudioConfig(base_url="http://100.127.255.172:1234")
         >>> lm = configure_dspy_lm_studio(custom_config)
     """
+    dspy = _dspy()
     cfg = config or LMStudioConfig()
 
     # Use openai/ prefix - LM Studio is OpenAI-compatible
@@ -499,6 +728,7 @@ def configure_dspy_lm_studio(config: Optional[LMStudioConfig] = None) -> dspy.LM
         temperature=cfg.temperature,
         max_tokens=cfg.max_tokens,
         model_type="chat",
+        cache=False,
     )
 
     return lm
@@ -506,6 +736,7 @@ def configure_dspy_lm_studio(config: Optional[LMStudioConfig] = None) -> dspy.LM
 
 def configure_dspy_router_lm_studio(config: Optional[RouterLMConfig] = None) -> dspy.LM:
     """Configure DSPy to use LM Studio for router (deterministic)."""
+    dspy = _dspy()
     cfg = config or RouterLMConfig()
     model_name = f"openai/{cfg.model}"
 
@@ -516,11 +747,13 @@ def configure_dspy_router_lm_studio(config: Optional[RouterLMConfig] = None) -> 
         temperature=cfg.temperature,
         max_tokens=cfg.max_tokens,
         model_type="chat",
+        cache=False,
     )
 
 
 def configure_dspy_reasoner_lm_studio(config: Optional[ReasonerLMConfig] = None) -> dspy.LM:
     """Configure DSPy to use LM Studio for reasoner (creative)."""
+    dspy = _dspy()
     cfg = config or ReasonerLMConfig()
     model_name = f"openai/{cfg.model}"
 
@@ -531,6 +764,7 @@ def configure_dspy_reasoner_lm_studio(config: Optional[ReasonerLMConfig] = None)
         temperature=cfg.temperature,
         max_tokens=cfg.max_tokens,
         model_type="chat",
+        cache=False,
     )
 
 
@@ -582,6 +816,7 @@ def setup_dspy(model: Optional[str] = None, verbose: bool = True) -> dspy.LM:
     # (`response_format={"type": "json_object"}`). Keep them on text chat
     # formatting; cloud providers can still use DSPy's JSON fallback.
     use_json_fallback = not is_local_openai_compatible_backend(config)
+    dspy = _dspy()
     dspy.configure(
         lm=lm,
         adapter=dspy.ChatAdapter(use_json_adapter_fallback=use_json_fallback),
@@ -632,7 +867,7 @@ if __name__ == "__main__":
 
         # Simple test prediction
         print("\n2. Testing simple prediction...")
-        predictor = dspy.Predict("question -> answer")
+        predictor = _dspy().Predict("question -> answer")
         result = predictor(question="What is 2+2?")
         print(f"Answer: {result.answer}")
 

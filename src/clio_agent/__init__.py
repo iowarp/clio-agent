@@ -28,15 +28,32 @@ Example:
     >>> print(f"Answer: {result.answer}")
 """
 
-__version__ = "0.2.0"
+__version__ = "0.5.0"
 __author__ = "IOWarp Team"
-
-# Core imports
-from clio_agent.agent import ClioAgent
-from clio_agent.config import LMStudioConfig, setup_dspy
 
 __all__ = [
     "ClioAgent",
     "setup_dspy",
     "LMStudioConfig",
 ]
+
+# PEP 562 lazy attribute access. ``from clio_agent import ClioAgent``
+# still works, but plain ``import clio_agent`` (or anything that just
+# touches a submodule like ``clio_agent.gact.app``) no longer drags in
+# DSPy + every expert + ARC at import time. The boot-time win matters
+# for ``clio-agent-gact``: gact-tui's ``agent deploy`` probe only waits
+# 3 s for /v1/capabilities, and an eager import here ate the budget.
+def __getattr__(name: str):
+    if name == "ClioAgent":
+        from clio_agent.agent import ClioAgent  # noqa: PLC0415
+
+        return ClioAgent
+    if name == "setup_dspy":
+        from clio_agent.config import setup_dspy  # noqa: PLC0415
+
+        return setup_dspy
+    if name == "LMStudioConfig":
+        from clio_agent.config import LMStudioConfig  # noqa: PLC0415
+
+        return LMStudioConfig
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

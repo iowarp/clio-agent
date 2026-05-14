@@ -27,8 +27,6 @@ import os
 from typing import Any, Optional
 
 import dspy
-import matplotlib
-import matplotlib.pyplot as plt
 import pyarrow.csv as pcsv
 import pyarrow.parquet as pq
 
@@ -41,9 +39,30 @@ from clio_agent.tools.file_policy import (
     validate_write_path,
 )
 
-matplotlib.use("Agg")  # Headless rendering
-
 logger = logging.getLogger(__name__)
+
+# Matplotlib + the Agg backend pulls ~3-4s of import cost on Aurora's
+# frameworks Python (beartype import hook + Lustre cold reads). The
+# Visualization expert is rarely the first thing a user reaches for,
+# so we defer the import until the first chart call. _plt() memoizes
+# pyplot after running matplotlib.use("Agg") — call it from every
+# chart function instead of binding ``plt`` at module level.
+_plt_cache: Any = None
+
+
+def _plt() -> Any:
+    """Return matplotlib.pyplot, importing it (and forcing Agg) on
+    first call. Subsequent calls hit the module cache so this is
+    cheap on the hot path."""
+    global _plt_cache  # noqa: PLW0603
+    if _plt_cache is None:
+        import matplotlib  # noqa: PLC0415
+
+        matplotlib.use("Agg")  # headless before pyplot binds a backend
+        import matplotlib.pyplot as plt  # noqa: PLC0415
+
+        _plt_cache = plt
+    return _plt_cache
 
 
 def _load_table(filepath: str):
@@ -91,6 +110,7 @@ def plot_histogram(
     Returns:
         Absolute path to the saved PNG file, or error message string.
     """
+    plt = _plt()
     try:
         validate_non_empty_string(column, field="column")
         validate_positive_int(bins, field="bins", max_value=1000)
@@ -141,6 +161,7 @@ def plot_bar_chart(
     Returns:
         Absolute path to the saved PNG file, or error message string.
     """
+    plt = _plt()
     try:
         validate_non_empty_string(column, field="column")
         validate_positive_int(top_n, field="top_n", max_value=1000)
@@ -205,6 +226,7 @@ def plot_scatter(
     Returns:
         Absolute path to the saved PNG file, or error message string.
     """
+    plt = _plt()
     try:
         validate_non_empty_string(x_column, field="x_column")
         validate_non_empty_string(y_column, field="y_column")
@@ -265,6 +287,7 @@ def plot_summary(filepath: str, output_path: str = "") -> str:
     Returns:
         Absolute path to the saved PNG file, or error message string.
     """
+    plt = _plt()
     try:
         if not output_path:
             base = os.path.splitext(os.path.basename(filepath))[0]

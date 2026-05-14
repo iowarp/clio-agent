@@ -43,6 +43,62 @@ Think of CLIO Agent as a specialized colleague for scientific data:
 
 ---
 
+## Quick Start
+
+One line installs `clio-agent` + the `gact` TUI, builds them, and drops
+a `clio` command on your PATH.
+
+**Linux / macOS**
+```sh
+curl -fsSL https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.sh | sh
+clio
+```
+
+**Windows (PowerShell)**
+```powershell
+irm https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.ps1 | iex
+clio
+```
+
+`clio` boots the server (if it isn't already up) and attaches the TUI.
+On first connect, pick an LM provider in the modal and you're chatting.
+
+Prerequisites: `git`, [`uv`](https://astral.sh/uv), and `go` 1.26+ — the
+installer tells you if any are missing.
+
+---
+
+## Using the `clio` command
+
+`clio` with no arguments is the one-command UX: ensure the server is up,
+attach the TUI. The subcommands manage the backing server without
+hunting PIDs:
+
+| Command | What it does |
+|---|---|
+| `clio` | ensure the server is up, then attach the TUI |
+| `clio start` | start the server (no TUI) |
+| `clio stop` | stop the server (kills the whole process tree) |
+| `clio restart` | stop, then start — clears stale/zombie launches |
+| `clio status` / `clio ps` | PID, port, health |
+| `clio logs [N]` | tail the server + gact stderr logs |
+| `clio doctor` | check prerequisites and install layout |
+| `clio report` | print a diagnostics bundle for GitHub issues |
+| `clio completion <shell>` | shell tab-completion (bash / zsh / powershell) |
+| `clio uninstall` | remove CLIO (add `--purge` / `-Purge` to drop config too) |
+| `clio help` | full help text |
+
+The server runs detached; logs land in `$CLIO_PREFIX`
+(`clio-server.log`, `clio-server.err.log`, `gact-stderr.log`).
+`clio report` bundles all three plus version info — attach its output
+when filing an issue.
+
+Override install paths with `CLIO_PREFIX` / `CLIO_BIN_DIR` and the
+server port with `CLIO_PORT`. Full install/uninstall reference:
+[install/README.md](install/README.md).
+
+---
+
 ## Architecture
 
 ### The Big Picture
@@ -130,7 +186,11 @@ Result: "Applied gzip-6 compression: 100GB → 45GB (2.2x reduction)"
 
 ---
 
-## Quick Start
+## Development — running from source
+
+For normal use, see [Quick Start](#quick-start) above — the one-line
+installer is the supported path. This section is the from-source
+workflow for contributors and for building everything by hand.
 
 ### Prerequisites
 
@@ -195,6 +255,152 @@ Found 3 datasets:
 2. `/simulation/pressure` - shape `(120, 80)`, chunked
 3. `/time_step` - shape `(120,)`
 ```
+
+---
+
+## From-scratch deploy: TUI + Agent on a fresh machine
+
+> Manual from-source recipe — the developer path. For the supported
+> install, use the one-line [Quick Start](#quick-start) instead.
+
+End-to-end recipe for a box that has nothing installed yet. Three things to
+install (`uv`, Go, an LLM), two repos to clone (`clio-agent` on
+`tui-integration`, `gact-tui` on `clio`), one command to launch the TUI.
+
+### 0. System prerequisites
+
+A real terminal (256-color), a working network, and:
+
+```sh
+# Python ≥ 3.12 — most current distros ship 3.12. Verify:
+python3 --version
+
+# Go ≥ 1.25 (for building gact-tui)
+#   Debian/Ubuntu:   sudo apt install -y golang
+#   Fedora/RHEL:     sudo dnf install -y golang
+#   macOS:           brew install go
+#   anywhere:        https://go.dev/dl/   (or asdf / gvm)
+go version
+```
+
+If `python3 --version` reports < 3.12, install 3.12 first (`uv python install
+3.12` works once `uv` is on disk).
+
+### 1. Install `uv`
+
+```sh
+curl -LsSf https://astral.sh/uv/install.sh | sh
+export PATH="$HOME/.local/bin:$PATH"   # add to ~/.bashrc / ~/.zshrc
+```
+
+### 2. Install `clio-agent` (tui-integration branch)
+
+```sh
+git clone -b tui-integration https://github.com/iowarp/clio-agent
+cd clio-agent
+uv venv --python 3.12
+source .venv/bin/activate
+uv pip install -e '.[api]'             # or '.[all]' for optimizers + argonne + iowarp
+```
+
+You should now have three console scripts on `$PATH`:
+
+| Script              | Purpose                                              |
+| ------------------- | ---------------------------------------------------- |
+| `clio-agent`        | Interactive CLI (smoke test)                         |
+| `clio-agent-api`    | REST API on its own port                             |
+| `clio-agent-gact`   | GACT v0.2 server — the surface `gact-tui` talks to   |
+
+Verify: `which clio-agent-gact` should point inside the venv you just created.
+
+### 3. Install `gact-tui` (clio branch)
+
+```sh
+cd ..
+git clone -b clio https://github.com/iowarp/gact-tui
+cd gact-tui
+make build && make install            # → ~/.local/bin/{gact,emulator-server}
+gact version
+```
+
+### 4. Pick an LLM (one of three)
+
+Set the env in the **same shell** you'll deploy from — `gact agent deploy`
+inherits your env when spawning the detached `clio-agent-gact` process.
+
+**A) Local LM Studio** — free, private, runs on your box.
+
+```sh
+# 1. Launch LM Studio, load a model, start its local server (default :1234).
+# 2. Point CLIO at it:
+export CLIO_LM_PROVIDER=lm_studio
+export CLIO_LM_API_BASE=http://127.0.0.1:1234/v1
+export CLIO_LM_MODEL=<id-shown-in-lm-studio>
+```
+
+**B) Claude Max via Meridian** — bring your own Anthropic subscription. Full
+recipe in [docs/providers/meridian.md](docs/providers/meridian.md). Short form:
+
+```sh
+npm install -g @rynfar/meridian
+CLAUDE_CONFIG_DIR="$HOME/.claude" meridian &
+export CLIO_LM_PROVIDER=openai
+export CLIO_LM_API_BASE=http://127.0.0.1:3456/v1
+export CLIO_LM_MODEL=claude-haiku-4-5-20251001
+export CLIO_LM_API_KEY=x               # any non-empty string
+```
+
+**C) Argonne ALCF inference gateway** — Sophia vLLM via Globus Auth. Needs
+`uv pip install -e '.[argonne]'` and an ALCF account.
+
+```sh
+export CLIO_LM_PROVIDER=argonne
+export CLIO_LM_API_BASE=https://inference-api.alcf.anl.gov/resource_server/sophia/vllm/v1
+export CLIO_LM_MODEL=meta-llama/Meta-Llama-3.1-70B-Instruct
+# First call triggers Globus device-flow login; the bearer is refreshed
+# automatically on 401. See src/clio_agent/providers/argonne_auth.py.
+```
+
+### 5. Smoke-test the agent on its own
+
+```sh
+clio-agent --query "hello, name yourself"
+```
+
+A greeting plus an expert label means the LLM + agent are wired up. If this
+fails, the TUI step will fail too — fix it here first.
+
+### 6. Deploy through the TUI
+
+```sh
+gact agent deploy clio my-clio        # spawns clio-agent-gact detached
+gact connect my-clio                  # opens the TUI
+```
+
+Inside the TUI:
+
+- **Ctrl+S** → Settings → Model tab → *Change provider…* swaps the running
+  session to a different provider/model without restarting the agent.
+- **Ctrl+Z** detaches the TUI; the agent keeps running. `gact resume` to
+  reattach where you left off.
+- **`/help`** in the input bar shows the full slash palette
+  (`/doctor`, `/memory`, `/experts`, `/metrics`, …).
+
+When you're done:
+
+```sh
+gact agent stop my-clio
+```
+
+### Troubleshooting
+
+| Symptom                                          | Likely cause                                                                                                                  |
+| ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------ |
+| `/doctor` shows `agent: unavailable`             | `CLIO_LM_*` env wasn't set in the shell that ran `gact agent deploy`. `env \| grep CLIO_LM_` to confirm; re-export and redeploy. |
+| `gact: command not found`                        | `~/.local/bin` isn't on `$PATH`. Add it to your shell rc.                                                                       |
+| `clio-agent-gact: command not found`             | Wrong venv active. `source clio-agent/.venv/bin/activate` then `which clio-agent-gact`.                                          |
+| TUI shows old behaviour after editing source     | `clio-agent-gact` runs as a detached child. `gact agent stop my-clio && gact agent deploy clio my-clio` to pick up edits.        |
+| 400 from provider on certain model ids           | Provider-specific quirk — see `PROVIDER_DEFAULTS` in `src/clio_agent/config.py`. Add a capability flag, don't branch on name.    |
 
 ---
 
