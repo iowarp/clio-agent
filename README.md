@@ -43,6 +43,62 @@ Think of CLIO Agent as a specialized colleague for scientific data:
 
 ---
 
+## Quick Start
+
+One line installs `clio-agent` + the `gact` TUI, builds them, and drops
+a `clio` command on your PATH.
+
+**Linux / macOS**
+```sh
+curl -fsSL https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.sh | sh
+clio
+```
+
+**Windows (PowerShell)**
+```powershell
+irm https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.ps1 | iex
+clio
+```
+
+`clio` boots the server (if it isn't already up) and attaches the TUI.
+On first connect, pick an LM provider in the modal and you're chatting.
+
+Prerequisites: `git`, [`uv`](https://astral.sh/uv), and `go` 1.26+ — the
+installer tells you if any are missing.
+
+---
+
+## Using the `clio` command
+
+`clio` with no arguments is the one-command UX: ensure the server is up,
+attach the TUI. The subcommands manage the backing server without
+hunting PIDs:
+
+| Command | What it does |
+|---|---|
+| `clio` | ensure the server is up, then attach the TUI |
+| `clio start` | start the server (no TUI) |
+| `clio stop` | stop the server (kills the whole process tree) |
+| `clio restart` | stop, then start — clears stale/zombie launches |
+| `clio status` / `clio ps` | PID, port, health |
+| `clio logs [N]` | tail the server + gact stderr logs |
+| `clio doctor` | check prerequisites and install layout |
+| `clio report` | print a diagnostics bundle for GitHub issues |
+| `clio completion <shell>` | shell tab-completion (bash / zsh / powershell) |
+| `clio uninstall` | remove CLIO (add `--purge` / `-Purge` to drop config too) |
+| `clio help` | full help text |
+
+The server runs detached; logs land in `$CLIO_PREFIX`
+(`clio-server.log`, `clio-server.err.log`, `gact-stderr.log`).
+`clio report` bundles all three plus version info — attach its output
+when filing an issue.
+
+Override install paths with `CLIO_PREFIX` / `CLIO_BIN_DIR` and the
+server port with `CLIO_PORT`. Full install/uninstall reference:
+[install/README.md](install/README.md).
+
+---
+
 ## Architecture
 
 ### The Big Picture
@@ -130,7 +186,11 @@ Result: "Applied gzip-6 compression: 100GB → 45GB (2.2x reduction)"
 
 ---
 
-## Quick Start
+## Development — running from source
+
+For normal use, see [Quick Start](#quick-start) above — the one-line
+installer is the supported path. This section is the from-source
+workflow for contributors and for building everything by hand.
 
 ### Prerequisites
 
@@ -199,6 +259,9 @@ Found 3 datasets:
 ---
 
 ## From-scratch deploy: TUI + Agent on a fresh machine
+
+> Manual from-source recipe — the developer path. For the supported
+> install, use the one-line [Quick Start](#quick-start) instead.
 
 End-to-end recipe for a box that has nothing installed yet. Three things to
 install (`uv`, Go, an LLM), two repos to clone (`clio-agent` on
