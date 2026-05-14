@@ -204,11 +204,18 @@ class SessionStore:
         parent_session_id: str = "",
         mode: str = "chat",
         edit_mode: str = "diff",
+        routing_mode: str = "auto",
     ) -> Session:
-        """Create a new session. Returns the freshly-minted record."""
+        """Create a new session. Returns the freshly-minted record.
+
+        ``routing_mode`` mirrors the same validation as ``update()`` so a
+        client can pre-lock a fresh session to a non-default routing mode
+        (e.g. issue #25's ``reasoning_only``) without an extra PATCH.
+        """
 
         sid = _SESSION_ID_PREFIX + uuid.uuid4().hex[:12]
         now = _utcnow_iso()
+        valid_routing_modes = {"auto", "chat", "experts", "reasoning_only"}
         sess = Session(
             id=sid,
             workspace_id=workspace_id,
@@ -220,6 +227,7 @@ class SessionStore:
             parent_session_id=parent_session_id,
             mode=mode if mode in {"chat", "plan", "edit", "architect"} else "chat",
             edit_mode=edit_mode if edit_mode in {"diff", "whole", "patch"} else "diff",
+            routing_mode=routing_mode if routing_mode in valid_routing_modes else "auto",
         )
         with self._lock:
             self._sessions[sid] = sess
@@ -299,7 +307,9 @@ class SessionStore:
                 sess.mode = mode
             if edit_mode is not None and edit_mode in {"diff", "whole", "patch"}:
                 sess.edit_mode = edit_mode
-            if routing_mode is not None and routing_mode in {"auto", "chat", "experts"}:
+            if routing_mode is not None and routing_mode in {
+                "auto", "chat", "experts", "reasoning_only",
+            }:
                 sess.routing_mode = routing_mode
             if metadata_patch is not None:
                 sess.metadata.update(metadata_patch)

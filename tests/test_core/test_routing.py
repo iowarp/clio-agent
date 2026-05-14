@@ -9,7 +9,13 @@ from typing import get_args, get_type_hints
 
 import dspy
 
-from clio_agent.signatures.main_agent_sig import ChatAgentSignature, RouterSignature
+import pytest
+
+from clio_agent.signatures.main_agent_sig import (
+    ChatAgentSignature,
+    DataIntentSig,
+    RouterSignature,
+)
 
 
 class TestRouterSignature:
@@ -208,3 +214,90 @@ class TestClioAgentRouting:
         assert "plot" in cap.keywords
         assert "chart" in cap.keywords
         agent.shutdown()
+
+
+# iowarp/clio-agent#25 — DataIntentSig + _classify_data_intent tests.
+
+
+class TestDataIntentSignature:
+    """DataIntentSig must declare a Literal[inspect, reason] output."""
+
+    def test_has_question_input(self):
+        assert "question" in DataIntentSig.input_fields
+
+    def test_has_intent_output(self):
+        assert "intent" in DataIntentSig.output_fields
+
+    def test_intent_is_literal_with_two_targets(self):
+        hints = get_type_hints(DataIntentSig)
+        annotation = hints["intent"]
+        args = get_args(annotation)
+        assert set(args) == {"inspect", "reason"}
+
+    def test_docstring_mentions_both_paths(self):
+        doc = DataIntentSig.__doc__ or ""
+        assert "inspect" in doc.lower()
+        assert "reason" in doc.lower()
+
+
+class TestClassifyDataIntent:
+    """_classify_data_intent must return inspect / reason / ambiguous
+    based on the wording, never call an LM."""
+
+    @pytest.mark.parametrize(
+        "question",
+        [
+            "list datasets in data/atmospheric.h5",
+            "inspect /tmp/x.h5",
+            "what's in /tmp/x.h5",
+            "show me the schema of /tmp/x.h5",
+            "analyze data/atmospheric.h5",
+            "describe the file data/atmospheric.h5",
+            "preview /tmp/x.h5",
+            "schema of /tmp/x.parquet",
+        ],
+    )
+    def test_inspect_verbs(self, question):
+        from clio_agent.agent import ClioAgent
+
+        assert ClioAgent._classify_data_intent(question) == "inspect"
+
+    @pytest.mark.parametrize(
+        "question",
+        [
+            "compare pressure and temperature from data/atmospheric.h5",
+            "why is /tmp/x.h5 so large?",
+            "recommend a compression strategy for /tmp/x.h5",
+            "is there an anomaly in /tmp/x.h5",
+            "explain the trend in data/atmospheric.h5",
+            "optimize the chunking of /tmp/x.h5",
+            "which is larger, temperature or pressure, in /tmp/x.h5?",
+            "distribution of pressure in data/atmospheric.h5",
+        ],
+    )
+    def test_reason_verbs(self, question):
+        from clio_agent.agent import ClioAgent
+
+        assert ClioAgent._classify_data_intent(question) == "reason"
+
+    @pytest.mark.parametrize(
+        "question",
+        [
+            "/tmp/x.h5",
+            "tell me about /tmp/x.h5",
+            "data/atmospheric.h5",
+            "see /tmp/x.h5",
+        ],
+    )
+    def test_ambiguous_returns_ambiguous(self, question):
+        from clio_agent.agent import ClioAgent
+
+        assert ClioAgent._classify_data_intent(question) == "ambiguous"
+
+    def test_inspect_and_reason_together_is_ambiguous(self):
+        """If both verb buckets match the same question, treat it as
+        ambiguous so the LM resolver gets the final say."""
+        from clio_agent.agent import ClioAgent
+
+        q = "list datasets and compare temperature with pressure in /tmp/x.h5"
+        assert ClioAgent._classify_data_intent(q) == "ambiguous"

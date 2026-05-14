@@ -265,3 +265,114 @@ class TestVariantLoading:
         conv = agent.arc.get_conversation("conv_test")
         assert conv is not None
         assert len(conv.messages) == 2  # user + assistant
+
+
+# iowarp/clio-agent#25 — hybrid routing inside the data branch must
+# pick "fast" for inspection questions, "expert_loop" for reasoning
+# questions, and let session.routing_mode="reasoning_only" override
+# everything to expert_loop.
+
+
+class TestDataIntentDispatch:
+    """forward() must select the right execution path inside the data
+    branch and surface it via Prediction.execution_path."""
+
+    def test_inspect_prompt_runs_fast_path(self, agent, tmp_path):
+        """An inspect-verb question against a real .h5 path must use
+        _direct_hdf5_answer and never call data_expert.forward."""
+        # Heuristic router will pick "data" because the question
+        # contains ".h5"; no LM router invocation required.
+        h5 = tmp_path / "test.h5"
+        import h5py
+
+        with h5py.File(h5, "w") as f:
+            f.create_dataset("temperature", data=[1.0, 2.0, 3.0])
+
+        agent.data_expert = MagicMock()  # would raise if called
+        result = agent.forward(
+            question=f"inspect {h5}",
+            session_id="t1",
+        )
+
+        agent.data_expert.assert_not_called()
+        assert result.selected_expert == "data"
+        assert getattr(result, "execution_path", "") == "fast"
+
+    def test_reason_prompt_runs_expert_loop(self, agent, tmp_path):
+        """A reason-verb question against a real .h5 path must reach
+        the DataExpert ReAct loop, not the deterministic template."""
+        h5 = tmp_path / "test.h5"
+        import h5py
+
+        with h5py.File(h5, "w") as f:
+            f.create_dataset("a", data=[1.0])
+            f.create_dataset("b", data=[2.0])
+
+        expert_result = dspy.Prediction(
+            analysis="Compared a vs b",
+            recommendations="None",
+        )
+        agent.data_expert = MagicMock(return_value=expert_result)
+
+        result = agent.forward(
+            question=f"compare a and b from {h5}",
+            session_id="t2",
+        )
+
+        agent.data_expert.assert_called_once()
+        assert result.selected_expert == "data"
+        assert getattr(result, "execution_path", "") == "expert_loop"
+        assert "Compared a vs b" in result.answer
+
+    def test_reasoning_only_mode_bypasses_fast_path(self, agent, tmp_path):
+        """When session.routing_mode = 'reasoning_only', even an
+        inspect-verb question must reach data_expert.forward."""
+        h5 = tmp_path / "test.h5"
+        import h5py
+
+        with h5py.File(h5, "w") as f:
+            f.create_dataset("x", data=[1.0])
+
+        expert_result = dspy.Prediction(
+            analysis="x has shape (1,)",
+            recommendations="None",
+        )
+        agent.data_expert = MagicMock(return_value=expert_result)
+        agent._routing_mode_override = "reasoning_only"
+        try:
+            result = agent.forward(
+                question=f"inspect {h5}",  # inspect verb → would normally fast-path
+                session_id="t3",
+            )
+        finally:
+            agent._routing_mode_override = "auto"
+
+        agent.data_expert.assert_called_once()
+        assert result.selected_expert == "data"
+        assert getattr(result, "execution_path", "") == "expert_loop"
+
+    def test_ambiguous_prompt_calls_lm_resolver(self, agent, tmp_path):
+        """An ambiguous prompt (neither inspect nor reason verb)
+        must invoke the LM intent classifier exactly once. We mock
+        the classifier to return 'reason' and verify data_expert ran."""
+        h5 = tmp_path / "test.h5"
+        import h5py
+
+        with h5py.File(h5, "w") as f:
+            f.create_dataset("d", data=[1.0])
+
+        resolver_pred = MagicMock()
+        resolver_pred.intent = "reason"
+        agent.data_intent_classifier = MagicMock(return_value=resolver_pred)
+
+        expert_result = dspy.Prediction(analysis="ok", recommendations="ok")
+        agent.data_expert = MagicMock(return_value=expert_result)
+
+        result = agent.forward(
+            question=f"tell me about {h5}",  # neither bucket matches
+            session_id="t4",
+        )
+
+        agent.data_intent_classifier.assert_called_once()
+        agent.data_expert.assert_called_once()
+        assert getattr(result, "execution_path", "") == "expert_loop"

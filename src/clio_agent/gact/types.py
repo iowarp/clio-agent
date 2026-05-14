@@ -257,7 +257,7 @@ class Session(BaseModel):
     # iowarp/clio-agent — capabilities.plan_mode + edit_modes:
     mode: Literal["chat", "plan", "edit", "architect"] = "chat"
     edit_mode: Literal["diff", "whole", "patch"] = "diff"
-    routing_mode: Literal["auto", "chat", "experts"] = "auto"
+    routing_mode: Literal["auto", "chat", "experts", "reasoning_only"] = "auto"
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -268,7 +268,7 @@ class CreateSessionRequest(BaseModel):
     title: str = ""
     mode: Literal["chat", "plan", "edit", "architect"] = "chat"
     edit_mode: Literal["diff", "whole", "patch"] = "diff"
-    routing_mode: Literal["auto", "chat", "experts"] = "auto"
+    routing_mode: Literal["auto", "chat", "experts", "reasoning_only"] = "auto"
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -282,8 +282,11 @@ class UpdateSessionRequest(BaseModel):
     edit_mode: Optional[Literal["diff", "whole", "patch"]] = None
     # routing_mode overrides the LM-based router. "auto" runs the
     # router; "chat" forces every turn through the chat path so users
-    # don't need a /chat prefix; "experts" rejects chat/none routes.
-    routing_mode: Optional[Literal["auto", "chat", "experts"]] = None
+    # don't need a /chat prefix; "experts" rejects chat/none routes;
+    # "reasoning_only" (issue #25) skips the deterministic fast path
+    # inside the data branch so every turn reaches the DataExpert
+    # ReAct loop.
+    routing_mode: Optional[Literal["auto", "chat", "experts", "reasoning_only"]] = None
 
 
 class ListSessionsResponse(BaseModel):
@@ -319,6 +322,15 @@ class Part(BaseModel):
     rationale: str = ""
     confidence: float = 0.0
     heuristic: bool = False
+    # iowarp/clio-agent#25: which path the selected expert actually
+    # ran on. "fast" = deterministic tool template (no LM); "expert_
+    # loop" = full DSPy ReAct iteration with the expert's tool set.
+    # Empty when not applicable (e.g. chat path, or branches that
+    # haven't been migrated to the classifier yet — analysis /
+    # visualization will follow in their own issues). Field values
+    # are user-neutral per CLAUDE.md Rule 3 (no DSPy terms in user-
+    # facing payload).
+    execution_path: str = ""
 
     # file_diff (BBB21 + #4): a proposed edit awaiting apply/reject.
     # ``new_content`` (when present) is what the apply path writes
