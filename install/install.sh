@@ -25,8 +25,11 @@ die()  { printf "${RED}xx ${RESET} %s\n" "$*" >&2; exit 1; }
 # ---------- defaults ---------------------------------------------------
 PREFIX="${CLIO_PREFIX:-$HOME/.local/share/clio}"
 BIN_DIR="${CLIO_BIN_DIR:-$HOME/.local/bin}"
-CLIO_REF="${CLIO_REF:-v0.3.1}"
-GACT_REF="${GACT_REF:-v0.2.1}"
+# Default to the main branches so a bare `curl | sh` tracks the latest
+# released state. GACT_REF stays on `clio` until iowarp/gact-tui#12
+# (clio -> main) merges, after which it can move to `main` too.
+CLIO_REF="${CLIO_REF:-main}"
+GACT_REF="${GACT_REF:-clio}"
 # Default to HTTPS for the one-liner UX, but allow override to SSH for
 # users who only have SSH access (and for the period while the repos
 # are still private — anonymous HTTPS returns 404). Set
@@ -131,29 +134,21 @@ say "Installing CLIO Python deps (uv sync --extra api)"
 say "Building gact TUI"
 ( cd "$PREFIX/gact-tui/tui" && go build -o "$PREFIX/gact" . )
 
-# ---------- launcher ---------------------------------------------------
+# ---------- launcher + uninstaller -------------------------------------
+# The launcher is a real CLI (install/clio) checked into the clio-agent
+# repo. We copy it from the freshly-cloned checkout rather than
+# generating it inline, so there is one source of truth and
+# `clio start|stop|restart|status|logs|doctor|report` ship with it.
+INSTALL_SRC="$PREFIX/clio-agent/install"
 LAUNCHER="$BIN_DIR/clio"
-say "Writing launcher: $LAUNCHER"
-cat > "$LAUNCHER" <<'EOF'
-#!/usr/bin/env bash
-# CLIO launcher — boots clio-agent-gact + connects the gact TUI.
-set -euo pipefail
-PREFIX="${CLIO_PREFIX:-$HOME/.local/share/clio}"
-PORT="${CLIO_PORT:-17800}"
-LOG="${CLIO_LOG:-$PREFIX/clio-server.log}"
 
-if ! curl -sf -m 1 "http://127.0.0.1:$PORT/v1/health" >/dev/null 2>&1; then
-  echo "Starting CLIO server on :$PORT (log: $LOG)"
-  (
-    cd "$PREFIX/clio-agent" &&
-    nohup .venv/bin/clio-agent-gact --port "$PORT" > "$LOG" 2>&1 &
-  )
-  sleep 4
-fi
-
-GACT_BACKEND="http://127.0.0.1:$PORT" exec "$PREFIX/gact" --no-intro "$@"
-EOF
+say "Installing launcher: $LAUNCHER"
+cp "$INSTALL_SRC/clio" "$LAUNCHER"
 chmod +x "$LAUNCHER"
+
+say "Installing uninstaller: $PREFIX/uninstall.sh"
+cp "$INSTALL_SRC/uninstall.sh" "$PREFIX/uninstall.sh"
+chmod +x "$PREFIX/uninstall.sh"
 
 # ---------- finishing notes -------------------------------------------
 say "Done."
@@ -167,9 +162,9 @@ gact-tui  ref:       $GACT_REF
 Next steps:
   1. Make sure $BIN_DIR is on your PATH.
   2. Run:   clio
-     The TUI will pop the LM-provider modal on first connect — pick a
-     preset (Meridian / Anthropic / OpenAI / OpenRouter / LM Studio /
-     Ollama), paste an API key if needed, and you're chatting.
-  3. Mid-session provider swap: Ctrl+S → Settings → Model → Change provider…
+     The TUI pops the LM-provider modal on first connect.
+  3. Manage the server: clio status | clio restart | clio logs
+  4. Tab-completion:    clio completion bash >> ~/.bashrc   (or zsh)
+  5. Uninstall:         clio uninstall   (add --purge to drop config)
 
 EOF

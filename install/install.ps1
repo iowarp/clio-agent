@@ -18,8 +18,11 @@ function Die($msg)  { Write-Host "xx $msg"  -ForegroundColor Red; exit 1 }
 # ---------- defaults ---------------------------------------------------
 $Prefix    = if ($env:CLIO_PREFIX)  { $env:CLIO_PREFIX }  else { Join-Path $HOME 'AppData\Local\clio' }
 $BinDir    = if ($env:CLIO_BIN_DIR) { $env:CLIO_BIN_DIR } else { Join-Path $HOME 'AppData\Local\Microsoft\WindowsApps' }
-$ClioRef   = if ($env:CLIO_REF)     { $env:CLIO_REF }     else { 'v0.3.1' }
-$GactRef   = if ($env:GACT_REF)     { $env:GACT_REF }     else { 'v0.2.1' }
+# Default to the main branches so a bare one-liner tracks the latest
+# released state. GactRef stays on 'clio' until iowarp/gact-tui#12
+# (clio -> main) merges, after which it can move to 'main' too.
+$ClioRef   = if ($env:CLIO_REF)     { $env:CLIO_REF }     else { 'main' }
+$GactRef   = if ($env:GACT_REF)     { $env:GACT_REF }     else { 'clio' }
 # Default to HTTPS for the one-liner UX, but allow override to SSH for
 # users who only have SSH access (and for the period while the repos
 # are still private — anonymous HTTPS returns 404). Set
@@ -93,25 +96,20 @@ Push-Location "$Prefix/gact-tui/tui"
 go build -o "$Prefix/gact.exe" .
 Pop-Location
 
-# ---------- launcher ---------------------------------------------------
-$Launcher = Join-Path $BinDir 'clio.cmd'
-Say "Writing launcher: $Launcher"
-@"
-@echo off
-setlocal
-if "%CLIO_PORT%"=="" set CLIO_PORT=17800
-if "%CLIO_PREFIX%"=="" set CLIO_PREFIX=$Prefix
+# ---------- launcher + uninstaller -------------------------------------
+# The launcher is a real CLI (clio.ps1) checked into the clio-agent
+# repo under install/. We copy it from the freshly-cloned checkout
+# rather than generating it inline, so there is one source of truth and
+# `clio start|stop|restart|status|logs|doctor|report` ship with it.
+$InstallSrc = Join-Path $Prefix 'clio-agent\install'
+$Launcher   = Join-Path $BinDir 'clio.cmd'
 
-curl -sf -m 1 http://127.0.0.1:%CLIO_PORT%/v1/health >NUL 2>&1
-if errorlevel 1 (
-  echo Starting CLIO server on :%CLIO_PORT%
-  start "clio-server" /B "%CLIO_PREFIX%\clio-agent\.venv\Scripts\clio-agent-gact.exe" --port %CLIO_PORT% > "%CLIO_PREFIX%\clio-server.log" 2>&1
-  timeout /t 4 /nobreak >NUL
-)
+Say "Installing launcher: $Launcher"
+Copy-Item -Path (Join-Path $InstallSrc 'clio.ps1') -Destination (Join-Path $BinDir 'clio.ps1') -Force
+Copy-Item -Path (Join-Path $InstallSrc 'clio.cmd') -Destination $Launcher -Force
 
-set GACT_BACKEND=http://127.0.0.1:%CLIO_PORT%
-"%CLIO_PREFIX%\gact.exe" --no-intro %*
-"@ | Set-Content -Path $Launcher -Encoding ASCII
+Say "Installing uninstaller: $Prefix\uninstall.ps1"
+Copy-Item -Path (Join-Path $InstallSrc 'uninstall.ps1') -Destination (Join-Path $Prefix 'uninstall.ps1') -Force
 
 Say "Done."
 Write-Host ""
@@ -124,4 +122,6 @@ Write-Host "Next steps:"
 Write-Host "  1. Make sure $BinDir is on your PATH (it usually is on Win 10/11)."
 Write-Host "  2. Run:   clio"
 Write-Host "     The TUI pops the LM-provider modal on first connect."
-Write-Host "  3. Mid-session swap: Ctrl+S -> Settings -> Model -> Change provider..."
+Write-Host "  3. Manage the server: clio status | clio restart | clio logs"
+Write-Host "  4. Tab-completion:    clio completion powershell >> `$PROFILE"
+Write-Host "  5. Uninstall:         clio uninstall   (add -Purge to drop config)"
