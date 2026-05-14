@@ -1,8 +1,6 @@
-# CLIO Agent
-
-**Cognitive Layer for Adaptive Universal Data & Intelligent Operations**
-
-Autonomous agent for scientific data management. **IOWarp Intelligence Layer (CEI).**
+<p align="center">
+  <img src="docs/images/banner.png" alt="CLIO Agent — Cognitive Layer for Adaptive Universal Data & Intelligent Operations" width="820">
+</p>
 
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
 [![UV](https://img.shields.io/badge/UV-enabled-orange.svg)](https://github.com/astral-sh/uv)
@@ -101,67 +99,9 @@ server port with `CLIO_PORT`. Full install/uninstall reference:
 
 ## Architecture
 
-### The Big Picture
-
-```
-┌────────────────────────────────────────────────────────────┐
-│  USER INTERFACES (AI Gateway)                              │
-│  • CLI (current)  • REST API (current)  • A2A (future)     │
-└───────────────────────────┬────────────────────────────────┘
-                            │
-┌───────────────────────────▼────────────────────────────────┐
-│  INTELLIGENCE LAYER (CEI) - CLIO Agent + ARC Memory           │
-│                                                             │
-│  ┌──────────────────────────────────────────────────────┐ │
-│  │  CLIO Agent Orchestrator (Tier 1)                       │ │
-│  │   → Agent Registry coordination                      │ │
-│  │   → ARC Memory queries (O(log N))                    │ │
-│  │   → Capability-based routing                         │ │
-│  └────────────┬─────────────────────────────────────────┘ │
-│               │                                            │
-│    ┌──────────┼──────────┬──────────────┐                 │
-│    ▼          ▼          ▼              ▼                 │
-│  ┌──────┐ ┌──────┐ ┌──────────┐  ┌──────────────┐        │
-│  │Data  │ │Analysis│ │Visualization│ │External   │       │
-│  │Expert│ │Expert  │ │Expert       │ │Agents     │       │
-│  │(T2)  │ │(T2)    │ │(T2)         │ │(future)   │       │
-│  └──┬───┘ └──┬───┘ └──┬───────┘  └──────────────┘        │
-│     │        │        │                                   │
-│     │  All tiers read/write ARC for coordination          │
-│     └────────┴────────┘                                   │
-│              │                                             │
-│        ┌─────┴──────┐                                     │
-│        ▼            ▼                                     │
-│   ┌─────────────────────────┐   ┌────────────────────┐   │
-│   │ Nanoagents (Tier 3)     │   │ ARC Memory         │   │
-│   │ • Ephemeral workers     │   │ • In-mem cache     │   │
-│   └─────────────────────────┘   │ • B-tree index     │   │
-│                                  │ • O(log N) search  │   │
-│                                  └────────────────────┘   │
-└───────────────────────┬────────────────────────────────────┘
-                        │
-    ┌───────────────────┼──────────────────┐
-    ▼                   ▼                  ▼
-┌─────────────┐  ┌──────────────┐  ┌────────────────────┐
-│ CAE/PPI     │  │ OPTIMIZER    │  │ ARC Persistent     │
-│ (Tools)     │  │ LAYER        │  │ Store (CTE)        │
-│             │  │              │  │                    │
-│ FastMCP     │  │ • Prompt     │  │ Local-first ARC /  │
-│ local tools │  │   Optimizers │  │ future CTE         │
-│ gateway     │  │ • Routing    │  │                    │
-│ (current)   │  │   Optimizers │  │ • Conversations    │
-│             │  │ • Offline    │  │ • Metrics          │
-│             │  │   Tuning     │  │ • Invocations      │
-│             │  │ • Online     │  │ • Context          │
-│             │  │   Learning   │  │                    │
-└─────────────┘  └──────────────┘  └────────────────────┘
-                        │
-                        ▼
-        ┌───────────────────────────────────┐
-        │  CTE - Hermes Multi-Tier Storage  │
-        │  GPU → NVMe → PFS → Object Store  │
-        └───────────────────────────────────┘
-```
+<p align="center">
+  <img src="docs/images/architecture.png" alt="CLIO Agent architecture: user interfaces, the Intelligence Layer (CEI) with the orchestrator and tier-2 experts, tier-3 nanoagents, ARC memory, the optimizer layer, and CTE multi-tier storage" width="900">
+</p>
 
 ### Example Flow: Data Optimization
 
