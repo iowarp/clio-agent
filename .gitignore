@@ -154,3 +154,8 @@ ANTHONY/
 .research/
 
 
+
+# Test artefacts (relative-path file_diff tests sometimes leak)
+/b.py
+/x.py
+scratch/

@@ -112,7 +112,7 @@ GatewayLister = Callable[[], list[dict[str, Any]]]
 HttpGet = Callable[..., Any]
 ModuleChecker = Callable[[str], bool]
 
-_SUPPORTED_LM_PROVIDERS = {"lm_studio", "ollama", "openai", "anthropic"}
+_SUPPORTED_LM_PROVIDERS = {"lm_studio", "ollama", "openai", "anthropic", "argonne"}
 _CLOUD_API_KEY_ENV = {
     "openai": "OPENAI_API_KEY",
     "anthropic": "ANTHROPIC_API_KEY",
@@ -273,6 +273,8 @@ class RuntimeProbe:
             )
 
         auth_mode = "api_key" if config.provider in _CLOUD_API_KEY_ENV else "local_token"
+        if config.provider == "argonne":
+            auth_mode = "globus_token"
         if config.provider in _CLOUD_API_KEY_ENV:
             return IntegrationStatus(
                 name="lm_provider",
@@ -286,6 +288,12 @@ class RuntimeProbe:
                 details={"provider": config.provider, "model": config.model},
                 required=True,
             )
+
+        # Argonne / ALCF: never live-probe — that would force an OAuth
+        # round-trip on every /doctor or /health hit. Report instead on
+        # whether stored tokens exist + whether globus-sdk is importable.
+        if config.provider == "argonne":
+            return self._probe_argonne(config, source)
 
         models_url = config.api_base.rstrip("/") + "/models"
         try:
@@ -359,6 +367,84 @@ class RuntimeProbe:
                 "model_count": len(models),
                 "models": models[:10],
             },
+            required=True,
+        )
+
+    def _probe_argonne(
+        self,
+        config: LMProviderConfig,
+        source: str,
+    ) -> IntegrationStatus:
+        """Cheap-status report for the ALCF inference gateway.
+
+        We never trigger globus OAuth here — that's an interactive flow
+        the user only wants when they explicitly opt in (CLI command or
+        TUI button). Instead we look at:
+
+          - Is ``globus-sdk`` importable? (UNAVAILABLE if not.)
+          - Do tokens exist on disk? (MISCONFIGURED if not — needs a
+            one-time ``authenticate``.)
+          - Otherwise SKIPPED with a "ready, run a query to verify"
+            summary, mirroring the OpenAI/Anthropic probe path.
+        """
+        details = {"provider": "argonne", "model": config.model}
+        try:
+            from clio_agent.providers import argonne_auth  # noqa: PLC0415
+        except Exception as exc:  # pragma: no cover - import bug
+            return IntegrationStatus(
+                name="lm_provider",
+                state=IntegrationState.UNAVAILABLE,
+                summary=f"argonne provider module failed to import: {exc}",
+                config_source=source,
+                next_action="Reinstall clio-agent or check the providers package.",
+                endpoint=config.api_base,
+                auth_mode="globus_token",
+                details=details,
+                required=True,
+            )
+
+        if not self.module_checker("globus_sdk"):
+            return IntegrationStatus(
+                name="lm_provider",
+                state=IntegrationState.UNAVAILABLE,
+                summary="globus-sdk is not importable; ALCF tokens cannot be minted.",
+                config_source=source,
+                next_action="Install with: pip install 'clio-agent[argonne]'",
+                endpoint=config.api_base,
+                auth_mode="globus_token",
+                details=details,
+                required=True,
+            )
+
+        if not argonne_auth.tokens_exist():
+            return IntegrationStatus(
+                name="lm_provider",
+                state=IntegrationState.MISCONFIGURED,
+                summary="ALCF provider selected but no Globus tokens are stored.",
+                config_source=source,
+                next_action=(
+                    "Run once: python -m clio_agent.providers.argonne_auth "
+                    "authenticate"
+                ),
+                endpoint=config.api_base,
+                auth_mode="globus_token",
+                details=details,
+                required=True,
+            )
+
+        return IntegrationStatus(
+            name="lm_provider",
+            state=IntegrationState.SKIPPED,
+            summary=(
+                "argonne is configured with stored Globus tokens; "
+                "live probe skipped to avoid spurious OAuth refreshes."
+            ),
+            config_source=source,
+            next_action="Run a query to verify the token still validates.",
+            endpoint=config.api_base,
+            auth_mode="globus_token",
+            capabilities=["chat-completions"],
+            details=details,
             required=True,
         )
 
@@ -840,6 +926,14 @@ class RuntimeProbe:
                 f"Cloud provider '{provider}' requires CLIO_LM_API_KEY "
                 f"or {_CLOUD_API_KEY_ENV[provider]}."
             )
+
+        # Argonne: leave api_key blank in the LMProviderConfig the
+        # probe constructs — it's only used to display config_source,
+        # never to call out to the network here. The probe path itself
+        # (_probe_argonne) reports separately on token presence.
+        if provider == "argonne" and not api_key:
+            api_key = ""
+            key_source = "argonne:globus-deferred"
 
         config = LMProviderConfig(
             provider=provider,  # type: ignore[arg-type]

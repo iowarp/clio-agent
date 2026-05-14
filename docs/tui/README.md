@@ -1,6 +1,6 @@
 # docs/tui — TUI frontend integration reference
 
-This folder is the spec and reference for building a first-class terminal UI on top of CLIO. It documents CLIO's external surface end-to-end from the perspective of a frontend integrator, and ends with a concrete phased plan for connecting [gact-tui](https://github.com/JaimeCernuda/gact-tui) — a Bubbletea-based TUI with a pluggable backend contract (GACT v0.1) — as CLIO's primary interactive UI.
+This folder is the spec and reference for building a first-class terminal UI on top of CLIO. It documents CLIO's external surface end-to-end from the perspective of a frontend integrator, and ends with a concrete phased plan for connecting [gact-tui](https://github.com/iowarp/gact-tui) — a Bubbletea-based TUI with a pluggable backend contract (GACT v0.1) — as CLIO's primary interactive UI.
 
 **North-star**: CLIO is the gold standard of compatibility. Everything CLIO can do, the TUI must be able to surface. The GACT contract evolves to match CLIO's semantics, not the other way around.
 

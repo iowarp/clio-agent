@@ -9,7 +9,19 @@ from pathlib import Path
 from typing import Any, Mapping
 
 DEFAULT_MAX_FILE_SIZE_BYTES = 1 << 30
-DEFAULT_ALLOWED_ROOTS = (Path.cwd(), Path("/tmp"))
+
+
+def _default_allowed_roots() -> tuple[Path, ...]:
+    """Default roots evaluated at policy-creation time, not module-import.
+
+    Capturing Path.cwd() at module-import time was a footgun: the
+    clio_agent package may be imported (via DSPy/litellm side effects)
+    long before the agent process settles into its real working dir.
+    Result: writes to the agent's actual cwd were rejected as 'outside
+    allowed roots'. Defer evaluation so each FileAccessPolicy instance
+    sees the current cwd at the moment it's constructed.
+    """
+    return (Path.cwd(), Path("/tmp"))
 
 
 class FilePolicyError(ValueError):
@@ -72,7 +84,7 @@ class FileAccessPolicy:
         if roots_raw.strip():
             roots = tuple(Path(item).expanduser() for item in roots_raw.split(os.pathsep) if item)
         else:
-            roots = DEFAULT_ALLOWED_ROOTS
+            roots = _default_allowed_roots()
 
         max_size_raw = env.get("CLIO_MAX_FILE_SIZE_BYTES", "")
         try:

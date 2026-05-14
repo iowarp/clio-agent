@@ -1,6 +1,6 @@
 [project]
 name = "clio-agent"
-version = "0.2.0"
+version = "0.3.1"
 description = "CLIO Agent — Autonomous AI agent framework for scientific data management. Part of the IOWarp platform."
 authors = [
     { name = "Antonis Kougkas", email = "a.kougkas@gmail.com" },
@@ -69,6 +69,13 @@ iowarp = [
     "pyzmq>=25.0.0",             # ZeroMQ Python bindings for IOWarp CTE runtime
 ]
 
+argonne = [
+    # Globus Auth bridge for the ALCF inference gateway (Sophia/Polaris vLLM).
+    # Optional: only needed when CLIO_LM_PROVIDER=argonne. See
+    # src/clio_agent/providers/argonne_auth.py.
+    "globus-sdk>=3.0.0",
+]
+
 dev = [
     "pytest>=7.4.0",
     "pytest-cov>=4.1.0",
@@ -78,7 +85,7 @@ dev = [
 ]
 
 all = [
-    "clio-agent[optimizers,api,tools,iowarp,dev]",
+    "clio-agent[optimizers,api,tools,iowarp,argonne,dev]",
 ]
 
 [project.urls]
@@ -90,6 +97,10 @@ Issues = "https://github.com/iowarp/clio-agent/issues"
 [project.scripts]
 clio-agent = "clio_agent.ui.cli:run_cli"
 clio-agent-api = "clio_agent.ui.api:main"
+# GACT v0.2 surface. Peer of clio-agent-api; runs on its own port.
+# See docs/tui/ for the integration spec. Wired in CLIO-BBBBBBBBBB6;
+# real endpoints come online in CLIO-BBBBBBBBBB7-12.
+clio-agent-gact = "clio_agent.gact.app:main"
 
 [build-system]
 requires = ["hatchling"]
@@ -103,6 +114,7 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
+asyncio_mode = "auto"  # CLIO-BBBBBBBBBB13: SSE tests use async httpx
 markers = [
     "integration: marks tests requiring full-stack/external runtime behavior",
 ]

@@ -1,0 +1,181 @@
+"""Nanoagent spawn primitive for Tier-2 experts.
+
+A nanoagent is a Tier-3 ephemeral DSPy ReAct invocation a Tier-2
+expert kicks off in parallel for a sub-task. Each spawn produces a
+``NanoagentResult`` the caller appends to its own
+``Prediction.nanoagents_spawned`` list — the GACT layer (see
+``app._run_turn_in_background``) materialises the spawns as child
+sessions and publishes ``subagent.started/completed`` events.
+
+Usage from inside a Tier-2 expert::
+
+    from clio_agent.runtime.nanoagent import spawn_many
+    from clio_agent.experts.data_expert import DataExpert
+
+    spawns = spawn_many(
+        agent_factory=lambda: DataExpert(),
+        items=[
+            {"input": {"file": "a.h5"}, "agent_id": "data_validator"},
+            {"input": {"file": "b.h5"}, "agent_id": "data_validator"},
+        ],
+        question_template="Validate {file}",
+    )
+    pred.nanoagents_spawned = [s.to_wire() for s in spawns]
+
+The actual parallel execution uses ``dspy.Parallel`` for I/O
+overlap when the underlying experts make external calls.
+"""
+
+from __future__ import annotations
+
+import time
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from typing import Any
+
+
+@dataclass
+class NanoagentResult:
+    """One nanoagent invocation's result, in the wire shape the
+    GACT layer's ``_run_turn_in_background`` consumes."""
+
+    agent_id: str
+    input: dict[str, Any]
+    answer: str = ""
+    duration_ms: float = 0.0
+    tokens: dict[str, int] = field(default_factory=dict)
+    cost_usd: float = 0.0
+    error: str = ""
+
+    def to_wire(self) -> dict[str, Any]:
+        out: dict[str, Any] = {
+            "agent_id": self.agent_id,
+            "input": self.input,
+            "answer": self.answer,
+            "duration_ms": self.duration_ms,
+            "cost_usd": self.cost_usd,
+        }
+        if self.tokens:
+            out["tokens"] = self.tokens
+        if self.error:
+            out["error"] = self.error
+        return out
+
+
+def spawn_one(
+    agent_factory: Callable[[], Any],
+    *,
+    agent_id: str,
+    input: dict[str, Any],
+    question_field: str = "question",
+) -> NanoagentResult:
+    """Run a single nanoagent synchronously and capture its result.
+
+    ``agent_factory`` builds a fresh DSPy module per invocation so
+    the Tier-3 spawn doesn't share state with its peers (or its
+    parent). ``input`` is rendered into a question string by
+    interpolating ``input`` values into the agent's expected
+    field; for stricter agents we just pass kwargs.
+    """
+
+    t0 = time.time()
+    agent = agent_factory()
+    try:
+        result = agent(**{question_field: _render_input(input)})
+    except Exception as exc:  # noqa: BLE001
+        return NanoagentResult(
+            agent_id=agent_id,
+            input=input,
+            duration_ms=(time.time() - t0) * 1000,
+            error=repr(exc),
+        )
+    answer = (
+        getattr(result, "answer", None)
+        or getattr(result, "analysis", None)
+        or str(result)
+    )
+    return NanoagentResult(
+        agent_id=agent_id,
+        input=input,
+        answer=answer,
+        duration_ms=(time.time() - t0) * 1000,
+    )
+
+
+def spawn_many(
+    agent_factory: Callable[[], Any],
+    *,
+    items: list[dict[str, Any]],
+    question_field: str = "question",
+    num_threads: int = 4,
+) -> list[NanoagentResult]:
+    """Run N nanoagent invocations in parallel via dspy.Parallel.
+
+    Each item must carry at least ``input`` (passed to the agent)
+    and ``agent_id`` (label used by the GACT layer).
+
+    Returns the results in the same order as ``items``.
+    """
+
+    if not items:
+        return []
+
+    try:
+        import dspy
+    except Exception:  # pragma: no cover - dspy not present
+        return [
+            spawn_one(
+                agent_factory,
+                agent_id=item.get("agent_id", "nanoagent"),
+                input=item.get("input", {}),
+                question_field=question_field,
+            )
+            for item in items
+        ]
+
+    # Build (module, kwargs-dict) pairs. Each pair gets a fresh
+    # agent so they don't share DSPy state.
+    pairs = []
+    for item in items:
+        agent = agent_factory()
+        kwargs = {question_field: _render_input(item.get("input", {}))}
+        pairs.append((agent, kwargs))
+
+    parallel = dspy.Parallel(num_threads=num_threads)
+    raw_results = parallel(pairs)
+
+    out: list[NanoagentResult] = []
+    for item, result in zip(items, raw_results, strict=True):
+        if result is None or isinstance(result, Exception):
+            out.append(NanoagentResult(
+                agent_id=item.get("agent_id", "nanoagent"),
+                input=item.get("input", {}),
+                error=repr(result) if result else "no result",
+            ))
+            continue
+        answer = (
+            getattr(result, "answer", None)
+            or getattr(result, "analysis", None)
+            or str(result)
+        )
+        out.append(NanoagentResult(
+            agent_id=item.get("agent_id", "nanoagent"),
+            input=item.get("input", {}),
+            answer=answer,
+        ))
+    return out
+
+
+def _render_input(payload: dict[str, Any]) -> str:
+    """Flatten an input dict into a one-line question string.
+
+    The Tier-2 expert is responsible for building a richer prompt
+    if needed; this is the default for spawns that just want
+    "validate this file" semantics.
+    """
+
+    if not payload:
+        return ""
+    if "question" in payload:
+        return str(payload["question"])
+    return ", ".join(f"{k}={v}" for k, v in payload.items())
