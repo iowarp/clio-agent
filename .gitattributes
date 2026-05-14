@@ -1,0 +1,7 @@
+# Shell scripts must keep LF endings or they break on Linux/macOS
+# (a CRLF shebang line is not a valid interpreter path).
+install/clio   text eol=lf
+*.sh           text eol=lf
+
+# Batch files are Windows-only; keep CRLF.
+*.cmd          text eol=crlf
