@@ -2,8 +2,8 @@
 # /// script
 # requires-python = ">=3.12"
 # dependencies = [
-#   "dspy-ai>=3.0.3",
-#   "fastmcp>=2.13.0",
+#   "dspy>=3.1.3",
+#   "fastmcp>=3.2.4",
 # ]
 # ///
 

@@ -47,12 +47,12 @@ class TestAgentArchitecture:
         assert agent.registry.get_agent_count() == 3
         agent.shutdown()
 
-    def test_agent_data_expert_has_react(self):
-        """DataExpert should use ReAct with real MCP tools."""
+    def test_agent_data_expert_has_native_tool_boundary(self):
+        """DataExpert should expose native tools without ReAct ownership."""
         agent = ClioAgent()
         expert = agent.data_expert
         assert hasattr(expert, "agent")
-        assert hasattr(expert.agent, "tools")
+        assert "ReAct" not in type(expert.agent).__name__
         assert len(expert._tools) >= 4
         agent.shutdown()
 
@@ -127,13 +127,17 @@ class TestEndToEnd:
         agent.shutdown()
 
 
-def _make_mock_router(selected_expert: str):
-    """Create a mock router returning specified expert."""
-    mock_router = MagicMock()
-    mock_result = MagicMock()
-    mock_result.selected_expert = selected_expert
-    mock_router.return_value = mock_result
-    return mock_router
+def _make_mock_planner(selected_expert: str):
+    """Create a mock planner returning a specified expert action."""
+    mock_planner = MagicMock()
+    if selected_expert in {"data", "analysis", "visualization"}:
+        action = {"action": "expert", "expert": selected_expert, "question": "test query"}
+    elif selected_expert == "none":
+        action = {"action": "none", "answer": "No suitable CLIO action."}
+    else:
+        action = {"action": "answer", "answer": ""}
+    mock_planner.return_value = MagicMock(action_json=json.dumps(action))
+    return mock_planner
 
 
 class TestMultiExpertWorkflow:
@@ -161,7 +165,7 @@ class TestMultiExpertWorkflow:
         agent.arc.store_dataset_profile(profile)
 
         # Step 2: Route to analysis expert -- should receive file_context with profile
-        agent.router = _make_mock_router("analysis")
+        agent.action_planner = _make_mock_planner("analysis")
 
         received_contexts = []
         mock_result = MagicMock()
@@ -191,7 +195,7 @@ class TestMultiExpertWorkflow:
         agent._store_conversation("What is HDF5?", "HDF5 is a data format.", session_id)
 
         # Now query with "none" to avoid needing LM
-        agent.router = _make_mock_router("none")
+        agent.action_planner = _make_mock_planner("none")
         result = agent(question="Tell me about weather", session_id=session_id)
 
         # Context compiler should have been used (graceful even if no enrichment)
@@ -205,7 +209,7 @@ class TestMultiExpertWorkflow:
         session_id = "routing_persist"
 
         for expert in ["none", "none", "none"]:
-            agent.router = _make_mock_router(expert)
+            agent.action_planner = _make_mock_planner(expert)
             agent(question=f"Query for {expert}", session_id=session_id)
 
         conv = agent.arc.get_conversation(session_id)

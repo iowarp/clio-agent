@@ -946,7 +946,7 @@ iowarp:
 
 - [CLIO Agent Architecture](CLIO_AGENT_ARCHITECTURE.md) - Full system architecture
 - [System Identity](SYSTEM_IDENTITY.md) - CLIO Agent capabilities and design
-- [Optimizer Guide](OPTIMIZER_GUIDE.md) - How Optimizer Layer uses ARC metrics
+- [Self Improvement](SELF_IMPROVEMENT.md) - How Optimizer Layer uses ARC metrics
 - [IOWarp CTE Documentation](https://iowarp.ai/docs/cte) - Context Transfer Engine
 
 ---

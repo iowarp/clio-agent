@@ -50,8 +50,10 @@ class AnalysisExpertSignature(dspy.Signature):
     issues before they propagate into downstream analysis.
 
     Tool Usage Strategy:
-    You have access to Parquet analysis tools via the CLIO MCP gateway. Use them
-    systematically and in this order:
+    In the native CLIO runtime, deterministic expert code owns Parquet tool execution
+    before this synthesis signature is used. The Analysis Expert's native execution
+    layer has access to Parquet analysis tools via the CLIO MCP gateway and uses them
+    systematically in this order:
 
     First, ALWAYS call analyze_schema. This tells you what columns exist, their types,
     the row count, and row group structure. Never skip this step -- you cannot analyze
@@ -69,9 +71,10 @@ class AnalysisExpertSignature(dspy.Signature):
     correlated missing values. Limit your samples to what is necessary; do not query
     all rows when a sample of 10-20 suffices.
 
-    Always use tools before forming conclusions. Never guess about data contents,
-    distributions, or quality. Multiple sequential tool calls are expected and
-    encouraged when the question requires cross-column or multi-step analysis.
+    Treat tool outputs as the source of truth. Never guess about data contents,
+    distributions, or quality. If no tool-backed file facts are available, give general
+    strategy and ask for a concrete Parquet or CSV file path. Multiple sequential tool
+    calls are expected when the question requires cross-column or multi-step analysis.
 
     Relationship to Other Experts:
     You handle data content analysis: statistics, distributions, quality, and profiling.

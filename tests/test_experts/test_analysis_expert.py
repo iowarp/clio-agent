@@ -1,9 +1,8 @@
 """
 Tests for Analysis Expert module.
 
-Tests AnalysisExpert initialization, tool loading via MCPToolBridge,
-capabilities, and signature. Does not require LM Studio (no forward() tests
-that call real LMs).
+Tests AnalysisExpert initialization, native tool execution via the MCP execution
+boundary, capabilities, and signature. Does not require LM Studio.
 """
 
 import inspect
@@ -12,7 +11,7 @@ from unittest.mock import Mock
 import dspy
 
 from clio_agent.experts.analysis_expert import AnalysisExpert
-from clio_agent.experts.data_expert import MCPToolBridge
+from clio_agent.tools.execution import SyncMCPToolExecutor
 
 
 class TestAnalysisExpertSignature:
@@ -43,30 +42,42 @@ class TestAnalysisExpert:
     def test_analysis_expert_loads_parquet_tools(self):
         """Test expert tools all start with parquet_ prefix."""
         expert = AnalysisExpert()
-        for tool in expert._tools:
-            assert tool.name.startswith("parquet_"), (
-                f"Tool {tool.name} does not have parquet_ prefix"
-            )
+        try:
+            for tool in expert._tools:
+                assert tool.name.startswith("parquet_"), (
+                    f"Tool {tool.name} does not have parquet_ prefix"
+                )
+        finally:
+            expert.close()
 
     def test_analysis_expert_tool_count(self):
         """Test expert has exactly 3 parquet tools."""
         expert = AnalysisExpert()
-        assert len(expert._tools) == 3
+        try:
+            assert len(expert._tools) == 3
+        finally:
+            expert.close()
 
     def test_analysis_expert_tool_names(self):
         """Test expert has the expected parquet tools."""
         expert = AnalysisExpert()
-        tool_names = [t.name for t in expert._tools]
-        assert "parquet_analyze_schema" in tool_names
-        assert "parquet_query_data" in tool_names
-        assert "parquet_compute_statistics" in tool_names
+        try:
+            tool_names = [t.name for t in expert._tools]
+            assert "parquet_analyze_schema" in tool_names
+            assert "parquet_query_data" in tool_names
+            assert "parquet_compute_statistics" in tool_names
+        finally:
+            expert.close()
 
-    def test_analysis_expert_has_react_agent(self):
-        """Test expert uses ReAct, not ChainOfThought."""
+    def test_analysis_expert_has_synthesis_module_not_react(self):
+        """Test expert keeps DSPy only for synthesis, not tool execution."""
         expert = AnalysisExpert()
-        assert hasattr(expert.agent, "tools")
-        agent_type = type(expert.agent).__name__
-        assert "ReAct" in agent_type
+        try:
+            agent_type = type(expert.agent).__name__
+            assert "Predict" in agent_type
+            assert "ReAct" not in agent_type
+        finally:
+            expert.close()
 
     def test_analysis_expert_capabilities_keywords(self):
         """Test expert capabilities contain analysis-related keywords."""
@@ -91,23 +102,144 @@ class TestAnalysisExpert:
     def test_analysis_expert_forward_signature(self):
         """Test forward method accepts question and file_context parameters."""
         expert = AnalysisExpert()
-        sig = inspect.signature(expert.forward)
-        params = list(sig.parameters.keys())
-        assert "question" in params
-        assert "file_context" in params
+        try:
+            sig = inspect.signature(expert.forward)
+            params = list(sig.parameters.keys())
+            assert "question" in params
+            assert "file_context" in params
+        finally:
+            expert.close()
 
-    def test_mcptoolbridge_reuse(self):
-        """Test that AnalysisExpert imports MCPToolBridge, not redefines it."""
-        # Verify AnalysisExpert uses the same MCPToolBridge class as DataExpert
+    def test_analysis_expert_forward_uses_native_parquet_tools(self, sample_parquet):
+        """Explicit Parquet questions should run tools without LM calls."""
         expert = AnalysisExpert()
-        assert isinstance(expert._bridge, MCPToolBridge)
+        try:
+            result = expert(question=f"Show statistics for temperature in {sample_parquet}")
+            assert "Column statistics" in result.analysis
+            assert "temperature" in result.analysis
+            assert result.synthesis_source == "deterministic"
+            assert [tool.tool for tool in result.tool_provenance] == [
+                "parquet_analyze_schema",
+                "parquet_compute_statistics",
+            ]
+            arc_tool = result.tool_provenance[0].to_arc_tool_call()
+            assert arc_tool.result["ok"] is True
+            assert arc_tool.result["columns"]["count"] == 3
+        finally:
+            expert.close()
+
+    def test_analysis_expert_rejects_invalid_parquet_schema_shape(self):
+        """Malformed Parquet schema payloads should not produce file facts."""
+
+        class FakeExecutor:
+            closed = False
+
+            def to_dspy_tools(self):
+                def fake_tool(**kwargs):
+                    return "{}"
+
+                return [
+                    dspy.Tool(
+                        func=fake_tool,
+                        name="parquet_analyze_schema",
+                        desc="Fake Parquet analyzer.",
+                        args={},
+                    ),
+                    dspy.Tool(
+                        func=fake_tool,
+                        name="parquet_compute_statistics",
+                        desc="Fake Parquet stats.",
+                        args={},
+                    ),
+                ]
+
+            def call_tool(self, name, args):
+                assert name == "parquet_analyze_schema"
+                return '{"filepath": "/tmp/broken.parquet", "num_rows": 42, "columns": []}'
+
+            def close(self):
+                self.closed = True
+
+        expert = AnalysisExpert(tool_executor=FakeExecutor())
+
+        result = expert(question="Inspect /tmp/broken.parquet")
+
+        assert result.synthesis_source == "deterministic"
+        assert result.analysis.startswith("Could not inspect Parquet file")
+        assert "42 rows" not in result.analysis
+        assert result.tool_provenance[0].ok is False
+        error = result.tool_provenance[0].result["error"]
+        assert error["type"] == "tool_contract"
+        assert error["code"] == "invalid_result_shape"
+        expert.close()
+
+    def test_analysis_expert_reports_stats_contract_failure_without_fake_values(self):
+        """Optional stats failures should be explicit in the answer."""
+
+        class FakeExecutor:
+            closed = False
+
+            def to_dspy_tools(self):
+                def fake_tool(**kwargs):
+                    return "{}"
+
+                return [
+                    dspy.Tool(
+                        func=fake_tool,
+                        name="parquet_analyze_schema",
+                        desc="Fake Parquet analyzer.",
+                        args={},
+                    ),
+                    dspy.Tool(
+                        func=fake_tool,
+                        name="parquet_compute_statistics",
+                        desc="Fake Parquet stats.",
+                        args={},
+                    ),
+                ]
+
+            def call_tool(self, name, args):
+                if name == "parquet_analyze_schema":
+                    return (
+                        '{"filepath": "/tmp/test.parquet", "num_columns": 1, '
+                        '"columns": [{"name": "temperature", "type": "double", '
+                        '"nullable": true}], "num_rows": 10, "num_row_groups": 1, '
+                        '"file_size_bytes": 128}'
+                    )
+                assert name == "parquet_compute_statistics"
+                return '{"column": "temperature", "min": 1.0}'
+
+            def close(self):
+                self.closed = True
+
+        expert = AnalysisExpert(tool_executor=FakeExecutor())
+
+        result = expert(question="Show statistics for temperature in /tmp/test.parquet")
+
+        assert "statistics unavailable" in result.analysis
+        assert "min=1.0" not in result.analysis
+        assert result.tool_provenance[-1].ok is False
+        error = result.tool_provenance[-1].result["error"]
+        assert error["type"] == "tool_contract"
+        expert.close()
+
+    def test_analysis_expert_uses_sync_tool_executor_boundary(self):
+        """Default AnalysisExpert should use the explicit sync executor."""
+        expert = AnalysisExpert()
+        try:
+            assert isinstance(expert._tool_executor, SyncMCPToolExecutor)
+        finally:
+            expert.close()
 
     def test_analysis_expert_with_arc_memory(self):
         """Test expert with ARC memory integration."""
         mock_arc = Mock()
         expert = AnalysisExpert(arc_memory=mock_arc)
-        assert expert is not None
-        assert expert.arc_memory is mock_arc
+        try:
+            assert expert is not None
+            assert expert.arc_memory is mock_arc
+        finally:
+            expert.close()
 
     def test_analysis_expert_accepts_tool_executor_boundary(self):
         """AnalysisExpert should filter tools from an injected executor."""
@@ -140,7 +272,7 @@ class TestAnalysisExpert:
         executor = FakeExecutor()
         expert = AnalysisExpert(tool_executor=executor)
 
-        assert expert._bridge is executor
+        assert expert._tool_executor is executor
         assert [tool.name for tool in expert._tools] == ["parquet_analyze_schema"]
         expert.close()
         assert executor.closed is True
@@ -148,9 +280,12 @@ class TestAnalysisExpert:
     def test_analysis_expert_initialization(self):
         """Test expert can be initialized and has required attributes."""
         expert = AnalysisExpert()
-        assert expert is not None
-        assert hasattr(expert, "forward")
-        assert hasattr(expert, "agent")
-        assert hasattr(expert, "_tools")
-        assert hasattr(expert, "_bridge")
-        assert hasattr(expert, "arc_memory")
+        try:
+            assert expert is not None
+            assert hasattr(expert, "forward")
+            assert hasattr(expert, "agent")
+            assert hasattr(expert, "_tools")
+            assert hasattr(expert, "_tool_executor")
+            assert hasattr(expert, "arc_memory")
+        finally:
+            expert.close()

@@ -2,8 +2,8 @@
 # /// script
 # requires-python = ">=3.12"
 # dependencies = [
-#   "dspy-ai>=3.0.3",
-#   "fastmcp>=2.13.0",
+#   "dspy>=3.1.3",
+#   "fastmcp>=3.2.4",
 #   "requests>=2.31.0",
 # ]
 # ///
@@ -29,6 +29,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from ipaddress import ip_address
+from pathlib import Path
 from typing import TYPE_CHECKING, List, Literal, Mapping, Optional
 from urllib.parse import urlparse
 
@@ -137,6 +138,75 @@ _CLOUD_API_KEY_ENV: dict[str, str] = {
     "openai": "OPENAI_API_KEY",
     "anthropic": "ANTHROPIC_API_KEY",
 }
+
+ENV_FILE_LOADED_KEY = "CLIO_ENV_FILE_LOADED"
+
+
+def load_project_env_file(
+    path: str | os.PathLike[str] | None = None,
+    *,
+    override: bool = False,
+) -> Path | None:
+    """Load CLIO environment defaults from a dotenv-style file.
+
+    This keeps host/model defaults outside Python code while making direct
+    commands like ``uv run src/clio_agent/ui/cli.py`` pick up the repo-local
+    configuration. Existing process environment variables win unless
+    ``override`` is true.
+    """
+    env_file = _resolve_env_file(path)
+    if env_file is None or not env_file.exists():
+        return None
+
+    for raw_line in env_file.read_text(encoding="utf-8").splitlines():
+        parsed = _parse_env_line(raw_line)
+        if parsed is None:
+            continue
+        key, value = parsed
+        if override or key not in os.environ:
+            os.environ[key] = value
+
+    os.environ[ENV_FILE_LOADED_KEY] = str(env_file)
+    return env_file
+
+
+def _resolve_env_file(path: str | os.PathLike[str] | None) -> Path | None:
+    explicit = path or os.environ.get("CLIO_ENV_FILE", "")
+    if explicit:
+        return Path(explicit).expanduser().resolve(strict=False)
+
+    cwd_env = Path.cwd() / ".env"
+    if cwd_env.exists():
+        return cwd_env.resolve(strict=False)
+
+    repo_env = Path(__file__).resolve().parents[2] / ".env"
+    if repo_env.exists():
+        return repo_env.resolve(strict=False)
+    return None
+
+
+def _parse_env_line(line: str) -> tuple[str, str] | None:
+    stripped = line.strip()
+    if not stripped or stripped.startswith("#"):
+        return None
+    if stripped.startswith("export "):
+        stripped = stripped.removeprefix("export ").strip()
+    if "=" not in stripped:
+        return None
+
+    key, value = stripped.split("=", 1)
+    key = key.strip()
+    if not key or not key.replace("_", "").isalnum() or key[0].isdigit():
+        return None
+
+    value = value.strip()
+    if (
+        len(value) >= 2
+        and value[0] == value[-1]
+        and value[0] in {"'", '"'}
+    ):
+        value = value[1:-1]
+    return key, value
 
 
 # ============================================================================
@@ -519,6 +589,14 @@ def _lm_studio_models_url(base_url: str) -> str:
     return f"{normalized}/v1/models"
 
 
+def _openai_compatible_api_base(base_url: str) -> str:
+    """Return an OpenAI-compatible API base with exactly one /v1 suffix."""
+    normalized = base_url.rstrip("/")
+    if normalized.endswith("/v1"):
+        return normalized
+    return f"{normalized}/v1"
+
+
 def select_models_for_agents(models: List[str]) -> tuple[str, str]:
     """Select main and expert models from available models.
 
@@ -645,7 +723,7 @@ def configure_dspy_lm_studio(config: Optional[LMStudioConfig] = None) -> dspy.LM
 
     lm = dspy.LM(
         model=model_name,
-        api_base=f"{cfg.base_url}/v1",
+        api_base=_openai_compatible_api_base(cfg.base_url),
         api_key=cfg.api_key,
         temperature=cfg.temperature,
         max_tokens=cfg.max_tokens,
@@ -664,7 +742,7 @@ def configure_dspy_router_lm_studio(config: Optional[RouterLMConfig] = None) -> 
 
     return dspy.LM(
         model=model_name,
-        api_base=f"{cfg.base_url}/v1",
+        api_base=_openai_compatible_api_base(cfg.base_url),
         api_key=cfg.api_key,
         temperature=cfg.temperature,
         max_tokens=cfg.max_tokens,
@@ -681,7 +759,7 @@ def configure_dspy_reasoner_lm_studio(config: Optional[ReasonerLMConfig] = None)
 
     return dspy.LM(
         model=model_name,
-        api_base=f"{cfg.base_url}/v1",
+        api_base=_openai_compatible_api_base(cfg.base_url),
         api_key=cfg.api_key,
         temperature=cfg.temperature,
         max_tokens=cfg.max_tokens,

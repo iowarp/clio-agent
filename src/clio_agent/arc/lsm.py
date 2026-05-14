@@ -99,13 +99,6 @@ class LSMTree:
         # Thread safety
         self._lock = threading.Lock()
 
-        # Background compaction thread
-        self._stop_compaction = threading.Event()
-        self._compaction_thread = threading.Thread(
-            target=self._compact_background, daemon=True, name="LSMCompaction"
-        )
-        self._compaction_thread.start()
-
         # Statistics
         self._write_count = 0
         self._flush_count = 0
@@ -113,6 +106,15 @@ class LSMTree:
 
         # Load existing SSTables from disk
         self._load_sstables()
+
+        # Background compaction thread. Flush-time compaction below keeps tests
+        # and short-lived CLI/API runs deterministic; the thread is a safety net
+        # for longer-running processes.
+        self._stop_compaction = threading.Event()
+        self._compaction_thread = threading.Thread(
+            target=self._compact_background, daemon=True, name="LSMCompaction"
+        )
+        self._compaction_thread.start()
 
     def write(self, timestamp: float, metric: Dict[str, Any]) -> None:
         """Write metric to LSM tree (O(log N) due to SortedDict).
@@ -263,6 +265,8 @@ class LSMTree:
         with self._lock:
             self._sstables.insert(0, sstable)
             self._flush_count += 1
+            if len(self._sstables) >= self._compaction_threshold:
+                self._compact_sstables()
 
     def _flush_memtable(self) -> None:
         """Flush MemTable to SSTable on disk.
@@ -304,6 +308,8 @@ class LSMTree:
         # Clear MemTable
         self._memtable.clear()
         self._flush_count += 1
+        if len(self._sstables) >= self._compaction_threshold:
+            self._compact_sstables()
 
     def _compact_background(self) -> None:
         """Background compaction thread.

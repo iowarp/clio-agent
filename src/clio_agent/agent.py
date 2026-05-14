@@ -1,15 +1,13 @@
 """
 ClioAgent - Main Agent Module
 
-Router + ChatAgent + Expert dispatch architecture.
+Agent-loop architecture over registered experts and tools.
 
 Architecture:
-    User Query -> Router (fast SLM, Literal output)
-        -> "data" -> DataExpert (ReAct + HDF5 MCP tools)
-        -> "analysis" -> AnalysisExpert (ReAct + Parquet MCP tools)
-        -> "visualization" -> VisualizationExpert (ReAct + matplotlib tools)
-        -> "chat" -> ChatAgent (conversational response)
-        -> "none" -> Out-of-scope fallback message
+    User Query -> Planner action
+        -> tool call -> observation -> Planner action
+        -> expert delegation -> expert result
+        -> answer from observations
 
 Usage:
     >>> from clio_agent import ClioAgent
@@ -22,13 +20,13 @@ Usage:
     >>> print(result.selected_expert)
 """
 
-import asyncio
 import json
-import re
+import os
 import time
 import uuid
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, Dict, List, Literal
+from typing import Any, Dict, List
 
 import dspy
 import requests
@@ -53,38 +51,48 @@ from clio_agent.config import (
 from clio_agent.errors import (
     ExpertError,
     RoutingError,
+    ToolError,
 )
 from clio_agent.experts import AnalysisExpert, DataExpert, VisualizationExpert
+from clio_agent.harness import (
+    RouteDecision,
+    RunTrace,
+    compact_tool_result,
+    extract_file_paths,
+    format_tool_error,
+    normalize_tool_error,
+    normalize_tool_result,
+    tool_result_ok,
+)
 from clio_agent.optimizer.instrumentation import _extract_output
 from clio_agent.registry.registry import AgentCapability, AgentRegistry
 from clio_agent.signatures.main_agent_sig import (
+    AgentActionSignature,
+    AgentAnswerSignature,
     ChatAgentSignature,
-    DataIntentSig,
-    RouterSignature,
 )
+from clio_agent.tools.execution import create_sync_tool_executor
+from clio_agent.tools.file_policy import FileAccessPolicy, FilePolicyError, validate_write_path
+from clio_agent.tools.gateway import gateway
 
-_FILE_PATH_RE = re.compile(
-    r"(?P<path>(?:~|/|\.{1,2}/)?[^\s'\"`]+?\.(?:h5|hdf5|parquet|csv))",
-    re.IGNORECASE,
-)
+SCIENTIFIC_FILE_SUFFIXES = {".h5", ".hdf5", ".parquet", ".csv"}
+DEFAULT_AGENT_MAX_STEPS = 4
 
 
 class ClioAgent(dspy.Module):
-    """CLIO Agent -- Router + Chat Agent + Expert dispatch.
+    """CLIO Agent with a planner loop over registered tools and experts.
 
     Architecture:
-        User Query -> Router (fast SLM, Literal output)
-            -> "data" -> DataExpert (ReAct + HDF5 MCP tools)
-            -> "analysis" -> AnalysisExpert (ReAct + Parquet MCP tools)
-            -> "visualization" -> VisualizationExpert (ReAct + matplotlib tools)
-            -> "chat" -> ChatAgent (conversational response)
-            -> "none" -> Out-of-scope fallback message
+        User Query -> Planner action
+            -> tool call -> observation -> next planner action
+            -> expert delegation -> expert result
+            -> answer from observations or conversation
 
     Attributes:
-        router: DSPy ChainOfThought module with RouterSignature
+        action_planner: DSPy Predict module with AgentActionSignature
         chat_agent: DSPy Predict module with ChatAgentSignature
-        data_expert: DataExpert instance with ReAct + MCP tools
-        analysis_expert: AnalysisExpert instance with ReAct + Parquet tools
+        data_expert: DataExpert instance with native HDF5 tools
+        analysis_expert: AnalysisExpert instance with native Parquet/CSV tools
         visualization_expert: VisualizationExpert instance with matplotlib tools
         arc: ARC Memory instance
         context_retriever: Context retrieval module
@@ -99,7 +107,7 @@ class ClioAgent(dspy.Module):
     """
 
     def __init__(self, verbose: bool = False, data_dir: str = ".clio_agent"):
-        """Initialize ClioAgent with Router + ChatAgent + all experts.
+        """Initialize ClioAgent with planner, ChatAgent, and all experts.
 
         Args:
             verbose: If True, print reasoning and decisions
@@ -141,29 +149,35 @@ class ClioAgent(dspy.Module):
 
         if self.verbose:
             print(f"[ClioAgent] Provider: {self._provider_config.provider}")
-            print(f"[ClioAgent] Main/Router model: {main_model}")
+            print(f"[ClioAgent] Main/Planner model: {main_model}")
             print(f"[ClioAgent] Expert model: {expert_model}")
 
-        # Router: ChainOfThought with Literal output on fast model
+        # Planner: a model-chosen action loop over live capabilities.
         self._router_lm = create_router_lm(self._provider_config)
-        self.router = dspy.ChainOfThought(RouterSignature)
-
-        # iowarp/clio-agent#25: tier-2 ambiguity resolver inside the
-        # data branch. Only fires when keyword-based intent
-        # classification returns "ambiguous"; runs on the same low-
-        # temperature router LM via dspy.context(...) at call time.
-        self.data_intent_classifier = dspy.ChainOfThought(DataIntentSig)
+        self.action_planner = dspy.Predict(AgentActionSignature)
+        self.answer_synthesizer = dspy.Predict(AgentAnswerSignature)
+        self.router = self.action_planner
+        self._active_trace: RunTrace | None = None
 
         # Chat Agent: Predict for conversational responses. This keeps the
         # structured output surface smaller than ChainOfThought, which is more
         # reliable with local OpenAI-compatible backends.
         self.chat_agent = dspy.Predict(ChatAgentSignature)
 
-        # DataExpert: ReAct with real HDF5 MCP tools
-        self.data_expert = DataExpert(arc_memory=self.arc)
+        # Shared MCP executor: one explicit sync boundary for CLI/API thread calls.
+        self.tool_executor = create_sync_tool_executor(gateway)
 
-        # AnalysisExpert: ReAct with real Parquet MCP tools
-        self.analysis_expert = AnalysisExpert(arc_memory=self.arc)
+        # DataExpert: native deterministic HDF5 tools with optional DSPy synthesis
+        self.data_expert = DataExpert(
+            arc_memory=self.arc,
+            tool_executor=self.tool_executor,
+        )
+
+        # AnalysisExpert: native deterministic Parquet/CSV tools with optional DSPy synthesis
+        self.analysis_expert = AnalysisExpert(
+            arc_memory=self.arc,
+            tool_executor=self.tool_executor,
+        )
 
         # VisualizationExpert: ReAct with matplotlib chart tools
         self.visualization_expert = VisualizationExpert(arc_memory=self.arc)
@@ -183,6 +197,7 @@ class ClioAgent(dspy.Module):
                     "hdf5_analyze_file",
                 ],
                 specialization="data_io",
+                metadata={"file_suffixes": [".h5", ".hdf5"]},
             ),
         )
 
@@ -204,8 +219,10 @@ class ClioAgent(dspy.Module):
                     "parquet_analyze_schema",
                     "parquet_query_data",
                     "parquet_compute_statistics",
+                    "csv_read_table",
                 ],
                 specialization="data_analysis",
+                metadata={"file_suffixes": [".parquet", ".csv"]},
             ),
         )
 
@@ -222,6 +239,7 @@ class ClioAgent(dspy.Module):
                     "plot_summary",
                 ],
                 specialization="data_visualization",
+                metadata={"file_suffixes": [".parquet", ".csv"]},
             ),
         )
 
@@ -255,61 +273,15 @@ class ClioAgent(dspy.Module):
             print(f"[ClioAgent] ARC Memory initialized at {data_dir}/arc")
             print(f"[ClioAgent] LSM Tree initialized at {data_dir}/arc/lsm")
 
-    async def acall(
-        self,
-        question: str,
-        session_id: str = "default",
-        session_mode: str = "chat",
-        session_edit_mode: str = "diff",
-    ) -> dspy.Prediction:
-        """Async call wrapper for dspy.streamify compatibility.
-
-        Offloads the synchronous ``forward`` to a thread executor so
-        the asyncio event loop stays free during long LM calls.
-        Without this, the loop blocks for the whole turn duration —
-        every other HTTP request to CLIO (/v1/providers, /v1/health,
-        even the SSE stream) stalls until the turn completes, which
-        from the TUI feels like a complete UI freeze.
-
-        Streaming context survival: ``contextvars.copy_context()`` +
-        ``ctx.run`` propagates dspy's ``send_stream`` ContextVar into
-        the executor thread, so streamify's per-token chunks still
-        reach the listener. Without this propagation, the offload
-        would silently break live streaming.
-        """
-
-        import contextvars  # noqa: PLC0415
-
-        loop = asyncio.get_running_loop()
-        ctx = contextvars.copy_context()
-
-        def _run() -> dspy.Prediction:
-            return ctx.run(
-                self.forward,
-                question,
-                session_id=session_id,
-                session_mode=session_mode,
-                session_edit_mode=session_edit_mode,
-            )
-
-        return await loop.run_in_executor(None, _run)
-
-    def forward(
-        self,
-        question: str,
-        session_id: str = "default",
-        session_mode: str = "chat",
-        session_edit_mode: str = "diff",
-    ) -> dspy.Prediction:
-        """Process question through Router -> Expert/Chat dispatch.
+    def forward(self, question: str, session_id: str = "default") -> dspy.Prediction:
+        """Process a question through the CLIO agent loop.
 
         Flow:
-            1. Retrieve context from ARC Memory
-            2. Route query using Router with fast model (Literal output)
-            3. Load dataset profiles from ARC for expert context
-            4. Dispatch to expert or ChatAgent
-            5. Store routing decision + metrics + conversation in ARC
-            6. Return response with selected_expert field
+            1. Retrieve session and current-file context from ARC
+            2. Ask the planner for the next action using live capabilities
+            3. Execute tools or experts and append observations
+            4. Answer from observations or direct conversation
+            5. Store decisions, provenance, metrics, and conversation in ARC
 
         Args:
             question: User's question or request
@@ -321,243 +293,71 @@ class ClioAgent(dspy.Module):
         """
         start_time = time.time()
 
-        # Step 0: Identity short-circuit — answer "who/what are you?" and
-        # "what model is this?" locally before anything else. These
-        # questions are deterministic; involving the router or LM at all
-        # is wasteful AND unreliable (some providers strip our system
-        # prompt and answer with their own identity, or the router
-        # classifies the question as `none` and the user gets a routing
-        # error for what should be a trivial answer).
-        identity_reply = self._identity_intercept(question)
-        if identity_reply is not None:
-            return dspy.Prediction(
-                answer=identity_reply,
-                selected_expert="chat",
-                session_id=session_id,
-                duration_ms=(time.time() - start_time) * 1000,
-                arc_stats=self.arc.get_cache_stats(),
-                lsm_stats=self.lsm.get_stats(),
-                error_info=None,
-            )
-
         # Step 1: Retrieve context from ARC Memory
         session_context = self._get_session_context(question, session_id)
+        active_file = self._resolve_session_file_reference(question, session_id)
+        file_context = self._get_file_context(session_id, active_file)
 
-        # Step 2: Route query. Obvious file/tool requests use deterministic
-        # routing first so demos do not depend on local model parsing latency.
-        success = False
-        error_msg = None
-        selected = "chat"  # default fallback
-
-        # Routing override (set by the GACT layer from the session's
-        # routing_mode field). "chat" forces every turn through the
-        # chat path so users can avoid typing /chat. "experts" makes
-        # the router skip the chat/none classes — handy when the user
-        # wants to lock the session to data/analysis/visualization
-        # work. "auto" (default) keeps current behaviour.
-        routing_override = getattr(self, "_routing_mode_override", "auto") or "auto"
-
-        if routing_override == "chat":
-            if self.verbose:
-                print("[Router] forced chat (session.routing_mode=chat)")
-            selected = "chat"
-        elif self._looks_like_explicit_edit(question):
-            # Edit-intent short-circuit: when the user explicitly says
-            # "propose an edit to /path/...", route straight to the chat
-            # path's _direct_edit_answer regardless of router. The
-            # router otherwise picks data/analysis based on the file
-            # extension and never invokes the edit handler. Saves a
-            # router LM call too.
-            selected = "chat"
-            if self.verbose:
-                print(f"[Router] explicit-edit route: chat")
-        else:
-            heuristic_selected = self._route_with_heuristics(question)
-            if heuristic_selected:
-                if self.verbose:
-                    print(f"[Router] heuristic route: {heuristic_selected}")
-                selected = heuristic_selected
-            else:
-                try:
-                    with dspy.context(lm=self._router_lm):
-                        routing = self.router(question=question)
-                    selected = (routing.selected_expert or "chat").strip().lower()
-                    # Router LMs sometimes echo back malformed Literal
-                    # values ("None", "", quoted strings). Coerce to one
-                    # of the known buckets so downstream dispatch always
-                    # finds a valid branch.
-                    if selected not in {"data", "analysis", "visualization", "none", "chat"}:
-                        selected = "chat"
-                except Exception as e:
-                    if self.verbose:
-                        routing_err = RoutingError(
-                            message=f"Router failed, falling back to chat: {e}",
-                            details={"original_error": str(e)},
-                        )
-                        print(f"[Router] {routing_err.to_dict()}")
-                    selected = "chat"
-
-        # Experts-only mode: refuse to fall back to chat. If routing
-        # picked chat (or none), surface a routing notification so the
-        # user knows the question wasn't experty enough.
-        if routing_override == "experts" and selected in {"chat", "none"}:
-            raise RoutingError(
-                f"experts-only mode: router classified as '{selected}' "
-                "but routing_mode is locked to experts. Switch to "
-                "auto/chat in Settings, or rephrase to target "
-                "data / analysis / visualization.",
-                details={
-                    "selected_expert": selected,
-                    "routing_mode": "experts",
-                    "question": question[:200],
-                },
-            )
+        route = RouteDecision(
+            target="chat",
+            source="dspy",
+            reason="Agent planner started from live CLIO capabilities.",
+            confidence=0.0,
+        )
+        trace = RunTrace(route=route)
+        self._active_trace = trace
 
         if self.verbose:
-            print(f"[Router] {question[:50]}... -> {selected}")
+            print(f"[Planner] {question[:50]}...")
 
-        # Step 3: Load dataset profiles for file context
-        file_context = self._get_file_context(session_id)
-
-        # Step 4: Dispatch to expert or chat agent
+        success = False
+        error_msg = None
+        selected = "chat"
         answer = ""
         expert_result = None
         error_info = None
-        # iowarp/clio-agent#25: track which execution path the data
-        # branch actually took so it can be surfaced on the routing
-        # decision Part. Empty string when the field isn't applicable
-        # (chat path, error branches, or non-data experts which have
-        # not been migrated yet).
-        execution_path = ""
+
         try:
-            if selected == "data":
-                # iowarp/clio-agent#25 — hybrid routing for the data
-                # branch:
-                #   Tier 3 (session): routing_mode == "reasoning_only"
-                #     skips the fast path entirely; every turn reaches
-                #     the DataExpert ReAct loop.
-                #   Tier 1 (keyword): _classify_data_intent picks
-                #     "inspect" -> fast path, "reason" -> ReAct.
-                #   Tier 2 (LM): on "ambiguous", a low-temperature LM
-                #     classifier (DataIntentSig) decides between the
-                #     same two paths.
-                # When the keyword/LM verdict is "inspect" we still
-                # fall through to the ReAct path if _direct_tool_answer
-                # returns None (no file path to inspect): the
-                # deterministic template needs a concrete file to
-                # describe.
-                use_fast_path = False
-                if routing_override != "reasoning_only":
-                    intent = self._classify_data_intent(question)
-                    if intent == "ambiguous":
-                        intent = self._resolve_ambiguous_data_intent(question)
-                    use_fast_path = intent == "inspect"
-                if use_fast_path:
-                    expert_result = self._direct_tool_answer(
-                        selected, question, file_context
-                    )
-                # Stamp execution_path BEFORE calling data_expert so the
-                # routing Part records which path we attempted even when
-                # the ReAct loop raises (e.g. a provider adapter parse
-                # failure). Empty execution_path on a "data" route now
-                # implies a bug, not a degraded turn.
-                if expert_result is None:
-                    execution_path = "expert_loop"
-                    expert_result = self.data_expert(
-                        question=question, file_context=file_context
-                    )
-                else:
-                    execution_path = "fast"
-                answer = (
-                    f"{expert_result.analysis}\n\nRecommendations:\n{expert_result.recommendations}"
-                )
-            elif selected == "analysis":
-                expert_result = self._direct_tool_answer(selected, question, file_context)
-                if expert_result is None:
-                    expert_result = self.analysis_expert(
-                        question=question, file_context=file_context
-                    )
-                answer = (
-                    f"{expert_result.analysis}\n\nRecommendations:\n{expert_result.recommendations}"
-                )
-            elif selected == "visualization":
-                expert_result = self._direct_tool_answer(selected, question, file_context)
-                if expert_result is None:
-                    expert_result = self.visualization_expert(
-                        question=question, file_context=file_context
-                    )
-                answer = f"Visualization: {expert_result.visualization_description}\n\nFile: {expert_result.file_path}"
-            elif selected == "none":
-                # Surface this as a real user-visible notification, NOT
-                # a canned fake-conversational reply. The router said
-                # "I don't have a handler for this" — that's a routing
-                # outcome the user deserves to see clearly, not hidden
-                # behind a conversational mask. Raise so the GACT layer
-                # can attach error_info to the assistant message and
-                # render it as a notification part instead of prose.
-                raise RoutingError(
-                    "router classified the question as out-of-scope "
-                    "for CLIO's experts (data / analysis / visualization / chat). "
-                    "Rephrase to target one of those domains.",
-                    details={
-                        "selected_expert": "none",
-                        "available_experts": [
-                            "data", "analysis", "visualization", "chat",
-                        ],
-                        "question": question[:200],
-                    },
-                )
-            else:  # "chat"
-                # iowarp/clio-agent#4: detect explicit edit requests
-                # ("propose an edit to /path/to/file …") and short-
-                # circuit through the fs MCP server's propose_edit
-                # tool. Returns a Prediction with file_diffs= already
-                # populated; main forward forwards them up.
-                edit_pred = self._direct_edit_answer(question, edit_mode=session_edit_mode)
-                if edit_pred is not None:
-                    expert_result = edit_pred
-                    answer = getattr(edit_pred, "analysis", "") or "Proposed edit ready for review."
-                else:
-                    answer = self._run_chat_agent(question, session_context)
-            success = True
-        except RoutingError as e:
-            # Router said "no expert matches" — surface the actual
-            # routing detail to the user so they understand WHY their
-            # question wasn't answered (not "an error happened" prose).
-            success = False
-            error_info = e.to_dict()
-            error_msg = str(e)
-            if self.verbose:
-                print(f"[ClioAgent] Routing error: {e}")
-            answer = (
-                f"⚠ {e}\n\nCLIO can engage with:\n"
-                "  • HDF5 / I/O optimisation (data expert)\n"
-                "  • Parquet / statistical profiling (analysis expert)\n"
-                "  • Plots / charts (visualization expert)\n"
-                "  • Conversational chat (general questions)\n\n"
-                "If you wanted a chat reply, try prefixing your question with "
-                "'tell me about' or 'explain' so the router classifies it as chat."
+            selected, answer, expert_result, error_info, route = self._run_agent_loop(
+                question=question,
+                session_context=session_context,
+                file_context=file_context,
+                trace=trace,
             )
+            trace.route = route
+            success = True
+            if selected in ("data", "analysis", "visualization") and error_info is None:
+                error_info = self._tool_error_info_from_trace(selected, trace)
+            if error_info and not error_info.get("details", {}).get("partial", False):
+                success = False
+                error_msg = str(error_info.get("message") or "Tool execution failed.")
         except Exception as e:
             success = False
-            expert_err = ExpertError(
-                message=f"The {selected} expert encountered an issue processing your request.",
-                details={"expert": selected, "original_error": str(e)},
-            )
-            error_info = expert_err.to_dict()
+            if isinstance(e, RoutingError):
+                error_info = e.to_dict()
+                answer = (
+                    "I could not choose a valid CLIO action for this request. "
+                    "Check the configured local model and retry."
+                )
+            else:
+                agent_err = ExpertError(
+                    message="CLIO could not complete the agent loop for this request.",
+                    details={"selected": selected, "original_error": str(e)},
+                )
+                error_info = agent_err.to_dict()
+                answer = (
+                    "I could not complete the requested action. "
+                    "The failure is recorded in error_info for inspection."
+                )
             error_msg = str(e)
             if self.verbose:
-                print(f"[ClioAgent] Error in {selected} dispatch: {e}")
-            answer = (
-                f"⚠ {selected} expert failed: {e}\n\n"
-                "Try rephrasing your question, or check /doctor for backend status."
-            )
+                print(f"[ClioAgent] Agent loop error: {e}")
 
         # Step 4b: Store tier-2 expert invocation for optimizer training data
         expert_duration_ms = (time.time() - start_time) * 1000
         if selected in ("data", "analysis", "visualization"):
             self._store_expert_invocation(
-                question=question,
+                question=self._question_with_session_file(question, active_file),
                 file_context=file_context,
                 selected=selected,
                 session_id=session_id,
@@ -565,321 +365,642 @@ class ClioAgent(dspy.Module):
                 success=success,
                 error_msg=error_msg,
                 duration_ms=expert_duration_ms,
+                trace=trace,
             )
 
         # Step 5: Store conversation + routing decision + metrics in ARC
         # Conversation must be stored first so routing decision can append to it
         duration_ms = (time.time() - start_time) * 1000
         self._store_conversation(question, answer, session_id)
-        self._store_routing_decision(question, selected, session_id)
-        self._store_metrics(question, session_id, selected, duration_ms, success, error_msg)
+        self._store_routing_decision(question, route, session_id)
+        self._store_metrics(question, session_id, selected, duration_ms, success, error_msg, trace)
+        self._active_trace = None
 
-        # iowarp/clio-agent#9: forward nanoagents_spawned from the
-        # expert's prediction up to the main one so the GACT layer
-        # materialises them as child sessions. Same pattern for any
-        # other expert-only attributes the GACT layer consumes
-        # (file_diffs, permissions_requested, thinking_blocks).
-        out = dspy.Prediction(
+        return dspy.Prediction(
             answer=answer,
             selected_expert=selected,
+            route_source=route.source,
+            route_reason=route.reason,
             session_id=session_id,
             duration_ms=duration_ms,
             arc_stats=self.arc.get_cache_stats(),
             lsm_stats=self.lsm.get_stats(),
             error_info=error_info,
-            # iowarp/clio-agent#25: which path the data branch ran on.
-            # "fast" when the deterministic template fired; "expert_loop"
-            # when the DataExpert ReAct loop ran. Empty for non-data
-            # selections until follow-up issues migrate them.
-            execution_path=execution_path,
         )
-        if expert_result is not None:
-            for forwarded in (
-                "nanoagents_spawned",
-                "file_diffs",
-                "permissions_requested",
-                "tools_called",
-                "reasoning",
-                "trajectory",
-            ):
-                val = getattr(expert_result, forwarded, None)
-                if val:
-                    try:
-                        setattr(out, forwarded, val)
-                    except Exception:
-                        pass
-        return out
 
-    @staticmethod
-    def _looks_like_explicit_edit(question: str) -> bool:
-        """Detect 'propose an edit to /path/file.ext' shape regardless of
-        which router would otherwise pick the question. The chat path's
-        _direct_edit_answer handles these end-to-end."""
+    def _run_agent_loop(
+        self,
+        *,
+        question: str,
+        session_context: str,
+        file_context: str,
+        trace: RunTrace,
+    ) -> tuple[str, str, Any, dict[str, Any] | None, RouteDecision]:
+        """Run the planner/executor loop for one user request."""
+        capabilities = self._build_capabilities_context()
+        observations: list[dict[str, Any]] = []
+        selected = "chat"
+        route = trace.route
 
-        import re
-        q = question.lower().strip()
-        triggers = ("propose an edit", "propose edit", "edit ", "modify ")
-        if not any(t in q for t in triggers):
-            return False
-        # Need an absolute path with a recognisable extension.
-        return bool(re.search(r"(/[\w./_-]+\.\w+)", question))
+        for step in range(self._agent_max_steps()):
+            action = self._plan_next_action(
+                question=question,
+                session_context=session_context,
+                file_context=file_context,
+                capabilities=capabilities,
+                observations=observations,
+            )
+            kind = self._coerce_text(action.get("action")).strip().lower()
+            reason = self._coerce_text(action.get("reason")).strip()
 
-    # iowarp/clio-agent#25 — intent classification inside the data
-    # branch. Tier 1 = keyword whitelist (instant, no LM). Tier 2 =
-    # DataIntentSig LM resolver, invoked only when tier 1 returns
-    # "ambiguous". Tier 3 (session.routing_mode == "reasoning_only")
-    # is checked in forward() — it bypasses tier 1+2 entirely.
-    #
-    # The wording lists are deliberately short. False negatives just
-    # mean "ambiguous" which falls through to the LM resolver — that
-    # path is correct by construction. False positives in the
-    # _INSPECT bucket are the failure mode that produced the original
-    # bug, so the bar for adding a verb here is high: the user must
-    # be asking for a structural summary that hdf5_analyze_file +
-    # hdf5_list_datasets can answer verbatim.
-    _INSPECT_VERBS: tuple[str, ...] = (
-        "list",
-        "what's in",
-        "what is in",
-        "show me the datasets",
-        "show me the schema",
-        "what datasets",
-        "what columns",
-        "inspect",
-        "analyze",
-        "analyse",
-        "summarize file",
-        "summarise file",
-        "summarize the file",
-        "summarise the file",
-        "describe the file",
-        "preview",
-        "head of",
-        "schema of",
-    )
-    _REASON_VERBS: tuple[str, ...] = (
-        "compare",
-        "contrast",
-        "correlate",
-        "compute",
-        "calculate",
-        "explain",
-        "why",
-        "how does",
-        "diff",
-        "anomal",
-        "outlier",
-        "distribution of",
-        "is there",
-        "are there",
-        "which is",
-        "do they",
-        "trend",
-        "recommend a",
-        "recommend ",
-        "optimize",
-        "optimise",
-        "what should i",
-    )
+            if kind == "tool":
+                tool_name = self._coerce_text(action.get("tool")).strip()
+                result = self._execute_tool_action(tool_name, action.get("args"), trace)
+                selected = self._selected_expert_for_tool(tool_name)
+                route = self._route_for_selected(
+                    selected,
+                    reason or f"Agent planner called tool {tool_name}.",
+                    confidence=0.75,
+                )
+                observations.append(
+                    {
+                        "step": step + 1,
+                        "type": "tool",
+                        "tool": tool_name,
+                        "ok": tool_result_ok(result),
+                        "result": compact_tool_result(
+                            result,
+                            tool=tool_name,
+                            ok=tool_result_ok(result),
+                        ),
+                    }
+                )
+                continue
 
-    @classmethod
-    def _classify_data_intent(cls, question: str) -> Literal["inspect", "reason", "ambiguous"]:
-        """Classify a question routed to the data expert by keyword.
+            if kind == "expert":
+                expert_id = self._coerce_text(action.get("expert")).strip().lower()
+                expert_question = self._coerce_text(action.get("question")).strip() or question
+                compatibility_error = self._expert_file_compatibility_error(
+                    expert_id,
+                    file_context,
+                )
+                if compatibility_error is not None:
+                    observations.append(
+                        {
+                            "step": step + 1,
+                            "type": "planner_error",
+                            "ok": False,
+                            "result": compatibility_error,
+                        }
+                    )
+                    continue
+                selected, answer, expert_result, error_info = self._dispatch_expert_action(
+                    expert_id=expert_id,
+                    question=expert_question,
+                    file_context=file_context,
+                    trace=trace,
+                )
+                route = self._route_for_selected(
+                    selected,
+                    reason or f"Agent planner delegated to the {selected} expert.",
+                    confidence=0.75,
+                )
+                return selected, answer, expert_result, error_info, route
 
-        Returns ``"inspect"`` if the question matches the inspect verb
-        list and no reason verb, ``"reason"`` if it matches the reason
-        verb list and no inspect verb, ``"ambiguous"`` otherwise. The
-        caller decides what to do with ``"ambiguous"`` (issue #25's
-        tier 2 escalates to the LM resolver).
-        """
+            if kind == "none":
+                answer = self._coerce_text(action.get("answer")).strip() or (
+                    "I can help with local scientific data files, analysis, and visualizations. "
+                    "I do not have a useful CLIO action for that request."
+                )
+                route = self._route_for_selected(
+                    "none",
+                    reason or "Agent planner found no suitable CLIO action.",
+                    confidence=0.7,
+                )
+                return "none", answer, None, None, route
 
-        q = question.lower()
-        inspect_hit = any(v in q for v in cls._INSPECT_VERBS)
-        reason_hit = any(v in q for v in cls._REASON_VERBS)
-        if inspect_hit and not reason_hit:
-            return "inspect"
-        if reason_hit and not inspect_hit:
-            return "reason"
-        return "ambiguous"
+            if kind == "answer":
+                answer = self._coerce_text(action.get("answer")).strip()
+                if not answer and observations:
+                    answer = self._synthesize_agent_answer(
+                        question=question,
+                        session_context=session_context,
+                        observations=observations,
+                    )
+                if not answer:
+                    answer = self._run_chat_agent(question, session_context)
+                if selected == "chat":
+                    selected = self._selected_expert_from_trace(trace)
+                route = self._route_for_selected(
+                    selected,
+                    reason or "Agent planner answered from conversation or observations.",
+                    confidence=0.7,
+                )
+                return selected, answer, None, None, route
 
-    def _resolve_ambiguous_data_intent(self, question: str) -> Literal["inspect", "reason"]:
-        """Ask the LM classifier to disambiguate a data-branch question.
+            observations.append(
+                {
+                    "step": step + 1,
+                    "type": "planner_error",
+                    "ok": False,
+                    "result": {
+                        "message": f"Planner returned unsupported action {kind!r}.",
+                        "action": action,
+                    },
+                }
+            )
 
-        Runs on the router LM (low temperature) via dspy.context, so the
-        global LM state is untouched. Falls back to ``"reason"`` on any
-        error — the slower path is the safe default per
-        ``DataIntentSig`` docstring.
-        """
+        answer = self._synthesize_agent_answer(
+            question=question,
+            session_context=session_context,
+            observations=observations,
+        )
+        selected = self._selected_expert_from_trace(trace)
+        route = self._route_for_selected(
+            selected,
+            "Agent planner reached the step limit and answered from accumulated observations.",
+            confidence=0.55,
+        )
+        return selected, answer, None, None, route
 
+    def _plan_next_action(
+        self,
+        *,
+        question: str,
+        session_context: str,
+        file_context: str,
+        capabilities: str,
+        observations: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Ask the planner for a validated JSON action."""
+        observations_text = self._format_observations_for_prompt(observations)
         try:
             with dspy.context(lm=self._router_lm):
-                pred = self.data_intent_classifier(question=question)
-            intent = (getattr(pred, "intent", "") or "").strip().lower()
-            if intent in {"inspect", "reason"}:
-                return intent  # type: ignore[return-value]
-        except Exception as e:  # noqa: BLE001
+                result = self.action_planner(
+                    question=question,
+                    session_context=session_context,
+                    file_context=file_context or "No current file context",
+                    capabilities=capabilities,
+                    observations=observations_text,
+                )
+            return self._parse_action_json(getattr(result, "action_json", ""))
+        except Exception as planner_error:
             if self.verbose:
-                print(f"[ClioAgent] data intent resolver failed, defaulting to 'reason': {e}")
-        return "reason"
+                print(f"[Planner] DSPy planner failed, trying direct JSON call: {planner_error}")
+
+            if not is_local_openai_compatible_backend(self._provider_config):
+                raise RoutingError(
+                    "Agent planner failed to produce an action.",
+                    details={"original_error": str(planner_error)},
+                ) from planner_error
+
+            try:
+                raw = self._direct_action_completion(
+                    question=question,
+                    session_context=session_context,
+                    file_context=file_context,
+                    capabilities=capabilities,
+                    observations=observations_text,
+                )
+                return self._parse_action_json(raw)
+            except Exception as fallback_error:
+                raise RoutingError(
+                    "Agent planner failed through DSPy and direct JSON fallback.",
+                    details={
+                        "planner_error": str(planner_error),
+                        "fallback_error": str(fallback_error),
+                    },
+                ) from fallback_error
+
+    def _direct_action_completion(
+        self,
+        *,
+        question: str,
+        session_context: str,
+        file_context: str,
+        capabilities: str,
+        observations: str,
+    ) -> str:
+        """Call the local OpenAI-compatible backend for one planner JSON object."""
+        headers = {"Content-Type": "application/json"}
+        if self._provider_config.api_key:
+            headers["Authorization"] = f"Bearer {self._provider_config.api_key}"
+
+        system_prompt = (AgentActionSignature.__doc__ or "").strip()
+        user_prompt = (
+            f"Question:\n{question}\n\n"
+            f"Session context:\n{session_context}\n\n"
+            f"File context:\n{file_context or 'No current file context'}\n\n"
+            f"Capabilities:\n{capabilities}\n\n"
+            f"Observations:\n{observations}\n\n"
+            "Return one JSON object only."
+        )
+        payload = {
+            "model": self._provider_config.model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            "temperature": self._provider_config.temperature,
+            "max_tokens": self._provider_config.max_tokens,
+        }
+
+        response = requests.post(
+            f"{self._provider_config.api_base.rstrip('/')}/chat/completions",
+            json=payload,
+            headers=headers,
+            timeout=120,
+        )
+        response.raise_for_status()
+        return self._extract_chat_completion_text(response.json()).strip()
+
+    def _dispatch_expert_action(
+        self,
+        *,
+        expert_id: str,
+        question: str,
+        file_context: str,
+        trace: RunTrace,
+    ) -> tuple[str, str, Any, dict[str, Any] | None]:
+        """Execute one planner-selected expert delegation."""
+        if expert_id not in self.registry.list_agents():
+            error = ExpertError(
+                f"Unknown expert selected by planner: {expert_id}",
+                details={"expert": expert_id, "available": self.registry.list_agents()},
+            ).to_dict()
+            return "none", error["message"], None, error
+
+        expert_question = self._question_with_file_context(question, file_context)
+        try:
+            if expert_id == "data":
+                expert_result = self.data_expert(question=expert_question, file_context=file_context)
+                self._merge_expert_provenance(trace, expert_result)
+                answer = f"{expert_result.analysis}\n\nRecommendations:\n{expert_result.recommendations}"
+                return "data", answer, expert_result, None
+
+            if expert_id == "analysis":
+                expert_result = self.analysis_expert(
+                    question=expert_question,
+                    file_context=file_context,
+                )
+                self._merge_expert_provenance(trace, expert_result)
+                answer = f"{expert_result.analysis}\n\nRecommendations:\n{expert_result.recommendations}"
+                return "analysis", answer, expert_result, None
+
+            expert_result = self.visualization_expert(
+                question=expert_question,
+                file_context=file_context,
+            )
+            description = self._coerce_text(
+                getattr(expert_result, "visualization_description", "")
+            ).strip()
+            file_path = self._coerce_text(getattr(expert_result, "file_path", "")).strip()
+            answer = f"Visualization: {description}\n\nFile: {file_path}".strip()
+            return "visualization", answer, expert_result, getattr(expert_result, "error_info", None)
+        except Exception as exc:
+            error = ExpertError(
+                f"The {expert_id} expert encountered an issue processing your request.",
+                details={"expert": expert_id, "original_error": str(exc)},
+            ).to_dict()
+            answer = (
+                f"I encountered an issue with the {expert_id} expert. "
+                "The failure is recorded in error_info for inspection."
+            )
+            return expert_id, answer, None, error
+
+    def _execute_tool_action(
+        self,
+        tool_name: str,
+        raw_args: Any,
+        trace: RunTrace,
+    ) -> Any:
+        """Execute a planner-selected tool and record provenance."""
+        args = self._normalize_tool_args(raw_args)
+        gateway_tools = set(self.tool_executor.get_tool_names())
+        visualization_tools = self._visualization_tool_map()
+        known_tools = gateway_tools | set(visualization_tools)
+
+        if not tool_name or tool_name not in known_tools:
+            return {
+                "error": normalize_tool_error(
+                    f"Planner selected unknown tool {tool_name!r}.",
+                    tool=tool_name or None,
+                    code="unknown_tool",
+                    next_action="Choose one of the tools listed in capabilities.",
+                    details={"available": sorted(known_tools)},
+                )
+            }
+
+        if tool_name in visualization_tools:
+            return self._execute_visualization_tool(tool_name, visualization_tools[tool_name], args)
+
+        start = time.time()
+        try:
+            raw_result = self.tool_executor.call_tool(tool_name, args)
+            result = normalize_tool_result(self._decode_tool_result(raw_result), tool=tool_name)
+        except Exception as exc:
+            result = {"error": normalize_tool_error(exc, tool=tool_name, code="tool_exception")}
+        duration_ms = (time.time() - start) * 1000
+        trace.record_tool(
+            tool=tool_name,
+            params=args,
+            result=result,
+            duration_ms=duration_ms,
+            ok=tool_result_ok(result),
+        )
+        return result
+
+    def _execute_visualization_tool(self, tool_name: str, tool: Any, args: dict[str, Any]) -> Any:
+        """Execute one local visualization tool with policy-aware artifact defaults."""
+        args = dict(args)
+        filepath = self._coerce_text(args.get("filepath")).strip()
+        if filepath and not self._coerce_text(args.get("output_path")).strip():
+            prepared = self._prepare_visualization_output_path(tool_name, filepath)
+            if isinstance(prepared, dict) and "error" in prepared:
+                start = time.time()
+                self._record_tool_call(tool_name, args, prepared, (time.time() - start) * 1000)
+                return prepared
+            args["output_path"] = str(prepared)
+
+        start = time.time()
+        try:
+            result = normalize_tool_result(
+                self._call_tool_function(tool, **args),
+                tool=tool_name,
+            )
+        except Exception as exc:
+            result = {"error": normalize_tool_error(exc, tool=tool_name, code="tool_exception")}
+        duration_ms = (time.time() - start) * 1000
+        self._record_tool_call(tool_name, args, result, duration_ms)
+        return result
+
+    def _prepare_visualization_output_path(self, tool_name: str, filepath: str) -> Path | dict[str, Any]:
+        """Return a safe default chart output path or a normalized policy error."""
+        source_path = Path(filepath).expanduser()
+        artifact_root = self._default_artifact_root(source_path)
+        output_dir = artifact_root / "charts"
+        default_name = f"{tool_name.removeprefix('plot_')}_{source_path.stem}.png"
+        output_path = output_dir / default_name
+        try:
+            validate_write_path(str(artifact_root.parent / f".{artifact_root.name}.probe"))
+            output_dir.mkdir(parents=True, exist_ok=True)
+            return validate_write_path(str(output_path))
+        except FilePolicyError as exc:
+            return {"error": normalize_tool_error(exc.to_result()["error"], tool=tool_name)}
+
+    def _synthesize_agent_answer(
+        self,
+        *,
+        question: str,
+        session_context: str,
+        observations: list[dict[str, Any]],
+    ) -> str:
+        """Produce a final answer from observations, with a deterministic fallback."""
+        observations_text = self._format_observations_for_prompt(observations)
+        try:
+            with dspy.context(lm=self._router_lm):
+                result = self.answer_synthesizer(
+                    question=question,
+                    session_context=session_context,
+                    observations=observations_text,
+                )
+            answer = self._coerce_text(getattr(result, "answer", "")).strip()
+            if answer:
+                return answer
+        except Exception as exc:
+            if self.verbose:
+                print(f"[Planner] Answer synthesis failed: {exc}")
+        return self._fallback_answer_from_observations(observations)
+
+    def _fallback_answer_from_observations(self, observations: list[dict[str, Any]]) -> str:
+        """Return a compact non-hallucinated answer when synthesis is unavailable."""
+        if not observations:
+            return (
+                "I could not choose a valid CLIO action. Check the configured local model "
+                "and retry with a concrete file path or task."
+            )
+
+        last = observations[-1]
+        if not last.get("ok", False):
+            result = last.get("result")
+            if isinstance(result, Mapping) and "error" in result:
+                return f"Tool {last.get('tool')} failed: {format_tool_error(result['error'])}"
+            return f"CLIO could not complete the action: {result}"
+
+        result = last.get("result")
+        if isinstance(result, Mapping) and "value" in result:
+            return f"Tool {last.get('tool')} completed: {result['value']}"
+        return f"Tool {last.get('tool')} completed.\n\n{json.dumps(result, indent=2)}"
+
+    def _build_capabilities_context(self) -> str:
+        """Describe live experts and tools for the planner without query heuristics."""
+        lines = ["Experts:"]
+        for agent_id in self.registry.list_agents():
+            caps = self.registry.get_capabilities(agent_id)
+            if caps is None:
+                continue
+            tools = ", ".join(caps.tools) if caps.tools else "no direct tools"
+            suffixes = ", ".join(caps.metadata.get("file_suffixes", []))
+            file_note = f"; files: {suffixes}" if suffixes else ""
+            lines.append(f"- {agent_id}: {caps.description}{file_note}; tools: {tools}")
+
+        lines.append("Tools:")
+        for tool in sorted(self._available_dspy_tools(), key=lambda t: t.name):
+            arg_names = ", ".join(sorted((getattr(tool, "args", {}) or {}).keys()))
+            desc = self._first_sentence(self._coerce_text(getattr(tool, "desc", "")))
+            if arg_names:
+                lines.append(f"- {tool.name}({arg_names}): {desc}")
+            else:
+                lines.append(f"- {tool.name}: {desc}")
+        return "\n".join(lines)
+
+    def _available_dspy_tools(self) -> list[dspy.Tool]:
+        """Return gateway and local visualization tools visible to the planner."""
+        return [*self.tool_executor.to_dspy_tools(), *self._visualization_tool_map().values()]
+
+    def _visualization_tool_map(self) -> dict[str, dspy.Tool]:
+        """Return local visualization tools keyed by their stable names."""
+        return {
+            tool.name: tool
+            for tool in getattr(self.visualization_expert, "_tools", [])
+            if hasattr(tool, "name")
+        }
+
+    def _selected_expert_for_tool(self, tool_name: str) -> str:
+        """Resolve a tool's owning expert from the registered capability table."""
+        for agent_id in self.registry.list_agents():
+            caps = self.registry.get_capabilities(agent_id)
+            if caps and tool_name in caps.tools:
+                return agent_id
+        return "chat"
+
+    def _selected_expert_from_trace(self, trace: RunTrace) -> str:
+        """Infer the public selected_expert from executed tool provenance."""
+        for observation in reversed(trace.tools):
+            selected = self._selected_expert_for_tool(observation.tool)
+            if selected != "chat":
+                return selected
+        return "chat"
+
+    def _expert_file_compatibility_error(
+        self,
+        expert_id: str,
+        file_context: str,
+    ) -> dict[str, Any] | None:
+        """Reject expert delegation that cannot inspect the current file context."""
+        paths = extract_file_paths(file_context, "", SCIENTIFIC_FILE_SUFFIXES)
+        if not paths:
+            return None
+
+        caps = self.registry.get_capabilities(expert_id)
+        if caps is None:
+            return {
+                "message": f"Unknown expert {expert_id!r}.",
+                "available_experts": self.registry.list_agents(),
+            }
+
+        supported = {
+            str(suffix).lower()
+            for suffix in caps.metadata.get("file_suffixes", [])
+            if str(suffix).strip()
+        }
+        if not supported:
+            return None
+
+        unsupported = [str(path) for path in paths if path.suffix.lower() not in supported]
+        if not unsupported:
+            return None
+
+        compatible = self._compatible_experts_for_paths(paths)
+        return {
+            "message": (
+                f"Expert {expert_id!r} cannot inspect the current file context "
+                f"({', '.join(unsupported)}). Choose a compatible expert or tool."
+            ),
+            "expert": expert_id,
+            "supported_suffixes": sorted(supported),
+            "compatible_experts": compatible,
+        }
+
+    def _compatible_experts_for_paths(self, paths: list[Path]) -> list[str]:
+        """List registered experts that support all current file suffixes."""
+        suffixes = {path.suffix.lower() for path in paths}
+        compatible: list[str] = []
+        for agent_id in self.registry.list_agents():
+            caps = self.registry.get_capabilities(agent_id)
+            if caps is None:
+                continue
+            supported = {
+                str(suffix).lower()
+                for suffix in caps.metadata.get("file_suffixes", [])
+                if str(suffix).strip()
+            }
+            if supported and suffixes.issubset(supported):
+                compatible.append(agent_id)
+        return compatible
 
     @staticmethod
-    def _route_with_heuristics(question: str) -> str | None:
-        """Return a deterministic route for obvious MVP/demo intents."""
-        q = question.lower()
+    def _route_for_selected(selected: str, reason: str, confidence: float) -> RouteDecision:
+        """Build the public route decision for a planner-selected handler."""
+        target = selected if selected in {"chat", "data", "analysis", "visualization", "none"} else "chat"
+        return RouteDecision(
+            target=target,  # type: ignore[arg-type]
+            source="dspy",
+            reason=reason,
+            confidence=confidence,
+        )
 
-        if any(word in q for word in ("plot", "chart", "graph", "histogram", "scatter")):
-            return "visualization"
-        if any(token in q for token in (".h5", ".hdf5", "hdf5", "chunking", "compression")):
-            return "data"
-        if any(
-            token in q for token in (".parquet", "parquet", "schema", "statistics", "null count")
-        ):
-            return "analysis"
-        if any(token in q for token in (".csv", "csv")):
-            return "analysis"
-        if q.strip() in {"hi", "hello", "hey"} or "who are you" in q:
-            return "chat"
-        return None
+    @staticmethod
+    def _normalize_tool_args(raw_args: Any) -> dict[str, Any]:
+        """Return a dict of tool args from planner output."""
+        if isinstance(raw_args, Mapping):
+            return dict(raw_args)
+        if isinstance(raw_args, str) and raw_args.strip():
+            try:
+                decoded = json.loads(raw_args)
+            except json.JSONDecodeError:
+                return {}
+            if isinstance(decoded, Mapping):
+                return dict(decoded)
+        return {}
 
-    def _direct_tool_answer(
-        self, selected: str, question: str, file_context: str
-    ) -> dspy.Prediction | None:
-        """Use deterministic local tools for explicit file-path questions."""
-        if selected == "data":
-            return self._direct_hdf5_answer(question, file_context)
-        if selected == "analysis":
-            return self._direct_parquet_answer(question, file_context) or self._direct_csv_answer(
-                question, file_context
-            )
-        if selected == "visualization":
-            return self._direct_visualization_answer(question, file_context)
-        return None
+    @staticmethod
+    def _decode_tool_result(raw_result: Any) -> Any:
+        """Decode gateway JSON text into native data when possible."""
+        if isinstance(raw_result, str):
+            try:
+                return json.loads(raw_result)
+            except json.JSONDecodeError:
+                return raw_result
+        return raw_result
 
-    _IDENTITY_PATTERNS = (
-        "who are you", "what are you", "what is this", "what's this",
-        "introduce yourself", "your name", "tell me about yourself",
-        "what can you do", "what do you do", "what are your capabilities",
-        "help me understand what you", "what is clio", "what's clio",
-    )
+    @classmethod
+    def _parse_action_json(cls, raw: Any) -> dict[str, Any]:
+        """Parse and lightly validate a planner JSON action object."""
+        if isinstance(raw, Mapping):
+            decoded = dict(raw)
+        else:
+            text = cls._coerce_text(raw).strip()
+            if text.startswith("```"):
+                text = text.strip("`").strip()
+                if text.lower().startswith("json"):
+                    text = text[4:].strip()
+            if not text.startswith("{"):
+                start = text.find("{")
+                end = text.rfind("}")
+                if start >= 0 and end > start:
+                    text = text[start : end + 1]
+            try:
+                decoded = json.loads(text)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"Planner returned invalid JSON action: {raw!r}") from exc
+            if not isinstance(decoded, dict):
+                raise ValueError(f"Planner action must be a JSON object: {raw!r}")
 
-    _IDENTITY_REPLY = (
-        "I am CLIO — an autonomous scientific-data agent from the IOWarp "
-        "project. I help with:\n\n"
-        "  • HDF5 inspection + I/O optimisation (DataExpert)\n"
-        "  • Parquet analysis + statistical profiling (AnalysisExpert)\n"
-        "  • Plotting + chart generation (VisualizationExpert)\n\n"
-        "Drop a /path/to/file.h5 or /path/to/file.parquet into a question and "
-        "I'll route to the right expert. I can also propose code edits "
-        "(\"propose an edit to /path/to/file.py — switch to f-string\") and "
-        "spawn nanoagents for parallel sub-tasks."
-    )
+        action = cls._coerce_text(decoded.get("action")).strip().lower()
+        if action not in {"tool", "expert", "answer", "none"}:
+            raise ValueError(f"Planner returned unsupported action: {decoded!r}")
+        decoded["action"] = action
+        return decoded
 
-    _MODEL_IDENTITY_PATTERNS = (
-        "what model", "which model", "what llm", "which llm",
-        "what language model", "which language model",
-        "what is the model", "what's the model",
-        "what is the underlying", "underlying model",
-        "what version of you", "what's powering you", "what powers you",
-    )
+    def _format_observations_for_prompt(self, observations: list[dict[str, Any]]) -> str:
+        """Format loop observations as compact JSON for planner prompts."""
+        if not observations:
+            return "No observations yet"
+        return json.dumps(observations, ensure_ascii=False, indent=2)
 
-    def _identity_intercept(self, question: str) -> str | None:
-        """Return a hardcoded CLIO identity reply for identity questions.
+    @staticmethod
+    def _first_sentence(text: str, max_chars: int = 220) -> str:
+        """Return a compact one-line description."""
+        compact = " ".join(text.split())
+        if "." in compact:
+            compact = compact.split(".", 1)[0] + "."
+        if len(compact) > max_chars:
+            compact = compact[: max_chars - 3] + "..."
+        return compact
 
-        Some configured providers (notably Meridian, which proxies to
-        claude.ai's Claude Code persona) ignore the system prompt and
-        always identify as Claude Code. To keep CLIO's identity stable
-        regardless of provider, intercept identity-shaped questions
-        before they reach the LM and answer them locally.
+    @staticmethod
+    def _agent_max_steps() -> int:
+        """Read the planner loop step budget from configuration."""
+        raw = os.environ.get("CLIO_AGENT_MAX_STEPS", str(DEFAULT_AGENT_MAX_STEPS))
+        try:
+            value = int(raw)
+        except ValueError:
+            value = DEFAULT_AGENT_MAX_STEPS
+        return max(1, min(value, 12))
 
-        Two intercept buckets:
-        - CLIO identity ("who are you" / "what can you do") → CLIO bio
-        - Model identity ("what model are you" / "what LM is this") →
-          actual provider/model from the live ProviderConfig (no LM
-          round-trip; the LM would lie or refuse anyway).
-        """
-        q = question.lower().strip().rstrip("?!.").strip()
-        # Model-identity questions take precedence — "what model are
-        # you?" overlaps "what are you?" but the user asking about the
-        # model wants the model id, not the CLIO bio.
-        for pat in self._MODEL_IDENTITY_PATTERNS:
-            if pat in q:
-                cfg = self._provider_config
-                provider = (cfg.provider or "?").strip()
-                model = (cfg.model or "?").strip()
-                api_base = (cfg.api_base or "").strip()
-                # Strip any leading "openai/" or "anthropic/" prefix the
-                # LM client adds — users care about the bare model name.
-                bare = model.split("/", 1)[1] if "/" in model else model
-                lines = [
-                    f"I'm CLIO. The underlying language model is **{bare}** "
-                    f"(provider: `{provider}`).",
-                ]
-                if api_base:
-                    lines.append(f"Routed via `{api_base}`.")
-                lines.append(
-                    "You can swap providers/models from the TUI at "
-                    "Ctrl+S → Settings → Model → Change provider…"
-                )
-                return "\n\n".join(lines)
-        for pat in self._IDENTITY_PATTERNS:
-            if pat in q:
-                return self._IDENTITY_REPLY
-        return None
+    @staticmethod
+    def _merge_expert_provenance(trace: RunTrace, expert_result: Any) -> None:
+        """Copy native expert tool provenance into the active run trace."""
+        provenance = getattr(expert_result, "tool_provenance", None)
+        if not isinstance(provenance, (list, tuple)):
+            return
+        for observation in provenance:
+            if hasattr(observation, "to_arc_tool_call"):
+                trace.tools.append(observation)
 
     def _run_chat_agent(self, question: str, session_context: str) -> str:
-        """Generate a conversational reply.
-
-        For identity-shaped questions (who are you / what can you do /
-        introduce yourself / etc.) we short-circuit and answer locally;
-        this guards against providers like Meridian that strip the
-        system prompt and would otherwise reply as Claude Code.
-
-        The remaining chat path goes through ``_direct_chat_completion``
-        for every openai-compatible provider (Meridian, OpenRouter,
-        OpenAI, LM Studio, Ollama, …). Reasons:
-
-        - DSPy's ChatAdapter wraps the system prompt with format
-          instructions that some upstreams (notably Meridian, which
-          proxies to claude.ai) interpret as a Claude Code agent
-          invocation and override our identity. Direct chat keeps full
-          control of the system prompt → CLIO identity stays intact.
-        - One round-trip per turn instead of adapter → parse → retry.
-
-        Falls back to the wrapped DSPy chat agent only when no api_base
-        is configured (e.g. anthropic native client)."""
-
-        identity = self._identity_intercept(question)
-        if identity is not None:
-            return identity
-
-        api_base = (self._provider_config.api_base or "").strip()
-        if api_base:
-            # When an api_base is configured (the common openai-compat
-            # path: argonne, openai, anthropic-via-meridian, lm_studio,
-            # ollama, openrouter, …), the direct HTTP path is the
-            # ONLY supported path. Don't silently swallow its error
-            # and fall back to DSPy/litellm — DSPy's async-bridging
-            # via httpx + anyio is broken when invoked from a
-            # ThreadPoolExecutor worker (AnyIO worker thread guard
-            # fails), so the fallback reliably trades a real,
-            # actionable error ("Sophia in maintenance until 3pm")
-            # for a confusing one ("Not running inside an AnyIO
-            # worker thread"). Surface direct's failure verbatim;
-            # the TUI's chat-error renderer will show it to the user.
-            try:
-                return self._direct_chat_completion(question, session_context)
-            except Exception as direct_err:
-                # Translate well-known upstream errors to user-friendly
-                # text where we can. Otherwise pass through.
-                msg = str(direct_err)
-                if "maintenance" in msg.lower():
-                    raise RuntimeError(
-                        f"upstream provider unavailable: {msg.strip()} "
-                        f"(api_base={api_base})"
-                    ) from direct_err
-                raise
-
-        # No api_base → use DSPy chat agent (anthropic native path).
+        """Generate a conversational reply, falling back for local backends."""
         try:
             result = self.chat_agent(question=question, session_context=session_context)
             answer = self._coerce_text(getattr(result, "answer", None)).strip()
@@ -887,194 +1008,28 @@ class ClioAgent(dspy.Module):
                 return answer
             raise ValueError("Chat agent returned an empty answer.")
         except Exception as chat_error:
-            raise RuntimeError(f"Chat agent failed: {chat_error}") from chat_error
+            if self.verbose:
+                print(f"[ClioAgent] ChatAgent failed, trying direct fallback: {chat_error}")
 
-    def _direct_edit_answer(
-        self, question: str, edit_mode: str = "diff",
-    ) -> dspy.Prediction | None:
-        """Drive the fs.propose_edit tool directly when the user
-        asks for an edit by file path.
+            if not is_local_openai_compatible_backend(self._provider_config):
+                raise
 
-        Recognised shapes:
-        - "propose an edit to /path/to/file [— description]"
-        - "edit /path/to/file [to ...]"
-        - "modify /path/to/file [to ...]"
-
-        Returns a Prediction with ``file_diffs=[{path, unified_diff,
-        ...}]`` populated when we both (a) parsed a real file path
-        from the question and (b) the LM produced parsable new
-        content. Falls back to ``None`` for the chat agent to
-        handle when either step misses — preserves the existing
-        chat path for non-edit questions.
-        """
-
-        q = question.lower().strip()
-        triggers = ("propose an edit", "propose edit", "edit ", "modify ")
-        if not any(t in q for t in triggers):
-            return None
-
-        import re
-        # Pull the first /path/to/something token out of the question.
-        path_match = re.search(r"(/[\w./_-]+\.\w+)", question)
-        if not path_match:
-            return None
-        filepath = path_match.group(1)
-
-        try:
-            from clio_agent.tools.servers.fs_server import (
-                propose_edit, read_file,
-            )
-        except Exception:
-            return None
-
-        try:
-            current = self._call_tool_function(read_file, filepath)
-        except Exception as exc:  # noqa: BLE001
-            return dspy.Prediction(
-                analysis=f"Could not read {filepath}: {exc}",
-                recommendations="Check that the path is inside the allowed roots.",
-            )
-
-        old = current.get("content", "")
-        # Ask the LM to produce ONLY the new file contents — no
-        # prose, no fences. Keep the prompt small + explicit so
-        # the response is easy to parse.
-        prompt = (
-            "You are editing a file. Return ONLY the new file "
-            "contents, with no prose, no markdown fences, no "
-            "explanations.\n\n"
-            f"Edit instruction: {question}\n\n"
-            f"--- {filepath} (current contents) ---\n"
-            f"{old}\n"
-            f"--- end ---\n"
-        )
-        try:
-            new_content = self._direct_chat_completion(prompt, "")
-        except Exception as exc:  # noqa: BLE001
-            return dspy.Prediction(
-                analysis=f"LM failed to produce edit for {filepath}: {exc}",
-                recommendations="Try again with a simpler edit instruction.",
-            )
-
-        # Strip stray markdown fences if the LM ignored the prompt.
-        new_content = new_content.strip()
-        if new_content.startswith("```"):
-            lines = new_content.splitlines()
-            if lines[0].startswith("```"):
-                lines = lines[1:]
-            if lines and lines[-1].startswith("```"):
-                lines = lines[:-1]
-            new_content = "\n".join(lines)
-
-        # Some providers (notably Meridian, which proxies to claude.ai's
-        # Claude Code persona) ignore edit instructions and return a
-        # generic non-answer. Writing that text to disk silently
-        # destroys the file. Detect a few canonical non-answer prefixes
-        # AND any reply that's drastically shorter than the original
-        # while looking nothing like file content.
-        non_answer_prefixes = (
-            "i can help with that",
-            "i'm happy to help",
-            "could you provide more details",
-            "i'd be happy to help",
-            "what specifically",
-        )
-        lc = new_content.lower().strip()
-        looks_like_non_answer = any(lc.startswith(p) for p in non_answer_prefixes)
-        # An edit reply shorter than 20% of the original AND under 200
-        # chars is almost certainly a refusal rather than a real edit.
-        suspiciously_short = (
-            len(new_content) < 200
-            and len(old) > 100
-            and len(new_content) < 0.2 * len(old)
-        )
-        if looks_like_non_answer or suspiciously_short:
-            cfg = self._provider_config
-            return dspy.Prediction(
-                analysis=(
-                    f"⚠ The configured LM ({cfg.provider}/{cfg.model}) "
-                    f"produced a generic non-answer for the edit prompt "
-                    f"instead of the new file content. The edit was NOT "
-                    f"applied — your file is unchanged.\n\n"
-                    f"LM reply:\n  {new_content[:200]!r}\n\n"
-                    f"This is a known Meridian limitation (it ignores "
-                    f"edit prompts and replies with a stock 'I can help' "
-                    f"line). Swap to a provider that honours the system "
-                    f"prompt (Anthropic direct, OpenRouter, Codex bridge) "
-                    f"via Ctrl+S → Settings → Change provider…, then retry."
-                ),
-                recommendations=(
-                    "Switch providers via the TUI's Settings → Change "
-                    "provider… modal and re-issue the propose-edit."
-                ),
-            )
-
-        diff = self._call_tool_function(propose_edit, filepath, new_content)
-        # Shape the file_diff Part by session.edit_mode:
-        # - "diff": unified_diff only (compact, reviewer-friendly)
-        # - "whole": new_content only (preview the full new file)
-        # - "patch": both fields (richest; consumer picks)
-        file_diff = {
-            "path": diff["path"],
-            "lines_added": diff["lines_added"],
-            "lines_removed": diff["lines_removed"],
-            "edit_mode": edit_mode,
-        }
-        if edit_mode == "whole":
-            file_diff["new_content"] = new_content
-        elif edit_mode == "patch":
-            file_diff["unified_diff"] = diff["unified_diff"]
-            file_diff["new_content"] = new_content
-        else:  # "diff" (default)
-            file_diff["unified_diff"] = diff["unified_diff"]
-            # new_content still needed for the apply path — it writes
-            # the whole file, not a diff. Carry it but not as a wire-
-            # surface field; the GACT layer reads it from a private
-            # _new_content key the TUI doesn't render.
-            file_diff["new_content"] = new_content
-        pred = dspy.Prediction(
-            analysis=(
-                f"Proposed edit for {filepath}: "
-                f"+{diff['lines_added']} / -{diff['lines_removed']} lines. "
-                "Apply via /v1/sessions/{sid}/diffs/apply or reject via /reject."
-            ),
-            recommendations="Review the diff in the body, then apply or reject.",
-        )
-        try:
-            pred.file_diffs = [file_diff]  # type: ignore[attr-defined]
-        except Exception:
-            pass
-        return pred
+            try:
+                return self._direct_chat_completion(question, session_context)
+            except Exception as fallback_error:
+                raise RuntimeError(
+                    f"ChatAgent failed ({chat_error}); direct fallback failed ({fallback_error})"
+                ) from fallback_error
 
     def _direct_chat_completion(self, question: str, session_context: str) -> str:
-        """Call the configured OpenAI-compatible chat endpoint directly.
+        """Call the configured OpenAI-compatible chat endpoint directly."""
+        headers = {"Content-Type": "application/json"}
+        if self._provider_config.api_key:
+            headers["Authorization"] = f"Bearer {self._provider_config.api_key}"
 
-        For argonne providers: ALCF Globus tokens have a ~1-hour
-        access-token lifetime. Long-running CLIO sessions outlive
-        that, so on 401 we re-resolve the token (env vars first, then
-        ~/.globus refresh-token mint via providers.argonne_auth) and
-        retry once. The refreshed token is stamped back onto
-        self._provider_config.api_key + the env so subsequent calls
-        skip the round-trip.
-        """
         system_prompt = self._build_direct_chat_system_prompt(session_context)
-        # Model-id normalization is a per-provider capability driven by
-        # config.PROVIDER_DEFAULTS[provider]["strip_openai_prefix"]:
-        #   - True (default, Meridian/generic openai-compat proxies):
-        #     strip leading "openai/" so the proxy's bare-id schema
-        #     accepts the request.
-        #   - False (Argonne / ALCF, anything using HF-style ids
-        #     verbatim): the org prefix IS part of the model id and
-        #     stripping it produces a non-existent endpoint.
-        # New providers with new wire-protocol quirks add a flag in the
-        # defaults dict, not a branch here.
-        model_id = self._provider_config.model
-        if self._provider_config.strip_openai_prefix and "/" in model_id:
-            head, tail = model_id.split("/", 1)
-            if head in {"openai", "anthropic"} and "/" not in tail:
-                model_id = tail
         payload = {
-            "model": model_id,
+            "model": self._provider_config.model,
             "messages": [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": question},
@@ -1082,77 +1037,19 @@ class ClioAgent(dspy.Module):
             "temperature": self._provider_config.temperature,
             "max_tokens": self._provider_config.max_tokens,
         }
-        url = f"{self._provider_config.api_base.rstrip('/')}/chat/completions"
 
-        def _do(api_key: str) -> requests.Response:
-            headers = {"Content-Type": "application/json"}
-            if api_key:
-                headers["Authorization"] = f"Bearer {api_key}"
-            return requests.post(url, json=payload, headers=headers, timeout=180)
-
-        response = _do(self._provider_config.api_key)
-        # Defensive: real requests.Response always has status_code, but tests
-        # and exotic response-likes may not. Tolerate missing attribute so we
-        # only retry on a *real* 401 and never crash the chat path.
-        status = getattr(response, "status_code", None)
-        if status == 401 and self._provider_config.provider == "argonne":
-            fresh = self._refresh_argonne_token()
-            if fresh and fresh != self._provider_config.api_key:
-                self._provider_config.api_key = fresh
-                response = _do(fresh)
-        # Surface the upstream response body in the error. requests'
-        # default raise_for_status() prints only the URL + status code,
-        # which hides per-model quirks (gpt-oss returning "extra inputs
-        # are not permitted" for fields vLLM rejects, Sophia's
-        # "maintenance" body, etc.). The user explicitly called out
-        # that silent error masking is unacceptable — surface the real
-        # diagnostic so they can act on it.
-        if status is not None and status >= 400:
-            body = ""
-            try:
-                body = (response.text or "").strip()
-            except Exception:
-                pass
-            snippet = body[:600] + ("…" if len(body) > 600 else "")
-            raise RuntimeError(
-                f"{status} from {self._provider_config.provider} "
-                f"({self._provider_config.model}) at {url}: "
-                f"{snippet or '(empty response body)'}"
-            )
+        response = requests.post(
+            f"{self._provider_config.api_base.rstrip('/')}/chat/completions",
+            json=payload,
+            headers=headers,
+            timeout=60,
+        )
         response.raise_for_status()
         data = response.json()
         answer = self._extract_chat_completion_text(data).strip()
         if not answer:
             raise ValueError("Direct chat completion returned empty content.")
         return answer
-
-    def _refresh_argonne_token(self) -> str:
-        """Re-resolve the ALCF bearer when a 401 hits mid-session.
-
-        Resolution order matches config._resolve_argonne_api_key:
-        explicit env override → alcf-agentics-workflow env var →
-        legacy `access_token` → ~/.globus refresh-token mint via
-        providers.argonne_auth. Returns "" when nothing fresh is
-        available; caller then surfaces the original 401 so the user
-        sees an actionable error instead of looping silently.
-        """
-        import os as _os
-
-        for env_name in ("CLIO_ARGONNE_TOKEN", "ALCF_INFERENCE_TOKEN", "access_token"):
-            v = (_os.environ.get(env_name, "") or "").strip()
-            if v:
-                return v
-
-        try:
-            from clio_agent.providers.argonne_auth import (  # noqa: PLC0415
-                get_access_token,
-                tokens_exist,
-            )
-            if tokens_exist():
-                return get_access_token() or ""
-        except Exception:
-            pass
-        return ""
 
     @staticmethod
     def _build_direct_chat_system_prompt(session_context: str) -> str:
@@ -1164,27 +1061,11 @@ class ClioAgent(dspy.Module):
 
     @staticmethod
     def _extract_chat_completion_text(payload: Dict[str, Any]) -> str:
-        """Extract assistant text from an OpenAI-compatible chat response.
-
-        Handles three real-world shapes:
-
-        1. Standard OpenAI / Anthropic / vLLM:
-           ``message.content = "answer text"``
-        2. Anthropic-style content blocks (when the proxy passes
-           through):  ``message.content = [{"type":"text","text":"..."}]``
-        3. OpenAI gpt-oss-style "reasoning" models (Metis, etc.):
-           ``message.content = null`` and the answer lives in
-           ``message.reasoning`` or ``message.reasoning_content``.
-           Without this fallback, gpt-oss-120b on Argonne Metis would
-           always return empty + drop us into the DSPy/litellm fallback
-           which then hits AnyIO worker-thread errors.
-        """
+        """Extract assistant text from an OpenAI-compatible chat response."""
         try:
-            message = payload["choices"][0]["message"]
+            content = payload["choices"][0]["message"]["content"]
         except (KeyError, IndexError, TypeError) as exc:
             raise ValueError(f"Unexpected chat completion payload: {payload}") from exc
-
-        content = message.get("content") if isinstance(message, dict) else None
 
         if isinstance(content, list):
             text_parts = [
@@ -1192,324 +1073,130 @@ class ClioAgent(dspy.Module):
                 for part in content
                 if isinstance(part, dict) and isinstance(part.get("text"), str)
             ]
-            joined = "\n".join(part for part in text_parts if part).strip()
-            if joined:
-                return joined
-            # Fall through to reasoning lookup if list-form content is empty.
+            return "\n".join(part for part in text_parts if part).strip()
 
-        if isinstance(content, str) and content.strip():
-            return ClioAgent._coerce_text(content)
+        return ClioAgent._coerce_text(content)
 
-        # gpt-oss-shape fallback: content is null/empty, real text in
-        # reasoning_content (newer field) or reasoning (older field).
-        if isinstance(message, dict):
-            for key in ("reasoning_content", "reasoning"):
-                rc = message.get(key)
-                if isinstance(rc, str) and rc.strip():
-                    return ClioAgent._coerce_text(rc)
+    @staticmethod
+    def _default_artifact_root(filepath: Path) -> Path:
+        """Return an artifact root that respects configured file policy roots."""
+        configured = os.environ.get("CLIO_ARTIFACT_DIR", "").strip()
+        if configured:
+            return Path(configured).expanduser()
 
-        # Nothing usable — surface the empty so the caller knows.
-        return ""
+        if not os.environ.get("CLIO_ALLOWED_ROOTS", "").strip():
+            return Path("/tmp/clio-agent-artifacts")
 
-    def _direct_hdf5_answer(self, question: str, file_context: str) -> dspy.Prediction | None:
-        """Inspect an explicit HDF5 path without relying on ReAct planning."""
-        paths = self._extract_file_paths(question, file_context, {".h5", ".hdf5"})
-        if not paths:
-            return None
-
-        filepath = paths[0]
-        from clio_agent.tools.servers.hdf5_server import analyze_file, list_datasets
-
-        overview = self._call_tool_function(analyze_file, str(filepath))
-        datasets = self._call_tool_function(list_datasets, str(filepath))
-
-        if "error" in overview:
-            return dspy.Prediction(
-                analysis=(
-                    f"Could not inspect HDF5 file {filepath}: "
-                    f"{self._format_tool_error(overview['error'])}"
-                ),
-                recommendations="Verify the path exists and that the file is readable HDF5.",
-            )
-
-        dataset_rows = datasets.get("datasets", []) if isinstance(datasets, dict) else []
-        dataset_lines = [
-            f"- {d['path']}: shape={d['shape']}, dtype={d['dtype']}, "
-            f"size={self._format_bytes(d['size_bytes'])}"
-            for d in dataset_rows[:12]
-        ]
-        if len(dataset_rows) > 12:
-            dataset_lines.append(f"- ... {len(dataset_rows) - 12} more datasets")
-
-        comp_summary = overview.get("compression_summary", {})
-        total = overview.get("total_datasets", len(dataset_rows))
-        compressed = comp_summary.get("compressed_datasets", 0)
-        uncompressed = comp_summary.get("uncompressed_datasets", 0)
-        ratio = comp_summary.get("overall_ratio")
-
-        analysis = (
-            f"Inspected HDF5 file {filepath}. It contains {total} datasets "
-            f"and {overview.get('total_groups', 0)} groups.\n"
-            + ("\n".join(dataset_lines) if dataset_lines else "No datasets were found.")
-            + "\n\n"
-            f"Compression summary: {compressed} compressed, {uncompressed} uncompressed."
-        )
-        if ratio is not None:
-            analysis += f" Overall raw-to-stored ratio is about {ratio}x."
-
-        if uncompressed:
-            recommendations = (
-                "Compression is partially configured. Review uncompressed numeric datasets and "
-                "consider chunked gzip/lzf compression when read patterns tolerate it. Keep chunk "
-                "sizes near 1 MiB as a starting point, then tune for row, column, or random access."
-            )
-        else:
-            recommendations = (
-                "Compression coverage looks reasonable. Validate chunk shapes against the dominant "
-                "read pattern before changing the file layout."
-            )
-
-        # tools_called is populated automatically by the observer
-        # hook in _call_tool_function, so we don't hand-code it here.
-        return dspy.Prediction(analysis=analysis, recommendations=recommendations)
-
-    def _direct_parquet_answer(self, question: str, file_context: str) -> dspy.Prediction | None:
-        """Inspect an explicit Parquet path without relying on ReAct planning."""
-        paths = self._extract_file_paths(question, file_context, {".parquet"})
-        if not paths:
-            return None
-
-        filepath = paths[0]
-        from clio_agent.tools.servers.parquet_server import analyze_schema, compute_statistics
-
-        schema = self._call_tool_function(analyze_schema, str(filepath))
-        if "error" in schema:
-            return dspy.Prediction(
-                analysis=(
-                    f"Could not inspect Parquet file {filepath}: "
-                    f"{self._format_tool_error(schema['error'])}"
-                ),
-                recommendations="Verify the path exists and that the file is readable Parquet.",
-            )
-
-        columns = schema.get("columns", [])
-        column_lines = [
-            f"- {c['name']}: {c['type']}, nullable={c['nullable']}" for c in columns[:12]
-        ]
-        if len(columns) > 12:
-            column_lines.append(f"- ... {len(columns) - 12} more columns")
-
-        stats_lines = []
-        q_lower = question.lower()
-        for col in columns[:4]:
-            name = col["name"]
-            if name.lower() not in q_lower and "stat" not in q_lower:
+        policy = FileAccessPolicy.from_env()
+        resolved_file = filepath.expanduser().resolve(strict=False)
+        for root in policy.allowed_roots:
+            try:
+                resolved_file.relative_to(root)
+                return root / ".clio-agent-artifacts"
+            except ValueError:
                 continue
-            stats = self._call_tool_function(compute_statistics, str(filepath), name)
-            if "error" not in stats:
-                stats_bits = [
-                    f"{k}={stats[k]}"
-                    for k in ("min", "max", "mean", "null_count", "unique_count")
-                    if k in stats
-                ]
-                stats_lines.append(f"{name}: " + ", ".join(stats_bits))
+        return policy.allowed_roots[0] / ".clio-agent-artifacts"
 
-        analysis = (
-            f"Inspected Parquet file {filepath}. It has {schema.get('num_rows')} rows, "
-            f"{schema.get('num_columns')} columns, and {schema.get('num_row_groups')} row groups.\n"
-            + "\n".join(column_lines)
-        )
-        if stats_lines:
-            analysis += "\n\nColumn statistics:\n" + "\n".join(stats_lines)
-
-        recommendations = (
-            "Use the schema and row group count to decide whether the file needs repartitioning. "
-            "For analysis questions, compute statistics on the specific columns involved instead "
-            "of scanning every column."
-        )
-
-        # tools_called is populated automatically by the observer
-        # hook in _call_tool_function (see _direct_hdf5_answer note).
-        return dspy.Prediction(analysis=analysis, recommendations=recommendations)
-
-    def _direct_csv_answer(self, question: str, file_context: str) -> dspy.Prediction | None:
-        """Inspect an explicit CSV path without relying on chat fallback."""
-        paths = self._extract_file_paths(question, file_context, {".csv"})
-        if not paths:
-            return None
-
-        filepath = paths[0]
-        try:
-            import pyarrow.csv as pcsv
-
-            from clio_agent.tools.file_policy import FilePolicyError, validate_read_path
-
-            safe_path = validate_read_path(str(filepath))
-            table = pcsv.read_csv(safe_path)
-        except FilePolicyError as exc:
-            return dspy.Prediction(
-                analysis=(
-                    f"Could not inspect CSV file {filepath}: "
-                    f"{self._format_tool_error(exc.to_result()['error'])}"
-                ),
-                recommendations="Move the file under an allowed root or adjust CLIO_ALLOWED_ROOTS.",
+    @classmethod
+    def _tool_error_info_from_trace(
+        cls,
+        selected: str,
+        trace: RunTrace,
+    ) -> dict[str, Any] | None:
+        """Return structured error_info for the first failed tool in a trace."""
+        successful_tools = [tool.tool for tool in trace.tools if tool.ok]
+        for observation in trace.tools:
+            if observation.ok:
+                continue
+            error = cls._tool_error_from_result(observation.tool, observation.result)
+            info = cls._tool_error_info(
+                selected=selected,
+                tool=observation.tool,
+                error=error,
+                partial=bool(successful_tools),
             )
-        except Exception as exc:
-            return dspy.Prediction(
-                analysis=f"Could not inspect CSV file {filepath}: {exc}",
-                recommendations="Verify the path exists and that the file is readable CSV.",
-            )
-
-        column_lines = []
-        for field in table.schema:
-            null_count = table.column(field.name).null_count
-            column_lines.append(f"- {field.name}: {field.type}, nulls={null_count}")
-
-        analysis = (
-            f"Inspected CSV file {safe_path}. It has {table.num_rows} rows and "
-            f"{table.num_columns} columns.\n"
-            + ("\n".join(column_lines) if column_lines else "No columns were found.")
-        )
-        recommendations = (
-            "CSV is readable in local mode. For repeated analysis or larger files, convert to "
-            "Parquet so schema, compression, and column statistics are cheaper to inspect."
-        )
-
-        return dspy.Prediction(analysis=analysis, recommendations=recommendations)
-
-    def _direct_visualization_answer(
-        self, question: str, file_context: str
-    ) -> dspy.Prediction | None:
-        """Create a deterministic summary plot for explicit tabular file paths."""
-        paths = self._extract_file_paths(question, file_context, {".parquet", ".csv"})
-        if not paths:
-            return None
-
-        filepath = paths[0]
-        output_dir = Path(".clio_agent") / "charts"
-        output_dir.mkdir(parents=True, exist_ok=True)
-        output_path = output_dir / f"summary_{filepath.stem}.png"
-
-        from clio_agent.experts.visualization_expert import plot_summary
-
-        chart_path = plot_summary(str(filepath), output_path=str(output_path))
-        if chart_path.startswith("Error:"):
-            return dspy.Prediction(
-                visualization_description=f"Could not create visualization: {chart_path}",
-                file_path="",
-            )
-
-        return dspy.Prediction(
-            visualization_description=(
-                f"Created a summary dashboard for {filepath} with data types, null counts, "
-                "numeric distributions, and correlations where available."
-            ),
-            file_path=chart_path,
-        )
+            if successful_tools:
+                info["details"]["successful_tools"] = successful_tools
+            return info
+        return None
 
     @staticmethod
-    def _extract_file_paths(question: str, file_context: str, suffixes: set[str]) -> list[Path]:
-        """Extract existing file paths with one of the requested suffixes."""
-        paths: list[Path] = []
-        seen: set[str] = set()
-
-        def add_matches(text: str, *, include_missing: bool) -> None:
-            for match in _FILE_PATH_RE.finditer(text):
-                raw = match.group("path").rstrip(".,;:)]}")
-                path = Path(raw).expanduser()
-                if path.suffix.lower() not in suffixes:
-                    continue
-                if not path.is_absolute():
-                    path = path.resolve()
-                if not include_missing and not path.exists():
-                    continue
-                key = str(path)
-                if key not in seen:
-                    paths.append(path)
-                    seen.add(key)
-
-        add_matches(question, include_missing=True)
-        add_matches(file_context, include_missing=False)
-        return paths
+    def _tool_error_from_result(tool: str, result: Any) -> dict[str, Any]:
+        """Extract one normalized tool error from a raw or structured result."""
+        normalized = normalize_tool_result(result, tool=tool)
+        if isinstance(normalized, dict) and "error" in normalized:
+            return normalize_tool_error(normalized["error"], tool=tool)
+        return normalize_tool_error(result, tool=tool)
 
     @staticmethod
-    def _format_bytes(size: int) -> str:
-        """Format byte counts for compact terminal/API answers."""
-        value = float(size)
-        for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
-            if value < 1024 or unit == "TiB":
-                if unit == "B":
-                    return f"{int(value)} {unit}"
-                return f"{value:.1f} {unit}"
-            value /= 1024
-        return f"{value:.1f} TiB"
+    def _tool_error_info(
+        *,
+        selected: str,
+        tool: str,
+        error: dict[str, Any],
+        partial: bool,
+    ) -> dict[str, Any]:
+        """Build the public result error_info shape for handled tool failures."""
+        normalized = normalize_tool_error(error, tool=tool)
+        message = str(normalized.get("message") or f"{tool} failed.")
+        return ToolError(
+            message,
+            details={
+                "expert": selected,
+                "tool": tool,
+                "tool_error": normalized,
+                "partial": partial,
+            },
+        ).to_dict()
 
     @staticmethod
     def _call_tool_function(tool: Any, *args: Any, **kwargs: Any) -> Any:
-        """Call either a FastMCP FunctionTool or a plain Python helper.
+        """Call either a FastMCP FunctionTool or a plain Python helper."""
+        fn = getattr(tool, "fn", None) or getattr(tool, "func", None) or tool
+        return fn(*args, **kwargs)
 
-        Fires the global tool_observer (same callback the MCPToolBridge
-        uses) before + after the call so direct-tool short-circuits in
-        the experts produce the same tool.call.* SSE events + populate
-        the same tools_called ledger as ReAct-driven tool calls.
-        Generic — works with any FastMCP tool, including third-party
-        MCP servers mounted by the gateway.
-        """
-
-        fn = getattr(tool, "fn", tool)
-        # Pull a stable name from the FunctionTool wrapper, falling back
-        # to the underlying function's __name__.
-        name = (
-            getattr(tool, "name", None)
-            or getattr(tool, "__name__", None)
-            or getattr(fn, "__name__", "tool")
-        )
-        # Best-effort args-as-mapping for the observer payload.
-        observer_args: dict[str, Any] = {}
-        if kwargs:
-            observer_args.update(kwargs)
-        if args:
-            # Positional args don't have names here — index them so the
-            # observer payload is at least lossless.
-            for i, val in enumerate(args):
-                observer_args.setdefault(f"arg{i}", val)
-
-        try:
-            from clio_agent.tools.execution import _GLOBAL_TOOL_OBSERVER  # noqa: PLC0415
-        except Exception:
-            _GLOBAL_TOOL_OBSERVER = None
-
-        if _GLOBAL_TOOL_OBSERVER is not None:
-            try:
-                _GLOBAL_TOOL_OBSERVER(name, observer_args, "started", None)
-            except Exception:
-                pass
-        try:
-            result = fn(*args, **kwargs)
-        except Exception as exc:
-            if _GLOBAL_TOOL_OBSERVER is not None:
-                try:
-                    _GLOBAL_TOOL_OBSERVER(name, observer_args, "completed", repr(exc))
-                except Exception:
-                    pass
-            raise
-        if _GLOBAL_TOOL_OBSERVER is not None:
-            try:
-                _GLOBAL_TOOL_OBSERVER(name, observer_args, "completed", None)
-            except Exception:
-                pass
+    def _run_local_tool(self, name: str, tool: Any, *args: Any, **kwargs: Any) -> Any:
+        """Run a local tool and record its result in the active harness trace."""
+        start = time.time()
+        result = self._call_tool_function(tool, *args, **kwargs)
+        duration_ms = (time.time() - start) * 1000
+        params = self._bind_tool_params(tool, args, kwargs)
+        self._record_tool_call(name, params, result, duration_ms)
         return result
 
+    def _record_tool_call(
+        self,
+        name: str,
+        params: dict[str, Any],
+        result: Any,
+        duration_ms: float,
+    ) -> None:
+        """Record a tool call if a run trace is active."""
+        if self._active_trace is None:
+            return
+        self._active_trace.record_tool(
+            tool=name,
+            params=params,
+            result=result,
+            duration_ms=duration_ms,
+            ok=tool_result_ok(result),
+        )
+
     @staticmethod
-    def _format_tool_error(error: Any) -> str:
-        """Format structured tool errors for user-facing direct answers."""
-        if isinstance(error, dict):
-            message = error.get("message") or str(error)
-            next_action = error.get("next_action")
-            if next_action:
-                return f"{message} Next action: {next_action}"
-            return str(message)
-        return str(error)
+    def _bind_tool_params(
+        tool: Any, args: tuple[Any, ...], kwargs: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Best-effort conversion of positional tool args into named params."""
+        import inspect
+
+        fn = getattr(tool, "fn", None) or getattr(tool, "func", None) or tool
+        try:
+            bound = inspect.signature(fn).bind_partial(*args, **kwargs)
+            return dict(bound.arguments)
+        except Exception:
+            params: dict[str, Any] = {"args": list(args)}
+            params.update(kwargs)
+            return params
 
     @staticmethod
     def _coerce_text(value: Any) -> str:
@@ -1550,7 +1237,7 @@ class ClioAgent(dspy.Module):
         Args:
             question: User's current question
             session_id: Session identifier
-            tier: Agent tier for token budget (1=router/2K, 2=expert/4K)
+            tier: Agent tier for token budget (1=planner/2K, 2=expert/4K)
 
         Returns:
             Compiled context string or "No prior context"
@@ -1587,7 +1274,7 @@ class ClioAgent(dspy.Module):
                 pass
         return "No prior context"
 
-    def _get_file_context(self, session_id: str) -> str:
+    def _get_file_context(self, session_id: str, active_file: Path | None = None) -> str:
         """Load dataset profiles from ARC for expert file context.
 
         Args:
@@ -1599,7 +1286,7 @@ class ClioAgent(dspy.Module):
         try:
             profiles = self.arc.get_session_profiles(session_id)
             if profiles:
-                return json.dumps(
+                context = json.dumps(
                     [
                         {
                             "filepath": p.filepath,
@@ -1609,11 +1296,62 @@ class ClioAgent(dspy.Module):
                         for p in profiles
                     ]
                 )
+                if active_file is not None:
+                    return f"{context}\nCurrent session file: {active_file}"
+                return context
         except Exception:
             pass
+        if active_file is not None:
+            return f"Current session file: {active_file}"
         return ""
 
-    def _store_routing_decision(self, question: str, selected: str, session_id: str) -> None:
+    def _resolve_session_file_reference(self, question: str, session_id: str) -> Path | None:
+        """Return an explicit path or the most recent scientific file in the session."""
+        explicit_paths = extract_file_paths(question, "", SCIENTIFIC_FILE_SUFFIXES)
+        if explicit_paths:
+            return explicit_paths[0]
+        return self._last_session_file_path(session_id)
+
+    def _last_session_file_path(self, session_id: str) -> Path | None:
+        """Find the last local scientific file path mentioned in this session."""
+        try:
+            conv = self.arc.get_conversation(session_id)
+        except Exception:
+            return None
+        if conv is None:
+            return None
+
+        for message in reversed(conv.messages):
+            paths = extract_file_paths(message.content, "", SCIENTIFIC_FILE_SUFFIXES)
+            if paths:
+                return paths[0]
+        return None
+
+    @staticmethod
+    def _question_with_session_file(question: str, active_file: Path | None) -> str:
+        """Append current file context so native tools own the facts."""
+        if active_file is None:
+            return question
+        if extract_file_paths(question, "", SCIENTIFIC_FILE_SUFFIXES):
+            return question
+        return f"{question}\n\nUse this file from the current session: {active_file}"
+
+    @staticmethod
+    def _question_with_file_context(question: str, file_context: str) -> str:
+        """Append current file context when a planner expert action omits the path."""
+        if extract_file_paths(question, "", SCIENTIFIC_FILE_SUFFIXES):
+            return question
+        paths = extract_file_paths(file_context, "", SCIENTIFIC_FILE_SUFFIXES)
+        if not paths:
+            return question
+        return f"{question}\n\nUse this file from the current session: {paths[0]}"
+
+    def _store_routing_decision(
+        self,
+        question: str,
+        route: RouteDecision,
+        session_id: str,
+    ) -> None:
         """Store routing decision in the ARC conversation object.
 
         Args:
@@ -1625,10 +1363,10 @@ class ClioAgent(dspy.Module):
             routing_decision = RoutingDecision(
                 timestamp=time.time(),
                 query=question,
-                capabilities_needed=[],
-                selected_agent=selected,
-                reasoning="Literal router",
-                confidence=1.0,
+                capabilities_needed=list(route.capabilities),
+                selected_agent=route.target,
+                reasoning=f"{route.source}: {route.reason}",
+                confidence=route.confidence,
             )
 
             conv = self.arc.get_conversation(session_id)
@@ -1648,6 +1386,7 @@ class ClioAgent(dspy.Module):
         duration_ms: float,
         success: bool,
         error_msg: str | None = None,
+        trace: RunTrace | None = None,
     ) -> None:
         """Store invocation metrics in LSM Tree and ARC Memory.
 
@@ -1673,7 +1412,7 @@ class ClioAgent(dspy.Module):
         )
 
         # Store invocation in ARC Memory
-        invocation_id = str(uuid.uuid4())
+        invocation_id = trace.trace_id if trace else str(uuid.uuid4())
         invocation = Invocation(
             trace_id=invocation_id,
             session_id=session_id,
@@ -1687,7 +1426,7 @@ class ClioAgent(dspy.Module):
             status="success" if success else "failure",
             input={"query": question},
             output={"error": error_msg} if error_msg else {},
-            tools_called=[],
+            tools_called=[tool.to_arc_tool_call() for tool in (trace.tools if trace else [])],
             nanoagents_spawned=[],
             performance={"success": success, "duration_ms": duration_ms},
             storage_tier="warm",
@@ -1704,6 +1443,7 @@ class ClioAgent(dspy.Module):
         success: bool,
         error_msg: str | None,
         duration_ms: float,
+        trace: RunTrace | None = None,
     ) -> None:
         """Store tier-2 expert invocation in ARC for optimizer training data.
 
@@ -1740,7 +1480,7 @@ class ClioAgent(dspy.Module):
                 status="success" if success else "failure",
                 input={"question": question, "file_context": file_context},
                 output=output_data,
-                tools_called=[],
+                tools_called=[tool.to_arc_tool_call() for tool in (trace.tools if trace else [])],
                 nanoagents_spawned=[],
                 performance={"success": success, "duration_ms": duration_ms},
                 storage_tier="warm",

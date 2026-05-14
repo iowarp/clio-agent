@@ -108,9 +108,7 @@ async def test_analyze_schema_returns_metadata(sample_parquet):
 async def test_analyze_schema_nonexistent_file():
     """Test analyze_schema returns error for nonexistent file."""
     async with Client(parquet_server) as client:
-        result = await client.call_tool(
-            "analyze_schema", {"filepath": "/nonexistent/data.parquet"}
-        )
+        result = await client.call_tool("analyze_schema", {"filepath": "/nonexistent/data.parquet"})
         data = _parse_result(result)
         assert "error" in data
 
@@ -122,9 +120,7 @@ async def test_analyze_schema_nonexistent_file():
 async def test_query_data_all_columns(sample_parquet):
     """Test query_data returns all columns when none specified."""
     async with Client(parquet_server) as client:
-        result = await client.call_tool(
-            "query_data", {"filepath": sample_parquet}
-        )
+        result = await client.call_tool("query_data", {"filepath": sample_parquet})
         data = _parse_result(result)
 
         assert "error" not in data
@@ -156,9 +152,7 @@ async def test_query_data_specific_columns(sample_parquet):
 async def test_query_data_with_row_limit(sample_parquet):
     """Test query_data respects row_limit parameter."""
     async with Client(parquet_server) as client:
-        result = await client.call_tool(
-            "query_data", {"filepath": sample_parquet, "row_limit": 5}
-        )
+        result = await client.call_tool("query_data", {"filepath": sample_parquet, "row_limit": 5})
         data = _parse_result(result)
 
         assert "error" not in data
@@ -171,9 +165,7 @@ async def test_query_data_with_row_limit(sample_parquet):
 async def test_query_data_nonexistent_file():
     """Test query_data returns error for nonexistent file."""
     async with Client(parquet_server) as client:
-        result = await client.call_tool(
-            "query_data", {"filepath": "/nonexistent/data.parquet"}
-        )
+        result = await client.call_tool("query_data", {"filepath": "/nonexistent/data.parquet"})
         data = _parse_result(result)
         assert "error" in data
 
@@ -205,6 +197,32 @@ async def test_compute_statistics_numeric(sample_parquet):
         assert data["min"] >= 15.0
         assert data["max"] <= 35.0
         assert 15.0 <= data["mean"] <= 35.0
+
+
+@pytest.mark.asyncio
+async def test_compute_statistics_all_null_numeric_column(tmp_path):
+    """All-null numeric columns should report counts without false stats."""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    filepath = tmp_path / "all_null_numeric.parquet"
+    table = pa.table({"value": pa.array([None, None, None], type=pa.float64())})
+    pq.write_table(table, filepath)
+
+    async with Client(parquet_server) as client:
+        result = await client.call_tool(
+            "compute_statistics", {"filepath": str(filepath), "column": "value"}
+        )
+        data = _parse_result(result)
+
+    assert "error" not in data
+    assert data["column"] == "value"
+    assert data["total_count"] == 3
+    assert data["null_count"] == 3
+    assert data["non_null_count"] == 0
+    assert data["unique_count"] == 0
+    assert "min" not in data
+    assert "mean" not in data
 
 
 @pytest.mark.asyncio
@@ -259,9 +277,7 @@ async def test_gateway_lists_parquet_tools():
 async def test_gateway_call_parquet_tool(sample_parquet):
     """Test calling parquet_analyze_schema through the gateway."""
     async with Client(gateway) as client:
-        result = await client.call_tool(
-            "parquet_analyze_schema", {"filepath": sample_parquet}
-        )
+        result = await client.call_tool("parquet_analyze_schema", {"filepath": sample_parquet})
         data = _parse_result(result)
 
         assert "error" not in data

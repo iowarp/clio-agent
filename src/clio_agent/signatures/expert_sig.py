@@ -40,16 +40,16 @@ class DataExpertSignature(dspy.Signature):
     pattern (sequential scan versus random access versus columnar aggregation).
 
     Data Analysis Methodology:
-    When asked about a file, you ALWAYS use your tools first before reasoning. Never
-    guess about file contents -- call analyze_file or list_datasets to get real data.
-    When recommending optimizations, base them on actual compression ratios, dataset
-    shapes, and chunk configurations from tool results. If a tool returns an error,
-    report it clearly and suggest alternatives. Never fabricate statistics or file
-    properties.
+    In the native CLIO runtime, deterministic expert code owns tool execution before
+    this synthesis signature is used. Never guess about file contents. If tool results
+    or file summaries are present in file_context, base recommendations on those actual
+    compression ratios, dataset shapes, and chunk configurations. If no tool-backed
+    file facts are available, give general strategy and ask for a concrete file path.
+    Never fabricate statistics or file properties.
 
     Tool Usage Strategy:
-    You have access to HDF5 analysis tools via the CLIO MCP gateway. Use them
-    systematically:
+    The Data Expert's native execution layer has access to HDF5 analysis tools via
+    the CLIO MCP gateway. It uses them systematically:
     - For "what's in this file?" questions: call list_datasets first to discover
       the file structure
     - For specific dataset questions: call analyze_dataset with the exact dataset
@@ -60,9 +60,8 @@ class DataExpertSignature(dspy.Signature):
       pattern (row, column, or random) to get chunk shape recommendations
     - For quick overviews: call analyze_file for a high-level summary of size,
       datasets, groups, and compression
-    Always use tools before forming conclusions. Multiple tool calls in sequence
-    are expected and encouraged when the question requires cross-referencing data
-    from different tools.
+    Treat tool outputs as the source of truth. Multiple tool calls in sequence are
+    expected when the question requires cross-referencing data from different tools.
 
     Response Format:
     Structure your responses with three clear sections:

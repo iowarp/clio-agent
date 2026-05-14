@@ -29,10 +29,10 @@ from typing import Any
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sse_starlette.sse import EventSourceResponse
 
-from clio_agent.config import load_config_from_env, setup_dspy
+from clio_agent.config import load_config_from_env, load_project_env_file, setup_dspy
 from clio_agent.errors import ClioError, format_error_response
 from clio_agent.runtime.status import IntegrationState, collect_runtime_status
 
@@ -51,12 +51,22 @@ class QueryRequest(BaseModel):
     session_id: str = "default"
     stream: bool = False
 
+    @field_validator("question", "session_id")
+    @classmethod
+    def _reject_blank_strings(cls, value: str) -> str:
+        """Reject blank query fields before they reach the agent runtime."""
+        if not value.strip():
+            raise ValueError("must not be blank")
+        return value
+
 
 class QueryResponse(BaseModel):
     """Response body for POST /query (non-streaming)."""
 
     answer: str
     selected_expert: str
+    route_source: str = ""
+    route_reason: str = ""
     session_id: str
     duration_ms: float
     error_info: dict[str, Any] | None = None
@@ -105,6 +115,7 @@ async def lifespan(app: FastAPI):
     """Application lifespan: initialize agent on startup, shutdown on exit."""
     # Startup
     try:
+        load_project_env_file()
         config = load_config_from_env()
         app.state.provider_config = config
         setup_dspy()
@@ -224,9 +235,7 @@ async def query(req: QueryRequest):
         error_msg = getattr(app.state, "startup_error", "Agent not initialized")
         return JSONResponse(
             status_code=503,
-            content=format_error_response(
-                ClioError(error_msg, error_type="service_unavailable")
-            ),
+            content=format_error_response(ClioError(error_msg, error_type="service_unavailable")),
         )
 
     if req.stream:
@@ -246,6 +255,8 @@ async def _json_response(agent: Any, req: QueryRequest) -> JSONResponse:
             content=QueryResponse(
                 answer=result.answer,
                 selected_expert=result.selected_expert,
+                route_source=getattr(result, "route_source", ""),
+                route_reason=getattr(result, "route_reason", ""),
                 session_id=result.session_id,
                 duration_ms=duration_ms,
                 error_info=getattr(result, "error_info", None),
@@ -266,7 +277,13 @@ async def _stream_response(agent: Any, req: QueryRequest):
         # Event: routing
         yield {
             "event": "routing",
-            "data": json.dumps({"selected_expert": result.selected_expert}),
+            "data": json.dumps(
+                {
+                    "selected_expert": result.selected_expert,
+                    "route_source": getattr(result, "route_source", ""),
+                    "route_reason": getattr(result, "route_reason", ""),
+                }
+            ),
         }
 
         # Event: chunk -- split answer into word chunks for SSE infrastructure
@@ -287,7 +304,10 @@ async def _stream_response(agent: Any, req: QueryRequest):
                 {
                     "answer": result.answer,
                     "selected_expert": result.selected_expert,
+                    "route_source": getattr(result, "route_source", ""),
+                    "route_reason": getattr(result, "route_reason", ""),
                     "duration_ms": duration_ms,
+                    "error_info": getattr(result, "error_info", None),
                 }
             ),
         }

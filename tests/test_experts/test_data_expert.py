@@ -1,8 +1,8 @@
 """
 Tests for Data Expert module.
 
-Tests DataExpert initialization, tool loading via MCPToolBridge,
-and capabilities. Does not require LM Studio (no forward() tests).
+Tests DataExpert initialization, native tool execution via the MCP execution
+boundary, and capabilities. Does not require LM Studio.
 """
 
 from unittest.mock import Mock
@@ -10,6 +10,7 @@ from unittest.mock import Mock
 import dspy
 
 from clio_agent.experts.data_expert import DataExpert, MCPToolBridge
+from clio_agent.tools.execution import SyncMCPToolExecutor
 from clio_agent.tools.gateway import gateway
 
 
@@ -79,40 +80,53 @@ class TestDataExpert:
     def test_expert_initialization(self):
         """Test expert can be initialized with real MCP tools."""
         expert = DataExpert()
-
-        assert expert is not None
-        assert hasattr(expert, "forward")
-        assert hasattr(expert, "agent")
-        assert hasattr(expert, "_tools")
-        assert hasattr(expert, "_bridge")
+        try:
+            assert expert is not None
+            assert hasattr(expert, "forward")
+            assert hasattr(expert, "agent")
+            assert hasattr(expert, "_tools")
+            assert hasattr(expert, "_tool_executor")
+            assert isinstance(expert._tool_executor, SyncMCPToolExecutor)
+        finally:
+            expert.close()
 
     def test_expert_has_tools(self):
         """Test expert loads at least 4 HDF5 tools."""
         expert = DataExpert()
-        assert len(expert._tools) >= 4
+        try:
+            assert len(expert._tools) >= 4
+        finally:
+            expert.close()
 
-    def test_expert_has_react_agent(self):
-        """Test expert uses ReAct, not ChainOfThought."""
+    def test_expert_has_synthesis_module_not_react(self):
+        """Test expert keeps DSPy only for synthesis, not tool execution."""
         expert = DataExpert()
-        # ReAct agent should have tools attribute
-        assert hasattr(expert.agent, "tools")
-        agent_type = type(expert.agent).__name__
-        assert "ReAct" in agent_type
+        try:
+            agent_type = type(expert.agent).__name__
+            assert "Predict" in agent_type
+            assert "ReAct" not in agent_type
+        finally:
+            expert.close()
 
     def test_expert_tool_names(self):
         """Test expert has the expected HDF5 tools."""
         expert = DataExpert()
-        tool_names = [t.name for t in expert._tools]
-        assert "hdf5_analyze_file" in tool_names
-        assert "hdf5_list_datasets" in tool_names
+        try:
+            tool_names = [t.name for t in expert._tools]
+            assert "hdf5_analyze_file" in tool_names
+            assert "hdf5_list_datasets" in tool_names
+        finally:
+            expert.close()
 
     def test_expert_with_arc_memory(self):
         """Test expert with ARC memory integration."""
         mock_arc = Mock()
         expert = DataExpert(arc_memory=mock_arc)
-
-        assert expert is not None
-        assert expert.arc_memory is mock_arc
+        try:
+            assert expert is not None
+            assert expert.arc_memory is mock_arc
+        finally:
+            expert.close()
 
     def test_expert_accepts_tool_executor_boundary(self):
         """DataExpert should depend on a tool executor interface."""
@@ -139,9 +153,105 @@ class TestDataExpert:
         executor = FakeExecutor()
         expert = DataExpert(tool_executor=executor)
 
-        assert expert._bridge is executor
+        assert expert._tool_executor is executor
         expert.close()
         assert executor.closed is True
+
+    def test_expert_forward_uses_native_hdf5_tools(self, sample_hdf5):
+        """Explicit HDF5 questions should run tools without LM calls."""
+        expert = DataExpert()
+        try:
+            result = expert(question=f"What datasets are in {sample_hdf5}?")
+            assert "simulation/temperature" in result.analysis
+            assert result.synthesis_source == "deterministic"
+            assert [tool.tool for tool in result.tool_provenance] == [
+                "hdf5_analyze_file",
+                "hdf5_list_datasets",
+            ]
+            arc_tool = result.tool_provenance[1].to_arc_tool_call()
+            assert arc_tool.result["ok"] is True
+            assert arc_tool.result["datasets"]["count"] == 3
+        finally:
+            expert.close()
+
+    def test_analyze_dataset_without_dataset_lists_available_datasets(self, sample_hdf5):
+        """hdf5_analyze_dataset needs a dataset argument and should not fake one."""
+        expert = DataExpert()
+        try:
+            result = expert(question=f"Run hdf5_analyze_dataset on {sample_hdf5}")
+
+            assert result.synthesis_source == "deterministic"
+            assert "needs a dataset path" in result.analysis
+            assert "simulation/temperature" in result.analysis
+            assert [tool.tool for tool in result.tool_provenance] == ["hdf5_list_datasets"]
+        finally:
+            expert.close()
+
+    def test_analyze_dataset_with_dataset_uses_dataset_tool(self, sample_hdf5):
+        """Named dataset analysis should call hdf5_analyze_dataset directly."""
+        expert = DataExpert()
+        try:
+            result = expert(
+                question=(
+                    f"Run hdf5_analyze_dataset on {sample_hdf5} "
+                    "for simulation/temperature"
+                )
+            )
+
+            assert result.synthesis_source == "deterministic"
+            assert "Analyzed HDF5 dataset simulation/temperature" in result.analysis
+            assert "statistics:" in result.analysis
+            assert [tool.tool for tool in result.tool_provenance] == [
+                "hdf5_list_datasets",
+                "hdf5_analyze_dataset",
+            ]
+        finally:
+            expert.close()
+
+    def test_expert_rejects_invalid_hdf5_tool_shape(self):
+        """Malformed HDF5 tool payloads should not produce file facts."""
+
+        class FakeExecutor:
+            closed = False
+
+            def to_dspy_tools(self):
+                def fake_tool(**kwargs):
+                    return "{}"
+
+                return [
+                    dspy.Tool(
+                        func=fake_tool,
+                        name="hdf5_analyze_file",
+                        desc="Fake HDF5 analyzer.",
+                        args={},
+                    ),
+                    dspy.Tool(
+                        func=fake_tool,
+                        name="hdf5_list_datasets",
+                        desc="Fake HDF5 lister.",
+                        args={},
+                    ),
+                ]
+
+            def call_tool(self, name, args):
+                assert name == "hdf5_analyze_file"
+                return '{"filepath": "/tmp/broken.h5", "total_datasets": 99}'
+
+            def close(self):
+                self.closed = True
+
+        expert = DataExpert(tool_executor=FakeExecutor())
+
+        result = expert(question="Inspect /tmp/broken.h5")
+
+        assert result.synthesis_source == "deterministic"
+        assert result.analysis.startswith("Could not inspect HDF5 file")
+        assert "99 datasets" not in result.analysis
+        assert result.tool_provenance[0].ok is False
+        error = result.tool_provenance[0].result["error"]
+        assert error["type"] == "tool_contract"
+        assert error["code"] == "invalid_result_shape"
+        expert.close()
 
 
 class TestDataExpertSignature:

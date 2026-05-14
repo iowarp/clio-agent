@@ -4,10 +4,12 @@ ClioAgent Signatures Module
 DSPy signature definitions for ClioAgent components.
 
 Available Signatures:
-- RouterSignature: Routes questions to experts via Literal typed output
+- AgentActionSignature: Selects loop actions over registered experts/tools
+- AgentAnswerSignature: Synthesizes answers from loop observations
+- RouterSignature: Legacy Literal router contract
 - ChatAgentSignature: Conversational responses for non-data queries
-- DataExpertSignature: HDF5, Parquet optimization with ReAct tools
-- AnalysisExpertSignature: Statistical analysis and data profiling
+- DataExpertSignature: HDF5 and data-layout synthesis
+- AnalysisExpertSignature: Statistical analysis and data profiling synthesis
 - VisualizationExpertSignature: Scientific data visualization
 
 Example:
@@ -25,6 +27,8 @@ from clio_agent.signatures.expert_sig import (
     DataExpertSignature,
 )
 from clio_agent.signatures.main_agent_sig import (
+    AgentActionSignature,
+    AgentAnswerSignature,
     ChatAgentSignature,
     RouterSignature,
 )
@@ -33,6 +37,8 @@ from clio_agent.signatures.visualization_sig import (
 )
 
 __all__ = [
+    "AgentActionSignature",
+    "AgentAnswerSignature",
     "RouterSignature",
     "ChatAgentSignature",
     "DataExpertSignature",

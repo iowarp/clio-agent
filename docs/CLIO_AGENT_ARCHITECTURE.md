@@ -25,9 +25,9 @@ CLIO Agent is NOT:
 CLIO Agent IS:
 - ✅ A self-improving autonomous data management agent specialized in scientific workflows
 - ✅ A 3-tier orchestration system (main agent → experts → nanoagents)
-- ✅ A native memory system (ARC) with O(log N) retrieval and IOWarp CTE persistence
-- ✅ A continuous learning system (Optimizer Layer) with offline tuning + online learning
-- ✅ An agent registry coordinator for external agent integration (LangChain, CrewAI, AutoGen)
+- ✅ A native memory system (ARC) with O(log N) retrieval and local-first persistence
+- ✅ An optimizer layer with offline tuning support and future online learning
+- ✅ An agent registry coordinator for native experts and future external integration
 - ✅ The Intelligence Layer (CEI) of IOWarp's 3-tier architecture
 - ✅ A tool-augmented reasoning system via FastMCP (CAE/PPI layer)
 - ✅ A multi-modal deployment platform (CLI, library, REST API, container)
@@ -41,7 +41,7 @@ CLIO Agent IS:
 ```
 ┌────────────────────────────────────────────────────────────────────┐
 │                    USER INTERFACES (AI Gateway)                    │
-│  CLI (current) | REST API (planned) | A2A Protocol (external)      │
+│  CLI (current) | REST API (current) | Delegation/A2A (future)      │
 └────────────────────────────────┬───────────────────────────────────┘
                                  │
 ┌────────────────────────────────▼───────────────────────────────────┐
@@ -672,13 +672,12 @@ Expert Agent (process result)
 - Tools enhance capabilities when available
 - MCP servers provide standardized scientific infrastructure interfaces
 
-**FastMCP 3.x Gateway Pattern** (Phase 1):
+**FastMCP Gateway Pattern** (Current):
 ```python
 from fastmcp import FastMCP
 gateway = FastMCP("clio-gateway")
-gateway.mount("/hdf5", hdf5_server)      # Tools namespaced: hdf5_list_datasets, etc.
-gateway.mount("/parquet", parquet_server)  # Phase 2
-gateway.mount("/slurm", slurm_server)     # Phase 2
+gateway.mount(hdf5_server, namespace="hdf5")        # hdf5_list_datasets, etc.
+gateway.mount(parquet_server, namespace="parquet")  # parquet_analyze_schema, etc.
 ```
 
 **Tool Curation Principle**:
@@ -926,50 +925,31 @@ lm = setup_lm(provider="custom", endpoint="http://my-model:8000")
 
 ## Implementation Phases
 
-### Current State (Feb 2026)
-- [x] Main agent orchestration (Tier 1) with conversation management
-- [x] DataExpert (Tier 2) working in ChainOfThought mode
-- [x] ARC Memory Layer: LRU cache, B-tree index, LSM tree (90% complete)
-- [x] Agent Registry with keyword-based capability matching
-- [x] Interactive CLI with Rich TUI
-- [x] LM Studio configuration with model auto-detection
+### Current State (Apr 2026)
+- [x] Main agent orchestration (Tier 1) with conversation management and deterministic local-tool shortcuts for explicit file paths
+- [x] DataExpert, AnalysisExpert, and VisualizationExpert wired as built-in Tier 2 experts
+- [x] Real local HDF5 and Parquet FastMCP servers plus CSV inspection and matplotlib visualization tools
+- [x] FastMCP gateway with stable namespaced tool names and namespace/prefix compatibility
+- [x] ARC Memory Layer: cache, index, LSM metrics, context compiler, local persistence, dataset profiles, and procedural memory
+- [x] Runtime doctor reporting for LM, ARC, file policy, gateway, HDF5, Parquet, API, and `clio-core` discovery
+- [x] Interactive CLI, REST API, SSE streaming, multi-provider LM configuration, containers, and offline optimization support
 
-### Phase 1: Foundation Reset (In Progress)
-- [ ] Real HDF5 MCP server with FastMCP 3.x
-- [ ] FastMCP gateway with mount() composition
-- [ ] DSPy 3.x ReAct + ChatAdapter (replacing CoT fallback)
-- [ ] Delete mcp_connector.py (789 lines), replace with native bridge
-- [ ] Clean up empty stubs
-- [ ] Test coverage to 50%
+### Active Phase: v0.3 Integration-Ready Harness
+- [x] Add `doctor` runtime integration status models and CLI/API health details
+- [x] Modernize gateway namespacing while preserving stable HDF5/Parquet tool names
+- [x] Add local file access policy and basic parameter validation around current tools
+- [ ] Finish tool result validation contracts for every HDF5, Parquet, CSV, and visualization response shape
+- [x] Replace or isolate `MCPToolBridge` behind explicit sync and async execution boundaries
+- [ ] Add artifact registry support for generated charts and future reports
+- [ ] Define the CTE adapter interface and identify the real IOWarp runtime contract
 
-### Phase 2: Multi-Expert System
-- [ ] HPCExpert with SLURM/Darshan tools
-- [ ] DSPy-optimizable typed routing (Literal outputs)
-- [ ] Context compilation pipeline (filter → compact → enrich → assemble)
-- [ ] Expert collaboration via ARC shared context
-
-### Phase 3: Self-Improvement (Optimizer Layer)
-- [ ] SIMBA optimizer integration (DSPy 3.x)
-- [ ] Training data collection from ARC history
-- [ ] Variant management with A/B testing
-- [ ] Offline tuning CLI mode (--tune)
-
-### Phase 4: Production Hardening
-- [ ] REST API (FastAPI)
-- [ ] CI/CD pipeline
-- [ ] Container deployment (Docker, Singularity)
-- [ ] 80%+ test coverage
-
-### Phase 5: IOWarp Integration
-- [ ] ARC-CTE storage backend
-- [ ] Multi-tier data migration
-- [ ] Additional MCP servers (Darshan, ADIOS)
-
-### Phase 6: Advanced Features
-- [ ] Online learning mode (A/B testing, automatic triggers)
-- [ ] A2A protocol implementation
-- [ ] Community optimizer marketplace
-- [ ] Additional expert agents
+### Future Phases
+- **v0.4 Real Scientific Tool Integrations**: ADIOS2/BP, Darshan, scheduler read-only probes, compression benchmarking, and guarded mutating workflows.
+- **v0.5 Agent Harness and Objective-Driven Workflows**: `TaskSpec`, plan-execute-verify, workflow traces, dependency-aware coordination, cancellation, and golden workflow tests.
+- **v0.6 ARC + IOWarp CTE Production Integration**: real CTE storage contract, local/CTE/auto modes, retention, repair, privacy, and service-mode concurrency controls.
+- **v0.7 Evaluation and Self-Improvement as Product**: golden evaluations, scorecards, gated optimization deployment, rollback, and audit trail.
+- **v0.8 External Agent and Team Integration**: authenticated discovery/delegation endpoints, bounded external calls, artifact and trace retrieval.
+- **v1.0 Production Release**: stable CLI/API contract, security policy, verified containers/HPC deployment, and production-ready scientific integrations.
 
 See [PLAN.md](../PLAN.md) for detailed task breakdown.
 
@@ -1087,14 +1067,14 @@ CLIO Agent's internal implementation uses DSPy 3.x for agent orchestration and o
 - **Agent patterns**: DSPy 3.x (signatures, modules, ReAct, ChatAdapter)
 - **Tool bridge**: dspy.Tool.from_mcp_tool() for MCP→DSPy integration
 - **Optimizers**: DSPy SIMBA optimizer for agentic tasks (BootstrapFewShot, MIPROv2 wrapped in ClioOptimizer API)
-- **Gateway**: FastMCP 3.x mount() pattern for tool composition
+- **Gateway**: FastMCP mount() pattern for tool composition
 - **ARC Memory**: Custom implementation with LRU cache, B-tree index, IOWarp CTE integration
 
 These are implementation details - users interact with CLIO Agent through:
 - CLI commands (including `--tune` for offline optimization)
-- Python API (`from clio_agent import ClioAgent`, `from clio_agent.arc import ARC`)
-- REST API (planned for Phase 4)
-- A2A protocol (for agent-to-agent communication, Phase 6)
+- Python API (`from clio_agent import ClioAgent`)
+- REST API (current)
+- Future authenticated delegation/A2A-style endpoints after capabilities stabilize
 
 ---
 
@@ -1102,8 +1082,8 @@ These are implementation details - users interact with CLIO Agent through:
 
 - [System Identity](SYSTEM_IDENTITY.md) - CLIO Agent identity, capabilities, and design principles
 - [ARC Memory Layer](ARC_MEMORY_LAYER.md) - Deep dive on memory architecture, indexing, IOWarp integration
-- [Optimizer Guide](OPTIMIZER_GUIDE.md) - Self-improvement, tuning workflows, community optimizers
-- [A2A Protocol Specification](A2A_PROTOCOL.md) - Agent-to-Agent communication (Phase 6)
+- [Self Improvement](SELF_IMPROVEMENT.md) - Optimizer concepts, metrics, and tuning direction
+- [Global Development Plan](../PLAN.md) - Active roadmap, work packages, and current delivery status
 - [IOWarp Architecture](https://iowarp.ai/docs) - Full IOWarp 3-tier architecture (CEI/CAE/CTE)
 - [MCP Protocol Specification](https://modelcontextprotocol.io) - Model Context Protocol docs
 

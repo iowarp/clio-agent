@@ -4,7 +4,6 @@ Tests for clio_agent.config module.
 Tests LM Studio configuration classes and DSPy setup functions.
 """
 
-
 import dspy
 
 from clio_agent.config import (
@@ -88,6 +87,12 @@ class TestConfigureFunctions:
         """configure_dspy_lm_studio with no args uses defaults."""
         lm = configure_dspy_lm_studio()
         assert isinstance(lm, dspy.LM)
+
+    def test_configure_lm_studio_does_not_duplicate_v1_suffix(self):
+        """Legacy LM Studio config should accept base URLs that already include /v1."""
+        config = LMStudioConfig(base_url="http://localhost:1234/v1")
+        lm = configure_dspy_lm_studio(config)
+        assert lm.kwargs["api_base"] == "http://localhost:1234/v1"
 
     def test_configure_router_lm(self):
         """configure_dspy_router_lm_studio should return a dspy.LM."""

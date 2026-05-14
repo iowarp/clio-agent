@@ -65,13 +65,20 @@ class TestClioAgentExperts:
         agent.shutdown()
 
 
-def _make_mock_router(selected_expert: str):
-    """Create a mock that replaces the router to return specified expert."""
-    mock_router = MagicMock()
-    mock_result = MagicMock()
-    mock_result.selected_expert = selected_expert
-    mock_router.return_value = mock_result
-    return mock_router
+def _make_mock_planner(selected_expert: str):
+    """Create a mock planner returning a specified expert action."""
+    mock_planner = MagicMock()
+    if selected_expert in {"data", "analysis", "visualization"}:
+        action = {"action": "expert", "expert": selected_expert, "question": "test query"}
+    elif selected_expert == "none":
+        action = {
+            "action": "none",
+            "answer": "CLIO is specialized in scientific data; no suitable CLIO action.",
+        }
+    else:
+        action = {"action": "answer", "answer": ""}
+    mock_planner.return_value = MagicMock(action_json=json.dumps(action))
+    return mock_planner
 
 
 class TestDispatch:
@@ -81,8 +88,7 @@ class TestDispatch:
         """Router returns 'data', verify data_expert called."""
         agent = ClioAgent(data_dir=str(tmp_path / "clio"))
 
-        # Replace router entirely
-        agent.router = _make_mock_router("data")
+        agent.action_planner = _make_mock_planner("data")
 
         # Mock data_expert forward
         mock_result = MagicMock()
@@ -100,7 +106,7 @@ class TestDispatch:
         """Router returns 'analysis', verify analysis_expert called."""
         agent = ClioAgent(data_dir=str(tmp_path / "clio"))
 
-        agent.router = _make_mock_router("analysis")
+        agent.action_planner = _make_mock_planner("analysis")
 
         mock_result = MagicMock()
         mock_result.analysis = "Parquet schema has 3 columns"
@@ -117,7 +123,7 @@ class TestDispatch:
         """Router returns 'visualization', verify visualization_expert called."""
         agent = ClioAgent(data_dir=str(tmp_path / "clio"))
 
-        agent.router = _make_mock_router("visualization")
+        agent.action_planner = _make_mock_planner("visualization")
 
         mock_result = MagicMock()
         mock_result.visualization_description = "Histogram of temperature"
@@ -133,7 +139,7 @@ class TestDispatch:
     def test_dispatch_none_query(self, tmp_path):
         """Router returns 'none', verify fallback message returned."""
         agent = ClioAgent(data_dir=str(tmp_path / "clio"))
-        agent.router = _make_mock_router("none")
+        agent.action_planner = _make_mock_planner("none")
 
         result = agent(question="What is the weather today?")
         assert "CLIO" in result.answer
@@ -145,7 +151,7 @@ class TestDispatch:
         """Router returns 'chat', verify chat_agent called."""
         agent = ClioAgent(data_dir=str(tmp_path / "clio"))
 
-        agent.router = _make_mock_router("chat")
+        agent.action_planner = _make_mock_planner("chat")
 
         mock_result = MagicMock()
         mock_result.answer = "Hello! I am CLIO."
@@ -166,7 +172,7 @@ class TestRoutingDecisionStorage:
         agent = ClioAgent(data_dir=str(tmp_path / "clio"))
         session_id = "test_routing_session"
 
-        agent.router = _make_mock_router("none")
+        agent.action_planner = _make_mock_planner("none")
         agent(question="What is quantum physics?", session_id=session_id)
 
         # Check conversation has routing decision
@@ -190,7 +196,7 @@ class TestRoutingDecisionStorage:
         ]
 
         for question, expert in queries_and_experts:
-            agent.router = _make_mock_router(expert)
+            agent.action_planner = _make_mock_planner(expert)
 
             # Mock all possible targets to avoid LM errors
             mock_result = MagicMock()
@@ -235,7 +241,7 @@ class TestDatasetProfileSharing:
         agent.arc.store_dataset_profile(profile)
 
         # Mock router to route to analysis
-        agent.router = _make_mock_router("analysis")
+        agent.action_planner = _make_mock_planner("analysis")
 
         # Track what file_context the analysis_expert receives
         received_contexts = []

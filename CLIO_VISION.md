@@ -1,12 +1,36 @@
 # CLIO Agent - Next Milestone Vision Document
 
+> Active-spec note (2026-04-23): this document is historical vision context.
+> Use [PLAN.md](PLAN.md) as the current source of truth when it conflicts with
+> this file. Source code and tests still outrank both documents.
+
 ## What This Is
 
 CLIO Agent is an autonomous, self-improving AI agent specialized in scientific data management within the IOWarp HPC ecosystem. It is NOT a framework for building agents -- it IS the agent. It helps scientists optimize HDF5 files, analyze I/O traces, convert data formats, run statistical analysis, and make their scientific computing workflows faster.
 
-This document describes the next milestone: taking the existing baseline (working single-expert agent with ARC memory) and transforming it into a multi-expert, tool-using, self-improving agent that operates on real scientific data.
+This document originally described the milestone that took the early baseline
+from a single-expert agent into a multi-expert, tool-using alpha. That milestone
+has largely shipped for local HDF5, Parquet, CSV, visualization, CLI/API, ARC,
+doctor reporting, and offline optimization support. The active next milestone is
+the v0.3 Integration-Ready Harness in `PLAN.md`.
 
-## Current State (Feb 2026)
+## Current Source-Verified Snapshot (Apr 2026)
+
+### Working Components
+- **Main Agent (Tier 1)**: `ClioAgent` routes to Data, Analysis, Visualization, Chat, or out-of-scope handlers, with deterministic local-tool shortcuts for explicit file paths.
+- **Experts (Tier 2)**: DataExpert, AnalysisExpert, and VisualizationExpert are wired with curated tool sets.
+- **Tools**: real local HDF5 and Parquet FastMCP servers, safe CSV inspection, matplotlib chart generation, and a FastMCP gateway with namespace compatibility.
+- **ARC Memory Layer**: conversations, invocations, metrics, dataset profiles, procedural memory, context compilation, cache, index, local storage, and LSM metrics.
+- **Runtime Interfaces**: Rich CLI, `doctor` reporting, FastAPI `/health`, `/query`, `/experts`, `/metrics`, and SSE streaming.
+- **Optimization**: instrumentation, training-set generation, SIMBA runner, variant management, compare, deploy, and rollback scaffolding.
+- **Deployment**: Dockerfile, Docker Compose, Singularity definition, multi-provider LM configuration, and local-first runtime defaults.
+
+### Still Not Product Capabilities
+- ADIOS2/BP inspection, Darshan analysis, SLURM/PBS integration, real CTE backend, A2A, nanoagent execution, production auth, online learning, and guarded mutating HPC workflows remain future work.
+- `MCPToolBridge` is now a compatibility shim over explicit sync/async MCP execution boundaries; new execution paths should depend on those executor interfaces directly.
+- Historical `.planning/` files record the v0.2 milestone and should not override `PLAN.md`.
+
+## Historical State (Feb 2026, Superseded)
 
 ### Working Components
 - **Main Agent (Tier 1)**: `ClioAgent` class using DSPy `ChainOfThought`, routes to experts, stores context in ARC memory. Works with LM Studio local models. ~665 lines.
@@ -49,7 +73,7 @@ This document describes the next milestone: taking the existing baseline (workin
 | Thread-safe `configure()` | Safe concurrent usage |
 | Native async (`acall()`) | No manual async/sync bridges needed |
 
-### FastMCP 3.x (fastmcp 3.0.0)
+### Historical FastMCP Reference Snapshot
 
 | Feature | Impact on CLIO |
 |---------|---------------|
@@ -99,7 +123,7 @@ See [PLAN.md](PLAN.md) for detailed task breakdown. Summary:
 
 ## Key Design Principles
 
-1. **DSPy is internal**: Users see CLIO, not DSPy. Exception: CLAUDE.md and code comments.
+1. **DSPy is internal**: Users see CLIO, not DSPy. Exception: `AGENTS.md` and code comments for contributors.
 2. **All data through ARC**: Conversations, invocations, metrics, cached tool results -- all in ARC.
 3. **Graceful degradation**: IOWarp down -> filesystem. MCP down -> reasoning only. Optimizer fails -> keep current variant.
 4. **Cache first**: Check ARC before every tool call. Target >85% hit rate.

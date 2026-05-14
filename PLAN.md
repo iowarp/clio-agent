@@ -30,6 +30,8 @@ The current codebase is a real alpha, not empty scaffolding.
 
 Implemented and source-verified:
 
+- CLIO harness contracts for validated route decisions and explicit tool traces:
+  `src/clio_agent/harness.py`
 - Main orchestrator: `src/clio_agent/agent.py`
 - CLI: `src/clio_agent/ui/cli.py`
 - REST API with health/query/experts/metrics/SSE: `src/clio_agent/ui/api.py`
@@ -38,28 +40,49 @@ Implemented and source-verified:
   `src/clio_agent/arc/`
 - HDF5 FastMCP server using `h5py`: `src/clio_agent/tools/servers/hdf5_server.py`
 - Parquet FastMCP server using `pyarrow`: `src/clio_agent/tools/servers/parquet_server.py`
-- FastMCP gateway: `src/clio_agent/tools/gateway.py`
-- Data, Analysis, Visualization experts: `src/clio_agent/experts/`
+- FastMCP 3 gateway: `src/clio_agent/tools/gateway.py`
+- Data and Analysis experts now use native typed CLIO request/result contracts
+  with deterministic tool execution first and explicit tool provenance:
+  `src/clio_agent/experts/data_expert.py`,
+  `src/clio_agent/experts/analysis_expert.py`
+- Native HDF5, Parquet, and CSV expert paths validate tool result shapes before
+  answer construction, normalize tool errors, and store compact ARC-compatible
+  tool summaries through `src/clio_agent/harness.py`
+- Visualization expert remains a chart-focused DSPy ReAct module around local
+  matplotlib tools: `src/clio_agent/experts/visualization_expert.py`
 - Offline optimization support: `src/clio_agent/optimizer/`
 - Container and CI artifacts: `Dockerfile`, `docker-compose.yml`,
   `singularity.def`, `.github/workflows/ci.yml`
 
 Recent local verification:
 
-- `uv run pytest tests/`: 549 passed
-- `uv run ruff check src/ tests/ scripts/create_demo_data.py`: passed
-- Touched files pass `ruff format --check`
+- `uv sync --extra dev --extra api --extra optimizers`: upgraded FastMCP to
+  `3.2.4` and switched from legacy `dspy-ai` to direct `dspy` dependency
+  (2026-04-23)
+- `uv run python -c "import dspy, fastmcp; ..."`: reported `dspy 3.1.3`,
+  `fastmcp 3.2.4` (2026-04-23)
+- Focused upgraded-harness smoke checks against generated HDF5, Parquet, and
+  visualization outputs passed locally (2026-04-23)
+- `uv run pytest tests/test_tools/test_gateway.py tests/test_tools/test_execution.py
+  tests/test_core/test_api.py tests/test_core/test_cli_commands.py
+  tests/test_integration/test_local_filesystem_smoke.py --no-cov -q`: 78 passed
+  (2026-04-23)
+- `uv run pytest tests/`: 598 passed, 84% coverage (2026-04-23)
+- `uv run ruff check src/ tests/ scripts/create_demo_data.py`: passed (2026-04-23)
+- `uv run ruff format <first-wave touched Python files> --check`: passed (2026-04-23)
 - Live CLI and API smoke checks worked against generated HDF5 and Parquet files
 
 Known baseline caveats:
 
-- The reliable path for explicit file tasks is deterministic tool routing. The
-  LLM ReAct path remains useful but should not be the only production path.
-- FastMCP gateway still uses the deprecated `prefix=` mount style. Move to the
-  supported namespace API before relying on long-term compatibility.
-- `MCPToolBridge` is a pragmatic async-to-sync adapter. It works, but it is a
-  harness risk for concurrency, streaming, optimization, and long-running
-  remote tools.
+- The product path for explicit HDF5, Parquet, and CSV file tasks is
+  deterministic harness routing plus native expert tool execution with ARC tool
+  traces. LLM routing and DSPy synthesis are reasoning extensions, not the core
+  safety path.
+- FastMCP gateway is now validated on FastMCP 3.2.4 with stable namespaced tool
+  names.
+- `MCPToolBridge` is retained as a compatibility shim over the explicit sync
+  MCP executor. New tool execution paths should use the sync or async executor
+  interfaces directly.
 - IOWarp CTE support is an adapter-shaped local fallback, not proven production
   CTE integration.
 - ADIOS, Darshan, SLURM/PBS, compression benchmarking, workflow execution, A2A,
@@ -102,8 +125,9 @@ Out of scope unless explicitly promoted:
    for production paths.
 7. Tool sets are curated. Each expert should see the smallest useful set of
    high-level tools, normally 5 to 7.
-8. Deterministic routing and validation protect the product path. LLM routing
-   and ReAct are reasoning layers, not the only safety mechanism.
+8. Deterministic routing, typed expert contracts, and validated tool execution
+   protect the product path. LLM routing and DSPy synthesis are optional
+   reasoning layers, not the execution owner.
 9. Optimization is evidence-gated. Variants can be saved freely, but deployment
    requires before/after evaluation and rollback.
 10. External integration failures degrade clearly. Users should know which
@@ -442,6 +466,9 @@ Scope:
 - Hide or replace `MCPToolBridge`.
 - Support CLI sync calls, FastAPI async calls, and optimizer evaluation without
   deadlocks or leaked threads.
+- Keep expert tool execution CLIO-native: typed request/result objects,
+  deterministic tools first, explicit provenance, and DSPy only for synthesis
+  or planning where it adds value.
 
 Done when:
 
@@ -599,13 +626,23 @@ complete. Defaults are listed so coding can proceed without blocking where safe.
 
 The next milestone should be v0.3: Integration-Ready Harness.
 
-Recommended first four tasks:
+Source-verified v0.3 items already present:
 
-1. Add `clio-agent doctor` and integration status models.
-2. Modernize FastMCP gateway namespacing and add tests.
-3. Add file access policy plus tool parameter/result validation.
-4. Define the CTE adapter interface and identify the real IOWarp runtime
+- `doctor` runtime integration status models and CLI/API health detail.
+- FastMCP gateway namespace compatibility with stable tool names.
+- File access policy and basic tool parameter validation for current HDF5,
+  Parquet, CSV, and visualization paths.
+
+Recommended next tasks:
+
+1. Finish tool result validation contracts for every HDF5, Parquet, CSV, and
+   visualization response shape.
+2. Migrate future direct API tool-use paths to `AsyncMCPToolExecutor` instead of
+   sync executor calls when API handlers can stay fully async end-to-end.
+3. Define the CTE adapter interface and identify the real IOWarp runtime
    contract with the project owner.
+4. Add artifact registry support for generated charts and future reports.
 
-Do not start ADIOS, Darshan, or scheduler implementation until task 1 gives
-the team a reliable way to see which runtime integrations are live.
+Do not start ADIOS, Darshan, or scheduler implementation until the v0.3
+integration harness stays green and every current backend reports clear ready,
+degraded, unavailable, or misconfigured status.
