@@ -228,13 +228,33 @@ gateway.mount("/admin", admin_server, transforms=[Enabled(lambda t: user.is_admi
 
 ## Development Workflow
 
+### Environment setup
+
+- Python >= 3.12; [`uv`](https://astral.sh/uv) drives everything (deps + execution).
+- Install deps: `uv sync --extra dev --extra api --extra optimizers`
+- `CLIO_ALLOWED_ROOTS` gates tool file access. The tool-server tests
+  write fixtures into the pytest temp dir, so that dir must be on the
+  allow list or those tests fail with `outside_allowed_roots`. Unset,
+  the file policy defaults to the current working directory, which
+  excludes temp paths. Before running the tool tests:
+  `CLIO_ALLOWED_ROOTS="$TMPDIR:$PWD" uv run pytest tests/`
+
+### Workflow
+
 1. Read PLAN.md for current phase and task
 2. Read relevant architecture docs (CLIO_AGENT_ARCHITECTURE, etc.)
 3. Implement with type hints + docstrings
 4. Write tests (using `Client(server)` for MCP, mocks for LM calls)
-5. Run: `pytest tests/ && ruff check src/`
+5. Test + lint: `uv run pytest tests/ -m "not integration"` then `ruff check src/`
 6. Verify baseline still works: `uv run src/clio_agent/ui/cli.py`
 7. Commit with clear message: `<type>: <description>`
+
+### Running CLIO
+
+- **Dev (from source):** `uv run src/clio_agent/ui/cli.py`
+- **Deployed:** the `install/` system installs a `clio` launcher CLI
+  (`clio start|stop|restart|status|logs|doctor`) alongside the gact
+  TUI. See `install/README.md`.
 
 ---
 
@@ -243,32 +263,24 @@ gateway.mount("/admin", admin_server, transforms=[Enabled(lambda t: user.is_admi
 ### Current Working Files
 ```
 src/clio_agent/
-├── config.py                 # LM configuration
-├── agent.py                  # Main agent (Tier 1)
-├── signatures/               # DSPy signatures
-│   ├── main_agent_sig.py
-│   └── expert_sig.py
-├── experts/                  # Domain experts (Tier 2)
-│   └── data_expert.py        # DataExpert (working)
-├── registry/
-│   ├── registry.py           # Capability-based routing
-│   └── capability_matcher.py # Query -> expert matching
-├── arc/                      # Memory layer (90% complete)
-│   ├── memory.py             # Core ARC API
-│   ├── cache.py              # LRU cache
-│   ├── index.py              # B-tree index
-│   ├── lsm.py                # LSM tree for metrics
-│   ├── retrieval.py          # Context retrieval
-│   ├── schema.py             # Data schemas (msgspec)
-│   ├── storage.py            # IOWarp CTE backend (fallback to local FS)
-│   └── coordinator.py        # Multi-agent coordination
-├── tools/                    # FastMCP tool servers
-│   ├── gateway.py            # Gateway with mount() (Phase 1)
-│   └── servers/
-│       └── hdf5_server.py    # HDF5 tools (Phase 1)
+├── config.py                 # Multi-provider LM configuration
+├── agent.py                  # Main agent — planner loop (Tier 1)
+├── harness.py                # RunTrace, RouteDecision, tool-result normalization
+├── conversation_manager.py   # Session conversation state
+├── errors.py                 # Structured error types
+├── signatures/               # DSPy signatures (planner, expert, chat)
+├── experts/                  # Domain experts (Tier 2): data, analysis, visualization
+├── registry/                 # Capability-based agent registry + matching
+├── arc/                      # ARC memory: cache, B-tree index, LSM, storage, retrieval
+├── optimizer/                # Instrumentation, training, variants, runner
+├── runtime/                  # Doctor / runtime status + nanoagent spawn primitive (Tier 3)
+├── providers/                # Provider-specific auth (e.g. Argonne / ALCF)
+├── tools/                    # FastMCP gateway, file policy, execution boundary
+│   └── servers/              # HDF5 + Parquet MCP servers
+├── gact/                     # GACT v0.2 server — the API surface gact-tui talks to
 └── ui/
-    ├── cli.py                # Interactive CLI (working)
-    └── api.py                # REST API (Phase 4)
+    ├── cli.py                # Interactive CLI + doctor
+    └── api.py                # REST API
 ```
 
 ---
