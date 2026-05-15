@@ -1,0 +1,47 @@
+name: Release
+
+# Publish clio-agent to PyPI when a version tag is pushed.
+#
+# Uses PyPI Trusted Publishing (OIDC) -- no API token secret needed.
+# One-time setup on PyPI before the first release:
+#   PyPI project "clio-agent" -> Settings -> Publishing -> add a
+#   trusted publisher:
+#     owner:        iowarp
+#     repository:   clio-agent
+#     workflow:     release.yml
+#     environment:  pypi
+# If the project doesn't exist on PyPI yet, create it (or do one manual
+# `uv publish --token ...` for the first upload, then switch to OIDC).
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  pypi:
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write   # required for PyPI Trusted Publishing (OIDC)
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: "latest"
+
+      - name: Verify tag matches package version
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          pkg="$(uv version --short)"
+          if [ "$tag" != "$pkg" ]; then
+            echo "tag $GITHUB_REF_NAME does not match pyproject version $pkg" >&2
+            exit 1
+          fi
+
+      - name: Build sdist + wheel
+        run: uv build
+
+      - name: Publish to PyPI
+        run: uv publish
