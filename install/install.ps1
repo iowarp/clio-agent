@@ -1,127 +1,159 @@
-# CLIO + GACT TUI installer (Windows / PowerShell).
+# CLIO installer (Windows / PowerShell).
 #
-# One-liner:
-#   irm https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.ps1 | iex
+# Default: pulls clio-agent from PyPI and downloads a prebuilt
+# gact.exe from gact-tui's GitHub Releases. No `git` or `go` required;
+# you only need `uv` or `pip`.
+#
+# Source-build mode (opt-in for tracking unreleased work): set
+# $env:CLIO_REF=<branch> and/or $env:GACT_REF=<branch> to
+# clone-and-build the selected component instead. Source mode for
+# clio-agent needs `git` + `uv`; source mode for gact-tui needs
+# `git` + `go` 1.26+.
 #
 # Honors environment overrides:
-#   $env:CLIO_PREFIX  install root (default: $HOME\AppData\Local\clio)
-#   $env:CLIO_REF     clio-agent git ref/tag (default: v0.3.1)
-#   $env:GACT_REF     gact-tui git ref/tag    (default: v0.2.1)
-#   $env:CLIO_BIN_DIR launcher dir (default: $HOME\AppData\Local\Microsoft\WindowsApps)
+#   CLIO_PREFIX        install root           (default: $HOME\AppData\Local\clio)
+#   CLIO_BIN_DIR       launcher location      (default: ...\WindowsApps)
+#   CLIO_VERSION       pin clio-agent         (default: latest from PyPI)
+#   GACT_VERSION       pin gact release tag   (default: latest)
+#   CLIO_REF           clio-agent branch      (default: release mode)
+#   GACT_REF           gact-tui branch        (default: release mode)
+#   CLIO_GIT_PROTOCOL  https | ssh            (default: https; only used
+#                                              in source-build mode)
 
 $ErrorActionPreference = 'Stop'
 
-function Say($msg)  { Write-Host "==> $msg" -ForegroundColor Green }
-function Warn($msg) { Write-Host "!! $msg"  -ForegroundColor Yellow }
-function Die($msg)  { Write-Host "xx $msg"  -ForegroundColor Red; exit 1 }
+function Say  ($m) { Write-Host "==> $m" -ForegroundColor Green }
+function Warn ($m) { Write-Host "!! $m"  -ForegroundColor Yellow }
+function Die  ($m) { Write-Host "xx $m"  -ForegroundColor Red; exit 1 }
+function Have ($cmd) { return $null -ne (Get-Command $cmd -ErrorAction SilentlyContinue) }
 
 # ---------- defaults ---------------------------------------------------
-$Prefix    = if ($env:CLIO_PREFIX)  { $env:CLIO_PREFIX }  else { Join-Path $HOME 'AppData\Local\clio' }
-$BinDir    = if ($env:CLIO_BIN_DIR) { $env:CLIO_BIN_DIR } else { Join-Path $HOME 'AppData\Local\Microsoft\WindowsApps' }
-# Default to the main branches so a bare one-liner tracks the latest
-# released state. GactRef stays on 'clio' until iowarp/gact-tui#12
-# (clio -> main) merges, after which it can move to 'main' too.
-$ClioRef   = if ($env:CLIO_REF)     { $env:CLIO_REF }     else { 'main' }
-$GactRef   = if ($env:GACT_REF)     { $env:GACT_REF }     else { 'clio' }
-# Default to HTTPS for the one-liner UX, but allow override to SSH for
-# users who only have SSH access (and for the period while the repos
-# are still private — anonymous HTTPS returns 404). Set
-#   $env:CLIO_GIT_PROTOCOL = 'ssh'
-# to switch both URLs to git@github.com:.../...git form.
-$Protocol = if ($env:CLIO_GIT_PROTOCOL) { $env:CLIO_GIT_PROTOCOL } else { 'https' }
+$Prefix      = if ($env:CLIO_PREFIX)       { $env:CLIO_PREFIX }      else { Join-Path $HOME 'AppData\Local\clio' }
+$BinDir      = if ($env:CLIO_BIN_DIR)      { $env:CLIO_BIN_DIR }     else { Join-Path $HOME 'AppData\Local\Microsoft\WindowsApps' }
+$ClioVersion = $env:CLIO_VERSION
+$GactVersion = if ($env:GACT_VERSION)      { $env:GACT_VERSION }     else { 'latest' }
+$ClioRef     = $env:CLIO_REF
+$GactRef     = $env:GACT_REF
+$Protocol    = if ($env:CLIO_GIT_PROTOCOL) { $env:CLIO_GIT_PROTOCOL } else { 'https' }
+
 switch ($Protocol) {
     'https' {
         $ClioRepo = 'https://github.com/iowarp/clio-agent.git'
-        $GactRepo = 'https://github.com/JaimeCernuda/gact-tui.git'
+        $GactRepo = 'https://github.com/iowarp/gact-tui.git'
     }
     'ssh' {
         $ClioRepo = 'git@github.com:iowarp/clio-agent.git'
-        $GactRepo = 'git@github.com:JaimeCernuda/gact-tui.git'
+        $GactRepo = 'git@github.com:iowarp/gact-tui.git'
     }
     default { Die "CLIO_GIT_PROTOCOL must be 'https' or 'ssh' (got: $Protocol)" }
 }
 
 # ---------- prerequisite checks ---------------------------------------
-function Have($cmd) {
-    return $null -ne (Get-Command $cmd -ErrorAction SilentlyContinue)
+$PyInstall = $null
+if     (Have uv)   { $PyInstall = 'uv' }
+elseif (Have pip)  { $PyInstall = 'pip' }
+elseif (Have pip3) { $PyInstall = 'pip3' }
+else {
+    Die "need uv or pip to install clio-agent. install uv with: irm https://astral.sh/uv/install.ps1 | iex"
 }
 
-$missing = @()
-if (-not (Have git)) { $missing += 'git'           }
-if (-not (Have uv))  { $missing += 'uv'            }
-if (-not (Have go))  { $missing += 'go (>=1.26)'   }
-
-if ($missing.Count -gt 0) {
-    Warn "Missing prerequisites: $($missing -join ', ')"
-    Write-Host ""
-    Write-Host "Install them via winget, then re-run:" -ForegroundColor Yellow
-    Write-Host ""
-    Write-Host "  winget install Git.Git"
-    Write-Host "  winget install astral-sh.uv"
-    Write-Host "  winget install GoLang.Go"
-    Write-Host ""
-    Write-Host "Then:" -ForegroundColor Yellow
-    Write-Host "  irm https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.ps1 | iex"
-    exit 1
+if ($ClioRef) {
+    if (-not (Have git)) { Die "git required when CLIO_REF is set (source-build mode)" }
+    if (-not (Have uv))  { Die "uv required to build clio-agent from source" }
+}
+if ($GactRef) {
+    if (-not (Have git)) { Die "git required when GACT_REF is set (source-build mode)" }
+    if (-not (Have go))  { Die "go (>= 1.26) required to build gact from source" }
 }
 
-Say "Detected: $(go version)"
-Say "uv: $(uv --version)"
-
-# ---------- clone + build ---------------------------------------------
 New-Item -ItemType Directory -Force -Path $Prefix, $BinDir | Out-Null
-Set-Location $Prefix
 
-function CloneOrUpdate($repo, $dir, $ref) {
-    if (Test-Path "$dir/.git") {
-        Say "Updating $dir -> $ref"
-        git -C $dir fetch --tags --quiet
-        git -C $dir checkout --quiet $ref
+# ---------- install clio-agent ----------------------------------------
+$Venv = Join-Path $Prefix 'clio-agent\.venv'
+
+if ($ClioRef) {
+    Say "Cloning clio-agent at $ClioRef (source-build mode)"
+    Remove-Item -Recurse -Force (Join-Path $Prefix 'clio-agent') -ErrorAction SilentlyContinue
+    git clone --quiet --branch $ClioRef --depth 1 $ClioRepo (Join-Path $Prefix 'clio-agent')
+    Say "Installing clio-agent deps (uv sync --extra api)"
+    Push-Location (Join-Path $Prefix 'clio-agent')
+    uv sync --extra api
+    Pop-Location
+} else {
+    $pkgSpec = if ($ClioVersion) { "clio-agent==$ClioVersion" } else { 'clio-agent' }
+    Say "Installing $pkgSpec from PyPI"
+    Remove-Item -Recurse -Force (Join-Path $Prefix 'clio-agent') -ErrorAction SilentlyContinue
+    New-Item -ItemType Directory -Force -Path (Join-Path $Prefix 'clio-agent') | Out-Null
+    if ($PyInstall -eq 'uv') {
+        uv venv --python ">=3.12" $Venv | Out-Null
+        uv pip install --quiet --python (Join-Path $Venv 'Scripts\python.exe') $pkgSpec
     } else {
-        Say "Cloning $dir -> $ref"
-        git clone --quiet --branch $ref --depth 1 $repo $dir
+        python -m venv $Venv
+        & (Join-Path $Venv "Scripts\$PyInstall.exe") install --quiet --upgrade pip
+        & (Join-Path $Venv "Scripts\$PyInstall.exe") install --quiet $pkgSpec
     }
 }
 
-CloneOrUpdate $ClioRepo 'clio-agent' $ClioRef
-CloneOrUpdate $GactRepo 'gact-tui'   $GactRef
+# ---------- install gact ----------------------------------------------
+$GactExe = Join-Path $Prefix 'gact.exe'
 
-Say "Installing CLIO Python deps (uv sync --extra api)"
-Push-Location "$Prefix/clio-agent"
-uv sync --extra api
-Pop-Location
+if ($GactRef) {
+    Say "Cloning gact-tui at $GactRef (source-build mode)"
+    $gactSrc = Join-Path $Prefix 'gact-tui'
+    Remove-Item -Recurse -Force $gactSrc -ErrorAction SilentlyContinue
+    git clone --quiet --branch $GactRef --depth 1 $GactRepo $gactSrc
+    Say "Building gact"
+    Push-Location (Join-Path $gactSrc 'tui')
+    go build -o $GactExe .
+    Pop-Location
+} else {
+    $tag = $GactVersion
+    if ($tag -eq 'latest') {
+        Say "Resolving latest gact-tui release"
+        $rel = Invoke-RestMethod -UseBasicParsing -Uri 'https://api.github.com/repos/iowarp/gact-tui/releases/latest'
+        $tag = $rel.tag_name
+        if (-not $tag) { Die "couldn't resolve gact-tui latest release tag" }
+    }
+    $asset = 'gact-windows-amd64.exe'
+    $url   = "https://github.com/iowarp/gact-tui/releases/download/$tag/$asset"
+    Say "Downloading $asset from gact-tui $tag"
+    Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $GactExe
+}
 
-Say "Building gact TUI"
-Push-Location "$Prefix/gact-tui/tui"
-go build -o "$Prefix/gact.exe" .
-Pop-Location
+# ---------- launcher + uninstaller ------------------------------------
+$launcherRef = if ($ClioRef) { $ClioRef } else { 'main' }
+$Raw         = "https://raw.githubusercontent.com/iowarp/clio-agent/$launcherRef/install"
 
-# ---------- launcher + uninstaller -------------------------------------
-# The launcher is a real CLI (clio.ps1) checked into the clio-agent
-# repo under install/. We copy it from the freshly-cloned checkout
-# rather than generating it inline, so there is one source of truth and
-# `clio start|stop|restart|status|logs|doctor|report` ship with it.
-$InstallSrc = Join-Path $Prefix 'clio-agent\install'
-$Launcher   = Join-Path $BinDir 'clio.cmd'
-
+$Launcher = Join-Path $BinDir 'clio.cmd'
 Say "Installing launcher: $Launcher"
-Copy-Item -Path (Join-Path $InstallSrc 'clio.ps1') -Destination (Join-Path $BinDir 'clio.ps1') -Force
-Copy-Item -Path (Join-Path $InstallSrc 'clio.cmd') -Destination $Launcher -Force
+if ($ClioRef) {
+    Copy-Item (Join-Path $Prefix 'clio-agent\install\clio.ps1') (Join-Path $BinDir 'clio.ps1') -Force
+    Copy-Item (Join-Path $Prefix 'clio-agent\install\clio.cmd') $Launcher -Force
+} else {
+    Invoke-WebRequest -UseBasicParsing -Uri "$Raw/clio.ps1" -OutFile (Join-Path $BinDir 'clio.ps1')
+    Invoke-WebRequest -UseBasicParsing -Uri "$Raw/clio.cmd" -OutFile $Launcher
+}
 
 Say "Installing uninstaller: $Prefix\uninstall.ps1"
-Copy-Item -Path (Join-Path $InstallSrc 'uninstall.ps1') -Destination (Join-Path $Prefix 'uninstall.ps1') -Force
+if ($ClioRef) {
+    Copy-Item (Join-Path $Prefix 'clio-agent\install\uninstall.ps1') (Join-Path $Prefix 'uninstall.ps1') -Force
+} else {
+    Invoke-WebRequest -UseBasicParsing -Uri "$Raw/uninstall.ps1" -OutFile (Join-Path $Prefix 'uninstall.ps1')
+}
 
+# ---------- finishing notes -------------------------------------------
 Say "Done."
+$clioSrc = if ($ClioRef) { "source: $ClioRef" } else { "PyPI: $(if ($ClioVersion) { $ClioVersion } else { 'latest' })" }
+$gactSrc = if ($GactRef) { "source: $GactRef" } else { "release: $tag" }
 Write-Host ""
 Write-Host "Installed to:   $Prefix"
 Write-Host "Launcher:       $Launcher"
-Write-Host "clio-agent ref: $ClioRef"
-Write-Host "gact-tui  ref:  $GactRef"
+Write-Host "clio-agent:     $clioSrc"
+Write-Host "gact:           $gactSrc"
 Write-Host ""
 Write-Host "Next steps:"
 Write-Host "  1. Make sure $BinDir is on your PATH (it usually is on Win 10/11)."
 Write-Host "  2. Run:   clio"
-Write-Host "     The TUI pops the LM-provider modal on first connect."
 Write-Host "  3. Manage the server: clio status | clio restart | clio logs"
 Write-Host "  4. Tab-completion:    clio completion powershell >> `$PROFILE"
 Write-Host "  5. Uninstall:         clio uninstall   (add -Purge to drop config)"
