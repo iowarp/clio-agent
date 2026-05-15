@@ -19,56 +19,70 @@ Installs to `$HOME\AppData\Local\clio`, drops `clio.cmd` + `clio.ps1`
 into `$HOME\AppData\Local\Microsoft\WindowsApps` (already on PATH on
 Windows 10/11).
 
-## Private repo? Use SSH
+## What gets installed (default: release mode)
 
-Both repos are currently private. Until they're public, the HTTPS clone
-in the one-liner above returns 404. Use SSH instead:
-
-```sh
-# Linux / macOS
-CLIO_GIT_PROTOCOL=ssh \
-  bash <(curl -fsSL https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.sh)
-
-# Windows (PowerShell)
-$env:CLIO_GIT_PROTOCOL = 'ssh'
-irm https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.ps1 | iex
-```
-
-(Note: if `raw.githubusercontent.com/iowarp/clio-agent/...` itself
-returns 404, the script file is unreachable too. In that case fetch the
-script via `gh api repos/iowarp/clio-agent/contents/install/install.sh
---jq .content | base64 -d > install.sh && bash install.sh` — your `gh`
-auth token gets you through.)
-
-## What gets installed
-
-- `clio-agent` (server, Python) — the `main` branch
-- `gact-tui` (TUI binary, Go) — the `clio` branch
+- `clio-agent` (server, Python) — latest from **PyPI**, installed into a
+  managed virtualenv at `$CLIO_PREFIX/clio-agent/.venv`
+- `gact` (TUI binary, Go) — latest **GitHub Release** asset for your
+  OS/arch (`gact-linux-amd64`, `gact-darwin-arm64`,
+  `gact-windows-amd64.exe`, …)
 - `clio` launcher — a small CLI that boots the server on `:17800` if
   not already running, attaches the TUI, and manages the server
   process (`clio start|stop|restart|status|logs|doctor|report`)
 - `uninstall` script — dropped into the install prefix
 
-## Prerequisites
+### Prerequisites (release mode)
 
-The script bails with install instructions if any of these are missing:
+- `curl` (Linux/macOS) / `Invoke-WebRequest` (PowerShell — built in)
+- `uv` (recommended) **or** Python 3.12+ with `pip`
 
-- `git`
-- [`uv`](https://astral.sh/uv) — Python package manager
-- `go` 1.26+
+That's it — no `git`, no `go`.
 
-## Pinning a specific version
+## Source-build mode (track unreleased work)
 
-The installer tracks the `main` / `clio` branches by default. Pin a
-tag or another branch with `CLIO_REF` / `GACT_REF`:
+Set `CLIO_REF` and/or `GACT_REF` to a branch/tag to clone-and-build
+instead of using PyPI/GitHub Releases:
 
 ```sh
-CLIO_REF=v0.3.1 GACT_REF=v0.2.1 \
+# Linux / macOS — build clio-agent from develop, keep released gact
+CLIO_REF=develop \
+  curl -fsSL https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.sh | sh
+
+# Both from source
+CLIO_REF=develop GACT_REF=develop \
   curl -fsSL https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.sh | sh
 ```
 
-`CLIO_REF` / `GACT_REF` accept any git ref — a tag, or a branch like
-`develop`.
+```powershell
+# Windows
+$env:CLIO_REF = 'develop'
+irm https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.ps1 | iex
+```
+
+Source mode needs:
+
+- `git` (always)
+- `uv` (when `CLIO_REF` is set — Python deps from `uv sync`)
+- `go` 1.26+ (when `GACT_REF` is set — builds the TUI)
+
+If both repos are private and HTTPS clone returns 404, switch to SSH:
+
+```sh
+CLIO_REF=develop CLIO_GIT_PROTOCOL=ssh \
+  bash <(curl -fsSL https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.sh)
+```
+
+## Pinning a specific release
+
+```sh
+# Pin the PyPI version for clio-agent and the gact release tag
+CLIO_VERSION=0.5.0 GACT_VERSION=v0.3.0 \
+  curl -fsSL https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.sh | sh
+```
+
+`CLIO_VERSION` is a PyPI version string (no `v` prefix); `GACT_VERSION`
+is a GitHub Release tag (with `v` prefix). Leave either unset to track
+"latest".
 
 ## Using `clio`
 
