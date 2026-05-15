@@ -80,7 +80,7 @@ if ($ClioRef) {
     uv sync --extra api
     Pop-Location
 } else {
-    $pkgSpec = if ($ClioVersion) { "clio-agent==$ClioVersion" } else { 'clio-agent' }
+    $pkgSpec = if ($ClioVersion) { "clio-agent[api]==$ClioVersion" } else { 'clio-agent[api]' }
     Say "Installing $pkgSpec from PyPI"
     Remove-Item -Recurse -Force (Join-Path $Prefix 'clio-agent') -ErrorAction SilentlyContinue
     New-Item -ItemType Directory -Force -Path (Join-Path $Prefix 'clio-agent') | Out-Null
