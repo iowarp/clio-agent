@@ -17,6 +17,9 @@ from typing import Any, Callable, Mapping
 
 import requests
 
+from clio_agent.config import (
+    _CLOUD_API_KEY_ENV as _CONFIG_CLOUD_API_KEY_ENV,
+)
 from clio_agent.config import PROVIDER_DEFAULTS, LMProviderConfig
 from clio_agent.tools.file_policy import FileAccessPolicy, FilePolicyError
 
@@ -112,11 +115,11 @@ GatewayLister = Callable[[], list[dict[str, Any]]]
 HttpGet = Callable[..., Any]
 ModuleChecker = Callable[[str], bool]
 
-_SUPPORTED_LM_PROVIDERS = {"lm_studio", "ollama", "openai", "anthropic", "argonne"}
-_CLOUD_API_KEY_ENV = {
-    "openai": "OPENAI_API_KEY",
-    "anthropic": "ANTHROPIC_API_KEY",
-}
+# Derived from the provider registry — the set of wire kinds with
+# entries in PROVIDER_DEFAULTS. Excludes "codex" (Literal-widened but no
+# entry yet; lands in sprint #51).
+_SUPPORTED_LM_PROVIDERS = frozenset(PROVIDER_DEFAULTS.keys())
+_CLOUD_API_KEY_ENV = _CONFIG_CLOUD_API_KEY_ENV
 _HDF5_TOOLS = {
     "hdf5_list_datasets",
     "hdf5_analyze_dataset",
