@@ -12,5 +12,5 @@ not just wire-shaped.
 
 Run:
     CLIO_INTEGRATION_BASE=http://127.0.0.1:17779 \\
-      uv run --extra dev --extra api pytest tests/test_integration_v0_2/ -v
+      uv run --extra dev pytest tests/test_integration_v0_2/ -v
 """

@@ -14,7 +14,7 @@ jobs:
       - uses: astral-sh/setup-uv@v5
         with:
           version: "latest"
-      - run: uv sync --extra dev --extra api --extra optimizers
+      - run: uv sync --extra dev --extra optimizers
       - run: uv run ruff check src/ tests/ scripts/create_demo_data.py
       - run: bash -n scripts/homelab-env.sh
       - run: uv run mypy src/

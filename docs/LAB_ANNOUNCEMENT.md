@@ -20,7 +20,7 @@ Release date: 2026-04-27
 > # 1. Clone + install both pieces (one-time setup).
 > git clone --branch v0.3.1 https://github.com/iowarp/clio-agent
 > git clone --branch v0.2.1 https://github.com/iowarp/gact-tui
-> cd clio-agent && uv pip install -e '.[api]'
+> cd clio-agent && uv pip install -e .
 > cd ../gact-tui/tui && go build -o gact .
 >
 > # 2. Boot the agent server.

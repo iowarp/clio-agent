@@ -58,9 +58,9 @@ table.
 git clone https://github.com/iowarp/clio-agent.git
 git clone https://github.com/iowarp/gact-tui.git
 
-# Install CLIO with the API extra (pulls FastAPI + uvicorn).
+# Install CLIO (FastAPI + uvicorn are core deps).
 cd clio-agent
-uv pip install -e '.[api]'
+uv pip install -e .
 
 # Build the TUI.
 cd ../gact-tui/tui

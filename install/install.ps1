@@ -75,12 +75,12 @@ if ($ClioRef) {
     Say "Cloning clio-agent at $ClioRef (source-build mode)"
     Remove-Item -Recurse -Force (Join-Path $Prefix 'clio-agent') -ErrorAction SilentlyContinue
     git clone --quiet --branch $ClioRef --depth 1 $ClioRepo (Join-Path $Prefix 'clio-agent')
-    Say "Installing clio-agent deps (uv sync --extra api)"
+    Say "Installing clio-agent deps (uv sync)"
     Push-Location (Join-Path $Prefix 'clio-agent')
-    uv sync --extra api
+    uv sync
     Pop-Location
 } else {
-    $pkgSpec = if ($ClioVersion) { "clio-agent[api]==$ClioVersion" } else { 'clio-agent[api]' }
+    $pkgSpec = if ($ClioVersion) { "clio-agent==$ClioVersion" } else { 'clio-agent' }
     Say "Installing $pkgSpec from PyPI"
     Remove-Item -Recurse -Force (Join-Path $Prefix 'clio-agent') -ErrorAction SilentlyContinue
     New-Item -ItemType Directory -Force -Path (Join-Path $Prefix 'clio-agent') | Out-Null

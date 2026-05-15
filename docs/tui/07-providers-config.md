@@ -130,8 +130,8 @@ Docker mount: `clio-data` volume → `.clio_agent/` (ARC local persistence). (`D
 ## Python + install
 
 - Python **≥ 3.12** locked (`pyproject.toml:14`).
-- Dev install: `uv sync --extra dev --extra api --extra optimizers`
-- Prod install: `uv sync --frozen --extra api`
+- Dev install: `uv sync --extra dev --extra optimizers`
+- Prod install: `uv sync --frozen`
 
 ## Key runtime deps
 

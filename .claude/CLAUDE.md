@@ -231,7 +231,7 @@ gateway.mount("/admin", admin_server, transforms=[Enabled(lambda t: user.is_admi
 ### Environment setup
 
 - Python >= 3.12; [`uv`](https://astral.sh/uv) drives everything (deps + execution).
-- Install deps: `uv sync --extra dev --extra api --extra optimizers`
+- Install deps: `uv sync --extra dev --extra optimizers`
 - `CLIO_ALLOWED_ROOTS` gates tool file access. The tool-server tests
   write fixtures into the pytest temp dir, so that dir must be on the
   allow list or those tests fail with `outside_allowed_roots`. Unset,

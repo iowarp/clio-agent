@@ -1,6 +1,6 @@
 [project]
 name = "clio-agent"
-version = "0.5.0"
+version = "0.5.1"
 description = "CLIO Agent — Autonomous AI agent framework for scientific data management. Part of the IOWarp platform."
 authors = [
     { name = "Antonis Kougkas", email = "a.kougkas@gmail.com" },
@@ -46,6 +46,10 @@ dependencies = [
     "lru-dict>=1.3.0",
     "msgspec>=0.18.0",
     "matplotlib>=3.8.0",
+    # gact backend (clio_agent.gact.app) — shipped product surface, not optional
+    "fastapi>=0.104.0",
+    "uvicorn>=0.24.0",
+    "sse-starlette>=1.6.0",
 ]
 
 [project.optional-dependencies]
@@ -53,12 +57,6 @@ optimizers = [
     # Optimizer Layer (v0.4.0+)
     "scipy>=1.11.0",
     "numpy>=1.24.0",
-]
-
-api = [
-    "fastapi>=0.104.0",
-    "uvicorn>=0.24.0",
-    "sse-starlette>=1.6.0",
 ]
 
 tools = [
@@ -85,7 +83,7 @@ dev = [
 ]
 
 all = [
-    "clio-agent[optimizers,api,tools,iowarp,argonne,dev]",
+    "clio-agent[optimizers,tools,iowarp,argonne,dev]",
 ]
 
 [project.urls]

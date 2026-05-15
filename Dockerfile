@@ -2,7 +2,7 @@
 FROM python:3.12-slim AS builder
 WORKDIR /app
 COPY pyproject.toml uv.lock ./
-RUN pip install uv && uv sync --frozen --extra api --extra optimizers --no-dev
+RUN pip install uv && uv sync --frozen --extra optimizers --no-dev
 
 # Stage 2: Runtime
 FROM python:3.12-slim

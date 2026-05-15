@@ -56,7 +56,7 @@ Implemented and source-verified:
 
 Recent local verification:
 
-- `uv sync --extra dev --extra api --extra optimizers`: upgraded FastMCP to
+- `uv sync --extra dev --extra optimizers`: upgraded FastMCP to
   `3.2.4` and switched from legacy `dspy-ai` to direct `dspy` dependency
   (2026-04-23)
 - `uv run python -c "import dspy, fastmcp; ..."`: reported `dspy 3.1.3`,

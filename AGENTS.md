@@ -14,7 +14,7 @@ Helper scripts for local demos and homelab setup live in `scripts/`.
 
 ## Build, Test, and Development Commands
 Use `uv` for environment and command execution:
-- `uv sync --extra dev --extra api --extra optimizers` installs contributor dependencies.
+- `uv sync --extra dev --extra optimizers` installs contributor dependencies.
 - `uv run ruff check src/ tests/ scripts/create_demo_data.py` runs lint checks.
 - `uv run ruff format src/ tests/ scripts/create_demo_data.py` formats code.
 - `uv run pytest tests/` runs the full test suite with coverage output.

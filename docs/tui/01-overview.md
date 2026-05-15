@@ -160,9 +160,9 @@ export CLIO_LOG_LEVEL=INFO                # or DEBUG / WARNING / ERROR
 
 ```sh
 # Dev
-uv sync --extra dev --extra api --extra optimizers
+uv sync --extra dev --extra optimizers
 # Prod (minimal)
-uv sync --frozen --extra api
+uv sync --frozen
 ```
 
 Python **≥3.12** locked (`pyproject.toml` L14).

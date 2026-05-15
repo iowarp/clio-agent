@@ -10,7 +10,7 @@ discovered.
 |---|---|---|
 | `git clone iowarp/clio-agent` (`tui-integration` branch, --depth 1) | <2s | nothing surprising |
 | `git clone iowarp/gact-tui` (`clio` branch, --depth 1) | <2s | |
-| `cd clio-agent && uv sync --extra api` | ~3s | uv has the wheel cache warm; first-time install on a fresh box may take longer (lots of LM/MCP deps) |
+| `cd clio-agent && uv sync` | ~3s | uv has the wheel cache warm; first-time install on a fresh box may take longer (lots of LM/MCP deps) |
 | `cd ../gact-tui/tui && go build -o gact .` | ~3s | |
 | `clio-agent-gact --port 17900` (boot) | ~3-5s | clean boot; `/v1/health` returns 28/30 caps before LM is wired |
 | `PUT /v1/providers/lm` (configure) | <1s | accepts any openai-compatible preset |
@@ -49,7 +49,7 @@ discovered.
 ```bash
 git clone --branch tui-integration --depth 1 git@github.com:iowarp/clio-agent.git
 git clone --branch clio --depth 1 git@github.com:iowarp/gact-tui.git
-cd clio-agent && uv sync --extra api
+cd clio-agent && uv sync
 cd ../gact-tui/tui && go build -o /tmp/gact-smoke .
 
 # Boot the server.

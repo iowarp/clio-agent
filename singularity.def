@@ -8,7 +8,7 @@ From: python:3.12-slim
 
 %post
     pip install uv
-    cd /app && uv sync --frozen --extra api --extra optimizers --no-dev
+    cd /app && uv sync --frozen --extra optimizers --no-dev
 
 %environment
     export PATH="/app/.venv/bin:$PATH"
