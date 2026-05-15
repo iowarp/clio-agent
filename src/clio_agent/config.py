@@ -30,7 +30,7 @@ import os
 from dataclasses import dataclass, field
 from ipaddress import ip_address
 from pathlib import Path
-from typing import TYPE_CHECKING, List, Literal, Mapping, Optional
+from typing import TYPE_CHECKING, Any, List, Literal, Mapping, Optional
 from urllib.parse import urlparse
 
 import requests
@@ -42,7 +42,10 @@ import requests
 # their body via ``_dspy()`` below; type-only references stay valid
 # thanks to ``from __future__ import annotations`` (PEP 563).
 if TYPE_CHECKING:  # pragma: no cover
-    import dspy as dspy_typing
+    # Annotations only -- `from __future__ import annotations` keeps
+    # the runtime import elided. Needed in scope so `dspy.LM` return
+    # types lint cleanly under F821.
+    import dspy
 
 
 _dspy_cache = None

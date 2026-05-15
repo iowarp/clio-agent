@@ -14,7 +14,6 @@ from __future__ import annotations
 import time
 
 import httpx
-import pytest
 
 from .conftest import post_user, turn, wait_for_assistant
 

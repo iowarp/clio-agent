@@ -30,7 +30,7 @@ import threading
 import time
 import uuid
 from collections.abc import Mapping
-from contextlib import asynccontextmanager, nullcontext as _nullcontext
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, AsyncIterator, Optional
@@ -416,7 +416,8 @@ async def _run_turn_in_background(
         if isinstance(row, dict):
             getf = row.get
         else:
-            getf = lambda k, default=None, _r=row: getattr(_r, k, default)
+            def getf(k, default=None, _r=row):
+                return getattr(_r, k, default)
         path = getf("path", "") or ""
         udiff = getf("unified_diff", "") or ""
         new_content = getf("new_content", "") or ""
@@ -1284,7 +1285,7 @@ async def _try_streamed_forward(
     # Without this, streamify wraps sync forward() in asyncify ->
     # runs in an executor thread -> ContextVar lost -> zero live
     # chunks. Requires the agent expose acall.
-    has_acall = hasattr(agent, "acall") and callable(getattr(agent, "acall"))
+    has_acall = hasattr(agent, "acall") and callable(agent.acall)
     streamed = streamify(
         agent,
         async_streaming=True,
@@ -1558,7 +1559,8 @@ def _inspect_hdf5_for_context(path: str) -> str:
     one-paragraph summary."""
 
     from clio_agent.tools.servers.hdf5_server import (
-        analyze_file, list_datasets,
+        analyze_file,
+        list_datasets,
     )
     af = getattr(analyze_file, "fn", analyze_file)
     ld = getattr(list_datasets, "fn", list_datasets)
@@ -2229,56 +2231,56 @@ def build_app(
     # Populated by POST /messages, read by GET /messages. Not
     # persisted across restarts — disk-backed persistence lives in
     # the CLIO catch-up phase alongside ARC session replay.
-    app.state.messages: dict[str, list[Message]] = {}
+    app.state.messages = {}
     # CLIO-BBBBBBBBBB20: cooperative cancellation flags. POST /cancel
     # adds a sid; the POST-message handler checks + clears after the
     # agent returns. Set (not dict) because the flag's presence IS
     # the signal — no payload.
-    app.state.cancel_flags: set[str] = set()
+    app.state.cancel_flags = set()
     # CLIO-BBBBBBBBBB22: per-session context files. Keyed by
     # session_id, each value is an ordered dict of
     # path -> ContextFile dict.
-    app.state.context_files: dict[str, dict[str, dict[str, Any]]] = {}
+    app.state.context_files = {}
     # CLIO-BBBBBBBBBB21: per-session pending diffs. Keyed by
     # session_id -> list of {path, unified_diff, status,
     # part_id, message_id}. Status is "pending" until apply/reject
     # flips it.
-    app.state.pending_diffs: dict[str, list[dict[str, Any]]] = {}
+    app.state.pending_diffs = {}
     # CLIO-BBBBBBBBBB23: pending permission requests. Flat dict
     # keyed by permission_id so GET /v1/permissions can filter by
     # session cheaply. Each record carries
     # {id, session_id, tool_call, summary, created_at, status,
     #  action, resolved_at}.
-    app.state.permissions: dict[str, dict[str, Any]] = {}
+    app.state.permissions = {}
     # iowarp/clio-agent#7: per-permission threading.Event so the
     # MCPToolBridge gate (running in a worker thread) can block on
     # the user's response without polling.
-    app.state.permission_events: dict[str, "threading.Event"] = {}
+    app.state.permission_events = {}
     # SPEC §6.17 hooks (declarative event→command/url callouts that
     # gact-tui drives via /v1/hooks). Distinct from CLIO's runtime
     # in-process Python hooks (clio_agent.runtime.hooks) — these are
     # user-configurable callouts the agent fires during the turn
     # lifecycle, while the Python runtime hooks are framework-level
     # extension points. In-memory; not persisted across restarts.
-    app.state.declarative_hooks: dict[str, dict[str, Any]] = {}
+    app.state.declarative_hooks = {}
     # SPEC §6.11.b permission policies — list, not dict. Backends
     # consult this on every tool call to decide allow/deny/ask before
     # falling back to the per-tool permission_default. PUT replaces
     # the whole list; in-memory.
-    app.state.permission_policies: list[dict[str, Any]] = []
+    app.state.permission_policies = []
     # iowarp/clio-agent#18: per-session task list (todo-style).
     # Keyed by session_id -> {task_id -> task dict}. In-memory.
-    app.state.session_tasks: dict[str, dict[str, dict[str, Any]]] = {}
+    app.state.session_tasks = {}
     # iowarp/clio-agent#3: per-session in-flight turn tasks. POST
     # /messages tracks the asyncio.Task here so /cancel can
     # hard-abort instead of waiting for the cooperative flag check.
-    app.state.in_flight_turns: dict[str, asyncio.Task] = {}
+    app.state.in_flight_turns = {}
     # iowarp/clio-agent#2: per-session ledger of tool calls observed
     # during the in-flight turn. The global tool_observer appends
     # here; _run_turn_in_background drains it post-forward to attach
     # tools_called metadata even when the underlying expert
     # didn't populate ``pred.tools_called`` itself.
-    app.state.tool_call_ledger: dict[str, list[dict[str, Any]]] = {}
+    app.state.tool_call_ledger = {}
 
     # iowarp/clio-agent#7 + #2: install process-global hooks on the
     # MCPToolBridge so EVERY expert's tool call routes through our
@@ -2329,7 +2331,7 @@ def build_app(
     # CLIO-BBBBBBBBBB-D: live LM config — what the TUI configured
     # us with. Distinct from boot-time env because PUT /providers/lm
     # rebuilds the agent + DSPy config in-place.
-    app.state.lm_config: Optional[dict[str, str]] = None
+    app.state.lm_config = None
     # CLIO-BBBBBBBBBB-WS: workspaces store. Persisted alongside
     # sessions; seeds a default workspace if none exist so the TUI
     # always has something to render.
@@ -2359,9 +2361,9 @@ def build_app(
         path=(sessions_path.parent / "schedules.json")
         if sessions_path is not None else None
     )
-    app.state.scheduler_task: Optional[asyncio.Task] = None
+    app.state.scheduler_task = None
     # iowarp/clio-agent#22: shared session tokens.
-    app.state.shared_tokens: dict[str, dict[str, Any]] = {}
+    app.state.shared_tokens = {}
 
     @app.get("/v1/health", response_model=HealthResponse)
     async def health() -> HealthResponse:
@@ -2481,7 +2483,7 @@ def build_app(
         return HealthResponse(
             healthy=overall != "unavailable",
             uptime_s=uptime,
-            overall_status=overall,
+            overall_status=overall,  # type: ignore[arg-type]  # narrowed by branches above
             integrations=rows,
         )
 
@@ -3265,7 +3267,7 @@ def build_app(
             ))
             body_text = "session messages cleared"
         elif cmd_id == "/cache-stats":
-            stats = {}
+            stats: dict[str, Any] = {}
             if app.state.arc is not None:
                 try:
                     stats = app.state.arc.get_cache_stats() or {}
@@ -4056,7 +4058,8 @@ def build_app(
         try:
             from fastmcp import Client
             from fastmcp.client.transports import (
-                StdioTransport, StreamableHttpTransport,
+                StdioTransport,
+                StreamableHttpTransport,
             )
         except Exception as exc:
             raise HTTPException(
@@ -4094,7 +4097,7 @@ def build_app(
                         recoverable=True,
                     )).model_dump(exclude_none=True),
                 )
-            transport = StreamableHttpTransport(url=url)
+            transport = StreamableHttpTransport(url=url)  # type: ignore[assignment]
             spec = {"transport": "http", "url": url}
         else:
             raise HTTPException(
@@ -4120,7 +4123,7 @@ def build_app(
 
         sid = f"mcp_ext_{uuid.uuid4().hex[:10]}"
         if not hasattr(app.state, "external_mcp_servers"):
-            app.state.external_mcp_servers: dict[str, dict[str, Any]] = {}
+            app.state.external_mcp_servers = {}
         info = {
             "id": sid,
             "name": name,
@@ -4196,7 +4199,8 @@ def build_app(
         try:
             from fastmcp import Client
             from fastmcp.client.transports import (
-                StdioTransport, StreamableHttpTransport,
+                StdioTransport,
+                StreamableHttpTransport,
             )
         except Exception as exc:
             raise HTTPException(
@@ -4215,7 +4219,7 @@ def build_app(
                 args=spec.get("args") or [],
             )
         elif spec.get("transport") == "http":
-            transport = StreamableHttpTransport(url=spec["url"])
+            transport = StreamableHttpTransport(url=spec["url"])  # type: ignore[assignment]
         else:
             raise HTTPException(
                 status_code=500,
@@ -4475,7 +4479,8 @@ def build_app(
         try:
             from fastmcp import Client
             from fastmcp.client.transports import (
-                StdioTransport, StreamableHttpTransport,
+                StdioTransport,
+                StreamableHttpTransport,
             )
         except Exception as exc:
             raise HTTPException(
@@ -4493,7 +4498,7 @@ def build_app(
                 args=spec.get("args") or [],
             )
         elif spec.get("transport") == "http":
-            transport = StreamableHttpTransport(url=spec["url"])
+            transport = StreamableHttpTransport(url=spec["url"])  # type: ignore[assignment]
         else:
             return []
         rows: list[dict[str, Any]] = []
@@ -4667,7 +4672,7 @@ def build_app(
             body = {}
         ttl_s = int(body.get("ttl_s") or 0)
         token = "shr_" + uuid.uuid4().hex[:24]
-        expires_at = ""
+        expires_at: str | float = ""
         if ttl_s > 0:
             expires_at = (
                 datetime.now(timezone.utc).timestamp() + ttl_s
@@ -5371,7 +5376,7 @@ def build_app(
         return MemoryStats(
             cache=cache,
             session=session_block,
-            global_=global_stats,
+            global_=global_stats,  # type: ignore[call-arg]  # Pydantic alias "global"
         )
 
     # ---- /v1/sessions/{sid}/events SSE (BBB13) -----------------------
@@ -5723,7 +5728,7 @@ def build_app(
                     message=f"could not resolve path: {path}",
                     recoverable=False,
                 )).model_dump(exclude_none=True),
-            )
+            ) from None
         # Refuse path-traversal: target must be at-or-below root.
         try:
             target.relative_to(root)
@@ -5735,7 +5740,7 @@ def build_app(
                     message=f"path escapes workspace: {path}",
                     recoverable=False,
                 )).model_dump(exclude_none=True),
-            )
+            ) from None
         if not target.is_file():
             raise HTTPException(
                 status_code=404,
@@ -5773,7 +5778,7 @@ def build_app(
                     message=f"could not read file: {exc}",
                     recoverable=False,
                 )).model_dump(exclude_none=True),
-            )
+            ) from exc
         return JSONResponse(
             content=data.decode("utf-8", errors="replace"),
             media_type="text/plain; charset=utf-8",
@@ -5991,7 +5996,7 @@ def build_app(
                     )
 
             cfg = LMProviderConfig(
-                provider=req.provider,
+                provider=req.provider,  # type: ignore[arg-type]  # str validated at boundary
                 api_base=req.api_base,
                 model=req.model,
                 api_key=resolved_api_key or "x",
@@ -6160,7 +6165,8 @@ def build_app(
             try:
                 from fastmcp import Client  # noqa: PLC0415
                 from fastmcp.client.transports import (  # noqa: PLC0415
-                    StdioTransport, StreamableHttpTransport,
+                    StdioTransport,
+                    StreamableHttpTransport,
                 )
             except Exception:  # noqa: BLE001
                 Client = None  # type: ignore
@@ -6174,7 +6180,7 @@ def build_app(
                         args=spec.get("args") or [],
                     )
                 elif spec.get("transport") == "http":
-                    transport = StreamableHttpTransport(url=spec["url"])
+                    transport = StreamableHttpTransport(url=spec["url"])  # type: ignore[assignment]
                 else:
                     continue
                 try:
@@ -6232,7 +6238,8 @@ def build_app(
             try:
                 from fastmcp import Client  # noqa: PLC0415
                 from fastmcp.client.transports import (  # noqa: PLC0415
-                    StdioTransport, StreamableHttpTransport,
+                    StdioTransport,
+                    StreamableHttpTransport,
                 )
             except Exception:
                 Client = None  # type: ignore
@@ -6248,7 +6255,7 @@ def build_app(
                             env=info.get("env") or None,
                         )
                     else:
-                        t = StreamableHttpTransport(url=info.get("url") or "")
+                        t = StreamableHttpTransport(url=info.get("url") or "")  # type: ignore[assignment]
                     async with Client(t) as cli:
                         tools = await cli.list_tools()
                     for tt in tools:
