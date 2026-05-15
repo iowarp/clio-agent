@@ -14,8 +14,16 @@ from __future__ import annotations
 import time
 
 import httpx
+import pytest
 
 from .conftest import post_user, turn, wait_for_assistant
+
+# These exercise a live clio-agent-gact + real LM. The conftest's
+# module-level skipif only applies inside conftest.py itself, so mark
+# the whole file `integration` here too -- the default CI run
+# (`-m "not integration"`) then excludes it cleanly, and an
+# integration-only job can opt in with `-m integration`.
+pytestmark = pytest.mark.integration
 
 # ---- /v1/health + /v1/capabilities -----------------------------------------
 
