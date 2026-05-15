@@ -32,7 +32,7 @@ One line installs `clio-agent` + the `gact` TUI, builds them, and drops a `clio`
 
 **Linux / macOS**
 ```sh
-curl -fsSL https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.sh | bash
 clio
 ```
 

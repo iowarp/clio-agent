@@ -3,7 +3,7 @@
 ## Linux / macOS
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.sh | bash
 ```
 
 Installs to `~/.local/share/clio` (override via `CLIO_PREFIX`), drops a
@@ -46,11 +46,11 @@ instead of using PyPI/GitHub Releases:
 ```sh
 # Linux / macOS — build clio-agent from develop, keep released gact
 CLIO_REF=develop \
-  curl -fsSL https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.sh | sh
+  curl -fsSL https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.sh | bash
 
 # Both from source
 CLIO_REF=develop GACT_REF=develop \
-  curl -fsSL https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.sh | sh
+  curl -fsSL https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.sh | bash
 ```
 
 ```powershell
@@ -77,7 +77,7 @@ CLIO_REF=develop CLIO_GIT_PROTOCOL=ssh \
 ```sh
 # Pin the PyPI version for clio-agent and the gact release tag
 CLIO_VERSION=0.5.0 GACT_VERSION=v0.3.0 \
-  curl -fsSL https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.sh | sh
+  curl -fsSL https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.sh | bash
 ```
 
 `CLIO_VERSION` is a PyPI version string (no `v` prefix); `GACT_VERSION`

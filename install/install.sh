@@ -19,6 +19,22 @@
 #   GACT_REF           gact-tui branch      (default: release mode)
 #   CLIO_GIT_PROTOCOL  https | ssh          (default: https; only used
 #                                            in source-build mode)
+#
+# NOTE: invoke via `bash` (not `sh`). On Debian/Ubuntu `sh` is dash,
+# which doesn't support `set -o pipefail`. The one-liner in the README
+# pipes to `bash` for this reason.
+
+# Refuse to run under dash / POSIX-sh — we use `set -o pipefail` and a
+# couple of bash-only constructs below. Piping into `sh` on Debian/
+# Ubuntu (where /bin/sh is dash) trips this. Re-exec via curl isn't
+# possible here because the script is being streamed from stdin, so
+# just bail with the right next-step.
+if [ -z "${BASH_VERSION:-}" ]; then
+  echo "clio installer requires bash, not sh/dash." >&2
+  echo "Re-run with bash, e.g.:" >&2
+  echo "  curl -fsSL https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.sh | bash" >&2
+  exit 1
+fi
 set -euo pipefail
 
 GREEN='\033[0;32m'; YELLOW='\033[0;33m'; RED='\033[0;31m'; RESET='\033[0m'

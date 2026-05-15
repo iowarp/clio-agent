@@ -36,7 +36,7 @@ client. This guide covers the common case: both together.
 
 ```sh
 # Linux / macOS
-curl -fsSL https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.sh | bash
 
 # Windows (PowerShell)
 irm https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.ps1 | iex
