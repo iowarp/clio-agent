@@ -97,7 +97,7 @@ if [ -n "$CLIO_REF" ]; then
   say "Installing clio-agent deps (uv sync --extra api)"
   ( cd "$PREFIX/clio-agent" && uv sync --extra api )
 else
-  pkg_spec="clio-agent${CLIO_VERSION:+==$CLIO_VERSION}"
+  pkg_spec="clio-agent[api]${CLIO_VERSION:+==$CLIO_VERSION}"
   say "Installing $pkg_spec from PyPI"
   rm -rf "$PREFIX/clio-agent"
   mkdir -p "$PREFIX/clio-agent"
