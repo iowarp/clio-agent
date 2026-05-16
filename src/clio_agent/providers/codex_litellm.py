@@ -14,8 +14,11 @@ Design notes
   final assistant message to a file via ``-o/--output-last-message``.
   Clio's planner does the real orchestration.
 
-- **Subprocess per call.** ~1-2 s cold start; for hot paths consider
-  the SDK transport (sprint #52, optional ``[codex]`` extra).
+- **Two transports.** Default is ``codex exec`` subprocess (~1-2 s
+  cold start; always works if the binary is on PATH). Opt-in
+  ``transport="sdk"`` uses the ``openai_codex`` Python SDK in-process
+  via JSON-RPC against the local app-server daemon — much faster after
+  the daemon warms, but requires ``pip install 'clio-agent[codex]'``.
 
 - **Auth lives in the CLI.** We never see the user's ChatGPT cookie
   / OpenAI key — ``codex login`` writes a token to ``~/.codex/`` and
@@ -57,6 +60,13 @@ CODEX_BINARY_NAME = "codex"
 #: keeps Codex's shell/fs tools inert (they can read, not write or
 #: shell out) so the agent loop has nothing to do but answer.
 DEFAULT_SANDBOX = "read-only"
+
+#: Transport mode for the CustomLLM. ``"exec"`` shells out to
+#: ``codex exec`` (always works if the binary is on PATH);
+#: ``"sdk"`` uses the in-process ``openai_codex`` SDK (opt-in via
+#: ``pip install 'clio-agent[codex]'``).
+Transport = str  # Literal["exec", "sdk"] — kept as str so callers can override freely.
+DEFAULT_TRANSPORT: Transport = "exec"
 
 
 class CodexCLIUnavailableError(RuntimeError):
@@ -181,6 +191,62 @@ def _run_exec(
     return text
 
 
+def _run_sdk(
+    *,
+    prompt: str,
+    model: str,
+    sandbox: str = DEFAULT_SANDBOX,
+    cwd: str | None = None,
+    timeout: float | None = 120.0,
+) -> str:
+    """In-process Codex call via the openai_codex Python SDK.
+
+    Requires the optional ``[codex]`` extra
+    (``pip install 'clio-agent[codex]'``). The SDK talks to the local
+    Codex app-server daemon over JSON-RPC, so per-call latency is
+    much lower than ``codex exec`` once the daemon warms.
+
+    Raises:
+        CodexCLIUnavailableError: ``openai_codex`` isn't importable
+            (with an actionable install hint).
+        CodexExecError: the thread returned no final response.
+    """
+    try:
+        # The package ships as ``openai_codex`` after a 2026 rename.
+        # Earlier docs called it ``codex_app_server``; either name
+        # may show up in the wild, so try both.
+        try:
+            from openai_codex import Codex  # type: ignore[import-not-found] # noqa: PLC0415
+        except ImportError:  # pragma: no cover - covered by negative test
+            from codex_app_server import (
+                Codex,  # type: ignore[import-not-found,no-redef] # noqa: PLC0415
+            )
+    except ImportError as e:
+        raise CodexCLIUnavailableError(
+            "openai_codex SDK is not installed. Install the optional "
+            "extra with: pip install 'clio-agent[codex]'"
+        ) from e
+
+    sandbox_kwargs: dict[str, Any] = {"sandbox": sandbox} if sandbox else {}
+    with Codex() as codex:
+        thread = codex.thread_start(
+            model=model,
+            cwd=cwd,
+            ephemeral=True,
+            **sandbox_kwargs,
+        )
+        # The SDK's `run` blocks until the agent settles. Read-only
+        # sandbox + no instructions = a single model turn that produces
+        # the final answer. The optional `effort` knob keeps reasoning
+        # budgets tight.
+        result = thread.run(prompt)
+
+    text = (getattr(result, "final_response", "") or "").strip()
+    if not text:
+        raise CodexExecError(f"codex SDK returned empty content (model={model})")
+    return text
+
+
 def _build_model_response(
     *,
     text: str,
@@ -237,16 +303,35 @@ class CodexLLM(CustomLLM):
         # confuse the CLI.
         clean_model = model.removeprefix("codex/")
         prompt = _messages_to_codex_prompt(messages)
-        sandbox = (optional_params or {}).get("codex_sandbox", DEFAULT_SANDBOX)
-        cwd = (optional_params or {}).get("codex_cwd", os.getcwd())
-        timeout_s = float(timeout) if timeout else 120.0
-        text = _run_exec(
-            prompt=prompt,
-            model=clean_model,
-            sandbox=sandbox,
-            cwd=cwd,
-            timeout=timeout_s,
+        params = optional_params or {}
+        sandbox = params.get("codex_sandbox", DEFAULT_SANDBOX)
+        cwd = params.get("codex_cwd", os.getcwd())
+        transport = (
+            params.get("codex_transport")
+            or os.environ.get("CLIO_CODEX_TRANSPORT")
+            or DEFAULT_TRANSPORT
         )
+        timeout_s = float(timeout) if timeout else 120.0
+        if transport == "sdk":
+            text = _run_sdk(
+                prompt=prompt,
+                model=clean_model,
+                sandbox=sandbox,
+                cwd=cwd,
+                timeout=timeout_s,
+            )
+        elif transport == "exec":
+            text = _run_exec(
+                prompt=prompt,
+                model=clean_model,
+                sandbox=sandbox,
+                cwd=cwd,
+                timeout=timeout_s,
+            )
+        else:
+            raise CodexExecError(
+                f"unknown codex transport {transport!r} (expected 'exec' or 'sdk')"
+            )
         return _build_model_response(text=text, model=clean_model)
 
     async def acompletion(

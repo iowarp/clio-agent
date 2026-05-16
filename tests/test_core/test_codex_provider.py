@@ -260,6 +260,111 @@ class TestCodexLLM:
 # ---------------------------------------------------------------------
 
 
+class TestSDKTransport:
+    """The `sdk` transport requires the optional [codex] extra; we test
+    via mocking so the suite runs without the SDK installed."""
+
+    def test_sdk_path_routes_through_openai_codex(self, monkeypatch):
+        """When transport=sdk, the SDK is imported and thread.run is called."""
+        sdk_module = MagicMock()
+        codex_instance = MagicMock()
+        thread = MagicMock()
+        thread.run.return_value = MagicMock(final_response="sdk answer")
+        codex_instance.thread_start.return_value = thread
+        # Codex() is used as a context manager.
+        codex_instance.__enter__ = MagicMock(return_value=codex_instance)
+        codex_instance.__exit__ = MagicMock(return_value=False)
+        sdk_module.Codex = MagicMock(return_value=codex_instance)
+        monkeypatch.setitem(__import__("sys").modules, "openai_codex", sdk_module)
+
+        handler = CodexLLM()
+        resp = handler.completion(
+            model="codex/gpt-5",
+            messages=[{"role": "user", "content": "hi"}],
+            api_base="",
+            custom_prompt_dict={},
+            model_response=None,  # type: ignore[arg-type]
+            print_verbose=lambda *_: None,
+            encoding=None,
+            api_key=None,
+            logging_obj=None,
+            optional_params={"codex_transport": "sdk"},
+        )
+
+        assert resp.choices[0].message.content == "sdk answer"
+        codex_instance.thread_start.assert_called_once()
+        thread.run.assert_called_once_with("USER: hi")
+
+    def test_sdk_path_missing_extra_raises_actionable(self, monkeypatch):
+        """If neither openai_codex nor codex_app_server is importable, the
+        ImportError must point users at the [codex] extra."""
+        # Block the SDK imports.
+        import sys
+
+        monkeypatch.setitem(sys.modules, "openai_codex", None)
+        monkeypatch.setitem(sys.modules, "codex_app_server", None)
+
+        handler = CodexLLM()
+        with pytest.raises(CodexCLIUnavailableError, match=r"clio-agent\[codex\]"):
+            handler.completion(
+                model="codex/gpt-5",
+                messages=[{"role": "user", "content": "hi"}],
+                api_base="",
+                custom_prompt_dict={},
+                model_response=None,  # type: ignore[arg-type]
+                print_verbose=lambda *_: None,
+                encoding=None,
+                api_key=None,
+                logging_obj=None,
+                optional_params={"codex_transport": "sdk"},
+            )
+
+    def test_env_var_selects_transport(self, monkeypatch):
+        """CLIO_CODEX_TRANSPORT=sdk should route through the SDK path even
+        when optional_params doesn't override transport."""
+        monkeypatch.setenv("CLIO_CODEX_TRANSPORT", "sdk")
+        sdk_module = MagicMock()
+        codex_instance = MagicMock()
+        thread = MagicMock()
+        thread.run.return_value = MagicMock(final_response="env-routed sdk")
+        codex_instance.thread_start.return_value = thread
+        codex_instance.__enter__ = MagicMock(return_value=codex_instance)
+        codex_instance.__exit__ = MagicMock(return_value=False)
+        sdk_module.Codex = MagicMock(return_value=codex_instance)
+        monkeypatch.setitem(__import__("sys").modules, "openai_codex", sdk_module)
+
+        handler = CodexLLM()
+        resp = handler.completion(
+            model="codex/gpt-5",
+            messages=[{"role": "user", "content": "hi"}],
+            api_base="",
+            custom_prompt_dict={},
+            model_response=None,  # type: ignore[arg-type]
+            print_verbose=lambda *_: None,
+            encoding=None,
+            api_key=None,
+            logging_obj=None,
+            optional_params={},
+        )
+        assert resp.choices[0].message.content == "env-routed sdk"
+
+    def test_unknown_transport_raises(self):
+        handler = CodexLLM()
+        with pytest.raises(CodexExecError, match="unknown codex transport"):
+            handler.completion(
+                model="codex/gpt-5",
+                messages=[{"role": "user", "content": "hi"}],
+                api_base="",
+                custom_prompt_dict={},
+                model_response=None,  # type: ignore[arg-type]
+                print_verbose=lambda *_: None,
+                encoding=None,
+                api_key=None,
+                logging_obj=None,
+                optional_params={"codex_transport": "telepathy"},
+            )
+
+
 class TestEnsureRegistered:
     def test_registers_once(self):
         import litellm
