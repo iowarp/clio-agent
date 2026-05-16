@@ -1,7 +1,7 @@
 # Real-readiness gap log
 
 Honest list of what's wire-shape-only vs end-to-end-working when CLIO
-runs against a real LM (Meridian + Claude Haiku, OpenRouter + a free
+runs against a real LM (Anthropic Claude direct, OpenRouter + a free
 model). Drives what to fix before declaring v0.2 ready.
 
 Updated as gaps land or close.
@@ -40,8 +40,8 @@ Fix scope:
   "unavailable"` (or a new `lm_unconfigured` flag), open a modal
   asking for the four fields. Persist last value in
   `~/.config/gact/clio.json` so we don't ask twice.
-- Provider picker offers both Meridian (Claude Max) and OpenRouter
-  presets out of the box plus a custom slot.
+- Provider picker offers OpenAI / Anthropic / OpenRouter / LM Studio /
+  Ollama / Argonne ALCF presets out of the box plus a custom slot.
 
 ### 3. Tokens + cost stay zero with real Claude
 
@@ -49,7 +49,8 @@ Fix scope:
 need to read `dspy.LM.history` or the per-call `usage` after each
 forward and feed the numbers to the GACT layer. Otherwise the
 sidebar/footer chips and `/v1/metrics` claim zero usage every turn,
-which matters because the user is paying-by-quota through Meridian.
+which matters because the user is paying-by-quota through the
+upstream provider.
 
 Fix scope: add a `_extract_usage(pred, lm)` helper that pulls from
 DSPy's history, plumb through `app.state.agent.last_usage()` or
@@ -99,7 +100,7 @@ We DO NOT close an issue until:
 1. The capability flag is `true`.
 2. An integration test in `tests/test_integration_v0_2/` drives the
    capability through `clio-agent-gact` against a real LM.
-3. The test passes against Claude Haiku via Meridian AND a sanity
+3. The test passes against a real Anthropic Claude turn AND a sanity
    check passes against an OpenRouter free model (proves no
    Claude-specific assumption sneaked in).
 

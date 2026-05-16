@@ -60,9 +60,9 @@ import uuid
 from typing import Any
 
 try:
+    import uvicorn
     from fastapi import FastAPI, HTTPException
     from fastapi.responses import JSONResponse
-    import uvicorn
 except ImportError as exc:  # pragma: no cover
     raise SystemExit(
         "codex_bridge.py needs fastapi + uvicorn. Install via:\n"

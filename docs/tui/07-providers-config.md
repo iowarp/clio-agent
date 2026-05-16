@@ -85,36 +85,6 @@ Two LMs exist:
 
 Both are scoped per request via `dspy.context()` — no global model mutation (`CLAUDE.md` L30–133).
 
-## Provider path for Claude Max via Meridian
-
-DSPy's built-in Anthropic provider expects a pay-as-you-go API key. For dev on a **Claude Max subscription** (OAuth), use [Meridian](https://github.com/rynfar/meridian) — a TypeScript/Bun proxy that bridges Anthropic's official SDK (OAuth) to an OpenAI-compatible endpoint. CLIO + Meridian looks identical to "CLIO + any openai-compatible backend":
-
-```sh
-# 1. Run meridian (follow its README for OAuth bootstrap):
-meridian serve --port 4141 &
-
-# 2. Point CLIO at it:
-export CLIO_LM_PROVIDER=openai
-export CLIO_LM_API_BASE=http://127.0.0.1:4141/v1
-export CLIO_LM_API_KEY=any-placeholder      # meridian owns real auth
-export CLIO_LM_MODEL=claude-sonnet-4-5
-
-# 3. Launch CLIO as usual:
-clio-agent-api --host 127.0.0.1 --port 8000
-```
-
-Meridian's README lists Crush / OpenCode / Aider / Cline as known-good clients; CLIO slots into the same integration pattern. No DSPy or CLIO changes required — the proxy is invisible to both ends.
-
-Tradeoffs vs a native DSPy/Anthropic integration:
-
-- **+** No API-key cost during development.
-- **+** Reuses the user's existing Claude Max subscription session.
-- **+** Same knobs as any other openai-compatible setup (`CLIO_LM_PROVIDER=openai`, swap `API_BASE`).
-- **−** One extra process to supervise. If we ship this in a `gact agent deploy clio` adapter, the adapter should spawn/supervise meridian the same way it supervises `clio-agent-api`.
-- **−** Latency adds ~10–30 ms per hop (negligible relative to LM inference itself).
-
-For CI and non-interactive use where OAuth flow isn't viable, fall back to `openai` / `anthropic` with a real API key.
-
 ## Deployment modes
 
 | Mode | Start | State |

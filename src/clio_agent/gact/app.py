@@ -308,7 +308,8 @@ async def _run_turn_in_background(
             # router + expert + chat calls cleanly. Falls back to
             # ``last entry only`` for older code paths, then to a
             # character-based estimate when the upstream proxy
-            # reports zero (Meridian quirk on some chunked replies).
+            # reports zero (some OpenAI-compatible proxies don't
+            # populate usage on chunked replies).
             history_end = _snapshot_lm_history_index(app)
             history_made_calls = any(
                 history_end.get(k, 0) > history_start.get(k, 0)
@@ -931,10 +932,10 @@ def _usage_from_dspy_history() -> dict[str, Any]:
     cache_read = int(usage.get("cache_read_input_tokens") or 0)
     cache_write = int(usage.get("cache_creation_input_tokens") or 0)
     raw_cost = float(usage.get("cost_usd") or usage.get("total_cost") or 0.0)
-    # iowarp/clio-agent#8: Meridian (and some other proxies) don't
-    # pass cost_usd through the OpenAI-compatible response shape, so
-    # the upstream usage dict reports zero. Fall back to a per-token
-    # price table keyed by the LM's model id when raw_cost == 0.
+    # iowarp/clio-agent#8: some OpenAI-compatible proxies don't pass
+    # cost_usd through, so the upstream usage dict reports zero. Fall
+    # back to a per-token price table keyed by the LM's model id when
+    # raw_cost == 0.
     if raw_cost == 0.0:
         model = ""
         if isinstance(last, dict):
@@ -3355,7 +3356,7 @@ def build_app(
           AND globus-sdk is importable.
         - cloud (requires_api_key=True): api_key auth; authenticated when
           the matching env var is set.
-        - local (lm_studio/ollama/meridian/codex): no auth required;
+        - local (lm_studio/ollama/codex): no auth required;
           surface as ``["none"]``, always authenticated.
         """
         if preset.provider == "argonne":
@@ -3857,8 +3858,8 @@ def build_app(
           ALCF's /jobs endpoint (the vLLM /models proxy 405s on the
           gateway). Everyone else uses the OpenAI-compatible
           ``GET {api_base}/models`` discovery (Anthropic, OpenAI,
-          OpenRouter, LM Studio, Ollama, Meridian, vLLM-direct all
-          implement that shape).
+          OpenRouter, LM Studio, Ollama, vLLM-direct all implement
+          that shape).
         - Path is a bare provider kind (``argonne``, ``openai``):
           live-fetch using the kind's first registered preset's
           api_base + auth.

@@ -34,7 +34,6 @@ __author__ = "IOWarp Team"
 __all__ = [
     "ClioAgent",
     "setup_dspy",
-    "LMStudioConfig",
 ]
 
 # PEP 562 lazy attribute access. ``from clio_agent import ClioAgent``
@@ -52,8 +51,4 @@ def __getattr__(name: str):
         from clio_agent.config import setup_dspy  # noqa: PLC0415
 
         return setup_dspy
-    if name == "LMStudioConfig":
-        from clio_agent.config import LMStudioConfig  # noqa: PLC0415
-
-        return LMStudioConfig
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

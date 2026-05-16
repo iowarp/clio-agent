@@ -26,23 +26,6 @@ This folder is the spec and reference for building a first-class terminal UI on 
 - CLIO doesn't issue `session_id`s — the adapter/TUI owns them.
 - Cancellation, per-tool SSE events, and token streaming are **not** available today. Plan to fall back to post-hoc rendering, and upstream these as Phase 4 of the integration (see [09-integration-plan.md](09-integration-plan.md)).
 
-## Provider path for dev without paying for API credits
-
-DSPy's default Anthropic provider expects an API key. For local development on Claude Max subscriptions, route through **[Meridian](https://github.com/rynfar/meridian)** — a proxy that bridges Anthropic's official SDK (OAuth) to an OpenAI-compatible endpoint. CLIO then treats Claude Max like any custom `openai`-compatible backend:
-
-```sh
-# Launch meridian (see its own README for OAuth setup).
-meridian serve --port 4141 &
-
-# Point CLIO at it.
-export CLIO_LM_PROVIDER=openai
-export CLIO_LM_API_BASE=http://127.0.0.1:4141/v1
-export CLIO_LM_API_KEY=any-placeholder   # meridian handles real auth
-export CLIO_LM_MODEL=claude-sonnet-4-5
-```
-
-Already proven with Crush / OpenCode / Aider / Cline per Meridian's own README — same pattern applies here. See [07-providers-config.md](07-providers-config.md#provider-path-for-claude-max-via-meridian) for the TUI-side knobs.
-
 ## What this folder does NOT cover
 
 - SIMBA optimiser internals — enough in [08-semantics-and-lifecycle.md](08-semantics-and-lifecycle.md) for integration; deeper context in [`../SELF_IMPROVEMENT.md`](../SELF_IMPROVEMENT.md).
