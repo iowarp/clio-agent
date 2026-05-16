@@ -69,7 +69,7 @@ class Provider:
 
     # ----- wire kind --------------------------------------------------
     #: Drives ``LMProviderConfig.provider``. Multiple catalog entries can
-    #: share a kind (meridian, openrouter, codex-bridge all share
+    #: share a kind (e.g. openrouter and openai both share
     #: ``openai``); the entry flagged ``is_kind_default`` supplies the
     #: dict row in :func:`as_provider_defaults_dict`.
     provider_kind: ProviderKind

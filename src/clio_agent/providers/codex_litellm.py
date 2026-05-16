@@ -84,8 +84,7 @@ def _messages_to_codex_prompt(messages: list[dict[str, Any]]) -> str:
     Codex `exec` takes a single prompt string; DSPy / LiteLLM hand us
     the canonical ``[{role, content}, ...]`` shape that openai-compat
     backends consume. We collapse it to ``ROLE: content\\n\\n``
-    sections, with system messages preserved at the top, mirroring the
-    legacy ``scripts/codex_bridge.py:_messages_to_prompt`` helper.
+    sections with system messages preserved at the top.
     """
     parts: list[str] = []
     for msg in messages:
