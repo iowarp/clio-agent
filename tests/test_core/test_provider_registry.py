@@ -126,7 +126,14 @@ class TestLookups:
 class TestDerivedViews:
     def test_provider_defaults_keys_match_kinds(self) -> None:
         defaults = as_provider_defaults_dict()
-        assert set(defaults.keys()) == {"lm_studio", "ollama", "openai", "anthropic", "argonne"}
+        assert set(defaults.keys()) == {
+            "lm_studio",
+            "ollama",
+            "openai",
+            "anthropic",
+            "argonne",
+            "codex",
+        }
 
     def test_provider_defaults_have_required_keys(self) -> None:
         for kind, row in as_provider_defaults_dict().items():

@@ -313,34 +313,43 @@ PROVIDERS: tuple[Provider, ...] = (
     ),
     Provider(
         id="codex",
-        label="OpenAI Codex (via bridge)",
+        label="OpenAI Codex (subscription)",
         description=(
-            "Routes through scripts/codex_bridge.py which fronts the "
-            "Codex app-server SDK with an OpenAI-compatible HTTP "
-            "interface. Requires the bridge running locally (default "
-            "port 18900) and the `codex` binary on PATH. Will be "
-            "superseded by a LiteLLM CustomLLM in v0.6 (see #48)."
+            "Routes through the local `codex` CLI (`codex exec`) so "
+            "calls hit your ChatGPT / Codex subscription instead of "
+            "paying per-token on the OpenAI API. Requires the Codex "
+            "CLI on PATH and `codex login` done once per machine. "
+            "Implemented as a LiteLLM CustomLLM — no HTTP bridge "
+            "process needed."
         ),
-        provider_kind="openai",
-        api_base="http://127.0.0.1:18900/v1",
-        suggested_model="gpt-5.4",
+        provider_kind="codex",
+        # Codex doesn't use an HTTP base; the CustomLLM dispatches to a
+        # subprocess. Empty here is a registry marker, not a URL.
+        api_base="codex://exec",
+        suggested_model="gpt-5",
         requires_api_key=False,
         auth_method="none",
+        is_kind_default=True,
         model_catalog=(
-            ModelEntry(
-                "gpt-5.4",
-                "GPT-5.4 (via Codex)",
-                "Codex's reasoning-tuned default.",
-            ),
             ModelEntry(
                 "gpt-5",
                 "GPT-5 (via Codex)",
-                "Standard GPT-5 through the Codex app-server.",
+                "Standard GPT-5 through your Codex subscription.",
+            ),
+            ModelEntry(
+                "gpt-5-codex",
+                "GPT-5 Codex",
+                "Codex-tuned variant for code-heavy tasks.",
+            ),
+            ModelEntry(
+                "gpt-5.4",
+                "GPT-5.4 (via Codex)",
+                "Codex's reasoning-tuned variant.",
             ),
             ModelEntry(
                 "gpt-4.1",
                 "GPT-4.1 (via Codex)",
-                "Older GPT-4.1 routed through Codex.",
+                "Older GPT-4.1 routed through your subscription.",
             ),
         ),
     ),
