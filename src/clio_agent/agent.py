@@ -532,11 +532,10 @@ class ClioAgent(dspy.Module):
     ) -> dict[str, Any]:
         """Ask the planner for a validated JSON action.
 
-        Every backend (local LM Studio / Ollama included) routes through
-        ``dspy.context(lm=self._router_lm)`` — there is no raw-HTTP
-        side channel. When a local model returns malformed planner
-        output, the fix is prompt hardening in
-        ``AgentActionSignature``, not a side-channel.
+        All providers, including local OpenAI-compatible backends, must
+        route through DSPy/LiteLLM. Adapter or provider failures are
+        surfaced as routing errors rather than retried through a raw
+        HTTP side channel with different semantics.
         """
         observations_text = self._format_observations_for_prompt(observations)
         try:
@@ -943,12 +942,7 @@ class ClioAgent(dspy.Module):
                 trace.tools.append(observation)
 
     def _run_chat_agent(self, question: str, session_context: str) -> str:
-        """Generate a conversational reply via the DSPy chat agent.
-
-        Every backend routes through DSPy → LiteLLM. If the chat
-        signature returns an empty answer or the LM raises, that's
-        surfaced as-is — no raw-HTTP side channel.
-        """
+        """Generate a conversational reply through DSPy/LiteLLM."""
         try:
             result = self.chat_agent(question=question, session_context=session_context)
             answer = self._coerce_text(getattr(result, "answer", None)).strip()

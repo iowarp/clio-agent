@@ -209,8 +209,8 @@ class TestForwardDispatch:
         assert str(parquet_path) in call["question"]
         assert str(parquet_path) in call["file_context"]
 
-    def test_dispatch_chat_surfaces_dspy_parse_failure(self, agent):
-        """Local chat parse failures should surface instead of bypassing LiteLLM."""
+    def test_dispatch_chat_failure_surfaces_error_without_direct_provider_bypass(self, agent):
+        """Local chat failures must surface instead of using raw HTTP fallback."""
         self._set_planner(agent, {"action": "answer", "answer": ""})
 
         agent.chat_agent = MagicMock(
@@ -227,11 +227,11 @@ class TestForwardDispatch:
         )
 
         assert result.selected_expert == "chat"
-        assert "could not complete" in result.answer.lower()
         assert result.error_info is not None
         assert result.error_info["error"] == "expert_error"
-        assert result.error_info["details"]["selected"] == "chat"
-        assert "ChatAdapter failed to parse" in result.error_info["details"]["original_error"]
+        assert "ChatAdapter failed" in result.error_info["details"]["original_error"]
+        assert not hasattr(ClioAgent, "_direct_chat_completion")
+        assert not hasattr(ClioAgent, "_direct_action_completion")
 
     def test_dispatch_none_out_of_scope(self, agent):
         """Test routing to 'none' returns out-of-scope message."""
