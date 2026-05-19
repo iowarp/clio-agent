@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextvars
 import importlib.util
 import json
 import os
@@ -30,15 +31,42 @@ import threading
 import time
 import uuid
 from collections.abc import Mapping
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, AsyncIterator, Optional
+from typing import Any, AsyncIterator, Iterator, Optional
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from clio_agent.tools.file_policy import validate_write_path
+
+_ACTIVE_TOOL_SESSION_ID: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "clio_gact_active_tool_session_id",
+    default="",
+)
+
+
+@contextmanager
+def _tool_session_context(sid: str) -> Iterator[None]:
+    """Bind GACT tool hooks to the session driving the current turn."""
+    token = _ACTIVE_TOOL_SESSION_ID.set(sid)
+    try:
+        yield
+    finally:
+        _ACTIVE_TOOL_SESSION_ID.reset(token)
+
+
+def _resolve_tool_session(app: "FastAPI") -> tuple[str, Any | None]:
+    """Return the active turn session, falling back to recency for out-of-band calls."""
+    sid = _ACTIVE_TOOL_SESSION_ID.get().strip()
+    if sid:
+        return sid, app.state.sessions.get(sid)
+    sessions_by_recency = app.state.sessions.list()
+    if sessions_by_recency:
+        current = sessions_by_recency[0]
+        return current.id, current
+    return "", None
 
 
 def _format_sse(event: "Event") -> bytes:
@@ -237,23 +265,26 @@ async def _run_turn_in_background(
         except Exception:  # noqa: BLE001
             pass
 
-        pred = await _try_streamed_forward(
-            app, enriched_text, sid, _emit_chunk,
-            session_mode=getattr(sess, "mode", "chat"),
-            session_edit_mode=getattr(sess, "edit_mode", "diff"),
-        )
-        if pred is None:
-            loop = asyncio.get_running_loop()
-            pred = await loop.run_in_executor(
-                None,
-                lambda: _agent_forward_compat(
-                    app.state.agent,
-                    enriched_text,
-                    sid,
-                    getattr(sess, "mode", "chat"),
-                    getattr(sess, "edit_mode", "diff"),
-                ),
+        with _tool_session_context(sid):
+            pred = await _try_streamed_forward(
+                app, enriched_text, sid, _emit_chunk,
+                session_mode=getattr(sess, "mode", "chat"),
+                session_edit_mode=getattr(sess, "edit_mode", "diff"),
             )
+            if pred is None:
+                loop = asyncio.get_running_loop()
+                turn_context = contextvars.copy_context()
+                pred = await loop.run_in_executor(
+                    None,
+                    lambda: turn_context.run(
+                        _agent_forward_compat,
+                        app.state.agent,
+                        enriched_text,
+                        sid,
+                        getattr(sess, "mode", "chat"),
+                        getattr(sess, "edit_mode", "diff"),
+                    ),
+                )
         try:
             agent_obj._routing_mode_override = prev_routing  # type: ignore[attr-defined]
         except Exception:  # noqa: BLE001
@@ -1055,14 +1086,10 @@ def _make_permission_gate(app: "FastAPI"):
             return "deny"
         if not _is_destructive(name):
             return "allow"
-        # Find an active session to attach the permission to.
-        # Bridge calls don't carry session context today, so fall
-        # back to the most-recently-active session.
-        sid = ""
-        sessions_by_recency = app.state.sessions.list()
-        if sessions_by_recency:
-            sid = sessions_by_recency[0].id
-            current = sessions_by_recency[0]
+        # Prefer the session currently driving the turn. Recency is
+        # only a fallback for truly out-of-band tool calls.
+        sid, current = _resolve_tool_session(app)
+        if current is not None:
             # iowarp/clio-agent — plan_mode + architect mode reject
             # destructive tool calls without prompting. Read-only
             # contract is hard, not advisory.
@@ -1132,9 +1159,9 @@ def _make_tool_observer(app: "FastAPI"):
     """Build a callable suitable for MCPToolBridge.tool_observer.
 
     Publishes tool.call.started / tool.call.completed events into
-    the EventBus, attaching to the most-recently-active session
-    (bridge calls don't carry session context). Also appends each
-    completed call into ``app.state.tool_call_ledger[sid]`` so the
+    the EventBus, attaching to the active turn session when present
+    and falling back to recency only for out-of-band calls. Also
+    appends each completed call into ``app.state.tool_call_ledger[sid]`` so the
     turn handler can attach a per-turn ``tools_called`` list to the
     assistant message metadata even when the underlying expert
     didn't populate ``pred.tools_called`` itself (e.g. the
@@ -1147,10 +1174,9 @@ def _make_tool_observer(app: "FastAPI"):
         phase: Optional[str],
         error: Optional[str],
     ) -> None:
-        sessions_by_recency = app.state.sessions.list()
-        if not sessions_by_recency:
+        sid, _current = _resolve_tool_session(app)
+        if not sid:
             return
-        sid = sessions_by_recency[0].id
         if phase == "started":
             call_id = f"call_{uuid.uuid4().hex[:12]}"
             # Stash the per-thread call_id so the completion event
