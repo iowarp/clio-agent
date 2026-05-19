@@ -22,6 +22,7 @@ def test_get_lm_provider_unconfigured(tmp_path: Path) -> None:
         assert "openai" in ids
         assert "openrouter" in ids
         assert "lm_studio" in ids
+        assert "codex" in ids
 
 
 def test_health_lm_row_when_unconfigured(tmp_path: Path) -> None:

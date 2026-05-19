@@ -11,8 +11,8 @@ Release date: 2026-04-27
 > CLIO is the lab's scientific-data agent (HDF5 / Parquet inspection +
 > analysis + visualization, plus arbitrary MCP tools). The new release
 > ships with a full terminal UI and supports any LM provider you use
-> daily — OpenAI / ChatGPT, Claude (direct or via Meridian), or any
-> openai-compatible endpoint.
+> daily — OpenAI / ChatGPT, Anthropic Claude, OpenRouter, Codex, or
+> another OpenAI-compatible endpoint.
 >
 > **Five-minute install:**
 >
@@ -27,7 +27,8 @@ Release date: 2026-04-27
 > cd ../../clio-agent && uv run clio-agent-gact --port 17800 &
 >
 > # 3. Connect the TUI. The LM-config modal pops on first connect —
-> #    pick OpenAI / Claude / OpenRouter, paste your API key, save.
+> #    pick OpenAI / Anthropic / OpenRouter / Codex, paste your API key
+> #    if the provider needs one, save.
 > GACT_BACKEND=http://127.0.0.1:17800 ./gact
 > ```
 >
@@ -77,7 +78,7 @@ Each one is in `gact-tui/screenshots/` on the v0.2.1 tag:
 - Full integration suite: 16/16 strict in 95s, zero `xfail` markers.
 - Smoke install rehearsal documented in `LAB_USER_NOTES.md`.
 - Two real bugs caught + fixed during the rehearsal (chat fallback
-  gating, model-prefix doubling for Meridian) — both shipped in 0.3.1.
+  gating, OpenAI-compatible model-prefix handling) — both shipped in 0.3.1.
 
 ## Contact
 
