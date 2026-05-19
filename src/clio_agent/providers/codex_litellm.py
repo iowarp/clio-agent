@@ -104,7 +104,18 @@ def _messages_to_codex_prompt(messages: list[dict[str, Any]]) -> str:
 
 
 def _resolve_codex_binary() -> str:
-    """Return an absolute path to the ``codex`` binary or raise."""
+    """Return an absolute path to the ``codex`` binary or raise.
+
+    On Windows the npm shim ships as ``codex`` (a bash wrapper) +
+    ``codex.cmd`` (the launchable Win32 shim). ``shutil.which("codex")``
+    returns the bare wrapper, which ``subprocess.run`` can't exec without
+    ``shell=True`` (WinError 193). Prefer the ``.cmd`` variant when it
+    exists so the subprocess invocation stays shell-free.
+    """
+    if os.name == "nt":
+        cmd_path = shutil.which(f"{CODEX_BINARY_NAME}.cmd")
+        if cmd_path:
+            return cmd_path
     path = shutil.which(CODEX_BINARY_NAME)
     if not path:
         raise CodexCLIUnavailableError(
@@ -190,6 +201,33 @@ def _run_exec(
     return text
 
 
+def _import_codex_sdk() -> Any:
+    """Resolve the ``Codex`` class from the optional ``[codex]`` extra.
+
+    The package was renamed mid-2026 from ``codex_app_server`` to
+    ``openai_codex``; either may exist in the wild depending on when the
+    user installed. Raises a single actionable error if neither is
+    importable.
+    """
+    try:
+        from openai_codex import Codex  # type: ignore[import-not-found,no-redef] # noqa: PLC0415
+
+        return Codex
+    except ImportError:
+        pass
+    try:
+        from codex_app_server import (
+            Codex,  # type: ignore[import-not-found,no-redef] # noqa: PLC0415
+        )
+
+        return Codex
+    except ImportError as e:
+        raise CodexCLIUnavailableError(
+            "openai_codex SDK is not installed. Install the optional "
+            "extra with: pip install 'clio-agent[codex]'"
+        ) from e
+
+
 def _run_sdk(
     *,
     prompt: str,
@@ -210,21 +248,10 @@ def _run_sdk(
             (with an actionable install hint).
         CodexExecError: the thread returned no final response.
     """
-    try:
-        # The package ships as ``openai_codex`` after a 2026 rename.
-        # Earlier docs called it ``codex_app_server``; either name
-        # may show up in the wild, so try both.
-        try:
-            from openai_codex import Codex  # type: ignore[import-not-found] # noqa: PLC0415
-        except ImportError:  # pragma: no cover - covered by negative test
-            from codex_app_server import (
-                Codex,  # type: ignore[import-not-found,no-redef] # noqa: PLC0415
-            )
-    except ImportError as e:
-        raise CodexCLIUnavailableError(
-            "openai_codex SDK is not installed. Install the optional "
-            "extra with: pip install 'clio-agent[codex]'"
-        ) from e
+    # The package ships as ``openai_codex`` after a 2026 rename. Earlier
+    # docs called it ``codex_app_server``; either name may show up in
+    # the wild, so try both before raising the actionable error.
+    Codex = _import_codex_sdk()
 
     sandbox_kwargs: dict[str, Any] = {"sandbox": sandbox} if sandbox else {}
     with Codex() as codex:
@@ -297,10 +324,17 @@ class CodexLLM(CustomLLM):
         client: Any = None,
     ) -> ModelResponse:
         # LiteLLM passes the model with the `codex/` prefix stripped
-        # already (the provider routing layer ate it). If it didn't, we
-        # strip defensively so `codex exec --model codex/gpt-5` doesn't
-        # confuse the CLI.
-        clean_model = model.removeprefix("codex/")
+        # already. We also strip the leading `cdx-` namespace marker
+        # so the actual model id flows clean to `codex exec`.
+        #
+        # Why `cdx-`: LiteLLM's dispatcher short-circuits to the OpenAI
+        # handler when the bare model name (after the `codex/` split)
+        # matches an entry in `litellm.open_ai_chat_completion_models`
+        # — and every gpt-5* / gpt-4.1* name is in that list. Wrapping
+        # the model id with a `cdx-` prefix in the registry keeps the
+        # bare name unrecognizable to LiteLLM's openai-detect path so
+        # routing falls through to our custom handler.
+        clean_model = model.removeprefix("codex/").removeprefix("cdx-")
         prompt = _messages_to_codex_prompt(messages)
         params = optional_params or {}
         sandbox = params.get("codex_sandbox", DEFAULT_SANDBOX)
