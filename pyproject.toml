@@ -63,6 +63,16 @@ tools = [
     # pyarrow moved to core dependencies (v0.2.0)
 ]
 
+codex = [
+    # openai_codex Python SDK — controls the local Codex app-server
+    # over JSON-RPC. Used by clio_agent.providers.codex_litellm's
+    # in-process transport (`CLIO_CODEX_TRANSPORT=sdk`). The package
+    # is not published on PyPI; we git-pin against openai/codex's
+    # `main`. Bump the ref deliberately — there's no stable release
+    # cadence yet.
+    "openai-codex @ git+https://github.com/openai/codex.git@main#subdirectory=sdk/python",
+]
+
 iowarp = [
     "pyzmq>=25.0.0",             # ZeroMQ Python bindings for IOWarp CTE runtime
 ]
@@ -103,6 +113,11 @@ clio-agent-gact = "clio_agent.gact.app:main"
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+# Hatch requires this opt-in to allow git URLs in dependencies (we use
+# one for the optional [codex] extra — openai_codex isn't on PyPI yet).
+[tool.hatch.metadata]
+allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/clio_agent"]
