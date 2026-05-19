@@ -2140,16 +2140,15 @@ async def _construct_agent_async(app: "FastAPI") -> None:
 
         from clio_agent.agent import ClioAgent  # noqa: PLC0415
         from clio_agent.config import (  # noqa: PLC0415
+            create_chat_adapter,
             create_lm,
-            is_local_openai_compatible_backend,
             load_config_from_env,
         )
 
         cfg = load_config_from_env()
-        use_json_fallback = not is_local_openai_compatible_backend(cfg)
         dspy.configure(
             lm=create_lm(cfg),
-            adapter=dspy.ChatAdapter(use_json_adapter_fallback=use_json_fallback),
+            adapter=create_chat_adapter(cfg),
         )
         return ClioAgent(verbose=False)
 
@@ -5893,11 +5892,10 @@ def build_app(
             # task ownership check.
             new_lm = create_lm(cfg)
             from clio_agent.config import (  # noqa: PLC0415
+                create_chat_adapter,
                 create_router_lm,
-                is_local_openai_compatible_backend,
             )
-            use_json_fallback = not is_local_openai_compatible_backend(cfg)
-            new_adapter = dspy.ChatAdapter(use_json_adapter_fallback=use_json_fallback)
+            new_adapter = create_chat_adapter(cfg)
             try:
                 from dspy.dsp.utils.settings import main_thread_config  # noqa: PLC0415
                 main_thread_config["lm"] = new_lm
@@ -5909,19 +5907,22 @@ def build_app(
             # (ARC retriever, LSM tree, registry, expert instances,
             # tool gateways) is LM-independent — rebuilding it for
             # every Save+Connect costs ~5-10 s and is exactly the
-            # latency the user complained about. Three attribute
+            # latency the user complained about. These attribute
             # swaps cover the LM-dependent surface:
-            #   * _provider_config   → direct-chat fallback uses it
-            #   * _router_lm         → router runs with new lm
-            #   * dspy.settings.lm   → experts pick it up via
-            #                          dspy.context()
+            #   * _provider_config   -> health/config surfaces the new provider
+            #   * _main_lm           -> chat + answer synthesis use the new lm
+            #   * _router_lm         -> planner runs with the new lm
+            #   * _dspy_adapter      -> local backends keep text ChatAdapter mode
+            #   * dspy.settings.lm   -> experts pick it up via dspy.context()
             # Only rebuild from scratch when no agent yet exists
             # (first-connect lifecycle: the deferred-construction
             # task hasn't completed).
             existing = app.state.agent
             if existing is not None:
                 existing._provider_config = cfg
+                existing._main_lm = new_lm
                 existing._router_lm = create_router_lm(cfg)
+                existing._dspy_adapter = new_adapter
                 agent = existing
             else:
                 agent = await asyncio.get_running_loop().run_in_executor(

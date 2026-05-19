@@ -4,7 +4,10 @@ Tests for clio_agent.agent module.
 Tests ClioAgent Router + ChatAgent + Expert dispatch architecture.
 """
 
+from contextlib import contextmanager
 from unittest.mock import patch
+
+import dspy
 
 from clio_agent.agent import ClioAgent
 
@@ -131,6 +134,55 @@ class TestClioAgent:
         try:
             assert agent._provider_config.model == "nemotron-cascade-2-30b-a3b-i1"
             assert agent._router_lm.model == "openai/nemotron-cascade-2-30b-a3b-i1"
+        finally:
+            agent.shutdown()
+
+    def test_direct_lm_studio_agent_uses_text_chat_adapter(self, tmp_path, monkeypatch):
+        """Direct ClioAgent construction should not leak DSPy's JSON fallback."""
+        monkeypatch.setenv("CLIO_LM_PROVIDER", "lm_studio")
+        monkeypatch.setenv("CLIO_LM_API_BASE", "http://127.0.0.1:1234/v1")
+        monkeypatch.setenv("CLIO_LM_MODEL", "ibm/granite-4-h-tiny")
+
+        agent = ClioAgent(data_dir=str(tmp_path / "clio"))
+
+        try:
+            assert agent._main_lm.model == "openai/ibm/granite-4-h-tiny"
+            assert agent._router_lm.model == "openai/ibm/granite-4-h-tiny"
+            assert agent._dspy_adapter.use_json_adapter_fallback is False
+        finally:
+            agent.shutdown()
+
+    def test_planner_context_pins_provider_adapter(self, tmp_path, monkeypatch):
+        """Planner calls must use the agent-owned adapter, not DSPy's default."""
+        monkeypatch.setenv("CLIO_LM_PROVIDER", "lm_studio")
+        monkeypatch.setenv("CLIO_LM_API_BASE", "http://127.0.0.1:1234/v1")
+        monkeypatch.setenv("CLIO_LM_MODEL", "ibm/granite-4-h-tiny")
+
+        agent = ClioAgent(data_dir=str(tmp_path / "clio"))
+        calls: list[dict[str, object]] = []
+
+        @contextmanager
+        def fake_context(**kwargs: object):
+            calls.append(kwargs)
+            yield
+
+        try:
+            agent.action_planner = lambda **_: dspy.Prediction(
+                action_json='{"action":"answer","answer":"ok"}'
+            )
+            with patch("clio_agent.agent.dspy.context", side_effect=fake_context):
+                action = agent._plan_next_action(
+                    question="hi",
+                    session_context="",
+                    file_context="",
+                    capabilities="",
+                    observations=[],
+                )
+
+            assert action["answer"] == "ok"
+            assert calls[0]["lm"] is agent._router_lm
+            assert calls[0]["adapter"] is agent._dspy_adapter
+            assert agent._dspy_adapter.use_json_adapter_fallback is False
         finally:
             agent.shutdown()
 

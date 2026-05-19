@@ -65,6 +65,7 @@ def _dspy():
         _dspy_cache = dspy
     return _dspy_cache
 
+
 # ============================================================================
 # PROVIDER DEFAULTS — derived from clio_agent.providers.registry
 # ============================================================================
@@ -164,11 +165,7 @@ def _parse_env_line(line: str) -> tuple[str, str] | None:
         return None
 
     value = value.strip()
-    if (
-        len(value) >= 2
-        and value[0] == value[-1]
-        and value[0] in {"'", '"'}
-    ):
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
         value = value[1:-1]
     return key, value
 
@@ -196,9 +193,9 @@ class LMProviderConfig:
         environment: Deployment environment (dev/staging/production)
     """
 
-    provider: Literal[
-        "lm_studio", "ollama", "openai", "anthropic", "argonne", "codex"
-    ] = "lm_studio"
+    provider: Literal["lm_studio", "ollama", "openai", "anthropic", "argonne", "codex"] = (
+        "lm_studio"
+    )
     api_base: str = ""
     model: str = ""
     api_key: str = ""
@@ -458,7 +455,7 @@ def _resolve_model_name(config: LMProviderConfig) -> str:
         return f"codex/{bare}"
     bare = config.model
     if bare.startswith("openai/"):
-        bare = bare[len("openai/"):]
+        bare = bare[len("openai/") :]
     return f"openai/{bare}"
 
 
@@ -517,6 +514,19 @@ def create_router_lm(config: LMProviderConfig) -> dspy.LM:
         cache=False,  # see create_lm — same rationale
         **_thinking_kwargs(config),
     )
+
+
+def create_chat_adapter(config: LMProviderConfig) -> Any:
+    """Create the DSPy chat adapter appropriate for this provider.
+
+    Local OpenAI-compatible servers commonly reject DSPy's JSON adapter
+    fallback request format. They still work with ChatAdapter's text
+    protocol, so keep this decision in one place and reuse it anywhere an
+    LM context is installed.
+    """
+    dspy = _dspy()
+    use_json_fallback = not is_local_openai_compatible_backend(config)
+    return dspy.ChatAdapter(use_json_adapter_fallback=use_json_fallback)
 
 
 # ============================================================================
@@ -686,14 +696,10 @@ def setup_dspy(model: Optional[str] = None, verbose: bool = True) -> dspy.LM:
         print("  - Check CLIO_LM_* environment variables")
         raise
 
-    # Local OpenAI-compatible servers often reject LiteLLM's JSON mode fallback
-    # (`response_format={"type": "json_object"}`). Keep them on text chat
-    # formatting; cloud providers can still use DSPy's JSON fallback.
-    use_json_fallback = not is_local_openai_compatible_backend(config)
     dspy = _dspy()
     dspy.configure(
         lm=lm,
-        adapter=dspy.ChatAdapter(use_json_adapter_fallback=use_json_fallback),
+        adapter=create_chat_adapter(config),
     )
 
     return lm

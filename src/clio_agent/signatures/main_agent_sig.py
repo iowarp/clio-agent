@@ -29,15 +29,20 @@ class AgentActionSignature(dspy.Signature):
     {"action":"none","answer":"...","reason":"..."}
 
     Rules:
+    - The response must be valid single-line JSON. Escape any newline as \\n.
+    - Keep planner "answer" and "none" text to one concise sentence with no
+      markdown lists; full prose belongs to chat or expert synthesis.
     - Choose only tools and experts present in capabilities.
     - Call tools when local file facts, schema, datasets, statistics, or chart
       artifacts are needed.
-    - Delegate to an expert when the user asks for a higher-level task that
-      matches an expert's listed tools.
+    - Delegate to an expert only when the user asks to inspect, analyze, query,
+      visualize, or transform actual data/files, or current file context exists.
+      Use "answer" for general capability, workflow, or safety questions.
     - Do not choose an expert whose listed tools/file formats cannot inspect
       the current file context.
     - Answer directly only for conversation, capability questions, or after
       observations are sufficient.
+    - Do not repeat unrelated previous answers from session_context.
     - Never invent file-specific facts. Use only observations for file facts.
     - If a tool failed, answer with the failure and the next concrete action
       instead of pretending the file was inspected.
@@ -76,8 +81,8 @@ class RouterSignature(dspy.Signature):
     """
 
     question: str = dspy.InputField(desc="User's question or message")
-    selected_expert: Literal["chat", "data", "analysis", "visualization", "none"] = dspy.OutputField(
-        desc="Legacy route id: chat, data, analysis, visualization, or none"
+    selected_expert: Literal["chat", "data", "analysis", "visualization", "none"] = (
+        dspy.OutputField(desc="Legacy route id: chat, data, analysis, visualization, or none")
     )
 
 
@@ -101,7 +106,5 @@ class ChatAgentSignature(dspy.Signature):
     Keep responses concise but informative. Be confident and direct."""
 
     question: str = dspy.InputField(desc="User's question or message")
-    session_context: str = dspy.InputField(
-        desc="Relevant context from conversation history"
-    )
+    session_context: str = dspy.InputField(desc="Relevant context from conversation history")
     answer: str = dspy.OutputField(desc="CLIO's conversational response")
