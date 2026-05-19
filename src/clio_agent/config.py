@@ -12,7 +12,7 @@
 ClioAgent Configuration Module
 
 Multi-provider LM configuration with environment-based settings.
-Supports LM Studio, Ollama, OpenAI, and Anthropic providers.
+Supports local, cloud, OpenAI-compatible, Codex, and ALCF providers.
 
 Usage:
     >>> from clio_agent.config import setup_dspy
@@ -312,7 +312,7 @@ def load_config_from_env() -> LMProviderConfig:
     Reads CLIO_* environment variables with fallback to provider defaults.
 
     Environment variables:
-        CLIO_LM_PROVIDER: Provider name (lm_studio, ollama, openai, anthropic)
+        CLIO_LM_PROVIDER: Provider name (lm_studio, ollama, openai, anthropic, argonne, codex)
         CLIO_LM_API_BASE: Override API base URL
         CLIO_LM_MODEL: Override model identifier
         CLIO_LM_API_KEY: Override API key

@@ -18,7 +18,7 @@ def client(tmp_path: Path) -> TestClient:
 def test_providers_list_includes_known_presets(client: TestClient) -> None:
     body = client.get("/v1/providers").json()
     ids = {p["id"] for p in body["providers"]}
-    assert {"openai", "openrouter", "lm_studio", "ollama", "anthropic"} <= ids
+    assert {"openai", "openrouter", "lm_studio", "ollama", "anthropic", "codex"} <= ids
     for row in body["providers"]:
         assert row["name"]
         assert row["api_base"]
