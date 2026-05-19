@@ -484,10 +484,15 @@ async def _run_turn_in_background(
     for p in assistant_parts:
         if p.type != "file_diff":
             continue
+        write_content = (
+            p.new_content
+            if p.new_content or p.edit_mode in {"whole", "patch"}
+            else None
+        )
         bucket.append({
             "path": p.path,
             "unified_diff": p.unified_diff,
-            "new_content": p.new_content,
+            "new_content": write_content,
             "status": "pending",
             "part_id": p.id,
             "message_id": assistant_msg.id,
