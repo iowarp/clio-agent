@@ -391,6 +391,8 @@ def create_lm(config: LMProviderConfig) -> dspy.LM:
 
     For openai/anthropic, uses the provider prefix (e.g., 'openai/gpt-4o-mini').
     For lm_studio/ollama, uses 'openai/{model}' with custom api_base.
+    For codex, uses 'codex/{model}' routed through the LiteLLM
+    ``CustomLLM`` registered by ``providers.codex_litellm``.
 
     Args:
         config: LM provider configuration
@@ -399,6 +401,7 @@ def create_lm(config: LMProviderConfig) -> dspy.LM:
         Configured dspy.LM instance
     """
     dspy = _dspy()
+    _ensure_provider_registered(config)
     model_name = _resolve_model_name(config)
 
     extras = _thinking_kwargs(config)
@@ -419,10 +422,25 @@ def create_lm(config: LMProviderConfig) -> dspy.LM:
     )
 
 
+def _ensure_provider_registered(config: LMProviderConfig) -> None:
+    """Register provider-specific LiteLLM hooks before constructing dspy.LM.
+
+    Only the codex provider needs this today (it's a LiteLLM CustomLLM).
+    The import is gated on the provider so installs without the codex
+    binary don't pay the import cost.
+    """
+    if config.provider == "codex":
+        from clio_agent.providers.codex_litellm import ensure_registered  # noqa: PLC0415
+
+        ensure_registered()
+
+
 def _resolve_model_name(config: LMProviderConfig) -> str:
     """Prefix the configured model id for litellm.
 
     - ``openai`` / ``anthropic``: native litellm prefix.
+    - ``codex``: routes through the registered CustomLLM
+      (``providers.codex_litellm``) under the ``codex/`` prefix.
     - everything else (lm_studio, ollama, argonne, …): treated as
       OpenAI-compatible by litellm, so we prefix with ``openai/``.
 
@@ -435,6 +453,9 @@ def _resolve_model_name(config: LMProviderConfig) -> str:
     """
     if config.provider in ("openai", "anthropic"):
         return f"{config.provider}/{config.model}"
+    if config.provider == "codex":
+        bare = config.model.removeprefix("codex/")
+        return f"codex/{bare}"
     bare = config.model
     if bare.startswith("openai/"):
         bare = bare[len("openai/"):]
@@ -460,7 +481,7 @@ def _thinking_kwargs(config: LMProviderConfig) -> dict:
         return {}
     if config.provider == "anthropic":
         return {"thinking": {"type": "enabled", "budget_tokens": n}}
-    if config.provider in ("openai", "lm_studio", "ollama", "argonne"):
+    if config.provider in ("openai", "lm_studio", "ollama", "argonne", "codex"):
         if n < 2000:
             effort = "low"
         elif n < 8000:
@@ -483,6 +504,7 @@ def create_router_lm(config: LMProviderConfig) -> dspy.LM:
         Configured dspy.LM instance with lower temperature
     """
     dspy = _dspy()
+    _ensure_provider_registered(config)
     model_name = _resolve_model_name(config)
 
     return dspy.LM(
