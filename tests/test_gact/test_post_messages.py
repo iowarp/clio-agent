@@ -181,6 +181,31 @@ def test_post_message_agent_exception_populates_error_info(
         assert sess["status"] == "error"
 
 
+def test_post_message_agent_exception_includes_error_info_on_completed_event(
+    tmp_path: Path,
+) -> None:
+    from .conftest import complete_turn
+
+    failing_agent = FakeClioAgent(raise_on_forward=True)
+    app = build_app(
+        sessions_path=tmp_path / "s.json", agent=failing_agent
+    )
+    with TestClient(app) as c:
+        sid = c.post("/v1/sessions", json={"title": "x"}).json()["id"]
+        assistant = complete_turn(c, sid, "hi")
+
+    completed = [
+        ev for ev in app.state.bus._history.get(sid, [])
+        if ev.type == "message.completed"
+    ]
+    assert completed, "turn did not publish message.completed"
+    payload = completed[-1].payload
+    assert payload["message_id"] == assistant["id"]
+    assert payload["stop_reason"] == "error"
+    assert payload["error_info"]["error"] == "agent_error"
+    assert "simulated agent failure" in payload["error_info"]["message"]
+
+
 def test_post_message_without_routing_emits_text_only(
     tmp_path: Path,
 ) -> None:

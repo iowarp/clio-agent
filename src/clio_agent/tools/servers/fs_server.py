@@ -30,6 +30,7 @@ from fastmcp import FastMCP
 from clio_agent.tools.file_policy import (
     validate_non_empty_string,
     validate_read_path,
+    validate_write_path,
 )
 
 fs_server = FastMCP("fs")
@@ -78,12 +79,14 @@ def propose_edit(filepath: str, new_content: str) -> dict[str, Any]:
     """
 
     validate_non_empty_string(filepath, field="filepath")
-    safe = validate_read_path(filepath)
-    p = Path(safe)
+    safe_write = validate_write_path(filepath, field="filepath")
+    p = Path(safe_write)
     if not p.exists():
         # Treat as a new file — diff against empty.
         old = ""
     else:
+        safe_read = validate_read_path(str(p), field="filepath")
+        p = Path(safe_read)
         old = p.read_text(encoding="utf-8", errors="replace")
     new = new_content if isinstance(new_content, str) else str(new_content)
     diff_lines = list(difflib.unified_diff(
@@ -120,9 +123,8 @@ def apply_edit_write(filepath: str, new_content: str) -> dict[str, Any]:
     """
 
     validate_non_empty_string(filepath, field="filepath")
-    safe = validate_read_path(filepath)
+    safe = validate_write_path(filepath, field="filepath")
     p = Path(safe)
-    p.parent.mkdir(parents=True, exist_ok=True)
     body = new_content if isinstance(new_content, str) else str(new_content)
     p.write_text(body, encoding="utf-8")
     return {

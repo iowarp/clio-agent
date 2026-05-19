@@ -1,5 +1,7 @@
 """Tests for file access policy validation."""
 
+import pytest
+
 from clio_agent.tools.file_policy import FileAccessPolicy, FilePolicyError
 
 
@@ -52,7 +54,12 @@ def test_validate_read_rejects_symlink_by_default(tmp_path):
     real_file = tmp_path / "real.h5"
     real_file.write_bytes(b"content")
     link = tmp_path / "link.h5"
-    link.symlink_to(real_file)
+    try:
+        link.symlink_to(real_file)
+    except OSError as exc:
+        if getattr(exc, "winerror", None) == 1314:
+            pytest.skip("Windows symlink privilege is not available")
+        raise
     policy = FileAccessPolicy(allowed_roots=(tmp_path,))
 
     try:

@@ -1,120 +1,15 @@
 """
 Tests for clio_agent.config module.
 
-Tests LM Studio configuration classes and DSPy setup functions.
+The legacy LM-Studio-specific dataclasses (LMStudioConfig / RouterLMConfig
+/ ReasonerLMConfig) and their configure_dspy_*_lm_studio factories were
+removed alongside the provider registry refactor (umbrella iowarp/clio-
+agent#48, sprint #50). The canonical surface is now
+LMProviderConfig + create_lm() / create_router_lm() driven by the
+PROVIDER_DEFAULTS dict derived from clio_agent.providers.registry.
 """
 
-import dspy
-
-from clio_agent.config import (
-    LMStudioConfig,
-    ReasonerLMConfig,
-    RouterLMConfig,
-    configure_dspy_lm_studio,
-    configure_dspy_reasoner_lm_studio,
-    configure_dspy_router_lm_studio,
-    select_models_for_agents,
-)
-
-
-class TestLMStudioConfig:
-    """Test LM Studio configuration."""
-
-    def test_default_config(self):
-        """Test default LM Studio configuration values."""
-        config = LMStudioConfig()
-        assert config.base_url == "http://127.0.0.1:1234"
-        assert config.model == "ibm/granite-4-h-tiny"
-        assert config.temperature == 1.0
-        assert config.max_tokens == 32000
-        assert config.api_key == "lm-studio"
-
-    def test_custom_config(self):
-        """Test custom LM Studio configuration."""
-        config = LMStudioConfig(
-            base_url="http://localhost:1234",
-            model="custom-model",
-            temperature=0.5,
-        )
-        assert config.base_url == "http://localhost:1234"
-        assert config.model == "custom-model"
-        assert config.temperature == 0.5
-
-
-class TestRouterLMConfig:
-    """Test Router LM configuration."""
-
-    def test_default_temperature(self):
-        """Router should use low temperature for deterministic routing."""
-        config = RouterLMConfig()
-        assert config.temperature == 0.3
-
-    def test_default_model(self):
-        """Router should default to granite model."""
-        config = RouterLMConfig()
-        assert config.model == "ibm/granite-4-h-tiny"
-
-    def test_custom_model(self):
-        """Router config should accept custom model."""
-        config = RouterLMConfig(model="custom/router-model")
-        assert config.model == "custom/router-model"
-
-
-class TestReasonerLMConfig:
-    """Test Reasoner LM configuration."""
-
-    def test_default_temperature(self):
-        """Reasoner should use higher temperature for creativity."""
-        config = ReasonerLMConfig()
-        assert config.temperature == 1.0
-
-    def test_default_model(self):
-        """Reasoner should default to granite model."""
-        config = ReasonerLMConfig()
-        assert config.model == "ibm/granite-4-h-tiny"
-
-
-class TestConfigureFunctions:
-    """Test DSPy LM configuration functions."""
-
-    def test_configure_lm_studio_returns_lm(self):
-        """configure_dspy_lm_studio should return a dspy.LM instance."""
-        config = LMStudioConfig()
-        lm = configure_dspy_lm_studio(config)
-        assert isinstance(lm, dspy.LM)
-
-    def test_configure_lm_studio_default(self):
-        """configure_dspy_lm_studio with no args uses defaults."""
-        lm = configure_dspy_lm_studio()
-        assert isinstance(lm, dspy.LM)
-
-    def test_configure_lm_studio_does_not_duplicate_v1_suffix(self):
-        """Legacy LM Studio config should accept base URLs that already include /v1."""
-        config = LMStudioConfig(base_url="http://localhost:1234/v1")
-        lm = configure_dspy_lm_studio(config)
-        assert lm.kwargs["api_base"] == "http://localhost:1234/v1"
-
-    def test_configure_router_lm(self):
-        """configure_dspy_router_lm_studio should return a dspy.LM."""
-        config = RouterLMConfig()
-        lm = configure_dspy_router_lm_studio(config)
-        assert isinstance(lm, dspy.LM)
-
-    def test_configure_router_lm_default(self):
-        """configure_dspy_router_lm_studio with no args uses defaults."""
-        lm = configure_dspy_router_lm_studio()
-        assert isinstance(lm, dspy.LM)
-
-    def test_configure_reasoner_lm(self):
-        """configure_dspy_reasoner_lm_studio should return a dspy.LM."""
-        config = ReasonerLMConfig()
-        lm = configure_dspy_reasoner_lm_studio(config)
-        assert isinstance(lm, dspy.LM)
-
-    def test_configure_reasoner_lm_default(self):
-        """configure_dspy_reasoner_lm_studio with no args uses defaults."""
-        lm = configure_dspy_reasoner_lm_studio()
-        assert isinstance(lm, dspy.LM)
+from clio_agent.config import select_models_for_agents
 
 
 class TestSelectModels:

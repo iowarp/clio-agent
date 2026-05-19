@@ -38,6 +38,8 @@ from typing import Any, AsyncIterator, Optional
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
+from clio_agent.tools.file_policy import validate_write_path
+
 
 def _format_sse(event: "Event") -> bytes:
     """Render an Event as the SSE wire format (SPEC §7.2)::
@@ -308,7 +310,8 @@ async def _run_turn_in_background(
             # router + expert + chat calls cleanly. Falls back to
             # ``last entry only`` for older code paths, then to a
             # character-based estimate when the upstream proxy
-            # reports zero (Meridian quirk on some chunked replies).
+            # reports zero (some OpenAI-compatible proxies don't
+            # populate usage on chunked replies).
             history_end = _snapshot_lm_history_index(app)
             history_made_calls = any(
                 history_end.get(k, 0) > history_start.get(k, 0)
@@ -664,6 +667,8 @@ async def _run_turn_in_background(
         "tokens": dict(turn_tokens),
         "cost_usd": turn_cost,
     }
+    if error_info is not None:
+        completed_payload["error_info"] = error_info.model_dump(exclude_none=True)
     if tools_called:
         completed_payload["metadata"] = {"tools_called": tools_called}
     bus.publish(Event(
@@ -931,10 +936,10 @@ def _usage_from_dspy_history() -> dict[str, Any]:
     cache_read = int(usage.get("cache_read_input_tokens") or 0)
     cache_write = int(usage.get("cache_creation_input_tokens") or 0)
     raw_cost = float(usage.get("cost_usd") or usage.get("total_cost") or 0.0)
-    # iowarp/clio-agent#8: Meridian (and some other proxies) don't
-    # pass cost_usd through the OpenAI-compatible response shape, so
-    # the upstream usage dict reports zero. Fall back to a per-token
-    # price table keyed by the LM's model id when raw_cost == 0.
+    # iowarp/clio-agent#8: some OpenAI-compatible proxies don't pass
+    # cost_usd through, so the upstream usage dict reports zero. Fall
+    # back to a per-token price table keyed by the LM's model id when
+    # raw_cost == 0.
     if raw_cost == 0.0:
         model = ""
         if isinstance(last, dict):
@@ -1378,6 +1383,24 @@ def _apply_edit_to_disk(
     complete audit trail of every destructive operation.
     """
 
+    target = Path(path).resolve(strict=False)
+    # Workspace root scope.
+    ws = app.state.workspaces.get(session.workspace_id)
+    if ws is not None and ws.root_path:
+        try:
+            target.relative_to(Path(ws.root_path).resolve())
+        except ValueError as exc:
+            raise PermissionError(
+                f"refused to write {target} outside workspace root "
+                f"{ws.root_path}"
+            ) from exc
+    # Mode gate — plan + architect can't apply.
+    if session.mode in {"plan", "architect"}:
+        raise PermissionError(
+            f"refused to write under session.mode={session.mode!r}"
+        )
+    target = validate_write_path(path, field="path")
+
     # Audit row for the apply (auto-approved by the user's explicit
     # POST to /diffs/apply). Every destructive call lands in
     # /v1/permissions for compliance / replay.
@@ -1388,10 +1411,10 @@ def _apply_edit_to_disk(
         "session_id": session.id,
         "tool_call": {
             "tool_name": "fs_apply_edit_write",
-            "input": {"filepath": path, "new_content_bytes": len(new_content)},
+            "input": {"filepath": str(target), "new_content_bytes": len(new_content)},
         },
         "summary": (
-            f"diffs/apply: write {len(new_content)} bytes to {path}"
+            f"diffs/apply: write {len(new_content)} bytes to {target}"
         ),
         "created_at": now_iso,
         "status": "auto_approved",
@@ -1413,23 +1436,6 @@ def _apply_edit_to_disk(
             },
         ))
 
-    target = Path(path).resolve()
-    # Workspace root scope.
-    ws = app.state.workspaces.get(session.workspace_id)
-    if ws is not None and ws.root_path:
-        try:
-            target.relative_to(Path(ws.root_path).resolve())
-        except ValueError as exc:
-            raise PermissionError(
-                f"refused to write {target} outside workspace root "
-                f"{ws.root_path}"
-            ) from exc
-    # Mode gate — plan + architect can't apply.
-    if session.mode in {"plan", "architect"}:
-        raise PermissionError(
-            f"refused to write under session.mode={session.mode!r}"
-        )
-    target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(new_content, encoding="utf-8")
 
 
@@ -3355,7 +3361,7 @@ def build_app(
           AND globus-sdk is importable.
         - cloud (requires_api_key=True): api_key auth; authenticated when
           the matching env var is set.
-        - local (lm_studio/ollama/meridian/codex): no auth required;
+        - local (lm_studio/ollama/codex): no auth required;
           surface as ``["none"]``, always authenticated.
         """
         if preset.provider == "argonne":
@@ -3857,8 +3863,8 @@ def build_app(
           ALCF's /jobs endpoint (the vLLM /models proxy 405s on the
           gateway). Everyone else uses the OpenAI-compatible
           ``GET {api_base}/models`` discovery (Anthropic, OpenAI,
-          OpenRouter, LM Studio, Ollama, Meridian, vLLM-direct all
-          implement that shape).
+          OpenRouter, LM Studio, Ollama, vLLM-direct all implement
+          that shape).
         - Path is a bare provider kind (``argonne``, ``openai``):
           live-fetch using the kind's first registered preset's
           api_base + auth.

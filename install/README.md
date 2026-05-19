@@ -148,8 +148,8 @@ overrides as the installer.
    `$CLIO_PREFIX/clio-server.pid`.
 2. Sets `GACT_BACKEND=http://127.0.0.1:17800` and runs `gact`.
 3. The TUI pops the LM-provider config modal on first connect — pick a
-   preset (Meridian / Anthropic / OpenAI / OpenRouter / LM Studio /
-   Ollama), paste an API key if needed, save.
+   preset (OpenAI / Anthropic / OpenRouter / LM Studio / Ollama /
+   ALCF Sophia / Metis), paste an API key if needed, save.
 
 ## Mid-session provider swap (no env vars)
 
