@@ -25,9 +25,6 @@ client. This guide covers the common case: both together.
   - **OpenAI / ChatGPT** — needs `OPENAI_API_KEY` (most lab
     members; same key Codex CLI uses).
   - **Anthropic Claude direct** — needs `ANTHROPIC_API_KEY`.
-  - **Claude Max via Meridian** — Meridian proxies your Claude Max
-    OAuth as an OpenAI-compatible API. Cheapest if you have a Max
-    subscription. See [Meridian](https://github.com/rynfar/meridian).
   - **OpenRouter** — single key, many providers (incl. free
     tier models for testing).
   - **Local: LM Studio / Ollama** — fully on-device.
@@ -70,10 +67,10 @@ go build -o gact .
 ## Configure providers from inside the TUI (no env vars needed)
 
 The first time you run the TUI against an unconfigured backend, the
-**LM Provider** modal pops automatically — pick a preset (Meridian /
-Claude Max via Meridian / Anthropic API / OpenAI / OpenRouter / LM
-Studio / Ollama), paste an API key if needed, save. CLIO is wired
-in-place; the next message uses the new provider.
+**LM Provider** modal pops automatically — pick a preset (OpenAI /
+Anthropic API / OpenRouter / LM Studio / Ollama / ALCF Sophia /
+Metis), paste an API key if needed, save. CLIO is wired in-place;
+the next message uses the new provider.
 
 To swap mid-session: **Ctrl+S** → Settings → Model → **Change provider…**
 The same modal opens, you re-pick, save, and the next turn uses the new
@@ -127,15 +124,6 @@ Cost shows in the TUI footer per turn (e.g. `$0.0021  150 in / 800 out`).
 The cost-meter price table tracks `gpt-4o-mini` ($0.15/$0.60 per M)
 and `gpt-4o` ($2.5/$10 per M); other OpenAI models fall through to
 zero — file an issue if you need a model added to the table.
-
-### Meridian (Claude Max)
-
-If you have a Claude Max subscription, install Meridian once
-(`npm install -g @rynfar/meridian` then `meridian start`) and use:
-- `provider: openai-compatible`
-- `api_base: http://127.0.0.1:3456/v1`
-- `model: claude-haiku-4-5-20251001` (or sonnet/opus)
-- `api_key: anything` (Meridian doesn't validate)
 
 ### OpenRouter
 

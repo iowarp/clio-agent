@@ -4,7 +4,7 @@ Used by gact-tui's ``screenshot_clio_e2e.tape`` VHS recording +
 CLIO-BBBBBBBBBB14 end-to-end smoke. It binds the same ``build_app``
 the production ``clio-agent-gact`` console script builds, but with
 ``agent=FakeClioAgent()`` so the POST message path returns without
-needing an LM, DSPy config, API keys, or Meridian.
+needing an LM, DSPy config, or API keys.
 
 Not an alternate production path — it lives under ``scripts/`` and
 its entry point is spelled differently (``clio-agent-gact-smoke``)
