@@ -228,6 +228,7 @@ async def _run_turn_in_background(
                         id=streamed_assistant_part_id,
                         type="text",
                         text="",
+                        metadata={"stream_source": "live"},
                     ).model_dump(exclude_none=True),
                 },
             ))
@@ -238,6 +239,7 @@ async def _run_turn_in_background(
             payload={
                 "message_id": streamed_assistant_msg_id,
                 "part_id": streamed_assistant_part_id,
+                "stream_source": "live",
                 "delta": {"text_append": text},
             },
         ))
@@ -478,6 +480,13 @@ async def _run_turn_in_background(
         ))
 
     assistant_metadata: dict[str, Any] = {}
+    text_stream_source = (
+        "live"
+        if streamed_assistant_part_id is not None
+        else "synthetic_posthoc"
+    ) if answer_text else ""
+    if text_stream_source:
+        assistant_metadata["stream_source"] = text_stream_source
     if tools_called:
         assistant_metadata["tools_called"] = tools_called
     # iowarp/clio-agent#6: when streaming actually emitted chunks,
@@ -627,12 +636,17 @@ async def _run_turn_in_background(
                     payload={
                         "message_id": assistant_msg.id,
                         "part_id": part.id,
+                        "stream_source": "live",
                         "final_text": part.text,
                     },
                 ))
                 continue
             stub = part.model_copy(deep=True)
             stub.text = ""
+            stub.metadata = {
+                **stub.metadata,
+                "stream_source": "synthetic_posthoc",
+            }
             bus.publish(Event(
                 type="message.part.added",
                 session_id=sid,
@@ -649,6 +663,7 @@ async def _run_turn_in_background(
                     payload={
                         "message_id": assistant_msg.id,
                         "part_id": part.id,
+                        "stream_source": "synthetic_posthoc",
                         "delta": {"text_append": full[i:i + _CHUNK]},
                     },
                 ))
@@ -658,6 +673,7 @@ async def _run_turn_in_background(
                 payload={
                     "message_id": assistant_msg.id,
                     "part_id": part.id,
+                    "stream_source": "synthetic_posthoc",
                 },
             ))
         else:
@@ -705,8 +721,8 @@ async def _run_turn_in_background(
     }
     if error_info is not None:
         completed_payload["error_info"] = error_info.model_dump(exclude_none=True)
-    if tools_called:
-        completed_payload["metadata"] = {"tools_called": tools_called}
+    if assistant_metadata:
+        completed_payload["metadata"] = assistant_metadata
     bus.publish(Event(
         type="message.completed",
         session_id=sid,
