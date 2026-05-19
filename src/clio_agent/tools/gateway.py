@@ -78,10 +78,16 @@ def list_capabilities() -> list[dict[str, str]]:
             return await client.list_tools()
 
     try:
-        tools = asyncio.run(_list())
+        asyncio.get_running_loop()
     except RuntimeError:
-        # If already in an event loop, create a new one in a thread
+        tools = asyncio.run(_list())
+    else:
+        # If already in an event loop, create a new one in a thread.
+        # Avoid calling asyncio.run(_list()) first: that creates a
+        # coroutine object before asyncio.run raises, which leaks an
+        # unawaited-coroutine warning even though the fallback succeeds.
         import concurrent.futures
+
         with concurrent.futures.ThreadPoolExecutor() as pool:
             tools = pool.submit(lambda: asyncio.run(_list())).result()
 

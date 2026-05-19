@@ -5,12 +5,18 @@ Tests gateway routing with namespaced tool names using
 in-memory Client(gateway) pattern.
 """
 
+import gc
 import json
 
 import pytest
 from fastmcp import Client
 
-from clio_agent.tools.gateway import _mount_with_namespace, gateway, get_gateway
+from clio_agent.tools.gateway import (
+    _mount_with_namespace,
+    gateway,
+    get_gateway,
+    list_capabilities,
+)
 
 
 def _parse_result(result):
@@ -136,6 +142,22 @@ async def test_get_gateway_helper():
     gw = get_gateway()
     assert gw is gateway
     assert gw.name == "clio-gateway"
+
+
+@pytest.mark.asyncio
+async def test_list_capabilities_inside_running_loop_has_no_unawaited_warning(recwarn):
+    """Sync capability listing must not leak coroutine warnings in async callers."""
+
+    caps = list_capabilities()
+    assert {c["server"] for c in caps} >= {"hdf5", "parquet", "fs"}
+
+    gc.collect()
+    leaked = [
+        warning for warning in recwarn
+        if issubclass(warning.category, RuntimeWarning)
+        and "was never awaited" in str(warning.message)
+    ]
+    assert leaked == []
 
 
 @pytest.mark.asyncio
