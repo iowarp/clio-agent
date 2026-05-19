@@ -29,7 +29,6 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 import dspy
-import requests
 
 from clio_agent.arc.lsm import LSMTree
 from clio_agent.arc.memory import ARCMemory
@@ -44,7 +43,6 @@ from clio_agent.config import (
     create_router_lm,
     fetch_lm_studio_models,
     has_explicit_model_override,
-    is_local_openai_compatible_backend,
     load_config_from_env,
     select_models_for_agents,
 )
@@ -532,7 +530,13 @@ class ClioAgent(dspy.Module):
         capabilities: str,
         observations: list[dict[str, Any]],
     ) -> dict[str, Any]:
-        """Ask the planner for a validated JSON action."""
+        """Ask the planner for a validated JSON action.
+
+        All providers, including local OpenAI-compatible backends, must
+        route through DSPy/LiteLLM. Adapter or provider failures are
+        surfaced as routing errors rather than retried through a raw
+        HTTP side channel with different semantics.
+        """
         observations_text = self._format_observations_for_prompt(observations)
         try:
             with dspy.context(lm=self._router_lm):
@@ -546,73 +550,11 @@ class ClioAgent(dspy.Module):
             return self._parse_action_json(getattr(result, "action_json", ""))
         except Exception as planner_error:
             if self.verbose:
-                print(f"[Planner] DSPy planner failed, trying direct JSON call: {planner_error}")
-
-            if not is_local_openai_compatible_backend(self._provider_config):
-                raise RoutingError(
-                    "Agent planner failed to produce an action.",
-                    details={"original_error": str(planner_error)},
-                ) from planner_error
-
-            try:
-                raw = self._direct_action_completion(
-                    question=question,
-                    session_context=session_context,
-                    file_context=file_context,
-                    capabilities=capabilities,
-                    observations=observations_text,
-                )
-                return self._parse_action_json(raw)
-            except Exception as fallback_error:
-                raise RoutingError(
-                    "Agent planner failed through DSPy and direct JSON fallback.",
-                    details={
-                        "planner_error": str(planner_error),
-                        "fallback_error": str(fallback_error),
-                    },
-                ) from fallback_error
-
-    def _direct_action_completion(
-        self,
-        *,
-        question: str,
-        session_context: str,
-        file_context: str,
-        capabilities: str,
-        observations: str,
-    ) -> str:
-        """Call the local OpenAI-compatible backend for one planner JSON object."""
-        headers = {"Content-Type": "application/json"}
-        if self._provider_config.api_key:
-            headers["Authorization"] = f"Bearer {self._provider_config.api_key}"
-
-        system_prompt = (AgentActionSignature.__doc__ or "").strip()
-        user_prompt = (
-            f"Question:\n{question}\n\n"
-            f"Session context:\n{session_context}\n\n"
-            f"File context:\n{file_context or 'No current file context'}\n\n"
-            f"Capabilities:\n{capabilities}\n\n"
-            f"Observations:\n{observations}\n\n"
-            "Return one JSON object only."
-        )
-        payload = {
-            "model": self._provider_config.model,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            "temperature": self._provider_config.temperature,
-            "max_tokens": self._provider_config.max_tokens,
-        }
-
-        response = requests.post(
-            f"{self._provider_config.api_base.rstrip('/')}/chat/completions",
-            json=payload,
-            headers=headers,
-            timeout=120,
-        )
-        response.raise_for_status()
-        return self._extract_chat_completion_text(response.json()).strip()
+                print(f"[Planner] DSPy planner failed: {planner_error}")
+            raise RoutingError(
+                "Agent planner failed to produce an action.",
+                details={"original_error": str(planner_error)},
+            ) from planner_error
 
     def _dispatch_expert_action(
         self,
@@ -1000,7 +942,7 @@ class ClioAgent(dspy.Module):
                 trace.tools.append(observation)
 
     def _run_chat_agent(self, question: str, session_context: str) -> str:
-        """Generate a conversational reply, falling back for local backends."""
+        """Generate a conversational reply through DSPy/LiteLLM."""
         try:
             result = self.chat_agent(question=question, session_context=session_context)
             answer = self._coerce_text(getattr(result, "answer", None)).strip()
@@ -1009,73 +951,8 @@ class ClioAgent(dspy.Module):
             raise ValueError("Chat agent returned an empty answer.")
         except Exception as chat_error:
             if self.verbose:
-                print(f"[ClioAgent] ChatAgent failed, trying direct fallback: {chat_error}")
-
-            if not is_local_openai_compatible_backend(self._provider_config):
-                raise
-
-            try:
-                return self._direct_chat_completion(question, session_context)
-            except Exception as fallback_error:
-                raise RuntimeError(
-                    f"ChatAgent failed ({chat_error}); direct fallback failed ({fallback_error})"
-                ) from fallback_error
-
-    def _direct_chat_completion(self, question: str, session_context: str) -> str:
-        """Call the configured OpenAI-compatible chat endpoint directly."""
-        headers = {"Content-Type": "application/json"}
-        if self._provider_config.api_key:
-            headers["Authorization"] = f"Bearer {self._provider_config.api_key}"
-
-        system_prompt = self._build_direct_chat_system_prompt(session_context)
-        payload = {
-            "model": self._provider_config.model,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": question},
-            ],
-            "temperature": self._provider_config.temperature,
-            "max_tokens": self._provider_config.max_tokens,
-        }
-
-        response = requests.post(
-            f"{self._provider_config.api_base.rstrip('/')}/chat/completions",
-            json=payload,
-            headers=headers,
-            timeout=60,
-        )
-        response.raise_for_status()
-        data = response.json()
-        answer = self._extract_chat_completion_text(data).strip()
-        if not answer:
-            raise ValueError("Direct chat completion returned empty content.")
-        return answer
-
-    @staticmethod
-    def _build_direct_chat_system_prompt(session_context: str) -> str:
-        """Build the system prompt used by the direct chat fallback."""
-        prompt = (ChatAgentSignature.__doc__ or "").strip()
-        if session_context and session_context != "No prior context":
-            return f"{prompt}\n\nRelevant session context:\n{session_context}"
-        return prompt
-
-    @staticmethod
-    def _extract_chat_completion_text(payload: Dict[str, Any]) -> str:
-        """Extract assistant text from an OpenAI-compatible chat response."""
-        try:
-            content = payload["choices"][0]["message"]["content"]
-        except (KeyError, IndexError, TypeError) as exc:
-            raise ValueError(f"Unexpected chat completion payload: {payload}") from exc
-
-        if isinstance(content, list):
-            text_parts = [
-                part.get("text", "")
-                for part in content
-                if isinstance(part, dict) and isinstance(part.get("text"), str)
-            ]
-            return "\n".join(part for part in text_parts if part).strip()
-
-        return ClioAgent._coerce_text(content)
+                print(f"[ClioAgent] ChatAgent failed: {chat_error}")
+            raise
 
     @staticmethod
     def _default_artifact_root(filepath: Path) -> Path:
