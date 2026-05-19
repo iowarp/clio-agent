@@ -451,8 +451,8 @@ def _resolve_model_name(config: LMProviderConfig) -> str:
     if config.provider in ("openai", "anthropic"):
         return f"{config.provider}/{config.model}"
     if config.provider == "codex":
-        bare = config.model.removeprefix("codex/")
-        return f"codex/{bare}"
+        bare = config.model.removeprefix("codex/").removeprefix("cdx-")
+        return f"codex/cdx-{bare}"
     bare = config.model
     if bare.startswith("openai/"):
         bare = bare[len("openai/") :]

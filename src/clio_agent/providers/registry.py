@@ -295,29 +295,23 @@ PROVIDERS: tuple[Provider, ...] = (
         # Codex doesn't use an HTTP base; the CustomLLM dispatches to a
         # subprocess. Empty here is a registry marker, not a URL.
         api_base="codex://exec",
-        # Model ids are prefixed with `cdx-` so that after LiteLLM
-        # strips the `codex/` provider prefix, the bare model name
-        # (e.g. `cdx-gpt-5`) isn't in `litellm.open_ai_chat_completion
-        # _models` — which would otherwise short-circuit dispatch to
-        # the OpenAI handler. The CustomLLM strips `cdx-` before
-        # invoking the actual `codex exec --model gpt-5`.
-        suggested_model="cdx-gpt-5.5",
+        suggested_model="gpt-5.5",
         requires_api_key=False,
         auth_method="none",
         is_kind_default=True,
         model_catalog=(
             ModelEntry(
-                "cdx-gpt-5.5",
+                "gpt-5.5",
                 "GPT-5.5 (via Codex)",
                 "Codex's current default for ChatGPT-account users.",
             ),
             ModelEntry(
-                "cdx-gpt-5-codex",
+                "gpt-5-codex",
                 "GPT-5 Codex",
                 "Codex-tuned variant for code-heavy tasks (subscription-permitting).",
             ),
             ModelEntry(
-                "cdx-gpt-4.1",
+                "gpt-4.1",
                 "GPT-4.1 (via Codex)",
                 "Older GPT-4.1 routed through your subscription (if available).",
             ),

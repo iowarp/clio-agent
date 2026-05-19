@@ -212,6 +212,18 @@ class TestCreateLM:
             lm = create_lm(config)
             assert lm.model.startswith("anthropic/")
 
+    def test_codex_uses_custom_provider_prefix_with_internal_marker(self):
+        """Codex should keep user-facing model ids clean and mark internally."""
+        config = LMProviderConfig(provider="codex", model="gpt-5.5")
+        lm = create_lm(config)
+        assert lm.model == "codex/cdx-gpt-5.5"
+
+    def test_codex_model_marker_is_not_doubled(self):
+        """Codex should accept already-prefixed config values idempotently."""
+        config = LMProviderConfig(provider="codex", model="codex/cdx-gpt-5.5")
+        lm = create_lm(config)
+        assert lm.model == "codex/cdx-gpt-5.5"
+
     def test_each_provider_returns_lm(self):
         """All providers should produce valid dspy.LM instances."""
         for provider in ("lm_studio", "ollama"):

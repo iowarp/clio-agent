@@ -327,9 +327,9 @@ class CodexLLM(CustomLLM):
         # handler when the bare model name (after the `codex/` split)
         # matches an entry in `litellm.open_ai_chat_completion_models`
         # — and every gpt-5* / gpt-4.1* name is in that list. Wrapping
-        # the model id with a `cdx-` prefix in the registry keeps the
-        # bare name unrecognizable to LiteLLM's openai-detect path so
-        # routing falls through to our custom handler.
+        # the model id with a `cdx-` prefix in config._resolve_model_name
+        # keeps the bare name unrecognizable to LiteLLM's openai-detect
+        # path while keeping user-facing model ids clean.
         clean_model = model.removeprefix("codex/").removeprefix("cdx-")
         prompt = _messages_to_codex_prompt(messages)
         params = optional_params or {}

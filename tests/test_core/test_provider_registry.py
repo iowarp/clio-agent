@@ -73,11 +73,12 @@ class TestRegistryInvariants:
             )
             seen.add(p.provider_kind)
 
-    @pytest.mark.parametrize("kind", ["lm_studio", "ollama", "openai", "anthropic", "argonne"])
+    @pytest.mark.parametrize(
+        "kind", ["lm_studio", "ollama", "openai", "anthropic", "argonne", "codex"]
+    )
     def test_each_active_kind_has_a_default(self, kind: str) -> None:
         # Sanity: every wire kind currently in PROVIDER_DEFAULTS must
-        # have exactly one is_kind_default entry. (codex is widened
-        # into the Literal but the provider entry lands in sprint #3.)
+        # have exactly one is_kind_default entry.
         assert kind_default(kind) is not None, (
             f"no kind default for {kind}; PROVIDER_DEFAULTS will lose this row"
         )
@@ -167,6 +168,12 @@ class TestDerivedViews:
         # ("argonne") must also be present for legacy callers that look
         # up by wire kind.
         assert "argonne" in models
+
+    def test_codex_catalog_uses_user_facing_model_ids(self) -> None:
+        models = as_provider_models_dict()["codex"]
+        ids = {row["id"] for row in models}
+        assert "gpt-5.5" in ids
+        assert all(not model_id.startswith("cdx-") for model_id in ids)
 
 
 # ---------------------------------------------------------------------
