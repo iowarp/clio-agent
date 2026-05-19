@@ -40,6 +40,8 @@ from clio_agent.arc.schema import (
     RoutingDecision,
 )
 from clio_agent.config import (
+    create_chat_adapter,
+    create_lm,
     create_router_lm,
     fetch_lm_studio_models,
     has_explicit_model_override,
@@ -152,7 +154,9 @@ class ClioAgent(dspy.Module):
             print(f"[ClioAgent] Expert model: {expert_model}")
 
         # Planner: a model-chosen action loop over live capabilities.
+        self._main_lm = create_lm(self._provider_config)
         self._router_lm = create_router_lm(self._provider_config)
+        self._dspy_adapter = create_chat_adapter(self._provider_config)
         self.action_planner = dspy.Predict(AgentActionSignature)
         self.answer_synthesizer = dspy.Predict(AgentAnswerSignature)
         self.router = self.action_planner
@@ -538,7 +542,7 @@ class ClioAgent(dspy.Module):
         """
         observations_text = self._format_observations_for_prompt(observations)
         try:
-            with dspy.context(lm=self._router_lm):
+            with dspy.context(lm=self._router_lm, adapter=self._dspy_adapter):
                 result = self.action_planner(
                     question=question,
                     session_context=session_context,
@@ -548,6 +552,9 @@ class ClioAgent(dspy.Module):
                 )
             return self._parse_action_json(getattr(result, "action_json", ""))
         except Exception as planner_error:
+            raw_action = self._parse_action_from_adapter_error(planner_error)
+            if raw_action is not None:
+                return raw_action
             if self.verbose:
                 print(f"[Planner] DSPy planner failed: {planner_error}")
             raise RoutingError(
@@ -576,31 +583,34 @@ class ClioAgent(dspy.Module):
 
         expert_question = self._question_with_file_context(question, file_context)
         try:
-            if expert_id == "data":
-                expert_result = self.data_expert(
-                    question=expert_question, file_context=file_context
-                )
-                self._merge_expert_provenance(trace, expert_result)
-                answer = (
-                    f"{expert_result.analysis}\n\nRecommendations:\n{expert_result.recommendations}"
-                )
-                return "data", answer, expert_result, None
+            with dspy.context(lm=self._main_lm, adapter=self._dspy_adapter):
+                if expert_id == "data":
+                    expert_result = self.data_expert(
+                        question=expert_question, file_context=file_context
+                    )
+                    self._merge_expert_provenance(trace, expert_result)
+                    answer = (
+                        f"{expert_result.analysis}\n\n"
+                        f"Recommendations:\n{expert_result.recommendations}"
+                    )
+                    return "data", answer, expert_result, None
 
-            if expert_id == "analysis":
-                expert_result = self.analysis_expert(
+                if expert_id == "analysis":
+                    expert_result = self.analysis_expert(
+                        question=expert_question,
+                        file_context=file_context,
+                    )
+                    self._merge_expert_provenance(trace, expert_result)
+                    answer = (
+                        f"{expert_result.analysis}\n\n"
+                        f"Recommendations:\n{expert_result.recommendations}"
+                    )
+                    return "analysis", answer, expert_result, None
+
+                expert_result = self.visualization_expert(
                     question=expert_question,
                     file_context=file_context,
                 )
-                self._merge_expert_provenance(trace, expert_result)
-                answer = (
-                    f"{expert_result.analysis}\n\nRecommendations:\n{expert_result.recommendations}"
-                )
-                return "analysis", answer, expert_result, None
-
-            expert_result = self.visualization_expert(
-                question=expert_question,
-                file_context=file_context,
-            )
             description = self._coerce_text(
                 getattr(expert_result, "visualization_description", "")
             ).strip()
@@ -714,7 +724,7 @@ class ClioAgent(dspy.Module):
         """Produce a final answer from observations, with a deterministic fallback."""
         observations_text = self._format_observations_for_prompt(observations)
         try:
-            with dspy.context(lm=self._router_lm):
+            with dspy.context(lm=self._main_lm, adapter=self._dspy_adapter):
                 result = self.answer_synthesizer(
                     question=question,
                     session_context=session_context,
@@ -927,8 +937,14 @@ class ClioAgent(dspy.Module):
                     text = text[start : end + 1]
             try:
                 decoded = json.loads(text)
-            except json.JSONDecodeError as exc:
-                raise ValueError(f"Planner returned invalid JSON action: {raw!r}") from exc
+            except json.JSONDecodeError:
+                start = text.find("{")
+                if start < 0:
+                    raise ValueError(f"Planner returned invalid JSON action: {raw!r}") from None
+                try:
+                    decoded, _ = json.JSONDecoder().raw_decode(text[start:])
+                except json.JSONDecodeError as exc:
+                    raise ValueError(f"Planner returned invalid JSON action: {raw!r}") from exc
             if not isinstance(decoded, dict):
                 raise ValueError(f"Planner action must be a JSON object: {raw!r}")
 
@@ -937,6 +953,27 @@ class ClioAgent(dspy.Module):
             raise ValueError(f"Planner returned unsupported action: {decoded!r}")
         decoded["action"] = action
         return decoded
+
+    @classmethod
+    def _parse_action_from_adapter_error(cls, error: Exception) -> dict[str, Any] | None:
+        """Recover valid planner JSON from a DSPy ChatAdapter parse error.
+
+        Weak local models sometimes follow the planner instruction to return
+        exactly one JSON object, but omit DSPy's ``[[ ## action_json ## ]]``
+        marker. This keeps the call on the DSPy/LiteLLM path and accepts only
+        a valid CLIO action object from the already-returned LM text.
+        """
+        message = str(error)
+        marker = "LM Response:"
+        expected = "Expected to find output fields"
+        if marker not in message or expected not in message or "action_json" not in message:
+            return None
+
+        raw_response = message.split(marker, 1)[1].split(expected, 1)[0].strip()
+        try:
+            return cls._parse_action_json(raw_response)
+        except ValueError:
+            return None
 
     def _format_observations_for_prompt(self, observations: list[dict[str, Any]]) -> str:
         """Format loop observations as compact JSON for planner prompts."""
@@ -977,7 +1014,8 @@ class ClioAgent(dspy.Module):
     def _run_chat_agent(self, question: str, session_context: str) -> str:
         """Generate a conversational reply through DSPy/LiteLLM."""
         try:
-            result = self.chat_agent(question=question, session_context=session_context)
+            with dspy.context(lm=self._main_lm, adapter=self._dspy_adapter):
+                result = self.chat_agent(question=question, session_context=session_context)
             answer = self._coerce_text(getattr(result, "answer", None)).strip()
             if answer:
                 return answer

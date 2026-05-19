@@ -27,9 +27,7 @@ def agent(tmp_path):
 
 def _trace() -> RunTrace:
     return RunTrace(
-        route=RouteDecision(
-            target="chat", source="dspy", reason="test", confidence=0.0
-        )
+        route=RouteDecision(target="chat", source="dspy", reason="test", confidence=0.0)
     )
 
 
@@ -70,7 +68,9 @@ class TestCoerceText:
 
 class TestParseActionJson:
     def test_dict_input(self):
-        assert ClioAgent._parse_action_json({"action": "answer", "answer": "x"})["action"] == "answer"
+        assert (
+            ClioAgent._parse_action_json({"action": "answer", "answer": "x"})["action"] == "answer"
+        )
 
     def test_plain_json_string(self):
         out = ClioAgent._parse_action_json('{"action": "tool", "tool": "t"}')
@@ -85,7 +85,9 @@ class TestParseActionJson:
         assert out["action"] == "expert"
 
     def test_action_is_lowercased(self):
-        assert ClioAgent._parse_action_json({"action": "ANSWER", "answer": "x"})["action"] == "answer"
+        assert (
+            ClioAgent._parse_action_json({"action": "ANSWER", "answer": "x"})["action"] == "answer"
+        )
 
     def test_invalid_json_raises(self):
         with pytest.raises(ValueError):
@@ -299,6 +301,47 @@ class TestExecuteToolAction:
 
 
 class TestPlannerNoBypass:
+    def test_planner_accepts_raw_json_from_chat_adapter_error(self, agent):
+        agent.action_planner = MagicMock(
+            side_effect=ValueError(
+                "Adapter ChatAdapter failed to parse the LM response.\n\n"
+                'LM Response: {"action":"answer","answer":"ok","reason":"raw json"}]\n\n'
+                "Expected to find output fields in the LM response: [action_json]\n\n"
+                "Actual output fields parsed from the LM response: []"
+            )
+        )
+
+        action = agent._plan_next_action(
+            question="hi",
+            session_context="",
+            file_context="",
+            capabilities="",
+            observations=[],
+        )
+
+        assert action == {"action": "answer", "answer": "ok", "reason": "raw json"}
+
+    def test_invalid_adapter_error_still_raises_routing_error(self, agent):
+        agent.action_planner = MagicMock(
+            side_effect=ValueError(
+                "Adapter ChatAdapter failed to parse the LM response.\n\n"
+                "LM Response: not a json action\n\n"
+                "Expected to find output fields in the LM response: [action_json]\n\n"
+                "Actual output fields parsed from the LM response: []"
+            )
+        )
+
+        with pytest.raises(RoutingError) as excinfo:
+            agent._plan_next_action(
+                question="hi",
+                session_context="",
+                file_context="",
+                capabilities="",
+                observations=[],
+            )
+
+        assert "not a json action" in excinfo.value.details["original_error"]
+
     def test_planner_failure_raises_routing_error(self, agent):
         agent.action_planner = MagicMock(side_effect=RuntimeError("dspy adapter blew up"))
 
