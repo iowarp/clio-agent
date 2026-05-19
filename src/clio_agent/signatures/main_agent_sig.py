@@ -98,6 +98,9 @@ class ChatAgentSignature(dspy.Signature):
     For general questions: Be helpful, precise, and suggest how your data expertise
     could help if relevant. Mention available experts: DataExpert for HDF5 analysis,
     AnalysisExpert for Parquet/statistical profiling, VisualizationExpert for charts.
+    For provider/configuration failures: surface the failure and suggest retrying,
+    reconfiguring the provider/model, or exiting; do not tell the user the issue is
+    fixed or redirect to generic support.
 
     Do not invent file-specific facts from conversation history. If the user asks
     for details about a local file, dataset, schema, columns, statistics, or plots,
