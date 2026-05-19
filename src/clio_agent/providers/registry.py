@@ -26,7 +26,7 @@ from typing import Any, Literal
 #: Wire-level provider kinds. These are the values that flow into
 #: ``LMProviderConfig.provider`` and ultimately into the LiteLLM model
 #: prefix (``openai/``, ``anthropic/``…). Catalog ids are usually a
-#: superset (e.g. ``openrouter`` and the legacy codex bridge both have
+#: superset (e.g. ``openrouter`` and ``openai`` both have
 #: ``provider_kind="openai"``).
 ProviderKind = Literal[
     "lm_studio",
@@ -69,8 +69,8 @@ class Provider:
 
     # ----- wire kind --------------------------------------------------
     #: Drives ``LMProviderConfig.provider``. Multiple catalog entries can
-    #: share a kind (``openrouter`` and the legacy codex bridge both
-    #: share ``openai``); the entry flagged ``is_kind_default`` supplies the
+    #: share a kind (e.g. openrouter and openai both share
+    #: ``openai``); the entry flagged ``is_kind_default`` supplies the
     #: dict row in :func:`as_provider_defaults_dict`.
     provider_kind: ProviderKind
 
