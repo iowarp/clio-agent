@@ -38,13 +38,15 @@ import os
 import threading
 import uuid
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
 
 # Keep session ids namespaced so log scraping (and humans) can tell
 # them apart from e.g. message ids at a glance.
 _SESSION_ID_PREFIX = "sess_"
+_TIME_LOCK = threading.Lock()
+_LAST_TIME: datetime | None = None
 
 
 def _utcnow_iso() -> str:
@@ -57,7 +59,13 @@ def _utcnow_iso() -> str:
     process code.
     """
 
-    return datetime.now(timezone.utc).isoformat()
+    global _LAST_TIME
+    with _TIME_LOCK:
+        now = datetime.now(timezone.utc)
+        if _LAST_TIME is not None and now <= _LAST_TIME:
+            now = _LAST_TIME + timedelta(microseconds=1)
+        _LAST_TIME = now
+        return now.isoformat()
 
 
 def _default_store_path() -> Path:

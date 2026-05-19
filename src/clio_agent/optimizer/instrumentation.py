@@ -39,6 +39,7 @@ def instrumented_forward(arc_memory: Any, agent_id: str) -> Callable:
         @functools.wraps(forward_fn)
         def wrapper(*args, **kwargs):
             start = time.time()
+            start_ns = time.perf_counter_ns()
             trace_id = str(uuid.uuid4())
 
             # Extract input fields from args/kwargs
@@ -59,7 +60,11 @@ def instrumented_forward(arc_memory: Any, agent_id: str) -> Callable:
                 output_data = {"error": str(e)[:500]}
                 raise
             finally:
-                duration_ms = (time.time() - start) * 1000
+                completed_at = time.time()
+                duration_ms = max(
+                    (time.perf_counter_ns() - start_ns) / 1_000_000,
+                    0.001,
+                )
                 invocation = Invocation(
                     trace_id=trace_id,
                     session_id=session_id,
@@ -68,7 +73,7 @@ def instrumented_forward(arc_memory: Any, agent_id: str) -> Callable:
                     tier=2,
                     source="native",
                     started_at=start,
-                    completed_at=time.time(),
+                    completed_at=completed_at,
                     duration_ms=duration_ms,
                     status=status,
                     input=input_data,
