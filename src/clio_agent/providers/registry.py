@@ -26,7 +26,7 @@ from typing import Any, Literal
 #: Wire-level provider kinds. These are the values that flow into
 #: ``LMProviderConfig.provider`` and ultimately into the LiteLLM model
 #: prefix (``openai/``, ``anthropic/``…). Catalog ids are usually a
-#: superset (e.g. ``meridian``, ``openrouter`` both have
+#: superset (e.g. ``openrouter`` and the legacy codex bridge both have
 #: ``provider_kind="openai"``).
 ProviderKind = Literal[
     "lm_studio",
@@ -69,8 +69,8 @@ class Provider:
 
     # ----- wire kind --------------------------------------------------
     #: Drives ``LMProviderConfig.provider``. Multiple catalog entries can
-    #: share a kind (meridian, openrouter, codex-bridge all share
-    #: ``openai``); the entry flagged ``is_kind_default`` supplies the
+    #: share a kind (``openrouter`` and the legacy codex bridge both
+    #: share ``openai``); the entry flagged ``is_kind_default`` supplies the
     #: dict row in :func:`as_provider_defaults_dict`.
     provider_kind: ProviderKind
 
@@ -248,37 +248,6 @@ PROVIDERS: tuple[Provider, ...] = (
                 "claude-opus-4-6-20251001",
                 "Claude Opus 4.6",
                 "Direct Anthropic. Highest capability.",
-            ),
-        ),
-    ),
-    Provider(
-        id="meridian",
-        label="Claude Max via Meridian",
-        description=(
-            "Routes through a local Meridian proxy that translates "
-            "your Claude Max OAuth into an OpenAI-compatible API. "
-            "Cheapest, fastest, default for CLIO development."
-        ),
-        provider_kind="openai",
-        api_base="http://127.0.0.1:3456/v1",
-        suggested_model="claude-haiku-4-5-20251001",
-        requires_api_key=False,
-        auth_method="none",
-        model_catalog=(
-            ModelEntry(
-                "claude-haiku-4-5",
-                "Claude Haiku 4.5",
-                "Fast + cheap. Default for CLIO development.",
-            ),
-            ModelEntry(
-                "claude-sonnet-4-6",
-                "Claude Sonnet 4.6",
-                "Balanced; better reasoning at moderate cost.",
-            ),
-            ModelEntry(
-                "claude-opus-4-6",
-                "Claude Opus 4.6",
-                "Highest-capability Anthropic model. Slow + expensive.",
             ),
         ),
     ),

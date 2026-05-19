@@ -1,5 +1,5 @@
 """End-to-end v0.2 capability tests against a live clio-agent-gact
-backed by a real LM (Meridian + Claude Haiku by default).
+backed by a real LM (OpenAI or Anthropic by default).
 
 Each test exercises ONE capability through the real ClioAgent.
 Pass = the wire shape works AND the real agent drives it. Where
@@ -90,9 +90,9 @@ def test_session_fork_copies_messages(
     """Fork a settled turn, assert child gets the same messages."""
 
     # Prompts that don't hit the heuristic router fall back to the
-    # router LM + chat agent, which can take 30-60s through
-    # Meridian. 300s gives us tail-latency headroom without making
-    # the test feel hung.
+    # router LM + chat agent, which can take 30-60s through a slow
+    # upstream proxy. 300s gives us tail-latency headroom without
+    # making the test feel hung.
     turn(http, session_id, "Reply with the single word PING.", timeout=300)
     fork = http.post(
         f"/v1/sessions/{session_id}/fork", json={"title": "forked"}
@@ -129,7 +129,8 @@ def test_real_turn_populates_tokens(
     http: httpx.Client, session_id: str
 ) -> None:
     """A real LM turn lands tokens.input + tokens.output > 0 from
-    DSPy LM history (cost may be 0 from Meridian — see #8)."""
+    DSPy LM history (cost may be 0 from some OpenAI-compatible
+    proxies — see #8)."""
 
     a = turn(http, session_id, "Reply with just the word PING.", timeout=300)
     assert a["tokens"]["input"] >= 0
@@ -299,8 +300,8 @@ def test_streaming_deltas_are_temporally_distributed(
     """SPEC §6.10 — streaming text parts arrive as ``message.part.delta``
     events between ``message.part.added`` and ``message.part.completed``,
     BEFORE the final ``message.completed``. The exact temporal
-    distribution is best-effort: providers like Meridian buffer SSE
-    upstream so even when CLIO streams, chunks may bunch at the end.
+    distribution is best-effort: some upstream proxies buffer SSE
+    so even when CLIO streams, chunks may bunch at the end.
     Live per-token timing depends on (a) provider streaming support
     and (b) the agent's forward being truly async — both are quality
     attributes, not contract guarantees. The contract guarantees
