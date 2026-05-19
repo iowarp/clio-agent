@@ -209,8 +209,8 @@ class TestForwardDispatch:
         assert str(parquet_path) in call["question"]
         assert str(parquet_path) in call["file_context"]
 
-    def test_dispatch_chat_falls_back_to_direct_local_completion(self, agent, monkeypatch):
-        """Local chat should recover from DSPy parse failures with the same model."""
+    def test_dispatch_chat_surfaces_dspy_parse_failure(self, agent):
+        """Local chat parse failures should surface instead of bypassing LiteLLM."""
         self._set_planner(agent, {"action": "answer", "answer": ""})
 
         agent.chat_agent = MagicMock(
@@ -221,39 +221,17 @@ class TestForwardDispatch:
         agent._provider_config.api_key = "lm-studio"
         agent._provider_config.model = "nemotron-cascade-2-30b-a3b-i1"
 
-        captured: dict[str, object] = {}
-
-        class FakeResponse:
-            def raise_for_status(self):
-                return None
-
-            def json(self):
-                return {
-                    "choices": [
-                        {"message": {"content": "Hello from the local direct fallback."}}
-                    ]
-                }
-
-        def fake_post(url, json, headers, timeout):
-            captured["url"] = url
-            captured["json"] = json
-            captured["headers"] = headers
-            captured["timeout"] = timeout
-            return FakeResponse()
-
-        monkeypatch.setattr("clio_agent.agent.requests.post", fake_post)
-
         result = agent.forward(
             question="Tell me about your capabilities",
             session_id="test_session",
         )
 
         assert result.selected_expert == "chat"
-        assert result.answer == "Hello from the local direct fallback."
-        assert result.error_info is None
-        assert captured["url"] == "http://192.168.86.143:1234/v1/chat/completions"
-        assert captured["json"]["model"] == "nemotron-cascade-2-30b-a3b-i1"
-        assert captured["json"]["messages"][-1]["content"] == "Tell me about your capabilities"
+        assert "could not complete" in result.answer.lower()
+        assert result.error_info is not None
+        assert result.error_info["error"] == "expert_error"
+        assert result.error_info["details"]["selected"] == "chat"
+        assert "ChatAdapter failed to parse" in result.error_info["details"]["original_error"]
 
     def test_dispatch_none_out_of_scope(self, agent):
         """Test routing to 'none' returns out-of-scope message."""
