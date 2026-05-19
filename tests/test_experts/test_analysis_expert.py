@@ -9,6 +9,7 @@ import inspect
 from unittest.mock import Mock
 
 import dspy
+import pytest
 
 from clio_agent.experts.analysis_expert import AnalysisExpert
 from clio_agent.tools.execution import SyncMCPToolExecutor
@@ -107,6 +108,47 @@ class TestAnalysisExpert:
             params = list(sig.parameters.keys())
             assert "question" in params
             assert "file_context" in params
+        finally:
+            expert.close()
+
+    def test_conceptual_synthesis_uses_dspy_result(self):
+        """No-file conceptual questions should return provider synthesis when it succeeds."""
+        expert = AnalysisExpert()
+        try:
+            expert.agent = Mock(
+                return_value=dspy.Prediction(
+                    analysis="Profile the columns needed by the question.",
+                    recommendations="Inspect schema first, then compute targeted statistics.",
+                )
+            )
+
+            result = expert(question="How should I profile this tabular dataset?")
+
+            assert result.synthesis_source == "dspy"
+            assert result.analysis == "Profile the columns needed by the question."
+            assert "targeted statistics" in result.recommendations
+        finally:
+            expert.close()
+
+    def test_conceptual_synthesis_failure_surfaces_error(self):
+        """Provider-backed synthesis failures must not become canned guidance."""
+        expert = AnalysisExpert()
+        try:
+            expert.agent = Mock(side_effect=RuntimeError("provider unavailable"))
+
+            with pytest.raises(RuntimeError, match="provider unavailable"):
+                expert(question="How should I profile this tabular dataset?")
+        finally:
+            expert.close()
+
+    def test_empty_conceptual_synthesis_surfaces_error(self):
+        """Empty provider output is a failure, not a fallback answer."""
+        expert = AnalysisExpert()
+        try:
+            expert.agent = Mock(return_value=dspy.Prediction(analysis="", recommendations=""))
+
+            with pytest.raises(ValueError, match="empty analysis"):
+                expert(question="How should I profile this tabular dataset?")
         finally:
             expert.close()
 

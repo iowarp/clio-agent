@@ -124,9 +124,7 @@ class DataExpert(dspy.Module):
         self._tool_executor = tool_executor or create_sync_tool_executor(gateway)
         self._bridge = self._tool_executor
         self._tools = [
-            tool
-            for tool in self._tool_executor.to_dspy_tools()
-            if tool.name.startswith("hdf5_")
+            tool for tool in self._tool_executor.to_dspy_tools() if tool.name.startswith("hdf5_")
         ]
 
         logger.info(
@@ -249,8 +247,7 @@ class DataExpert(dspy.Module):
 
         return ExpertResult(
             analysis=(
-                f"Analyzed HDF5 dataset {dataset_path} in {filepath}.\n"
-                + "\n".join(details)
+                f"Analyzed HDF5 dataset {dataset_path} in {filepath}.\n" + "\n".join(details)
             ),
             recommendations=self._hdf5_recommendations(
                 uncompressed=0 if dataset_data.get("compression") else 1,
@@ -406,36 +403,20 @@ class DataExpert(dspy.Module):
         )
 
     def _synthesize_without_tools(self, request: ExpertRequest) -> ExpertResult:
-        """Use DSPy only for conceptual guidance when no file can be inspected."""
-        try:
-            synthesis = self.agent(
-                question=request.question,
-                file_context=request.file_context,
-            )
-            analysis = str(getattr(synthesis, "analysis", "")).strip()
-            recommendations = str(getattr(synthesis, "recommendations", "")).strip()
-            if analysis:
-                return ExpertResult(
-                    analysis=analysis,
-                    recommendations=recommendations,
-                    source="dspy",
-                    metadata={"expert": "data", "mode": "conceptual_synthesis"},
-                )
-        except Exception as exc:
-            logger.debug("DataExpert synthesis fallback failed: %s", exc)
-
+        """Use DSPy for conceptual guidance when no file can be inspected."""
+        synthesis = self.agent(
+            question=request.question,
+            file_context=request.file_context,
+        )
+        analysis = str(getattr(synthesis, "analysis", "")).strip()
+        recommendations = str(getattr(synthesis, "recommendations", "")).strip()
+        if not analysis:
+            raise ValueError("DataExpert synthesis returned an empty analysis.")
         return ExpertResult(
-            analysis=(
-                "No concrete HDF5 file path was available to inspect. I can give general "
-                "HDF5 layout guidance, but file-specific conclusions require tool results."
-            ),
-            recommendations=(
-                "Provide an HDF5 file path for inspection. For general tuning, start by "
-                "checking dataset shapes, compression coverage, chunk payload size, and the "
-                "dominant read pattern before rewriting the file."
-            ),
-            source="fallback",
-            metadata={"expert": "data", "mode": "no_file"},
+            analysis=analysis,
+            recommendations=recommendations,
+            source="dspy",
+            metadata={"expert": "data", "mode": "conceptual_synthesis"},
         )
 
     @staticmethod
