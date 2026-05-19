@@ -21,12 +21,7 @@ pytestmark = pytest.mark.integration
 
 def _planner_actions(*actions: dict[str, object]) -> MagicMock:
     """Return a mocked planner with deterministic JSON actions."""
-    return MagicMock(
-        side_effect=[
-            MagicMock(action_json=json.dumps(action))
-            for action in actions
-        ]
-    )
+    return MagicMock(side_effect=[MagicMock(action_json=json.dumps(action)) for action in actions])
 
 
 def _expert_action(expert: str) -> dict[str, object]:
@@ -207,12 +202,16 @@ def test_direct_agent_reports_structured_error_for_missing_file(tmp_path, monkey
         agent.shutdown()
 
     assert result.selected_expert == "data"
-    assert "Could not inspect HDF5 file" in result.answer
-    assert "It contains" not in result.answer
+    assert result.answer == ""
     assert result.error_info is not None
     assert result.error_info["error"] == "tool_error"
     assert result.error_info["details"]["tool"] == "hdf5_analyze_file"
     assert result.error_info["details"]["tool_error"]["code"] == "file_not_found"
+    assert result.error_info["details"]["recovery_actions"] == [
+        "retry",
+        "reconfigure_provider",
+        "exit",
+    ]
     assert any(invocation.status == "failure" for invocation in invocations)
 
 
@@ -228,10 +227,7 @@ def test_direct_visualization_uses_allowed_root_for_default_artifacts(
 
     agent = ClioAgent(data_dir=str(tmp_path / "clio"), verbose=False)
     artifact_path = (
-        tmp_path
-        / ".clio-agent-artifacts"
-        / "charts"
-        / f"summary_{Path(sample_parquet).stem}.png"
+        tmp_path / ".clio-agent-artifacts" / "charts" / f"summary_{Path(sample_parquet).stem}.png"
     )
     agent.action_planner = _planner_actions(
         {
@@ -299,12 +295,16 @@ def test_direct_visualization_reports_structured_policy_error(
         agent.shutdown()
 
     assert result.selected_expert == "visualization"
-    assert "Could not create visualization" in result.answer
-    assert "Error: {" not in result.answer
+    assert result.answer == ""
     assert result.error_info is not None
     assert result.error_info["error"] == "tool_error"
     assert result.error_info["details"]["tool"] == "plot_summary"
     assert result.error_info["details"]["tool_error"]["code"] == "outside_allowed_roots"
+    assert result.error_info["details"]["recovery_actions"] == [
+        "retry",
+        "reconfigure_provider",
+        "exit",
+    ]
     assert any(invocation.status == "failure" for invocation in invocations)
 
 

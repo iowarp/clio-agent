@@ -791,10 +791,10 @@ if __name__ == "__main__":
         # Ask question
         try:
             result = agent(question=args.query, session_id=args.session)
+            error_info = getattr(result, "error_info", None)
 
             if args.json:
                 # JSON output
-                error_info = getattr(result, "error_info", None)
                 output = {
                     "question": args.query,
                     "answer": result.answer,
@@ -820,7 +820,17 @@ if __name__ == "__main__":
                     )
                 else:
                     console.print(f"[bold green]Agent:[/bold green] {result.selected_expert}")
-                console.print(Panel(Markdown(result.answer), title="CLIO", border_style="green"))
+                if error_info:
+                    message = str(error_info.get("message") or "CLIO reported an error.")
+                    console.print(Panel(Markdown(message), title="CLIO Error", border_style="red"))
+                    console.print(
+                        "[dim]Use --json to inspect error_info, then retry, reconfigure "
+                        "the provider, or exit.[/dim]"
+                    )
+                else:
+                    console.print(
+                        Panel(Markdown(result.answer), title="CLIO", border_style="green")
+                    )
 
         except Exception as e:
             if args.json:

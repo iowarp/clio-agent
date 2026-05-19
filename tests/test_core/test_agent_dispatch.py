@@ -227,9 +227,15 @@ class TestForwardDispatch:
         )
 
         assert result.selected_expert == "chat"
+        assert result.answer == ""
         assert result.error_info is not None
         assert result.error_info["error"] == "expert_error"
         assert "ChatAdapter failed" in result.error_info["details"]["original_error"]
+        assert result.error_info["details"]["recovery_actions"] == [
+            "retry",
+            "reconfigure_provider",
+            "exit",
+        ]
         assert not hasattr(ClioAgent, "_direct_chat_completion")
         assert not hasattr(ClioAgent, "_direct_action_completion")
 
@@ -260,12 +266,16 @@ class TestForwardDispatch:
         result = agent.forward(question="Analyze HDF5", session_id="test_session")
 
         assert result.selected_expert == "data"
-        # User-facing answer should be friendly (no raw traceback)
-        assert "issue" in result.answer.lower()
+        assert result.answer == ""
         # Structured error_info should be present
         assert result.error_info is not None
         assert result.error_info["error"] == "expert_error"
         assert result.error_info["details"]["expert"] == "data"
+        assert result.error_info["details"]["recovery_actions"] == [
+            "retry",
+            "reconfigure_provider",
+            "exit",
+        ]
 
     def test_planner_failure_returns_structured_error(self, agent):
         """Planner failures should be structured instead of faking an answer."""
@@ -275,8 +285,14 @@ class TestForwardDispatch:
         result = agent.forward(question="Test query", session_id="test_session")
 
         assert result.selected_expert == "chat"
+        assert result.answer == ""
         assert result.error_info is not None
         assert result.error_info["error"] == "routing_error"
+        assert result.error_info["details"]["recovery_actions"] == [
+            "retry",
+            "reconfigure_provider",
+            "exit",
+        ]
 
     def test_stores_expert_invocation_in_arc(self, agent):
         """Test that expert dispatch stores invocation in ARC."""
