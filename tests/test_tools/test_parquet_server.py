@@ -171,9 +171,7 @@ async def test_query_data_row_limit_does_not_read_full_table(sample_parquet, mon
     monkeypatch.setattr(parquet_module.pq, "read_table", fail_read_table)
 
     async with Client(parquet_server) as client:
-        result = await client.call_tool(
-            "query_data", {"filepath": sample_parquet, "row_limit": 5}
-        )
+        result = await client.call_tool("query_data", {"filepath": sample_parquet, "row_limit": 5})
     data = _parse_result(result)
 
     assert "error" not in data
@@ -218,6 +216,32 @@ async def test_compute_statistics_numeric(sample_parquet):
         assert data["min"] >= 15.0
         assert data["max"] <= 35.0
         assert 15.0 <= data["mean"] <= 35.0
+        assert data["median_approximate"] is False
+        assert data["unique_count_capped"] is False
+
+
+@pytest.mark.asyncio
+async def test_compute_statistics_numeric_does_not_read_full_table(
+    sample_parquet,
+    monkeypatch,
+):
+    """Column statistics should scan batches instead of materializing a table."""
+
+    def fail_read_table(*args, **kwargs):
+        raise AssertionError("pq.read_table should not be called by compute_statistics")
+
+    monkeypatch.setattr(parquet_module.pq, "read_table", fail_read_table)
+
+    async with Client(parquet_server) as client:
+        result = await client.call_tool(
+            "compute_statistics", {"filepath": sample_parquet, "column": "temperature"}
+        )
+    data = _parse_result(result)
+
+    assert "error" not in data
+    assert data["column"] == "temperature"
+    assert data["total_count"] == 100
+    assert "mean" in data
 
 
 @pytest.mark.asyncio
@@ -263,6 +287,31 @@ async def test_compute_statistics_string(sample_parquet):
         assert data["unique_count"] <= 5  # Only 5 possible cities
         assert "value_counts" in data
         assert len(data["value_counts"]) <= 5
+        assert data["unique_count_capped"] is False
+        assert data["value_counts_capped"] is False
+
+
+@pytest.mark.asyncio
+async def test_compute_statistics_string_does_not_read_full_table(
+    sample_parquet,
+    monkeypatch,
+):
+    """String statistics should also avoid full-table reads."""
+
+    def fail_read_table(*args, **kwargs):
+        raise AssertionError("pq.read_table should not be called by compute_statistics")
+
+    monkeypatch.setattr(parquet_module.pq, "read_table", fail_read_table)
+
+    async with Client(parquet_server) as client:
+        result = await client.call_tool(
+            "compute_statistics", {"filepath": sample_parquet, "column": "city"}
+        )
+    data = _parse_result(result)
+
+    assert "error" not in data
+    assert data["column"] == "city"
+    assert "value_counts" in data
 
 
 @pytest.mark.asyncio
