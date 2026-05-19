@@ -88,7 +88,7 @@ so the tests prove what they prove.
 | `subagents` | yes | no | ClioAgent has no Tier-3 spawn primitive yet |
 | `diffs` | yes | no | No edit_file tool that produces diffs |
 | `permissions` | yes | no | MCPToolBridge doesn't gate destructive ops |
-| `cancellation` (cooperative) | yes | partial | Server flips state + emits event; agent ignores the cancel flag mid-forward |
+| `cancellation` (best-effort) | yes | partial | Server settles the GACT envelope as cancelled; executor-thread provider/tool work may continue and is flagged with `execution_cancellation="best_effort"` |
 | `tool_telemetry` events | yes | partial | Synthesised from `tools_called` post-hoc; not live |
 
 ## What does work end-to-end against real Claude

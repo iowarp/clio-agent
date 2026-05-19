@@ -401,7 +401,11 @@ async def _run_turn_in_background(
             error_info = ErrorInfo(
                 error="cancelled",
                 message="turn cancelled by client",
-                details={"session_id": sid},
+                details={
+                    "session_id": sid,
+                    "execution_cancellation": "turn_boundary",
+                    "executor_work_may_continue": False,
+                },
                 recoverable=True,
             )
             answer_text = ""
@@ -410,7 +414,11 @@ async def _run_turn_in_background(
         error_info = ErrorInfo(
             error="cancelled",
             message="turn cancelled by client",
-            details={"session_id": sid},
+            details={
+                "session_id": sid,
+                "execution_cancellation": "best_effort",
+                "executor_work_may_continue": True,
+            },
             recoverable=True,
         )
         answer_text = ""
@@ -4959,7 +4967,7 @@ def build_app(
 
     @app.post("/v1/sessions/{sid}/cancel")
     async def cancel_session(sid: str) -> JSONResponse:
-        """Cooperative cancel of an in-flight turn on this session.
+        """Best-effort cancel of an in-flight turn on this session.
 
         The agent's ``forward()`` checks ``agent.is_cancelled(sid)``
         periodically (or honors a threading.Event we hand it) and
@@ -4967,6 +4975,12 @@ def build_app(
         endpoint itself just flips the flag + publishes a
         ``session.cancelled`` event so any live SSE subscriber sees
         the transition without waiting for the next turn boundary.
+
+        If the turn is already blocked inside executor-thread provider
+        or tool work, cancelling the asyncio Task settles the GACT
+        envelope as cancelled but cannot kill the underlying Python
+        thread. The emitted status event marks this as best-effort so
+        clients do not mistake it for a guaranteed provider abort.
 
         Returns 204 whether a turn was actually running — the TUI
         fires this on Esc/Ctrl+C speculatively and doesn't want an
@@ -4991,15 +5005,11 @@ def build_app(
         # this after forward() returns so even agents that don't
         # cooperate produce a cancelled-looking turn envelope.
         app.state.cancel_flags.add(sid)
-        # iowarp/clio-agent#3: hard-abort the in-flight turn task.
-        # The task's coroutine catches asyncio.CancelledError +
-        # finalises with error="cancelled" so the wire still settles
-        # cleanly. Cooperative flag stays set as a belt-and-braces:
-        # if cancel races a finishing turn we still report it as
-        # cancelled rather than a successful answer.
         in_flight = app.state.in_flight_turns.get(sid)
+        cancelled_task = False
         if in_flight is not None and not in_flight.done():
             in_flight.cancel()
+            cancelled_task = True
         app.state.sessions.update(sid, status="cancelled")
         app.state.bus.publish(Event(
             type="session.status_changed",
@@ -5008,6 +5018,10 @@ def build_app(
                 "session_id": sid,
                 "status": "cancelled",
                 "prev_status": sess.status,
+                "execution_cancellation": (
+                    "best_effort" if cancelled_task else "none"
+                ),
+                "executor_work_may_continue": cancelled_task,
             },
         ))
         return JSONResponse(status_code=204, content=None)

@@ -59,12 +59,7 @@ def test_cancel_unknown_session_404s_with_v0_2_envelope(tmp_path: Path) -> None:
 
 
 class _SlowAgent:
-    """Agent that sleeps long enough for /cancel to race in.
-
-    Used to verify hard-abort cancels the running task instead of
-    waiting for forward() to complete. Without the fix the test
-    sleeps 5s; with the fix it returns within ~0.3s of /cancel.
-    """
+    """Agent that sleeps long enough for /cancel to race in."""
 
     def __init__(self, sleep_s: float = 5.0) -> None:
         self.sleep_s = sleep_s
@@ -79,12 +74,11 @@ class _SlowAgent:
                                  "routing_rationale": ""})()
 
 
-def test_cancel_hard_aborts_in_flight_task(tmp_path: Path) -> None:
-    """iowarp/clio-agent#3: cancel during forward() interrupts the
-    task instead of waiting for it to finish."""
+def test_cancel_reports_best_effort_for_executor_thread(tmp_path: Path) -> None:
+    """Cancelling the asyncio task does not kill executor-thread work."""
 
     import time as _time
-    agent = _SlowAgent(sleep_s=10.0)
+    agent = _SlowAgent(sleep_s=0.6)
     app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
     with TestClient(app) as c:
         sid = c.post("/v1/sessions", json={"title": "x"}).json()["id"]
@@ -95,26 +89,40 @@ def test_cancel_hard_aborts_in_flight_task(tmp_path: Path) -> None:
         )
         # Give the loop a slice to schedule the task + start the
         # blocking sleep in the executor.
-        _time.sleep(0.3)
+        _time.sleep(0.1)
         c.post(f"/v1/sessions/{sid}/cancel")
         # Poll for the assistant turn to settle as cancelled.
         # complete_turn polls list_messages — the assistant
         # appears once the cancellation path finalises.
-        # We just want the task NOT to take the full 10s.
-        deadline = _time.monotonic() + 5.0
-        seen_cancelled = False
+        # We just want the GACT envelope to settle promptly.
+        deadline = _time.monotonic() + 3.0
+        assistant = None
         while _time.monotonic() < deadline:
-            sess = c.get(f"/v1/sessions/{sid}").json()
-            if sess["status"] in {"cancelled", "error"}:
-                seen_cancelled = True
+            msgs = c.get(f"/v1/sessions/{sid}/messages").json()["messages"]
+            assistants = [m for m in msgs if m["role"] == "assistant"]
+            if assistants:
+                assistant = assistants[0]
                 break
             _time.sleep(0.1)
-        assert seen_cancelled, "cancel didn't take effect within 5s"
-        # The slow agent must NOT have completed — proves the hard
-        # abort bypassed forward().
-        assert agent.completed is False, (
-            "slow agent ran to completion despite /cancel; hard-abort failed"
-        )
+        assert assistant is not None, "cancel didn't settle the turn within 3s"
+        assert assistant["error_info"]["error"] == "cancelled"
+        assert assistant["error_info"]["details"]["execution_cancellation"] == "best_effort"
+        assert assistant["error_info"]["details"]["executor_work_may_continue"] is True
+        status_events = [
+            e for e in app.state.bus._history.get(sid, [])
+            if e.type == "session.status_changed"
+            and e.payload.get("status") == "cancelled"
+        ]
+        assert status_events
+        assert status_events[-1].payload["execution_cancellation"] == "best_effort"
+        assert status_events[-1].payload["executor_work_may_continue"] is True
+
+        # The executor thread can still finish after the GACT envelope
+        # has truthfully settled as cancelled.
+        deadline = _time.monotonic() + 2.0
+        while _time.monotonic() < deadline and not agent.completed:
+            _time.sleep(0.05)
+        assert agent.completed is True
 
 
 def test_cancel_during_turn_marks_turn_as_cancelled(tmp_path: Path) -> None:
