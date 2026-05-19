@@ -216,7 +216,9 @@ def _import_codex_sdk() -> Any:
     except ImportError:
         pass
     try:
-        from codex_app_server import Codex  # type: ignore[import-not-found,no-redef] # noqa: PLC0415
+        from codex_app_server import (
+            Codex,  # type: ignore[import-not-found,no-redef] # noqa: PLC0415
+        )
 
         return Codex
     except ImportError as e:
