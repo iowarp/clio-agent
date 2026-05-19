@@ -38,6 +38,8 @@ from typing import Any, AsyncIterator, Optional
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
+from clio_agent.tools.file_policy import validate_write_path
+
 
 def _format_sse(event: "Event") -> bytes:
     """Render an Event as the SSE wire format (SPEC §7.2)::
@@ -1381,6 +1383,24 @@ def _apply_edit_to_disk(
     complete audit trail of every destructive operation.
     """
 
+    target = Path(path).resolve(strict=False)
+    # Workspace root scope.
+    ws = app.state.workspaces.get(session.workspace_id)
+    if ws is not None and ws.root_path:
+        try:
+            target.relative_to(Path(ws.root_path).resolve())
+        except ValueError as exc:
+            raise PermissionError(
+                f"refused to write {target} outside workspace root "
+                f"{ws.root_path}"
+            ) from exc
+    # Mode gate — plan + architect can't apply.
+    if session.mode in {"plan", "architect"}:
+        raise PermissionError(
+            f"refused to write under session.mode={session.mode!r}"
+        )
+    target = validate_write_path(path, field="path")
+
     # Audit row for the apply (auto-approved by the user's explicit
     # POST to /diffs/apply). Every destructive call lands in
     # /v1/permissions for compliance / replay.
@@ -1391,10 +1411,10 @@ def _apply_edit_to_disk(
         "session_id": session.id,
         "tool_call": {
             "tool_name": "fs_apply_edit_write",
-            "input": {"filepath": path, "new_content_bytes": len(new_content)},
+            "input": {"filepath": str(target), "new_content_bytes": len(new_content)},
         },
         "summary": (
-            f"diffs/apply: write {len(new_content)} bytes to {path}"
+            f"diffs/apply: write {len(new_content)} bytes to {target}"
         ),
         "created_at": now_iso,
         "status": "auto_approved",
@@ -1416,23 +1436,6 @@ def _apply_edit_to_disk(
             },
         ))
 
-    target = Path(path).resolve()
-    # Workspace root scope.
-    ws = app.state.workspaces.get(session.workspace_id)
-    if ws is not None and ws.root_path:
-        try:
-            target.relative_to(Path(ws.root_path).resolve())
-        except ValueError as exc:
-            raise PermissionError(
-                f"refused to write {target} outside workspace root "
-                f"{ws.root_path}"
-            ) from exc
-    # Mode gate — plan + architect can't apply.
-    if session.mode in {"plan", "architect"}:
-        raise PermissionError(
-            f"refused to write under session.mode={session.mode!r}"
-        )
-    target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(new_content, encoding="utf-8")
 
 
