@@ -8,6 +8,7 @@ boundary, and capabilities. Does not require LM Studio.
 from unittest.mock import Mock
 
 import dspy
+import pytest
 
 from clio_agent.experts.data_expert import DataExpert, MCPToolBridge
 from clio_agent.tools.execution import SyncMCPToolExecutor
@@ -157,6 +158,47 @@ class TestDataExpert:
         expert.close()
         assert executor.closed is True
 
+    def test_conceptual_synthesis_uses_dspy_result(self):
+        """No-file conceptual questions should return provider synthesis when it succeeds."""
+        expert = DataExpert()
+        try:
+            expert.agent = Mock(
+                return_value=dspy.Prediction(
+                    analysis="Use chunked HDF5 for partial reads.",
+                    recommendations="Tune chunk payloads around the access pattern.",
+                )
+            )
+
+            result = expert(question="How should I tune HDF5 chunks?")
+
+            assert result.synthesis_source == "dspy"
+            assert result.analysis == "Use chunked HDF5 for partial reads."
+            assert "chunk payloads" in result.recommendations
+        finally:
+            expert.close()
+
+    def test_conceptual_synthesis_failure_surfaces_error(self):
+        """Provider-backed synthesis failures must not become canned guidance."""
+        expert = DataExpert()
+        try:
+            expert.agent = Mock(side_effect=RuntimeError("provider unavailable"))
+
+            with pytest.raises(RuntimeError, match="provider unavailable"):
+                expert(question="How should I tune HDF5 chunks?")
+        finally:
+            expert.close()
+
+    def test_empty_conceptual_synthesis_surfaces_error(self):
+        """Empty provider output is a failure, not a fallback answer."""
+        expert = DataExpert()
+        try:
+            expert.agent = Mock(return_value=dspy.Prediction(analysis="", recommendations=""))
+
+            with pytest.raises(ValueError, match="empty analysis"):
+                expert(question="How should I tune HDF5 chunks?")
+        finally:
+            expert.close()
+
     def test_expert_forward_uses_native_hdf5_tools(self, sample_hdf5):
         """Explicit HDF5 questions should run tools without LM calls."""
         expert = DataExpert()
@@ -192,10 +234,7 @@ class TestDataExpert:
         expert = DataExpert()
         try:
             result = expert(
-                question=(
-                    f"Run hdf5_analyze_dataset on {sample_hdf5} "
-                    "for simulation/temperature"
-                )
+                question=(f"Run hdf5_analyze_dataset on {sample_hdf5} for simulation/temperature")
             )
 
             assert result.synthesis_source == "deterministic"

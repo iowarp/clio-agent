@@ -372,8 +372,7 @@ class AnalysisExpert(dspy.Module):
             result = normalize_tool_result(exc.to_result(), tool="csv_read_table")
             return ExpertResult(
                 analysis=(
-                    f"Could not inspect CSV file {filepath}: "
-                    f"{format_tool_error(result['error'])}"
+                    f"Could not inspect CSV file {filepath}: {format_tool_error(result['error'])}"
                 ),
                 recommendations="Move the file under an allowed root or adjust CLIO_ALLOWED_ROOTS.",
                 source="deterministic",
@@ -394,8 +393,7 @@ class AnalysisExpert(dspy.Module):
             }
             return ExpertResult(
                 analysis=(
-                    f"Could not inspect CSV file {filepath}: "
-                    f"{format_tool_error(result['error'])}"
+                    f"Could not inspect CSV file {filepath}: {format_tool_error(result['error'])}"
                 ),
                 recommendations="Verify the path exists and that the file is readable CSV.",
                 source="deterministic",
@@ -482,36 +480,20 @@ class AnalysisExpert(dspy.Module):
         )
 
     def _synthesize_without_tools(self, request: ExpertRequest) -> ExpertResult:
-        """Use DSPy only for conceptual guidance when no file can be inspected."""
-        try:
-            synthesis = self.agent(
-                question=request.question,
-                file_context=request.file_context,
-            )
-            analysis = str(getattr(synthesis, "analysis", "")).strip()
-            recommendations = str(getattr(synthesis, "recommendations", "")).strip()
-            if analysis:
-                return ExpertResult(
-                    analysis=analysis,
-                    recommendations=recommendations,
-                    source="dspy",
-                    metadata={"expert": "analysis", "mode": "conceptual_synthesis"},
-                )
-        except Exception as exc:
-            logger.debug("AnalysisExpert synthesis fallback failed: %s", exc)
-
+        """Use DSPy for conceptual guidance when no file can be inspected."""
+        synthesis = self.agent(
+            question=request.question,
+            file_context=request.file_context,
+        )
+        analysis = str(getattr(synthesis, "analysis", "")).strip()
+        recommendations = str(getattr(synthesis, "recommendations", "")).strip()
+        if not analysis:
+            raise ValueError("AnalysisExpert synthesis returned an empty analysis.")
         return ExpertResult(
-            analysis=(
-                "No concrete Parquet or CSV file path was available to inspect. I can discuss "
-                "analysis strategy, but file-specific statistics require tool results."
-            ),
-            recommendations=(
-                "Provide a Parquet or CSV file path for inspection. For data profiling, start "
-                "with schema discovery, then compute statistics only for the columns needed by "
-                "the question."
-            ),
-            source="fallback",
-            metadata={"expert": "analysis", "mode": "no_file"},
+            analysis=analysis,
+            recommendations=recommendations,
+            source="dspy",
+            metadata={"expert": "analysis", "mode": "conceptual_synthesis"},
         )
 
     @staticmethod
