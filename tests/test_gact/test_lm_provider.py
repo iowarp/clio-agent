@@ -19,7 +19,7 @@ def test_get_lm_provider_unconfigured(tmp_path: Path) -> None:
         assert body["configured"] is False
         # Presets always shipped — TUI uses them to populate the picker.
         ids = {p["id"] for p in body["presets"]}
-        assert "meridian" in ids
+        assert "openai" in ids
         assert "openrouter" in ids
         assert "lm_studio" in ids
 

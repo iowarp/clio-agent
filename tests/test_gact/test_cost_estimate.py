@@ -1,5 +1,6 @@
 """iowarp/clio-agent#8: cost estimate falls back to a price table
-when the upstream LM doesn't report cost_usd (Meridian, etc.)."""
+when the upstream LM doesn't report cost_usd (some OpenAI-compatible
+proxies)."""
 
 from __future__ import annotations
 

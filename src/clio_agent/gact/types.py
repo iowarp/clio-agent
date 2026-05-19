@@ -555,7 +555,7 @@ class LMProviderInfo(BaseModel):
 class LMProviderPreset(BaseModel):
     """One row in the TUI's provider picker. ``requires_api_key``
     tells the modal whether to render the api_key field; some
-    presets (Meridian on localhost) don't need one."""
+    presets (LM Studio, Ollama, ALCF local vLLM) don't need one."""
 
     id: str
     label: str
@@ -571,7 +571,7 @@ class LMProviderRequest(BaseModel):
     `openai|anthropic|openrouter|lm_studio|ollama|...` — anything
     LiteLLM understands. ``api_key`` is required for cloud
     providers; locally-OpenAI-compatible backends (LM Studio,
-    Ollama, Meridian) tolerate any non-empty string.
+    Ollama, ALCF local vLLM) tolerate any non-empty string.
 
     ``temperature`` + ``max_tokens`` are forwarded to dspy.LM so
     the user can tune behaviour from the TUI without touching env

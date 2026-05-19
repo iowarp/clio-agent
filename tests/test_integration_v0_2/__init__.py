@@ -1,6 +1,6 @@
 """Integration tests against a live clio-agent-gact backed by a
-real LM provider (Meridian + Claude Haiku by default; OpenRouter
-free models for cross-provider sanity).
+real LM provider (OpenAI or Anthropic by default; OpenRouter free
+models for cross-provider sanity).
 
 Skipped automatically when:
   - CLIO_INTEGRATION_BASE not set, or
