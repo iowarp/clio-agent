@@ -8,11 +8,12 @@ All without a live LM.
 """
 
 import json
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from clio_agent.agent import ClioAgent
+from clio_agent.errors import RoutingError
 from clio_agent.harness import RouteDecision, RunTrace
 
 
@@ -286,3 +287,65 @@ class TestExecuteToolAction:
         result = agent._execute_tool_action("not_a_real_tool", {}, _trace())
         assert "error" in result
         assert result["error"]["code"] == "unknown_tool"
+
+
+# --------------------------------------------------------------------------
+# DSPy -> LiteLLM exclusivity (iowarp/clio-agent#54).
+# These tests lock in the contract that there is NO raw-HTTP side
+# channel for either the planner or the chat agent. If the DSPy layer
+# fails, the failure propagates -- the agent never reaches for
+# requests.post.
+# --------------------------------------------------------------------------
+
+
+class TestPlannerNoBypass:
+    def test_planner_failure_raises_routing_error(self, agent):
+        agent.action_planner = MagicMock(side_effect=RuntimeError("dspy adapter blew up"))
+
+        with pytest.raises(RoutingError) as excinfo:
+            agent._plan_next_action(
+                question="hi",
+                session_context="",
+                file_context="",
+                capabilities="",
+                observations=[],
+            )
+
+        assert "dspy adapter blew up" in excinfo.value.details["original_error"]
+        assert isinstance(excinfo.value.__cause__, RuntimeError)
+
+    def test_planner_failure_does_not_call_requests(self, agent):
+        # Belt-and-suspenders: if requests.post is reintroduced into
+        # this path, this test catches it.
+        agent.action_planner = MagicMock(side_effect=RuntimeError("dspy failed"))
+
+        with patch("requests.post") as post_mock, pytest.raises(RoutingError):
+            agent._plan_next_action(
+                question="hi",
+                session_context="",
+                file_context="",
+                capabilities="",
+                observations=[],
+            )
+
+        post_mock.assert_not_called()
+
+
+class TestChatAgentNoBypass:
+    def test_chat_failure_surfaces_underlying_exception(self, agent):
+        agent.chat_agent = MagicMock(side_effect=ValueError("bad response"))
+
+        with pytest.raises(ValueError, match="bad response"):
+            agent._run_chat_agent("hi", "")
+
+    def test_chat_empty_answer_raises(self, agent):
+        result = MagicMock()
+        result.answer = ""
+        agent.chat_agent = MagicMock(return_value=result)
+
+        with pytest.raises(ValueError, match="empty answer"):
+            agent._run_chat_agent("hi", "")
+
+    # NB: the "does not call requests.post" check is on the planner
+    # variant; both paths share the same rule and we don't need two
+    # copies of the same belt-and-suspenders test.
