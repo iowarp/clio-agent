@@ -66,81 +66,42 @@ def _dspy():
     return _dspy_cache
 
 # ============================================================================
-# PROVIDER DEFAULTS
+# PROVIDER DEFAULTS — derived from clio_agent.providers.registry
 # ============================================================================
 
 #
-# Per-provider capability flags (in addition to api_base/model/api_key
-# overrides). New traits go here, and LMProviderConfig.__post_init__
-# materializes them onto the config so the agent code reads
-# `cfg.strip_openai_prefix` instead of branching on `cfg.provider ==
-# "argonne"`. Adding a new provider with a new wire-protocol quirk =
-# one entry here, no new branches in agent.py.
+# These two dicts are derived views over the canonical provider list at
+# ``src/clio_agent/providers/registry.py``. Add a new provider by adding
+# a ``Provider(...)`` entry there — the wire defaults flow through here,
+# the catalog rows flow into ``GET /v1/providers/lm``, and the static
+# model fallback flows into ``GET /v1/providers/{id}/models``.
 #
-# Currently tracked traits:
+# Per-provider capability flags currently tracked:
 #   strip_openai_prefix : strip leading "openai/"/"anthropic/" from the
 #                         configured model id before sending. Defaults
-#                         to True (matches Meridian and most generic
-#                         openai-compat proxies). False for backends
-#                         that use HuggingFace-style ids verbatim
-#                         (Argonne / ALCF — `openai/gpt-oss-120b` IS
-#                         the gateway's model id; stripping it makes
-#                         the request resolve to a non-existent
-#                         endpoint).
-PROVIDER_DEFAULTS: dict[str, dict[str, Any]] = {
-    "lm_studio": {
-        "api_base": "http://127.0.0.1:1234/v1",
-        "model": "ibm/granite-4-h-tiny",
-        "api_key": "lm-studio",
-    },
-    "ollama": {
-        "api_base": "http://127.0.0.1:11434/v1",
-        "model": "granite3.1-dense:8b",
-        "api_key": "ollama",
-    },
-    "openai": {
-        "api_base": "https://api.openai.com/v1",
-        "model": "gpt-4o-mini",
-        "api_key": "",  # Must come from OPENAI_API_KEY env
-    },
-    "anthropic": {
-        "api_base": "https://api.anthropic.com/v1",
-        "model": "claude-sonnet-4-20250514",
-        "api_key": "",  # Must come from ANTHROPIC_API_KEY env
-    },
-    # Argonne / ALCF inference endpoints. The gateway is OpenAI-compatible
-    # vLLM behind a Globus Auth bearer. ``api_key`` is intentionally empty:
-    # ``__post_init__`` calls ``providers.argonne_auth.get_access_token``
-    # to fetch (or refresh) a real token only when the user actually
-    # selects this provider, so installs without ``globus-sdk`` keep
-    # importing cleanly.
-    #
-    # ``max_tokens`` is overridden to 4096 because Sophia's default
-    # Llama 3.1-8B has a 32 768-token context window. The shared
-    # LMProviderConfig default of 32 000 leaves only ~768 tokens for
-    # input + system prompt, which the gateway 400s on as soon as the
-    # router/expert prompts run (they alone are >2 k tokens). 4 k is a
-    # comfortable answer length while leaving 28 k for the prompt;
-    # users can override with CLIO_LM_MAX_TOKENS for larger-context
-    # models like Llama-405B or Mistral-Large.
-    "argonne": {
-        "api_base": "https://inference-api.alcf.anl.gov/resource_server/sophia/vllm/v1",
-        "model": "meta-llama/Meta-Llama-3.1-8B-Instruct",
-        "api_key": "",  # Lazy: minted via Globus Auth on demand.
-        "max_tokens": 4096,
-        # ALCF gateway uses HF-style ids verbatim — `openai/gpt-oss-120b`
-        # IS the model id. Stripping the org prefix turns it into
-        # `gpt-oss-120b`, which the gateway maps to backend endpoint
-        # `sophia-vllm-gpt-oss-120b` that doesn't exist (400).
-        "strip_openai_prefix": False,
-    },
-}
+#                         to True for most generic openai-compat proxies.
+#                         False for backends that use HuggingFace-style
+#                         ids verbatim (Argonne / ALCF — `openai/gpt-oss
+#                         -120b` IS the gateway's model id; stripping
+#                         turns it into `gpt-oss-120b`, which the
+#                         gateway maps to a non-existent backend).
+#   max_tokens (override): 4 096 for Sophia's default Llama 3.1-8B
+#                         (32 768-token context window — the shared
+#                         32 000 default would leave ~768 tokens for the
+#                         router/expert prompts, which the gateway 400s
+#                         on. Users can override with CLIO_LM_MAX_TOKENS
+#                         for larger-context models.)
+from clio_agent.providers.registry import (
+    as_cloud_api_key_env as _registry_cloud_api_key_env,
+)
+from clio_agent.providers.registry import (
+    as_provider_defaults_dict as _registry_provider_defaults,
+)
 
-# Environment variable names for cloud provider API keys
-_CLOUD_API_KEY_ENV: dict[str, str] = {
-    "openai": "OPENAI_API_KEY",
-    "anthropic": "ANTHROPIC_API_KEY",
-}
+PROVIDER_DEFAULTS: dict[str, dict[str, Any]] = _registry_provider_defaults()
+
+# Environment variable names for cloud provider API keys.
+_CLOUD_API_KEY_ENV: dict[str, str] = _registry_cloud_api_key_env()
 
 ENV_FILE_LOADED_KEY = "CLIO_ENV_FILE_LOADED"
 
@@ -235,7 +196,9 @@ class LMProviderConfig:
         environment: Deployment environment (dev/staging/production)
     """
 
-    provider: Literal["lm_studio", "ollama", "openai", "anthropic", "argonne"] = "lm_studio"
+    provider: Literal[
+        "lm_studio", "ollama", "openai", "anthropic", "argonne", "codex"
+    ] = "lm_studio"
     api_base: str = ""
     model: str = ""
     api_key: str = ""

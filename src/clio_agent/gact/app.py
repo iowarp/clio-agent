@@ -3535,80 +3535,17 @@ def build_app(
     # because most upstreams either don't expose a /models endpoint or
     # return hundreds of irrelevant entries. The TUI's Settings → Model
     # picker calls this once per provider and lists the rows verbatim.
-    _PROVIDER_MODELS: dict[str, list[dict[str, str]]] = {
-        "meridian": [
-            {"id": "claude-haiku-4-5",  "name": "Claude Haiku 4.5",
-             "description": "Fast + cheap. Default for CLIO development."},
-            {"id": "claude-sonnet-4-6", "name": "Claude Sonnet 4.6",
-             "description": "Balanced; better reasoning at moderate cost."},
-            {"id": "claude-opus-4-6",   "name": "Claude Opus 4.6",
-             "description": "Highest-capability Anthropic model. Slow + expensive."},
-        ],
-        "anthropic": [
-            {"id": "claude-haiku-4-5-20251001",  "name": "Claude Haiku 4.5",
-             "description": "Direct Anthropic. Fast + cheap."},
-            {"id": "claude-sonnet-4-6-20251001", "name": "Claude Sonnet 4.6",
-             "description": "Direct Anthropic. Balanced."},
-            {"id": "claude-opus-4-6-20251001",   "name": "Claude Opus 4.6",
-             "description": "Direct Anthropic. Highest capability."},
-        ],
-        "openai": [
-            {"id": "gpt-4o-mini", "name": "GPT-4o mini",
-             "description": "OpenAI's cheap fast model. Good default."},
-            {"id": "gpt-4o",      "name": "GPT-4o",
-             "description": "OpenAI's flagship multimodal model."},
-            {"id": "gpt-4-turbo", "name": "GPT-4 Turbo",
-             "description": "Higher capability, slower + pricier."},
-        ],
-        "openrouter": [
-            {"id": "openai/gpt-oss-120b:free",
-             "name": "GPT-OSS 120B (free)",
-             "description": "Free tier. Heavily rate-limited."},
-            {"id": "anthropic/claude-haiku-4-5",
-             "name": "Claude Haiku 4.5 via OpenRouter",
-             "description": "Pay-per-token via OpenRouter."},
-            {"id": "anthropic/claude-sonnet-4-6",
-             "name": "Claude Sonnet 4.6 via OpenRouter",
-             "description": "Pay-per-token via OpenRouter."},
-        ],
-        "lm_studio": [
-            {"id": "", "name": "(auto-discovered)",
-             "description": "LM Studio reports the loaded model on /v1/models."},
-        ],
-        "ollama": [
-            {"id": "llama3.2", "name": "Llama 3.2",
-             "description": "Default Ollama model. Local."},
-            {"id": "qwen2.5-coder:14b", "name": "Qwen2.5 Coder 14B",
-             "description": "Better at code than llama3.2; same speed band."},
-        ],
-        "codex": [
-            {"id": "gpt-5.4", "name": "GPT-5.4 (via Codex)",
-             "description": "Codex's reasoning-tuned default."},
-            {"id": "gpt-5", "name": "GPT-5 (via Codex)",
-             "description": "Standard GPT-5 through the Codex app-server."},
-            {"id": "gpt-4.1", "name": "GPT-4.1 (via Codex)",
-             "description": "Older GPT-4.1 routed through Codex."},
-        ],
-        # ALCF / Argonne — model availability is dynamic (jobs spin up
-        # and tear down behind the gateway). These are the models we've
-        # observed loaded on Sophia + Polaris in 2025–2026; the actual
-        # live set can be queried with
-        # `scripts/list_active_models.sh` in alcf-agentics-workflow.
-        "argonne": [
-            {"id": "meta-llama/Meta-Llama-3.1-8B-Instruct",
-             "name": "Llama 3.1 8B Instruct (Sophia/Polaris)",
-             "description": "Default ALCF demo model. Fastest of the lot."},
-            {"id": "meta-llama/Meta-Llama-3.1-70B-Instruct",
-             "name": "Llama 3.1 70B Instruct",
-             "description": "Heavier reasoning; jobs may need to warm up."},
-            {"id": "meta-llama/Meta-Llama-3.1-405B-Instruct",
-             "name": "Llama 3.1 405B Instruct",
-             "description": "Frontier-class. Often offline; check active models first."},
-            {"id": "mistralai/Mistral-7B-Instruct-v0.3",
-             "name": "Mistral 7B Instruct v0.3",
-             "description": "Lightweight alternative to Llama."},
-        ],
-    }
+    # Derived from clio_agent.providers.registry. Static fallback used
+    # only when live model discovery against the upstream /v1/models
+    # endpoint fails (no key, network down, 5xx) — see the GET
+    # /v1/providers/{id}/models handler below for the resolution order.
+    # ALCF / Argonne live model availability is dynamic (jobs spin up
+    # and tear down behind the gateway); the live set can be queried
+    # with `scripts/list_active_models.sh` in alcf-agentics-workflow.
+    from clio_agent.providers.registry import (
+        as_provider_models_dict as _build_provider_models,
+    )
+    _PROVIDER_MODELS: dict[str, list[dict[str, str]]] = _build_provider_models()
 
     # Cache for live model discovery. Keyed by preset id (or
     # "argonne:<cluster>" for the cluster-aware argonne path); value
@@ -5786,148 +5723,13 @@ def build_app(
 
     # ---- /v1/providers/lm (CLIO-BBBBBBBBBB-D) ------------------------
 
-    _LM_PRESETS: list[LMProviderPreset] = [
-        LMProviderPreset(
-            id="meridian",
-            label="Claude Max via Meridian",
-            provider="openai",
-            api_base="http://127.0.0.1:3456/v1",
-            suggested_model="claude-haiku-4-5-20251001",
-            requires_api_key=False,
-            description=(
-                "Routes through a local Meridian proxy that translates "
-                "your Claude Max OAuth into an OpenAI-compatible API. "
-                "Cheapest, fastest, default for CLIO development."
-            ),
-        ),
-        LMProviderPreset(
-            id="anthropic",
-            label="Anthropic API",
-            provider="anthropic",
-            api_base="https://api.anthropic.com",
-            suggested_model="claude-haiku-4-5-20251001",
-            requires_api_key=True,
-            description="Direct Anthropic API. Requires an ANTHROPIC_API_KEY.",
-        ),
-        LMProviderPreset(
-            id="openai",
-            label="OpenAI / ChatGPT",
-            provider="openai",
-            api_base="https://api.openai.com/v1",
-            suggested_model="gpt-4o-mini",
-            requires_api_key=True,
-            description=(
-                "Direct OpenAI API (powers ChatGPT + Codex CLI). "
-                "Requires an OPENAI_API_KEY. Defaults to gpt-4o-mini "
-                "for low cost; swap in gpt-4o or gpt-4-turbo for "
-                "heavier work."
-            ),
-        ),
-        LMProviderPreset(
-            id="openrouter",
-            label="OpenRouter",
-            provider="openai",
-            api_base="https://openrouter.ai/api/v1",
-            suggested_model="openai/gpt-oss-120b:free",
-            requires_api_key=True,
-            description=(
-                "OpenAI-compatible gateway over many providers. Free "
-                "tier models (suffixed :free) work without spend but "
-                "are heavily rate-limited."
-            ),
-        ),
-        LMProviderPreset(
-            id="lm_studio",
-            label="LM Studio (localhost)",
-            provider="lm_studio",
-            api_base="http://127.0.0.1:1234/v1",
-            suggested_model="",
-            requires_api_key=False,
-            description=(
-                "Locally-hosted models via LM Studio. Model name is "
-                "discovered automatically when blank."
-            ),
-        ),
-        LMProviderPreset(
-            id="ollama",
-            label="Ollama (localhost)",
-            provider="ollama",
-            api_base="http://127.0.0.1:11434/v1",
-            suggested_model="llama3.2",
-            requires_api_key=False,
-            description="Locally-hosted models via Ollama.",
-        ),
-        LMProviderPreset(
-            id="codex",
-            label="OpenAI Codex (via bridge)",
-            provider="openai",
-            api_base="http://127.0.0.1:18900/v1",
-            suggested_model="gpt-5.4",
-            requires_api_key=False,
-            description=(
-                "Routes through scripts/codex_bridge.py which fronts the "
-                "Codex app-server SDK with an OpenAI-compatible HTTP "
-                "interface. Requires the bridge running locally (default "
-                "port 18900) and the `codex` binary on PATH."
-            ),
-        ),
-        # ALCF inference endpoints. The api_key is left blank in the
-        # preset and resolved by the PUT /v1/providers/lm handler via
-        # Globus Auth (providers.argonne_auth) — that's why
-        # requires_api_key=False even though this is a remote service.
-        LMProviderPreset(
-            id="argonne_sophia",
-            label="ALCF Sophia (Globus Auth)",
-            provider="argonne",
-            api_base="https://inference-api.alcf.anl.gov/resource_server/sophia/vllm/v1",
-            suggested_model="meta-llama/Meta-Llama-3.1-8B-Instruct",
-            requires_api_key=False,
-            description=(
-                "Argonne's Sophia inference gateway (vLLM, OpenAI-"
-                "compatible). Auth is a Globus access token minted on "
-                "demand from the user's anl.gov / alcf.anl.gov identity. "
-                "Run `python -m clio_agent.providers.argonne_auth "
-                "authenticate` once per machine; tokens auto-refresh."
-            ),
-        ),
-        # Polaris preset removed — the inference-api gateway returns
-        # 400 'cluster polaris does not exist' for /resource_server/
-        # polaris/vllm/v1, so the preset was just a guaranteed dead end
-        # for users. If/when ALCF brings Polaris-side inference back
-        # online, restore this entry.
-        LMProviderPreset(
-            id="argonne_metis",
-            label="ALCF Metis (Globus Auth)",
-            provider="argonne",
-            # Metis hangs framework="api" off /api/v1, not /vllm/v1
-            # the way Sophia does. Same Globus auth, same /jobs schema
-            # for live model discovery, different chat-completions path.
-            api_base="https://inference-api.alcf.anl.gov/resource_server/metis/api/v1",
-            suggested_model="gpt-oss-120b",
-            requires_api_key=False,
-            description=(
-                "Argonne's Metis inference gateway (FastCoE 'api' "
-                "framework, OpenAI-compatible chat-completions). Useful "
-                "fallback when Sophia is in maintenance — typically "
-                "loads gpt-oss-120b and Llama-4-Maverick. Same Globus "
-                "tokens as Sophia/Polaris."
-            ),
-        ),
-        LMProviderPreset(
-            id="argonne_local_vllm",
-            label="ALCF local vLLM (compute-node)",
-            provider="openai",
-            api_base="http://127.0.0.1:8000/v1",
-            suggested_model="meta-llama/Llama-3.1-8B-Instruct",
-            requires_api_key=False,
-            description=(
-                "vLLM running co-located on an Aurora / Polaris compute "
-                "node (see localWorkflow/scripts/vllm_setup.sh). No "
-                "Globus needed — the server accepts the literal "
-                "'EMPTY' API key. Override api_base with the bound port."
-            ),
-        ),
-    ]
+    # Derived from clio_agent.providers.registry. Add new presets to
+    # the registry, not here — this list reflects whatever the registry
+    # contains at build_app() time. Polaris preset removed for the time
+    # being — the inference-api gateway returns 400 'cluster polaris
+    # does not exist' for /resource_server/polaris/vllm/v1.
+    from clio_agent.providers.registry import as_lm_presets as _build_lm_presets
+    _LM_PRESETS: list[LMProviderPreset] = _build_lm_presets()
 
     @app.get("/v1/providers/lm", response_model=LMProviderInfo)
     async def get_lm_provider() -> LMProviderInfo:
