@@ -664,6 +664,8 @@ async def _run_turn_in_background(
         "tokens": dict(turn_tokens),
         "cost_usd": turn_cost,
     }
+    if error_info is not None:
+        completed_payload["error_info"] = error_info.model_dump(exclude_none=True)
     if tools_called:
         completed_payload["metadata"] = {"tools_called": tools_called}
     bus.publish(Event(
