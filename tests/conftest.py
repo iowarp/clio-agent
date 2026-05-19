@@ -5,11 +5,29 @@ Provides shared fixtures for all test modules, including synthetic
 HDF5 and Parquet test data for MCP server testing.
 """
 
+import os
+
 import h5py
 import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
+
+
+@pytest.fixture(autouse=True)
+def allow_pytest_tmp_path(tmp_path, monkeypatch):
+    """Let file-policy tests read/write their own pytest temp files.
+
+    Developer shells often set CLIO_ALLOWED_ROOTS narrowly for manual
+    use. Tests should not inherit that and then reject their own
+    tmp_path fixtures.
+    """
+
+    existing = os.environ.get("CLIO_ALLOWED_ROOTS", "")
+    roots = [str(tmp_path)]
+    if existing.strip():
+        roots.extend(item for item in existing.split(os.pathsep) if item)
+    monkeypatch.setenv("CLIO_ALLOWED_ROOTS", os.pathsep.join(roots))
 
 
 @pytest.fixture

@@ -162,6 +162,27 @@ async def test_query_data_with_row_limit(sample_parquet):
 
 
 @pytest.mark.asyncio
+async def test_query_data_row_limit_does_not_read_full_table(sample_parquet, monkeypatch):
+    """Bounded row queries should not materialize the full Parquet table."""
+
+    def fail_read_table(*args, **kwargs):
+        raise AssertionError("pq.read_table should not be called by query_data")
+
+    monkeypatch.setattr(parquet_module.pq, "read_table", fail_read_table)
+
+    async with Client(parquet_server) as client:
+        result = await client.call_tool(
+            "query_data", {"filepath": sample_parquet, "row_limit": 5}
+        )
+    data = _parse_result(result)
+
+    assert "error" not in data
+    assert data["total_rows"] == 100
+    assert data["rows_returned"] == 5
+    assert len(data["rows"]) == 5
+
+
+@pytest.mark.asyncio
 async def test_query_data_nonexistent_file():
     """Test query_data returns error for nonexistent file."""
     async with Client(parquet_server) as client:
