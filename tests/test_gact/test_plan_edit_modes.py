@@ -26,6 +26,7 @@ from clio_agent.gact.app import (
     _make_permission_gate,
     build_app,
 )
+from clio_agent.tools.file_policy import FilePolicyError
 
 
 @dataclass
@@ -103,10 +104,12 @@ def test_plan_mode_auto_denies_destructive_tools(tmp_path: Path) -> None:
         )
 
 
-def test_diffs_apply_writes_to_disk(tmp_path: Path) -> None:
+def test_diffs_apply_writes_to_disk(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     sample_diff = "--- a/x\n+++ b/x\n@@ -1 +1 @@\n-old\n+new\n"
+    workspace = tmp_path / "ws"
+    monkeypatch.setenv("CLIO_ALLOWED_ROOTS", str(workspace))
     pred = _Pred(file_diffs=[{
-        "path": str(tmp_path / "ws" / "x.py"),
+        "path": str(workspace / "x.py"),
         "unified_diff": sample_diff,
         "new_content": "print('hello new')\n",
     }])
@@ -115,15 +118,15 @@ def test_diffs_apply_writes_to_disk(tmp_path: Path) -> None:
     )
     # Pin ws_default's root to tmp_path/ws so the write passes
     # the workspace boundary check.
-    (tmp_path / "ws").mkdir()
-    app.state.workspaces.update("ws_default", root_path=str(tmp_path / "ws"))
+    workspace.mkdir()
+    app.state.workspaces.update("ws_default", root_path=str(workspace))
     with TestClient(app) as c:
         from .conftest import complete_turn
 
         sid = c.post("/v1/sessions", json={"title": "t"}).json()["id"]
         complete_turn(c, sid, "make the edit")
 
-        target = tmp_path / "ws" / "x.py"
+        target = workspace / "x.py"
         assert not target.exists(), "should not have been written before /apply"
 
         resp = c.post(
@@ -170,3 +173,29 @@ def test_apply_edit_refuses_in_plan_mode(tmp_path: Path) -> None:
             session=sess,
             app=app,
         )
+
+
+def test_apply_edit_refuses_outside_allowed_roots(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Workspace scope is not enough; writes must also pass file_policy."""
+
+    workspace = tmp_path / "ws"
+    allowed = tmp_path / "allowed"
+    workspace.mkdir()
+    allowed.mkdir()
+    monkeypatch.setenv("CLIO_ALLOWED_ROOTS", str(allowed))
+
+    app = build_app(sessions_path=tmp_path / "s.json")
+    app.state.workspaces.update("ws_default", root_path=str(workspace))
+    sess = app.state.sessions.create(
+        workspace_id="ws_default", title="t", mode="edit",
+    )
+    with pytest.raises(FilePolicyError) as exc:
+        _apply_edit_to_disk(
+            path=str(workspace / "x.txt"),
+            new_content="x",
+            session=sess,
+            app=app,
+        )
+    assert exc.value.code == "outside_allowed_roots"
