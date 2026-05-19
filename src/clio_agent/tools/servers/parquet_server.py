@@ -127,12 +127,20 @@ def query_data(
         if columns and columns.strip():
             col_list = [c.strip() for c in columns.split(",") if c.strip()]
 
-        table = pq.read_table(safe_path, columns=col_list)
-        total_rows = len(table)
-
-        # Limit rows
-        if row_limit > 0 and total_rows > row_limit:
-            table = table.slice(0, row_limit)
+        parquet_file = pq.ParquetFile(safe_path)
+        total_rows = parquet_file.metadata.num_rows
+        batch_iter = parquet_file.iter_batches(
+            batch_size=row_limit,
+            columns=col_list,
+        )
+        first_batch = next(batch_iter, None)
+        if first_batch is None:
+            schema = parquet_file.schema_arrow
+            if col_list is not None:
+                schema = pa.schema([schema.field(name) for name in col_list])
+            table = schema.empty_table()
+        else:
+            table = pa.Table.from_batches([first_batch])
 
         # Convert to list of dicts
         rows = table.to_pydict()
