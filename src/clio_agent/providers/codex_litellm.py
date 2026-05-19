@@ -49,9 +49,7 @@ try:
     from litellm import CustomLLM
     from litellm.types.utils import Choices, Message, ModelResponse, Usage
 except ImportError as e:  # pragma: no cover - litellm is a hard dep
-    raise ImportError(
-        "litellm must be installed to use the Codex provider"
-    ) from e
+    raise ImportError("litellm must be installed to use the Codex provider") from e
 
 
 CODEX_BINARY_NAME = "codex"
@@ -172,9 +170,7 @@ def _run_exec(
             check=False,
         )
     except subprocess.TimeoutExpired as e:
-        raise CodexExecError(
-            f"codex exec timed out after {timeout}s (model={model})"
-        ) from e
+        raise CodexExecError(f"codex exec timed out after {timeout}s (model={model})") from e
     finally:
         # Best-effort temp cleanup; defer until after we read.
         pass
@@ -190,9 +186,7 @@ def _run_exec(
     try:
         text = last_msg_path.read_text(encoding="utf-8").strip()
     except FileNotFoundError as e:
-        raise CodexExecError(
-            f"codex exec produced no output file (model={model})"
-        ) from e
+        raise CodexExecError(f"codex exec produced no output file (model={model})") from e
     finally:
         last_msg_path.unlink(missing_ok=True)
 
@@ -210,17 +204,19 @@ def _import_codex_sdk() -> Any:
     importable.
     """
     try:
-        from openai_codex import Codex  # type: ignore[import-not-found,no-redef] # noqa: PLC0415
+        from openai_codex import (
+            Codex as OpenAICodex,  # type: ignore[import-not-found] # noqa: PLC0415
+        )
 
-        return Codex
+        return OpenAICodex
     except ImportError:
         pass
     try:
         from codex_app_server import (
-            Codex,  # type: ignore[import-not-found,no-redef] # noqa: PLC0415
+            Codex as CodexAppServerCodex,  # type: ignore[import-not-found] # noqa: PLC0415
         )
 
-        return Codex
+        return CodexAppServerCodex
     except ImportError as e:
         raise CodexCLIUnavailableError(
             "openai_codex SDK is not installed. Install the optional "
@@ -429,9 +425,7 @@ def ensure_registered() -> None:
     import litellm  # noqa: PLC0415 - imported lazily for fast import path
 
     _handler = CodexLLM()
-    litellm.custom_provider_map.append(
-        {"provider": "codex", "custom_handler": _handler}
-    )
+    litellm.custom_provider_map.append({"provider": "codex", "custom_handler": _handler})
     _registered = True
 
 
@@ -442,9 +436,7 @@ def _reset_for_tests() -> None:
         import litellm  # noqa: PLC0415
 
         litellm.custom_provider_map[:] = [
-            entry
-            for entry in litellm.custom_provider_map
-            if entry.get("provider") != "codex"
+            entry for entry in litellm.custom_provider_map if entry.get("provider") != "codex"
         ]
     _registered = False
     _handler = None

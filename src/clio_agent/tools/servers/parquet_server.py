@@ -18,7 +18,9 @@ Usage:
     ...     result = await client.call_tool("analyze_schema", {"filepath": "data.parquet"})
 """
 
+import math
 import os
+import random
 from typing import Any
 
 import numpy as np
@@ -34,6 +36,9 @@ from clio_agent.tools.file_policy import (
 )
 
 parquet_server = FastMCP("parquet")
+PARQUET_STATS_BATCH_SIZE = 65_536
+PARQUET_STATS_SAMPLE_SIZE = 10_000
+PARQUET_STATS_UNIQUE_LIMIT = 100_000
 
 
 @parquet_server.tool()
@@ -196,15 +201,15 @@ def compute_statistics(filepath: str, column: str) -> dict[str, Any]:
     try:
         validate_non_empty_string(column, field="column")
         safe_path = validate_read_path(filepath)
-        table = pq.read_table(safe_path, columns=[column])
+        parquet_file = pq.ParquetFile(safe_path)
+        schema = parquet_file.schema_arrow
 
-        if column not in table.column_names:
+        if schema.get_field_index(column) < 0:
             return {"error": f"Column '{column}' not found in file"}
 
-        col_array = table.column(column)
-        col_type = col_array.type
-        null_count = col_array.null_count
-        total_count = len(col_array)
+        col_type = schema.field(column).type
+        total_count = parquet_file.metadata.num_rows
+        null_count = 0
 
         result: dict[str, Any] = {
             "filepath": str(safe_path),
@@ -217,46 +222,104 @@ def compute_statistics(filepath: str, column: str) -> dict[str, Any]:
         is_numeric = pa.types.is_integer(col_type) or pa.types.is_floating(col_type)
 
         if is_numeric:
-            non_null = col_array.drop_null()
-            if len(non_null) == 0:
+            count = 0
+            total = 0.0
+            total_sq = 0.0
+            min_value: float | None = None
+            max_value: float | None = None
+            sample: list[float] = []
+            unique_values: set[float | int] = set()
+            unique_count_capped = False
+            rng = random.Random(0)
+
+            for batch in parquet_file.iter_batches(
+                batch_size=PARQUET_STATS_BATCH_SIZE,
+                columns=[column],
+            ):
+                arr = batch.column(0)
+                null_count += arr.null_count
+                non_null = arr.drop_null()
+                if len(non_null) == 0:
+                    continue
+                series = non_null.to_numpy(zero_copy_only=False)
+                if np.issubdtype(series.dtype, np.floating):
+                    valid = series[~np.isnan(series)]
+                else:
+                    valid = series
+                if len(valid) == 0:
+                    continue
+
+                values = valid.astype(np.float64, copy=False)
+                batch_min = float(np.min(values))
+                batch_max = float(np.max(values))
+                min_value = batch_min if min_value is None else min(min_value, batch_min)
+                max_value = batch_max if max_value is None else max(max_value, batch_max)
+                total += float(np.sum(values, dtype=np.float64))
+                total_sq += float(np.sum(values * values, dtype=np.float64))
+
+                for raw_value in values:
+                    value = float(raw_value)
+                    count += 1
+                    if len(sample) < PARQUET_STATS_SAMPLE_SIZE:
+                        sample.append(value)
+                    else:
+                        idx = rng.randrange(count)
+                        if idx < PARQUET_STATS_SAMPLE_SIZE:
+                            sample[idx] = value
+                    if not unique_count_capped:
+                        unique_values.add(value)
+                        if len(unique_values) > PARQUET_STATS_UNIQUE_LIMIT:
+                            unique_count_capped = True
+
+            result["null_count"] = null_count
+            if count == 0:
                 result["unique_count"] = 0
                 result["non_null_count"] = 0
                 return result
 
-            series = non_null.to_numpy(zero_copy_only=False)
-            if np.issubdtype(series.dtype, np.floating):
-                valid = series[~np.isnan(series)]
-            else:
-                valid = series
-
-            if len(valid) == 0:
-                result["unique_count"] = 0
-                result["non_null_count"] = 0
-                return result
-
-            result["min"] = float(np.min(valid))
-            result["max"] = float(np.max(valid))
-            result["mean"] = float(np.mean(valid))
-            result["std"] = float(np.std(valid))
-            result["median"] = float(np.median(valid))
-            result["unique_count"] = int(len(np.unique(valid)))
-            result["non_null_count"] = int(len(valid))
-        else:
-            # String/categorical statistics
-            py_values = col_array.to_pylist()
-            non_null_values = [v for v in py_values if v is not None]
-            unique_values = set(non_null_values)
+            mean = total / count
+            variance = max((total_sq / count) - (mean * mean), 0.0)
+            result["min"] = min_value
+            result["max"] = max_value
+            result["mean"] = mean
+            result["std"] = math.sqrt(variance)
+            result["median"] = float(np.median(np.array(sample, dtype=np.float64)))
+            result["median_approximate"] = count > PARQUET_STATS_SAMPLE_SIZE
             result["unique_count"] = len(unique_values)
+            result["unique_count_capped"] = unique_count_capped
+            result["non_null_count"] = count
+        else:
+            value_counts: dict[str, int] = {}
+            string_unique_values: set[str] = set()
+            unique_count_capped = False
+            value_counts_capped = False
 
-            # Top 5 value counts
-            if non_null_values:
-                value_counts: dict[str, int] = {}
-                for v in non_null_values:
-                    sv = str(v)
+            for batch in parquet_file.iter_batches(
+                batch_size=PARQUET_STATS_BATCH_SIZE,
+                columns=[column],
+            ):
+                arr = batch.column(0)
+                null_count += arr.null_count
+                for value in arr.to_pylist():
+                    if value is None:
+                        continue
+                    sv = str(value)
+                    if not unique_count_capped:
+                        string_unique_values.add(sv)
+                        if len(string_unique_values) > PARQUET_STATS_UNIQUE_LIMIT:
+                            unique_count_capped = True
+                    if sv not in value_counts and len(value_counts) >= PARQUET_STATS_UNIQUE_LIMIT:
+                        value_counts_capped = True
+                        continue
                     value_counts[sv] = value_counts.get(sv, 0) + 1
-                # Sort by count descending, take top 5
+
+            result["null_count"] = null_count
+            result["unique_count"] = len(string_unique_values)
+            result["unique_count_capped"] = unique_count_capped
+            if value_counts:
                 sorted_counts = sorted(value_counts.items(), key=lambda x: x[1], reverse=True)
                 result["value_counts"] = dict(sorted_counts[:5])
+                result["value_counts_capped"] = value_counts_capped
 
         return result
     except FilePolicyError as e:
