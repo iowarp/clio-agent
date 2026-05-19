@@ -44,6 +44,24 @@ Two flags are explicitly `false` (LSP, voice — out of scope for v0.3.1).
 | `integration_health` | ✅ verified | `/v1/health.integrations[]` reports per-subsystem status; `clio_doctor_health.png` |
 | `tool_telemetry` | ✅ verified | `tool.call.started/completed` SSE events fire BEFORE `message.completed` (strict integration test) |
 
+## Transport Truthfulness
+
+`transports.events_sse=true` means the backend emits the GACT event
+stream. It does not mean every text delta is a live token from the
+provider.
+
+Text streaming has two explicit modes on `message.part.*` payloads and
+assistant `message.completed.metadata.stream_source`:
+
+| `stream_source` | Meaning |
+|---|---|
+| `live` | Delta arrived through the live `dspy.streamify` path. |
+| `synthetic_posthoc` | Backend already had the final answer and chunked it after completion for TUI rendering continuity. |
+
+As of v0.3.1, the chat `answer` path can stream live when the upstream
+DSPy/LiteLLM provider supports it. Expert paths that do not expose that
+`answer` stream still fall back to `synthetic_posthoc`.
+
 ## Vendor-specific (CLIO additions on top of v0.2)
 
 | Capability | Status | How verified |

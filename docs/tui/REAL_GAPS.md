@@ -56,17 +56,24 @@ Fix scope: add a `_extract_usage(pred, lm)` helper that pulls from
 DSPy's history, plumb through `app.state.agent.last_usage()` or
 similar.
 
-### 4. Streaming is fake
+### 4. Streaming is only partially live
 
-`message.part.delta` events fire after the whole assistant text is
-in hand — chunked at 64 chars synthetically. Real per-token
-streaming via `dspy.streamify()` isn't wired. The TUI rendering
-looks identical, but turn latency is bursty (whole answer arrives
-~5-15s after Enter rather than streaming token-by-token), and the
-user can't see a slow turn slowing down — it just hangs.
+`message.part.delta` events can come from two different sources:
 
-Fix scope: switch the agent invocation path to async streaming;
-pump `streamed_chunk.text` into the EventBus as it arrives.
+- `stream_source="live"`: text arrived through the live
+  `dspy.streamify` path.
+- `stream_source="synthetic_posthoc"`: the backend already had the
+  final assistant text and chunked it afterward for TUI rendering
+  continuity.
+
+The chat `answer` path can stream live when the upstream DSPy/LiteLLM
+provider supports it. Expert paths that do not expose the same `answer`
+stream still fall back to post-hoc 64-character chunks. The TUI should
+render both, but only `live` is evidence of real token arrival.
+
+Fix scope: extend live streaming beyond the chat `answer` listener to
+expert outputs, and keep the explicit `stream_source` marker so the UI
+and tests can tell when a path regresses to synthetic chunks.
 
 ## Wire-shape-only — work but no real driver
 
