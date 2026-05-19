@@ -269,6 +269,69 @@ class TestRunAgentLoop:
         assert selected == "none"
         assert answer == "out of scope"
 
+    def test_general_question_expert_action_is_kept_in_chat(self, agent):
+        agent._plan_next_action = MagicMock(
+            return_value={
+                "action": "expert",
+                "expert": "data",
+                "question": "What can you do with HDF5 or Parquet data?",
+            }
+        )
+        agent._run_chat_agent = MagicMock(return_value="capability answer")
+        agent.data_expert = MagicMock()
+
+        selected, answer, _, error_info, route = agent._run_agent_loop(
+            question="What can you do with HDF5 or Parquet data?",
+            session_context="",
+            file_context="",
+            trace=_trace(),
+        )
+
+        assert selected == "chat"
+        assert answer == "capability answer"
+        assert error_info is None
+        assert "no concrete file" in route.reason
+        agent.data_expert.assert_not_called()
+
+    def test_none_action_with_stale_in_scope_answer_uses_chat(self, agent):
+        stale = "HDF5 and Parquet are scientific data formats."
+        agent._plan_next_action = MagicMock(
+            return_value={"action": "none", "answer": stale, "reason": "no handler"}
+        )
+        agent._run_chat_agent = MagicMock(return_value="summary answer")
+
+        selected, answer, _, error_info, route = agent._run_agent_loop(
+            question="Summarize your previous answers in one sentence.",
+            session_context=f"user: What can you do?\nassistant: {stale}",
+            file_context="",
+            trace=_trace(),
+        )
+
+        assert selected == "chat"
+        assert answer == "summary answer"
+        assert error_info is None
+        assert "replaced" in route.reason
+
+    def test_planner_answer_leaking_file_context_uses_chat(self, agent):
+        agent._plan_next_action = MagicMock(
+            return_value={
+                "action": "answer",
+                "answer": "The file_context is empty, so I need more context.",
+            }
+        )
+        agent._run_chat_agent = MagicMock(return_value="clean answer")
+
+        selected, answer, _, error_info, _ = agent._run_agent_loop(
+            question="Explain one safe next step for analyzing a local data file.",
+            session_context="",
+            file_context="",
+            trace=_trace(),
+        )
+
+        assert selected == "chat"
+        assert answer == "clean answer"
+        assert error_info is None
+
     def test_step_limit_synthesizes_answer(self, agent, monkeypatch):
         monkeypatch.setenv("CLIO_AGENT_MAX_STEPS", "1")
         agent._plan_next_action = MagicMock(
@@ -375,6 +438,39 @@ class TestPlannerNoBypass:
 
 
 class TestChatAgentNoBypass:
+    def test_chat_accepts_text_from_malformed_adapter_marker(self, agent):
+        agent.chat_agent = MagicMock(
+            side_effect=ValueError(
+                "Adapter ChatAdapter failed to parse the LM response.\n\n"
+                "LM Response: [[ ## answer ##\nUseful answer text.\n"
+                "[[ ## completed ## ]]\n\n"
+                "Expected to find output fields in the LM response: [answer]\n\n"
+                "Actual output fields parsed from the LM response: []"
+            )
+        )
+
+        assert agent._run_chat_agent("hi", "") == "Useful answer text."
+
+    def test_chat_summary_replaces_repeated_previous_answer(self, agent):
+        repeated = "If a provider fails, retry or reconfigure the provider."
+        agent.chat_agent = MagicMock(
+            return_value=MagicMock(answer=repeated)
+        )
+        session_context = (
+            "assistant: CLIO helps analyze scientific data files.\n"
+            "assistant: HDF5 and Parquet capabilities include schemas and statistics.\n"
+            f"assistant: {repeated}"
+        )
+
+        answer = agent._run_chat_agent(
+            "Summarize your previous answers in one sentence.",
+            session_context,
+        )
+
+        assert answer.startswith("Previous answers covered:")
+        assert "scientific data files" in answer
+        assert "schemas and statistics" in answer
+
     def test_chat_failure_surfaces_underlying_exception(self, agent):
         agent.chat_agent = MagicMock(side_effect=ValueError("bad response"))
 

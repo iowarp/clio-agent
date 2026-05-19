@@ -441,6 +441,14 @@ class ClioAgent(dspy.Module):
             if kind == "expert":
                 expert_id = self._coerce_text(action.get("expert")).strip().lower()
                 expert_question = self._coerce_text(action.get("question")).strip() or question
+                if self._should_answer_with_chat(question, file_context):
+                    answer = self._run_chat_agent(question, session_context)
+                    route = self._route_for_selected(
+                        "chat",
+                        "Planner expert action ignored because no concrete file/data context exists.",
+                        confidence=0.65,
+                    )
+                    return "chat", answer, None, None, route
                 compatibility_error = self._expert_file_compatibility_error(
                     expert_id,
                     file_context,
@@ -473,6 +481,19 @@ class ClioAgent(dspy.Module):
                     "I can help with local scientific data files, analysis, and visualizations. "
                     "I do not have a useful CLIO action for that request."
                 )
+                if self._should_replace_planner_text(
+                    kind=kind,
+                    question=question,
+                    session_context=session_context,
+                    answer=answer,
+                ):
+                    answer = self._run_chat_agent(question, session_context)
+                    route = self._route_for_selected(
+                        "chat",
+                        "Planner none action replaced because the answer looked stale or in-scope.",
+                        confidence=0.65,
+                    )
+                    return "chat", answer, None, None, route
                 route = self._route_for_selected(
                     "none",
                     reason or "Agent planner found no suitable CLIO action.",
@@ -482,6 +503,13 @@ class ClioAgent(dspy.Module):
 
             if kind == "answer":
                 answer = self._coerce_text(action.get("answer")).strip()
+                if self._should_replace_planner_text(
+                    kind=kind,
+                    question=question,
+                    session_context=session_context,
+                    answer=answer,
+                ):
+                    answer = ""
                 if not answer and observations:
                     answer = self._synthesize_agent_answer(
                         question=question,
@@ -975,11 +1003,167 @@ class ClioAgent(dspy.Module):
         except ValueError:
             return None
 
+    @classmethod
+    def _parse_text_from_adapter_error(cls, error: Exception, field: str) -> str:
+        """Recover text from a DSPy ChatAdapter field-marker parse error."""
+        message = str(error)
+        marker = "LM Response:"
+        expected = "Expected to find output fields"
+        if marker not in message or expected not in message or field not in message:
+            return ""
+
+        raw_response = message.split(marker, 1)[1].split(expected, 1)[0].strip()
+        field_marker = f"[[ ## {field} ##"
+        start = raw_response.find(field_marker)
+        if start >= 0:
+            text = raw_response[start + len(field_marker):]
+            if text.startswith(" ]]"):
+                text = text[3:]
+            end = text.find("[[ ##")
+            if end >= 0:
+                text = text[:end]
+            return text.strip(" ]\n\t")
+
+        return raw_response.strip()
+
     def _format_observations_for_prompt(self, observations: list[dict[str, Any]]) -> str:
         """Format loop observations as compact JSON for planner prompts."""
         if not observations:
             return "No observations yet"
         return json.dumps(observations, ensure_ascii=False, indent=2)
+
+    @classmethod
+    def _should_answer_with_chat(cls, question: str, file_context: str) -> bool:
+        """Return whether an expert action should be kept in chat.
+
+        Without a concrete file path or current file context, broad capability
+        and workflow questions should not be sent to data experts. Weak local
+        planners otherwise produce plausible but file-context-dependent expert
+        answers for ordinary conversation.
+        """
+        if file_context.strip() or extract_file_paths(question, "", SCIENTIFIC_FILE_SUFFIXES):
+            return False
+
+        lowered = " ".join(question.lower().split())
+        general_prefixes = (
+            "briefly",
+            "explain",
+            "how ",
+            "if ",
+            "summarize",
+            "tell me",
+            "what ",
+            "when ",
+            "why ",
+        )
+        general_terms = (
+            "capabilit",
+            "can you do",
+            "local data file",
+            "previous answer",
+            "provider",
+            "safe next step",
+            "workflow",
+        )
+        return lowered.startswith(general_prefixes) or any(term in lowered for term in general_terms)
+
+    @classmethod
+    def _should_replace_planner_text(
+        cls,
+        *,
+        kind: str,
+        question: str,
+        session_context: str,
+        answer: str,
+    ) -> bool:
+        """Return whether planner text should be regenerated by chat."""
+        if not answer:
+            return False
+
+        lowered = answer.lower()
+        if "file_context" in lowered or "no current file context" in lowered:
+            return True
+
+        if kind == "none" and not cls._question_looks_out_of_scope(question):
+            return True
+
+        previous = cls._last_assistant_context(session_context)
+        return cls._text_similarity(answer, previous) >= 0.72
+
+    @staticmethod
+    def _question_looks_out_of_scope(question: str) -> bool:
+        """Return whether a request is clearly outside CLIO's domain."""
+        lowered = question.lower()
+        in_scope_terms = (
+            "analysis",
+            "clio",
+            "data",
+            "file",
+            "hdf5",
+            "parquet",
+            "previous answer",
+            "provider",
+            "scientific",
+            "summarize",
+            "visual",
+        )
+        return not any(term in lowered for term in in_scope_terms)
+
+    @staticmethod
+    def _last_assistant_context(session_context: str) -> str:
+        """Extract the most recent assistant line from compiled context."""
+        for line in reversed(session_context.splitlines()):
+            if line.lower().startswith("assistant:"):
+                return line.split(":", 1)[1].strip()
+        return ""
+
+    @staticmethod
+    def _assistant_context_lines(session_context: str) -> list[str]:
+        """Extract assistant lines from compiled context."""
+        lines: list[str] = []
+        for line in session_context.splitlines():
+            if line.lower().startswith("assistant:"):
+                text = line.split(":", 1)[1].strip()
+                if text:
+                    lines.append(text)
+        return lines
+
+    @classmethod
+    def _summarize_assistant_context(cls, session_context: str) -> str:
+        """Build a short deterministic summary from prior assistant turns."""
+        snippets: list[str] = []
+        for line in cls._assistant_context_lines(session_context):
+            snippet = cls._first_sentence(line, max_chars=120).strip()
+            if not snippet:
+                continue
+            if any(cls._text_similarity(snippet, existing) >= 0.7 for existing in snippets):
+                continue
+            snippets.append(snippet)
+            if len(snippets) >= 4:
+                break
+
+        if not snippets:
+            return ""
+        return "Previous answers covered: " + "; ".join(snippets) + "."
+
+    @staticmethod
+    def _question_requests_summary(question: str) -> bool:
+        """Return whether the user is asking to summarize prior answers."""
+        lowered = question.lower()
+        return "summar" in lowered and (
+            "previous" in lowered or "prior" in lowered or "earlier" in lowered
+        )
+
+    @staticmethod
+    def _text_similarity(left: str, right: str) -> float:
+        """Small token-overlap score for repeated context detection."""
+        if not left or not right:
+            return 0.0
+        left_tokens = {token for token in left.lower().split() if len(token) > 3}
+        right_tokens = {token for token in right.lower().split() if len(token) > 3}
+        if not left_tokens or not right_tokens:
+            return 0.0
+        return len(left_tokens & right_tokens) / len(left_tokens | right_tokens)
 
     @staticmethod
     def _first_sentence(text: str, max_chars: int = 220) -> str:
@@ -1018,9 +1202,20 @@ class ClioAgent(dspy.Module):
                 result = self.chat_agent(question=question, session_context=session_context)
             answer = self._coerce_text(getattr(result, "answer", None)).strip()
             if answer:
+                if self._question_requests_summary(question):
+                    summary = self._summarize_assistant_context(session_context)
+                    if summary:
+                        return summary
                 return answer
             raise ValueError("Chat agent returned an empty answer.")
         except Exception as chat_error:
+            answer = self._parse_text_from_adapter_error(chat_error, "answer")
+            if answer:
+                if self._question_requests_summary(question):
+                    summary = self._summarize_assistant_context(session_context)
+                    if summary:
+                        return summary
+                return answer
             if self.verbose:
                 print(f"[ClioAgent] ChatAgent failed: {chat_error}")
             raise
