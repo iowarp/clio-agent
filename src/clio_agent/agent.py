@@ -75,6 +75,7 @@ from clio_agent.tools.gateway import gateway
 
 SCIENTIFIC_FILE_SUFFIXES = {".h5", ".hdf5", ".parquet", ".csv"}
 DEFAULT_AGENT_MAX_STEPS = 4
+ERROR_RECOVERY_ACTIONS = ("retry", "reconfigure_provider", "exit")
 
 
 class ClioAgent(dspy.Module):
@@ -329,24 +330,22 @@ class ClioAgent(dspy.Module):
             if error_info and not error_info.get("details", {}).get("partial", False):
                 success = False
                 error_msg = str(error_info.get("message") or "Tool execution failed.")
+                answer = ""
         except Exception as e:
             success = False
             if isinstance(e, RoutingError):
-                error_info = e.to_dict()
-                answer = (
-                    "I could not choose a valid CLIO action for this request. "
-                    "Check the configured local model and retry."
-                )
+                error_info = self._with_recovery_actions(e.to_dict())
+                answer = ""
             else:
                 agent_err = ExpertError(
                     message="CLIO could not complete the agent loop for this request.",
-                    details={"selected": selected, "original_error": str(e)},
+                    details=self._recovery_details(
+                        selected=selected,
+                        original_error=str(e),
+                    ),
                 )
                 error_info = agent_err.to_dict()
-                answer = (
-                    "I could not complete the requested action. "
-                    "The failure is recorded in error_info for inspection."
-                )
+                answer = ""
             error_msg = str(e)
             if self.verbose:
                 print(f"[ClioAgent] Agent loop error: {e}")
@@ -568,16 +567,23 @@ class ClioAgent(dspy.Module):
         if expert_id not in self.registry.list_agents():
             error = ExpertError(
                 f"Unknown expert selected by planner: {expert_id}",
-                details={"expert": expert_id, "available": self.registry.list_agents()},
+                details=self._recovery_details(
+                    expert=expert_id,
+                    available=self.registry.list_agents(),
+                ),
             ).to_dict()
-            return "none", error["message"], None, error
+            return "none", "", None, error
 
         expert_question = self._question_with_file_context(question, file_context)
         try:
             if expert_id == "data":
-                expert_result = self.data_expert(question=expert_question, file_context=file_context)
+                expert_result = self.data_expert(
+                    question=expert_question, file_context=file_context
+                )
                 self._merge_expert_provenance(trace, expert_result)
-                answer = f"{expert_result.analysis}\n\nRecommendations:\n{expert_result.recommendations}"
+                answer = (
+                    f"{expert_result.analysis}\n\nRecommendations:\n{expert_result.recommendations}"
+                )
                 return "data", answer, expert_result, None
 
             if expert_id == "analysis":
@@ -586,7 +592,9 @@ class ClioAgent(dspy.Module):
                     file_context=file_context,
                 )
                 self._merge_expert_provenance(trace, expert_result)
-                answer = f"{expert_result.analysis}\n\nRecommendations:\n{expert_result.recommendations}"
+                answer = (
+                    f"{expert_result.analysis}\n\nRecommendations:\n{expert_result.recommendations}"
+                )
                 return "analysis", answer, expert_result, None
 
             expert_result = self.visualization_expert(
@@ -598,17 +606,21 @@ class ClioAgent(dspy.Module):
             ).strip()
             file_path = self._coerce_text(getattr(expert_result, "file_path", "")).strip()
             answer = f"Visualization: {description}\n\nFile: {file_path}".strip()
-            return "visualization", answer, expert_result, getattr(expert_result, "error_info", None)
+            return (
+                "visualization",
+                answer,
+                expert_result,
+                getattr(expert_result, "error_info", None),
+            )
         except Exception as exc:
             error = ExpertError(
                 f"The {expert_id} expert encountered an issue processing your request.",
-                details={"expert": expert_id, "original_error": str(exc)},
+                details=self._recovery_details(
+                    expert=expert_id,
+                    original_error=str(exc),
+                ),
             ).to_dict()
-            answer = (
-                f"I encountered an issue with the {expert_id} expert. "
-                "The failure is recorded in error_info for inspection."
-            )
-            return expert_id, answer, None, error
+            return expert_id, "", None, error
 
     def _execute_tool_action(
         self,
@@ -676,7 +688,9 @@ class ClioAgent(dspy.Module):
         self._record_tool_call(tool_name, args, result, duration_ms)
         return result
 
-    def _prepare_visualization_output_path(self, tool_name: str, filepath: str) -> Path | dict[str, Any]:
+    def _prepare_visualization_output_path(
+        self, tool_name: str, filepath: str
+    ) -> Path | dict[str, Any]:
         """Return a safe default chart output path or a normalized policy error."""
         source_path = Path(filepath).expanduser()
         artifact_root = self._default_artifact_root(source_path)
@@ -733,6 +747,21 @@ class ClioAgent(dspy.Module):
         if isinstance(result, Mapping) and "value" in result:
             return f"Tool {last.get('tool')} completed: {result['value']}"
         return f"Tool {last.get('tool')} completed.\n\n{json.dumps(result, indent=2)}"
+
+    @staticmethod
+    def _recovery_details(**details: Any) -> dict[str, Any]:
+        """Attach client-facing recovery actions to a structured error."""
+        return {**details, "recovery_actions": list(ERROR_RECOVERY_ACTIONS)}
+
+    @classmethod
+    def _with_recovery_actions(cls, error_info: dict[str, Any]) -> dict[str, Any]:
+        """Ensure a serialized error advertises retry/reconfigure/exit options."""
+        details = error_info.get("details")
+        if isinstance(details, dict):
+            details.setdefault("recovery_actions", list(ERROR_RECOVERY_ACTIONS))
+        else:
+            error_info["details"] = cls._recovery_details()
+        return error_info
 
     def _build_capabilities_context(self) -> str:
         """Describe live experts and tools for the planner without query heuristics."""
@@ -844,7 +873,11 @@ class ClioAgent(dspy.Module):
     @staticmethod
     def _route_for_selected(selected: str, reason: str, confidence: float) -> RouteDecision:
         """Build the public route decision for a planner-selected handler."""
-        target = selected if selected in {"chat", "data", "analysis", "visualization", "none"} else "chat"
+        target = (
+            selected
+            if selected in {"chat", "data", "analysis", "visualization", "none"}
+            else "chat"
+        )
         return RouteDecision(
             target=target,  # type: ignore[arg-type]
             source="dspy",
@@ -1023,6 +1056,7 @@ class ClioAgent(dspy.Module):
                 "tool": tool,
                 "tool_error": normalized,
                 "partial": partial,
+                "recovery_actions": list(ERROR_RECOVERY_ACTIONS),
             },
         ).to_dict()
 
