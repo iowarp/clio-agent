@@ -126,6 +126,31 @@ class _SlowAgent:
         )()
 
 
+class _LateToolObserverAgent:
+    """Agent that reports a successful tool completion after cancellation."""
+
+    def __init__(self, sleep_s: float = 0.4) -> None:
+        import threading
+
+        self.sleep_s = sleep_s
+        self.started = threading.Event()
+        self.completed = threading.Event()
+
+    def forward(self, question: str, session_id: str):
+        import time
+
+        from clio_agent.tools.execution import notify_global_tool_observer
+
+        notify_global_tool_observer("late_tool", {"question": question}, "started", None)
+        self.started.set()
+        time.sleep(self.sleep_s)
+        notify_global_tool_observer("late_tool", {"question": question}, "completed", None)
+        self.completed.set()
+        return type(
+            "Pred", (), {"answer": "late", "selected_expert": "", "routing_rationale": ""}
+        )()
+
+
 def test_cancel_reports_best_effort_for_executor_thread(tmp_path: Path) -> None:
     """Cancelling the asyncio task does not kill executor-thread work."""
 
@@ -176,6 +201,55 @@ def test_cancel_reports_best_effort_for_executor_thread(tmp_path: Path) -> None:
         while _time.monotonic() < deadline and not agent.completed:
             _time.sleep(0.05)
         assert agent.completed is True
+
+
+def test_late_tool_completion_after_cancel_is_not_reported_as_success(
+    tmp_path: Path,
+) -> None:
+    """Late observer completions must not become success telemetry or stale metadata."""
+
+    import time as _time
+
+    from .conftest import complete_turn
+
+    agent = _LateToolObserverAgent(sleep_s=0.35)
+    app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
+    with TestClient(app) as c:
+        sid = c.post("/v1/sessions", json={"title": "x"}).json()["id"]
+        c.post(
+            f"/v1/sessions/{sid}/messages",
+            json={"parts": [{"type": "text", "text": "hi"}]},
+        )
+        assert agent.started.wait(timeout=2.0)
+        c.post(f"/v1/sessions/{sid}/cancel")
+
+        deadline = _time.monotonic() + 3.0
+        assistant = None
+        while _time.monotonic() < deadline:
+            msgs = c.get(f"/v1/sessions/{sid}/messages").json()["messages"]
+            assistants = [m for m in msgs if m["role"] == "assistant"]
+            if assistants:
+                assistant = assistants[0]
+                break
+            _time.sleep(0.05)
+        assert assistant is not None, "cancel didn't settle the turn within 3s"
+        assert assistant["error_info"]["error"] == "cancelled"
+        assert agent.completed.wait(timeout=2.0)
+
+        completed_events = [
+            e
+            for e in app.state.bus._history.get(sid, [])
+            if e.type == "tool.call.completed" and e.payload.get("tool") == "late_tool"
+        ]
+        assert completed_events
+        assert not any(e.payload.get("ok") is True for e in completed_events)
+        assert completed_events[-1].payload["ok"] is False
+        assert completed_events[-1].payload["execution_cancellation"] == "best_effort"
+        assert completed_events[-1].payload["executor_work_may_continue"] is True
+
+        app.state.agent = _Agent()
+        next_assistant = complete_turn(c, sid, "next turn")
+        assert "tools_called" not in next_assistant.get("metadata", {})
 
 
 def test_cancel_during_turn_marks_turn_as_cancelled(tmp_path: Path) -> None:

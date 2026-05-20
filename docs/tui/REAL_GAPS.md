@@ -71,7 +71,7 @@ what they prove.
 
 | Capability | Endpoint works | Real agent emits | Notes |
 |---|---|---|---|
-| `cancellation` (best-effort) | yes | partial | Server settles the GACT envelope as cancelled; compatible agents and the sync MCP bridge observe cooperative cancellation between execution boundaries, but already-running provider/tool work may continue and is flagged with `execution_cancellation="best_effort"` |
+| `cancellation` (best-effort) | yes | partial | Server settles the GACT envelope as cancelled; compatible agents and the sync MCP bridge observe cooperative cancellation between execution boundaries. Late tool completions after cancellation are marked as cancellation/error telemetry and are not carried into later turn metadata. Already-running provider/tool work may still continue and is flagged with `execution_cancellation="best_effort"`. |
 
 ## What does work end-to-end against real LM providers
 
