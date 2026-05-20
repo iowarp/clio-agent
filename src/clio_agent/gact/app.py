@@ -38,7 +38,9 @@ from pathlib import Path
 from typing import Any, AsyncIterator, Iterator, Optional
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, StreamingResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from clio_agent.tools.file_policy import validate_write_path
 from clio_agent.tools.fs_write import write_text_with_policy
@@ -7394,9 +7396,21 @@ def build_app(
             include_in_schema=False,
         )
 
+    def _error_code_for_status(status_code: int) -> str:
+        if status_code == 404:
+            return "not_found"
+        if status_code == 405:
+            return "unsupported"
+        if status_code in {400, 422}:
+            return "validation_error"
+        if status_code in {401, 403}:
+            return "permission_error"
+        return "internal_error" if status_code >= 500 else "request_error"
+
     @app.exception_handler(HTTPException)
+    @app.exception_handler(StarletteHTTPException)
     async def _http_exception_handler(
-        request, exc: HTTPException
+        request, exc: StarletteHTTPException
     ) -> JSONResponse:
         """Wrap HTTPExceptions in the v0.2 error envelope."""
 
@@ -7405,13 +7419,32 @@ def build_app(
             return JSONResponse(status_code=exc.status_code, content=exc.detail)
         envelope = ErrorEnvelope(
             error=ErrorInfo(
-                error="internal_error",
+                error=_error_code_for_status(exc.status_code),
                 message=str(exc.detail) if exc.detail else "",
                 recoverable=exc.status_code < 500,
             )
         )
         return JSONResponse(
             status_code=exc.status_code,
+            content=envelope.model_dump(exclude_none=True),
+        )
+
+    @app.exception_handler(RequestValidationError)
+    async def _validation_exception_handler(
+        request, exc: RequestValidationError
+    ) -> JSONResponse:
+        """Wrap FastAPI request validation failures in the GACT envelope."""
+
+        envelope = ErrorEnvelope(
+            error=ErrorInfo(
+                error="validation_error",
+                message="Request validation failed.",
+                details={"errors": exc.errors()},
+                recoverable=True,
+            )
+        )
+        return JSONResponse(
+            status_code=422,
             content=envelope.model_dump(exclude_none=True),
         )
 

@@ -130,3 +130,26 @@ def test_stubbed_routes_return_501_with_v0_2_envelope() -> None:
     body = resp.json()
     assert body["error"]["error"] == "config_error"
     assert "capability not yet implemented" in body["error"]["message"]
+
+
+def test_unknown_route_uses_structured_error_envelope(client: TestClient) -> None:
+    resp = client.get("/v1/does-not-exist")
+
+    assert resp.status_code == 404
+    body = resp.json()
+    assert "detail" not in body
+    assert body["error"]["error"] == "not_found"
+    assert body["error"]["message"] == "Not Found"
+
+
+def test_request_validation_uses_structured_error_envelope(
+    client: TestClient,
+) -> None:
+    resp = client.get("/v1/workspaces/ws_default/files/read")
+
+    assert resp.status_code == 422
+    body = resp.json()
+    assert "detail" not in body
+    assert body["error"]["error"] == "validation_error"
+    assert body["error"]["message"] == "Request validation failed."
+    assert body["error"]["details"]["errors"][0]["loc"] == ["query", "path"]
