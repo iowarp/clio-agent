@@ -6576,6 +6576,47 @@ def build_app(
         messages) is preserved across the swap.
         """
 
+        env_keys = (
+            "CLIO_LM_PROVIDER",
+            "CLIO_LM_API_BASE",
+            "CLIO_LM_MODEL",
+            "CLIO_LM_API_KEY",
+            "CLIO_CODEX_TRANSPORT",
+        )
+        env_before = {key: os.environ.get(key) for key in env_keys}
+        dspy_settings_before: dict[str, Any] | None = None
+        settings_sentinel = object()
+
+        def _restore_process_env() -> None:
+            for key, value in env_before.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
+        def _restore_dspy_settings() -> None:
+            if dspy_settings_before is None:
+                return
+            try:
+                from dspy.dsp.utils.settings import main_thread_config  # noqa: PLC0415
+            except Exception:
+                return
+            for key, value in dspy_settings_before.items():
+                if value is settings_sentinel:
+                    main_thread_config.pop(key, None)
+                else:
+                    main_thread_config[key] = value
+
+        def _stamp_process_env(cfg: "LMProviderConfig", api_key: str) -> None:
+            os.environ["CLIO_LM_PROVIDER"] = req.provider
+            os.environ["CLIO_LM_API_BASE"] = req.api_base
+            os.environ["CLIO_LM_MODEL"] = req.model
+            os.environ["CLIO_LM_API_KEY"] = api_key
+            if req.provider == "codex":
+                os.environ["CLIO_CODEX_TRANSPORT"] = cfg.codex_transport
+            else:
+                os.environ.pop("CLIO_CODEX_TRANSPORT", None)
+
         try:
             import dspy
 
@@ -6584,6 +6625,15 @@ def build_app(
                 LMProviderConfig,
                 create_lm,
             )
+            try:
+                from dspy.dsp.utils.settings import main_thread_config  # noqa: PLC0415
+
+                dspy_settings_before = {
+                    "lm": main_thread_config.get("lm", settings_sentinel),
+                    "adapter": main_thread_config.get("adapter", settings_sentinel),
+                }
+            except Exception:
+                dspy_settings_before = None
 
             # Argonne / ALCF: if the TUI didn't ship an api_key, mint
             # one from the user's stored Globus session. ``LMProviderConfig``
@@ -6621,20 +6671,6 @@ def build_app(
                 thinking_budget=req.thinking_budget,
                 codex_transport=req.transport or "exec",
             )
-            # ClioAgent.__init__ reads load_config_from_env() to
-            # wire its planner + experts. Stamp the env before
-            # construction so the fresh agent matches what we just
-            # configured for DSPy — otherwise it falls back to the
-            # default provider (lm_studio) and we silently configure
-            # the wrong endpoint.
-            os.environ["CLIO_LM_PROVIDER"] = req.provider
-            os.environ["CLIO_LM_API_BASE"] = req.api_base
-            os.environ["CLIO_LM_MODEL"] = req.model
-            os.environ["CLIO_LM_API_KEY"] = resolved_api_key or "x"
-            if req.provider == "codex":
-                os.environ["CLIO_CODEX_TRANSPORT"] = cfg.codex_transport
-            else:
-                os.environ.pop("CLIO_CODEX_TRANSPORT", None)
             # iowarp/clio-agent — DSPy 3.x forbids dspy.configure()
             # being re-called from a different async task than the
             # first one. PUT /v1/providers/lm comes from the FastAPI
@@ -6649,6 +6685,7 @@ def build_app(
                 create_planner_lm,
             )
             new_adapter = create_chat_adapter(cfg)
+            new_planner_lm = create_planner_lm(cfg)
             try:
                 from dspy.dsp.utils.settings import main_thread_config  # noqa: PLC0415
                 main_thread_config["lm"] = new_lm
@@ -6674,19 +6711,26 @@ def build_app(
             if existing is not None:
                 existing._provider_config = cfg
                 existing._main_lm = new_lm
-                existing._planner_lm = create_planner_lm(cfg)
-                existing._router_lm = existing._planner_lm
+                existing._planner_lm = new_planner_lm
+                existing._router_lm = new_planner_lm
                 existing._dspy_adapter = new_adapter
                 agent = existing
             else:
+                # First-time agent construction still reads the provider from
+                # env; restore the snapshot if construction rejects it.
+                _stamp_process_env(cfg, resolved_api_key or "x")
                 agent = await asyncio.get_running_loop().run_in_executor(
                     None, lambda: ClioAgent(verbose=False)
                 )
         except HTTPException:
             # Argonne auth path raises a structured 401 above; keep its
             # error code intact instead of flattening to a generic 400.
+            _restore_process_env()
+            _restore_dspy_settings()
             raise
         except Exception as exc:  # noqa: BLE001
+            _restore_process_env()
+            _restore_dspy_settings()
             raise HTTPException(
                 status_code=400,
                 detail=ErrorEnvelope(
@@ -6702,6 +6746,7 @@ def build_app(
         # Swap the agent + ARC atomically. Old agent isn't
         # explicitly closed because we don't know what background
         # state it owns; Python's GC will clean up.
+        _stamp_process_env(cfg, resolved_api_key or "x")
         app.state.agent = agent
         app.state.arc = agent.arc
         app.state.lm_config = {
