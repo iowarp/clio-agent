@@ -27,3 +27,13 @@ def test_providers_list_includes_known_presets(client: TestClient) -> None:
 def test_providers_capability_advertised(client: TestClient) -> None:
     body = client.get("/v1/capabilities").json()
     assert body["capabilities"]["providers"] is True
+
+
+def test_unknown_provider_models_returns_structured_404(client: TestClient) -> None:
+    resp = client.get("/v1/providers/not-a-provider/models")
+
+    assert resp.status_code == 404
+    body = resp.json()
+    assert body["error"]["error"] == "not_found"
+    assert "not-a-provider" in body["error"]["message"]
+    assert "lm_studio" in body["error"]["details"]["available"]
