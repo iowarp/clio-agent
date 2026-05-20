@@ -94,6 +94,7 @@ def test_cancel_flips_status_and_publishes_event(tmp_path: Path) -> None:
 
     resp = client.post(f"/v1/sessions/{sid}/cancel")
     assert resp.status_code == 204
+    assert resp.content == b""
 
     # Session now reports cancelled.
     row = client.get(f"/v1/sessions/{sid}").json()

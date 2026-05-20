@@ -41,7 +41,7 @@ from typing import Any, AsyncIterator, Iterator, Optional
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from clio_agent.tools.file_policy import validate_write_path
@@ -4270,7 +4270,7 @@ def build_app(
                     )
                 ).model_dump(exclude_none=True),
             )
-        return JSONResponse(status_code=204, content=None)
+        return Response(status_code=204)
 
     # ---- /v1/permissions (BBB23) --------------------------------------
 
@@ -4349,7 +4349,7 @@ def build_app(
                     },
                 )
             )
-        return JSONResponse(status_code=204, content=None)
+        return Response(status_code=204)
 
     # ---- /v1/sessions/{sid}/diffs/* (BBB21) ---------------------------
 
@@ -4747,7 +4747,7 @@ def build_app(
                     payload={"session_id": sid, "path": path},
                 )
             )
-        return JSONResponse(status_code=204, content=None)
+        return Response(status_code=204)
 
     # ---- POST /v1/sessions/{sid}/fork (BBB26) -------------------------
 
@@ -4938,7 +4938,7 @@ def build_app(
             reason="user_requested_task_delete",
         )
         app.state.session_tasks[sid_key].pop(tid, None)
-        return JSONResponse(status_code=204, content=None)
+        return Response(status_code=204)
 
     # ---- /v1/commands + dispatch (#14) --------------------------------
 
@@ -6544,7 +6544,7 @@ def build_app(
                     )
                 ).model_dump(exclude_none=True),
             )
-        return JSONResponse(status_code=204, content=None)
+        return Response(status_code=204)
 
     # ---- /v1/sessions/{sid}/share + /v1/shared/{token} (#22) ---------
 
@@ -6921,7 +6921,7 @@ def build_app(
                 },
             )
         )
-        return JSONResponse(status_code=204, content=None)
+        return Response(status_code=204)
 
     # ---- POST /v1/sessions/{sid}/messages (BBB9) ---------------------
     # Non-streaming turn: 1 request, 1 response body containing both
@@ -7295,7 +7295,7 @@ def build_app(
             reason="user_requested_agent_delete",
         )
         app.state.user_agents.delete(agent_id)
-        return JSONResponse(status_code=204, content=None)
+        return Response(status_code=204)
 
     @app.get("/v1/catalog/tools", response_model=ListToolsResponse)
     async def list_tools() -> ListToolsResponse:
@@ -7571,7 +7571,7 @@ def build_app(
             reason="user_requested_workspace_delete",
         )
         app.state.workspaces.delete(wid)
-        return JSONResponse(status_code=204, content=None)
+        return Response(status_code=204)
 
     # ---- /v1/workspaces/{wid}/files (gact-tui @-picker) -------------
     #
@@ -8397,7 +8397,7 @@ def build_app(
             reason="user_requested_hook_delete",
         )
         app.state.declarative_hooks.pop(hook_id, None)
-        return JSONResponse(status_code=204, content=None)
+        return Response(status_code=204)
 
     # ---- /v1/policies (SPEC §6.11.b permission policies) -------------
     #
@@ -8517,7 +8517,7 @@ def build_app(
                 ).model_dump(exclude_none=True),
             )
         if _delete_message_from_session(sid, message_id):
-            return JSONResponse(status_code=204, content=None)
+            return Response(status_code=204)
         raise _message_not_found(message_id, session_id=sid)
 
     @app.delete("/v1/messages/{message_id}")
@@ -8536,11 +8536,11 @@ def build_app(
                     ).model_dump(exclude_none=True),
                 )
             if _delete_message_from_session(session_id, message_id):
-                return JSONResponse(status_code=204, content=None)
+                return Response(status_code=204)
             raise _message_not_found(message_id, session_id=session_id)
         for sid in list(app.state.messages):
             if _delete_message_from_session(sid, message_id):
-                return JSONResponse(status_code=204, content=None)
+                return Response(status_code=204)
         raise HTTPException(
             status_code=404,
             detail=ErrorEnvelope(
