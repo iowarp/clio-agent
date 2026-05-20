@@ -402,6 +402,8 @@ def test_post_message_prompt_user_agent_executes_registered_agent(
     ]
     assert assistant["parts"][0]["selected_agent"] == "reviewer"
     assert assistant["parts"][1]["text"] == "USER_AGENT_OK"
+    assert assistant["metadata"]["stream_source"] == "synthetic_posthoc"
+    assert assistant["metadata"]["stream_fallback"]["reason"] == "dynamic_agent_sync_path"
     assert sess["status"] == "idle"
 
 
@@ -462,6 +464,8 @@ def test_post_message_tool_user_agent_executes_registered_agent(
     ]
     assert assistant["parts"][0]["selected_agent"] == "tool_reviewer"
     assert assistant["parts"][1]["text"] == "TOOL_USER_AGENT_OK"
+    assert assistant["metadata"]["stream_source"] == "synthetic_posthoc"
+    assert assistant["metadata"]["stream_fallback"]["reason"] == "dynamic_agent_sync_path"
     assert assistant["metadata"]["tools_called"][0]["name"] == "fs_read_file"
     assert assistant["metadata"]["tools_called"][0]["args"] == {"path": "README.md"}
     assert sess["status"] == "idle"
