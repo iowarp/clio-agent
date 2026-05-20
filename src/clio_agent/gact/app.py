@@ -111,6 +111,46 @@ def _iso_from_epoch(ts: float) -> str:
     return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
 
 
+def _coerce_error_info(value: Any) -> Optional["ErrorInfo"]:
+    """Normalize agent/provider error payloads into the GACT error model."""
+
+    if value is None:
+        return None
+    if isinstance(value, ErrorInfo):
+        return value
+    if isinstance(value, Mapping):
+        raw_details = value.get("details", {})
+        if isinstance(raw_details, Mapping):
+            details = dict(raw_details)
+        elif raw_details is None:
+            details = {}
+        else:
+            details = {"details": raw_details}
+        retry_after_raw = value.get("retry_after_s")
+        retry_after_s: Optional[int] = None
+        if retry_after_raw is not None:
+            try:
+                retry_after_s = int(retry_after_raw)
+            except (TypeError, ValueError):
+                details["retry_after_s"] = retry_after_raw
+        return ErrorInfo(
+            error=str(value.get("error") or "agent_error"),
+            message=str(
+                value.get("message")
+                or value.get("error")
+                or "Agent returned an error."
+            ),
+            details=details,
+            recoverable=bool(value.get("recoverable", True)),
+            retry_after_s=retry_after_s,
+        )
+    return ErrorInfo(
+        error="agent_error",
+        message=str(value),
+        recoverable=True,
+    )
+
+
 async def _run_turn_in_background(
     app: "FastAPI",
     sid: str,
@@ -295,6 +335,11 @@ async def _run_turn_in_background(
         answer_text = getattr(pred, "answer", "")
         selected_agent = getattr(pred, "selected_expert", "") or ""
         rationale = getattr(pred, "routing_rationale", "")
+        pred_error_info = _coerce_error_info(getattr(pred, "error_info", None))
+        if pred_error_info is not None:
+            error_info = pred_error_info
+            if not error_info.details.get("partial", False):
+                answer_text = ""
         # iowarp/clio-agent#25: data branch reports which execution
         # path it took ("fast" or "expert_loop"). Empty when not
         # populated by ClioAgent.forward (older code paths, non-data
@@ -449,6 +494,24 @@ async def _run_turn_in_background(
     # Build assistant parts — routing_decision (v0.2) first when we
     # got a selected_agent, then optional thinking trace, then the
     # text answer, then any file_diffs.
+    if (
+        error_info is None
+        and not answer_text
+        and not thinking_text
+        and not proposed_diffs
+        and not nanoagents
+    ):
+        error_info = ErrorInfo(
+            error="empty_response",
+            message="Agent completed without user-visible output.",
+            details={
+                "session_id": sid,
+                "routing_mode": getattr(sess, "routing_mode", "auto"),
+                "selected_agent": selected_agent,
+            },
+            recoverable=True,
+        )
+
     assistant_parts: list[Part] = []
     if selected_agent:
         assistant_parts.append(Part(

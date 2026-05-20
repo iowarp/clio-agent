@@ -27,6 +27,7 @@ class FakePrediction:
     answer: str
     selected_expert: str = ""
     routing_rationale: str = ""
+    error_info: dict[str, Any] | None = None
 
 
 class FakeClioAgent:
@@ -38,11 +39,13 @@ class FakeClioAgent:
         answer: str = "hello from fake",
         selected_expert: str = "code_expert",
         routing_rationale: str = "matched coding keywords",
+        error_info: dict[str, Any] | None = None,
         raise_on_forward: bool = False,
     ) -> None:
         self.answer = answer
         self.selected_expert = selected_expert
         self.routing_rationale = routing_rationale
+        self.error_info = error_info
         self.raise_on_forward = raise_on_forward
         self.calls: list[tuple[str, str]] = []
 
@@ -54,6 +57,7 @@ class FakeClioAgent:
             answer=self.answer,
             selected_expert=self.selected_expert,
             routing_rationale=self.routing_rationale,
+            error_info=self.error_info,
         )
 
 
@@ -204,6 +208,76 @@ def test_post_message_agent_exception_includes_error_info_on_completed_event(
     assert payload["stop_reason"] == "error"
     assert payload["error_info"]["error"] == "agent_error"
     assert "simulated agent failure" in payload["error_info"]["message"]
+
+
+def test_post_message_prediction_error_info_sets_error_turn(
+    tmp_path: Path,
+) -> None:
+    from .conftest import complete_turn
+
+    agent = FakeClioAgent(
+        answer="",
+        selected_expert="chat",
+        routing_rationale="planner selected a direct chat route",
+        error_info={
+            "error": "routing_error",
+            "message": "Session routing_mode='experts' rejected chat.",
+            "details": {"recovery_actions": ["retry_with_auto_routing"]},
+            "recoverable": True,
+        },
+    )
+    app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
+    with TestClient(app) as c:
+        sid = c.post(
+            "/v1/sessions",
+            json={"title": "x", "routing_mode": "experts"},
+        ).json()["id"]
+        assistant = complete_turn(c, sid, "hi")
+
+    assert assistant["stop_reason"] == "error"
+    assert assistant["error_info"]["error"] == "routing_error"
+    assert "rejected chat" in assistant["error_info"]["message"]
+    assert assistant["error_info"]["details"]["recovery_actions"] == [
+        "retry_with_auto_routing"
+    ]
+    assert [part["type"] for part in assistant["parts"]] == ["routing_decision"]
+
+    completed = [
+        ev for ev in app.state.bus._history.get(sid, [])
+        if ev.type == "message.completed"
+    ]
+    assert completed, "turn did not publish message.completed"
+    payload = completed[-1].payload
+    assert payload["message_id"] == assistant["id"]
+    assert payload["stop_reason"] == "error"
+    assert payload["error_info"]["error"] == "routing_error"
+
+
+def test_post_message_empty_prediction_without_error_info_sets_error_turn(
+    tmp_path: Path,
+) -> None:
+    from .conftest import complete_turn
+
+    agent = FakeClioAgent(
+        answer="",
+        selected_expert="chat",
+        routing_rationale="planner selected chat",
+    )
+    app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
+    with TestClient(app) as c:
+        sid = c.post(
+            "/v1/sessions",
+            json={"title": "x", "routing_mode": "experts"},
+        ).json()["id"]
+        assistant = complete_turn(c, sid, "hi")
+        sess = c.get(f"/v1/sessions/{sid}").json()
+
+    assert assistant["stop_reason"] == "error"
+    assert assistant["error_info"]["error"] == "empty_response"
+    assert "without user-visible output" in assistant["error_info"]["message"]
+    assert assistant["error_info"]["details"]["routing_mode"] == "experts"
+    assert [part["type"] for part in assistant["parts"]] == ["routing_decision"]
+    assert sess["status"] == "error"
 
 
 def test_post_message_without_routing_emits_text_only(
