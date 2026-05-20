@@ -80,9 +80,17 @@ class TestParseActionJson:
         out = ClioAgent._parse_action_json('```json\n{"action": "none"}\n```')
         assert out["action"] == "none"
 
-    def test_embedded_object(self):
-        out = ClioAgent._parse_action_json('noise before {"action": "expert"} noise after')
-        assert out["action"] == "expert"
+    def test_embedded_object_rejected(self):
+        with pytest.raises(ValueError):
+            ClioAgent._parse_action_json('noise before {"action": "expert"} noise after')
+
+    def test_trailing_text_rejected(self):
+        with pytest.raises(ValueError):
+            ClioAgent._parse_action_json('{"action": "answer", "answer": "x"} trailing')
+
+    def test_dspy_adapter_trailing_bracket_artifact_allowed(self):
+        out = ClioAgent._parse_action_json('{"action": "answer", "answer": "x"}]')
+        assert out == {"action": "answer", "answer": "x"}
 
     def test_action_is_lowercased(self):
         assert (
