@@ -1231,11 +1231,15 @@ class ClioAgent(dspy.Module):
                 try:
                     decoded, end = json.JSONDecoder().raw_decode(text)
                 except json.JSONDecodeError as exc:
-                    raise ValueError(f"Planner returned invalid JSON action: {raw!r}") from exc
-                trailing = text[end:].strip()
-                # DSPy ChatAdapter error strings can append one bracket after the LM payload.
-                if trailing != "]":
-                    raise ValueError(f"Planner returned invalid JSON action: {raw!r}") from None
+                    repaired = cls._repair_truncated_action_json(text)
+                    if repaired is None:
+                        raise ValueError(f"Planner returned invalid JSON action: {raw!r}") from exc
+                    decoded = repaired
+                else:
+                    trailing = text[end:].strip()
+                    # DSPy ChatAdapter error strings can append one bracket after the LM payload.
+                    if trailing != "]":
+                        raise ValueError(f"Planner returned invalid JSON action: {raw!r}") from None
             if not isinstance(decoded, dict):
                 raise ValueError(f"Planner action must be a JSON object: {raw!r}")
 
@@ -1244,6 +1248,97 @@ class ClioAgent(dspy.Module):
             raise ValueError(f"Planner returned unsupported action: {decoded!r}")
         decoded["action"] = action
         return decoded
+
+    @classmethod
+    def _repair_truncated_action_json(cls, text: str) -> dict[str, Any] | None:
+        """Repair a planner JSON object that ended before final delimiters.
+
+        This intentionally accepts only a single object that starts at the
+        first character. It may close an unterminated string and missing
+        brackets/braces, then normal action validation still decides whether
+        the repaired object is usable.
+        """
+
+        repaired = cls._close_truncated_json(text)
+        if repaired is None or repaired == text:
+            return None
+        try:
+            decoded = json.loads(repaired)
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(decoded, dict):
+            return None
+        return decoded
+
+    @staticmethod
+    def _close_truncated_json(text: str) -> str | None:
+        """Return text with missing trailing JSON delimiters appended."""
+
+        stack: list[str] = []
+        in_string = False
+        escaped = False
+        string_start = -1
+
+        for index, char in enumerate(text):
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == '"':
+                    in_string = False
+                    string_start = -1
+                continue
+
+            if char == '"':
+                in_string = True
+                string_start = index
+            elif char == "{":
+                stack.append("}")
+            elif char == "[":
+                stack.append("]")
+            elif char in {"}", "]"}:
+                if not stack or stack.pop() != char:
+                    return None
+
+        if in_string and ClioAgent._unterminated_string_key(text, string_start) != "reason":
+            return None
+        suffix = '"' if in_string else ""
+        suffix += "".join(reversed(stack))
+        if not suffix:
+            return None
+        return text + suffix
+
+    @staticmethod
+    def _unterminated_string_key(text: str, string_start: int) -> str | None:
+        """Return the object key for an unterminated string value."""
+
+        prefix = text[:string_start].rstrip()
+        if not prefix.endswith(":"):
+            return None
+        key_prefix = prefix[:-1].rstrip()
+        if not key_prefix.endswith('"'):
+            return None
+        key_end = len(key_prefix) - 1
+        key_start = key_end - 1
+        while key_start >= 0:
+            if key_prefix[key_start] == '"' and not ClioAgent._is_escaped(
+                key_prefix, key_start
+            ):
+                return key_prefix[key_start + 1 : key_end]
+            key_start -= 1
+        return None
+
+    @staticmethod
+    def _is_escaped(text: str, index: int) -> bool:
+        """Return whether text[index] is escaped by an odd number of backslashes."""
+
+        slash_count = 0
+        cursor = index - 1
+        while cursor >= 0 and text[cursor] == "\\":
+            slash_count += 1
+            cursor -= 1
+        return slash_count % 2 == 1
 
     @classmethod
     def _parse_action_from_adapter_error(cls, error: Exception) -> dict[str, Any] | None:

@@ -93,6 +93,47 @@ class TestParseActionJson:
         out = ClioAgent._parse_action_json('{"action": "answer", "answer": "x"}]')
         assert out == {"action": "answer", "answer": "x"}
 
+    def test_truncated_object_with_complete_tool_args_is_repaired(self):
+        raw = (
+            '{"action":"tool","tool":"parquet_analyze_schema",'
+            '"args":{"filepath":"D:\\\\data\\\\measurements.parquet"},'
+            '"reason":"Inspect schema"'
+        )
+
+        out = ClioAgent._parse_action_json(raw)
+
+        assert out == {
+            "action": "tool",
+            "tool": "parquet_analyze_schema",
+            "args": {"filepath": "D:\\data\\measurements.parquet"},
+            "reason": "Inspect schema",
+        }
+
+    def test_truncated_reason_string_is_repaired_when_action_is_complete(self):
+        raw = (
+            '{"action":"expert","expert":"analysis",'
+            '"question":"Inspect D:\\\\data\\\\observations.csv for temperature columns.",'
+            '"reason":"User wants to inspect a'
+        )
+
+        out = ClioAgent._parse_action_json(raw)
+
+        assert out == {
+            "action": "expert",
+            "expert": "analysis",
+            "question": "Inspect D:\\data\\observations.csv for temperature columns.",
+            "reason": "User wants to inspect a",
+        }
+
+    def test_truncated_required_string_value_is_rejected(self):
+        raw = (
+            '{"action":"tool","tool":"parquet_analyze_schema",'
+            '"args":{"filepath":"D:\\\\data\\\\measure'
+        )
+
+        with pytest.raises(ValueError):
+            ClioAgent._parse_action_json(raw)
+
     def test_action_is_lowercased(self):
         assert (
             ClioAgent._parse_action_json({"action": "ANSWER", "answer": "x"})["action"] == "answer"
