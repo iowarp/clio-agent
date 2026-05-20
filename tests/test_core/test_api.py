@@ -271,10 +271,10 @@ class TestQuerySSE:
     def test_stream_events(self, client):
         resp = client.post("/query", json={"question": "Stream me", "stream": True})
         text = resp.text
-        # Must contain routing, chunk, and done events
+        # Legacy /query SSE is an envelope, not live token streaming.
         assert "event: routing" in text
-        assert "event: chunk" in text
         assert "event: done" in text
+        assert "event: chunk" not in text
 
     def test_stream_error_event(self, client, mock_agent):
         mock_agent.side_effect = RuntimeError("boom")
@@ -289,21 +289,23 @@ class TestQuerySSE:
                 assert data["error"] == "internal_error"
                 break
 
-    def test_stream_success_chunks_are_marked_synthetic_posthoc(self, client):
+    def test_stream_success_done_is_marked_synthetic_posthoc_without_chunks(self, client):
         resp = client.post("/query", json={"question": "Stream me", "stream": True})
         lines = resp.text.splitlines()
 
+        assert "event: chunk" not in resp.text
         for i, line in enumerate(lines):
-            if line.strip() == "event: chunk":
+            if line.strip() == "event: done":
                 for j in range(i + 1, min(i + 3, len(lines))):
                     if lines[j].startswith("data:"):
                         data = json.loads(lines[j][len("data:") :].strip())
                         assert data["stream_source"] == "synthetic_posthoc"
-                        assert data["stream_fallback"]["reason"] == (
-                            "legacy_query_sync_path"
-                        )
+                        assert data["stream_fallback"]["reason"] == ("legacy_query_sync_path")
+                        assert data["stream_fallback"]["synthetic_posthoc"] is True
+                        assert data["stream_fallback"]["live_streaming"] is False
+                        assert "use_gact_streaming" in data["stream_fallback"]["recovery_actions"]
                         return
-        raise AssertionError("No chunk event found in SSE stream")
+        raise AssertionError("No done event found in SSE stream")
 
     def test_stream_prediction_error_info_emits_error_event(self, client, mock_agent):
         prediction = dspy.Prediction(
@@ -448,9 +450,7 @@ class TestAPIMain:
                         data = json.loads(lines[j][len("data:") :].strip())
                         assert "answer" in data
                         assert data["stream_source"] == "synthetic_posthoc"
-                        assert data["stream_fallback"]["reason"] == (
-                            "legacy_query_sync_path"
-                        )
+                        assert data["stream_fallback"]["reason"] == ("legacy_query_sync_path")
                         found_done = True
                         break
                 break

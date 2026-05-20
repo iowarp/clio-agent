@@ -104,7 +104,12 @@ Current limitation: the chat `answer` path can stream live when the upstream DSP
 
 Tests: `tests/test_gact/test_streaming.py`.
 
-The legacy `clio-agent-api` `/query` endpoint still has its own SSE shape (`routing`, `chunk`, `done`) and those chunks are composed from the final answer. That is legacy API behavior, not the native GACT TUI contract.
+The legacy `clio-agent-api` `/query` endpoint still has its own SSE
+shape (`routing`, `done`) and returns a completed answer with
+`stream_source="synthetic_posthoc"` plus
+`stream_fallback.reason="legacy_query_sync_path"`. It does not emit live
+provider-token deltas or synthetic chunk events; use native GACT events
+for best-effort live streaming.
 
 ## Error semantics
 

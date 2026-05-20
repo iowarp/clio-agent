@@ -1,11 +1,11 @@
 """
 REST API Server for ClioAgent
 
-FastAPI application with SSE streaming, health checks, expert discovery,
+FastAPI application with legacy SSE completion events, health checks, expert discovery,
 and per-expert metrics. All errors are structured JSON (never raw tracebacks).
 
 Endpoints:
-    POST /query    -- Query the agent (JSON or SSE streaming response)
+    POST /query    -- Query the agent (JSON or legacy SSE completion response)
     GET  /health   -- Health check with provider info
     GET  /experts  -- List registered experts with capabilities
     GET  /metrics  -- Per-expert performance metrics
@@ -267,7 +267,12 @@ async def _json_response(agent: Any, req: QueryRequest) -> JSONResponse:
 
 
 async def _stream_response(agent: Any, req: QueryRequest):
-    """SSE generator: routing -> chunk(s) -> done | error events."""
+    """Legacy SSE generator: routing -> done | error events.
+
+    This endpoint does not have provider-token streaming. It emits a single
+    completed answer with explicit synthetic post-hoc provenance instead of
+    slicing the answer into fake partial chunks.
+    """
     try:
         start = time.time()
         result = await asyncio.to_thread(agent, question=req.question, session_id=req.session_id)
@@ -304,25 +309,11 @@ async def _stream_response(agent: Any, req: QueryRequest):
 
         stream_fallback = {
             "reason": "legacy_query_sync_path",
-            "message": "Legacy /query stream chunks a completed answer after agent execution.",
+            "message": "Legacy /query returns a completed answer after agent execution.",
+            "synthetic_posthoc": True,
+            "live_streaming": False,
+            "recovery_actions": ["use_gact_streaming", "continue_without_live_streaming"],
         }
-
-        # Event: chunk -- split answer into word chunks for SSE infrastructure
-        words = result.answer.split()
-        chunk_size = max(1, len(words) // 5) if words else 1
-        for i in range(0, len(words), chunk_size):
-            chunk_text = " ".join(words[i : i + chunk_size])
-            yield {
-                "event": "chunk",
-                "data": json.dumps(
-                    {
-                        "text": chunk_text,
-                        "stream_source": "synthetic_posthoc",
-                        "stream_fallback": stream_fallback,
-                    }
-                ),
-            }
-            await asyncio.sleep(0.02)
 
         # Event: done
         yield {
