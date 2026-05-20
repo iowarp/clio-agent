@@ -24,6 +24,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextvars
+import fnmatch
 import importlib.util
 import inspect
 import json
@@ -76,19 +77,16 @@ def _resolve_tool_session(app: "FastAPI") -> tuple[str, Any | None]:
 def _format_sse(event: "Event") -> bytes:
     """Render an Event as the SSE wire format (SPEC §7.2)::
 
-        event: <type>
-        id: <numeric monotonic id>
-        data: <json envelope>
-        <blank line>
+    event: <type>
+    id: <numeric monotonic id>
+    data: <json envelope>
+    <blank line>
     """
 
     payload = json.dumps(event.envelope())
-    lines = (
-        f"event: {event.type}\n"
-        f"id: {event.id}\n"
-        f"data: {payload}\n\n"
-    )
+    lines = f"event: {event.type}\nid: {event.id}\ndata: {payload}\n\n"
     return lines.encode("utf-8")
+
 
 # ---- ID + timestamp helpers used by the message endpoint ---------
 # Kept at module level (not inside build_app) so they're trivially
@@ -137,11 +135,7 @@ def _coerce_error_info(value: Any) -> Optional["ErrorInfo"]:
                 details["retry_after_s"] = retry_after_raw
         return ErrorInfo(
             error=str(value.get("error") or "agent_error"),
-            message=str(
-                value.get("message")
-                or value.get("error")
-                or "Agent returned an error."
-            ),
+            message=str(value.get("message") or value.get("error") or "Agent returned an error."),
             details=details,
             recoverable=bool(value.get("recoverable", True)),
             retry_after_s=retry_after_s,
@@ -211,12 +205,14 @@ def _context_file_access_error(
     if original_error is not None:
         details["original_error"] = type(original_error).__name__
         details["original_message"] = str(original_error)
-    return _ContextFileAccessError(ErrorInfo(
-        error="context_file_error",
-        message=message,
-        details=details,
-        recoverable=True,
-    ))
+    return _ContextFileAccessError(
+        ErrorInfo(
+            error="context_file_error",
+            message=message,
+            details=details,
+            recoverable=True,
+        )
+    )
 
 
 def _session_agent_id(sess: Any) -> str:
@@ -360,9 +356,7 @@ def _build_prompt_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> A
                 )
             answer = str(getattr(result, "answer", "") or "").strip()
             if not answer:
-                raise RuntimeError(
-                    f"user agent {self.agent_def.id!r} returned an empty answer"
-                )
+                raise RuntimeError(f"user agent {self.agent_def.id!r} returned an empty answer")
             return dspy.Prediction(
                 answer=answer,
                 selected_expert=self.agent_def.id,
@@ -468,9 +462,7 @@ def _build_tool_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> Any
                 )
             answer = str(getattr(result, "answer", "") or "").strip()
             if not answer:
-                raise RuntimeError(
-                    f"user agent {self.agent_def.id!r} returned an empty answer"
-                )
+                raise RuntimeError(f"user agent {self.agent_def.id!r} returned an empty answer")
             return dspy.Prediction(
                 answer=answer,
                 selected_expert=self.agent_def.id,
@@ -578,26 +570,28 @@ def _unsupported_model_ref_error(
 ) -> ErrorEnvelope:
     """Build a structured error for currently unsupported model refs."""
 
-    return ErrorEnvelope(error=ErrorInfo(
-        error="not_implemented",
-        message=(
-            f"{source} model overrides are not implemented for a model "
-            "that differs from the active global LM."
-        ),
-        details={
-            "session_id": session_id,
-            "source": source,
-            "model": _model_ref_dict(model_ref),
-            "active_model": dict(active_model),
-            "recovery_actions": [
-                "put_global_lm_provider",
-                "clear_session_model",
-                "retry",
-                "exit",
-            ],
-        },
-        recoverable=True,
-    ))
+    return ErrorEnvelope(
+        error=ErrorInfo(
+            error="not_implemented",
+            message=(
+                f"{source} model overrides are not implemented for a model "
+                "that differs from the active global LM."
+            ),
+            details={
+                "session_id": session_id,
+                "source": source,
+                "model": _model_ref_dict(model_ref),
+                "active_model": dict(active_model),
+                "recovery_actions": [
+                    "put_global_lm_provider",
+                    "clear_session_model",
+                    "retry",
+                    "exit",
+                ],
+            },
+            recoverable=True,
+        )
+    )
 
 
 async def _run_turn_in_background(
@@ -639,7 +633,10 @@ async def _run_turn_in_background(
     thinking_text = ""
     live_tool_event_keys: set[tuple[str, str]] = set()
     turn_tokens: dict[str, int] = {
-        "input": 0, "output": 0, "cache_read": 0, "cache_write": 0,
+        "input": 0,
+        "output": 0,
+        "cache_read": 0,
+        "cache_write": 0,
     }
     turn_cost = 0.0
 
@@ -649,9 +646,7 @@ async def _run_turn_in_background(
     # works regardless of which expert handles the turn.
     context_file_error: ErrorInfo | None = None
     try:
-        enriched_text = _enrich_with_context_files(
-            app, sid, user_text
-        )
+        enriched_text = _enrich_with_context_files(app, sid, user_text)
     except _ContextFileAccessError as exc:
         enriched_text = user_text
         context_file_error = exc.error_info
@@ -664,30 +659,34 @@ async def _run_turn_in_background(
 
             _fire_hook("pre_message", sid, enriched_text)
         except PermissionError as exc:
-            bus.publish(Event(
-                type="message.completed",
-                session_id=sid,
-                payload={
-                    "message_id": user_msg.id,
-                    "stop_reason": "blocked",
-                    "error_info": {
-                        "error": "permission_error",
-                        "message": str(exc),
-                        "recoverable": True,
+            bus.publish(
+                Event(
+                    type="message.completed",
+                    session_id=sid,
+                    payload={
+                        "message_id": user_msg.id,
+                        "stop_reason": "blocked",
+                        "error_info": {
+                            "error": "permission_error",
+                            "message": str(exc),
+                            "recoverable": True,
+                        },
                     },
-                },
-            ))
+                )
+            )
             app.state.sessions.update(sid, status="error")
-            bus.publish(Event(
-                type="session.status_changed",
-                session_id=sid,
-                payload={
-                    "session_id": sid,
-                    "status": "error",
-                    "prev_status": "running",
-                    "reason": "pre_message hook blocked turn",
-                },
-            ))
+            bus.publish(
+                Event(
+                    type="session.status_changed",
+                    session_id=sid,
+                    payload={
+                        "session_id": sid,
+                        "status": "error",
+                        "prev_status": "running",
+                        "reason": "pre_message hook blocked turn",
+                    },
+                )
+            )
             return
 
     # iowarp/clio-agent#6: try real per-token streaming via
@@ -706,42 +705,48 @@ async def _run_turn_in_background(
             # the final assistant message will reuse them.
             streamed_assistant_msg_id = _new_message_id("asst")
             streamed_assistant_part_id = _new_part_id()
-            bus.publish(Event(
-                type="message.created",
-                session_id=sid,
-                payload=Message(
-                    id=streamed_assistant_msg_id,
+            bus.publish(
+                Event(
+                    type="message.created",
                     session_id=sid,
-                    role="assistant",
-                    created_at=_iso_from_epoch(time.time()),
-                    updated_at=_iso_from_epoch(time.time()),
-                    parts=[],
-                ).model_dump(exclude_none=True),
-            ))
-            bus.publish(Event(
-                type="message.part.added",
+                    payload=Message(
+                        id=streamed_assistant_msg_id,
+                        session_id=sid,
+                        role="assistant",
+                        created_at=_iso_from_epoch(time.time()),
+                        updated_at=_iso_from_epoch(time.time()),
+                        parts=[],
+                    ).model_dump(exclude_none=True),
+                )
+            )
+            bus.publish(
+                Event(
+                    type="message.part.added",
+                    session_id=sid,
+                    payload={
+                        "message_id": streamed_assistant_msg_id,
+                        "part": Part(
+                            id=streamed_assistant_part_id,
+                            type="text",
+                            text="",
+                            metadata={"stream_source": "live"},
+                        ).model_dump(exclude_none=True),
+                    },
+                )
+            )
+        streamed_assistant_buffer.append(text)
+        bus.publish(
+            Event(
+                type="message.part.delta",
                 session_id=sid,
                 payload={
                     "message_id": streamed_assistant_msg_id,
-                    "part": Part(
-                        id=streamed_assistant_part_id,
-                        type="text",
-                        text="",
-                        metadata={"stream_source": "live"},
-                    ).model_dump(exclude_none=True),
+                    "part_id": streamed_assistant_part_id,
+                    "stream_source": "live",
+                    "delta": {"text_append": text},
                 },
-            ))
-        streamed_assistant_buffer.append(text)
-        bus.publish(Event(
-            type="message.part.delta",
-            session_id=sid,
-            payload={
-                "message_id": streamed_assistant_msg_id,
-                "part_id": streamed_assistant_part_id,
-                "stream_source": "live",
-                "delta": {"text_append": text},
-            },
-        ))
+            )
+        )
 
     # iowarp/clio-agent#8: snapshot LM history before the turn so we
     # can sum every call this turn made. ContextVars don't propagate
@@ -803,7 +808,10 @@ async def _run_turn_in_background(
             with _routing_override(routing_override):
                 with _tool_session_context(sid):
                     pred = await _try_streamed_forward(
-                        app, enriched_text, sid, _emit_chunk,
+                        app,
+                        enriched_text,
+                        sid,
+                        _emit_chunk,
                         session_mode=getattr(sess, "mode", "chat"),
                         session_edit_mode=getattr(sess, "edit_mode", "diff"),
                     )
@@ -905,18 +913,23 @@ async def _run_turn_in_background(
                 if turn_cost == 0.0:
                     turn_cost = _estimate_cost_usd(
                         _current_lm_model_id(),
-                        turn_tokens["input"], turn_tokens["output"],
+                        turn_tokens["input"],
+                        turn_tokens["output"],
                     )
         if not turn_cost:
             turn_cost = float(getattr(pred, "cost_usd", 0.0) or 0.0)
         proposed_diffs = list(getattr(pred, "file_diffs", None) or [])
         nanoagents = list(getattr(pred, "nanoagents_spawned", None) or [])
-        for req in (getattr(pred, "permissions_requested", None) or []):
-            src = req if isinstance(req, dict) else {
-                "tool_call": getattr(req, "tool_call", {}),
-                "summary": getattr(req, "summary", ""),
-                "id": getattr(req, "id", ""),
-            }
+        for req in getattr(pred, "permissions_requested", None) or []:
+            src = (
+                req
+                if isinstance(req, dict)
+                else {
+                    "tool_call": getattr(req, "tool_call", {}),
+                    "summary": getattr(req, "summary", ""),
+                    "id": getattr(req, "id", ""),
+                }
+            )
             pid = src.get("id") or f"perm_{uuid.uuid4().hex[:12]}"
             row = {
                 "id": pid,
@@ -927,11 +940,13 @@ async def _run_turn_in_background(
                 "status": "pending",
             }
             app.state.permissions[pid] = row
-            bus.publish(Event(
-                type="permission.requested",
-                session_id=sid,
-                payload=row,
-            ))
+            bus.publish(
+                Event(
+                    type="permission.requested",
+                    session_id=sid,
+                    payload=row,
+                )
+            )
         if sid in app.state.cancel_flags:
             app.state.cancel_flags.discard(sid)
             error_info = ErrorInfo(
@@ -981,9 +996,7 @@ async def _run_turn_in_background(
         )
         error_info = ErrorInfo(
             error="not_implemented",
-            message=(
-                f"Session agent {exc.agent_id!r} cannot be executed yet."
-            ),
+            message=(f"Session agent {exc.agent_id!r} cannot be executed yet."),
             details={
                 "agent_id": exc.agent_id,
                 "reason": exc.reason,
@@ -1037,32 +1050,32 @@ async def _run_turn_in_background(
 
     assistant_parts: list[Part] = []
     if selected_agent:
-        assistant_parts.append(Part(
-            id=_new_part_id(),
-            type="routing_decision",
-            selected_agent=selected_agent,
-            rationale=rationale,
-            confidence=0.0,
-            heuristic=False,
-            execution_path=execution_path,
-        ))
+        assistant_parts.append(
+            Part(
+                id=_new_part_id(),
+                type="routing_decision",
+                selected_agent=selected_agent,
+                rationale=rationale,
+                confidence=0.0,
+                heuristic=False,
+                execution_path=execution_path,
+            )
+        )
     if thinking_text:
         # iowarp/clio-agent#17: surface DSPy reasoning as a
         # thinking Part so the TUI can collapse + render it
         # gated on capabilities.thinking_blocks.
-        assistant_parts.append(
-            Part(id=_new_part_id(), type="thinking", text=thinking_text)
-        )
+        assistant_parts.append(Part(id=_new_part_id(), type="thinking", text=thinking_text))
     if answer_text:
-        assistant_parts.append(
-            Part(id=_new_part_id(), type="text", text=answer_text)
-        )
+        assistant_parts.append(Part(id=_new_part_id(), type="text", text=answer_text))
     for row in proposed_diffs:
         if isinstance(row, dict):
             getf = row.get
         else:
+
             def getf(k, default=None, _r=row):
                 return getattr(_r, k, default)
+
         path = getf("path", "") or ""
         udiff = getf("unified_diff", "") or ""
         new_content = getf("new_content", "") or ""
@@ -1076,24 +1089,26 @@ async def _run_turn_in_background(
         # so the Part lands instead of being dropped.
         if not udiff and not new_content:
             continue
-        assistant_parts.append(Part(
-            id=_new_part_id(),
-            type="file_diff",
-            path=path,
-            unified_diff=udiff,
-            new_content=new_content,
-            status="pending",
-            edit_mode=edit_mode,
-            lines_added=lines_added,
-            lines_removed=lines_removed,
-        ))
+        assistant_parts.append(
+            Part(
+                id=_new_part_id(),
+                type="file_diff",
+                path=path,
+                unified_diff=udiff,
+                new_content=new_content,
+                status="pending",
+                edit_mode=edit_mode,
+                lines_added=lines_added,
+                lines_removed=lines_removed,
+            )
+        )
 
     assistant_metadata: dict[str, Any] = {}
     text_stream_source = (
-        "live"
-        if streamed_assistant_part_id is not None
-        else "synthetic_posthoc"
-    ) if answer_text else ""
+        ("live" if streamed_assistant_part_id is not None else "synthetic_posthoc")
+        if answer_text
+        else ""
+    )
     if text_stream_source:
         assistant_metadata["stream_source"] = text_stream_source
     stream_fallback = _pop_stream_fallback(app, sid)
@@ -1139,23 +1154,25 @@ async def _run_turn_in_background(
         if p.type != "file_diff":
             continue
         write_content = (
-            p.new_content
-            if p.new_content or p.edit_mode in {"whole", "patch"}
-            else None
+            p.new_content if p.new_content or p.edit_mode in {"whole", "patch"} else None
         )
-        bucket.append({
-            "path": p.path,
-            "unified_diff": p.unified_diff,
-            "new_content": write_content,
-            "status": "pending",
-            "part_id": p.id,
-            "message_id": assistant_msg.id,
-        })
+        bucket.append(
+            {
+                "path": p.path,
+                "unified_diff": p.unified_diff,
+                "new_content": write_content,
+                "status": "pending",
+                "part_id": p.id,
+                "message_id": assistant_msg.id,
+            }
+        )
 
     # Materialise nanoagent spawns + publish their lifecycle events.
     for spawn in nanoagents:
-        get = spawn.get if isinstance(spawn, dict) else (
-            lambda k, default=None, _s=spawn: getattr(_s, k, default)
+        get = (
+            spawn.get
+            if isinstance(spawn, dict)
+            else (lambda k, default=None, _s=spawn: getattr(_s, k, default))
         )
         agent_id = get("agent_id") or get("agent") or "nanoagent"
         spawn_input = get("input") or {}
@@ -1172,9 +1189,13 @@ async def _run_turn_in_background(
             role="user",
             created_at=_iso_from_epoch(sub_now),
             updated_at=_iso_from_epoch(sub_now),
-            parts=[Part(
-                id=_new_part_id(), type="text", text=str(spawn_input),
-            )],
+            parts=[
+                Part(
+                    id=_new_part_id(),
+                    type="text",
+                    text=str(spawn_input),
+                )
+            ],
         )
         sub_asst = Message(
             id=_new_message_id("asst"),
@@ -1185,34 +1206,34 @@ async def _run_turn_in_background(
             parts=[Part(id=_new_part_id(), type="text", text=answer)] if answer else [],
             stop_reason="end_turn",
         )
-        app.state.messages.setdefault(subsess.id, []).extend(
-            [sub_user, sub_asst]
+        app.state.messages.setdefault(subsess.id, []).extend([sub_user, sub_asst])
+        app.state.sessions.update(subsess.id, message_count=2, status="idle")
+        bus.publish(
+            Event(
+                type="subagent.started",
+                session_id=sid,
+                payload={
+                    "parent_session_id": sid,
+                    "child_session_id": subsess.id,
+                    "agent_id": agent_id,
+                    "spawned_by_message_id": assistant_msg.id,
+                },
+            )
         )
-        app.state.sessions.update(
-            subsess.id, message_count=2, status="idle"
+        bus.publish(
+            Event(
+                type="subagent.completed",
+                session_id=sid,
+                payload={
+                    "parent_session_id": sid,
+                    "child_session_id": subsess.id,
+                    "agent_id": agent_id,
+                    "duration_ms": float(get("duration_ms", 0.0) or 0.0),
+                    "tokens": get("tokens") or {},
+                    "cost_usd": float(get("cost_usd", 0.0) or 0.0),
+                },
+            )
         )
-        bus.publish(Event(
-            type="subagent.started",
-            session_id=sid,
-            payload={
-                "parent_session_id": sid,
-                "child_session_id": subsess.id,
-                "agent_id": agent_id,
-                "spawned_by_message_id": assistant_msg.id,
-            },
-        ))
-        bus.publish(Event(
-            type="subagent.completed",
-            session_id=sid,
-            payload={
-                "parent_session_id": sid,
-                "child_session_id": subsess.id,
-                "agent_id": agent_id,
-                "duration_ms": float(get("duration_ms", 0.0) or 0.0),
-                "tokens": get("tokens") or {},
-                "cost_usd": float(get("cost_usd", 0.0) or 0.0),
-            },
-        ))
 
     # message.created for the assistant message (empty body — parts
     # arrive via subsequent message.part.added/delta events).
@@ -1220,17 +1241,20 @@ async def _run_turn_in_background(
     # message.part.added + N deltas (#6), skip re-issuing them so we
     # don't duplicate.
     if streamed_assistant_msg_id is None:
-        bus.publish(Event(
-            type="message.created", session_id=sid,
-            payload=Message(
-                id=assistant_msg.id,
+        bus.publish(
+            Event(
+                type="message.created",
                 session_id=sid,
-                role="assistant",
-                created_at=assistant_msg.created_at,
-                updated_at=assistant_msg.updated_at,
-                parts=[],
-            ).model_dump(exclude_none=True),
-        ))
+                payload=Message(
+                    id=assistant_msg.id,
+                    session_id=sid,
+                    role="assistant",
+                    created_at=assistant_msg.created_at,
+                    updated_at=assistant_msg.updated_at,
+                    parts=[],
+                ).model_dump(exclude_none=True),
+            )
+        )
     # Stream text parts via message.part.added (empty) + N
     # message.part.delta + message.part.completed. When real
     # streaming already drained the chunks, just close out with
@@ -1244,16 +1268,18 @@ async def _run_turn_in_background(
                 # markers ([[ ## answer ## ]] etc). The final ``part.text``
                 # is the parsed clean answer; ship it on the completed
                 # event so the TUI can replace the buffered text.
-                bus.publish(Event(
-                    type="message.part.completed",
-                    session_id=sid,
-                    payload={
-                        "message_id": assistant_msg.id,
-                        "part_id": part.id,
-                        "stream_source": "live",
-                        "final_text": part.text,
-                    },
-                ))
+                bus.publish(
+                    Event(
+                        type="message.part.completed",
+                        session_id=sid,
+                        payload={
+                            "message_id": assistant_msg.id,
+                            "part_id": part.id,
+                            "stream_source": "live",
+                            "final_text": part.text,
+                        },
+                    )
+                )
                 continue
             stub = part.model_copy(deep=True)
             stub.text = ""
@@ -1263,46 +1289,54 @@ async def _run_turn_in_background(
             }
             if stream_fallback:
                 stub.metadata["stream_fallback"] = stream_fallback
-            bus.publish(Event(
-                type="message.part.added",
-                session_id=sid,
-                payload={
-                    "message_id": assistant_msg.id,
-                    "part": stub.model_dump(exclude_none=True),
-                },
-            ))
+            bus.publish(
+                Event(
+                    type="message.part.added",
+                    session_id=sid,
+                    payload={
+                        "message_id": assistant_msg.id,
+                        "part": stub.model_dump(exclude_none=True),
+                    },
+                )
+            )
             full = part.text
             for i in range(0, len(full), _CHUNK):
-                bus.publish(Event(
-                    type="message.part.delta",
+                bus.publish(
+                    Event(
+                        type="message.part.delta",
+                        session_id=sid,
+                        payload={
+                            "message_id": assistant_msg.id,
+                            "part_id": part.id,
+                            "stream_source": "synthetic_posthoc",
+                            "stream_fallback": stream_fallback,
+                            "delta": {"text_append": full[i : i + _CHUNK]},
+                        },
+                    )
+                )
+            bus.publish(
+                Event(
+                    type="message.part.completed",
                     session_id=sid,
                     payload={
                         "message_id": assistant_msg.id,
                         "part_id": part.id,
                         "stream_source": "synthetic_posthoc",
                         "stream_fallback": stream_fallback,
-                        "delta": {"text_append": full[i:i + _CHUNK]},
                     },
-                ))
-            bus.publish(Event(
-                type="message.part.completed",
-                session_id=sid,
-                payload={
-                    "message_id": assistant_msg.id,
-                    "part_id": part.id,
-                    "stream_source": "synthetic_posthoc",
-                    "stream_fallback": stream_fallback,
-                },
-            ))
+                )
+            )
         else:
-            bus.publish(Event(
-                type="message.part.added",
-                session_id=sid,
-                payload={
-                    "message_id": assistant_msg.id,
-                    "part": part.model_dump(exclude_none=True),
-                },
-            ))
+            bus.publish(
+                Event(
+                    type="message.part.added",
+                    session_id=sid,
+                    payload={
+                        "message_id": assistant_msg.id,
+                        "part": part.model_dump(exclude_none=True),
+                    },
+                )
+            )
     # Per-tool telemetry events synthesised from the prediction's
     # tool_called trace. A real ReAct agent that instruments
     # MCPToolBridge.call_tool publishes the same wire shape live;
@@ -1311,28 +1345,32 @@ async def _run_turn_in_background(
         if _tool_call_event_key(call) in live_tool_event_keys:
             continue
         call_id = f"call_{assistant_msg.id}_{idx}"
-        bus.publish(Event(
-            type="tool.call.started",
-            session_id=sid,
-            payload={
-                "message_id": assistant_msg.id,
-                "call_id": call_id,
-                "tool": call.get("name", ""),
-                "args": call.get("args", {}),
-            },
-        ))
-        bus.publish(Event(
-            type="tool.call.completed",
-            session_id=sid,
-            payload={
-                "message_id": assistant_msg.id,
-                "call_id": call_id,
-                "tool": call.get("name", ""),
-                "ok": call.get("ok", True),
-                "duration_ms": call.get("duration_ms", 0.0),
-                "cached": call.get("cached", False),
-            },
-        ))
+        bus.publish(
+            Event(
+                type="tool.call.started",
+                session_id=sid,
+                payload={
+                    "message_id": assistant_msg.id,
+                    "call_id": call_id,
+                    "tool": call.get("name", ""),
+                    "args": call.get("args", {}),
+                },
+            )
+        )
+        bus.publish(
+            Event(
+                type="tool.call.completed",
+                session_id=sid,
+                payload={
+                    "message_id": assistant_msg.id,
+                    "call_id": call_id,
+                    "tool": call.get("name", ""),
+                    "ok": call.get("ok", True),
+                    "duration_ms": call.get("duration_ms", 0.0),
+                    "cached": call.get("cached", False),
+                },
+            )
+        )
     completed_payload: dict[str, Any] = {
         "message_id": assistant_msg.id,
         "stop_reason": "error" if error_info else "end_turn",
@@ -1343,11 +1381,13 @@ async def _run_turn_in_background(
         completed_payload["error_info"] = error_info.model_dump(exclude_none=True)
     if assistant_metadata:
         completed_payload["metadata"] = assistant_metadata
-    bus.publish(Event(
-        type="message.completed",
-        session_id=sid,
-        payload=completed_payload,
-    ))
+    bus.publish(
+        Event(
+            type="message.completed",
+            session_id=sid,
+            payload=completed_payload,
+        )
+    )
 
     # Persist + settle.
     app.state.messages.setdefault(sid, []).append(assistant_msg)
@@ -1359,15 +1399,17 @@ async def _run_turn_in_background(
         add_tokens_output=turn_tokens["output"],
         add_cost_usd=turn_cost,
     )
-    bus.publish(Event(
-        type="session.status_changed",
-        session_id=sid,
-        payload={
-            "session_id": sid,
-            "status": "error" if error_info else "idle",
-            "prev_status": "running",
-        },
-    ))
+    bus.publish(
+        Event(
+            type="session.status_changed",
+            session_id=sid,
+            payload={
+                "session_id": sid,
+                "status": "error" if error_info else "idle",
+                "prev_status": "running",
+            },
+        )
+    )
     # iowarp/clio-agent#20: post_message hook runs AFTER persistence
     # so user audit code sees the settled assistant + can ship to
     # external systems. Errors are swallowed (post_* contract).
@@ -1375,7 +1417,8 @@ async def _run_turn_in_background(
         from clio_agent.runtime.hooks import fire as _fire_hook
 
         _fire_hook(
-            "post_message", sid,
+            "post_message",
+            sid,
             assistant_msg.model_dump(exclude_none=True),
         )
     except Exception:  # noqa: BLE001
@@ -1401,6 +1444,7 @@ def _all_known_lms(app: "FastAPI") -> list[Any]:
     lms: list[Any] = []
     try:
         import dspy  # noqa: PLC0415
+
         main = getattr(dspy.settings, "lm", None) if hasattr(dspy, "settings") else None
         if main is not None:
             lms.append(main)
@@ -1593,11 +1637,7 @@ def _usage_from_dspy_history() -> dict[str, Any]:
     if not history:
         return {}
     last = history[-1]
-    usage = (
-        last.get("usage")
-        if isinstance(last, dict)
-        else getattr(last, "usage", None)
-    )
+    usage = last.get("usage") if isinstance(last, dict) else getattr(last, "usage", None)
     if usage is None and isinstance(last, dict):
         resp = last.get("response", {}) or {}
         usage = resp.get("usage", {}) if isinstance(resp, dict) else None
@@ -1615,11 +1655,7 @@ def _usage_from_dspy_history() -> dict[str, Any]:
     if raw_cost == 0.0:
         model = ""
         if isinstance(last, dict):
-            model = (
-                last.get("model")
-                or last.get("response", {}).get("model", "")
-                or ""
-            )
+            model = last.get("model") or last.get("response", {}).get("model", "") or ""
         else:
             model = getattr(last, "model", "") or ""
         raw_cost = _estimate_cost_usd(model, input_tok, output_tok)
@@ -1655,9 +1691,7 @@ _PRICE_TABLE_PER_M: dict[str, tuple[float, float]] = {
 }
 
 
-def _estimate_cost_usd(
-    model_id: str, input_tokens: int, output_tokens: int
-) -> float:
+def _estimate_cost_usd(model_id: str, input_tokens: int, output_tokens: int) -> float:
     """Best-effort cost estimate when the LM doesn't report one.
 
     Substring-matches the model id against ``_PRICE_TABLE_PER_M``;
@@ -1696,6 +1730,115 @@ _DESTRUCTIVE_TOOL_SUBSTRINGS: tuple[str, ...] = (
 def _is_destructive(tool_name: str) -> bool:
     n = tool_name.lower()
     return any(needle in n for needle in _DESTRUCTIVE_TOOL_SUBSTRINGS)
+
+
+def _permission_path_from_args(args: Mapping[str, Any]) -> str:
+    for key in ("filepath", "path", "output_path", "target_path"):
+        value = args.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return ""
+
+
+def _policy_action_for_tool(
+    app: "FastAPI",
+    *,
+    session_id: str,
+    session: Any | None,
+    tool_name: str,
+    args: Mapping[str, Any],
+) -> str:
+    """Return the first matching permission policy action.
+
+    The `/v1/policies` endpoint is user-facing configuration, so storing
+    policies without enforcing them is a silent safety bypass. Matching is
+    intentionally small and predictable: scope, tool glob, optional path glob,
+    then the policy action.
+    """
+
+    policies = getattr(app.state, "permission_policies", [])
+    if not isinstance(policies, list):
+        return ""
+    path = _permission_path_from_args(args)
+    workspace_id = getattr(session, "workspace_id", "") if session is not None else ""
+    for policy in policies:
+        if not isinstance(policy, dict):
+            continue
+        scope = str(policy.get("scope") or "").lower()
+        scope_id = str(policy.get("scope_id") or "")
+        if scope == "session":
+            if scope_id and scope_id != session_id:
+                continue
+        elif scope == "workspace":
+            if scope_id and scope_id != workspace_id:
+                continue
+        else:
+            continue
+
+        tool_pattern = str(policy.get("tool_name_pattern") or "*")
+        if not fnmatch.fnmatchcase(tool_name, tool_pattern):
+            continue
+
+        path_pattern = str(policy.get("path_pattern") or "")
+        if path_pattern:
+            candidates = [path]
+            if path:
+                try:
+                    candidates.append(str(Path(path).resolve(strict=False)))
+                except OSError:
+                    pass
+            if not any(fnmatch.fnmatchcase(candidate, path_pattern) for candidate in candidates):
+                continue
+
+        action = str(policy.get("action") or "").lower()
+        if action in {"allow", "allow_session", "allow_workspace", "deny", "ask"}:
+            return action
+    return ""
+
+
+def _record_resolved_permission(
+    app: "FastAPI",
+    *,
+    session_id: str,
+    tool_name: str,
+    args: Mapping[str, Any],
+    status: str,
+    action: str,
+    summary: str,
+    reason: str,
+) -> str:
+    pid = f"perm_{uuid.uuid4().hex[:12]}"
+    now_iso = datetime.now(timezone.utc).isoformat()
+    row = {
+        "id": pid,
+        "session_id": session_id,
+        "tool_call": {
+            "tool_name": tool_name,
+            "input": dict(args),
+        },
+        "summary": summary,
+        "created_at": now_iso,
+        "status": status,
+        "action": action,
+        "resolved_at": now_iso,
+        "reason": reason,
+    }
+    if hasattr(app.state, "permissions"):
+        app.state.permissions[pid] = row
+    if hasattr(app.state, "bus"):
+        app.state.bus.publish(
+            Event(
+                type="permission.resolved",
+                session_id=session_id,
+                payload={
+                    "permission_id": pid,
+                    "action": action,
+                    "session_id": session_id,
+                    "reason": reason,
+                },
+            )
+        )
+    return pid
 
 
 def _make_permission_gate(app: "FastAPI"):
@@ -1738,8 +1881,7 @@ def _make_permission_gate(app: "FastAPI"):
                         "input": dict(args),
                     },
                     "summary": (
-                        f"destructive tool {name!r} blocked by "
-                        f"session.mode={current.mode!r}"
+                        f"destructive tool {name!r} blocked by session.mode={current.mode!r}"
                     ),
                     "created_at": datetime.now(timezone.utc).isoformat(),
                     "status": "auto_denied",
@@ -1747,17 +1889,40 @@ def _make_permission_gate(app: "FastAPI"):
                     "resolved_at": datetime.now(timezone.utc).isoformat(),
                 }
                 app.state.permissions[row["id"]] = row
-                app.state.bus.publish(Event(
-                    type="permission.resolved",
-                    session_id=sid,
-                    payload={
-                        "permission_id": row["id"],
-                        "action": "deny",
-                        "session_id": sid,
-                        "reason": "session_mode_readonly",
-                    },
-                ))
+                app.state.bus.publish(
+                    Event(
+                        type="permission.resolved",
+                        session_id=sid,
+                        payload={
+                            "permission_id": row["id"],
+                            "action": "deny",
+                            "session_id": sid,
+                            "reason": "session_mode_readonly",
+                        },
+                    )
+                )
                 return "deny"
+        policy_action = _policy_action_for_tool(
+            app,
+            session_id=sid,
+            session=current,
+            tool_name=name,
+            args=args,
+        )
+        if policy_action == "deny":
+            _record_resolved_permission(
+                app,
+                session_id=sid,
+                tool_name=name,
+                args=args,
+                status="auto_denied",
+                action="deny",
+                summary=f"destructive tool {name!r} blocked by permission policy",
+                reason="policy_deny",
+            )
+            return "deny"
+        if policy_action in {"allow", "allow_session", "allow_workspace"}:
+            return "allow"
         pid = f"perm_{uuid.uuid4().hex[:12]}"
         evt = threading.Event()
         row = {
@@ -1773,11 +1938,13 @@ def _make_permission_gate(app: "FastAPI"):
         }
         app.state.permissions[pid] = row
         app.state.permission_events[pid] = evt
-        app.state.bus.publish(Event(
-            type="permission.requested",
-            session_id=sid,
-            payload=row,
-        ))
+        app.state.bus.publish(
+            Event(
+                type="permission.requested",
+                session_id=sid,
+                payload=row,
+            )
+        )
         # Block the bridge thread until POST /v1/permissions/{pid}
         # sets the event (or we time out).
         if not evt.wait(timeout=DEFAULT_TIMEOUT_S):
@@ -1821,15 +1988,17 @@ def _make_tool_observer(app: "FastAPI"):
             _OBSERVER_CALL_IDS.value = call_id
             # Stamp the start time so completion can compute duration.
             _OBSERVER_CALL_T0.value = time.time()
-            app.state.bus.publish(Event(
-                type="tool.call.started",
-                session_id=sid,
-                payload={
-                    "call_id": call_id,
-                    "tool": name,
-                    "args": dict(args),
-                },
-            ))
+            app.state.bus.publish(
+                Event(
+                    type="tool.call.started",
+                    session_id=sid,
+                    payload={
+                        "call_id": call_id,
+                        "tool": name,
+                        "args": dict(args),
+                    },
+                )
+            )
         elif phase == "completed":
             call_id = getattr(_OBSERVER_CALL_IDS, "value", "") or ""
             t0 = getattr(_OBSERVER_CALL_T0, "value", None)
@@ -1843,24 +2012,28 @@ def _make_tool_observer(app: "FastAPI"):
                 "cached": False,
                 **({"error": error} if error else {}),
             }
-            app.state.bus.publish(Event(
-                type="tool.call.completed",
-                session_id=sid,
-                payload=payload,
-            ))
+            app.state.bus.publish(
+                Event(
+                    type="tool.call.completed",
+                    session_id=sid,
+                    payload=payload,
+                )
+            )
             # Append to the per-session ledger so the turn handler
             # finds it post-forward and attaches to the assistant
             # message metadata.
             ledger = getattr(app.state, "tool_call_ledger", None)
             if ledger is not None:
-                ledger.setdefault(sid, []).append({
-                    "name": name,
-                    "args": dict(args),
-                    "ok": ok,
-                    "duration_ms": duration_ms,
-                    "cached": False,
-                    **({"error": error} if error else {}),
-                })
+                ledger.setdefault(sid, []).append(
+                    {
+                        "name": name,
+                        "args": dict(args),
+                        "ok": ok,
+                        "duration_ms": duration_ms,
+                        "cached": False,
+                        **({"error": error} if error else {}),
+                    }
+                )
 
     return observe
 
@@ -2109,6 +2282,7 @@ async def _try_streamed_forward(
         # ``ModelResponseStream`` / dict / str fallback for backends
         # that don't surface a typed listener payload.
         from dspy.streaming.messages import StreamResponse  # noqa: PLC0415
+
         # Pass session_mode + session_edit_mode if the agent's
         # forward signature accepts them (newer ClioAgent does;
         # older / fake agents fall back via TypeError catch).
@@ -2213,57 +2387,57 @@ def _apply_edit_to_disk(
             target.relative_to(Path(ws.root_path).resolve())
         except ValueError as exc:
             raise PermissionError(
-                f"refused to write {target} outside workspace root "
-                f"{ws.root_path}"
+                f"refused to write {target} outside workspace root {ws.root_path}"
             ) from exc
     # Mode gate — plan + architect can't apply.
     if session.mode in {"plan", "architect"}:
-        raise PermissionError(
-            f"refused to write under session.mode={session.mode!r}"
-        )
+        raise PermissionError(f"refused to write under session.mode={session.mode!r}")
     target = validate_write_path(path, field="path")
+
+    permission_args = {
+        "filepath": str(target),
+        "new_content_bytes": len(new_content),
+    }
+    policy_action = _policy_action_for_tool(
+        app,
+        session_id=session.id,
+        session=session,
+        tool_name="fs_apply_edit_write",
+        args=permission_args,
+    )
+    if policy_action == "deny":
+        _record_resolved_permission(
+            app,
+            session_id=session.id,
+            tool_name="fs_apply_edit_write",
+            args=permission_args,
+            status="auto_denied",
+            action="deny",
+            summary=f"diffs/apply blocked by permission policy for {target}",
+            reason="policy_deny",
+        )
+        raise PermissionError(
+            f"refused to write {target} because a permission policy denied fs_apply_edit_write"
+        )
 
     # Audit row for the apply (auto-approved by the user's explicit
     # POST to /diffs/apply). Every destructive call lands in
     # /v1/permissions for compliance / replay.
-    pid = f"perm_{uuid.uuid4().hex[:12]}"
-    now_iso = datetime.now(timezone.utc).isoformat()
-    audit_row = {
-        "id": pid,
-        "session_id": session.id,
-        "tool_call": {
-            "tool_name": "fs_apply_edit_write",
-            "input": {"filepath": str(target), "new_content_bytes": len(new_content)},
-        },
-        "summary": (
-            f"diffs/apply: write {len(new_content)} bytes to {target}"
-        ),
-        "created_at": now_iso,
-        "status": "auto_approved",
-        "action": "allow",
-        "resolved_at": now_iso,
-        "reason": "user clicked /diffs/apply",
-    }
-    if hasattr(app.state, "permissions"):
-        app.state.permissions[pid] = audit_row
-    if hasattr(app.state, "bus"):
-        app.state.bus.publish(Event(
-            type="permission.resolved",
-            session_id=session.id,
-            payload={
-                "permission_id": pid,
-                "action": "allow",
-                "session_id": session.id,
-                "reason": "user_clicked_apply",
-            },
-        ))
+    _record_resolved_permission(
+        app,
+        session_id=session.id,
+        tool_name="fs_apply_edit_write",
+        args=permission_args,
+        status="auto_approved",
+        action="allow",
+        summary=f"diffs/apply: write {len(new_content)} bytes to {target}",
+        reason="user_clicked_apply",
+    )
 
     return write_text_with_policy(str(target), new_content)
 
 
-def _enrich_with_context_files(
-    app: "FastAPI", sid: str, user_text: str
-) -> str:
+def _enrich_with_context_files(app: "FastAPI", sid: str, user_text: str) -> str:
     """Prepend a "Context:" section to the user's text for every
     file attached to the session via /v1/sessions/{sid}/context/files.
 
@@ -2309,10 +2483,7 @@ def _enrich_with_context_files(
         # in _apply_edit_to_disk, plus mode=plan/architect) still
         # protect against unintended writes.
         if mode == "edit" and not p.exists():
-            blocks.append(
-                f"### Context file: {path_str} "
-                f"(mode=edit, target does not exist yet)"
-            )
+            blocks.append(f"### Context file: {path_str} (mode=edit, target does not exist yet)")
             continue
         if not p.exists():
             raise _context_file_access_error(
@@ -2351,19 +2522,14 @@ def _enrich_with_context_files(
         if binary_inspector is not None:
             try:
                 summary = binary_inspector(str(p))
-                blocks.append(
-                    header + "\n```\n" + summary + "\n```"
-                )
+                blocks.append(header + "\n```\n" + summary + "\n```")
                 continue
             except Exception as exc:  # noqa: BLE001
                 raise _context_file_access_error(
                     path=path_str,
                     mode=mode,
                     operation="inspect",
-                    message=(
-                        "Could not inspect attached binary context file: "
-                        f"{path_str}"
-                    ),
+                    message=(f"Could not inspect attached binary context file: {path_str}"),
                     original_error=exc,
                 ) from exc
         try:
@@ -2378,18 +2544,13 @@ def _enrich_with_context_files(
             ) from exc
         if len(data) > _CTX_MAX_BYTES:
             blocks.append(
-                header + "\n```\n" +
-                data[:_CTX_MAX_BYTES].decode(
-                    "utf-8", errors="replace"
-                ) +
-                f"\n... ({len(data) - _CTX_MAX_BYTES} more bytes truncated)\n```"
+                header
+                + "\n```\n"
+                + data[:_CTX_MAX_BYTES].decode("utf-8", errors="replace")
+                + f"\n... ({len(data) - _CTX_MAX_BYTES} more bytes truncated)\n```"
             )
         else:
-            blocks.append(
-                header + "\n```\n" +
-                data.decode("utf-8", errors="replace") +
-                "\n```"
-            )
+            blocks.append(header + "\n```\n" + data.decode("utf-8", errors="replace") + "\n```")
 
     if not blocks:
         return user_text
@@ -2409,14 +2570,14 @@ def _inspect_parquet_for_context(path: str) -> str:
     summary the LM can quote when answering 'what's in this file'."""
 
     from clio_agent.tools.servers.parquet_server import analyze_schema
+
     fn = getattr(analyze_schema, "fn", analyze_schema)
     schema = fn(path)
     if "error" in schema:
         return f"Could not inspect Parquet file: {schema['error']}"
     cols = schema.get("columns", []) or []
     col_lines = [
-        f"  - {c.get('name')}: {c.get('type')}, nullable={c.get('nullable')}"
-        for c in cols[:24]
+        f"  - {c.get('name')}: {c.get('type')}, nullable={c.get('nullable')}" for c in cols[:24]
     ]
     body = (
         f"Parquet file with {schema.get('num_rows', '?')} rows, "
@@ -2437,6 +2598,7 @@ def _inspect_hdf5_for_context(path: str) -> str:
         analyze_file,
         list_datasets,
     )
+
     af = getattr(analyze_file, "fn", analyze_file)
     ld = getattr(list_datasets, "fn", list_datasets)
     overview = af(path)
@@ -2445,8 +2607,7 @@ def _inspect_hdf5_for_context(path: str) -> str:
         return f"Could not inspect HDF5 file: {overview['error']}"
     rows = (datasets.get("datasets", []) if isinstance(datasets, dict) else []) or []
     ds_lines = [
-        f"  - {d.get('path')}: shape={d.get('shape')} dtype={d.get('dtype')}"
-        for d in rows[:24]
+        f"  - {d.get('path')}: shape={d.get('shape')} dtype={d.get('dtype')}" for d in rows[:24]
     ]
     body = (
         f"HDF5 file with {overview.get('total_datasets', len(rows))} datasets "
@@ -2479,12 +2640,8 @@ def _format_react_trajectory(traj: Any) -> str:
         # ReAct stores as {step_n_thought, step_n_action, ...}
         idx = 0
         while True:
-            thought = traj.get(f"step_{idx}_thought") or traj.get(
-                f"thought_{idx}"
-            )
-            action = traj.get(f"step_{idx}_tool_name") or traj.get(
-                f"action_{idx}"
-            )
+            thought = traj.get(f"step_{idx}_thought") or traj.get(f"thought_{idx}")
+            action = traj.get(f"step_{idx}_tool_name") or traj.get(f"action_{idx}")
             if thought is None and action is None:
                 break
             row = []
@@ -2523,6 +2680,7 @@ def _extract_tools_called(pred: Any) -> list[dict[str, Any]]:
     for call in raw:
         row: dict[str, Any] = {}
         if isinstance(call, dict):
+
             def get(key: str, default: Any = None, _src: Any = call) -> Any:
                 return _src.get(key, default)
         else:
@@ -2647,11 +2805,13 @@ def _builtin_agents() -> list[AgentDef]:
                 "specialists based on keyword heuristics + LM classifier."
             ),
             system_prompt="\n\n".join(
-                part for part in (
+                part
+                for part in (
                     _signature_prompt(AgentActionSignature),
                     _signature_prompt(AgentAnswerSignature),
                     _signature_prompt(ChatAgentSignature),
-                ) if part
+                )
+                if part
             ),
             tier=1,
             specialization="orchestrator",
@@ -2672,9 +2832,7 @@ def _builtin_agents() -> list[AgentDef]:
                 system_prompt=prompts_by_agent.get(expert_id, ""),
                 tools=tools,
                 tier=2,
-                specialization=_EXPERT_SPECIALIZATION.get(
-                    expert_id, expert_id
-                ),
+                specialization=_EXPERT_SPECIALIZATION.get(expert_id, expert_id),
                 keywords=keywords,
             )
         )
@@ -2811,7 +2969,7 @@ def _parse_skill_frontmatter(text: str) -> tuple[dict[str, Any], str]:
         else:
             meta[key] = value.strip("\"'")
             cur_key = None
-    body = "\n".join(lines[end + 1:]).strip()
+    body = "\n".join(lines[end + 1 :]).strip()
     return meta, body
 
 
@@ -2836,6 +2994,7 @@ def _builtin_tools() -> list[Tool]:
                 title=tool_name.replace("_", " ").title(),
             )
     return list(seen.values())
+
 
 from typing import Protocol
 
@@ -2898,6 +3057,7 @@ class AgentLike(Protocol):
 
     def forward(self, question: str, session_id: str) -> Any:  # pragma: no cover
         ...
+
 
 # Version pins. Keep in sync with the gact-tui SPEC.md version bump
 # history; bump EMULATOR_VERSION-equivalent here only when the
@@ -3061,26 +3221,31 @@ async def _scheduler_tick(app: "FastAPI") -> None:
                     role="user",
                     created_at=_iso_from_epoch(time.time()),
                     updated_at=_iso_from_epoch(time.time()),
-                    parts=[Part(
-                        id=_new_part_id(),
-                        type="text",
-                        text=sch.question,
-                    )],
+                    parts=[
+                        Part(
+                            id=_new_part_id(),
+                            type="text",
+                            text=sch.question,
+                        )
+                    ],
                     metadata={"scheduled": True, "schedule_id": sch.id},
                 )
-                app.state.messages.setdefault(
-                    sch.session_id, []
-                ).append(user_msg)
-                app.state.bus.publish(Event(
-                    type="message.created",
-                    session_id=sch.session_id,
-                    payload=user_msg.model_dump(exclude_none=True),
-                ))
+                app.state.messages.setdefault(sch.session_id, []).append(user_msg)
+                app.state.bus.publish(
+                    Event(
+                        type="message.created",
+                        session_id=sch.session_id,
+                        payload=user_msg.model_dump(exclude_none=True),
+                    )
+                )
                 app.state.schedules.mark_fired(sch.id)
                 # Fire-and-forget the turn task.
                 asyncio.create_task(
                     _run_turn_in_background(
-                        app, sch.session_id, sch.question, user_msg,
+                        app,
+                        sch.session_id,
+                        sch.question,
+                        user_msg,
                     )
                 )
         except Exception:  # noqa: BLE001
@@ -3266,16 +3431,15 @@ def build_app(
     from clio_agent.gact.user_agents import (
         _default_store_path as _ua_default,
     )
+
     app.state.user_agents = UserAgentStore(
-        path=(sessions_path.parent / "agents.json")
-        if sessions_path is not None
-        else _ua_default()
+        path=(sessions_path.parent / "agents.json") if sessions_path is not None else _ua_default()
     )
     # iowarp/clio-agent#21: scheduled turns store + tick task.
     from clio_agent.gact.scheduler import ScheduleStore as _SchedStore
+
     app.state.schedules = _SchedStore(
-        path=(sessions_path.parent / "schedules.json")
-        if sessions_path is not None else None
+        path=(sessions_path.parent / "schedules.json") if sessions_path is not None else None
     )
     app.state.scheduler_task = None
     # iowarp/clio-agent#22: shared session tokens.
@@ -3308,11 +3472,13 @@ def build_app(
 
         agent = app.state.agent
         if agent is None:
-            rows.append(Integration(
-                name="agent",
-                status="unavailable",
-                detail="no ClioAgent wired; POST /messages will 503",
-            ))
+            rows.append(
+                Integration(
+                    name="agent",
+                    status="unavailable",
+                    detail="no ClioAgent wired; POST /messages will 503",
+                )
+            )
         else:
             # Heuristic: the production ClioAgent is a class that
             # imports DSPy under the hood and exposes it via
@@ -3321,42 +3487,46 @@ def build_app(
             # them so the /doctor modal is honest about what's
             # running.
             mod = type(agent).__module__
-            is_fake = (
-                "smoke" in mod
-                or mod == "__main__"
-                or "test" in mod.lower()
+            is_fake = "smoke" in mod or mod == "__main__" or "test" in mod.lower()
+            rows.append(
+                Integration(
+                    name="agent",
+                    status="degraded" if is_fake else "ready",
+                    detail=(
+                        f"{type(agent).__name__} (fake — dev harness)"
+                        if is_fake
+                        else f"{type(agent).__name__} wired"
+                    ),
+                )
             )
-            rows.append(Integration(
-                name="agent",
-                status="degraded" if is_fake else "ready",
-                detail=(
-                    f"{type(agent).__name__} (fake — dev harness)"
-                    if is_fake
-                    else f"{type(agent).__name__} wired"
-                ),
-            ))
 
         if app.state.arc is None:
-            rows.append(Integration(
-                name="memory",
-                status="degraded",
-                detail="memory layer not wired; /v1/memory/stats returns zeros",
-            ))
+            rows.append(
+                Integration(
+                    name="memory",
+                    status="degraded",
+                    detail="memory layer not wired; /v1/memory/stats returns zeros",
+                )
+            )
         else:
             try:
                 stats = app.state.arc.get_cache_stats()
                 hr = stats.get("hit_rate", 0.0)
-                rows.append(Integration(
-                    name="memory",
-                    status="ready",
-                    detail=f"cache {int(hr * 100)}% hit rate",
-                ))
+                rows.append(
+                    Integration(
+                        name="memory",
+                        status="ready",
+                        detail=f"cache {int(hr * 100)}% hit rate",
+                    )
+                )
             except Exception as exc:
-                rows.append(Integration(
-                    name="memory",
-                    status="unavailable",
-                    detail=f"memory cache stats raised: {exc!r}",
-                ))
+                rows.append(
+                    Integration(
+                        name="memory",
+                        status="unavailable",
+                        detail=f"memory cache stats raised: {exc!r}",
+                    )
+                )
 
         # LM row drives the TUI's "configure provider on connect"
         # decision. ``configured`` mirrors what GET /v1/providers/lm
@@ -3364,28 +3534,33 @@ def build_app(
         cfg = app.state.lm_config or {}
         if app.state.agent is not None and cfg:
             detail = f"{cfg.get('provider', '?')}/{cfg.get('model', '?')}"
-            rows.append(Integration(
-                name="lm",
-                status="ready",
-                detail=detail,
-            ))
+            rows.append(
+                Integration(
+                    name="lm",
+                    status="ready",
+                    detail=detail,
+                )
+            )
         elif app.state.agent is not None:
             # Agent wired by env at boot; lm_config wasn't recorded
             # but we know an LM is configured.
-            rows.append(Integration(
-                name="lm",
-                status="ready",
-                detail="configured from env at boot",
-            ))
+            rows.append(
+                Integration(
+                    name="lm",
+                    status="ready",
+                    detail="configured from env at boot",
+                )
+            )
         else:
-            rows.append(Integration(
-                name="lm",
-                status="unavailable",
-                detail=(
-                    "no LM configured; PUT /v1/providers/lm or set "
-                    "CLIO_LM_PROVIDER and restart"
-                ),
-            ))
+            rows.append(
+                Integration(
+                    name="lm",
+                    status="unavailable",
+                    detail=(
+                        "no LM configured; PUT /v1/providers/lm or set CLIO_LM_PROVIDER and restart"
+                    ),
+                )
+            )
 
         # Worst-status wins.
         statuses = {r.status for r in rows}
@@ -3502,9 +3677,7 @@ def build_app(
         return Session(**sess.to_wire())
 
     @app.patch("/v1/sessions/{sid}", response_model=Session)
-    async def patch_session(
-        sid: str, req: UpdateSessionRequest
-    ) -> Session:
+    async def patch_session(sid: str, req: UpdateSessionRequest) -> Session:
         """Update mutable session fields (title + mode + edit_mode).
 
         Lets the TUI flip plan ↔ edit ↔ chat ↔ architect mid-
@@ -3533,19 +3706,19 @@ def build_app(
                 ).model_dump(exclude_none=True),
             )
         # Publish so live SSE subscribers see mode flips immediately.
-        app.state.bus.publish(Event(
-            type="session.updated",
-            session_id=sid,
-            payload=Session(**sess.to_wire()).model_dump(exclude_none=True),
-        ))
+        app.state.bus.publish(
+            Event(
+                type="session.updated",
+                session_id=sid,
+                payload=Session(**sess.to_wire()).model_dump(exclude_none=True),
+            )
+        )
         return Session(**sess.to_wire())
 
     @app.get("/v1/sessions", response_model=ListSessionsResponse)
     async def list_sessions(workspace_id: Optional[str] = None) -> ListSessionsResponse:
         rows = app.state.sessions.list(workspace_id=workspace_id)
-        return ListSessionsResponse(
-            sessions=[Session(**row.to_wire()) for row in rows]
-        )
+        return ListSessionsResponse(sessions=[Session(**row.to_wire()) for row in rows])
 
     @app.get("/v1/sessions/{sid}", response_model=Session)
     async def get_session(sid: str) -> Session:
@@ -3584,9 +3757,7 @@ def build_app(
     # ---- /v1/permissions (BBB23) --------------------------------------
 
     @app.get("/v1/permissions")
-    async def list_permissions(
-        session_id: str = "", status: str = ""
-    ) -> dict[str, Any]:
+    async def list_permissions(session_id: str = "", status: str = "") -> dict[str, Any]:
         """List permission requests.
 
         ?session_id=<sid> narrows to a session; ?status=pending
@@ -3601,9 +3772,7 @@ def build_app(
         return {"permissions": rows}
 
     @app.post("/v1/permissions/{pid}")
-    async def respond_permission(
-        pid: str, request: Request
-    ) -> JSONResponse:
+    async def respond_permission(pid: str, request: Request) -> JSONResponse:
         """Resolve a pending permission. Body: ``{action}`` where
         action is ``allow | deny | allow_session | allow_workspace``.
         Idempotent when the row is already resolved (returns the
@@ -3629,17 +3798,14 @@ def build_app(
         if not isinstance(body, dict):
             body = {}
         action = body.get("action") or ""
-        if action not in {
-            "allow", "deny", "allow_session", "allow_workspace"
-        }:
+        if action not in {"allow", "deny", "allow_session", "allow_workspace"}:
             raise HTTPException(
                 status_code=422,
                 detail=ErrorEnvelope(
                     error=ErrorInfo(
                         error="internal_error",
                         message=(
-                            "action must be one of allow, deny, "
-                            "allow_session, allow_workspace"
+                            "action must be one of allow, deny, allow_session, allow_workspace"
                         ),
                         recoverable=True,
                     )
@@ -3654,22 +3820,22 @@ def build_app(
             evt = app.state.permission_events.pop(pid, None)
             if evt is not None:
                 evt.set()
-            app.state.bus.publish(Event(
-                type="permission.resolved",
-                session_id=row.get("session_id", ""),
-                payload={
-                    "permission_id": pid,
-                    "action": action,
-                    "session_id": row.get("session_id", ""),
-                },
-            ))
+            app.state.bus.publish(
+                Event(
+                    type="permission.resolved",
+                    session_id=row.get("session_id", ""),
+                    payload={
+                        "permission_id": pid,
+                        "action": action,
+                        "session_id": row.get("session_id", ""),
+                    },
+                )
+            )
         return JSONResponse(status_code=204, content=None)
 
     # ---- /v1/sessions/{sid}/diffs/* (BBB21) ---------------------------
 
-    def _filter_diff_paths(
-        rows: list[dict[str, Any]], paths: list[str]
-    ) -> list[dict[str, Any]]:
+    def _filter_diff_paths(rows: list[dict[str, Any]], paths: list[str]) -> list[dict[str, Any]]:
         """Narrow pending diffs to a given path allow-list. Empty
         list (or no param) means "every pending row"."""
 
@@ -3710,12 +3876,7 @@ def build_app(
                     )
                 ).model_dump(exclude_none=True),
             )
-        return {
-            "diffs": [
-                _diff_row_to_wire(row)
-                for row in app.state.pending_diffs.get(sid, [])
-            ]
-        }
+        return {"diffs": [_diff_row_to_wire(row) for row in app.state.pending_diffs.get(sid, [])]}
 
     @app.get("/v1/sessions/{sid}/messages/{message_id}/diffs")
     async def list_message_diffs(sid: str, message_id: str) -> dict[str, Any]:
@@ -3752,9 +3913,7 @@ def build_app(
         }
 
     @app.post("/v1/sessions/{sid}/diffs/apply")
-    async def diffs_apply(
-        sid: str, request: Request
-    ) -> dict[str, Any]:
+    async def diffs_apply(sid: str, request: Request) -> dict[str, Any]:
         """Mark pending diffs as applied + actually write to disk
         via the fs_apply_edit_write MCP tool.
 
@@ -3812,39 +3971,41 @@ def build_app(
                     # body carried write_errors but the TUI's apply-
                     # button path discards it). file.diff.write_failed
                     # mirrors file.diff.applied for parity.
-                    app.state.bus.publish(Event(
-                        type="file.diff.write_failed",
-                        session_id=sid,
-                        payload={
-                            "session_id": sid,
-                            "path": r["path"],
-                            "part_id": r.get("part_id", ""),
-                            "message_id": r.get("message_id", ""),
-                            "error": err,
-                        },
-                    ))
+                    app.state.bus.publish(
+                        Event(
+                            type="file.diff.write_failed",
+                            session_id=sid,
+                            payload={
+                                "session_id": sid,
+                                "path": r["path"],
+                                "part_id": r.get("part_id", ""),
+                                "message_id": r.get("message_id", ""),
+                                "error": err,
+                            },
+                        )
+                    )
                     continue
             r["status"] = "applied"
             applied.append(r["path"])
-            app.state.bus.publish(Event(
-                type="file.diff.applied",
-                session_id=sid,
-                payload={
-                    "session_id": sid,
-                    "path": r["path"],
-                    "part_id": r.get("part_id", ""),
-                    "message_id": r.get("message_id", ""),
-                },
-            ))
+            app.state.bus.publish(
+                Event(
+                    type="file.diff.applied",
+                    session_id=sid,
+                    payload={
+                        "session_id": sid,
+                        "path": r["path"],
+                        "part_id": r.get("part_id", ""),
+                        "message_id": r.get("message_id", ""),
+                    },
+                )
+            )
         out: dict[str, Any] = {"applied": applied}
         if write_errors:
             out["write_errors"] = write_errors
         return out
 
     @app.post("/v1/sessions/{sid}/diffs/reject")
-    async def diffs_reject(
-        sid: str, request: Request
-    ) -> dict[str, list[str]]:
+    async def diffs_reject(sid: str, request: Request) -> dict[str, list[str]]:
         """Mark pending diffs as rejected + publish events."""
 
         if app.state.sessions.get(sid) is None:
@@ -3872,16 +4033,18 @@ def build_app(
         for r in targets:
             r["status"] = "rejected"
             rejected.append(r["path"])
-            app.state.bus.publish(Event(
-                type="file.diff.rejected",
-                session_id=sid,
-                payload={
-                    "session_id": sid,
-                    "path": r["path"],
-                    "part_id": r.get("part_id", ""),
-                    "message_id": r.get("message_id", ""),
-                },
-            ))
+            app.state.bus.publish(
+                Event(
+                    type="file.diff.rejected",
+                    session_id=sid,
+                    payload={
+                        "session_id": sid,
+                        "path": r["path"],
+                        "part_id": r.get("part_id", ""),
+                        "message_id": r.get("message_id", ""),
+                    },
+                )
+            )
         return {"rejected": rejected}
 
     # ---- /v1/sessions/{sid}/context/files (BBB22) ---------------------
@@ -3950,8 +4113,7 @@ def build_app(
                     error=ErrorInfo(
                         error="bad_request",
                         message=(
-                            "invalid context file mode: "
-                            f"{mode!r}; expected edit, read, or pin"
+                            f"invalid context file mode: {mode!r}; expected edit, read, or pin"
                         ),
                         details={"field": "mode", "allowed": ["edit", "read", "pin"]},
                         recoverable=True,
@@ -4007,17 +4169,17 @@ def build_app(
         }
         bucket = app.state.context_files.setdefault(sid, {})
         bucket[path] = row
-        app.state.bus.publish(Event(
-            type="context.file.added",
-            session_id=sid,
-            payload={"session_id": sid, "file": row},
-        ))
+        app.state.bus.publish(
+            Event(
+                type="context.file.added",
+                session_id=sid,
+                payload={"session_id": sid, "file": row},
+            )
+        )
         return row
 
     @app.delete("/v1/sessions/{sid}/context/files")
-    async def remove_context_file(
-        sid: str, request: Request
-    ) -> JSONResponse:
+    async def remove_context_file(sid: str, request: Request) -> JSONResponse:
         """Detach a file by path. 204 whether the path was attached
         — the TUI fires this optimistically on `d` in the context
         pane and doesn't want to error if the file was already
@@ -4046,11 +4208,13 @@ def build_app(
         bucket = app.state.context_files.get(sid, {})
         removed = bucket.pop(path, None) if path else None
         if removed is not None:
-            app.state.bus.publish(Event(
-                type="context.file.removed",
-                session_id=sid,
-                payload={"session_id": sid, "path": path},
-            ))
+            app.state.bus.publish(
+                Event(
+                    type="context.file.removed",
+                    session_id=sid,
+                    payload={"session_id": sid, "path": path},
+                )
+            )
         return JSONResponse(status_code=204, content=None)
 
     # ---- POST /v1/sessions/{sid}/fork (BBB26) -------------------------
@@ -4109,9 +4273,7 @@ def build_app(
         # Deep-copy parts so the fork's message log doesn't alias the
         # source's. Pydantic's model_copy gives us a snapshot.
         app.state.messages[new_sess.id] = [m.model_copy(deep=True) for m in src_msgs]
-        app.state.sessions.update(
-            new_sess.id, message_count=len(src_msgs)
-        )
+        app.state.sessions.update(new_sess.id, message_count=len(src_msgs))
         return JSONResponse(
             status_code=201,
             content=Session(**new_sess.to_wire()).model_dump(exclude_none=True),
@@ -4139,9 +4301,7 @@ def build_app(
         return {"tasks": rows}
 
     @app.post("/v1/sessions/{sid}/tasks")
-    async def create_session_task(
-        sid: str, request: Request
-    ) -> dict[str, Any]:
+    async def create_session_task(sid: str, request: Request) -> dict[str, Any]:
         if app.state.sessions.get(sid) is None:
             raise HTTPException(
                 status_code=404,
@@ -4215,9 +4375,7 @@ def build_app(
             body = {}
         if "title" in body and body["title"]:
             row["title"] = str(body["title"])
-        if "status" in body and body["status"] in {
-            "pending", "running", "completed", "failed"
-        }:
+        if "status" in body and body["status"] in {"pending", "running", "completed", "failed"}:
             row["status"] = body["status"]
         row["updated_at"] = datetime.now(timezone.utc).isoformat()
         return row
@@ -4318,9 +4476,7 @@ def build_app(
                 detail=ErrorEnvelope(
                     error=ErrorInfo(
                         error="not_implemented",
-                        message=(
-                            "Backend command /optimize is not implemented yet."
-                        ),
+                        message=("Backend command /optimize is not implemented yet."),
                         details={
                             "command": cmd_id,
                             "recovery_actions": [
@@ -4338,11 +4494,13 @@ def build_app(
         if cmd_id == "/clear":
             app.state.messages.pop(sid, None)
             app.state.sessions.update(sid, message_count=0)
-            app.state.bus.publish(Event(
-                type="session.cleared",
-                session_id=sid,
-                payload={"session_id": sid},
-            ))
+            app.state.bus.publish(
+                Event(
+                    type="session.cleared",
+                    session_id=sid,
+                    payload={"session_id": sid},
+                )
+            )
             body_text = "session messages cleared"
         elif cmd_id == "/cache-stats":
             stats: dict[str, Any] = {}
@@ -4380,9 +4538,7 @@ def build_app(
             )
         elif cmd_id == "/dump-trace":
             log = app.state.messages.get(sid, [])
-            last_asst = next(
-                (m for m in reversed(log) if m.role == "assistant"), None
-            )
+            last_asst = next((m for m in reversed(log) if m.role == "assistant"), None)
             if last_asst is None:
                 body_text = "no assistant turns yet"
             else:
@@ -4391,7 +4547,8 @@ def build_app(
                     None,
                 )
                 body_text = (
-                    trace_part.text if trace_part is not None
+                    trace_part.text
+                    if trace_part is not None
                     else "no thinking trace on the last turn"
                 )
         else:  # pragma: no cover - guarded above
@@ -4404,29 +4561,34 @@ def build_app(
         # like they did nothing. Persist + publish so SSE redraws and
         # GET /messages reflects.
         from clio_agent.gact.types import Message, Part, Tokens  # noqa: PLC0415
+
         sys_msg = Message(
             id=f"msg_cmd_{uuid.uuid4().hex[:10]}",
             session_id=sid,
             role="assistant",
             created_at=datetime.now(timezone.utc).isoformat(),
             updated_at=datetime.now(timezone.utc).isoformat(),
-            parts=[Part(
-                id=f"part_cmd_{uuid.uuid4().hex[:10]}",
-                type="text",
-                metadata={"synthetic": "command_result", "command": cmd_id},
-                text=f"[{cmd_id}] {body_text}",
-            )],
+            parts=[
+                Part(
+                    id=f"part_cmd_{uuid.uuid4().hex[:10]}",
+                    type="text",
+                    metadata={"synthetic": "command_result", "command": cmd_id},
+                    text=f"[{cmd_id}] {body_text}",
+                )
+            ],
             tokens=Tokens(input=0, output=0, cache_read=0, cache_write=0),
             cost_usd=0.0,
             stop_reason="end_turn",
             metadata={"synthetic": "command_result", "command": cmd_id},
         )
         app.state.messages.setdefault(sid, []).append(sys_msg)
-        app.state.bus.publish(Event(
-            type="message.created",
-            session_id=sid,
-            payload=sys_msg.model_dump(exclude_none=True),
-        ))
+        app.state.bus.publish(
+            Event(
+                type="message.created",
+                session_id=sid,
+                payload=sys_msg.model_dump(exclude_none=True),
+            )
+        )
 
         return {
             "command": cmd_id,
@@ -4456,6 +4618,7 @@ def build_app(
             authed = False
             try:
                 from clio_agent.providers import argonne_auth  # noqa: PLC0415
+
                 authed = (
                     argonne_auth.tokens_exist()
                     and importlib.util.find_spec("globus_sdk") is not None
@@ -4482,9 +4645,7 @@ def build_app(
             "is_authenticated": is_authed,
             "default_model": preset.suggested_model,
             "api_base": preset.api_base,
-            "env_keys": (
-                ["CLIO_LM_API_KEY"] if preset.requires_api_key else []
-            ),
+            "env_keys": (["CLIO_LM_API_KEY"] if preset.requires_api_key else []),
             "description": preset.description,
             "metadata": {
                 "provider_kind": preset.provider,
@@ -4527,25 +4688,29 @@ def build_app(
         if preset is None:
             raise HTTPException(
                 status_code=404,
-                detail=ErrorEnvelope(error=ErrorInfo(
-                    error="not_found",
-                    message=f"unknown provider: {provider_id}",
-                    recoverable=False,
-                )).model_dump(exclude_none=True),
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="not_found",
+                        message=f"unknown provider: {provider_id}",
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
             )
 
         if preset.provider != "argonne":
             raise HTTPException(
                 status_code=405,
-                detail=ErrorEnvelope(error=ErrorInfo(
-                    error="unsupported",
-                    message=(
-                        f"provider '{provider_id}' uses "
-                        f"{'api_key' if preset.requires_api_key else 'no'} "
-                        "auth; pass api_key directly to PUT /v1/providers/lm."
-                    ),
-                    recoverable=False,
-                )).model_dump(exclude_none=True),
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="unsupported",
+                        message=(
+                            f"provider '{provider_id}' uses "
+                            f"{'api_key' if preset.requires_api_key else 'no'} "
+                            "auth; pass api_key directly to PUT /v1/providers/lm."
+                        ),
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
             )
 
         # Argonne / ALCF: invoke the Globus authenticate flow. Run in a
@@ -4556,25 +4721,29 @@ def build_app(
         except Exception as exc:
             raise HTTPException(
                 status_code=503,
-                detail=ErrorEnvelope(error=ErrorInfo(
-                    error="dependency_missing",
-                    message=f"argonne_auth import failed: {exc}",
-                    recoverable=False,
-                )).model_dump(exclude_none=True),
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="dependency_missing",
+                        message=f"argonne_auth import failed: {exc}",
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
             ) from exc
 
         if importlib.util.find_spec("globus_sdk") is None:
             raise HTTPException(
                 status_code=503,
-                detail=ErrorEnvelope(error=ErrorInfo(
-                    error="dependency_missing",
-                    message=(
-                        "globus-sdk not installed. Install with "
-                        "'pip install clio-agent[argonne]' on the "
-                        "backend host and retry."
-                    ),
-                    recoverable=True,
-                )).model_dump(exclude_none=True),
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="dependency_missing",
+                        message=(
+                            "globus-sdk not installed. Install with "
+                            "'pip install clio-agent[argonne]' on the "
+                            "backend host and retry."
+                        ),
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
             )
 
         body = {}
@@ -4594,17 +4763,17 @@ def build_app(
 
         loop = asyncio.get_running_loop()
         try:
-            await loop.run_in_executor(
-                None, lambda: argonne_auth.authenticate(force=force)
-            )
+            await loop.run_in_executor(None, lambda: argonne_auth.authenticate(force=force))
         except Exception as exc:
             raise HTTPException(
                 status_code=502,
-                detail=ErrorEnvelope(error=ErrorInfo(
-                    error="argonne_auth_failed",
-                    message=f"Globus authentication failed: {exc}",
-                    recoverable=True,
-                )).model_dump(exclude_none=True),
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="argonne_auth_failed",
+                        message=f"Globus authentication failed: {exc}",
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
             ) from exc
 
         is_authed = argonne_auth.check_auth_status()
@@ -4636,6 +4805,7 @@ def build_app(
     from clio_agent.providers.registry import (
         as_provider_models_dict as _build_provider_models,
     )
+
     _PROVIDER_MODELS: dict[str, list[dict[str, str]]] = _build_provider_models()
 
     # Cache for live model discovery. Keyed by preset id (or
@@ -4650,9 +4820,7 @@ def build_app(
     # reason live failed (empty when source=="live"). Surfacing this on
     # /v1/providers/{id}/models lets the TUI render a banner instead of
     # silently lying with a stale catalog.
-    _live_models_cache: dict[
-        str, tuple[float, list[dict[str, str]], str, str]
-    ] = {}
+    _live_models_cache: dict[str, tuple[float, list[dict[str, str]], str, str]] = {}
 
     def _argonne_live_models(
         cluster: str,
@@ -4692,6 +4860,7 @@ def build_app(
                     get_access_token,
                     tokens_exist,
                 )
+
                 if tokens_exist():
                     token = get_access_token()
                     token_source = "globus_disk"
@@ -4718,9 +4887,7 @@ def build_app(
                 timeout=4,
             )
         except Exception as exc:
-            return _fallback(
-                f"ALCF gateway unreachable: {exc}. Check network / proxy."
-            )
+            return _fallback(f"ALCF gateway unreachable: {exc}. Check network / proxy.")
 
         if r.status_code == 401:
             return _fallback(
@@ -4730,10 +4897,7 @@ def build_app(
                 "and re-export ALCF_INFERENCE_TOKEN before redeploying."
             )
         if r.status_code >= 400:
-            return _fallback(
-                f"ALCF gateway returned HTTP {r.status_code}: "
-                f"{(r.text or '')[:200]}"
-            )
+            return _fallback(f"ALCF gateway returned HTTP {r.status_code}: {(r.text or '')[:200]}")
 
         try:
             payload = r.json()
@@ -4780,8 +4944,10 @@ def build_app(
             # preset's api_base when supplied (it already encodes the
             # right framework path); fall back to the sophia layout
             # for the bare-kind call site.
-            probe_base = chat_base.rstrip("/") if chat_base else (
-                f"https://inference-api.alcf.anl.gov/resource_server/{cluster}/vllm/v1"
+            probe_base = (
+                chat_base.rstrip("/")
+                if chat_base
+                else (f"https://inference-api.alcf.anl.gov/resource_server/{cluster}/vllm/v1")
             )
             try:
                 probe = requests.post(
@@ -4805,9 +4971,11 @@ def build_app(
                     body = probe.json()
                 except Exception:
                     body = probe.text
-                text = body if isinstance(body, str) else (
-                    body.get("detail") if isinstance(body, dict) else ""
-                ) or ""
+                text = (
+                    body
+                    if isinstance(body, str)
+                    else (body.get("detail") if isinstance(body, dict) else "") or ""
+                )
                 if isinstance(text, str) and text.lower().startswith("error:"):
                     maintenance_msg = text
             except Exception:
@@ -4861,15 +5029,10 @@ def build_app(
 
         headers: dict[str, str] = {}
         if preset.provider == "anthropic":
-            key = (
-                os.environ.get("ANTHROPIC_API_KEY")
-                or os.environ.get("CLIO_LM_API_KEY")
-                or ""
-            )
+            key = os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("CLIO_LM_API_KEY") or ""
             if not key:
                 return _fallback(
-                    "no API key — set ANTHROPIC_API_KEY (or "
-                    "CLIO_LM_API_KEY) in the backend's env."
+                    "no API key — set ANTHROPIC_API_KEY (or CLIO_LM_API_KEY) in the backend's env."
                 )
             headers["x-api-key"] = key
             headers["anthropic-version"] = "2023-06-01"
@@ -4877,9 +5040,7 @@ def build_app(
             key = (
                 os.environ.get("OPENAI_API_KEY")
                 or os.environ.get("CLIO_LM_API_KEY")
-                or {"lm_studio": "lm-studio", "ollama": "ollama"}.get(
-                    preset.provider, ""
-                )
+                or {"lm_studio": "lm-studio", "ollama": "ollama"}.get(preset.provider, "")
             )
             if key:
                 headers["Authorization"] = f"Bearer {key}"
@@ -4893,27 +5054,21 @@ def build_app(
 
         if r.status_code == 401:
             return _fallback(
-                f"{preset.label} rejected the API key (401). "
-                "Check the env var on the backend host."
+                f"{preset.label} rejected the API key (401). Check the env var on the backend host."
             )
         if r.status_code >= 400:
             return _fallback(
-                f"{preset.label} returned HTTP {r.status_code}: "
-                f"{(r.text or '')[:200]}"
+                f"{preset.label} returned HTTP {r.status_code}: {(r.text or '')[:200]}"
             )
 
         try:
             payload = r.json()
         except Exception as exc:
-            return _fallback(
-                f"{preset.label} response not JSON: {exc}"
-            )
+            return _fallback(f"{preset.label} response not JSON: {exc}")
 
         raw = payload.get("data") if isinstance(payload, dict) else payload
         if not isinstance(raw, list):
-            return _fallback(
-                f"{preset.label} response missing data[] array"
-            )
+            return _fallback(f"{preset.label} response missing data[] array")
 
         seen: set[str] = set()
         models: list[dict[str, str]] = []
@@ -4932,9 +5087,7 @@ def build_app(
             models.append({"id": mid, "name": name, "description": desc})
 
         if not models:
-            return _fallback(
-                f"{preset.label} returned an empty model list"
-            )
+            return _fallback(f"{preset.label} returned an empty model list")
         _live_models_cache[cache_key] = (now, models, "live", "")
         return models, "live", ""
 
@@ -4964,6 +5117,7 @@ def build_app(
         provider ids return a structured 404 instead of pretending to
         be an empty static catalog.
         """
+
         # Match a preset id first.
         def _wrap(triple: tuple[list[dict[str, str]], str, str]) -> dict[str, Any]:
             models, source, err = triple
@@ -4994,12 +5148,14 @@ def build_app(
         if models is None:
             raise HTTPException(
                 status_code=404,
-                detail=ErrorEnvelope(error=ErrorInfo(
-                    error="not_found",
-                    message=f"unknown provider: {provider_id}",
-                    details={"available": sorted(_PROVIDER_MODELS)},
-                    recoverable=False,
-                )).model_dump(exclude_none=True),
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="not_found",
+                        message=f"unknown provider: {provider_id}",
+                        details={"available": sorted(_PROVIDER_MODELS)},
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
             )
         return {"models": models, "source": "static_fallback"}
 
@@ -5013,7 +5169,7 @@ def build_app(
         idx = base.find(marker)
         if idx == -1:
             return "sophia"
-        tail = base[idx + len(marker):]
+        tail = base[idx + len(marker) :]
         slug = tail.split("/", 1)[0]
         return slug or "sophia"
 
@@ -5037,43 +5193,50 @@ def build_app(
         # In-process bundled servers (fs/hdf5/parquet via gateway).
         try:
             from clio_agent.tools.gateway import list_capabilities
+
             caps = list_capabilities()
             per_server: dict[str, list[dict[str, str]]] = {}
             for tool in caps:
                 srv = tool.get("server", "unknown")
                 per_server.setdefault(srv, []).append(tool)
             for name, tools in sorted(per_server.items()):
-                rows.append({
-                    "id": f"mcp_{name}",
-                    "name": name,
-                    "status": "ready",
-                    "transport": "in_process",
-                    "tools_count": len(tools),
-                    "tools": [t["name"] for t in tools],
-                })
+                rows.append(
+                    {
+                        "id": f"mcp_{name}",
+                        "name": name,
+                        "status": "ready",
+                        "transport": "in_process",
+                        "tools_count": len(tools),
+                        "tools": [t["name"] for t in tools],
+                    }
+                )
         except Exception as exc:  # noqa: BLE001
-            rows.append({
-                "id": "mcp_bundled_error",
-                "name": "bundled-gateway",
-                "status": "error",
-                "transport": "in_process",
-                "tools_count": 0,
-                "tools": [],
-                "error": f"gateway introspection failed: {exc!r}",
-            })
+            rows.append(
+                {
+                    "id": "mcp_bundled_error",
+                    "name": "bundled-gateway",
+                    "status": "error",
+                    "transport": "in_process",
+                    "tools_count": 0,
+                    "tools": [],
+                    "error": f"gateway introspection failed: {exc!r}",
+                }
+            )
 
         # Third-party servers installed at runtime.
         installed = getattr(app.state, "external_mcp_servers", {})
         for sid, info in sorted(installed.items()):
-            rows.append({
-                "id": sid,
-                "name": info.get("name", sid),
-                "status": info.get("status", "unknown"),
-                "transport": info.get("transport", "unknown"),
-                "tools_count": len(info.get("tools") or []),
-                "tools": list(info.get("tools") or []),
-                "spec": info.get("spec", {}),
-            })
+            rows.append(
+                {
+                    "id": sid,
+                    "name": info.get("name", sid),
+                    "status": info.get("status", "unknown"),
+                    "transport": info.get("transport", "unknown"),
+                    "tools_count": len(info.get("tools") or []),
+                    "tools": list(info.get("tools") or []),
+                    "spec": info.get("spec", {}),
+                }
+            )
         return rows
 
     @app.post("/v1/mcp/servers", status_code=201)
@@ -5110,11 +5273,13 @@ def build_app(
         except Exception as exc:
             raise HTTPException(
                 status_code=503,
-                detail=ErrorEnvelope(error=ErrorInfo(
-                    error="dependency_missing",
-                    message=f"fastmcp Client unavailable: {exc!r}",
-                    recoverable=False,
-                )).model_dump(exclude_none=True),
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="dependency_missing",
+                        message=f"fastmcp Client unavailable: {exc!r}",
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
             ) from exc
 
         if transport_kind == "stdio":
@@ -5124,11 +5289,13 @@ def build_app(
             if not command:
                 raise HTTPException(
                     status_code=422,
-                    detail=ErrorEnvelope(error=ErrorInfo(
-                        error="bad_request",
-                        message="stdio transport requires 'command'",
-                        recoverable=True,
-                    )).model_dump(exclude_none=True),
+                    detail=ErrorEnvelope(
+                        error=ErrorInfo(
+                            error="bad_request",
+                            message="stdio transport requires 'command'",
+                            recoverable=True,
+                        )
+                    ).model_dump(exclude_none=True),
                 )
             transport = StdioTransport(command=command, args=list(args), env=dict(env) or None)
             spec = {"transport": "stdio", "command": command, "args": list(args)}
@@ -5137,22 +5304,26 @@ def build_app(
             if not url:
                 raise HTTPException(
                     status_code=422,
-                    detail=ErrorEnvelope(error=ErrorInfo(
-                        error="bad_request",
-                        message="http transport requires 'url'",
-                        recoverable=True,
-                    )).model_dump(exclude_none=True),
+                    detail=ErrorEnvelope(
+                        error=ErrorInfo(
+                            error="bad_request",
+                            message="http transport requires 'url'",
+                            recoverable=True,
+                        )
+                    ).model_dump(exclude_none=True),
                 )
             transport = StreamableHttpTransport(url=url)  # type: ignore[assignment]
             spec = {"transport": "http", "url": url}
         else:
             raise HTTPException(
                 status_code=422,
-                detail=ErrorEnvelope(error=ErrorInfo(
-                    error="bad_request",
-                    message=f"unknown transport: {transport_kind!r} (use stdio|http)",
-                    recoverable=True,
-                )).model_dump(exclude_none=True),
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="bad_request",
+                        message=f"unknown transport: {transport_kind!r} (use stdio|http)",
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
             )
 
         # Probe the server: connect, list tools, disconnect cleanly.
@@ -5185,12 +5356,14 @@ def build_app(
         if connect_error is not None:
             raise HTTPException(
                 status_code=502,
-                detail=ErrorEnvelope(error=ErrorInfo(
-                    error="upstream_unavailable",
-                    message=f"MCP server probe failed: {connect_error}",
-                    details={"id": sid, "spec": spec},
-                    recoverable=True,
-                )).model_dump(exclude_none=True),
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="upstream_unavailable",
+                        message=f"MCP server probe failed: {connect_error}",
+                        details={"id": sid, "spec": spec},
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
             )
         return {
             "id": sid,
@@ -5220,11 +5393,13 @@ def build_app(
         if info is None:
             raise HTTPException(
                 status_code=404,
-                detail=ErrorEnvelope(error=ErrorInfo(
-                    error="not_found",
-                    message=f"no installed MCP server: {sid}",
-                    recoverable=True,
-                )).model_dump(exclude_none=True),
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="not_found",
+                        message=f"no installed MCP server: {sid}",
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
             )
         try:
             body = await request.json()
@@ -5235,11 +5410,13 @@ def build_app(
         if not tool_name:
             raise HTTPException(
                 status_code=422,
-                detail=ErrorEnvelope(error=ErrorInfo(
-                    error="bad_request",
-                    message="missing 'tool' in request body",
-                    recoverable=True,
-                )).model_dump(exclude_none=True),
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="bad_request",
+                        message="missing 'tool' in request body",
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
             )
 
         try:
@@ -5251,11 +5428,13 @@ def build_app(
         except Exception as exc:
             raise HTTPException(
                 status_code=503,
-                detail=ErrorEnvelope(error=ErrorInfo(
-                    error="dependency_missing",
-                    message=f"fastmcp Client unavailable: {exc!r}",
-                    recoverable=False,
-                )).model_dump(exclude_none=True),
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="dependency_missing",
+                        message=f"fastmcp Client unavailable: {exc!r}",
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
             ) from exc
 
         spec = info.get("spec", {})
@@ -5269,11 +5448,13 @@ def build_app(
         else:
             raise HTTPException(
                 status_code=500,
-                detail=ErrorEnvelope(error=ErrorInfo(
-                    error="internal_error",
-                    message=f"unknown stored transport: {spec!r}",
-                    recoverable=False,
-                )).model_dump(exclude_none=True),
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="internal_error",
+                        message=f"unknown stored transport: {spec!r}",
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
             )
 
         # Fire tool observer manually so this call shows up in
@@ -5283,7 +5464,7 @@ def build_app(
             from clio_agent.tools.execution import _GLOBAL_TOOL_OBSERVER
         except Exception:
             _GLOBAL_TOOL_OBSERVER = None
-        observer_name = f"{info.get('name','ext')}.{tool_name}"
+        observer_name = f"{info.get('name', 'ext')}.{tool_name}"
         if _GLOBAL_TOOL_OBSERVER is not None:
             try:
                 _GLOBAL_TOOL_OBSERVER(observer_name, tool_args, "started", None)
@@ -5293,11 +5474,13 @@ def build_app(
             async with Client(transport) as client:
                 result = await client.call_tool(tool_name, tool_args)
             content = []
-            for c in (getattr(result, "content", None) or []):
-                content.append({
-                    "type": getattr(c, "type", "text"),
-                    "text": getattr(c, "text", str(c)),
-                })
+            for c in getattr(result, "content", None) or []:
+                content.append(
+                    {
+                        "type": getattr(c, "type", "text"),
+                        "text": getattr(c, "text", str(c)),
+                    }
+                )
         except Exception as exc:  # noqa: BLE001
             if _GLOBAL_TOOL_OBSERVER is not None:
                 try:
@@ -5306,11 +5489,13 @@ def build_app(
                     pass
             raise HTTPException(
                 status_code=502,
-                detail=ErrorEnvelope(error=ErrorInfo(
-                    error="upstream_error",
-                    message=f"tool call failed: {exc!r}",
-                    recoverable=True,
-                )).model_dump(exclude_none=True),
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="upstream_error",
+                        message=f"tool call failed: {exc!r}",
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
             ) from exc
         if _GLOBAL_TOOL_OBSERVER is not None:
             try:
@@ -5339,16 +5524,21 @@ def build_app(
         if sess is None:
             raise HTTPException(
                 status_code=404,
-                detail=ErrorEnvelope(error=ErrorInfo(
-                    error="not_found",
-                    message=f"session not found: {sid}",
-                    recoverable=True,
-                )).model_dump(exclude_none=True),
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="not_found",
+                        message=f"session not found: {sid}",
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
             )
         ledger = app.state.messages.get(sid, [])
         if not ledger:
-            return {"session_id": sid, "compacted": False,
-                    "reason": "session has no messages to compact"}
+            return {
+                "session_id": sid,
+                "compacted": False,
+                "reason": "session has no messages to compact",
+            }
 
         # Build a transcript blob. Cap each message at 800 chars so a
         # huge tool-result payload doesn't dominate the prompt.
@@ -5365,24 +5555,29 @@ def build_app(
         chunks: list[str] = []
         for m in ledger[-50:]:  # last 50 messages should be enough context
             role = (_attr(m, "role", "user") or "user").upper()
-            for p in (_attr(m, "parts", []) or []):
+            for p in _attr(m, "parts", []) or []:
                 txt = (_attr(p, "text", "") or "")[:800]
                 if txt.strip():
                     chunks.append(f"{role}: {txt}")
         transcript = "\n".join(chunks)
         if not transcript.strip():
-            return {"session_id": sid, "compacted": False,
-                    "reason": "transcript is empty after part filtering"}
+            return {
+                "session_id": sid,
+                "compacted": False,
+                "reason": "transcript is empty after part filtering",
+            }
 
         agent = app.state.agent
         if agent is None:
             raise HTTPException(
                 status_code=503,
-                detail=ErrorEnvelope(error=ErrorInfo(
-                    error="agent_unavailable",
-                    message="no LM agent wired; configure one via PUT /v1/providers/lm",
-                    recoverable=True,
-                )).model_dump(exclude_none=True),
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="agent_unavailable",
+                        message="no LM agent wired; configure one via PUT /v1/providers/lm",
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
             )
 
         # Try to extract optional focus instructions from the body.
@@ -5410,11 +5605,13 @@ def build_app(
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(
                 status_code=502,
-                detail=ErrorEnvelope(error=ErrorInfo(
-                    error="upstream_error",
-                    message=f"compact summarisation failed: {exc!r}",
-                    recoverable=True,
-                )).model_dump(exclude_none=True),
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="upstream_error",
+                        message=f"compact summarisation failed: {exc!r}",
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
             ) from exc
 
         # Insert the summary as a new assistant message at the head of the
@@ -5423,23 +5620,28 @@ def build_app(
         # archived messages — only the compact summary + anything that
         # comes after it.
         archive = app.state.__dict__.setdefault("session_archives", {})
-        archive.setdefault(sid, []).append({
-            "compacted_at": time.time(),
-            "messages": list(ledger),
-        })
+        archive.setdefault(sid, []).append(
+            {
+                "compacted_at": time.time(),
+                "messages": list(ledger),
+            }
+        )
         from clio_agent.gact.types import Message, Part, Tokens  # noqa: PLC0415
+
         compact_message = Message(
             id=f"msg_compact_{uuid.uuid4().hex[:10]}",
             session_id=sid,
             role="assistant",
             created_at=datetime.now(timezone.utc).isoformat(),
             updated_at=datetime.now(timezone.utc).isoformat(),
-            parts=[Part(
-                id=f"part_compact_{uuid.uuid4().hex[:10]}",
-                type="text",
-                metadata={"synthetic": "compact_summary"},
-                text="[compact summary]\n" + (summary or "").strip(),
-            )],
+            parts=[
+                Part(
+                    id=f"part_compact_{uuid.uuid4().hex[:10]}",
+                    type="text",
+                    metadata={"synthetic": "compact_summary"},
+                    text="[compact summary]\n" + (summary or "").strip(),
+                )
+            ],
             tokens=Tokens(input=0, output=0, cache_read=0, cache_write=0),
             cost_usd=0.0,
             stop_reason="end_turn",
@@ -5448,14 +5650,16 @@ def build_app(
         app.state.messages[sid] = [compact_message]
 
         # Publish so any open SSE stream redraws.
-        app.state.bus.publish(Event(
-            type="session.compacted",
-            session_id=sid,
-            payload={
-                "archived_count": len(ledger),
-                "summary_chars": len((summary or "")),
-            },
-        ))
+        app.state.bus.publish(
+            Event(
+                type="session.compacted",
+                session_id=sid,
+                payload={
+                    "archived_count": len(ledger),
+                    "summary_chars": len((summary or "")),
+                },
+            )
+        )
         return {
             "session_id": sid,
             "compacted": True,
@@ -5473,11 +5677,13 @@ def build_app(
         if sid not in installed:
             raise HTTPException(
                 status_code=404,
-                detail=ErrorEnvelope(error=ErrorInfo(
-                    error="not_found",
-                    message=f"no externally-installed MCP server: {sid}",
-                    recoverable=True,
-                )).model_dump(exclude_none=True),
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="not_found",
+                        message=f"no externally-installed MCP server: {sid}",
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
             )
         installed.pop(sid, None)
         return None
@@ -5491,11 +5697,13 @@ def build_app(
                 return row
         raise HTTPException(
             status_code=404,
-            detail=ErrorEnvelope(error=ErrorInfo(
-                error="not_found",
-                message=f"no MCP server: {sid}",
-                recoverable=False,
-            )).model_dump(exclude_none=True),
+            detail=ErrorEnvelope(
+                error=ErrorInfo(
+                    error="not_found",
+                    message=f"no MCP server: {sid}",
+                    recoverable=False,
+                )
+            ).model_dump(exclude_none=True),
         )
 
     # ---- /v1/mcp/servers/{sid}/(tools|resources|prompts) ----------------
@@ -5509,6 +5717,7 @@ def build_app(
         TUI's catalog detail rows (id/name/description)."""
         try:
             from clio_agent.tools.gateway import list_capabilities
+
             caps = list_capabilities()
         except Exception:
             return []
@@ -5516,27 +5725,29 @@ def build_app(
         for tool in caps:
             if tool.get("server") != short_name:
                 continue
-            out.append({
-                "id": tool.get("name", ""),
-                "name": tool.get("name", ""),
-                "description": tool.get("description") or "",
-            })
+            out.append(
+                {
+                    "id": tool.get("name", ""),
+                    "name": tool.get("name", ""),
+                    "description": tool.get("description") or "",
+                }
+            )
         return out
 
-    async def _external_mcp_inventory(
-        sid: str, kind: str
-    ) -> list[dict[str, Any]]:
+    async def _external_mcp_inventory(sid: str, kind: str) -> list[dict[str, Any]]:
         """Fetch tools|resources|prompts from a third-party MCP server."""
         installed = getattr(app.state, "external_mcp_servers", {}) or {}
         info = installed.get(sid)
         if info is None:
             raise HTTPException(
                 status_code=404,
-                detail=ErrorEnvelope(error=ErrorInfo(
-                    error="not_found",
-                    message=f"no installed MCP server: {sid}",
-                    recoverable=True,
-                )).model_dump(exclude_none=True),
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="not_found",
+                        message=f"no installed MCP server: {sid}",
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
             )
         try:
             from fastmcp import Client
@@ -5547,11 +5758,13 @@ def build_app(
         except Exception as exc:
             raise HTTPException(
                 status_code=503,
-                detail=ErrorEnvelope(error=ErrorInfo(
-                    error="dependency_missing",
-                    message=f"fastmcp Client unavailable: {exc!r}",
-                    recoverable=False,
-                )).model_dump(exclude_none=True),
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="dependency_missing",
+                        message=f"fastmcp Client unavailable: {exc!r}",
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
             ) from exc
         spec = info.get("spec", {})
         if spec.get("transport") == "stdio":
@@ -5569,36 +5782,44 @@ def build_app(
                 if kind == "tools":
                     items = await client.list_tools()
                     for t in items:
-                        rows.append({
-                            "id": t.name,
-                            "name": t.name,
-                            "description": getattr(t, "description", "") or "",
-                        })
+                        rows.append(
+                            {
+                                "id": t.name,
+                                "name": t.name,
+                                "description": getattr(t, "description", "") or "",
+                            }
+                        )
                 elif kind == "resources":
                     items = await client.list_resources()
                     for r in items:
                         uri = str(getattr(r, "uri", ""))
-                        rows.append({
-                            "id": uri or getattr(r, "name", ""),
-                            "name": getattr(r, "name", "") or uri,
-                            "description": getattr(r, "description", "") or "",
-                        })
+                        rows.append(
+                            {
+                                "id": uri or getattr(r, "name", ""),
+                                "name": getattr(r, "name", "") or uri,
+                                "description": getattr(r, "description", "") or "",
+                            }
+                        )
                 elif kind == "prompts":
                     items = await client.list_prompts()
                     for p in items:
-                        rows.append({
-                            "id": p.name,
-                            "name": p.name,
-                            "description": getattr(p, "description", "") or "",
-                        })
+                        rows.append(
+                            {
+                                "id": p.name,
+                                "name": p.name,
+                                "description": getattr(p, "description", "") or "",
+                            }
+                        )
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(
                 status_code=502,
-                detail=ErrorEnvelope(error=ErrorInfo(
-                    error="upstream_error",
-                    message=f"MCP {kind} listing failed: {exc!r}",
-                    recoverable=True,
-                )).model_dump(exclude_none=True),
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="upstream_error",
+                        message=f"MCP {kind} listing failed: {exc!r}",
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
             ) from exc
         return rows
 
@@ -5610,7 +5831,7 @@ def build_app(
         if sid.startswith("mcp_") and sid not in (
             getattr(app.state, "external_mcp_servers", {}) or {}
         ):
-            return {"tools": _bundled_server_tools(sid[len("mcp_"):])}
+            return {"tools": _bundled_server_tools(sid[len("mcp_") :])}
         return {"tools": await _external_mcp_inventory(sid, "tools")}
 
     @app.get("/v1/mcp/servers/{sid}/resources")
@@ -5654,9 +5875,7 @@ def build_app(
         return {"schedules": rows}
 
     @app.post("/v1/sessions/{sid}/schedules")
-    async def add_schedule(
-        sid: str, request: Request
-    ) -> dict[str, Any]:
+    async def add_schedule(sid: str, request: Request) -> dict[str, Any]:
         if app.state.sessions.get(sid) is None:
             raise HTTPException(
                 status_code=404,
@@ -5687,9 +5906,7 @@ def build_app(
                     )
                 ).model_dump(exclude_none=True),
             )
-        sch = app.state.schedules.add(
-            session_id=sid, cron=cron, question=question
-        )
+        sch = app.state.schedules.add(session_id=sid, cron=cron, question=question)
         return sch.to_wire()
 
     @app.delete("/v1/schedules/{schedule_id}")
@@ -5711,9 +5928,7 @@ def build_app(
     # ---- /v1/sessions/{sid}/share + /v1/shared/{token} (#22) ---------
 
     @app.post("/v1/sessions/{sid}/share")
-    async def share_session(
-        sid: str, request: Request
-    ) -> dict[str, Any]:
+    async def share_session(sid: str, request: Request) -> dict[str, Any]:
         sess = app.state.sessions.get(sid)
         if sess is None:
             raise HTTPException(
@@ -5736,9 +5951,7 @@ def build_app(
         token = "shr_" + uuid.uuid4().hex[:24]
         expires_at: str | float = ""
         if ttl_s > 0:
-            expires_at = (
-                datetime.now(timezone.utc).timestamp() + ttl_s
-            )
+            expires_at = datetime.now(timezone.utc).timestamp() + ttl_s
         app.state.shared_tokens[token] = {
             "session_id": sid,
             "created_at": datetime.now(timezone.utc).isoformat(),
@@ -5767,9 +5980,7 @@ def build_app(
             )
         # Expiry check.
         expires_at = row.get("expires_at") or 0
-        if expires_at and (
-            datetime.now(timezone.utc).timestamp() > float(expires_at)
-        ):
+        if expires_at and (datetime.now(timezone.utc).timestamp() > float(expires_at)):
             app.state.shared_tokens.pop(token, None)
             raise HTTPException(
                 status_code=410,
@@ -5789,9 +6000,7 @@ def build_app(
                 detail=ErrorEnvelope(
                     error=ErrorInfo(
                         error="internal_error",
-                        message=(
-                            f"underlying session {sid} no longer exists"
-                        ),
+                        message=(f"underlying session {sid} no longer exists"),
                         recoverable=False,
                     )
                 ).model_dump(exclude_none=True),
@@ -5841,16 +6050,14 @@ def build_app(
                 detail=ErrorEnvelope(
                     error=ErrorInfo(
                         error="permission_error",
-                        message=(
-                            f"agent id {new_id!r} is built-in; "
-                            "pick a different one"
-                        ),
+                        message=(f"agent id {new_id!r} is built-in; pick a different one"),
                         recoverable=True,
                     )
                 ).model_dump(exclude_none=True),
             )
         # Walk the message logs.
         from collections import Counter
+
         tool_counts: Counter[str] = Counter()
         sample_questions: list[str] = []
         for sid in sids:
@@ -5865,16 +6072,17 @@ def build_app(
                 if m.role == "assistant":
                     md = m.metadata or {}
                     for call in md.get("tools_called", []) or []:
-                        name = call.get("name") if isinstance(call, dict) else getattr(call, "name", "")
+                        name = (
+                            call.get("name")
+                            if isinstance(call, dict)
+                            else getattr(call, "name", "")
+                        )
                         if name:
                             tool_counts[name] += 1
         top_tools = [t for t, _ in tool_counts.most_common(5)]
-        keywords = sorted({
-            w.strip(".,").lower()
-            for q in sample_questions[:5]
-            for w in q.split()
-            if len(w) >= 4
-        })[:8]
+        keywords = sorted(
+            {w.strip(".,").lower() for q in sample_questions[:5] for w in q.split() if len(w) >= 4}
+        )[:8]
         payload = {
             "id": new_id,
             "title": f"Extracted from {len(sids)} session(s)",
@@ -5916,10 +6124,7 @@ def build_app(
         return {
             "version": "1",
             "session": Session(**sess.to_wire()).model_dump(exclude_none=True),
-            "workspace": (
-                Workspace(**ws.to_wire()).model_dump(exclude_none=True)
-                if ws else None
-            ),
+            "workspace": (Workspace(**ws.to_wire()).model_dump(exclude_none=True) if ws else None),
             "messages": [m.model_dump(exclude_none=True) for m in msgs],
         }
 
@@ -5934,9 +6139,7 @@ def build_app(
         sess_data = blob.get("session", {})
         title = sess_data.get("title") or "imported"
         wid = "ws_default"
-        if blob.get("workspace") and app.state.workspaces.get(
-            blob["workspace"].get("id", "")
-        ):
+        if blob.get("workspace") and app.state.workspaces.get(blob["workspace"].get("id", "")):
             wid = blob["workspace"]["id"]
         new_sess = app.state.sessions.create(
             workspace_id=wid,
@@ -5951,17 +6154,12 @@ def build_app(
             except Exception:
                 continue
         app.state.messages[new_sess.id] = msg_rows
-        cost_total = sum(
-            float(m.get("cost_usd", 0.0) or 0.0)
-            for m in blob.get("messages", [])
-        )
+        cost_total = sum(float(m.get("cost_usd", 0.0) or 0.0) for m in blob.get("messages", []))
         in_total = sum(
-            int((m.get("tokens") or {}).get("input", 0) or 0)
-            for m in blob.get("messages", [])
+            int((m.get("tokens") or {}).get("input", 0) or 0) for m in blob.get("messages", [])
         )
         out_total = sum(
-            int((m.get("tokens") or {}).get("output", 0) or 0)
-            for m in blob.get("messages", [])
+            int((m.get("tokens") or {}).get("output", 0) or 0) for m in blob.get("messages", [])
         )
         app.state.sessions.update(
             new_sess.id,
@@ -6018,12 +6216,14 @@ def build_app(
                     snippet = "…" + snippet
                 if end < len(part.text):
                     snippet = snippet + "…"
-                matches.append({
-                    "message_id": m.id,
-                    "part_id": part.id,
-                    "snippet": snippet,
-                    "score": 1.0 + (idx * 0.01),
-                })
+                matches.append(
+                    {
+                        "message_id": m.id,
+                        "part_id": part.id,
+                        "snippet": snippet,
+                        "score": 1.0 + (idx * 0.01),
+                    }
+                )
         matches.sort(key=lambda r: r["score"], reverse=True)
         return {"matches": matches}
 
@@ -6075,19 +6275,19 @@ def build_app(
             in_flight.cancel()
             cancelled_task = True
         app.state.sessions.update(sid, status="cancelled")
-        app.state.bus.publish(Event(
-            type="session.status_changed",
-            session_id=sid,
-            payload={
-                "session_id": sid,
-                "status": "cancelled",
-                "prev_status": sess.status,
-                "execution_cancellation": (
-                    "best_effort" if cancelled_task else "none"
-                ),
-                "executor_work_may_continue": cancelled_task,
-            },
-        ))
+        app.state.bus.publish(
+            Event(
+                type="session.status_changed",
+                session_id=sid,
+                payload={
+                    "session_id": sid,
+                    "status": "cancelled",
+                    "prev_status": sess.status,
+                    "execution_cancellation": ("best_effort" if cancelled_task else "none"),
+                    "executor_work_may_continue": cancelled_task,
+                },
+            )
+        )
         return JSONResponse(status_code=204, content=None)
 
     # ---- POST /v1/sessions/{sid}/messages (BBB9) ---------------------
@@ -6095,9 +6295,7 @@ def build_app(
     # the stored user message + the assistant's reply. Streaming
     # (SSE on /v1/sessions/{sid}/events) lands in BBB10.
 
-    @app.post(
-        "/v1/sessions/{sid}/messages", response_model=PostMessageResponse
-    )
+    @app.post("/v1/sessions/{sid}/messages", response_model=PostMessageResponse)
     async def post_message(
         sid: str, req: PostMessageRequest, background_tasks: BackgroundTasks
     ) -> PostMessageResponse:
@@ -6157,9 +6355,7 @@ def build_app(
                 ).model_dump(exclude_none=True),
             )
 
-        if not _model_ref_is_empty(sess.model) and not _model_ref_matches_active(
-            sess.model, app
-        ):
+        if not _model_ref_is_empty(sess.model) and not _model_ref_matches_active(sess.model, app):
             active_model = _active_lm_model_ref(app)
             raise HTTPException(
                 status_code=501,
@@ -6206,16 +6402,20 @@ def build_app(
         # background and return.
         app.state.messages.setdefault(sid, []).append(user_msg)
         app.state.sessions.update(sid, status="running")
-        app.state.bus.publish(Event(
-            type="session.status_changed",
-            session_id=sid,
-            payload={"session_id": sid, "status": "running", "prev_status": "idle"},
-        ))
-        app.state.bus.publish(Event(
-            type="message.created",
-            session_id=sid,
-            payload=user_msg.model_dump(exclude_none=True),
-        ))
+        app.state.bus.publish(
+            Event(
+                type="session.status_changed",
+                session_id=sid,
+                payload={"session_id": sid, "status": "running", "prev_status": "idle"},
+            )
+        )
+        app.state.bus.publish(
+            Event(
+                type="message.created",
+                session_id=sid,
+                payload=user_msg.model_dump(exclude_none=True),
+            )
+        )
 
         # iowarp/clio-agent#3: switched from BackgroundTasks (which
         # doesn't expose the task back) to asyncio.create_task so
@@ -6225,9 +6425,7 @@ def build_app(
         # running loop AFTER queueing background_tasks (which
         # FastAPI now runs nothing in, but kept as a hook in case
         # we want a post-response side-effect later).
-        task = asyncio.create_task(
-            _run_turn_in_background(app, sid, user_text, user_msg)
-        )
+        task = asyncio.create_task(_run_turn_in_background(app, sid, user_text, user_msg))
         app.state.in_flight_turns[sid] = task
 
         def _drop_task(_t, _sid=sid) -> None:
@@ -6245,7 +6443,6 @@ def build_app(
             message_id=user_msg.id,
             accepted_at=user_msg.created_at,
         )
-
 
     @app.get("/v1/sessions/{sid}/messages")
     async def list_messages(sid: str) -> dict[str, Any]:
@@ -6351,9 +6548,7 @@ def build_app(
             ).model_dump(exclude_none=True),
         )
 
-    @app.post(
-        "/v1/agents", response_model=AgentDef, status_code=201
-    )
+    @app.post("/v1/agents", response_model=AgentDef, status_code=201)
     async def create_agent(req: dict[str, Any]) -> AgentDef:
         """iowarp/clio-agent#19: register a new dynamic agent.
 
@@ -6442,10 +6637,7 @@ def build_app(
                 detail=ErrorEnvelope(
                     error=ErrorInfo(
                         error="permission_error",
-                        message=(
-                            f"agent id {agent_id!r} is a built-in and "
-                            "cannot be removed"
-                        ),
+                        message=(f"agent id {agent_id!r} is a built-in and cannot be removed"),
                         recoverable=False,
                     )
                 ).model_dump(exclude_none=True),
@@ -6567,9 +6759,7 @@ def build_app(
             yield _format_sse(connected)
 
             try:
-                last_event_id = int(
-                    request.headers.get("last-event-id", "0")
-                )
+                last_event_id = int(request.headers.get("last-event-id", "0"))
             except (TypeError, ValueError):
                 last_event_id = 0
             sub = app.state.bus.subscribe(sid, last_event_id=last_event_id)
@@ -6674,9 +6864,7 @@ def build_app(
         """SPEC §6.1 — list workspaces."""
 
         rows = app.state.workspaces.list()
-        return ListWorkspacesResponse(
-            workspaces=[Workspace(**w.to_wire()) for w in rows]
-        )
+        return ListWorkspacesResponse(workspaces=[Workspace(**w.to_wire()) for w in rows])
 
     @app.post("/v1/workspaces", response_model=Workspace, status_code=201)
     async def create_workspace(req: CreateWorkspaceRequest) -> Workspace:
@@ -6749,11 +6937,21 @@ def build_app(
     # filesystem walk runs.
     _FILE_PICKER_LIMIT = 5000
     _FILE_PICKER_SKIP_DIRS = {
-        ".git", ".hg", ".svn",
-        "__pycache__", ".mypy_cache", ".pytest_cache", ".ruff_cache",
-        "node_modules", ".npm",
-        ".venv", "venv", ".tox",
-        "build", "dist", ".egg-info",
+        ".git",
+        ".hg",
+        ".svn",
+        "__pycache__",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".ruff_cache",
+        "node_modules",
+        ".npm",
+        ".venv",
+        "venv",
+        ".tox",
+        "build",
+        "dist",
+        ".egg-info",
         ".clio_agent",  # ARC's local persistence
     }
 
@@ -6772,11 +6970,13 @@ def build_app(
         if ws is None:
             raise HTTPException(
                 status_code=404,
-                detail=ErrorEnvelope(error=ErrorInfo(
-                    error="not_found",
-                    message=f"workspace not found: {wid}",
-                    recoverable=False,
-                )).model_dump(exclude_none=True),
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="not_found",
+                        message=f"workspace not found: {wid}",
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
             )
         root = Path(ws.root_path or os.getcwd()).expanduser()
         if not root.is_dir():
@@ -6834,9 +7034,11 @@ def build_app(
                     try:
                         st = child.stat()
                         entry["size"] = st.st_size
-                        entry["modified"] = datetime.fromtimestamp(
-                            st.st_mtime, tz=timezone.utc
-                        ).isoformat().replace("+00:00", "Z")
+                        entry["modified"] = (
+                            datetime.fromtimestamp(st.st_mtime, tz=timezone.utc)
+                            .isoformat()
+                            .replace("+00:00", "Z")
+                        )
                     except OSError:
                         pass
                 entries.append(entry)
@@ -6860,11 +7062,13 @@ def build_app(
         if ws is None:
             raise HTTPException(
                 status_code=404,
-                detail=ErrorEnvelope(error=ErrorInfo(
-                    error="not_found",
-                    message=f"workspace not found: {wid}",
-                    recoverable=False,
-                )).model_dump(exclude_none=True),
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="not_found",
+                        message=f"workspace not found: {wid}",
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
             )
         root = Path(ws.root_path or os.getcwd()).expanduser()
         tree: dict[str, Any] = {
@@ -6917,11 +7121,13 @@ def build_app(
         if ws is None:
             raise HTTPException(
                 status_code=404,
-                detail=ErrorEnvelope(error=ErrorInfo(
-                    error="not_found",
-                    message=f"workspace not found: {wid}",
-                    recoverable=False,
-                )).model_dump(exclude_none=True),
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="not_found",
+                        message=f"workspace not found: {wid}",
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
             )
         root = Path(ws.root_path or os.getcwd()).expanduser().resolve()
         try:
@@ -6929,11 +7135,13 @@ def build_app(
         except Exception:
             raise HTTPException(
                 status_code=400,
-                detail=ErrorEnvelope(error=ErrorInfo(
-                    error="invalid_path",
-                    message=f"could not resolve path: {path}",
-                    recoverable=False,
-                )).model_dump(exclude_none=True),
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="invalid_path",
+                        message=f"could not resolve path: {path}",
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
             ) from None
         # Refuse path-traversal: target must be at-or-below root.
         try:
@@ -6941,20 +7149,24 @@ def build_app(
         except ValueError:
             raise HTTPException(
                 status_code=403,
-                detail=ErrorEnvelope(error=ErrorInfo(
-                    error="path_outside_workspace",
-                    message=f"path escapes workspace: {path}",
-                    recoverable=False,
-                )).model_dump(exclude_none=True),
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="path_outside_workspace",
+                        message=f"path escapes workspace: {path}",
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
             ) from None
         if not target.is_file():
             raise HTTPException(
                 status_code=404,
-                detail=ErrorEnvelope(error=ErrorInfo(
-                    error="not_found",
-                    message=f"file not found: {path}",
-                    recoverable=False,
-                )).model_dump(exclude_none=True),
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="not_found",
+                        message=f"file not found: {path}",
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
             )
         # Enforce file-policy size cap so a 50 GB log doesn't OOM.
         try:
@@ -6968,22 +7180,26 @@ def build_app(
         if size > max_bytes:
             raise HTTPException(
                 status_code=413,
-                detail=ErrorEnvelope(error=ErrorInfo(
-                    error="file_too_large",
-                    message=f"file exceeds policy cap ({size} > {max_bytes} bytes)",
-                    recoverable=False,
-                )).model_dump(exclude_none=True),
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="file_too_large",
+                        message=f"file exceeds policy cap ({size} > {max_bytes} bytes)",
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
             )
         try:
             data = target.read_bytes()
         except Exception as exc:
             raise HTTPException(
                 status_code=500,
-                detail=ErrorEnvelope(error=ErrorInfo(
-                    error="read_failed",
-                    message=f"could not read file: {exc}",
-                    recoverable=False,
-                )).model_dump(exclude_none=True),
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="read_failed",
+                        message=f"could not read file: {exc}",
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
             ) from exc
         return JSONResponse(
             content=data.decode("utf-8", errors="replace"),
@@ -6998,6 +7214,7 @@ def build_app(
     # being — the inference-api gateway returns 400 'cluster polaris
     # does not exist' for /resource_server/polaris/vllm/v1.
     from clio_agent.providers.registry import as_lm_presets as _build_lm_presets
+
     _LM_PRESETS: list[LMProviderPreset] = _build_lm_presets()
 
     @app.get("/v1/providers/lm", response_model=LMProviderInfo)
@@ -7081,6 +7298,7 @@ def build_app(
                 LMProviderConfig,
                 create_lm,
             )
+
             try:
                 from dspy.dsp.utils.settings import main_thread_config  # noqa: PLC0415
 
@@ -7100,21 +7318,24 @@ def build_app(
             resolved_api_key = req.api_key
             if req.provider == "argonne" and not resolved_api_key:
                 from clio_agent.config import _resolve_argonne_api_key  # noqa: PLC0415
+
                 resolved_api_key = _resolve_argonne_api_key()
                 if not resolved_api_key:
                     raise HTTPException(
                         status_code=401,
-                        detail=ErrorEnvelope(error=ErrorInfo(
-                            error="argonne_auth_required",
-                            message=(
-                                "ALCF provider selected but no Globus token "
-                                "is available. Run "
-                                "`python -m clio_agent.providers.argonne_auth "
-                                "authenticate` once, or pass api_key in this "
-                                "request."
-                            ),
-                            recoverable=True,
-                        )).model_dump(exclude_none=True),
+                        detail=ErrorEnvelope(
+                            error=ErrorInfo(
+                                error="argonne_auth_required",
+                                message=(
+                                    "ALCF provider selected but no Globus token "
+                                    "is available. Run "
+                                    "`python -m clio_agent.providers.argonne_auth "
+                                    "authenticate` once, or pass api_key in this "
+                                    "request."
+                                ),
+                                recoverable=True,
+                            )
+                        ).model_dump(exclude_none=True),
                     )
 
             cfg = LMProviderConfig(
@@ -7140,10 +7361,12 @@ def build_app(
                 create_chat_adapter,
                 create_planner_lm,
             )
+
             new_adapter = create_chat_adapter(cfg)
             new_planner_lm = create_planner_lm(cfg)
             try:
                 from dspy.dsp.utils.settings import main_thread_config  # noqa: PLC0415
+
                 main_thread_config["lm"] = new_lm
                 main_thread_config["adapter"] = new_adapter
             except Exception:  # pragma: no cover - dspy missing
@@ -7216,18 +7439,20 @@ def build_app(
         }
         # Publish so live SSE subscribers see the swap (TUI updates
         # its model chip without polling).
-        app.state.bus.publish(Event(
-            type="lm.provider.changed",
-            session_id="",
-            payload={
-                "provider": req.provider,
-                "model": req.model,
-                "api_base": req.api_base,
-                "temperature": req.temperature,
-                "max_tokens": req.max_tokens,
-                "transport": cfg.codex_transport if req.provider == "codex" else None,
-            },
-        ))
+        app.state.bus.publish(
+            Event(
+                type="lm.provider.changed",
+                session_id="",
+                payload={
+                    "provider": req.provider,
+                    "model": req.model,
+                    "api_base": req.api_base,
+                    "temperature": req.temperature,
+                    "max_tokens": req.max_tokens,
+                    "transport": cfg.codex_transport if req.provider == "codex" else None,
+                },
+            )
+        )
         return LMProviderInfo(
             configured=True,
             provider=req.provider,
@@ -7248,12 +7473,14 @@ def build_app(
         if preset is None:
             raise HTTPException(
                 status_code=404,
-                detail=ErrorEnvelope(error=ErrorInfo(
-                    error="not_found",
-                    message=f"unknown provider: {provider_id}",
-                    details={"available": [p.id for p in _LM_PRESETS]},
-                    recoverable=False,
-                )).model_dump(exclude_none=True),
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="not_found",
+                        message=f"unknown provider: {provider_id}",
+                        details={"available": [p.id for p in _LM_PRESETS]},
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
             )
         return _provider_to_wire(preset)
 
@@ -7286,23 +7513,28 @@ def build_app(
         # Bundled in-process tools.
         try:
             from clio_agent.tools.gateway import list_capabilities  # noqa: PLC0415
+
             for tool in list_capabilities():
                 srv = tool.get("server", "")
-                rows.append({
-                    "id": tool.get("name", ""),
-                    "name": tool.get("name", ""),
-                    "description": tool.get("description") or "",
-                    "server_id": f"mcp_{srv}" if srv else "",
-                    "source": "mcp",
-                    "input_schema": tool.get("input_schema") or {},
-                })
+                rows.append(
+                    {
+                        "id": tool.get("name", ""),
+                        "name": tool.get("name", ""),
+                        "description": tool.get("description") or "",
+                        "server_id": f"mcp_{srv}" if srv else "",
+                        "source": "mcp",
+                        "input_schema": tool.get("input_schema") or {},
+                    }
+                )
         except Exception as exc:  # noqa: BLE001
-            rows.append({
-                "id": "_bundled_error",
-                "name": "_bundled_error",
-                "description": f"bundled gateway introspection failed: {exc!r}",
-                "source": "error",
-            })
+            rows.append(
+                {
+                    "id": "_bundled_error",
+                    "name": "_bundled_error",
+                    "description": f"bundled gateway introspection failed: {exc!r}",
+                    "source": "error",
+                }
+            )
 
         # Third-party installed servers — query each via fastmcp.Client.
         installed = getattr(app.state, "external_mcp_servers", {}) or {}
@@ -7332,23 +7564,28 @@ def build_app(
                     async with Client(transport) as client:
                         tools = await client.list_tools()
                     for t in tools:
-                        rows.append({
-                            "id": t.name,
-                            "name": t.name,
-                            "description": getattr(t, "description", "") or "",
-                            "server_id": sid,
-                            "source": "mcp",
-                            "input_schema": getattr(t, "inputSchema", None)
-                                or getattr(t, "input_schema", None) or {},
-                        })
+                        rows.append(
+                            {
+                                "id": t.name,
+                                "name": t.name,
+                                "description": getattr(t, "description", "") or "",
+                                "server_id": sid,
+                                "source": "mcp",
+                                "input_schema": getattr(t, "inputSchema", None)
+                                or getattr(t, "input_schema", None)
+                                or {},
+                            }
+                        )
                 except Exception as exc:  # noqa: BLE001
-                    rows.append({
-                        "id": f"{sid}_error",
-                        "name": f"{sid}_error",
-                        "description": f"failed to list {sid} tools: {exc!r}",
-                        "server_id": sid,
-                        "source": "error",
-                    })
+                    rows.append(
+                        {
+                            "id": f"{sid}_error",
+                            "name": f"{sid}_error",
+                            "description": f"failed to list {sid} tools: {exc!r}",
+                            "server_id": sid,
+                            "source": "error",
+                        }
+                    )
         return {"tools": rows}
 
     @app.get("/v1/tools/{tool_id}")
@@ -7362,6 +7599,7 @@ def build_app(
         # Bundled in-process tools first — cheap.
         try:
             from clio_agent.tools.gateway import list_capabilities  # noqa: PLC0415
+
             for tool in list_capabilities():
                 if tool.get("name") == tool_id:
                     srv = tool.get("server", "")
@@ -7412,18 +7650,21 @@ def build_app(
                                 "server_id": sid,
                                 "source": "mcp",
                                 "input_schema": getattr(tt, "inputSchema", None)
-                                    or getattr(tt, "input_schema", None) or {},
+                                or getattr(tt, "input_schema", None)
+                                or {},
                             }
                 except Exception:
                     continue
 
         raise HTTPException(
             status_code=404,
-            detail=ErrorEnvelope(error=ErrorInfo(
-                error="not_found",
-                message=f"tool not found: {tool_id}",
-                recoverable=False,
-            )).model_dump(exclude_none=True),
+            detail=ErrorEnvelope(
+                error=ErrorInfo(
+                    error="not_found",
+                    message=f"tool not found: {tool_id}",
+                    recoverable=False,
+                )
+            ).model_dump(exclude_none=True),
         )
 
     # ---- /v1/hooks (SPEC §6.17 declarative hooks) --------------------
@@ -7450,20 +7691,24 @@ def build_app(
         if not event:
             raise HTTPException(
                 status_code=400,
-                detail=ErrorEnvelope(error=ErrorInfo(
-                    error="invalid_request",
-                    message="hook missing required field: event",
-                    recoverable=False,
-                )).model_dump(exclude_none=True),
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="invalid_request",
+                        message="hook missing required field: event",
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
             )
         if not (body.get("command") or body.get("url")):
             raise HTTPException(
                 status_code=400,
-                detail=ErrorEnvelope(error=ErrorInfo(
-                    error="invalid_request",
-                    message="hook needs command or url",
-                    recoverable=False,
-                )).model_dump(exclude_none=True),
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="invalid_request",
+                        message="hook needs command or url",
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
             )
         hid = body.get("id") or f"hook_{uuid.uuid4().hex[:12]}"
         row = {
@@ -7482,11 +7727,13 @@ def build_app(
         if app.state.declarative_hooks.pop(hook_id, None) is None:
             raise HTTPException(
                 status_code=404,
-                detail=ErrorEnvelope(error=ErrorInfo(
-                    error="not_found",
-                    message=f"hook not found: {hook_id}",
-                    recoverable=False,
-                )).model_dump(exclude_none=True),
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="not_found",
+                        message=f"hook not found: {hook_id}",
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
             )
         return JSONResponse(status_code=204, content=None)
 
@@ -7512,11 +7759,13 @@ def build_app(
         if not isinstance(policies, list):
             raise HTTPException(
                 status_code=400,
-                detail=ErrorEnvelope(error=ErrorInfo(
-                    error="invalid_request",
-                    message="body must be {'policies': [...]}",
-                    recoverable=False,
-                )).model_dump(exclude_none=True),
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="invalid_request",
+                        message="body must be {'policies': [...]}",
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
             )
         # Light validation — keep unknown fields so future spec
         # additions round-trip; require the two fields the SPEC
@@ -7546,19 +7795,23 @@ def build_app(
             for i, m in enumerate(msgs):
                 if m.id == message_id:
                     msgs.pop(i)
-                    app.state.bus.publish(Event(
-                        type="message.deleted",
-                        session_id=sid,
-                        payload={"message_id": message_id, "session_id": sid},
-                    ))
+                    app.state.bus.publish(
+                        Event(
+                            type="message.deleted",
+                            session_id=sid,
+                            payload={"message_id": message_id, "session_id": sid},
+                        )
+                    )
                     return JSONResponse(status_code=204, content=None)
         raise HTTPException(
             status_code=404,
-            detail=ErrorEnvelope(error=ErrorInfo(
-                error="not_found",
-                message=f"message not found: {message_id}",
-                recoverable=False,
-            )).model_dump(exclude_none=True),
+            detail=ErrorEnvelope(
+                error=ErrorInfo(
+                    error="not_found",
+                    message=f"message not found: {message_id}",
+                    recoverable=False,
+                )
+            ).model_dump(exclude_none=True),
         )
 
     def _make_stub(cap: str):
@@ -7592,9 +7845,7 @@ def build_app(
 
     @app.exception_handler(HTTPException)
     @app.exception_handler(StarletteHTTPException)
-    async def _http_exception_handler(
-        request, exc: StarletteHTTPException
-    ) -> JSONResponse:
+    async def _http_exception_handler(request, exc: StarletteHTTPException) -> JSONResponse:
         """Wrap HTTPExceptions in the v0.2 error envelope."""
 
         if isinstance(exc.detail, dict) and "error" in exc.detail:
@@ -7613,9 +7864,7 @@ def build_app(
         )
 
     @app.exception_handler(RequestValidationError)
-    async def _validation_exception_handler(
-        request, exc: RequestValidationError
-    ) -> JSONResponse:
+    async def _validation_exception_handler(request, exc: RequestValidationError) -> JSONResponse:
         """Wrap FastAPI request validation failures in the GACT envelope."""
 
         envelope = ErrorEnvelope(
@@ -7632,9 +7881,7 @@ def build_app(
         )
 
     @app.exception_handler(Exception)
-    async def _unhandled_exception_handler(
-        request, exc: Exception
-    ) -> JSONResponse:
+    async def _unhandled_exception_handler(request, exc: Exception) -> JSONResponse:
         """Return a structured 500 for unexpected route failures."""
 
         envelope = ErrorEnvelope(
