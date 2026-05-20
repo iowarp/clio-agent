@@ -4349,8 +4349,29 @@ def build_app(
             if app.state.arc is not None:
                 try:
                     stats = app.state.arc.get_cache_stats() or {}
-                except Exception:
-                    stats = {}
+                except Exception as exc:
+                    raise HTTPException(
+                        status_code=500,
+                        detail=ErrorEnvelope(
+                            error=ErrorInfo(
+                                error="command_error",
+                                message=(
+                                    "Backend command /cache-stats could not read ARC "
+                                    "cache statistics."
+                                ),
+                                details={
+                                    "command": cmd_id,
+                                    "original_error": str(exc),
+                                    "recovery_actions": [
+                                        "retry",
+                                        "reconfigure_provider",
+                                        "exit",
+                                    ],
+                                },
+                                recoverable=True,
+                            )
+                        ).model_dump(exclude_none=True),
+                    ) from exc
             body_text = (
                 f"ARC cache: hits={stats.get('hits', 0)} "
                 f"misses={stats.get('misses', 0)} "

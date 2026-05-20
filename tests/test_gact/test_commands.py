@@ -23,6 +23,11 @@ class _Agent:
         return _Pred()
 
 
+class _BrokenARC:
+    def get_cache_stats(self) -> dict[str, object]:
+        raise RuntimeError("ARC stats unavailable")
+
+
 @pytest.fixture()
 def client(tmp_path: Path) -> TestClient:
     return TestClient(
@@ -77,6 +82,37 @@ def test_dispatch_cache_stats_returns_arc_numbers(client: TestClient) -> None:
     text = resp["result"]["text"]
     assert "hits=" in text
     assert "misses=" in text
+
+
+def test_dispatch_cache_stats_arc_failure_returns_structured_error(
+    tmp_path: Path,
+) -> None:
+    client = TestClient(
+        build_app(
+            sessions_path=tmp_path / "s.json",
+            agent=_Agent(),
+            arc=_BrokenARC(),
+        )
+    )
+    sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
+
+    resp = client.post(f"/v1/sessions/{sid}/commands/cache-stats")
+
+    assert resp.status_code == 500
+    body = resp.json()
+    assert body["error"]["error"] == "command_error"
+    assert body["error"]["message"] == (
+        "Backend command /cache-stats could not read ARC cache statistics."
+    )
+    assert body["error"]["details"]["command"] == "/cache-stats"
+    assert body["error"]["details"]["original_error"] == "ARC stats unavailable"
+    assert body["error"]["details"]["recovery_actions"] == [
+        "retry",
+        "reconfigure_provider",
+        "exit",
+    ]
+    msgs = client.get(f"/v1/sessions/{sid}/messages").json()["messages"]
+    assert msgs == []
 
 
 def test_dispatch_optimize_returns_structured_not_implemented(
