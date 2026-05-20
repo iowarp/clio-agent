@@ -336,6 +336,36 @@ class TestForwardDispatch:
             "exit",
         ]
 
+    def test_planner_error_step_limit_returns_structured_error(
+        self, agent, monkeypatch, tmp_path
+    ):
+        """Repeated planner errors should not become normal assistant text."""
+        monkeypatch.setenv("CLIO_AGENT_MAX_STEPS", "2")
+        hdf5_path = tmp_path / "run.h5"
+        hdf5_path.touch()
+        agent._store_conversation(
+            f"Inspect {hdf5_path}",
+            f"Inspected HDF5 file {hdf5_path}.",
+            "test_session",
+        )
+        self._set_planner(
+            agent,
+            {"action": "expert", "expert": "analysis", "question": "analyze it"},
+        )
+
+        result = agent.forward(question="Test query", session_id="test_session")
+
+        assert result.selected_expert == "chat"
+        assert result.answer == ""
+        assert result.error_info is not None
+        assert result.error_info["error"] == "routing_error"
+        assert "without producing a valid action" in result.error_info["message"]
+        assert result.error_info["details"]["recovery_actions"] == [
+            "retry",
+            "reconfigure_provider",
+            "exit",
+        ]
+
     def test_stores_expert_invocation_in_arc(self, agent):
         """Test that expert dispatch stores invocation in ARC."""
         self._set_planner(agent, {"action": "expert", "expert": "data", "question": "Test query"})
