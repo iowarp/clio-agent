@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 
 from clio_agent.gact.app import (
     _build_stream_listeners,
+    _pop_stream_fallback,
     _StreamingOutputError,
     _try_streamed_forward,
     build_app,
@@ -102,6 +103,7 @@ def test_text_parts_stream_as_deltas(app_client) -> None:
     ]
     deltas = [e for e in history if e.type == "message.part.delta"]
     completed = [e for e in history if e.type == "message.part.completed"]
+    message_completed = [e for e in history if e.type == "message.completed"]
 
     # The text part arrives as one .added (empty text) + N .deltas +
     # one .completed. The other part types (routing_decision) use
@@ -109,10 +111,20 @@ def test_text_parts_stream_as_deltas(app_client) -> None:
     assert len(added) == 1
     assert added[0].payload["part"]["text"] == ""
     assert added[0].payload["part"]["metadata"]["stream_source"] == "synthetic_posthoc"
+    assert added[0].payload["part"]["metadata"]["stream_fallback"]["reason"] == (
+        "agent_not_streamable"
+    )
     assert len(deltas) == 4
     assert all(d.payload["stream_source"] == "synthetic_posthoc" for d in deltas)
+    assert all(
+        d.payload["stream_fallback"]["reason"] == "agent_not_streamable" for d in deltas
+    )
     assert len(completed) == 1
     assert completed[0].payload["stream_source"] == "synthetic_posthoc"
+    assert completed[0].payload["stream_fallback"]["reason"] == "agent_not_streamable"
+    assert message_completed[-1].payload["metadata"]["stream_fallback"]["reason"] == (
+        "agent_not_streamable"
+    )
 
     # Concatenated deltas reconstruct the full answer.
     chunks = [d.payload["delta"]["text_append"] for d in deltas]
@@ -143,6 +155,9 @@ async def test_streamify_setup_failure_returns_none_for_sync_fallback(
     assert result is None
     assert chunks == []
     assert agent.calls == []
+    fallback = _pop_stream_fallback(app, "sid")
+    assert fallback["reason"] == "stream_setup_failed"
+    assert "ValueError" in fallback["message"]
 
 
 def test_build_stream_listeners_binds_known_predictors_explicitly() -> None:
@@ -253,6 +268,33 @@ async def test_stream_failure_after_delta_raises_instead_of_sync_fallback(
 
     with pytest.raises(_StreamingOutputError, match="stream transport lost"):
         await _try_streamed_forward(app, "stream breaks", "sid", emit_chunk)
+
+    assert chunks == ["partial "]
+    assert agent.calls == []
+
+
+async def test_stream_without_final_prediction_after_delta_raises(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    async def stream_without_prediction(*args: Any, **kwargs: Any) -> Any:
+        del args, kwargs
+        yield "partial "
+
+    def fake_streamify(*args: Any, **kwargs: Any) -> Any:
+        del args, kwargs
+        return stream_without_prediction
+
+    streamify_module = importlib.import_module("dspy.streaming.streamify")
+    monkeypatch.setattr(streamify_module, "streamify", fake_streamify)
+    agent = _DspyAgent("sync fallback should not run")
+    app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
+    chunks: list[str] = []
+
+    async def emit_chunk(text: str) -> None:
+        chunks.append(text)
+
+    with pytest.raises(_StreamingOutputError, match="without a final prediction"):
+        await _try_streamed_forward(app, "stream ends oddly", "sid", emit_chunk)
 
     assert chunks == ["partial "]
     assert agent.calls == []

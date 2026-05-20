@@ -63,6 +63,11 @@ assistant `message.completed.metadata.stream_source`:
 | `live` | Delta arrived through the live `dspy.streamify` path. |
 | `synthetic_posthoc` | Backend already had the final answer and chunked it after completion for TUI rendering continuity. |
 
+When synthetic chunks are emitted, their `message.part.*` payloads and
+assistant `message.completed.metadata` include `stream_fallback.reason`
+so clients can explain why live provider token streaming was not used
+instead of treating the chunks as normal live tokens.
+
 As of v0.3.1, the chat `answer` path can stream live when the upstream
 DSPy/LiteLLM provider supports it. Expert paths that do not expose that
 `answer` stream still fall back to `synthetic_posthoc`.
@@ -86,6 +91,7 @@ guaranteed upstream abort.
 | `plan_mode` | ✅ verified | session.mode=plan refuses `/diffs/apply` with `PermissionError("refused to write under session.mode='plan'")`; file unchanged |
 | `agent_write` | ✅ verified | `POST/PUT/DELETE /v1/agents` lifecycle; user agents appear in `/v1/agents` with `source="user"`; prompt-only agents execute through DSPy/LiteLLM, and tool-declaring agents execute through a DSPy ReAct runner scoped to their declared MCP tools. |
 | `skills_extraction` | ✅ verified | `POST /v1/agents/extract` mines `tools_called` from past sessions → produces a user agent definition visible in `/v1/agents`; extracted agents execute with prompt-only or declared-tool semantics. |
+| `x_clio_text_streaming` | best-effort live | `best_effort_live` means live provider-token streaming is attempted; `x_clio_synthetic_posthoc_streaming=true` means compatibility chunks may still be emitted after a completed answer. |
 
 ## Provider-Specific Verification
 
