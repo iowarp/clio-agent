@@ -267,34 +267,12 @@ def _user_agent_float_param(agent_def: "AgentDef", name: str, default: float) ->
         raise ValueError(f"user agent parameter {name!r} must be a number") from exc
 
 
-def _run_prompt_user_agent(
-    base_agent: Any,
-    agent_def: "AgentDef",
-    question: str,
-    session_id: str,
-) -> Any:
-    """Execute a prompt-only user/skill agent through DSPy/LiteLLM."""
-    import dspy  # noqa: PLC0415
-
+def _dynamic_agent_lm_config(base_agent: Any, agent_def: "AgentDef") -> Any:
+    """Build a provider config for a registered dynamic agent."""
     from clio_agent.config import (  # noqa: PLC0415
         LMProviderConfig,
-        create_chat_adapter,
-        create_lm,
         load_config_from_env,
     )
-
-    class PromptUserAgentSignature(dspy.Signature):
-        """Run a registered CLIO user agent.
-
-        Follow the supplied system_prompt exactly. Answer from the
-        prompt and user request. Do not claim to have called tools.
-        If a requested fact requires unavailable tool execution, say
-        what is missing instead of inventing it.
-        """
-
-        system_prompt: str = dspy.InputField(desc="Registered agent instructions")
-        question: str = dspy.InputField(desc="User message for this agent")
-        answer: str = dspy.OutputField(desc="User-facing answer")
 
     base_config = getattr(base_agent, "_provider_config", None)
     if base_config is None:
@@ -304,7 +282,7 @@ def _run_prompt_user_agent(
     params = agent_def.parameters if isinstance(agent_def.parameters, Mapping) else {}
     api_base = str(params.get("api_base") or (base_config.api_base if same_provider else ""))
     api_key = base_config.api_key if same_provider else ""
-    config = LMProviderConfig(
+    return LMProviderConfig(
         provider=provider,  # type: ignore[arg-type]
         api_base=api_base,
         model=agent_def.default_model or (base_config.model if same_provider else ""),
@@ -320,6 +298,36 @@ def _run_prompt_user_agent(
             base_config.thinking_budget,
         ),
     )
+
+
+def _run_prompt_user_agent(
+    base_agent: Any,
+    agent_def: "AgentDef",
+    question: str,
+    session_id: str,
+) -> Any:
+    """Execute a prompt-only user/skill agent through DSPy/LiteLLM."""
+    import dspy  # noqa: PLC0415
+
+    from clio_agent.config import (  # noqa: PLC0415
+        create_chat_adapter,
+        create_lm,
+    )
+
+    class PromptUserAgentSignature(dspy.Signature):
+        """Run a registered CLIO user agent.
+
+        Follow the supplied system_prompt exactly. Answer from the
+        prompt and user request. Do not claim to have called tools.
+        If a requested fact requires unavailable tool execution, say
+        what is missing instead of inventing it.
+        """
+
+        system_prompt: str = dspy.InputField(desc="Registered agent instructions")
+        question: str = dspy.InputField(desc="User message for this agent")
+        answer: str = dspy.OutputField(desc="User-facing answer")
+
+    config = _dynamic_agent_lm_config(base_agent, agent_def)
     predictor = dspy.Predict(PromptUserAgentSignature)
     system_prompt = agent_def.system_prompt.strip() or (
         f"You are the CLIO user agent {agent_def.id!r}. "
@@ -336,6 +344,83 @@ def _run_prompt_user_agent(
         routing_rationale=f"Session selected user agent {agent_def.id!r}.",
         route_source="user_agent",
         session_id=session_id,
+        error_info=None,
+    )
+
+
+def _run_tool_user_agent(
+    base_agent: Any,
+    agent_def: "AgentDef",
+    question: str,
+    session_id: str,
+) -> Any:
+    """Execute a tool-declaring user/skill agent through DSPy ReAct."""
+    import dspy  # noqa: PLC0415
+
+    from clio_agent.config import (  # noqa: PLC0415
+        create_chat_adapter,
+        create_lm,
+    )
+
+    class ToolUserAgentSignature(dspy.Signature):
+        """Run a registered CLIO user agent with its declared MCP tools.
+
+        Follow the supplied system_prompt exactly. Use only the tools
+        made available to this agent. Surface tool failures explicitly
+        instead of inventing results.
+        """
+
+        system_prompt: str = dspy.InputField(desc="Registered agent instructions")
+        question: str = dspy.InputField(desc="User message for this agent")
+        answer: str = dspy.OutputField(desc="User-facing answer")
+
+    requested_tools = [str(t).strip() for t in agent_def.tools if str(t).strip()]
+    tool_executor = getattr(base_agent, "tool_executor", None)
+    if tool_executor is None or not hasattr(tool_executor, "to_dspy_tools"):
+        raise _UnsupportedSessionAgent(
+            agent_def.id,
+            reason="custom_agent_tool_executor_unavailable",
+            tools=requested_tools,
+        )
+
+    available_tools = {
+        str(getattr(tool, "name", "")): tool
+        for tool in list(tool_executor.to_dspy_tools())
+        if getattr(tool, "name", "")
+    }
+    missing_tools = [name for name in requested_tools if name not in available_tools]
+    if missing_tools:
+        raise _UnsupportedSessionAgent(
+            agent_def.id,
+            reason="custom_agent_tools_unavailable",
+            tools=missing_tools,
+        )
+
+    max_iters = _user_agent_int_param(agent_def, "max_iters", 5)
+    if max_iters <= 0:
+        raise ValueError("user agent parameter 'max_iters' must be positive")
+
+    tools = [available_tools[name] for name in requested_tools]
+    config = _dynamic_agent_lm_config(base_agent, agent_def)
+    with dspy.context(lm=create_lm(config), adapter=create_chat_adapter(config)):
+        result = dspy.ReAct(
+            ToolUserAgentSignature,
+            tools=tools,
+            max_iters=max_iters,
+        )(
+            system_prompt=agent_def.system_prompt.strip() or agent_def.description,
+            question=question,
+        )
+    answer = str(getattr(result, "answer", "") or "").strip()
+    if not answer:
+        raise RuntimeError(f"user agent {agent_def.id!r} returned an empty answer")
+    return dspy.Prediction(
+        answer=answer,
+        selected_expert=agent_def.id,
+        routing_rationale=f"Session selected tool user agent {agent_def.id!r}.",
+        route_source="user_agent",
+        session_id=session_id,
+        trajectory=getattr(result, "trajectory", None),
         error_info=None,
     )
 
@@ -499,24 +584,20 @@ async def _run_turn_in_background(
             dynamic_agent = _resolve_dynamic_agent(app, active_agent_id)
             if dynamic_agent is None:
                 raise _UnsupportedSessionAgent(active_agent_id)
-            if dynamic_agent.tools:
-                raise _UnsupportedSessionAgent(
-                    active_agent_id,
-                    reason="custom_agent_tools_not_implemented",
-                    tools=list(dynamic_agent.tools),
+            runner = _run_tool_user_agent if dynamic_agent.tools else _run_prompt_user_agent
+            with _tool_session_context(sid):
+                loop = asyncio.get_running_loop()
+                turn_context = contextvars.copy_context()
+                pred = await loop.run_in_executor(
+                    None,
+                    lambda: turn_context.run(
+                        runner,
+                        app.state.agent,
+                        dynamic_agent,
+                        enriched_text,
+                        sid,
+                    ),
                 )
-            loop = asyncio.get_running_loop()
-            turn_context = contextvars.copy_context()
-            pred = await loop.run_in_executor(
-                None,
-                lambda: turn_context.run(
-                    _run_prompt_user_agent,
-                    app.state.agent,
-                    dynamic_agent,
-                    enriched_text,
-                    sid,
-                ),
-            )
         else:
             # Honour the session's routing override. routing_mode "chat"
             # forces the chat path (no /chat prefix needed); "experts"

@@ -376,15 +376,31 @@ def test_post_message_prompt_user_agent_executes_registered_agent(
     assert sess["status"] == "idle"
 
 
-def test_post_message_tool_user_agent_remains_structured_unsupported(
+def test_post_message_tool_user_agent_executes_registered_agent(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from .conftest import complete_turn
 
-    def fail_prompt_agent(*args: Any, **kwargs: Any) -> Any:
-        raise AssertionError("tool-declaring user agent should not run prompt helper")
+    calls: list[tuple[str, str, str]] = []
 
+    def fake_tool_agent(base_agent: Any, agent_def: Any, question: str, session_id: str) -> Any:
+        from clio_agent.tools.execution import _GLOBAL_TOOL_OBSERVER
+
+        calls.append((agent_def.id, question, session_id))
+        assert _GLOBAL_TOOL_OBSERVER is not None
+        _GLOBAL_TOOL_OBSERVER("fs_read_file", {"path": "README.md"}, "started", None)
+        _GLOBAL_TOOL_OBSERVER("fs_read_file", {"path": "README.md"}, "completed", None)
+        return FakePrediction(
+            answer="TOOL_USER_AGENT_OK",
+            selected_expert=agent_def.id,
+            routing_rationale="selected registered tool user agent",
+        )
+
+    def fail_prompt_agent(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("tool-declaring user agent should use the tool runner")
+
+    monkeypatch.setattr("clio_agent.gact.app._run_tool_user_agent", fake_tool_agent)
     monkeypatch.setattr("clio_agent.gact.app._run_prompt_user_agent", fail_prompt_agent)
 
     agent = FakeClioAgent(answer="should not run")
@@ -405,15 +421,65 @@ def test_post_message_tool_user_agent_remains_structured_unsupported(
             json={"title": "x", "agent": {"id": "tool_reviewer"}},
         ).json()["id"]
         assistant = complete_turn(c, sid, "hi")
+        sess = c.get(f"/v1/sessions/{sid}").json()
+
+    assert agent.calls == []
+    assert calls == [("tool_reviewer", "hi", sid)]
+    assert assistant["stop_reason"] == "end_turn"
+    assert assistant.get("error_info") is None
+    assert [part["type"] for part in assistant["parts"]] == [
+        "routing_decision",
+        "text",
+    ]
+    assert assistant["parts"][0]["selected_agent"] == "tool_reviewer"
+    assert assistant["parts"][1]["text"] == "TOOL_USER_AGENT_OK"
+    assert assistant["metadata"]["tools_called"][0]["name"] == "fs_read_file"
+    assert assistant["metadata"]["tools_called"][0]["args"] == {"path": "README.md"}
+    assert sess["status"] == "idle"
+
+
+def test_post_message_tool_user_agent_missing_declared_tool_sets_error_turn(
+    tmp_path: Path,
+) -> None:
+    from .conftest import complete_turn
+
+    class _Tool:
+        name = "hdf5_list_datasets"
+
+    class _Executor:
+        def to_dspy_tools(self) -> list[Any]:
+            return [_Tool()]
+
+    agent = FakeClioAgent(answer="should not run")
+    agent.tool_executor = _Executor()  # type: ignore[attr-defined]
+    app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
+    with TestClient(app) as c:
+        created = c.post(
+            "/v1/agents",
+            json={
+                "id": "tool_reviewer",
+                "title": "Tool Reviewer",
+                "system_prompt": "Read files before answering.",
+                "tools": ["fs_read_file"],
+            },
+        )
+        assert created.status_code == 201
+        sid = c.post(
+            "/v1/sessions",
+            json={"title": "x", "agent": {"id": "tool_reviewer"}},
+        ).json()["id"]
+        assistant = complete_turn(c, sid, "hi")
+        sess = c.get(f"/v1/sessions/{sid}").json()
 
     assert agent.calls == []
     assert assistant["stop_reason"] == "error"
     assert assistant["error_info"]["error"] == "not_implemented"
     assert assistant["error_info"]["details"]["agent_id"] == "tool_reviewer"
-    assert assistant["error_info"]["details"]["reason"] == "custom_agent_tools_not_implemented"
+    assert assistant["error_info"]["details"]["reason"] == "custom_agent_tools_unavailable"
     assert assistant["error_info"]["details"]["unsupported_tools"] == ["fs_read_file"]
     assert [part["type"] for part in assistant["parts"]] == ["routing_decision"]
     assert assistant["parts"][0]["selected_agent"] == "tool_reviewer"
+    assert sess["status"] == "error"
 
 
 def test_post_message_model_override_returns_structured_501(

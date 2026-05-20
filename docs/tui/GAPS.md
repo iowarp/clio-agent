@@ -37,8 +37,8 @@ same rich event stream as the smoke/fake agents.
 | `edit_modes` | `session.edit_mode` controls diff/whole/patch file-diff shape. |
 | `scheduled_sessions` | Cron-style schedules can fire stored backend commands. |
 | `session_sharing` | Share tokens expose read-only shared session views. |
-| `agent_write` | User and skill agent definitions can be created, listed, updated, deleted, and persisted with prompts, tool lists, provider, and model metadata. Prompt-only custom agents can be selected by a session and executed through DSPy/LiteLLM. Tool-declaring custom agents remain partial; see `REAL_GAPS.md`. |
-| `skills_extraction` | Past-session tool usage can be mined into a user agent definition. Prompt-only extracted agents can execute, but extracted tool lists are not executable yet; see `REAL_GAPS.md`. |
+| `agent_write` | User and skill agent definitions can be created, listed, updated, deleted, persisted, and executed with prompts, optional provider/model metadata, and declared MCP tool lists. |
+| `skills_extraction` | Past-session tool usage can be mined into a user agent definition. Extracted agents execute with prompt-only or declared-tool semantics. |
 
 ## Partial / Real-Driver Gaps
 
@@ -53,9 +53,9 @@ audit. In short:
   running after the GACT envelope settles.
 - Some capabilities have correct endpoints/events but limited real-agent
   drivers.
-- Prompt-only user, skill, and extracted agents can execute when selected
-  by a session. Tool-declaring custom agents still return structured
-  `not_implemented` until their tool-scoped planner path exists.
+- User, skill, and extracted agents can execute when selected by a
+  session, either prompt-only or through a tool-scoped ReAct runner for
+  declared MCP tools.
 
 ## Maintenance Rules
 
