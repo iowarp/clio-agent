@@ -12,8 +12,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from clio_agent.agent import ClioAgent
-from clio_agent.errors import RoutingError
+from clio_agent.agent import ClioAgent, cancellation_checker
+from clio_agent.errors import CancellationError, RoutingError
 from clio_agent.harness import RouteDecision, RunTrace
 from clio_agent.tools.execution import set_global_tool_observer
 
@@ -650,6 +650,72 @@ class TestExecuteToolAction:
         assert observed[1][2] == "completed"
         assert observed[1][3] is not None
         assert "failed hello" in observed[1][3]
+
+    def test_run_local_tool_reports_cancellation_instead_of_success(self, agent):
+        observed = []
+        cancelled = False
+
+        def observer(name, args, phase, error):
+            observed.append((name, dict(args), phase, error))
+
+        def local_echo(value: str) -> str:
+            nonlocal cancelled
+            cancelled = True
+            return f"ok:{value}"
+
+        set_global_tool_observer(observer)
+        try:
+            with cancellation_checker(lambda: cancelled):
+                with pytest.raises(CancellationError):
+                    agent._run_local_tool("local_echo", local_echo, "hello")
+        finally:
+            set_global_tool_observer(None)
+
+        assert observed[0] == ("local_echo", {"value": "hello"}, "started", None)
+        assert observed[1][0] == "local_echo"
+        assert observed[1][1] == {"value": "hello"}
+        assert observed[1][2] == "completed"
+        assert "turn cancelled by client" in observed[1][3]
+
+    def test_visualization_tool_reports_cancellation_instead_of_success(
+        self,
+        agent,
+        tmp_path,
+    ):
+        observed = []
+        cancelled = False
+
+        def observer(name, args, phase, error):
+            observed.append((name, dict(args), phase, error))
+
+        def fake_tool(filepath: str, output_path: str) -> dict[str, str]:
+            nonlocal cancelled
+            cancelled = True
+            return {"filepath": filepath, "output_path": output_path}
+
+        output_path = tmp_path / "plot.png"
+        set_global_tool_observer(observer)
+        try:
+            with cancellation_checker(lambda: cancelled):
+                with pytest.raises(CancellationError):
+                    agent._execute_visualization_tool(
+                        "plot_summary",
+                        fake_tool,
+                        {"filepath": "data.parquet", "output_path": str(output_path)},
+                    )
+        finally:
+            set_global_tool_observer(None)
+
+        assert observed[0] == (
+            "plot_summary",
+            {"filepath": "data.parquet", "output_path": str(output_path)},
+            "started",
+            None,
+        )
+        assert observed[1][0] == "plot_summary"
+        assert observed[1][1] == {"filepath": "data.parquet", "output_path": str(output_path)}
+        assert observed[1][2] == "completed"
+        assert "turn cancelled by client" in observed[1][3]
 
 
 # --------------------------------------------------------------------------

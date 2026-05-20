@@ -1211,6 +1211,9 @@ async def _run_turn_in_background(
     cancelled_turn = error_info is not None and error_info.error == "cancelled"
     if cancelled_turn:
         app.state.cancel_flags.discard(sid)
+        ledger = getattr(app.state, "tool_call_ledger", None)
+        if ledger is not None:
+            ledger.pop(sid, None)
 
     assistant_metadata: dict[str, Any] = {}
     text_stream_source = (
@@ -2261,7 +2264,21 @@ def _make_tool_observer(app: "FastAPI"):
             call_id = getattr(_OBSERVER_CALL_IDS, "value", "") or ""
             t0 = getattr(_OBSERVER_CALL_T0, "value", None)
             duration_ms = (time.time() - t0) * 1000 if t0 else 0.0
-            ok = error is None
+            cancel_event = app.state.cancel_events.get(sid)
+            completed_after_cancel = sid in app.state.cancel_flags or (
+                cancel_event is not None and cancel_event.is_set()
+            )
+            completion_error = error
+            cancellation_metadata: dict[str, Any] = {}
+            if completed_after_cancel:
+                completion_error = (
+                    completion_error or "tool call completed after session cancellation"
+                )
+                cancellation_metadata = {
+                    "execution_cancellation": "best_effort",
+                    "executor_work_may_continue": True,
+                }
+            ok = completion_error is None
             payload = {
                 "call_id": call_id,
                 "tool": name,
@@ -2269,7 +2286,8 @@ def _make_tool_observer(app: "FastAPI"):
                 "duration_ms": duration_ms,
                 "cached": False,
                 "telemetry_source": "live_observer",
-                **({"error": error} if error else {}),
+                **({"error": completion_error} if completion_error else {}),
+                **cancellation_metadata,
             }
             app.state.bus.publish(
                 Event(
@@ -2282,7 +2300,7 @@ def _make_tool_observer(app: "FastAPI"):
             # finds it post-forward and attaches to the assistant
             # message metadata.
             ledger = getattr(app.state, "tool_call_ledger", None)
-            if ledger is not None:
+            if ledger is not None and not completed_after_cancel:
                 ledger.setdefault(sid, []).append(
                     {
                         "name": name,
@@ -2291,7 +2309,8 @@ def _make_tool_observer(app: "FastAPI"):
                         "duration_ms": duration_ms,
                         "cached": False,
                         "telemetry_source": "live_observer",
-                        **({"error": error} if error else {}),
+                        **({"error": completion_error} if completion_error else {}),
+                        **cancellation_metadata,
                     }
                 )
 

@@ -905,6 +905,7 @@ class ClioAgent(dspy.Module):
     def _execute_visualization_tool(self, tool_name: str, tool: Any, args: dict[str, Any]) -> Any:
         """Execute one local visualization tool with policy-aware artifact defaults."""
         args = dict(args)
+        self._raise_if_cancelled("visualization_tool_before")
         filepath = self._coerce_text(args.get("filepath")).strip()
         if filepath and not self._coerce_text(args.get("output_path")).strip():
             prepared = self._prepare_visualization_output_path(tool_name, filepath)
@@ -923,6 +924,7 @@ class ClioAgent(dspy.Module):
                 self._call_tool_function(tool, **args),
                 tool=tool_name,
             )
+            self._raise_if_cancelled("visualization_tool_after")
         except CancellationError as exc:
             notify_global_tool_observer(tool_name, args, "completed", repr(exc))
             raise
@@ -1537,10 +1539,12 @@ class ClioAgent(dspy.Module):
     def _run_local_tool(self, name: str, tool: Any, *args: Any, **kwargs: Any) -> Any:
         """Run a local tool and record its result in the active harness trace."""
         params = self._bind_tool_params(tool, args, kwargs)
+        self._raise_if_cancelled("local_tool_before")
         start = time.time()
         notify_global_tool_observer(name, params, "started", None)
         try:
             result = self._call_tool_function(tool, *args, **kwargs)
+            self._raise_if_cancelled("local_tool_after")
         except Exception as exc:
             notify_global_tool_observer(name, params, "completed", repr(exc))
             raise

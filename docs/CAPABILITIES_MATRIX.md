@@ -95,7 +95,9 @@ cancellation before reporting normal tool success. If a provider or tool
 call is already running inside an executor thread and cannot observe the
 checker in time, the server reports `execution_cancellation="best_effort"`
 and `executor_work_may_continue=true`; clients must not interpret that as
-a guaranteed upstream abort.
+a guaranteed upstream abort. Late tool completions that arrive after a
+session cancellation are reported as cancellation/error telemetry rather
+than normal tool success and are not carried into later turn metadata.
 
 ## Vendor-specific (CLIO additions on top of v0.2)
 
