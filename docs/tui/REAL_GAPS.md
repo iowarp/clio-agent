@@ -42,7 +42,9 @@ Synthetic text part events and assistant completion metadata also carry
 `stream_fallback.reason`. Render that reason when useful; do not present
 synthetic chunks as evidence that the provider streamed live tokens.
 Known reasons include `agent_not_streamable` for non-DSPy test/runtime
-agents and `stream_setup_failed` for DSPy listener setup failures.
+agents, `stream_setup_failed` for DSPy listener setup failures, and
+`stream_completed_without_chunks` when DSPy streaming produced a final
+prediction but no user-visible token chunks.
 Registered user/skill agents, including tool-declaring agents backed by
 DSPy ReAct, attempt the live `dspy.streamify` path first and only use
 synthetic post-hoc chunks when streaming cannot start.

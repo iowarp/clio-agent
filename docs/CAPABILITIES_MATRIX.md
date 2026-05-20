@@ -72,8 +72,11 @@ As of v0.3.1, chat answers, provider-backed expert synthesis, and
 registered user/skill agents attempt live streaming when the upstream
 DSPy/LiteLLM provider supports it. Paths that cannot start a live stream
 still fall back to `synthetic_posthoc` with an explicit
-`stream_fallback.reason`; deterministic non-token summaries may also be
-synthetic because there are no provider tokens to stream.
+`stream_fallback.reason`. If streaming starts but produces only a final
+prediction and no visible chunks, the reason is
+`stream_completed_without_chunks` rather than the generic sync fallback.
+Deterministic non-token summaries may also be synthetic because there are
+no provider tokens to stream.
 
 Cancellation is also best-effort at the GACT boundary. A cancelled turn
 settles with `error_info.error="cancelled"` and status events include

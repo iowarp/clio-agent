@@ -116,9 +116,7 @@ def test_text_parts_stream_as_deltas(app_client) -> None:
     )
     assert len(deltas) == 4
     assert all(d.payload["stream_source"] == "synthetic_posthoc" for d in deltas)
-    assert all(
-        d.payload["stream_fallback"]["reason"] == "agent_not_streamable" for d in deltas
-    )
+    assert all(d.payload["stream_fallback"]["reason"] == "agent_not_streamable" for d in deltas)
     assert len(completed) == 1
     assert completed[0].payload["stream_source"] == "synthetic_posthoc"
     assert completed[0].payload["stream_fallback"]["reason"] == "agent_not_streamable"
@@ -401,3 +399,41 @@ def test_live_streamed_deltas_are_marked_live(
     assert len(completed) == 1
     assert completed[0].payload["stream_source"] == "live"
     assert message_completed[-1].payload["metadata"]["stream_source"] == "live"
+
+
+def test_streamify_final_prediction_without_chunks_has_specific_fallback(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    async def prediction_only_stream(*args: Any, **kwargs: Any) -> Any:
+        del args, kwargs
+        yield dspy.Prediction(answer="complete answer", selected_expert="", routing_rationale="")
+
+    def fake_streamify(*args: Any, **kwargs: Any) -> Any:
+        del args, kwargs
+        return prediction_only_stream
+
+    streamify_module = importlib.import_module("dspy.streaming.streamify")
+    monkeypatch.setattr(streamify_module, "streamify", fake_streamify)
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_DspyAgent("fallback"))
+    client = TestClient(app)
+    sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
+
+    client.post(
+        f"/v1/sessions/{sid}/messages",
+        json={"parts": [{"type": "text", "text": "stream me"}]},
+    )
+
+    history = app.state.bus._history.get(sid, [])
+    deltas = [e for e in history if e.type == "message.part.delta"]
+    completed_messages = [e for e in history if e.type == "message.completed"]
+
+    assert deltas
+    assert all(d.payload["stream_source"] == "synthetic_posthoc" for d in deltas)
+    assert all(
+        d.payload["stream_fallback"]["reason"] == "stream_completed_without_chunks" for d in deltas
+    )
+    assert completed_messages[-1].payload["metadata"]["stream_source"] == "synthetic_posthoc"
+    assert (
+        completed_messages[-1].payload["metadata"]["stream_fallback"]["reason"]
+        == "stream_completed_without_chunks"
+    )

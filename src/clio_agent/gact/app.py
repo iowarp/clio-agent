@@ -2541,6 +2541,13 @@ async def _try_streamed_forward(
         )
     if final_pred is None:
         _record_stream_fallback(app, sid, "stream_no_prediction")
+    elif not emitted_any:
+        _record_stream_fallback(
+            app,
+            sid,
+            "stream_completed_without_chunks",
+            "DSPy streamify returned a final prediction but emitted no visible text chunks.",
+        )
     return final_pred
 
 
