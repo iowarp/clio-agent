@@ -33,7 +33,7 @@ import threading
 import time
 import uuid
 from collections.abc import Mapping
-from contextlib import asynccontextmanager, contextmanager
+from contextlib import asynccontextmanager, contextmanager, nullcontext
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, AsyncIterator, Iterator, Optional
@@ -5640,6 +5640,7 @@ def build_app(
             body = {}
         tool_name = body.get("tool")
         tool_args = body.get("args") or {}
+        requested_session_id = str(body.get("session_id") or "").strip()
         if not tool_name:
             raise HTTPException(
                 status_code=422,
@@ -5651,126 +5652,146 @@ def build_app(
                     )
                 ).model_dump(exclude_none=True),
             )
+        if requested_session_id and app.state.sessions.get(requested_session_id) is None:
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="not_found",
+                        message=f"session not found: {requested_session_id}",
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            )
 
         observer_name = f"{info.get('name', 'ext')}.{tool_name}"
-        gate = getattr(app.state, "pending_permission_gate", None) or _make_permission_gate(app)
-        try:
-            decision = await asyncio.get_running_loop().run_in_executor(
-                None,
-                lambda: gate(observer_name, tool_args),
-            )
-        except PermissionError as exc:
-            raise HTTPException(
-                status_code=403,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="permission_error",
-                        message=str(exc),
-                        recoverable=True,
-                    )
-                ).model_dump(exclude_none=True),
-            ) from exc
-        if decision != "allow":
-            raise HTTPException(
-                status_code=403,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="permission_error",
-                        message=f"tool call {observer_name!r} denied by permission gate",
-                        recoverable=True,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-
-        try:
-            from fastmcp import Client
-            from fastmcp.client.transports import (
-                StdioTransport,
-                StreamableHttpTransport,
-            )
-        except Exception as exc:
-            raise HTTPException(
-                status_code=503,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="dependency_missing",
-                        message=f"fastmcp Client unavailable: {exc!r}",
-                        recoverable=False,
-                    )
-                ).model_dump(exclude_none=True),
-            ) from exc
-
-        spec = info.get("spec", {})
-        if spec.get("transport") == "stdio":
-            transport = StdioTransport(
-                command=spec["command"],
-                args=spec.get("args") or [],
-            )
-        elif spec.get("transport") == "http":
-            transport = StreamableHttpTransport(url=spec["url"])  # type: ignore[assignment]
-        else:
-            raise HTTPException(
-                status_code=500,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="internal_error",
-                        message=f"unknown stored transport: {spec!r}",
-                        recoverable=False,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-
-        # Fire tool observer manually so this call shows up in
-        # tools_called + tool.call.* SSE events identically to an
-        # agent-driven tool call. Same observer, no special path.
-        try:
-            from clio_agent.tools.execution import _GLOBAL_TOOL_OBSERVER
-        except Exception:
-            _GLOBAL_TOOL_OBSERVER = None
-        if _GLOBAL_TOOL_OBSERVER is not None:
+        tool_session = (
+            _tool_session_context(requested_session_id) if requested_session_id else nullcontext()
+        )
+        with tool_session:
+            gate = getattr(app.state, "pending_permission_gate", None) or _make_permission_gate(app)
+            tool_context = contextvars.copy_context()
             try:
-                _GLOBAL_TOOL_OBSERVER(observer_name, tool_args, "started", None)
-            except Exception:
-                pass
-        try:
-            async with Client(transport) as client:
-                result = await client.call_tool(tool_name, tool_args)
-            content = []
-            for c in getattr(result, "content", None) or []:
-                content.append(
-                    {
-                        "type": getattr(c, "type", "text"),
-                        "text": getattr(c, "text", str(c)),
-                    }
+                decision = await asyncio.get_running_loop().run_in_executor(
+                    None,
+                    lambda: tool_context.run(gate, observer_name, tool_args),
                 )
-        except Exception as exc:  # noqa: BLE001
-            if _GLOBAL_TOOL_OBSERVER is not None:
+            except PermissionError as exc:
+                raise HTTPException(
+                    status_code=403,
+                    detail=ErrorEnvelope(
+                        error=ErrorInfo(
+                            error="permission_error",
+                            message=str(exc),
+                            recoverable=True,
+                        )
+                    ).model_dump(exclude_none=True),
+                ) from exc
+            if decision != "allow":
+                raise HTTPException(
+                    status_code=403,
+                    detail=ErrorEnvelope(
+                        error=ErrorInfo(
+                            error="permission_error",
+                            message=f"tool call {observer_name!r} denied by permission gate",
+                            recoverable=True,
+                        )
+                    ).model_dump(exclude_none=True),
+                )
+
+            try:
+                from fastmcp import Client
+                from fastmcp.client.transports import (
+                    StdioTransport,
+                    StreamableHttpTransport,
+                )
+            except Exception as exc:
+                raise HTTPException(
+                    status_code=503,
+                    detail=ErrorEnvelope(
+                        error=ErrorInfo(
+                            error="dependency_missing",
+                            message=f"fastmcp Client unavailable: {exc!r}",
+                            recoverable=False,
+                        )
+                    ).model_dump(exclude_none=True),
+                ) from exc
+
+            spec = info.get("spec", {})
+            if spec.get("transport") == "stdio":
+                transport = StdioTransport(
+                    command=spec["command"],
+                    args=spec.get("args") or [],
+                )
+            elif spec.get("transport") == "http":
+                transport = StreamableHttpTransport(url=spec["url"])  # type: ignore[assignment]
+            else:
+                raise HTTPException(
+                    status_code=500,
+                    detail=ErrorEnvelope(
+                        error=ErrorInfo(
+                            error="internal_error",
+                            message=f"unknown stored transport: {spec!r}",
+                            recoverable=False,
+                        )
+                    ).model_dump(exclude_none=True),
+                )
+
+            # Fire tool observer manually so this call shows up in
+            # tools_called + tool.call.* SSE events identically to an
+            # agent-driven tool call. Same observer, no special path.
+            try:
+                from clio_agent.tools.execution import _GLOBAL_TOOL_OBSERVER
+            except Exception:
+                _GLOBAL_TOOL_OBSERVER = None
+            tool_observer = _GLOBAL_TOOL_OBSERVER or getattr(
+                app.state, "pending_tool_observer", None
+            )
+            if tool_observer is not None:
                 try:
-                    _GLOBAL_TOOL_OBSERVER(observer_name, tool_args, "completed", repr(exc))
+                    tool_observer(observer_name, tool_args, "started", None)
                 except Exception:
                     pass
-            raise HTTPException(
-                status_code=502,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="upstream_error",
-                        message=f"tool call failed: {exc!r}",
-                        recoverable=True,
-                    )
-                ).model_dump(exclude_none=True),
-            ) from exc
-        if _GLOBAL_TOOL_OBSERVER is not None:
             try:
-                _GLOBAL_TOOL_OBSERVER(observer_name, tool_args, "completed", None)
-            except Exception:
-                pass
-        return {
-            "server_id": sid,
-            "tool": tool_name,
-            "args": tool_args,
-            "content": content,
-            "is_error": getattr(result, "isError", False),
-        }
+                async with Client(transport) as client:
+                    result = await client.call_tool(tool_name, tool_args)
+                content = []
+                for c in getattr(result, "content", None) or []:
+                    content.append(
+                        {
+                            "type": getattr(c, "type", "text"),
+                            "text": getattr(c, "text", str(c)),
+                        }
+                    )
+            except Exception as exc:  # noqa: BLE001
+                if tool_observer is not None:
+                    try:
+                        tool_observer(observer_name, tool_args, "completed", repr(exc))
+                    except Exception:
+                        pass
+                raise HTTPException(
+                    status_code=502,
+                    detail=ErrorEnvelope(
+                        error=ErrorInfo(
+                            error="upstream_error",
+                            message=f"tool call failed: {exc!r}",
+                            recoverable=True,
+                        )
+                    ).model_dump(exclude_none=True),
+                ) from exc
+            if tool_observer is not None:
+                try:
+                    tool_observer(observer_name, tool_args, "completed", None)
+                except Exception:
+                    pass
+            return {
+                "server_id": sid,
+                "tool": tool_name,
+                "args": tool_args,
+                "content": content,
+                "is_error": getattr(result, "isError", False),
+                **({"session_id": requested_session_id} if requested_session_id else {}),
+            }
 
     # ---- /v1/sessions/{sid}/compact (Codex/CC parity) -----------------
     # Summarise the in-memory conversation transcript and replace it with
