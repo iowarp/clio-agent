@@ -404,6 +404,42 @@ class TestRunAgentLoop:
         assert answer == "synthesized"
         assert "step limit" in route.reason.lower()
 
+    def test_answer_synthesis_exception_surfaces_error_info(self, agent, monkeypatch):
+        monkeypatch.setenv("CLIO_AGENT_MAX_STEPS", "1")
+        agent._plan_next_action = MagicMock(
+            return_value={"action": "tool", "tool": "hdf5_analyze_file", "args": {}}
+        )
+        agent._execute_tool_action = MagicMock(return_value={"value": "partial"})
+        agent.answer_synthesizer = MagicMock(side_effect=RuntimeError("provider down"))
+
+        result = agent.forward("summarize the file", session_id="synthesis-error")
+
+        assert result.answer == ""
+        assert result.error_info is not None
+        assert result.error_info["error"] == "provider_error"
+        assert "final answer" in result.error_info["message"]
+        details = result.error_info["details"]
+        assert details["stage"] == "answer_synthesis"
+        assert details["original_error"] == "provider down"
+        assert details["recovery_actions"] == ["retry", "reconfigure_provider", "exit"]
+
+    def test_empty_answer_synthesis_surfaces_error_info(self, agent, monkeypatch):
+        monkeypatch.setenv("CLIO_AGENT_MAX_STEPS", "1")
+        agent._plan_next_action = MagicMock(
+            return_value={"action": "tool", "tool": "hdf5_analyze_file", "args": {}}
+        )
+        agent._execute_tool_action = MagicMock(return_value={"value": "partial"})
+        agent.answer_synthesizer = MagicMock(return_value=MagicMock(answer=""))
+
+        result = agent.forward("summarize the file", session_id="empty-synthesis")
+
+        assert result.answer == ""
+        assert result.error_info is not None
+        assert result.error_info["error"] == "provider_error"
+        details = result.error_info["details"]
+        assert details["stage"] == "answer_synthesis"
+        assert details["original_error"] == "answer synthesizer returned an empty answer"
+
 
 class TestExecuteToolAction:
     def test_unknown_tool_returns_structured_error(self, agent):
@@ -511,9 +547,7 @@ class TestChatAgentNoBypass:
 
     def test_chat_summary_replaces_repeated_previous_answer(self, agent):
         repeated = "If a provider fails, retry or reconfigure the provider."
-        agent.chat_agent = MagicMock(
-            return_value=MagicMock(answer=repeated)
-        )
+        agent.chat_agent = MagicMock(return_value=MagicMock(answer=repeated))
         session_context = (
             "assistant: CLIO helps analyze scientific data files.\n"
             "assistant: HDF5 and Parquet capabilities include schemas and statistics.\n"
