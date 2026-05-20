@@ -123,6 +123,11 @@ def test_text_parts_stream_as_deltas(app_client) -> None:
     assert message_completed[-1].payload["metadata"]["stream_fallback"]["reason"] == (
         "agent_not_streamable"
     )
+    messages = client.get(f"/v1/sessions/{sid}/messages").json()["messages"]
+    assistant = [m for m in messages if m["role"] == "assistant"][-1]
+    text_parts = [p for p in assistant["parts"] if p["type"] == "text"]
+    assert text_parts[-1]["metadata"]["stream_source"] == "synthetic_posthoc"
+    assert text_parts[-1]["metadata"]["stream_fallback"]["reason"] == "agent_not_streamable"
 
     # Concatenated deltas reconstruct the full answer.
     chunks = [d.payload["delta"]["text_append"] for d in deltas]
@@ -399,6 +404,11 @@ def test_live_streamed_deltas_are_marked_live(
     assert len(completed) == 1
     assert completed[0].payload["stream_source"] == "live"
     assert message_completed[-1].payload["metadata"]["stream_source"] == "live"
+    messages = client.get(f"/v1/sessions/{sid}/messages").json()["messages"]
+    assistant = [m for m in messages if m["role"] == "assistant"][-1]
+    text_parts = [p for p in assistant["parts"] if p["type"] == "text"]
+    assert text_parts[-1]["metadata"]["stream_source"] == "live"
+    assert "stream_fallback" not in text_parts[-1]["metadata"]
 
 
 def test_streamify_final_prediction_without_chunks_has_specific_fallback(
