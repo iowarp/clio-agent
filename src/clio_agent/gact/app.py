@@ -7448,6 +7448,28 @@ def build_app(
             content=envelope.model_dump(exclude_none=True),
         )
 
+    @app.exception_handler(Exception)
+    async def _unhandled_exception_handler(
+        request, exc: Exception
+    ) -> JSONResponse:
+        """Return a structured 500 for unexpected route failures."""
+
+        envelope = ErrorEnvelope(
+            error=ErrorInfo(
+                error="internal_error",
+                message="Unhandled server error.",
+                details={
+                    "original_error": type(exc).__name__,
+                    "original_message": str(exc),
+                },
+                recoverable=False,
+            )
+        )
+        return JSONResponse(
+            status_code=500,
+            content=envelope.model_dump(exclude_none=True),
+        )
+
     return app
 
 

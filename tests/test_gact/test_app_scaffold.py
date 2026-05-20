@@ -153,3 +153,21 @@ def test_request_validation_uses_structured_error_envelope(
     assert body["error"]["error"] == "validation_error"
     assert body["error"]["message"] == "Request validation failed."
     assert body["error"]["details"]["errors"][0]["loc"] == ["query", "path"]
+
+
+def test_unhandled_exception_uses_structured_error_envelope() -> None:
+    app = build_app()
+
+    @app.get("/v1/_boom")
+    def _boom() -> None:
+        raise RuntimeError("boom probe")
+
+    resp = TestClient(app, raise_server_exceptions=False).get("/v1/_boom")
+
+    assert resp.status_code == 500
+    assert resp.headers["content-type"].startswith("application/json")
+    body = resp.json()
+    assert "detail" not in body
+    assert body["error"]["error"] == "internal_error"
+    assert body["error"]["message"] == "Unhandled server error."
+    assert body["error"]["details"]["original_error"] == "RuntimeError"
