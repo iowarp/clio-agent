@@ -24,39 +24,7 @@ Fix scope: investigate MCPToolBridge thread/loop interaction with
 FastAPI's executor + the running uvicorn loop; surface tool errors
 as `tool.call.completed{ok:false}` events instead of swallowing.
 
-### 2. LM provider config is deploy-time only
-
-`gact agent deploy clio my-clio` requires `CLIO_LM_*` to be set in
-the parent shell. There's no in-TUI way to configure or change
-provider/model. The frictionless deploy story breaks: a fresh user
-gets a 503 on every POST until they read docs and re-deploy.
-
-Fix scope:
-
-- Server: GET / PUT `/v1/providers/lm` accepting
-  `{provider, api_base, model, api_key}`. PUT triggers a soft
-  rebuild of the LM + dependent experts (no process restart).
-- TUI: on connect, if `/v1/health.integrations.agent.status ==
-  "unavailable"` (or a new `lm_unconfigured` flag), open a modal
-  asking for the four fields. Persist last value in
-  `~/.config/gact/clio.json` so we don't ask twice.
-- Provider picker offers OpenAI / Anthropic / OpenRouter / LM Studio /
-  Ollama / Argonne ALCF presets out of the box plus a custom slot.
-
-### 3. Tokens + cost stay zero with real Claude
-
-`Prediction.tokens` and `.cost_usd` aren't populated by DSPy. We
-need to read `dspy.LM.history` or the per-call `usage` after each
-forward and feed the numbers to the GACT layer. Otherwise the
-sidebar/footer chips and `/v1/metrics` claim zero usage every turn,
-which matters because the user is paying-by-quota through the
-upstream provider.
-
-Fix scope: add a `_extract_usage(pred, lm)` helper that pulls from
-DSPy's history, plumb through `app.state.agent.last_usage()` or
-similar.
-
-### 4. Streaming is only partially live
+### 2. Streaming is only partially live
 
 `message.part.delta` events can come from two different sources:
 
@@ -74,6 +42,17 @@ render both, but only `live` is evidence of real token arrival.
 Fix scope: extend live streaming beyond the chat `answer` listener to
 expert outputs, and keep the explicit `stream_source` marker so the UI
 and tests can tell when a path regresses to synthetic chunks.
+
+## Fixed / no longer hard blockers
+
+These used to be hard blockers in this file, but the current GACT
+surface has runtime support and tests. Keep watching real-provider
+regressions, but don't treat these as unresolved release blockers:
+
+| Area | Current status | Evidence |
+|---|---|---|
+| LM provider config | `GET / PUT /v1/providers/lm` lets the TUI configure or hot-swap provider/model without redeploying the GACT process. | `tests/test_gact/test_lm_provider.py` |
+| Tokens + cost | Per-turn tokens/cost populate assistant messages, completion events, session rollups, and `/v1/metrics`; GACT also extracts DSPy history/usage and estimates known-model cost when upstream omits cost. | `tests/test_gact/test_cost_tracking.py`, `tests/test_gact/test_cost_estimate.py` |
 
 ## Wire-shape-only — work but no real driver
 
