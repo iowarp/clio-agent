@@ -3549,8 +3549,10 @@ def build_app(
         {
             "id": "/optimize",
             "title": "Optimize active expert",
-            "description": "(Stub) trigger SIMBA optimization on the active expert; reports a system message.",
+            "description": "Unavailable until optimizer command execution is wired.",
             "source": "builtin",
+            "status": "unavailable",
+            "error": "not_implemented",
         },
     ]
 
@@ -3595,6 +3597,27 @@ def build_app(
                 ).model_dump(exclude_none=True),
             )
 
+        if cmd_id == "/optimize":
+            raise HTTPException(
+                status_code=501,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="not_implemented",
+                        message=(
+                            "Backend command /optimize is not implemented yet."
+                        ),
+                        details={
+                            "command": cmd_id,
+                            "recovery_actions": [
+                                "retry_after_optimizer_support_lands",
+                                "exit",
+                            ],
+                        },
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+
         # Side effects + system message body per command.
         body_text: str
         if cmd_id == "/clear":
@@ -3635,11 +3658,6 @@ def build_app(
                     trace_part.text if trace_part is not None
                     else "no thinking trace on the last turn"
                 )
-        elif cmd_id == "/optimize":
-            body_text = (
-                "SIMBA optimization isn't wired yet — see "
-                "iowarp/clio-agent for the optimizer roadmap"
-            )
         else:  # pragma: no cover - guarded above
             body_text = f"unhandled command: {cmd_id}"
 
