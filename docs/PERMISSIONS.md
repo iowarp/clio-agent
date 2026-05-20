@@ -10,10 +10,16 @@ auto-resolve paths work.
 |---|---|---|
 | `/v1/permissions` | GET | List pending + recent permission rows |
 | `/v1/permissions/{pid}` | POST | Resolve one (`{"action": "allow"}` or `"deny"` or `"always_allow"`) |
+| `/v1/policies` | GET/PUT | List or replace declarative allow/deny/ask policy rules |
 
 Each row carries `id`, `session_id`, `tool_call.{tool_name, input}`,
 `summary`, `created_at`, `status`, `action`, optional `resolved_at` +
 `reason`.
+
+Policy updates are atomic. `PUT /v1/policies` rejects malformed rows with a
+structured `422 invalid_request` and leaves the previous policy set unchanged;
+the backend never silently drops typoed scopes/actions or stores rules that it
+cannot enforce.
 
 ## What triggers the gate
 

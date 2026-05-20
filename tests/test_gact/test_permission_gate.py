@@ -165,6 +165,109 @@ def test_permission_policy_allow_skips_prompt(tmp_path: Path) -> None:
         assert app.state.permissions == {}
 
 
+def test_put_policies_rejects_malformed_policy_without_replacing_existing(
+    tmp_path: Path,
+) -> None:
+    app = build_app(sessions_path=tmp_path / "s.json")
+    existing = [
+        {
+            "scope": "session",
+            "scope_id": "sess_existing",
+            "tool_name_pattern": "shell.*",
+            "action": "deny",
+        }
+    ]
+    app.state.permission_policies = existing.copy()
+
+    with TestClient(app) as c:
+        resp = c.put(
+            "/v1/policies",
+            json={
+                "policies": [
+                    {
+                        "scope": "session",
+                        "tool_name_pattern": "shell.*",
+                        "action": "alow",
+                    },
+                    {
+                        "scope": "project",
+                        "action": "deny",
+                    },
+                    "not-a-policy",
+                ]
+            },
+        )
+
+    assert resp.status_code == 422
+    detail = resp.json()["error"]
+    assert detail["error"] == "invalid_request"
+    fields = {(err["index"], err["field"]) for err in detail["details"]["policy_errors"]}
+    assert fields == {(0, "action"), (1, "scope"), (2, "policy")}
+    assert app.state.permission_policies == existing
+
+
+def test_put_policies_rejects_non_string_optional_patterns(tmp_path: Path) -> None:
+    app = build_app(sessions_path=tmp_path / "s.json")
+
+    with TestClient(app) as c:
+        resp = c.put(
+            "/v1/policies",
+            json={
+                "policies": [
+                    {
+                        "scope": "session",
+                        "scope_id": "sess_1",
+                        "tool_name_pattern": ["shell.*"],
+                        "path_pattern": 123,
+                        "action": "deny",
+                    }
+                ]
+            },
+        )
+
+    assert resp.status_code == 422
+    detail = resp.json()["error"]
+    fields = {(err["index"], err["field"]) for err in detail["details"]["policy_errors"]}
+    assert fields == {(0, "tool_name_pattern"), (0, "path_pattern")}
+    assert app.state.permission_policies == []
+
+
+def test_put_policies_normalizes_valid_policy_and_preserves_unknown_fields(
+    tmp_path: Path,
+) -> None:
+    app = build_app(sessions_path=tmp_path / "s.json")
+
+    with TestClient(app) as c:
+        resp = c.put(
+            "/v1/policies",
+            json={
+                "policies": [
+                    {
+                        "scope": " SESSION ",
+                        "scope_id": "sess_1",
+                        "tool_name_pattern": "shell.*",
+                        "path_pattern": "",
+                        "action": " DENY ",
+                        "description": "block shell",
+                    }
+                ]
+            },
+        )
+
+    assert resp.status_code == 200
+    assert resp.json()["policies"] == [
+        {
+            "scope": "session",
+            "scope_id": "sess_1",
+            "tool_name_pattern": "shell.*",
+            "path_pattern": "",
+            "action": "deny",
+            "description": "block shell",
+        }
+    ]
+    assert app.state.permission_policies == resp.json()["policies"]
+
+
 def test_external_mcp_call_policy_deny_blocks_before_tool_execution(tmp_path: Path) -> None:
     app = build_app(sessions_path=tmp_path / "s.json")
     app.state.external_mcp_servers = {

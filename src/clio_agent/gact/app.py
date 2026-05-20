@@ -1847,6 +1847,8 @@ _DESTRUCTIVE_TOOL_SUBSTRINGS: tuple[str, ...] = (
     "shell",
     "write",
 )
+_PERMISSION_POLICY_SCOPES = {"session", "workspace"}
+_PERMISSION_POLICY_ACTIONS = {"allow", "allow_session", "allow_workspace", "deny", "ask"}
 
 
 def _is_destructive(tool_name: str) -> bool:
@@ -1916,6 +1918,79 @@ def _policy_action_for_tool(
         if action in {"allow", "allow_session", "allow_workspace", "deny", "ask"}:
             return action
     return ""
+
+
+def _validate_permission_policies(
+    policies: list[Any],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Validate and normalize `/v1/policies` rows.
+
+    Invalid permission policies are a safety bug: silently dropping or storing
+    a typoed deny rule can make a user believe a destructive action is blocked
+    when it is not. Return every validation error so the caller can reject the
+    whole update atomically.
+    """
+
+    clean: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
+    for index, raw_policy in enumerate(policies):
+        if not isinstance(raw_policy, dict):
+            errors.append(
+                {
+                    "index": index,
+                    "field": "policy",
+                    "message": "policy must be an object",
+                }
+            )
+            continue
+
+        policy = dict(raw_policy)
+        scope_raw = policy.get("scope")
+        action_raw = policy.get("action")
+        scope = scope_raw.strip().lower() if isinstance(scope_raw, str) else ""
+        action = action_raw.strip().lower() if isinstance(action_raw, str) else ""
+        policy_has_errors = False
+
+        if scope not in _PERMISSION_POLICY_SCOPES:
+            policy_has_errors = True
+            errors.append(
+                {
+                    "index": index,
+                    "field": "scope",
+                    "message": "scope must be one of session, workspace",
+                }
+            )
+        if action not in _PERMISSION_POLICY_ACTIONS:
+            policy_has_errors = True
+            errors.append(
+                {
+                    "index": index,
+                    "field": "action",
+                    "message": (
+                        "action must be one of allow, allow_session, allow_workspace, deny, ask"
+                    ),
+                }
+            )
+
+        for field in ("scope_id", "tool_name_pattern", "path_pattern"):
+            value = policy.get(field)
+            if value is not None and not isinstance(value, str):
+                policy_has_errors = True
+                errors.append(
+                    {
+                        "index": index,
+                        "field": field,
+                        "message": f"{field} must be a string when present",
+                    }
+                )
+
+        if policy_has_errors:
+            continue
+
+        policy["scope"] = scope
+        policy["action"] = action
+        clean.append(policy)
+    return clean, errors
 
 
 def _record_resolved_permission(
@@ -8074,17 +8149,23 @@ def build_app(
                     )
                 ).model_dump(exclude_none=True),
             )
-        # Light validation — keep unknown fields so future spec
-        # additions round-trip; require the two fields the SPEC
-        # mandates so a malformed config doesn't silently disable
-        # permission gating.
-        clean: list[dict[str, Any]] = []
-        for p in policies:
-            if not isinstance(p, dict):
-                continue
-            if not p.get("scope") or not p.get("action"):
-                continue
-            clean.append(p)
+        clean, errors = _validate_permission_policies(policies)
+        if errors:
+            raise HTTPException(
+                status_code=422,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="invalid_request",
+                        message=("invalid permission policies; no policy changes were applied"),
+                        details={
+                            "policy_errors": errors,
+                            "allowed_scopes": sorted(_PERMISSION_POLICY_SCOPES),
+                            "allowed_actions": sorted(_PERMISSION_POLICY_ACTIONS),
+                        },
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            )
         app.state.permission_policies = clean
         return {"policies": clean}
 
