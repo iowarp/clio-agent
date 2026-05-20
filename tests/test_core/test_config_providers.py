@@ -89,6 +89,31 @@ class TestLMProviderConfig:
         """Default max_tokens should be 32000."""
         config = LMProviderConfig()
         assert config.max_tokens == 32000
+        assert config.planner_max_tokens == 32000
+
+    def test_qwopus_profile_hardens_planner_defaults(self):
+        """Qwopus should get deterministic planning and a planner token floor."""
+        config = LMProviderConfig(
+            provider="lm_studio",
+            model="qwopus3.5-9b-v3",
+            max_tokens=1024,
+        )
+        assert config.max_tokens == 1024
+        assert config.planner_temperature == 0.0
+        assert config.router_temperature == 0.0
+        assert config.planner_max_tokens == 4096
+
+    def test_qwopus_profile_respects_explicit_planner_knobs(self):
+        """Explicit planner settings should win over profile defaults."""
+        config = LMProviderConfig(
+            provider="lm_studio",
+            model="qwopus3.5-9b-v3",
+            max_tokens=1024,
+            planner_temperature=0.2,
+            planner_max_tokens=2048,
+        )
+        assert config.planner_temperature == 0.2
+        assert config.planner_max_tokens == 2048
 
     def test_default_environment(self):
         """Default environment should be 'dev'."""
@@ -158,6 +183,26 @@ class TestLoadConfigFromEnv:
         with patch.dict("os.environ", env, clear=True):
             config = load_config_from_env()
             assert config.max_tokens == 8192
+
+    def test_env_planner_max_tokens_override(self):
+        """CLIO_LM_PLANNER_MAX_TOKENS should override planner max tokens."""
+        env = {"CLIO_LM_PLANNER_MAX_TOKENS": "2048"}
+        with patch.dict("os.environ", env, clear=True):
+            config = load_config_from_env()
+            assert config.max_tokens == 32000
+            assert config.planner_max_tokens == 2048
+
+    def test_env_qwopus_profile_without_manual_planner_tuning(self):
+        """Qwopus via LM Studio should apply its planner profile from env config."""
+        env = {
+            "CLIO_LM_PROVIDER": "lm_studio",
+            "CLIO_LM_MODEL": "qwopus3.5-9b-v3",
+            "CLIO_LM_MAX_TOKENS": "1024",
+        }
+        with patch.dict("os.environ", env, clear=True):
+            config = load_config_from_env()
+            assert config.planner_temperature == 0.0
+            assert config.planner_max_tokens == 4096
 
     def test_env_environment(self):
         """CLIO_ENVIRONMENT should set environment field."""
@@ -287,6 +332,16 @@ class TestCreatePlannerLM:
         lm = create_planner_lm(config)
         # The temperature is set on the LM kwargs
         assert lm.kwargs.get("temperature") == 0.3
+
+    def test_uses_planner_max_tokens(self):
+        """Planner LM should use planner_max_tokens, not answer max_tokens."""
+        config = LMProviderConfig(
+            provider="lm_studio",
+            max_tokens=1024,
+            planner_max_tokens=4096,
+        )
+        lm = create_planner_lm(config)
+        assert lm.kwargs.get("max_tokens") == 4096
 
     def test_custom_planner_temperature(self):
         """Planner LM should respect custom planner_temperature."""

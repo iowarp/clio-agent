@@ -190,6 +190,7 @@ class LMProviderConfig:
         temperature: Sampling temperature
         max_tokens: Maximum tokens per response
         planner_temperature: Lower temperature for deterministic action planning
+        planner_max_tokens: Maximum tokens for planner JSON generation
         environment: Deployment environment (dev/staging/production)
         codex_transport: Codex transport mode, either "exec" or "sdk"
     """
@@ -206,6 +207,7 @@ class LMProviderConfig:
     # explicitly pass any non-zero value win.
     max_tokens: int = 0
     planner_temperature: float = 0.3
+    planner_max_tokens: int = 0
     router_temperature: float | None = None
     environment: str = "dev"
     codex_transport: Literal["exec", "sdk"] = "exec"
@@ -247,6 +249,9 @@ class LMProviderConfig:
         # 32 768-token context window.
         if self.max_tokens == 0:
             self.max_tokens = int(defaults.get("max_tokens", 32000))
+        self._apply_model_profile_defaults()
+        if self.planner_max_tokens == 0:
+            self.planner_max_tokens = self.max_tokens
         # Capability flags. defaults dict wins — these aren't user-set
         # via env vars (they're wire-protocol facts about the provider),
         # so re-reading on every config load is safe.
@@ -255,6 +260,32 @@ class LMProviderConfig:
             raise ValueError(
                 f"codex_transport must be 'exec' or 'sdk' (got {self.codex_transport!r})"
             )
+
+    def _apply_model_profile_defaults(self) -> None:
+        """Apply safe defaults for known model families."""
+        if not _uses_local_reasoning_model_profile(self.provider, self.model):
+            return
+
+        if self.planner_temperature == 0.3:
+            self.planner_temperature = 0.0
+            self.router_temperature = self.planner_temperature
+        if self.planner_max_tokens == 0:
+            self.planner_max_tokens = max(self.max_tokens, 4096)
+
+
+def _uses_local_reasoning_model_profile(provider: str, model: str) -> bool:
+    """Return whether a local model needs reasoning-friendly planner defaults."""
+    if provider not in {"lm_studio", "ollama"}:
+        return False
+    normalized = model.lower().replace("_", "-")
+    reasoning_markers = (
+        "qwopus",
+        "qwen3",
+        "qwen-3",
+        "qwen35",
+        "qwen-3.5",
+    )
+    return any(marker in normalized for marker in reasoning_markers)
 
 
 def _resolve_argonne_api_key() -> str:
@@ -328,6 +359,7 @@ def load_config_from_env() -> LMProviderConfig:
         CLIO_LM_API_KEY: Override API key
         CLIO_LM_TEMPERATURE: Override reasoner/chat temperature
         CLIO_LM_PLANNER_TEMPERATURE: Override planner temperature
+        CLIO_LM_PLANNER_MAX_TOKENS: Override planner token cap
         CLIO_LM_MAX_TOKENS: Override max tokens
         CLIO_CODEX_TRANSPORT: Codex transport mode (exec or sdk)
         CLIO_ENVIRONMENT: Deployment environment (dev/staging/production)
@@ -351,6 +383,7 @@ def load_config_from_env() -> LMProviderConfig:
         "CLIO_LM_PLANNER_TEMPERATURE",
         os.environ.get("CLIO_LM_ROUTER_TEMPERATURE", ""),
     )
+    planner_max_tokens_str = os.environ.get("CLIO_LM_PLANNER_MAX_TOKENS", "")
     max_tokens_str = os.environ.get("CLIO_LM_MAX_TOKENS", "")
 
     kwargs: dict = {
@@ -367,6 +400,8 @@ def load_config_from_env() -> LMProviderConfig:
         kwargs["temperature"] = float(temperature_str)
     if planner_temperature_str:
         kwargs["planner_temperature"] = float(planner_temperature_str)
+    if planner_max_tokens_str:
+        kwargs["planner_max_tokens"] = int(planner_max_tokens_str)
     if max_tokens_str:
         kwargs["max_tokens"] = int(max_tokens_str)
     if codex_transport:
@@ -530,7 +565,7 @@ def create_planner_lm(config: LMProviderConfig) -> dspy.LM:
         api_base=config.api_base,
         api_key=config.api_key,
         temperature=config.planner_temperature,
-        max_tokens=config.max_tokens,
+        max_tokens=config.planner_max_tokens,
         model_type="chat",
         cache=False,  # see create_lm — same rationale
         **_provider_lm_kwargs(config),

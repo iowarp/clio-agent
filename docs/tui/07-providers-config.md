@@ -63,6 +63,7 @@ All overridable with `CLIO_LM_API_BASE`, `CLIO_LM_MODEL`, `CLIO_LM_API_KEY`.
 | `CLIO_LM_API_KEY` | provider-specific or env | API key |
 | `CLIO_LM_TEMPERATURE` | `1.0` | sampling temperature for reasoner/chat paths |
 | `CLIO_LM_PLANNER_TEMPERATURE` | `0.3` | sampling temperature for planner action selection |
+| `CLIO_LM_PLANNER_MAX_TOKENS` | `CLIO_LM_MAX_TOKENS` | planner-only token cap for structured JSON actions |
 | `CLIO_LM_MAX_TOKENS` | `32000` | per-response cap |
 | `CLIO_ENVIRONMENT` | `dev` | `dev` / `staging` / `production` |
 | `CLIO_ARC_BACKEND` | `local` | `local` or `cte` (future) |
@@ -81,10 +82,22 @@ All overridable with `CLIO_LM_API_BASE`, `CLIO_LM_MODEL`, `CLIO_LM_API_KEY`.
 
 Two LMs exist:
 
-- **Planner LM** — low temperature (`0.3`), model defaults to `ibm/granite-4-h-tiny`. Drives `AgentActionSignature` planning for direct tools, experts, chat answers, or explicit no-action decisions.
+- **Planner LM** — low temperature (`0.3`), model defaults to `ibm/granite-4-h-tiny`. Drives `AgentActionSignature` planning for direct tools, experts, chat answers, or explicit no-action decisions. Known local reasoning models such as Qwopus/Qwen use a deterministic planner profile (`planner_temperature=0`, planner token floor 4096) so hidden reasoning tokens do not starve JSON action output.
 - **Reasoner LM** — default temperature `1.0`, same model by default. Drives expert ReAct loops, chat answers, and synthesis after tool observations.
 
 Both are scoped per request via `dspy.context()` — no global model mutation (`CLAUDE.md` L30–133).
+
+### Validated local reasoning profile
+
+`qwopus3.5-9b-v3` has been validated through LM Studio's ROCm runtime on an AMD Radeon RX 6950 XT with 32k context loaded. CLIO applies the local reasoning-model planner profile automatically when the LM Studio/Ollama model id contains `qwopus`, `qwen3`, `qwen-3`, `qwen35`, or `qwen-3.5`.
+
+Validation baseline:
+
+- direct LM Studio smoke returned `LMSTUDIO_QWOPUS_OK`
+- CLIO smoke returned `CLIO_QWOPUS_OK` with `error_info=null`
+- long-context push used 26,056 prompt tokens and returned `CTX32K_QWOPUS_OK`
+
+If a reasoning model still cannot produce valid planner JSON, CLIO should surface a structured `routing_error` with retry/reconfigure/exit actions rather than returning a fallback answer.
 
 ## Deployment modes
 
