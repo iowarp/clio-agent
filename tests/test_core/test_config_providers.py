@@ -470,9 +470,9 @@ class TestFetchLmStudioModels:
         assert models == ["nemotron"]
         mock_get.assert_called_once_with("http://192.168.86.143:1234/v1/models", timeout=10)
 
-    def test_empty_models_retries(self):
-        """Should retry when models list is empty."""
-        from clio_agent.config import fetch_lm_studio_models
+    def test_empty_models_retries_then_surfaces_configuration_error(self):
+        """Empty discovery should not collapse into a silent [] fallback."""
+        from clio_agent.config import LMStudioDiscoveryError, fetch_lm_studio_models
 
         with patch("clio_agent.config.requests.get") as mock_get:
             mock_resp = MagicMock()
@@ -481,28 +481,70 @@ class TestFetchLmStudioModels:
             mock_get.return_value = mock_resp
 
             with patch("time.sleep"):
-                models = fetch_lm_studio_models(max_retries=2, retry_delay=0)
-                assert models == []
+                with pytest.raises(LMStudioDiscoveryError, match="no loaded models"):
+                    fetch_lm_studio_models(max_retries=2, retry_delay=0)
+                assert mock_get.call_count == 2
 
-    def test_connection_error_retries(self):
-        """Should retry on ConnectionError."""
+    def test_connection_error_retries_then_surfaces_provider_error(self):
+        """Connection exhaustion should preserve the endpoint error."""
         import requests as req
 
-        from clio_agent.config import fetch_lm_studio_models
+        from clio_agent.config import LMStudioDiscoveryError, fetch_lm_studio_models
 
         with patch("clio_agent.config.requests.get") as mock_get:
             mock_get.side_effect = req.exceptions.ConnectionError("refused")
 
             with patch("time.sleep"):
-                models = fetch_lm_studio_models(max_retries=2, retry_delay=0)
-                assert models == []
+                with pytest.raises(LMStudioDiscoveryError, match="Could not connect"):
+                    fetch_lm_studio_models(max_retries=2, retry_delay=0)
+                assert mock_get.call_count == 2
 
-    def test_generic_error_returns_empty(self):
-        """Should return empty on generic exception."""
-        from clio_agent.config import fetch_lm_studio_models
+    def test_http_error_surfaces_provider_error(self):
+        """HTTP errors should not be reclassified as no loaded model."""
+        import requests as req
+
+        from clio_agent.config import LMStudioDiscoveryError, fetch_lm_studio_models
 
         with patch("clio_agent.config.requests.get") as mock_get:
-            mock_get.side_effect = Exception("weird error")
+            mock_resp = MagicMock()
+            mock_resp.raise_for_status.side_effect = req.exceptions.HTTPError("500 server")
+            mock_get.return_value = mock_resp
 
-            models = fetch_lm_studio_models(max_retries=1)
-            assert models == []
+            with pytest.raises(LMStudioDiscoveryError, match="500 server"):
+                fetch_lm_studio_models(max_retries=1)
+
+    def test_unexpected_error_surfaces_provider_error(self):
+        """Unexpected client errors should not return an empty model list."""
+        from clio_agent.config import LMStudioDiscoveryError, fetch_lm_studio_models
+
+        with patch("clio_agent.config.requests.get") as mock_get:
+            mock_get.side_effect = RuntimeError("weird error")
+
+            with pytest.raises(LMStudioDiscoveryError, match="weird error"):
+                fetch_lm_studio_models(max_retries=1)
+
+    def test_invalid_json_surfaces_provider_error(self):
+        """Malformed provider JSON should preserve the parsing failure."""
+        from clio_agent.config import LMStudioDiscoveryError, fetch_lm_studio_models
+
+        with patch("clio_agent.config.requests.get") as mock_get:
+            mock_resp = MagicMock()
+            mock_resp.raise_for_status.return_value = None
+            mock_resp.json.side_effect = ValueError("not json")
+            mock_get.return_value = mock_resp
+
+            with pytest.raises(LMStudioDiscoveryError, match="invalid JSON"):
+                fetch_lm_studio_models(max_retries=1)
+
+    def test_malformed_response_surfaces_provider_error(self):
+        """A response without data[] should be reported as malformed."""
+        from clio_agent.config import LMStudioDiscoveryError, fetch_lm_studio_models
+
+        with patch("clio_agent.config.requests.get") as mock_get:
+            mock_resp = MagicMock()
+            mock_resp.raise_for_status.return_value = None
+            mock_resp.json.return_value = {"models": [{"id": "x"}]}
+            mock_get.return_value = mock_resp
+
+            with pytest.raises(LMStudioDiscoveryError, match="missing data"):
+                fetch_lm_studio_models(max_retries=1)
