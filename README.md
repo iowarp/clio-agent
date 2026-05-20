@@ -22,7 +22,8 @@ The agent runs in three tiers: a main orchestrator (planner loop over registered
 - ARC memory with O(log N) context retrieval
 - Optimizer layer for offline tuning + online learning
 - Runtime doctor for LM / gateway / file-policy health
-- Works with LM Studio, Ollama, OpenAI, Anthropic, and the Argonne ALCF inference gateway
+- Works with LM Studio, Ollama, OpenAI, Anthropic, OpenRouter, OpenAI
+  Codex subscriptions, and the Argonne ALCF inference gateway
 
 ---
 
