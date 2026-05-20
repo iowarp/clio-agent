@@ -40,6 +40,7 @@ class AgentCapability:
         priority: Routing priority (1=highest, 10=lowest). Default: 5
         metadata: Additional agent-specific metadata
     """
+
     keywords: List[str]
     description: str
     tools: List[str]
@@ -58,6 +59,7 @@ class RoutingDecision:
         matched_keywords: Keywords that triggered this agent
         fallback_agents: List of backup agent IDs if primary fails
     """
+
     selected_agent: str
     confidence: float
     matched_keywords: List[str]
@@ -93,12 +95,7 @@ class AgentRegistry:
         self._capabilities: Dict[str, AgentCapability] = {}
         self._lock = threading.Lock()
 
-    def register_agent(
-        self,
-        agent_id: str,
-        agent: Any,
-        capabilities: AgentCapability
-    ) -> None:
+    def register_agent(self, agent_id: str, agent: Any, capabilities: AgentCapability) -> None:
         """Register an agent with its capabilities.
 
         Thread-safe registration of agents. Supports both DSPy modules
@@ -306,21 +303,13 @@ class AgentRegistry:
                     agent_scores[agent_id] = (score, matched_keywords)
 
             if not agent_scores:
-                # No keyword matches - return first agent as fallback
-                first_agent = list(self._agents.keys())[0]
-                return RoutingDecision(
-                    selected_agent=first_agent,
-                    confidence=0.1,
-                    matched_keywords=[],
-                    fallback_agents=[]
+                raise ValueError(
+                    "No registered agent capabilities matched the query. "
+                    "Use an explicit chat/no-op path or provide a more specific task."
                 )
 
             # Select agent with highest score
-            sorted_agents = sorted(
-                agent_scores.items(),
-                key=lambda x: x[1][0],
-                reverse=True
-            )
+            sorted_agents = sorted(agent_scores.items(), key=lambda x: x[1][0], reverse=True)
 
             best_agent, (best_score, matched_kw) = sorted_agents[0]
             fallbacks = [agent_id for agent_id, _ in sorted_agents[1:3]]
@@ -332,7 +321,7 @@ class AgentRegistry:
                 selected_agent=best_agent,
                 confidence=confidence,
                 matched_keywords=matched_kw,
-                fallback_agents=fallbacks
+                fallback_agents=fallbacks,
             )
 
     def get_all_capabilities(self) -> Dict[str, AgentCapability]:

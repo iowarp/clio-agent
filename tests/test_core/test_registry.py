@@ -4,7 +4,6 @@ Tests for clio_agent.registry.registry module.
 Tests AgentRegistry registration, discovery, keyword routing, and thread safety.
 """
 
-
 import pytest
 
 from clio_agent.registry.registry import AgentCapability, AgentRegistry, RoutingDecision
@@ -239,8 +238,8 @@ class TestAgentRegistry:
         assert decision.selected_agent == "data"
         assert decision.confidence > 0
 
-    def test_route_query_no_match_fallback(self):
-        """Query with no keyword matches falls back to first agent."""
+    def test_route_query_no_match_raises(self):
+        """Query with no keyword matches should not choose an arbitrary agent."""
         reg = AgentRegistry()
         cap = AgentCapability(
             keywords=["hdf5"],
@@ -249,9 +248,8 @@ class TestAgentRegistry:
             specialization="data_io",
         )
         reg.register_agent("data", object(), cap)
-        decision = reg.route_query("What is the weather?")
-        assert decision.selected_agent == "data"  # fallback
-        assert decision.confidence == 0.1
+        with pytest.raises(ValueError, match="No registered agent capabilities matched"):
+            reg.route_query("What is the weather?")
 
     def test_route_query_no_agents_raises(self):
         """Routing with no registered agents should raise."""
