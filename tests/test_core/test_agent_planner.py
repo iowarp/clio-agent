@@ -147,8 +147,13 @@ class TestRouteForSelected:
         route = ClioAgent._route_for_selected("data", "why", 0.8)
         assert route.target == "data" and route.confidence == 0.8
 
-    def test_invalid_target_falls_back_to_chat(self):
-        assert ClioAgent._route_for_selected("bogus", "why", 0.5).target == "chat"
+    def test_invalid_target_surfaces_routing_error(self):
+        with pytest.raises(RoutingError, match="invalid route target"):
+            ClioAgent._route_for_selected("bogus", "why", 0.5)
+
+    def test_route_decision_from_dspy_rejects_invalid_target(self):
+        with pytest.raises(ValueError, match="invalid route target"):
+            RouteDecision.from_dspy("bogus")
 
 
 class TestAgentMaxSteps:
