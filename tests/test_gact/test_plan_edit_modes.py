@@ -298,6 +298,44 @@ def test_apply_edit_refuses_in_plan_mode(tmp_path: Path) -> None:
         )
 
 
+def test_apply_edit_refuses_policy_denied_write(tmp_path: Path) -> None:
+    """A deny policy must block /diffs/apply before disk mutation."""
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    app = build_app(sessions_path=tmp_path / "s.json")
+    app.state.workspaces.update("ws_default", root_path=str(workspace))
+    sess = app.state.sessions.create(
+        workspace_id="ws_default",
+        title="t",
+        mode="edit",
+    )
+    app.state.permission_policies = [
+        {
+            "scope": "session",
+            "scope_id": sess.id,
+            "tool_name_pattern": "fs_apply_edit_write",
+            "path_pattern": str(workspace / "*.txt"),
+            "action": "deny",
+        }
+    ]
+
+    target = workspace / "x.txt"
+    with pytest.raises(PermissionError, match="permission policy denied"):
+        _apply_edit_to_disk(
+            path=str(target),
+            new_content="x",
+            session=sess,
+            app=app,
+        )
+
+    assert not target.exists()
+    rows = list(app.state.permissions.values())
+    assert len(rows) == 1
+    assert rows[0]["status"] == "auto_denied"
+    assert rows[0]["reason"] == "policy_deny"
+
+
 def test_apply_edit_refuses_outside_allowed_roots(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -43,9 +43,7 @@ def test_destructive_tool_blocks_until_resolved(tmp_path: Path) -> None:
         result: dict[str, str] = {}
 
         def fire():
-            result["decision"] = gate(
-                "shell.exec", {"cmd": "rm -rf /"}
-            )
+            result["decision"] = gate("shell.exec", {"cmd": "rm -rf /"})
 
         thread = threading.Thread(target=fire)
         thread.start()
@@ -71,9 +69,7 @@ def test_destructive_tool_blocks_until_resolved(tmp_path: Path) -> None:
 def test_permission_gate_uses_active_turn_session_over_recency(tmp_path: Path) -> None:
     app = build_app(sessions_path=tmp_path / "s.json")
     with TestClient(app) as c:
-        older_sid = c.post(
-            "/v1/sessions", json={"title": "older", "mode": "plan"}
-        ).json()["id"]
+        older_sid = c.post("/v1/sessions", json={"title": "older", "mode": "plan"}).json()["id"]
         newer_sid = c.post("/v1/sessions", json={"title": "newer"}).json()["id"]
         assert newer_sid != older_sid
 
@@ -110,6 +106,64 @@ def test_deny_decision_raises_permission_error(tmp_path: Path) -> None:
         assert result["decision"] == "deny"
 
 
+def test_permission_policy_deny_blocks_destructive_tool(tmp_path: Path) -> None:
+    app = build_app(sessions_path=tmp_path / "s.json")
+    with TestClient(app) as c:
+        sid = c.post("/v1/sessions", json={"title": "t"}).json()["id"]
+        resp = c.put(
+            "/v1/policies",
+            json={
+                "policies": [
+                    {
+                        "scope": "session",
+                        "scope_id": sid,
+                        "tool_name_pattern": "shell.*",
+                        "action": "deny",
+                    }
+                ]
+            },
+        )
+        assert resp.status_code == 200
+
+        gate = _make_permission_gate(app)
+        with _tool_session_context(sid):
+            decision = gate("shell.exec", {"cmd": "rm -rf /"})
+
+        assert decision == "deny"
+        rows = list(app.state.permissions.values())
+        assert len(rows) == 1
+        assert rows[0]["session_id"] == sid
+        assert rows[0]["status"] == "auto_denied"
+        assert rows[0]["reason"] == "policy_deny"
+
+
+def test_permission_policy_allow_skips_prompt(tmp_path: Path) -> None:
+    app = build_app(sessions_path=tmp_path / "s.json")
+    with TestClient(app) as c:
+        sid = c.post("/v1/sessions", json={"title": "t"}).json()["id"]
+        resp = c.put(
+            "/v1/policies",
+            json={
+                "policies": [
+                    {
+                        "scope": "session",
+                        "scope_id": sid,
+                        "tool_name_pattern": "shell.*",
+                        "action": "allow",
+                    }
+                ]
+            },
+        )
+        assert resp.status_code == 200
+
+        gate = _make_permission_gate(app)
+        with _tool_session_context(sid):
+            decision = gate("shell.exec", {"cmd": "echo ok"})
+
+        assert decision == "allow"
+        assert app.state.permissions == {}
+
+
 def test_observer_publishes_tool_call_events(tmp_path: Path) -> None:
     app = build_app(sessions_path=tmp_path / "s.json")
     with TestClient(app) as c:
@@ -124,13 +178,9 @@ def test_observer_publishes_tool_call_events(tmp_path: Path) -> None:
         assert "tool.call.started" in types
         assert "tool.call.completed" in types
         # Both events share the same call_id.
-        started_id = next(
-            e.payload["call_id"] for e in history
-            if e.type == "tool.call.started"
-        )
+        started_id = next(e.payload["call_id"] for e in history if e.type == "tool.call.started")
         completed_id = next(
-            e.payload["call_id"] for e in history
-            if e.type == "tool.call.completed"
+            e.payload["call_id"] for e in history if e.type == "tool.call.completed"
         )
         assert started_id == completed_id
 
