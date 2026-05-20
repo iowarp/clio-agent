@@ -134,6 +134,15 @@ Clients post the message, then consume `/events`. Live text deltas include `stre
 | `live` | delta arrived through the live `dspy.streamify` path |
 | `synthetic_posthoc` | final answer was already available before live provider-token deltas could be emitted |
 
+Synthetic post-hoc payloads include a structured `stream_fallback`
+object with `reason`, `category`, `description`, `recovery_actions`,
+`synthetic_posthoc=true`, and `live_streaming=false`. The allowed reason
+catalog is advertised in `/v1/capabilities` as
+`capabilities.x_clio_stream_fallback_reasons`.
+Provider/planner failures during live stream execution settle the turn
+with structured `error_info` instead of falling back to synthetic answer
+text.
+
 Cancellation is also explicit rather than hidden. Cancelling a running turn settles the GACT envelope as cancelled; if provider/tool work is already inside an executor thread, `session.status_changed` marks `execution_cancellation="best_effort"` and `executor_work_may_continue=true`.
 
 ## Legacy REST health shape

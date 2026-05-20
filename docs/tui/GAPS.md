@@ -48,7 +48,9 @@ audit. In short:
 - Streaming can be live for supported chat paths and provider-backed
   expert synthesis. Deterministic tool-result summaries can still emit
   `stream_source="synthetic_posthoc"` because no provider tokens exist
-  to stream.
+  to stream. Synthetic post-hoc text is completed-part delivery, not
+  fake delta streaming, and its structured fallback reason catalog is
+  exposed through `/v1/capabilities`.
 - Cancellation is truthful but best-effort; Python executor work may keep
   running after the GACT envelope settles.
 - Some capabilities have correct endpoints/events but limited real-agent

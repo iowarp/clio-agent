@@ -94,7 +94,13 @@ Text streaming has explicit provenance:
 - `stream_source="live"` means the delta arrived through the live `dspy.streamify` path.
 - `stream_source="synthetic_posthoc"` means the backend already had the final answer before live provider-token deltas could be emitted.
 
-Current limitation: the chat `answer` path can stream live when the upstream DSPy/LiteLLM path emits chunks. Expert outputs and paths that do not emit an `answer` stream are marked as synthetic post-hoc and delivered as completed text parts, not fake deltas. Mid-stream failures after user-visible output surface as structured `provider_error` messages with `details.partial_output=true`, not as a hidden sync rerun.
+Synthetic post-hoc payloads include a structured `stream_fallback`
+object with `reason`, `category`, `description`, `recovery_actions`,
+`synthetic_posthoc=true`, and `live_streaming=false`. The audited
+reason catalog is advertised in `/v1/capabilities`; unknown reasons are
+rejected instead of becoming unclassified fallback metadata.
+
+Current limitation: the chat `answer` path can stream live when the upstream DSPy/LiteLLM path emits chunks. Expert outputs and paths that do not emit an `answer` stream are marked as synthetic post-hoc and delivered as completed text parts, not fake deltas. Live stream execution failures surface as structured `provider_error` messages, not as hidden sync reruns; `details.partial_output` tells clients whether any live text was already emitted.
 
 Tests: `tests/test_gact/test_streaming.py`.
 

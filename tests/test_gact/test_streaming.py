@@ -15,6 +15,8 @@ from fastapi.testclient import TestClient
 from clio_agent.gact.app import (
     _build_stream_listeners,
     _pop_stream_fallback,
+    _record_stream_fallback,
+    _stream_fallback_reason_capabilities,
     _StreamingOutputError,
     _try_streamed_forward,
     build_app,
@@ -89,6 +91,19 @@ def app_client(tmp_path: Path):
     return app, TestClient(app), answer
 
 
+def _assert_structured_stream_fallback(payload: dict[str, Any], reason: str) -> None:
+    fallback = payload["stream_fallback"]
+    assert fallback["reason"] == reason
+    assert fallback["synthetic_posthoc"] is True
+    assert fallback["live_streaming"] is False
+    assert isinstance(fallback["category"], str)
+    assert fallback["category"]
+    assert isinstance(fallback["description"], str)
+    assert fallback["description"]
+    assert isinstance(fallback["recovery_actions"], list)
+    assert fallback["recovery_actions"]
+
+
 def test_synthetic_posthoc_text_is_delivered_without_deltas(app_client) -> None:
     app, client, answer = app_client
     sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
@@ -110,22 +125,73 @@ def test_synthetic_posthoc_text_is_delivered_without_deltas(app_client) -> None:
     assert len(added) == 1
     assert added[0].payload["part"]["text"] == answer
     assert added[0].payload["part"]["metadata"]["stream_source"] == "synthetic_posthoc"
-    assert added[0].payload["part"]["metadata"]["stream_fallback"]["reason"] == (
-        "agent_not_streamable"
-    )
+    _assert_structured_stream_fallback(added[0].payload["part"]["metadata"], "agent_not_streamable")
     assert deltas == []
     assert len(completed) == 1
     assert completed[0].payload["stream_source"] == "synthetic_posthoc"
-    assert completed[0].payload["stream_fallback"]["reason"] == "agent_not_streamable"
+    _assert_structured_stream_fallback(completed[0].payload, "agent_not_streamable")
     assert completed[0].payload["final_text"] == answer
-    assert message_completed[-1].payload["metadata"]["stream_fallback"]["reason"] == (
-        "agent_not_streamable"
+    _assert_structured_stream_fallback(
+        message_completed[-1].payload["metadata"], "agent_not_streamable"
     )
     messages = client.get(f"/v1/sessions/{sid}/messages").json()["messages"]
     assistant = [m for m in messages if m["role"] == "assistant"][-1]
     text_parts = [p for p in assistant["parts"] if p["type"] == "text"]
     assert text_parts[-1]["metadata"]["stream_source"] == "synthetic_posthoc"
-    assert text_parts[-1]["metadata"]["stream_fallback"]["reason"] == "agent_not_streamable"
+    _assert_structured_stream_fallback(text_parts[-1]["metadata"], "agent_not_streamable")
+
+
+def test_stream_fallback_reasons_are_audited_and_reject_unknowns(tmp_path: Path) -> None:
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_DspyAgent("fallback"))
+    catalog = _stream_fallback_reason_capabilities()
+
+    assert {
+        "streaming_dependency_unavailable",
+        "agent_not_available",
+        "agent_not_streamable",
+        "stream_setup_failed",
+        "stream_no_prediction",
+        "stream_completed_without_chunks",
+        "sync_execution_path",
+        "dynamic_prompt_stream_unavailable",
+        "dynamic_tool_stream_unavailable",
+    } == set(catalog)
+    for reason, details in catalog.items():
+        assert details["synthetic_posthoc"] is True, reason
+        assert details["live_streaming"] is False, reason
+        assert details["category"], reason
+        assert details["description"], reason
+        assert details["recovery_actions"], reason
+
+    with pytest.raises(ValueError, match="Unknown stream fallback reason"):
+        _record_stream_fallback(app, "sid", "unclassified_silent_downgrade")
+
+
+def test_sync_execution_default_fallback_is_structured(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    async def returns_none_without_reason(*args: Any, **kwargs: Any) -> None:
+        del args, kwargs
+        return None
+
+    monkeypatch.setattr("clio_agent.gact.app._try_streamed_forward", returns_none_without_reason)
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent("sync answer"))
+    client = TestClient(app)
+    sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
+
+    client.post(
+        f"/v1/sessions/{sid}/messages",
+        json={"parts": [{"type": "text", "text": "stream me"}]},
+    )
+
+    history = app.state.bus._history.get(sid, [])
+    deltas = [e for e in history if e.type == "message.part.delta"]
+    completed_messages = [e for e in history if e.type == "message.completed"]
+
+    assert deltas == []
+    _assert_structured_stream_fallback(
+        completed_messages[-1].payload["metadata"], "sync_execution_path"
+    )
 
 
 async def test_streamify_setup_failure_returns_none_for_sync_fallback(
@@ -154,6 +220,9 @@ async def test_streamify_setup_failure_returns_none_for_sync_fallback(
     assert agent.calls == []
     fallback = _pop_stream_fallback(app, "sid")
     assert fallback["reason"] == "stream_setup_failed"
+    assert fallback["synthetic_posthoc"] is True
+    assert fallback["live_streaming"] is False
+    assert fallback["recovery_actions"]
     assert "ValueError" in fallback["message"]
 
 
@@ -270,6 +339,34 @@ async def test_stream_failure_after_delta_raises_instead_of_sync_fallback(
     assert agent.calls == []
 
 
+async def test_stream_failure_before_delta_raises_instead_of_sync_fallback(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    async def fail_before_chunk(*args: Any, **kwargs: Any) -> Any:
+        del args, kwargs
+        raise RuntimeError("planner/provider failed before output")
+        yield "unreachable"
+
+    def fake_streamify(*args: Any, **kwargs: Any) -> Any:
+        del args, kwargs
+        return fail_before_chunk
+
+    streamify_module = importlib.import_module("dspy.streaming.streamify")
+    monkeypatch.setattr(streamify_module, "streamify", fake_streamify)
+    agent = _DspyAgent("sync fallback should not run")
+    app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
+    chunks: list[str] = []
+
+    async def emit_chunk(text: str) -> None:
+        chunks.append(text)
+
+    with pytest.raises(_StreamingOutputError, match="planner/provider failed"):
+        await _try_streamed_forward(app, "stream breaks before output", "sid", emit_chunk)
+
+    assert chunks == []
+    assert agent.calls == []
+
+
 async def test_stream_without_final_prediction_after_delta_raises(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -339,6 +436,47 @@ def test_mid_stream_failure_surfaces_error_without_sync_rerun(
     assert completed_parts[-1].payload["final_text"] == "partial "
     assert completed_messages[-1].payload["stop_reason"] == "error"
     assert completed_messages[-1].payload["error_info"]["error"] == "provider_error"
+
+
+def test_pre_stream_failure_surfaces_error_without_sync_rerun(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    async def fail_before_chunk(*args: Any, **kwargs: Any) -> Any:
+        del args, kwargs
+        raise RuntimeError("planner/provider failed before output")
+        yield "unreachable"
+
+    def fake_streamify(*args: Any, **kwargs: Any) -> Any:
+        del args, kwargs
+        return fail_before_chunk
+
+    streamify_module = importlib.import_module("dspy.streaming.streamify")
+    monkeypatch.setattr(streamify_module, "streamify", fake_streamify)
+    agent = _DspyAgent("sync fallback should not run")
+    app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
+    client = TestClient(app)
+    sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
+
+    client.post(
+        f"/v1/sessions/{sid}/messages",
+        json={"parts": [{"type": "text", "text": "stream me"}]},
+    )
+
+    messages = client.get(f"/v1/sessions/{sid}/messages").json()["messages"]
+    assistant = [m for m in messages if m["role"] == "assistant"][-1]
+    assert agent.calls == []
+    assert assistant["stop_reason"] == "error"
+    assert assistant["error_info"]["error"] == "provider_error"
+    assert "planner/provider failed" in assistant["error_info"]["message"]
+    assert assistant["parts"] == []
+
+    history = app.state.bus._history.get(sid, [])
+    deltas = [e for e in history if e.type == "message.part.delta"]
+    completed_messages = [e for e in history if e.type == "message.completed"]
+    assert deltas == []
+    assert completed_messages[-1].payload["stop_reason"] == "error"
+    assert completed_messages[-1].payload["error_info"]["details"]["partial_output"] is False
+    assert "stream_fallback" not in completed_messages[-1].payload.get("metadata", {})
 
 
 def test_non_text_parts_skip_deltas(app_client) -> None:
@@ -440,14 +578,12 @@ def test_streamify_final_prediction_without_chunks_has_specific_fallback(
     assert deltas == []
     assert added[-1].payload["part"]["text"] == "complete answer"
     assert added[-1].payload["part"]["metadata"]["stream_source"] == "synthetic_posthoc"
-    assert (
-        added[-1].payload["part"]["metadata"]["stream_fallback"]["reason"]
-        == "stream_completed_without_chunks"
+    _assert_structured_stream_fallback(
+        added[-1].payload["part"]["metadata"], "stream_completed_without_chunks"
     )
     assert completed_parts[-1].payload["stream_source"] == "synthetic_posthoc"
     assert completed_parts[-1].payload["final_text"] == "complete answer"
     assert completed_messages[-1].payload["metadata"]["stream_source"] == "synthetic_posthoc"
-    assert (
-        completed_messages[-1].payload["metadata"]["stream_fallback"]["reason"]
-        == "stream_completed_without_chunks"
+    _assert_structured_stream_fallback(
+        completed_messages[-1].payload["metadata"], "stream_completed_without_chunks"
     )
