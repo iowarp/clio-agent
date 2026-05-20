@@ -90,6 +90,7 @@ so the tests prove what they prove.
 | `permissions` | yes | no | MCPToolBridge doesn't gate destructive ops |
 | `cancellation` (best-effort) | yes | partial | Server settles the GACT envelope as cancelled; executor-thread provider/tool work may continue and is flagged with `execution_cancellation="best_effort"` |
 | `tool_telemetry` events | yes | partial | Synthesised from `tools_called` post-hoc; not live |
+| `user` / `skill` / `extracted` agents | yes | no | `/v1/agents` surfaces definitions, prompts, tools, provider, and model metadata; ClioAgent's planner still routes only built-in experts/tools |
 
 ## What does work end-to-end against real Claude
 

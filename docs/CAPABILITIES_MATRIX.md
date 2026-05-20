@@ -84,7 +84,7 @@ guaranteed upstream abort.
 | `edit_modes` | ✅ verified | session.edit_mode (diff/whole/patch) shapes the file_diff Part — diff: unified_diff, whole: new_content only, patch: both |
 | `plan_mode` | ✅ verified | session.mode=plan refuses `/diffs/apply` with `PermissionError("refused to write under session.mode='plan'")`; file unchanged |
 | `agent_write` | ✅ verified | `POST/PUT/DELETE /v1/agents` lifecycle; user agents appear in `/v1/agents` with `source="user"` |
-| `skills_extraction` | ✅ verified | `POST /v1/agents/extract` mines `tools_called` from past sessions → produces a routable agent |
+| `skills_extraction` | ✅ verified | `POST /v1/agents/extract` mines `tools_called` from past sessions → produces a user agent definition visible in `/v1/agents`; real planner execution is tracked in `docs/tui/REAL_GAPS.md` |
 
 ## Provider-Specific Verification
 

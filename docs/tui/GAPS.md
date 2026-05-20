@@ -37,6 +37,8 @@ same rich event stream as the smoke/fake agents.
 | `edit_modes` | `session.edit_mode` controls diff/whole/patch file-diff shape. |
 | `scheduled_sessions` | Cron-style schedules can fire stored backend commands. |
 | `session_sharing` | Share tokens expose read-only shared session views. |
+| `agent_write` | User and skill agent definitions can be created, listed, updated, deleted, and persisted with prompts, tool lists, provider, and model metadata. They are definition/catalog rows today, not extra runtime planner routes. |
+| `skills_extraction` | Past-session tool usage can be mined into a user agent definition. Real execution of extracted/user/skill agents is tracked in `REAL_GAPS.md`. |
 
 ## Partial / Real-Driver Gaps
 
@@ -49,6 +51,8 @@ audit. In short:
   running after the GACT envelope settles.
 - Some capabilities have correct endpoints/events but limited real-agent
   drivers.
+- User, skill, and extracted agent definitions are surfaced honestly in
+  `/v1/agents`; the real planner does not execute them yet.
 
 ## Maintenance Rules
 
