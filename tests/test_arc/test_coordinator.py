@@ -110,51 +110,54 @@ class TestCreatePlan:
         assert len(plan.tasks) == 1
         assert plan.tasks[0].agent_id == "DataExpert"
 
-    def test_single_agent_defaults_to_first(self, coordinator):
-        """If DataExpert not in agents, use first available."""
+    def test_single_agent_matched_unavailable_raises(self, coordinator):
+        """Matched-but-unavailable experts should not fall back to another agent."""
         agents = {"HPCExpert": MagicMock()}
-        plan = coordinator.create_plan("analyze file", agents)
-        assert len(plan.tasks) == 1
-        assert plan.tasks[0].agent_id == "HPCExpert"
+        with pytest.raises(ValueError, match="DataExpert.*not available"):
+            coordinator.create_plan("analyze file", agents)
+
+    def test_single_agent_unknown_task_raises(self, coordinator):
+        """Unknown tasks should not route to an arbitrary default expert."""
+        agents = {"DataExpert": MagicMock(), "HPCExpert": MagicMock()}
+        with pytest.raises(ValueError, match="No available agent matched"):
+            coordinator.create_plan("what is the weather", agents)
 
     def test_multi_agent_with_then(self, coordinator):
         """'then' keyword should create multi-agent plan."""
         agents = {"DataExpert": MagicMock(), "HPCExpert": MagicMock()}
-        plan = coordinator.create_plan(
-            "analyze data file then optimize on cluster", agents
-        )
+        plan = coordinator.create_plan("analyze data file then optimize on cluster", agents)
         assert len(plan.tasks) == 2
 
     def test_multi_agent_with_also(self, coordinator):
         """'also' keyword should trigger coordination."""
-        agents = {"DataExpert": MagicMock()}
+        agents = {"DataExpert": MagicMock(), "AnalysisExpert": MagicMock()}
         plan = coordinator.create_plan("check data also run analysis", agents)
-        assert len(plan.tasks) >= 1
+        assert len(plan.tasks) == 2
+
+    def test_multi_agent_unknown_segment_raises(self, coordinator):
+        """Unknown task segments should not default to DataExpert."""
+        agents = {"DataExpert": MagicMock(), "HPCExpert": MagicMock()}
+        with pytest.raises(ValueError, match="No available agent matched"):
+            coordinator.create_plan("check data also write poem", agents)
 
     def test_task_dependencies_chain(self, coordinator):
         """Second task should depend on first."""
         agents = {"DataExpert": MagicMock(), "HPCExpert": MagicMock()}
-        plan = coordinator.create_plan(
-            "analyze HDF5 file then optimize for HPC cluster", agents
-        )
+        plan = coordinator.create_plan("analyze HDF5 file then optimize for HPC cluster", agents)
         if len(plan.tasks) == 2:
             assert plan.tasks[1].depends_on == [plan.tasks[0].task_id]
 
     def test_keyword_routing_data(self, coordinator):
         """Tasks with 'data' keyword should route to DataExpert."""
         agents = {"DataExpert": MagicMock(), "HPCExpert": MagicMock()}
-        plan = coordinator.create_plan(
-            "analyze data then run on cluster", agents
-        )
+        plan = coordinator.create_plan("analyze data then run on cluster", agents)
         if len(plan.tasks) == 2:
             assert plan.tasks[0].agent_id == "DataExpert"
 
     def test_keyword_routing_hpc(self, coordinator):
         """Tasks with 'cluster' keyword should route to HPCExpert."""
         agents = {"DataExpert": MagicMock(), "HPCExpert": MagicMock()}
-        plan = coordinator.create_plan(
-            "read HDF5 file then deploy to HPC cluster", agents
-        )
+        plan = coordinator.create_plan("read HDF5 file then deploy to HPC cluster", agents)
         if len(plan.tasks) == 2:
             assert plan.tasks[1].agent_id == "HPCExpert"
 
