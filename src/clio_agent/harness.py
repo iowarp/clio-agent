@@ -53,11 +53,9 @@ class RouteDecision:
                 reason="DSPy planner selected a valid CLIO route.",
                 confidence=0.7,
             )
-        return cls(
-            target="chat",
-            source="guard",
-            reason=f"Planner produced invalid target {target!r}; kept control in chat.",
-            confidence=0.0,
+        raise ValueError(
+            f"Planner produced invalid route target {target!r}. "
+            f"Expected one of: {', '.join(sorted(ROUTE_TARGETS))}."
         )
 
 

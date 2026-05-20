@@ -996,13 +996,17 @@ class ClioAgent(dspy.Module):
     @staticmethod
     def _route_for_selected(selected: str, reason: str, confidence: float) -> RouteDecision:
         """Build the public route decision for a planner-selected handler."""
-        target = (
-            selected
-            if selected in {"chat", "data", "analysis", "visualization", "none"}
-            else "chat"
-        )
+        valid_targets = {"chat", "data", "analysis", "visualization", "none"}
+        if selected not in valid_targets:
+            raise RoutingError(
+                f"Agent planner produced invalid route target {selected!r}.",
+                details={
+                    "selected": selected,
+                    "available_targets": sorted(valid_targets),
+                },
+            )
         return RouteDecision(
-            target=target,  # type: ignore[arg-type]
+            target=selected,  # type: ignore[arg-type]
             source="dspy",
             reason=reason,
             confidence=confidence,
