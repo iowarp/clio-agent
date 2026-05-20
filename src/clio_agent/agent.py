@@ -1066,20 +1066,18 @@ class ClioAgent(dspy.Module):
                 if text.lower().startswith("json"):
                     text = text[4:].strip()
             if not text.startswith("{"):
-                start = text.find("{")
-                end = text.rfind("}")
-                if start >= 0 and end > start:
-                    text = text[start : end + 1]
+                raise ValueError(f"Planner returned invalid JSON action: {raw!r}")
             try:
                 decoded = json.loads(text)
             except json.JSONDecodeError:
-                start = text.find("{")
-                if start < 0:
-                    raise ValueError(f"Planner returned invalid JSON action: {raw!r}") from None
                 try:
-                    decoded, _ = json.JSONDecoder().raw_decode(text[start:])
+                    decoded, end = json.JSONDecoder().raw_decode(text)
                 except json.JSONDecodeError as exc:
                     raise ValueError(f"Planner returned invalid JSON action: {raw!r}") from exc
+                trailing = text[end:].strip()
+                # DSPy ChatAdapter error strings can append one bracket after the LM payload.
+                if trailing != "]":
+                    raise ValueError(f"Planner returned invalid JSON action: {raw!r}") from None
             if not isinstance(decoded, dict):
                 raise ValueError(f"Planner action must be a JSON object: {raw!r}")
 
