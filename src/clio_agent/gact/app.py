@@ -613,16 +613,43 @@ def _model_ref_is_empty(value: Any) -> bool:
     return not any(ref.values())
 
 
+def _effective_lm_config(app: "FastAPI") -> dict[str, Any]:
+    """Return the configured LM, falling back to the live agent config.
+
+    ``app.state.lm_config`` is populated by ``PUT /v1/providers/lm``.
+    When GACT boots from ``CLIO_LM_PROVIDER`` instead, the live
+    ``ClioAgent`` still carries the effective ``LMProviderConfig``.
+    """
+
+    cfg = dict(getattr(app.state, "lm_config", None) or {})
+    agent = getattr(app.state, "agent", None)
+    provider_config = getattr(agent, "_provider_config", None)
+    if provider_config is None:
+        return cfg
+
+    for key in (
+        "provider",
+        "api_base",
+        "model",
+        "temperature",
+        "max_tokens",
+        "thinking_budget",
+    ):
+        if not cfg.get(key):
+            value = getattr(provider_config, key, None)
+            if value is not None:
+                cfg[key] = value
+    if not cfg.get("transport") and getattr(provider_config, "provider", "") == "codex":
+        cfg["transport"] = getattr(provider_config, "codex_transport", None)
+    return cfg
+
+
 def _active_lm_model_ref(app: "FastAPI") -> dict[str, str]:
     """Return the active global LM as a GACT ModelRef-shaped dict."""
 
-    cfg = getattr(app.state, "lm_config", None) or {}
+    cfg = _effective_lm_config(app)
     provider = str(cfg.get("provider") or "")
     model = str(cfg.get("model") or "")
-    if (not provider or not model) and getattr(app.state, "agent", None) is not None:
-        provider_config = getattr(app.state.agent, "_provider_config", None)
-        provider = provider or str(getattr(provider_config, "provider", "") or "")
-        model = model or str(getattr(provider_config, "model", "") or "")
     return {"provider_id": provider, "model_id": model, "variant": ""}
 
 
@@ -3998,7 +4025,7 @@ def build_app(
         # LM row drives the TUI's "configure provider on connect"
         # decision. ``configured`` mirrors what GET /v1/providers/lm
         # reports — agent present + last-known config from PUT.
-        cfg = app.state.lm_config or {}
+        cfg = _effective_lm_config(app)
         if app.state.agent is not None and cfg:
             detail = f"{cfg.get('provider', '?')}/{cfg.get('model', '?')}"
             rows.append(
@@ -7850,15 +7877,17 @@ def build_app(
         modal on connect.
         """
 
-        cfg = app.state.lm_config or {}
+        cfg = _effective_lm_config(app)
         return LMProviderInfo(
             configured=app.state.agent is not None,
             provider=cfg.get("provider", ""),
             api_base=cfg.get("api_base", ""),
             model=cfg.get("model", ""),
-            temperature=float(cfg.get("temperature", 1.0) or 1.0),
-            max_tokens=int(cfg.get("max_tokens", 32000) or 32000),
-            thinking_budget=int(cfg.get("thinking_budget", 0) or 0),
+            temperature=(float(cfg["temperature"]) if cfg.get("temperature") is not None else 1.0),
+            max_tokens=int(cfg["max_tokens"]) if cfg.get("max_tokens") is not None else 32000,
+            thinking_budget=(
+                int(cfg["thinking_budget"]) if cfg.get("thinking_budget") is not None else 0
+            ),
             transport=cfg.get("transport"),
             presets=_LM_PRESETS,
         )
