@@ -682,6 +682,12 @@ async def _run_turn_in_background(
             dynamic_agent = _resolve_dynamic_agent(app, active_agent_id)
             if dynamic_agent is None:
                 raise _UnsupportedSessionAgent(active_agent_id)
+            _record_stream_fallback(
+                app,
+                sid,
+                "dynamic_agent_sync_path",
+                f"session agent {active_agent_id!r} executes through the synchronous runner",
+            )
             runner = _run_tool_user_agent if dynamic_agent.tools else _run_prompt_user_agent
             with _tool_session_context(sid):
                 loop = asyncio.get_running_loop()
