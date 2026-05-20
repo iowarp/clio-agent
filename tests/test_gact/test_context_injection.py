@@ -91,6 +91,60 @@ def test_edit_mode_includes_only_header(setup) -> None:
     assert "def f()" not in seen
 
 
+def test_missing_edit_mode_path_remains_visible(setup) -> None:
+    from .conftest import complete_turn
+
+    app, c, agent, tmp_path = setup
+    sid = c.post("/v1/sessions", json={"title": "t"}).json()["id"]
+    fpath = tmp_path / "new_file.py"
+    c.post(
+        f"/v1/sessions/{sid}/context/files",
+        json={"path": str(fpath), "mode": "edit"},
+    )
+    complete_turn(c, sid, "create it")
+    seen, _ = agent.calls[-1]
+    assert str(fpath) in seen
+    assert "mode=edit" in seen
+    assert "target does not exist yet" in seen
+
+
+def test_read_file_deleted_after_attach_surfaces_error(setup) -> None:
+    from .conftest import complete_turn
+
+    app, c, agent, tmp_path = setup
+    sid = c.post("/v1/sessions", json={"title": "t"}).json()["id"]
+    fpath = tmp_path / "notes.md"
+    fpath.write_text("important context\n")
+    c.post(
+        f"/v1/sessions/{sid}/context/files",
+        json={"path": str(fpath), "mode": "read"},
+    )
+    fpath.unlink()
+
+    assistant = complete_turn(c, sid, "summarise")
+
+    assert agent.calls == []
+    assert assistant["stop_reason"] == "error"
+    assert assistant["error_info"]["error"] == "context_file_error"
+    assert assistant["error_info"]["details"]["path"] == str(fpath)
+    assert assistant["error_info"]["details"]["operation"] == "exists"
+    assert assistant["error_info"]["details"]["recovery_actions"] == [
+        "reattach_context_file",
+        "remove_context_file",
+        "retry",
+        "exit",
+    ]
+    completed = [
+        ev for ev in app.state.bus._history.get(sid, [])
+        if ev.type == "message.completed"
+    ]
+    assert completed, "turn did not publish message.completed"
+    payload = completed[-1].payload
+    assert payload["message_id"] == assistant["id"]
+    assert payload["stop_reason"] == "error"
+    assert payload["error_info"]["error"] == "context_file_error"
+
+
 def test_path_outside_workspace_root_is_inlined_for_reads(
     setup, tmp_path: Path
 ) -> None:

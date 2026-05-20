@@ -169,6 +169,46 @@ class _UnsupportedSessionAgent(RuntimeError):
         self.agent_id = agent_id
 
 
+class _ContextFileAccessError(RuntimeError):
+    """Raised when a requested session context file cannot be prepared."""
+
+    def __init__(self, error_info: "ErrorInfo") -> None:
+        super().__init__(error_info.message)
+        self.error_info = error_info
+
+
+def _context_file_access_error(
+    *,
+    path: str,
+    mode: str,
+    operation: str,
+    message: str,
+    original_error: BaseException | None = None,
+) -> _ContextFileAccessError:
+    """Build a structured GACT error for context-file preparation failures."""
+
+    details: dict[str, Any] = {
+        "path": path,
+        "mode": mode,
+        "operation": operation,
+        "recovery_actions": [
+            "reattach_context_file",
+            "remove_context_file",
+            "retry",
+            "exit",
+        ],
+    }
+    if original_error is not None:
+        details["original_error"] = type(original_error).__name__
+        details["original_message"] = str(original_error)
+    return _ContextFileAccessError(ErrorInfo(
+        error="context_file_error",
+        message=message,
+        details=details,
+        recoverable=True,
+    ))
+
+
 def _session_agent_id(sess: Any) -> str:
     """Return the active session agent id from dict or object refs."""
 
@@ -224,42 +264,48 @@ async def _run_turn_in_background(
     # user's text so the agent's forward() sees them as primed input.
     # Plain text concat — keeps the agent.py interface untouched and
     # works regardless of which expert handles the turn.
-    enriched_text = _enrich_with_context_files(
-        app, sid, user_text
-    )
+    context_file_error: ErrorInfo | None = None
+    try:
+        enriched_text = _enrich_with_context_files(
+            app, sid, user_text
+        )
+    except _ContextFileAccessError as exc:
+        enriched_text = user_text
+        context_file_error = exc.error_info
     # iowarp/clio-agent#20: pre_message hook can transform the
     # input or veto the turn. PermissionError → cancelled-style
     # error_info; the caller sees the hook's reason.
-    try:
-        from clio_agent.runtime.hooks import fire as _fire_hook
+    if context_file_error is None:
+        try:
+            from clio_agent.runtime.hooks import fire as _fire_hook
 
-        _fire_hook("pre_message", sid, enriched_text)
-    except PermissionError as exc:
-        bus.publish(Event(
-            type="message.completed",
-            session_id=sid,
-            payload={
-                "message_id": user_msg.id,
-                "stop_reason": "blocked",
-                "error_info": {
-                    "error": "permission_error",
-                    "message": str(exc),
-                    "recoverable": True,
+            _fire_hook("pre_message", sid, enriched_text)
+        except PermissionError as exc:
+            bus.publish(Event(
+                type="message.completed",
+                session_id=sid,
+                payload={
+                    "message_id": user_msg.id,
+                    "stop_reason": "blocked",
+                    "error_info": {
+                        "error": "permission_error",
+                        "message": str(exc),
+                        "recoverable": True,
+                    },
                 },
-            },
-        ))
-        app.state.sessions.update(sid, status="error")
-        bus.publish(Event(
-            type="session.status_changed",
-            session_id=sid,
-            payload={
-                "session_id": sid,
-                "status": "error",
-                "prev_status": "running",
-                "reason": "pre_message hook blocked turn",
-            },
-        ))
-        return
+            ))
+            app.state.sessions.update(sid, status="error")
+            bus.publish(Event(
+                type="session.status_changed",
+                session_id=sid,
+                payload={
+                    "session_id": sid,
+                    "status": "error",
+                    "prev_status": "running",
+                    "reason": "pre_message hook blocked turn",
+                },
+            ))
+            return
 
     # iowarp/clio-agent#6: try real per-token streaming via
     # dspy.streamify when the LM supports it; fall back to the
@@ -323,6 +369,9 @@ async def _run_turn_in_background(
     history_start = _snapshot_lm_history_index(app)
 
     try:
+        if context_file_error is not None:
+            raise _ContextFileAccessError(context_file_error)
+
         active_agent_id = _session_agent_id(sess)
         if active_agent_id not in _EXECUTABLE_SESSION_AGENT_IDS:
             raise _UnsupportedSessionAgent(active_agent_id)
@@ -539,6 +588,10 @@ async def _run_turn_in_background(
             },
             recoverable=True,
         )
+        answer_text = ""
+        tools_called = []
+    except _ContextFileAccessError as exc:
+        error_info = exc.error_info
         answer_text = ""
         tools_called = []
     except Exception as exc:  # noqa: BLE001
@@ -1743,12 +1796,14 @@ def _enrich_with_context_files(
       - edit: include path + size hint only (the agent fetches via
         a tool when it needs the body).
 
-    Files outside the workspace's ``root_path`` are skipped silently
-    (file_policy invariant). Files larger than the cap are inlined
-    truncated with a marker.
+    Read/pin files are requested context. If they cannot be resolved,
+    found, inspected, or read, the turn raises a structured error
+    instead of proceeding with missing context. Edit entries can
+    point at files that do not exist yet, so they stay visible as
+    edit targets without requiring a body.
 
     Returns the original ``user_text`` unchanged when no files are
-    attached or all are filtered out — caller stays interface-clean.
+    attached.
     """
 
     files = (app.state.context_files.get(sid, {}) or {}).values()
@@ -1763,17 +1818,50 @@ def _enrich_with_context_files(
         mode = row.get("mode") or "read"
         try:
             p = Path(path_str).resolve()
-        except (OSError, ValueError):
-            continue
+        except (OSError, ValueError) as exc:
+            raise _context_file_access_error(
+                path=path_str,
+                mode=mode,
+                operation="resolve",
+                message=f"Could not resolve attached context file: {path_str}",
+                original_error=exc,
+            ) from exc
         # iowarp/clio-agent#5: do NOT silently skip files outside the
         # workspace root — the user explicitly attached this file via
         # POST /v1/sessions/{sid}/context/files, so they know what
         # they're doing. The destructive-write gates (workspace root
         # in _apply_edit_to_disk, plus mode=plan/architect) still
         # protect against unintended writes.
-        if not p.exists() or not p.is_file():
+        if mode == "edit" and not p.exists():
+            blocks.append(
+                f"### Context file: {path_str} "
+                f"(mode=edit, target does not exist yet)"
+            )
             continue
-        size = p.stat().st_size
+        if not p.exists():
+            raise _context_file_access_error(
+                path=path_str,
+                mode=mode,
+                operation="exists",
+                message=f"Attached context file no longer exists: {path_str}",
+            )
+        if not p.is_file():
+            raise _context_file_access_error(
+                path=path_str,
+                mode=mode,
+                operation="is_file",
+                message=f"Attached context path is not a file: {path_str}",
+            )
+        try:
+            size = p.stat().st_size
+        except OSError as exc:
+            raise _context_file_access_error(
+                path=path_str,
+                mode=mode,
+                operation="stat",
+                message=f"Could not stat attached context file: {path_str}",
+                original_error=exc,
+            ) from exc
         header = f"### Context file: {path_str} (mode={mode}, {size} bytes)"
         if mode == "edit":
             blocks.append(header)
@@ -1792,14 +1880,26 @@ def _enrich_with_context_files(
                 )
                 continue
             except Exception as exc:  # noqa: BLE001
-                blocks.append(
-                    header + f"\n(inspector failed: {exc!r})"
-                )
-                continue
+                raise _context_file_access_error(
+                    path=path_str,
+                    mode=mode,
+                    operation="inspect",
+                    message=(
+                        "Could not inspect attached binary context file: "
+                        f"{path_str}"
+                    ),
+                    original_error=exc,
+                ) from exc
         try:
             data = p.read_bytes()
-        except OSError:
-            continue
+        except OSError as exc:
+            raise _context_file_access_error(
+                path=path_str,
+                mode=mode,
+                operation="read",
+                message=f"Could not read attached context file: {path_str}",
+                original_error=exc,
+            ) from exc
         if len(data) > _CTX_MAX_BYTES:
             blocks.append(
                 header + "\n```\n" +
