@@ -120,6 +120,47 @@ class TestForwardDispatch:
         assert result.selected_expert == "analysis"
         assert "Parquet schema" in result.answer
 
+    def test_dispatch_analysis_expert_propagates_nanoagent_spawns(self, agent):
+        """Expert nanoagent spawns should reach GACT through the top-level prediction."""
+        self._set_planner(
+            agent,
+            {
+                "action": "expert",
+                "expert": "analysis",
+                "question": "Validate schema and statistics",
+            },
+        )
+
+        spawns = [
+            {
+                "agent_id": "analysis_validator",
+                "input": {"question": "Validate: schema"},
+                "answer": "schema ok",
+                "duration_ms": 12.5,
+            },
+            {
+                "agent_id": "analysis_validator",
+                "input": {"question": "Validate: statistics"},
+                "answer": "statistics ok",
+                "duration_ms": 7.0,
+            },
+        ]
+        expert_result = dspy.Prediction(
+            analysis="Parallel validation complete",
+            recommendations="No changes",
+            nanoagents_spawned=spawns,
+        )
+        agent.analysis_expert = MagicMock(return_value=expert_result)
+
+        result = agent.forward(question="Validate in parallel", session_id="test_session")
+
+        assert result.selected_expert == "analysis"
+        assert result.nanoagents_spawned == spawns
+        expert_invocations = agent.arc.get_invocations_by_agent("analysis")
+        assert expert_invocations[0].nanoagents_spawned[0].nanoagent_id == "analysis_validator"
+        main_invocations = agent.arc.get_session_invocations("test_session")
+        assert any(inv.nanoagents_spawned for inv in main_invocations)
+
     def test_dispatch_visualization_expert(self, agent):
         """Test routing to visualization expert."""
         self._set_planner(

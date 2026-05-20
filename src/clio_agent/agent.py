@@ -37,6 +37,7 @@ from clio_agent.arc.schema import (
     Conversation,
     Invocation,
     Message,
+    NanoagentSpawn,
     RoutingDecision,
 )
 from clio_agent.config import (
@@ -374,6 +375,7 @@ class ClioAgent(dspy.Module):
 
         # Step 4b: Store tier-2 expert invocation for optimizer training data
         expert_duration_ms = (time.time() - start_time) * 1000
+        nanoagents_spawned = self._extract_nanoagents_spawned(expert_result)
         if selected in ("data", "analysis", "visualization"):
             self._store_expert_invocation(
                 question=self._question_with_session_file(question, active_file),
@@ -392,7 +394,16 @@ class ClioAgent(dspy.Module):
         duration_ms = (time.time() - start_time) * 1000
         self._store_conversation(question, answer, session_id)
         self._store_routing_decision(question, route, session_id)
-        self._store_metrics(question, session_id, selected, duration_ms, success, error_msg, trace)
+        self._store_metrics(
+            question,
+            session_id,
+            selected,
+            duration_ms,
+            success,
+            error_msg,
+            trace,
+            nanoagents_spawned=nanoagents_spawned,
+        )
         self._active_trace = None
 
         return dspy.Prediction(
@@ -409,6 +420,7 @@ class ClioAgent(dspy.Module):
             duration_ms=duration_ms,
             arc_stats=self.arc.get_cache_stats(),
             lsm_stats=self.lsm.get_stats(),
+            nanoagents_spawned=nanoagents_spawned,
             error_info=error_info,
         )
 
@@ -1651,6 +1663,7 @@ class ClioAgent(dspy.Module):
         success: bool,
         error_msg: str | None = None,
         trace: RunTrace | None = None,
+        nanoagents_spawned: list[dict[str, Any]] | None = None,
     ) -> None:
         """Store invocation metrics in LSM Tree and ARC Memory.
 
@@ -1691,7 +1704,7 @@ class ClioAgent(dspy.Module):
             input={"query": question},
             output={"error": error_msg} if error_msg else {},
             tools_called=[tool.to_arc_tool_call() for tool in (trace.tools if trace else [])],
-            nanoagents_spawned=[],
+            nanoagents_spawned=self._to_arc_nanoagent_spawns(nanoagents_spawned or []),
             performance={"success": success, "duration_ms": duration_ms},
             storage_tier="warm",
         )
@@ -1745,7 +1758,9 @@ class ClioAgent(dspy.Module):
                 input={"question": question, "file_context": file_context},
                 output=output_data,
                 tools_called=[tool.to_arc_tool_call() for tool in (trace.tools if trace else [])],
-                nanoagents_spawned=[],
+                nanoagents_spawned=self._to_arc_nanoagent_spawns(
+                    self._extract_nanoagents_spawned(expert_result)
+                ),
                 performance={"success": success, "duration_ms": duration_ms},
                 storage_tier="warm",
             )
@@ -1753,6 +1768,69 @@ class ClioAgent(dspy.Module):
         except Exception as e:
             if self.verbose:
                 print(f"[ClioAgent] Warning: Failed to store expert invocation: {e}")
+
+    @staticmethod
+    def _extract_nanoagents_spawned(prediction: Any) -> list[dict[str, Any]]:
+        """Return nanoagent spawn wire rows from an expert prediction."""
+        raw = getattr(prediction, "nanoagents_spawned", None)
+        if not raw:
+            return []
+
+        out: list[dict[str, Any]] = []
+        for spawn in raw:
+            if isinstance(spawn, Mapping):
+                row = dict(spawn)
+            else:
+                row = {
+                    key: getattr(spawn, key)
+                    for key in (
+                        "agent_id",
+                        "nanoagent_id",
+                        "trace_id",
+                        "input",
+                        "task",
+                        "answer",
+                        "duration_ms",
+                        "status",
+                        "error",
+                    )
+                    if hasattr(spawn, key)
+                }
+            if row:
+                out.append(row)
+        return out
+
+    @staticmethod
+    def _to_arc_nanoagent_spawns(spawns: list[dict[str, Any]]) -> list[NanoagentSpawn]:
+        """Convert GACT nanoagent wire rows into ARC invocation records."""
+        out: list[NanoagentSpawn] = []
+        for spawn in spawns:
+            agent_id = str(
+                spawn.get("nanoagent_id")
+                or spawn.get("agent_id")
+                or spawn.get("agent")
+                or "nanoagent"
+            )
+            trace_id = str(spawn.get("trace_id") or spawn.get("id") or uuid.uuid4())
+            task = str(
+                spawn.get("task")
+                or spawn.get("question")
+                or spawn.get("input")
+                or ""
+            )
+            try:
+                duration_ms = float(spawn.get("duration_ms", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                duration_ms = 0.0
+            status = str(spawn.get("status") or ("failure" if spawn.get("error") else "success"))
+            out.append(NanoagentSpawn(
+                nanoagent_id=agent_id,
+                trace_id=trace_id,
+                task=task,
+                duration_ms=duration_ms,
+                status=status,
+            ))
+        return out
 
     def _store_conversation(self, question: str, answer: str, session_id: str) -> None:
         """Store conversation in ARC Memory.
