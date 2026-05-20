@@ -195,9 +195,15 @@ class LMProviderConfig:
         codex_transport: Codex transport mode, either "exec" or "sdk"
     """
 
-    provider: Literal["lm_studio", "ollama", "openai", "anthropic", "argonne", "codex"] = (
-        "lm_studio"
-    )
+    provider: Literal[
+        "lm_studio",
+        "ollama",
+        "openai",
+        "anthropic",
+        "argonne",
+        "codex",
+        "claude_code",
+    ] = "lm_studio"
     api_base: str = ""
     model: str = ""
     api_key: str = ""
@@ -211,6 +217,7 @@ class LMProviderConfig:
     router_temperature: float | None = None
     environment: str = "dev"
     codex_transport: Literal["exec", "sdk"] = "exec"
+    claude_code_transport: Literal["exec"] = "exec"
     # Reasoning/thinking budget. Mapped per-provider in create_lm:
     #   anthropic → thinking={"type":"enabled","budget_tokens":N}
     #   openai/openai-compat → reasoning_effort bucketed from N
@@ -259,6 +266,10 @@ class LMProviderConfig:
         if self.codex_transport not in {"exec", "sdk"}:
             raise ValueError(
                 f"codex_transport must be 'exec' or 'sdk' (got {self.codex_transport!r})"
+            )
+        if self.claude_code_transport != "exec":
+            raise ValueError(
+                f"claude_code_transport must be 'exec' (got {self.claude_code_transport!r})"
             )
 
     def _apply_model_profile_defaults(self) -> None:
@@ -353,7 +364,8 @@ def load_config_from_env() -> LMProviderConfig:
     Reads CLIO_* environment variables with fallback to provider defaults.
 
     Environment variables:
-        CLIO_LM_PROVIDER: Provider name (lm_studio, ollama, openai, anthropic, argonne, codex)
+        CLIO_LM_PROVIDER: Provider name (lm_studio, ollama, openai, anthropic,
+            argonne, codex, claude_code)
         CLIO_LM_API_BASE: Override API base URL
         CLIO_LM_MODEL: Override model identifier
         CLIO_LM_API_KEY: Override API key
@@ -362,6 +374,7 @@ def load_config_from_env() -> LMProviderConfig:
         CLIO_LM_PLANNER_MAX_TOKENS: Override planner token cap
         CLIO_LM_MAX_TOKENS: Override max tokens
         CLIO_CODEX_TRANSPORT: Codex transport mode (exec or sdk)
+        CLIO_CLAUDE_CODE_TRANSPORT: Claude Code transport mode (exec)
         CLIO_ENVIRONMENT: Deployment environment (dev/staging/production)
 
     Returns:
@@ -376,6 +389,7 @@ def load_config_from_env() -> LMProviderConfig:
     api_key = os.environ.get("CLIO_LM_API_KEY", "")
     environment = os.environ.get("CLIO_ENVIRONMENT", "dev")
     codex_transport = os.environ.get("CLIO_CODEX_TRANSPORT", "").strip().lower()
+    claude_code_transport = os.environ.get("CLIO_CLAUDE_CODE_TRANSPORT", "").strip().lower()
 
     # Parse numeric env vars
     temperature_str = os.environ.get("CLIO_LM_TEMPERATURE", "")
@@ -406,6 +420,8 @@ def load_config_from_env() -> LMProviderConfig:
         kwargs["max_tokens"] = int(max_tokens_str)
     if codex_transport:
         kwargs["codex_transport"] = codex_transport
+    if claude_code_transport:
+        kwargs["claude_code_transport"] = claude_code_transport
 
     config = LMProviderConfig(**kwargs)
 
@@ -444,8 +460,8 @@ def create_lm(config: LMProviderConfig) -> dspy.LM:
 
     For openai/anthropic, uses the provider prefix (e.g., 'openai/gpt-4o-mini').
     For lm_studio/ollama, uses 'openai/{model}' with custom api_base.
-    For codex, uses 'codex/{model}' routed through the LiteLLM
-    ``CustomLLM`` registered by ``providers.codex_litellm``.
+    For codex/claude_code, uses a provider-specific prefix routed through
+    the LiteLLM ``CustomLLM`` registered by ``providers.*_litellm``.
 
     Args:
         config: LM provider configuration
@@ -478,12 +494,18 @@ def create_lm(config: LMProviderConfig) -> dspy.LM:
 def _ensure_provider_registered(config: LMProviderConfig) -> None:
     """Register provider-specific LiteLLM hooks before constructing dspy.LM.
 
-    Only the codex provider needs this today (it's a LiteLLM CustomLLM).
-    The import is gated on the provider so installs without the codex
-    binary don't pay the import cost.
+    Only CLI-backed providers need this today (they are LiteLLM CustomLLMs).
+    The import is gated on the provider so installs without the relevant
+    binary do not pay the import cost.
     """
     if config.provider == "codex":
         from clio_agent.providers.codex_litellm import ensure_registered  # noqa: PLC0415
+
+        ensure_registered()
+    elif config.provider == "claude_code":
+        from clio_agent.providers.claude_code_litellm import (  # noqa: PLC0415
+            ensure_registered,
+        )
 
         ensure_registered()
 
@@ -492,8 +514,8 @@ def _resolve_model_name(config: LMProviderConfig) -> str:
     """Prefix the configured model id for litellm.
 
     - ``openai`` / ``anthropic``: native litellm prefix.
-    - ``codex``: routes through the registered CustomLLM
-      (``providers.codex_litellm``) under the ``codex/`` prefix.
+    - ``codex`` / ``claude_code``: route through registered CustomLLMs
+      under provider-specific prefixes.
     - everything else (lm_studio, ollama, argonne, …): treated as
       OpenAI-compatible by litellm, so we prefix with ``openai/``.
 
@@ -509,6 +531,9 @@ def _resolve_model_name(config: LMProviderConfig) -> str:
     if config.provider == "codex":
         bare = config.model.removeprefix("codex/").removeprefix("cdx-")
         return f"codex/cdx-{bare}"
+    if config.provider == "claude_code":
+        bare = config.model.removeprefix("claude_code/").removeprefix("cc-")
+        return f"claude_code/cc-{bare}"
     bare = config.model
     if bare.startswith("openai/"):
         bare = bare[len("openai/") :]
@@ -534,7 +559,14 @@ def _thinking_kwargs(config: LMProviderConfig) -> dict:
         return {}
     if config.provider == "anthropic":
         return {"thinking": {"type": "enabled", "budget_tokens": n}}
-    if config.provider in ("openai", "lm_studio", "ollama", "argonne", "codex"):
+    if config.provider in (
+        "openai",
+        "lm_studio",
+        "ollama",
+        "argonne",
+        "codex",
+        "claude_code",
+    ):
         if n < 2000:
             effort = "low"
         elif n < 8000:
@@ -582,6 +614,8 @@ def _provider_lm_kwargs(config: LMProviderConfig) -> dict[str, Any]:
     extras = _thinking_kwargs(config)
     if config.provider == "codex":
         extras["codex_transport"] = config.codex_transport
+    elif config.provider == "claude_code":
+        extras["claude_code_transport"] = config.claude_code_transport
     return extras
 
 
