@@ -3069,7 +3069,59 @@ def build_app(
             )
         mode = body.get("mode") or "read"
         if mode not in {"edit", "read", "pin"}:
-            mode = "read"
+            raise HTTPException(
+                status_code=422,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="bad_request",
+                        message=(
+                            "invalid context file mode: "
+                            f"{mode!r}; expected edit, read, or pin"
+                        ),
+                        details={"field": "mode", "allowed": ["edit", "read", "pin"]},
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        try:
+            resolved = Path(path).expanduser().resolve(strict=False)
+        except (OSError, ValueError) as exc:
+            raise HTTPException(
+                status_code=422,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="bad_request",
+                        message=f"invalid context file path: {path}",
+                        details={"field": "path", "original_error": type(exc).__name__},
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            ) from exc
+        if mode in {"read", "pin"}:
+            if not resolved.exists():
+                raise HTTPException(
+                    status_code=404,
+                    detail=ErrorEnvelope(
+                        error=ErrorInfo(
+                            error="not_found",
+                            message=f"context file not found: {path}",
+                            details={"path": path},
+                            recoverable=True,
+                        )
+                    ).model_dump(exclude_none=True),
+                )
+            if not resolved.is_file():
+                raise HTTPException(
+                    status_code=422,
+                    detail=ErrorEnvelope(
+                        error=ErrorInfo(
+                            error="bad_request",
+                            message=f"context path is not a file: {path}",
+                            details={"path": path},
+                            recoverable=True,
+                        )
+                    ).model_dump(exclude_none=True),
+                )
         row = {
             "path": path,
             "mode": mode,
