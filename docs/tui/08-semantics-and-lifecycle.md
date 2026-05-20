@@ -87,9 +87,18 @@ Tests: `tests/test_gact/test_cancellation.py`.
 
 ### Streaming
 
-**Tokens do not stream from the agent core.** SSE events in `/query` (stream mode) are synthesised from the final answer in the FastAPI layer (`test_api.py:238-271`). Real token streaming is Phase 4+.
+`clio-agent-gact` streams GACT events over `GET /v1/sessions/{sid}/events`. A user turn is accepted with `POST /v1/sessions/{sid}/messages`, then the SSE channel emits `message.created`, `message.part.added`, `message.part.delta`, `message.part.completed`, and `message.completed`.
 
-What the TUI *can* stream today: **routing + expert-selection progress** (emitted before the expert runs), then the full answer once done.
+Text streaming has explicit provenance:
+
+- `stream_source="live"` means the delta arrived through the live `dspy.streamify` path.
+- `stream_source="synthetic_posthoc"` means the backend already had the final answer and chunked it after completion for TUI rendering continuity.
+
+Current limitation: the chat `answer` path can stream live when the upstream DSPy/LiteLLM path emits chunks. Expert outputs and paths that do not emit an `answer` stream still fall back to synthetic post-hoc chunks. Mid-stream failures after user-visible output surface as structured `provider_error` messages with `details.partial_output=true`, not as a hidden sync rerun.
+
+Tests: `tests/test_gact/test_streaming.py`.
+
+The legacy `clio-agent-api` `/query` endpoint still has its own SSE shape (`routing`, `chunk`, `done`) and those chunks are composed from the final answer. That is legacy API behavior, not the native GACT TUI contract.
 
 ## Error semantics
 

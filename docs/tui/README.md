@@ -20,11 +20,13 @@ This folder is the spec and reference for building a first-class terminal UI on 
 
 ## TL;DR for somebody building the adapter
 
-- CLIO ships **`clio-agent-api`** — FastAPI server on `:8000` with `POST /query`, `GET /health`, `GET /experts`, `GET /metrics`. That's the TUI's main interface.
-- One turn = `POST /query {question, session_id}` → `{answer, selected_expert, duration_ms, error_info}`. Add `stream: true` for an SSE feed with `routing` / `chunk` / `done` events.
+- CLIO ships **`clio-agent-gact`**, a FastAPI backend that speaks the native GACT `/v1/...` contract used by `gact-tui`.
+- The legacy **`clio-agent-api`** surface still exists with `POST /query`, `GET /health`, `GET /experts`, and `GET /metrics`, but it is not the primary TUI integration path.
+- One GACT turn = `POST /v1/sessions/{sid}/messages`; the request acks quickly and progress streams over `GET /v1/sessions/{sid}/events` as `message.created`, `message.part.*`, tool telemetry when available, and `message.completed`.
 - Routing is a one-pass DSPy planner over live tools and registered experts; it selects a tool, `expert:data|analysis|visualization`, `answer`/chat, or an explicit `none` route.
-- CLIO doesn't issue `session_id`s — the adapter/TUI owns them.
-- Cancellation, per-tool SSE events, and token streaming are **not** available today. Plan to fall back to post-hoc rendering, and upstream these as Phase 4 of the integration (see [09-integration-plan.md](09-integration-plan.md)).
+- CLIO's GACT backend owns sessions through `/v1/sessions`.
+- Cancellation is available as best effort through `POST /v1/sessions/{sid}/cancel`.
+- Text deltas carry explicit stream provenance. `stream_source="live"` means the text came through the live DSPy/LiteLLM streaming path; `stream_source="synthetic_posthoc"` means the backend chunked a completed answer for rendering continuity. Expert paths can still be synthetic; see [REAL_GAPS.md](REAL_GAPS.md).
 
 ## What this folder does NOT cover
 
