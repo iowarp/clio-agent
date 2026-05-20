@@ -73,7 +73,7 @@ def _make_mock_planner(selected_expert: str):
             "answer": "CLIO is specialized in scientific data; no suitable CLIO action.",
         }
     else:
-        action = {"action": "answer", "answer": ""}
+        action = {"action": "answer", "answer": "Hello! I am CLIO."}
     mock_planner.return_value = MagicMock(action_json=json.dumps(action))
     return mock_planner
 
@@ -145,17 +145,17 @@ class TestDispatch:
         agent.shutdown()
 
     def test_dispatch_chat_query(self, tmp_path):
-        """Planner selects chat answer, verify chat_agent called."""
+        """Planner selects direct chat answer without an implicit fallback call."""
         agent = ClioAgent(data_dir=str(tmp_path / "clio"))
 
         agent.action_planner = _make_mock_planner("chat")
 
         mock_result = MagicMock()
-        mock_result.answer = "Hello! I am CLIO."
+        mock_result.answer = "fallback should not run"
 
         with patch.object(agent, "chat_agent", return_value=mock_result) as mock_chat:
             result = agent(question="Hello, who are you?")
-            mock_chat.assert_called_once()
+            mock_chat.assert_not_called()
             assert "CLIO" in result.answer
             assert result.selected_expert == "chat"
         agent.shutdown()

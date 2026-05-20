@@ -135,7 +135,7 @@ def _make_mock_planner(selected_expert: str):
     elif selected_expert == "none":
         action = {"action": "none", "answer": "No suitable CLIO action."}
     else:
-        action = {"action": "answer", "answer": ""}
+        action = {"action": "answer", "answer": "Hello from CLIO."}
     mock_planner.return_value = MagicMock(action_json=json.dumps(action))
     return mock_planner
 
@@ -208,9 +208,15 @@ class TestMultiExpertWorkflow:
         agent = ClioAgent(data_dir=str(tmp_path / "clio"))
         session_id = "routing_persist"
 
-        for expert in ["none", "none", "none"]:
-            agent.action_planner = _make_mock_planner(expert)
-            agent(question=f"Query for {expert}", session_id=session_id)
+        none_turns = [
+            ("Weather today?", "Weather requests are outside this assistant's scope."),
+            ("Sports score?", "Sports requests are outside this assistant's scope."),
+            ("Calendar holiday?", "Calendar trivia is outside this assistant's scope."),
+        ]
+        for question, answer in none_turns:
+            action = {"action": "none", "answer": answer}
+            agent.action_planner = MagicMock(return_value=MagicMock(action_json=json.dumps(action)))
+            agent(question=question, session_id=session_id)
 
         conv = agent.arc.get_conversation(session_id)
         assert conv is not None
