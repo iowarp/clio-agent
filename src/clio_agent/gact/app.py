@@ -2506,7 +2506,7 @@ def build_app(
     app.state.shared_tokens = {}
 
     @app.get("/v1/health", response_model=HealthResponse)
-    async def health() -> HealthResponse:
+    async def health() -> HealthResponse | JSONResponse:
         """SPEC §3.4 — per-subsystem status feeds the TUI's /doctor
         modal (v0.2 `integration_health`). We report on whatever is
         actually wired in this build: the API itself, the session
@@ -2620,12 +2620,18 @@ def build_app(
         else:
             overall = "ready"
 
-        return HealthResponse(
+        response = HealthResponse(
             healthy=overall != "unavailable",
             uptime_s=uptime,
             overall_status=overall,  # type: ignore[arg-type]  # narrowed by branches above
             integrations=rows,
         )
+        if overall == "unavailable":
+            return JSONResponse(
+                status_code=503,
+                content=response.model_dump(mode="json", exclude_none=True),
+            )
+        return response
 
     @app.get("/v1/capabilities", response_model=Capabilities)
     async def capabilities() -> Capabilities:

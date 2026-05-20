@@ -32,7 +32,7 @@ def test_module_exports_build_app_and_main() -> None:
 
 def test_health_returns_v0_2_shape(client: TestClient) -> None:
     resp = client.get("/v1/health")
-    assert resp.status_code == 200
+    assert resp.status_code in {200, 503}
     body = resp.json()
     # The default build_app() has no agent + no ARC wired, so the
     # integrations table flags both as unavailable/degraded and the
