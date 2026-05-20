@@ -50,7 +50,9 @@ The legacy `clio-agent-api` process still exposes `/query`, `/health`, `/experts
 
 ## Streaming Semantics
 
-The TUI should not translate legacy `/query?stream=true` `routing` / `chunk` / `done` events for the main integration. It should consume `GET /v1/sessions/{sid}/events` directly.
+The TUI should not translate legacy `/query?stream=true` `routing` /
+`done` events for the main integration. It should consume
+`GET /v1/sessions/{sid}/events` directly.
 
 Expected event flow for a turn:
 

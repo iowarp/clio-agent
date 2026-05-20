@@ -84,22 +84,24 @@ On shutdown: `agent.shutdown()` if available.
 }
 ```
 
-### SSE streaming
+### Legacy SSE completion
 
-When `stream: true`, the response is `text/event-stream`. Events (`api.py:259-299`):
+When `stream: true`, the legacy `/query` response is still
+`text/event-stream`, but it is not live token streaming. The API emits
+an SSE envelope around a completed answer:
 
 ```
 event: routing
 data: {"selected_expert": "data"}
 
-event: chunk
-data: {"text": "partial answer…"}
-
 event: done
-data: {"duration_ms": 1234.5, "selected_expert": "data"}
+data: {"duration_ms": 1234.5, "selected_expert": "data", "stream_source": "synthetic_posthoc"}
 ```
 
-> **Note:** the SSE `chunk` events are currently **composed in the FastAPI layer** (`test_api.py:238-271`) — they're not driven by real token streaming from the agent core. Today the FastAPI wrapper synthesises them from the final answer. True token streaming is Phase 4+.
+> **Note:** legacy `/query` no longer emits synthetic `chunk` events.
+> The completed answer is labeled with `stream_source="synthetic_posthoc"`
+> and `stream_fallback.reason="legacy_query_sync_path"`. Use native GACT
+> `/v1/sessions/{sid}/events` for best-effort live provider-token streaming.
 
 This section describes the legacy `clio-agent-api` surface. The primary TUI integration uses the native GACT backend below.
 
@@ -219,7 +221,10 @@ resp, _ := http.Post(url+"/query", "application/json",
 // then SSE-parse if stream=true
 ```
 
-**Pros:** long-running server, health endpoint, simple query response. **Cons:** old `/query` SSE shape; chunks are synthesized from the completed answer and must be translated into GACT events if used by the TUI.
+**Pros:** long-running server, health endpoint, simple query response.
+**Cons:** old `/query` SSE shape; it only returns a completed answer
+with synthetic post-hoc provenance and must not be presented as live
+token streaming.
 
 ### D. Direct Python import (same-process)
 
