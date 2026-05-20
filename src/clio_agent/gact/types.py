@@ -235,6 +235,21 @@ class ListWorkspacesResponse(BaseModel):
     workspaces: list[Workspace]
 
 
+class ModelRef(BaseModel):
+    """Per-session or per-message model selection reference."""
+
+    provider_id: str = ""
+    model_id: str = ""
+    variant: str = ""
+
+
+class AgentRef(BaseModel):
+    """Per-session agent/persona selection reference."""
+
+    id: str = "main"
+    mode: str = ""
+
+
 class Session(BaseModel):
     """GACT v0.2 §4.2. Fields CLIO doesn't populate yet are absent
     on the wire rather than carrying nulls — see SPEC §3.2 on
@@ -250,6 +265,8 @@ class Session(BaseModel):
     updated_at: str
     message_count: int = 0
     parent_session_id: str = ""
+    model: ModelRef = Field(default_factory=ModelRef)
+    agent: AgentRef = Field(default_factory=AgentRef)
     # CLIO-BBBBBBBBBB24: cumulative rollups.
     tokens_input: int = 0
     tokens_output: int = 0
@@ -266,6 +283,8 @@ class CreateSessionRequest(BaseModel):
 
     workspace_id: str = "ws_default"
     title: str = ""
+    model: Optional[ModelRef] = None
+    agent: Optional[AgentRef] = None
     mode: Literal["chat", "plan", "edit", "architect"] = "chat"
     edit_mode: Literal["diff", "whole", "patch"] = "diff"
     routing_mode: Literal["auto", "chat", "experts", "reasoning_only"] = "auto"
@@ -278,6 +297,8 @@ class UpdateSessionRequest(BaseModel):
     leave the corresponding session attribute alone."""
 
     title: Optional[str] = None
+    model: Optional[ModelRef] = None
+    agent: Optional[AgentRef] = None
     mode: Optional[Literal["chat", "plan", "edit", "architect"]] = None
     edit_mode: Optional[Literal["diff", "whole", "patch"]] = None
     # routing_mode overrides the planner. "auto" runs the normal planner;
@@ -397,7 +418,7 @@ class PostMessageRequest(BaseModel):
 
     parts: list[Part] = Field(default_factory=list)
     text: Optional[str] = None
-    model: Optional[dict[str, Any]] = None
+    model: Optional[ModelRef] = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
     def extract_text(self) -> str:
