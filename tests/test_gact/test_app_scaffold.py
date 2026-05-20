@@ -67,6 +67,9 @@ def test_capabilities_advertises_v0_2(client: TestClient) -> None:
     assert caps["x_clio_executor_cancellation"] is False
     assert caps["x_clio_text_streaming"] == "best_effort_live"
     assert caps["x_clio_synthetic_posthoc_streaming"] is False
+    fallback_reasons = caps["x_clio_stream_fallback_reasons"]
+    assert fallback_reasons["stream_completed_without_chunks"]["live_streaming"] is False
+    assert fallback_reasons["stream_setup_failed"]["recovery_actions"]
     # Landed capabilities.
     for flag in (
         "sessions",

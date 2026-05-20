@@ -1222,7 +1222,7 @@ async def _run_turn_in_background(
     stream_fallback = _pop_stream_fallback(app, sid)
     if text_stream_source == "synthetic_posthoc":
         if not stream_fallback:
-            stream_fallback = {"reason": "sync_execution_path"}
+            stream_fallback = _stream_fallback_payload("sync_execution_path")
         assistant_metadata["stream_fallback"] = stream_fallback
     if text_stream_source:
         for part in assistant_parts:
@@ -2329,6 +2329,102 @@ class _StreamingOutputError(RuntimeError):
     """Raised when live streaming fails after user-visible output was emitted."""
 
 
+_STREAM_FALLBACK_REASON_DEFINITIONS: dict[str, dict[str, Any]] = {
+    "streaming_dependency_unavailable": {
+        "category": "runtime_configuration",
+        "synthetic_posthoc": True,
+        "live_streaming": False,
+        "recovery_actions": ["reconfigure", "retry", "continue_without_live_streaming"],
+        "description": "DSPy/LiteLLM streaming dependencies were unavailable.",
+    },
+    "agent_not_available": {
+        "category": "runtime_configuration",
+        "synthetic_posthoc": True,
+        "live_streaming": False,
+        "recovery_actions": ["reconfigure", "retry", "exit"],
+        "description": "No executable agent was configured for the session.",
+    },
+    "agent_not_streamable": {
+        "category": "capability_gap",
+        "synthetic_posthoc": True,
+        "live_streaming": False,
+        "recovery_actions": ["continue_without_live_streaming", "reconfigure"],
+        "description": "The selected agent is not a DSPy module and cannot emit provider-token deltas.",
+    },
+    "stream_setup_failed": {
+        "category": "streaming_incompatibility",
+        "synthetic_posthoc": True,
+        "live_streaming": False,
+        "recovery_actions": ["retry", "reconfigure", "continue_without_live_streaming"],
+        "description": "DSPy stream listener setup failed before user-visible output.",
+    },
+    "stream_no_prediction": {
+        "category": "streaming_contract_violation",
+        "synthetic_posthoc": True,
+        "live_streaming": False,
+        "recovery_actions": ["retry", "reconfigure", "exit"],
+        "description": "DSPy streaming ended without a final prediction.",
+    },
+    "stream_completed_without_chunks": {
+        "category": "provider_streaming_limitation",
+        "synthetic_posthoc": True,
+        "live_streaming": False,
+        "recovery_actions": ["continue_without_live_streaming", "reconfigure", "retry"],
+        "description": "DSPy streaming returned a final prediction but no visible token chunks.",
+    },
+    "sync_execution_path": {
+        "category": "non_streamed_execution",
+        "synthetic_posthoc": True,
+        "live_streaming": False,
+        "recovery_actions": ["continue_without_live_streaming", "reconfigure"],
+        "description": "The turn completed through the synchronous execution path.",
+    },
+    "dynamic_prompt_stream_unavailable": {
+        "category": "capability_gap",
+        "synthetic_posthoc": True,
+        "live_streaming": False,
+        "recovery_actions": ["continue_without_live_streaming", "reconfigure"],
+        "description": "A registered prompt-only agent could not use live streaming.",
+    },
+    "dynamic_tool_stream_unavailable": {
+        "category": "capability_gap",
+        "synthetic_posthoc": True,
+        "live_streaming": False,
+        "recovery_actions": ["continue_without_live_streaming", "reconfigure"],
+        "description": "A registered tool agent could not use live streaming.",
+    },
+}
+
+
+def _stream_fallback_reason_capabilities() -> dict[str, dict[str, Any]]:
+    """Return the audited stream fallback reason catalog for capability metadata."""
+
+    return {
+        reason: {
+            key: list(value) if isinstance(value, list) else value for key, value in details.items()
+        }
+        for reason, details in _STREAM_FALLBACK_REASON_DEFINITIONS.items()
+    }
+
+
+def _stream_fallback_payload(reason: str, message: str = "") -> dict[str, Any]:
+    """Build structured metadata for a synthetic post-hoc text delivery path."""
+
+    definition = _STREAM_FALLBACK_REASON_DEFINITIONS.get(reason)
+    if definition is None:
+        raise ValueError(f"Unknown stream fallback reason: {reason}")
+    payload: dict[str, Any] = {
+        "reason": reason,
+        **{
+            key: list(value) if isinstance(value, list) else value
+            for key, value in definition.items()
+        },
+    }
+    if message:
+        payload["message"] = message
+    return payload
+
+
 def _stream_fallback_reasons(app: "FastAPI") -> dict[str, dict[str, Any]]:
     reasons = getattr(app.state, "stream_fallback_reasons", None)
     if not isinstance(reasons, dict):
@@ -2343,10 +2439,7 @@ def _record_stream_fallback(
     reason: str,
     message: str = "",
 ) -> None:
-    payload: dict[str, Any] = {"reason": reason}
-    if message:
-        payload["message"] = message
-    _stream_fallback_reasons(app)[sid] = payload
+    _stream_fallback_reasons(app)[sid] = _stream_fallback_payload(reason, message)
 
 
 def _pop_stream_fallback(app: "FastAPI", sid: str) -> dict[str, Any]:
@@ -2457,9 +2550,9 @@ async def _try_streamed_forward(
     """Run the agent's forward via dspy.streamify, pumping every
     text chunk through ``emit_chunk(text)`` as it arrives. Returns
     the final dspy.Prediction on success, or None if streaming is
-    unavailable before any user-visible output. After a chunk is
-    emitted, streaming failures raise ``_StreamingOutputError`` so the
-    caller can surface the failed partial turn instead of rerunning it.
+    unavailable before invoking the agent. Streaming execution failures
+    raise ``_StreamingOutputError`` so the caller can surface the failed
+    turn instead of rerunning it as synthetic post-hoc text.
 
     Falls back before output when the agent isn't a DSPy module, when
     streamify import fails, or when the wrapped call doesn't yield
@@ -2469,6 +2562,7 @@ async def _try_streamed_forward(
 
     try:
         import dspy  # noqa: PLC0415
+        from dspy.streaming.messages import StreamResponse  # noqa: PLC0415
         from dspy.streaming.streamify import streamify
         from dspy.streaming.streaming_listener import StreamListener  # noqa: PLC0415
         from litellm.types.utils import ModelResponseStream  # noqa: F401
@@ -2537,8 +2631,6 @@ async def _try_streamed_forward(
         # carry the cleaned chunk in ``.chunk``. Keep the legacy
         # ``ModelResponseStream`` / dict / str fallback for backends
         # that don't surface a typed listener payload.
-        from dspy.streaming.messages import StreamResponse  # noqa: PLC0415
-
         # Pass session_mode + session_edit_mode if the agent's
         # forward signature accepts them (newer ClioAgent does;
         # older / fake agents fall back via TypeError catch).
@@ -2578,15 +2670,7 @@ async def _try_streamed_forward(
             raise _StreamingOutputError(
                 f"live streaming failed after emitting output: {exc}"
             ) from exc
-        # No visible output was emitted, so the sync fallback can
-        # still run without duplicating user-visible content.
-        _record_stream_fallback(
-            app,
-            sid,
-            "stream_failed_before_output",
-            f"{type(exc).__name__}: {exc}",
-        )
-        return None
+        raise _StreamingOutputError(f"live streaming failed before emitting output: {exc}") from exc
     if emitted_any and final_pred is None:
         raise _StreamingOutputError(
             "live streaming ended after emitting output without a final prediction"
@@ -3918,6 +4002,7 @@ def build_app(
                 x_clio_executor_cancellation=False,
                 x_clio_text_streaming="best_effort_live",
                 x_clio_synthetic_posthoc_streaming=False,
+                x_clio_stream_fallback_reasons=_stream_fallback_reason_capabilities(),
             ),
             transports=TransportFlags(events_sse=True, events_websocket=False),
             auth=AuthInfo(schemes=["trust_socket"], current="trust_socket"),

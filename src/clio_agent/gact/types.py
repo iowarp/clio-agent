@@ -92,6 +92,7 @@ class CapabilityFlags(BaseModel):
     x_clio_executor_cancellation: bool = False
     x_clio_text_streaming: Literal["none", "synthetic_posthoc", "best_effort_live"] = "none"
     x_clio_synthetic_posthoc_streaming: bool = False
+    x_clio_stream_fallback_reasons: dict[str, dict[str, Any]] = Field(default_factory=dict)
 
 
 class TransportFlags(BaseModel):
@@ -265,9 +266,7 @@ class Session(BaseModel):
     id: str
     workspace_id: str
     title: str
-    status: Literal[
-        "idle", "running", "waiting_permission", "error", "cancelled"
-    ] = "idle"
+    status: Literal["idle", "running", "waiting_permission", "error", "cancelled"] = "idle"
     created_at: str
     updated_at: str
     message_count: int = 0

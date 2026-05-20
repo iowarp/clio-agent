@@ -74,6 +74,12 @@ Paths that cannot start a live stream mark completed text as
 `synthetic_posthoc` with an explicit `stream_fallback.reason`;
 deterministic non-token summaries may also be synthetic because there
 are no provider tokens to stream.
+The fallback object also carries `category`, `description`,
+`recovery_actions`, `synthetic_posthoc=true`, and `live_streaming=false`;
+the allowed reason catalog is advertised as
+`/v1/capabilities.capabilities.x_clio_stream_fallback_reasons`.
+Once live stream execution has started, failures are surfaced as
+structured `provider_error` turns rather than hidden sync reruns.
 
 ## Cancellation Semantics
 
