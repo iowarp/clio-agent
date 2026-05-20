@@ -42,7 +42,7 @@ from clio_agent.arc.schema import (
 from clio_agent.config import (
     create_chat_adapter,
     create_lm,
-    create_router_lm,
+    create_planner_lm,
     fetch_lm_studio_models,
     has_explicit_model_override,
     load_config_from_env,
@@ -133,7 +133,7 @@ class ClioAgent(dspy.Module):
         if self._provider_config.provider == "lm_studio" and not has_explicit_model_override():
             # LM Studio without an explicit model pin: discover loaded models
             # from the configured API base and use the same selected model for
-            # routing and the global DSPy runtime.
+            # planning and the global DSPy runtime.
             available_models = fetch_lm_studio_models(base_url=self._provider_config.api_base)
             if self.verbose:
                 main_model, expert_model = select_models_for_agents(available_models)
@@ -155,7 +155,8 @@ class ClioAgent(dspy.Module):
 
         # Planner: a model-chosen action loop over live capabilities.
         self._main_lm = create_lm(self._provider_config)
-        self._router_lm = create_router_lm(self._provider_config)
+        self._planner_lm = create_planner_lm(self._provider_config)
+        self._router_lm = self._planner_lm  # Deprecated alias for older integrations.
         self._dspy_adapter = create_chat_adapter(self._provider_config)
         self.action_planner = dspy.Predict(AgentActionSignature)
         self.answer_synthesizer = dspy.Predict(AgentAnswerSignature)
@@ -276,7 +277,14 @@ class ClioAgent(dspy.Module):
             print(f"[ClioAgent] ARC Memory initialized at {data_dir}/arc")
             print(f"[ClioAgent] LSM Tree initialized at {data_dir}/arc/lsm")
 
-    def forward(self, question: str, session_id: str = "default") -> dspy.Prediction:
+    def forward(
+        self,
+        question: str,
+        session_id: str = "default",
+        *,
+        session_mode: str = "chat",
+        session_edit_mode: str = "diff",
+    ) -> dspy.Prediction:
         """Process a question through the CLIO agent loop.
 
         Flow:
@@ -289,6 +297,10 @@ class ClioAgent(dspy.Module):
         Args:
             question: User's question or request
             session_id: Session identifier for conversation tracking
+            session_mode: GACT session mode. Currently recorded at the
+                boundary; write enforcement happens in the GACT layer.
+            session_edit_mode: GACT edit shaping mode. File-diff shaping
+                happens in the GACT layer.
 
         Returns:
             dspy.Prediction with answer, selected_expert, session_id,
@@ -300,6 +312,7 @@ class ClioAgent(dspy.Module):
         session_context = self._get_session_context(question, session_id)
         active_file = self._resolve_session_file_reference(question, session_id)
         file_context = self._get_file_context(session_id, active_file)
+        routing_mode = self._effective_routing_mode()
 
         route = RouteDecision(
             target="chat",
@@ -326,6 +339,7 @@ class ClioAgent(dspy.Module):
                 session_context=session_context,
                 file_context=file_context,
                 trace=trace,
+                routing_mode=routing_mode,
             )
             trace.route = route
             success = True
@@ -396,9 +410,19 @@ class ClioAgent(dspy.Module):
         session_context: str,
         file_context: str,
         trace: RunTrace,
+        routing_mode: str = "auto",
     ) -> tuple[str, str, Any, dict[str, Any] | None, RouteDecision]:
         """Run the planner/executor loop for one user request."""
-        capabilities = self._build_capabilities_context()
+        if routing_mode == "chat":
+            answer = self._run_chat_agent(question, session_context)
+            route = self._route_for_selected(
+                "chat",
+                "Session routing_mode='chat' forced the conversational path.",
+                confidence=1.0,
+            )
+            return "chat", answer, None, None, route
+
+        capabilities = self._build_capabilities_context(routing_mode=routing_mode)
         observations: list[dict[str, Any]] = []
         selected = "chat"
         route = trace.route
@@ -442,6 +466,16 @@ class ClioAgent(dspy.Module):
                 expert_id = self._coerce_text(action.get("expert")).strip().lower()
                 expert_question = self._coerce_text(action.get("question")).strip() or question
                 if self._should_answer_with_chat(question, file_context):
+                    if routing_mode == "experts":
+                        raise RoutingError(
+                            "Session routing_mode='experts' requires an expert/tool action, "
+                            "but the planner selected an expert without concrete file or data "
+                            "context.",
+                            details=self._recovery_details(
+                                requested_mode=routing_mode,
+                                planner_action=action,
+                            ),
+                        )
                     answer = self._run_chat_agent(question, session_context)
                     route = self._route_for_selected(
                         "chat",
@@ -477,10 +511,20 @@ class ClioAgent(dspy.Module):
                 return selected, answer, expert_result, error_info, route
 
             if kind == "none":
-                answer = self._coerce_text(action.get("answer")).strip() or (
-                    "I can help with local scientific data files, analysis, and visualizations. "
-                    "I do not have a useful CLIO action for that request."
-                )
+                if routing_mode == "experts":
+                    raise RoutingError(
+                        "Session routing_mode='experts' rejected the planner's no-op route.",
+                        details=self._recovery_details(
+                            requested_mode=routing_mode,
+                            planner_action=action,
+                        ),
+                    )
+                answer = self._coerce_text(action.get("answer")).strip()
+                if not answer:
+                    raise RoutingError(
+                        "Agent planner selected no action but did not provide an explanation.",
+                        details=self._recovery_details(planner_action=action),
+                    )
                 if self._should_replace_planner_text(
                     kind=kind,
                     question=question,
@@ -502,6 +546,14 @@ class ClioAgent(dspy.Module):
                 return "none", answer, None, None, route
 
             if kind == "answer":
+                if routing_mode == "experts" and not observations:
+                    raise RoutingError(
+                        "Session routing_mode='experts' rejected a direct planner answer.",
+                        details=self._recovery_details(
+                            requested_mode=routing_mode,
+                            planner_action=action,
+                        ),
+                    )
                 answer = self._coerce_text(action.get("answer")).strip()
                 if self._should_replace_planner_text(
                     kind=kind,
@@ -570,7 +622,7 @@ class ClioAgent(dspy.Module):
         """
         observations_text = self._format_observations_for_prompt(observations)
         try:
-            with dspy.context(lm=self._router_lm, adapter=self._dspy_adapter):
+            with dspy.context(lm=self._planner_lm, adapter=self._dspy_adapter):
                 result = self.action_planner(
                     question=question,
                     session_context=session_context,
@@ -801,7 +853,14 @@ class ClioAgent(dspy.Module):
             error_info["details"] = cls._recovery_details()
         return error_info
 
-    def _build_capabilities_context(self) -> str:
+    def _effective_routing_mode(self) -> str:
+        """Return the active GACT routing override, if one is set."""
+        mode = str(getattr(self, "_routing_mode_override", "auto") or "auto").strip().lower()
+        if mode in {"auto", "chat", "experts", "reasoning_only"}:
+            return mode
+        return "auto"
+
+    def _build_capabilities_context(self, routing_mode: str = "auto") -> str:
         """Describe live experts and tools for the planner without query heuristics."""
         lines = ["Experts:"]
         for agent_id in self.registry.list_agents():
@@ -821,6 +880,16 @@ class ClioAgent(dspy.Module):
                 lines.append(f"- {tool.name}({arg_names}): {desc}")
             else:
                 lines.append(f"- {tool.name}: {desc}")
+        if routing_mode == "experts":
+            lines.append(
+                "Routing override: experts mode is active. Do not choose answer or none "
+                "before a tool or expert has produced an observation."
+            )
+        elif routing_mode == "reasoning_only":
+            lines.append(
+                "Routing override: reasoning_only mode is active. Prefer the planner's "
+                "tool/expert reasoning path over deterministic shortcuts."
+            )
         return "\n".join(lines)
 
     def _available_dspy_tools(self) -> list[dspy.Tool]:

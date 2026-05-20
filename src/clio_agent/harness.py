@@ -44,19 +44,19 @@ class RouteDecision:
 
     @classmethod
     def from_dspy(cls, raw_target: Any) -> "RouteDecision":
-        """Normalize and validate a DSPy router output."""
+        """Normalize and validate a DSPy-selected route target."""
         target = str(raw_target or "").strip().lower()
         if target in ROUTE_TARGETS:
             return cls(
                 target=target,  # type: ignore[arg-type]
                 source="dspy",
-                reason="DSPy router selected a valid CLIO route.",
+                reason="DSPy planner selected a valid CLIO route.",
                 confidence=0.7,
             )
         return cls(
             target="chat",
             source="guard",
-            reason=f"Router produced invalid target {target!r}; kept control in chat.",
+            reason=f"Planner produced invalid target {target!r}; kept control in chat.",
             confidence=0.0,
         )
 

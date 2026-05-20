@@ -28,7 +28,7 @@ agent = ClioAgent(data_dir=str(tmp / "clio_test"), verbose=True)
 Shape after init:
 
 ```python
-agent.router                          # DSPy ChainOfThought on RouterSignature
+agent.action_planner                  # DSPy ChainOfThought on AgentActionSignature
 agent.chat_agent                      # DSPy Predict on ChatAgentSignature
 agent.data_expert                     # DataExpert (DSPy ReAct)
 agent.analysis_expert                 # AnalysisExpert
@@ -89,7 +89,7 @@ What the TUI *can* stream today: **routing + expert-selection progress** (emitte
 ```
 ClioError (base)
  ├── ProviderError   — LM unavailable / timeout
- ├── RoutingError    — router classification failed
+ ├── RoutingError    — planner could not select or validate a safe action
  ├── ExpertError     — expert ReAct loop blew up
  ├── ToolError       — MCP tool call failed
  └── ConfigError     — env / config invalid
@@ -129,7 +129,7 @@ result = with_degradation(
 
 Returns primary on success, fallback on `ProviderError`, re-raises anything else. CLIO uses this for:
 
-- Router failure → chat fallback (not a fatal).
+- Planner route failure → structured `routing_error`, not a canned answer.
 - Provider/LM failure → structured `error_info` with retry,
   reconfigure-provider, and exit recovery actions. CLIO must not hide
   an upstream/provider failure behind repeated, canned, or locally
@@ -188,10 +188,12 @@ arc.get_metrics("data")         # latest
 
 ## Routing semantics
 
-- `RouterSignature.selected_expert` is `Literal["chat","data","analysis","visualization","none"]` — five targets, no typos, validated at DSPy level (`test_routing.py:22-37`).
-- `chat` is **not registered** with the registry (built-in fallback), so `registry.get_agent_count() == 3`.
-- Heuristic triggers (`agent.py:386-402`) check keywords BEFORE invoking the LM router — saves ~200–500 ms when the intent is obvious.
-- Registry lookup by keyword: `registry.find_agents_by_keyword("hdf5") → ["data"]`.
+- `AgentActionSignature` returns a constrained JSON action. Valid action kinds are `tool`, `expert`, `answer`, and `none`.
+- `expert` actions select one of `data`, `analysis`, or `visualization`; those are the three registry-backed experts, so `registry.get_agent_count() == 3`.
+- `answer` is the conversational/chat path. It produces normal assistant text without tool execution.
+- `none` means no valid action is available. A missing planner explanation surfaces as `routing_error`; CLIO must not replace it with a canned assistant response.
+- Session `routing_mode` overrides constrain the planner path: `chat` forces the conversational path, `experts` rejects direct `answer`/`none` routes, and `reasoning_only` asks the planner to prefer tool/expert reasoning over deterministic shortcuts.
+- Registry lookup by keyword remains available for discovery, for example `registry.find_agents_by_keyword("hdf5")` returns the data expert.
 
 ## Expert semantics
 
@@ -271,5 +273,5 @@ $ curl -s -X POST http://127.0.0.1:8000/query \
 | ARC memory | `test_memory_coverage.py:35-150` — Invocation + Metrics schemas pinned |
 | Context window | `test_context_compiler.py:24-109` — 2K (T1) / 4K (T2) budgets |
 | Tools | `test_hdf5_server.py:37-120` — file_policy validation BEFORE open, error dict on failure |
-| Registry | `test_routing.py:167-210` — 3 experts, 5 router targets |
+| Registry | `test_registry.py` — 3 registry-backed experts plus planner-selected chat/none outcomes |
 | Variants | `test_runner.py:141-218` — SIMBA + stat-sig gating + VariantRecord in ARC |

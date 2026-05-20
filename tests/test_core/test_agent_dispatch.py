@@ -150,6 +150,48 @@ class TestForwardDispatch:
         assert result.selected_expert == "chat"
         assert "help with data" in result.answer
 
+    def test_forward_accepts_session_knobs(self, agent):
+        """GACT session mode/edit mode kwargs should reach real ClioAgent.forward."""
+        self._set_planner(agent, {"action": "answer", "answer": "ok"})
+
+        result = agent.forward(
+            question="Hello!",
+            session_id="test_session",
+            session_mode="edit",
+            session_edit_mode="patch",
+        )
+
+        assert result.answer == "ok"
+
+    def test_routing_mode_chat_forces_chat_without_planner(self, agent):
+        """routing_mode=chat should bypass planner classification for this turn."""
+        agent._routing_mode_override = "chat"
+        agent.action_planner = MagicMock()
+        agent._run_chat_agent = MagicMock(return_value="chat override answer")
+
+        result = agent.forward(question="Hello!", session_id="test_session")
+
+        assert result.selected_expert == "chat"
+        assert result.answer == "chat override answer"
+        assert "routing_mode='chat'" in result.route_reason
+        agent.action_planner.assert_not_called()
+
+    def test_routing_mode_experts_rejects_direct_answer(self, agent):
+        """routing_mode=experts should surface a route error instead of chatting."""
+        agent._routing_mode_override = "experts"
+        self._set_planner(agent, {"action": "answer", "answer": "plain chat"})
+
+        result = agent.forward(question="Hello!", session_id="test_session")
+
+        assert result.answer == ""
+        assert result.error_info is not None
+        assert result.error_info["error"] == "routing_error"
+        assert result.error_info["details"]["recovery_actions"] == [
+            "retry",
+            "reconfigure_provider",
+            "exit",
+        ]
+
     def test_hdf5_file_followup_reuses_last_session_path(self, agent, tmp_path):
         """Pathless HDF5 follow-ups should stay on the native data expert path."""
         hdf5_path = tmp_path / "run.h5"

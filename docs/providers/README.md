@@ -37,7 +37,7 @@ Three ways, in increasing scope:
    `CLIO_LM_API_BASE`, `CLIO_LM_MODEL`, `CLIO_LM_API_KEY` (and the
    provider-specific knobs documented per-provider).
 3. **Programmatic** (Python). Construct an `LMProviderConfig` and pass
-   it to `create_lm()` / `create_router_lm()`.
+   it to `create_lm()` / `create_planner_lm()`.
 
 ## How a provider call lands
 
@@ -46,7 +46,7 @@ user prompt
   ↓
 ClioAgent.action_planner          (dspy.Predict with AgentActionSignature)
   ↓
-dspy.context(lm=self._router_lm)  (per-request LM scope)
+dspy.context(lm=self._planner_lm)  (per-request LM scope)
   ↓
 dspy.LM.forward()                 (LiteLLM-compatible model string)
   ↓

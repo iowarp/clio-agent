@@ -93,8 +93,8 @@ so the tests prove what they prove.
 
 ## What does work end-to-end against real Claude
 
-- POST messages → routing decision (real router) → out-of-scope
-  fallback or chat path → text answer → `message.completed`
+- POST messages → planner decision → explicit no-action explanation
+  or chat path → text answer → `message.completed`
 - `/v1/health.integrations[]` reflects real ClioAgent + ARC state
 - Sessions CRUD, fork (in-memory copy), search (in-memory match)
 - `/v1/memory/stats` from the real ARCMemory (cache hit rate updates)

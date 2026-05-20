@@ -255,10 +255,9 @@ async def _run_turn_in_background(
     try:
         # Honour the session's routing override. routing_mode "chat"
         # forces the chat path (no /chat prefix needed); "experts"
-        # rejects chat/none classifications. We mutate the agent's
-        # ProviderConfig.routing_mode for the duration of the call so
-        # ClioAgent.forward can see it without changing its public
-        # signature.
+        # rejects chat/none classifications. Keep the override on the
+        # agent for the duration of this turn so ClioAgent.forward and
+        # streamed forward see the same mode.
         routing_override = getattr(sess, "routing_mode", "auto") or "auto"
         agent_obj = app.state.agent
         prev_routing = getattr(agent_obj, "_routing_mode_override", "auto")
@@ -340,7 +339,7 @@ async def _run_turn_in_background(
                 turn_tokens[key] = int(v or 0)
         else:
             # Diff the LM history slice for this turn first — captures
-            # router + expert + chat calls cleanly. Falls back to
+            # planner + expert + chat calls cleanly. Falls back to
             # ``last entry only`` for older code paths, then to a
             # character-based estimate when the upstream proxy
             # reports zero (some OpenAI-compatible proxies don't
@@ -782,9 +781,9 @@ def _current_lm_model_id() -> str:
 
 def _all_known_lms(app: "FastAPI") -> list[Any]:
     """Return every LM instance the running agent might call —
-    ``dspy.settings.lm`` plus the agent's ``_router_lm`` and any
+    ``dspy.settings.lm`` plus the agent's ``_planner_lm`` and any
     expert-bound LMs. Lets the turn handler diff history across
-    all of them so router + expert + chat token counts roll up."""
+    all of them so planner + expert + chat token counts roll up."""
 
     lms: list[Any] = []
     try:
@@ -795,7 +794,7 @@ def _all_known_lms(app: "FastAPI") -> list[Any]:
     except Exception:  # pragma: no cover
         pass
     agent = getattr(getattr(app, "state", None), "agent", None)
-    for attr in ("_router_lm", "router_lm", "_expert_lm"):
+    for attr in ("_planner_lm", "_router_lm", "router_lm", "_expert_lm"):
         side = getattr(agent, attr, None) if agent is not None else None
         if side is not None and side not in lms:
             lms.append(side)
@@ -823,7 +822,7 @@ def _snapshot_lm_history_index(app: Optional["FastAPI"] = None) -> dict[int, int
 
 def _usage_from_history_slice(start: Any, app: Optional["FastAPI"] = None) -> dict[str, Any]:
     """Sum usage from each known LM's ``history[start:]`` — every
-    call this turn made across router + experts + chat. Accepts
+    call this turn made across planner + experts + chat. Accepts
     either a ``dict[id(lm) -> int]`` snapshot (preferred) or a
     legacy single int for backwards compat with single-LM callers.
     """
@@ -5875,7 +5874,7 @@ def build_app(
                 codex_transport=req.transport or "exec",
             )
             # ClioAgent.__init__ reads load_config_from_env() to
-            # wire its router + experts. Stamp the env before
+            # wire its planner + experts. Stamp the env before
             # construction so the fresh agent matches what we just
             # configured for DSPy — otherwise it falls back to the
             # default provider (lm_studio) and we silently configure
@@ -5899,7 +5898,7 @@ def build_app(
             new_lm = create_lm(cfg)
             from clio_agent.config import (  # noqa: PLC0415
                 create_chat_adapter,
-                create_router_lm,
+                create_planner_lm,
             )
             new_adapter = create_chat_adapter(cfg)
             try:
@@ -5917,7 +5916,7 @@ def build_app(
             # swaps cover the LM-dependent surface:
             #   * _provider_config   -> health/config surfaces the new provider
             #   * _main_lm           -> chat + answer synthesis use the new lm
-            #   * _router_lm         -> planner runs with the new lm
+            #   * _planner_lm        -> planner runs with the new lm
             #   * _dspy_adapter      -> local backends keep text ChatAdapter mode
             #   * dspy.settings.lm   -> experts pick it up via dspy.context()
             # Only rebuild from scratch when no agent yet exists
@@ -5927,7 +5926,8 @@ def build_app(
             if existing is not None:
                 existing._provider_config = cfg
                 existing._main_lm = new_lm
-                existing._router_lm = create_router_lm(cfg)
+                existing._planner_lm = create_planner_lm(cfg)
+                existing._router_lm = existing._planner_lm
                 existing._dspy_adapter = new_adapter
                 agent = existing
             else:

@@ -113,10 +113,11 @@ class TestClioAgent:
         assert agent is not None
         agent.shutdown()
 
-    def test_router_lm_configured(self):
-        """Test that router LM is configured separately."""
+    def test_planner_lm_configured(self):
+        """Test that planner LM is configured separately."""
         agent = ClioAgent()
-        assert agent._router_lm is not None
+        assert agent._planner_lm is not None
+        assert agent._router_lm is agent._planner_lm
         agent.shutdown()
 
     def test_lm_studio_explicit_model_skips_model_discovery(self, tmp_path, monkeypatch):
@@ -133,7 +134,7 @@ class TestClioAgent:
 
         try:
             assert agent._provider_config.model == "nemotron-cascade-2-30b-a3b-i1"
-            assert agent._router_lm.model == "openai/nemotron-cascade-2-30b-a3b-i1"
+            assert agent._planner_lm.model == "openai/nemotron-cascade-2-30b-a3b-i1"
         finally:
             agent.shutdown()
 
@@ -147,7 +148,7 @@ class TestClioAgent:
 
         try:
             assert agent._main_lm.model == "openai/ibm/granite-4-h-tiny"
-            assert agent._router_lm.model == "openai/ibm/granite-4-h-tiny"
+            assert agent._planner_lm.model == "openai/ibm/granite-4-h-tiny"
             assert agent._dspy_adapter.use_json_adapter_fallback is False
         finally:
             agent.shutdown()
@@ -180,7 +181,7 @@ class TestClioAgent:
                 )
 
             assert action["answer"] == "ok"
-            assert calls[0]["lm"] is agent._router_lm
+            assert calls[0]["lm"] is agent._planner_lm
             assert calls[0]["adapter"] is agent._dspy_adapter
             assert agent._dspy_adapter.use_json_adapter_fallback is False
         finally:

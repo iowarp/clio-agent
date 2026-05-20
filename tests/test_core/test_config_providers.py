@@ -1,7 +1,7 @@
 """
 Tests for multi-provider LM configuration.
 
-Tests LMProviderConfig, load_config_from_env, create_lm, and create_router_lm.
+Tests LMProviderConfig, load_config_from_env, create_lm, and create_planner_lm.
 """
 
 from unittest.mock import MagicMock, patch
@@ -12,6 +12,7 @@ import pytest
 from clio_agent.config import (
     LMProviderConfig,
     create_lm,
+    create_planner_lm,
     create_router_lm,
     load_config_from_env,
 )
@@ -72,10 +73,17 @@ class TestLMProviderConfig:
         config = LMProviderConfig()
         assert config.temperature == 1.0
 
-    def test_default_router_temperature(self):
-        """Default router temperature should be 0.3."""
+    def test_default_planner_temperature(self):
+        """Default planner temperature should be 0.3."""
         config = LMProviderConfig()
+        assert config.planner_temperature == 0.3
         assert config.router_temperature == 0.3
+
+    def test_router_temperature_alias(self):
+        """Legacy router_temperature constructor arg should still configure the planner."""
+        config = LMProviderConfig(router_temperature=0.2)
+        assert config.planner_temperature == 0.2
+        assert config.router_temperature == 0.2
 
     def test_default_max_tokens(self):
         """Default max_tokens should be 32000."""
@@ -260,34 +268,40 @@ class TestCreateLM:
             assert isinstance(lm, dspy.LM), f"Failed for {provider}"
 
 
-class TestCreateRouterLM:
-    """Test create_router_lm function."""
+class TestCreatePlannerLM:
+    """Test create_planner_lm function."""
 
     def test_returns_dspy_lm(self):
-        """create_router_lm should return a dspy.LM instance."""
+        """create_planner_lm should return a dspy.LM instance."""
         config = LMProviderConfig(provider="lm_studio")
-        lm = create_router_lm(config)
+        lm = create_planner_lm(config)
         assert isinstance(lm, dspy.LM)
 
-    def test_uses_router_temperature(self):
-        """Router LM should use router_temperature, not temperature."""
+    def test_uses_planner_temperature(self):
+        """Planner LM should use planner_temperature, not temperature."""
         config = LMProviderConfig(
             provider="lm_studio",
             temperature=1.0,
-            router_temperature=0.3,
+            planner_temperature=0.3,
         )
-        lm = create_router_lm(config)
+        lm = create_planner_lm(config)
         # The temperature is set on the LM kwargs
         assert lm.kwargs.get("temperature") == 0.3
 
-    def test_custom_router_temperature(self):
-        """Router LM should respect custom router_temperature."""
+    def test_custom_planner_temperature(self):
+        """Planner LM should respect custom planner_temperature."""
         config = LMProviderConfig(
             provider="ollama",
-            router_temperature=0.1,
+            planner_temperature=0.1,
         )
-        lm = create_router_lm(config)
+        lm = create_planner_lm(config)
         assert lm.kwargs.get("temperature") == 0.1
+
+    def test_router_lm_alias(self):
+        """create_router_lm remains as a compatibility alias."""
+        config = LMProviderConfig(provider="lm_studio")
+        lm = create_router_lm(config)
+        assert isinstance(lm, dspy.LM)
 
 
 class TestSetupDspy:

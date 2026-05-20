@@ -189,7 +189,7 @@ class LMProviderConfig:
         api_key: API key
         temperature: Sampling temperature
         max_tokens: Maximum tokens per response
-        router_temperature: Lower temperature for deterministic routing
+        planner_temperature: Lower temperature for deterministic action planning
         environment: Deployment environment (dev/staging/production)
         codex_transport: Codex transport mode, either "exec" or "sdk"
     """
@@ -205,7 +205,8 @@ class LMProviderConfig:
     # PROVIDER_DEFAULTS) if it has one, else 32000". Callers who
     # explicitly pass any non-zero value win.
     max_tokens: int = 0
-    router_temperature: float = 0.3
+    planner_temperature: float = 0.3
+    router_temperature: float | None = None
     environment: str = "dev"
     codex_transport: Literal["exec", "sdk"] = "exec"
     # Reasoning/thinking budget. Mapped per-provider in create_lm:
@@ -221,6 +222,9 @@ class LMProviderConfig:
 
     def __post_init__(self) -> None:
         """Fill empty fields + capability flags from provider defaults."""
+        if self.router_temperature is not None:
+            self.planner_temperature = self.router_temperature
+        self.router_temperature = self.planner_temperature
         defaults = PROVIDER_DEFAULTS.get(self.provider, PROVIDER_DEFAULTS["lm_studio"])
         if not self.api_base:
             self.api_base = defaults["api_base"]
@@ -322,7 +326,8 @@ def load_config_from_env() -> LMProviderConfig:
         CLIO_LM_API_BASE: Override API base URL
         CLIO_LM_MODEL: Override model identifier
         CLIO_LM_API_KEY: Override API key
-        CLIO_LM_TEMPERATURE: Override temperature
+        CLIO_LM_TEMPERATURE: Override reasoner/chat temperature
+        CLIO_LM_PLANNER_TEMPERATURE: Override planner temperature
         CLIO_LM_MAX_TOKENS: Override max tokens
         CLIO_CODEX_TRANSPORT: Codex transport mode (exec or sdk)
         CLIO_ENVIRONMENT: Deployment environment (dev/staging/production)
@@ -342,6 +347,10 @@ def load_config_from_env() -> LMProviderConfig:
 
     # Parse numeric env vars
     temperature_str = os.environ.get("CLIO_LM_TEMPERATURE", "")
+    planner_temperature_str = os.environ.get(
+        "CLIO_LM_PLANNER_TEMPERATURE",
+        os.environ.get("CLIO_LM_ROUTER_TEMPERATURE", ""),
+    )
     max_tokens_str = os.environ.get("CLIO_LM_MAX_TOKENS", "")
 
     kwargs: dict = {
@@ -356,6 +365,8 @@ def load_config_from_env() -> LMProviderConfig:
         kwargs["api_key"] = api_key
     if temperature_str:
         kwargs["temperature"] = float(temperature_str)
+    if planner_temperature_str:
+        kwargs["planner_temperature"] = float(planner_temperature_str)
     if max_tokens_str:
         kwargs["max_tokens"] = int(max_tokens_str)
     if codex_transport:
@@ -499,16 +510,16 @@ def _thinking_kwargs(config: LMProviderConfig) -> dict:
     return {}
 
 
-def create_router_lm(config: LMProviderConfig) -> dspy.LM:
-    """Create a lower-temperature LM for deterministic routing.
+def create_planner_lm(config: LMProviderConfig) -> dspy.LM:
+    """Create a lower-temperature LM for deterministic action planning.
 
-    Uses config.router_temperature instead of config.temperature.
+    Uses config.planner_temperature instead of config.temperature.
 
     Args:
         config: LM provider configuration
 
     Returns:
-        Configured dspy.LM instance with lower temperature
+        Configured dspy.LM instance with lower planner temperature
     """
     dspy = _dspy()
     _ensure_provider_registered(config)
@@ -518,12 +529,17 @@ def create_router_lm(config: LMProviderConfig) -> dspy.LM:
         model=model_name,
         api_base=config.api_base,
         api_key=config.api_key,
-        temperature=config.router_temperature,
+        temperature=config.planner_temperature,
         max_tokens=config.max_tokens,
         model_type="chat",
         cache=False,  # see create_lm — same rationale
         **_provider_lm_kwargs(config),
     )
+
+
+def create_router_lm(config: LMProviderConfig) -> dspy.LM:
+    """Backward-compatible alias for create_planner_lm."""
+    return create_planner_lm(config)
 
 
 def _provider_lm_kwargs(config: LMProviderConfig) -> dict[str, Any]:
