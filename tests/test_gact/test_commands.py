@@ -35,6 +35,9 @@ def test_commands_listed(client: TestClient) -> None:
     ids = {c["id"] for c in body["commands"]}
     assert "/clear" in ids
     assert "/cache-stats" in ids
+    optimize = next(c for c in body["commands"] if c["id"] == "/optimize")
+    assert optimize["status"] == "unavailable"
+    assert optimize["error"] == "not_implemented"
 
 
 def test_commands_capability_advertised(client: TestClient) -> None:
@@ -74,6 +77,25 @@ def test_dispatch_cache_stats_returns_arc_numbers(client: TestClient) -> None:
     text = resp["result"]["text"]
     assert "hits=" in text
     assert "misses=" in text
+
+
+def test_dispatch_optimize_returns_structured_not_implemented(
+    client: TestClient,
+) -> None:
+    sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
+
+    resp = client.post(f"/v1/sessions/{sid}/commands/optimize")
+
+    assert resp.status_code == 501
+    body = resp.json()
+    assert body["error"]["error"] == "not_implemented"
+    assert body["error"]["details"]["command"] == "/optimize"
+    assert body["error"]["details"]["recovery_actions"] == [
+        "retry_after_optimizer_support_lands",
+        "exit",
+    ]
+    msgs = client.get(f"/v1/sessions/{sid}/messages").json()["messages"]
+    assert msgs == []
 
 
 def test_dispatch_unknown_command_404s(client: TestClient) -> None:
