@@ -9,6 +9,8 @@ LMProviderConfig + create_lm() / create_planner_lm() driven by the
 PROVIDER_DEFAULTS dict derived from clio_agent.providers.registry.
 """
 
+import pytest
+
 from clio_agent.config import select_models_for_agents
 
 
@@ -41,9 +43,12 @@ class TestSelectModels:
         main, expert = select_models_for_agents(models)
         assert main == "chat-model"
 
-    def test_select_empty_fallback(self):
-        """With empty list, should fall back to default model."""
-        models = []
-        main, expert = select_models_for_agents(models)
-        assert main is not None
-        assert expert is not None
+    def test_select_empty_surfaces_configuration_error(self):
+        """With no discovered models, do not guess a hardcoded fallback."""
+        with pytest.raises(ValueError, match="reported no loaded models"):
+            select_models_for_agents([])
+
+    def test_select_embedding_only_surfaces_configuration_error(self):
+        """Embedding-only models are not usable for chat/planner turns."""
+        with pytest.raises(ValueError, match="only embedding/non-chat models"):
+            select_models_for_agents(["text-embedding-nomic-embed-text-v1.5"])

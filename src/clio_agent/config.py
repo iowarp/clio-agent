@@ -674,16 +674,24 @@ def select_models_for_agents(models: List[str]) -> tuple[str, str]:
 
     Returns:
         Tuple of (main_model, expert_model)
+
+    Raises:
+        ValueError: If discovery returned no usable chat/instruct model.
     """
-    main_model = None
-    expert_model = None
+    if not models:
+        raise ValueError(
+            "LM Studio reported no loaded models. Load a chat/instruct model, "
+            "set CLIO_LM_MODEL explicitly, or reconfigure CLIO_LM_PROVIDER."
+        )
 
     # Filter out embedding models
     chat_models = [m for m in models if "embedding" not in m.lower()]
 
     if not chat_models:
-        print("No chat/instruct models found. Using available models as fallback.")
-        chat_models = models
+        raise ValueError(
+            "LM Studio reported only embedding/non-chat models. Load a chat/instruct "
+            f"model or set CLIO_LM_MODEL explicitly. Models: {', '.join(models)}"
+        )
 
     # Strategy 1: Look for granite chat models
     granite_models = [m for m in chat_models if "granite" in m.lower()]
@@ -695,24 +703,15 @@ def select_models_for_agents(models: List[str]) -> tuple[str, str]:
             expert_model = granite_models[1]
         else:
             expert_model = main_model
-
-    # Strategy 2: If no granite models, take any available chat model
-    if main_model is None and chat_models:
+    else:
+        # Strategy 2: If no granite models, take any available chat model.
         main_model = chat_models[0]
-
-    if expert_model is None:
         # Try to pick a different model if possible
         remaining_models = [m for m in chat_models if m != main_model]
         if remaining_models:
             expert_model = remaining_models[0]
         else:
             expert_model = main_model
-
-    # Fallback default if absolutely nothing found (shouldn't happen if models list is not empty)
-    if main_model is None:
-        main_model = "ibm/granite-4-h-tiny"
-    if expert_model is None:
-        expert_model = "ibm/granite-4-h-tiny"
 
     print("Selected models:")
     print(f"  Main/Router: {main_model}")
