@@ -29,7 +29,8 @@ The agent runs in three tiers: a main orchestrator (planner loop over registered
 
 ## Quick Start
 
-One line installs `clio-agent` + the `gact` TUI, builds them, and drops a `clio` command on your PATH.
+One line installs `clio-agent` from PyPI, downloads the prebuilt `gact` TUI
+binary for your platform, and drops a `clio` command on your PATH.
 
 **Linux / macOS**
 ```sh
@@ -45,7 +46,9 @@ clio
 
 `clio` boots the server (if it isn't already up) and attaches the TUI. On first connect, pick an LM provider in the modal and you're chatting.
 
-Prerequisites: `git`, [`uv`](https://astral.sh/uv), and `go` 1.26+ — the installer tells you if any are missing.
+Prerequisites for the default release install: [`uv`](https://astral.sh/uv)
+or Python 3.12+ with `pip`. `git` and Go are only needed when you opt into
+source-build mode with `CLIO_REF` or `GACT_REF`.
 
 ---
 
@@ -84,7 +87,7 @@ For the design rationale (three-tier hierarchy, ARC memory, optimizer layer, IOW
 |---|---|
 | [docs/CLIO_AGENT_ARCHITECTURE.md](docs/CLIO_AGENT_ARCHITECTURE.md) | Three-tier design, ARC memory, optimizer layer |
 | [docs/SYSTEM_IDENTITY.md](docs/SYSTEM_IDENTITY.md) | What the agent is, design principles |
-| [docs/SETUP.md](docs/SETUP.md) | From-scratch install + smoke test (manual path) |
+| [docs/SETUP.md](docs/SETUP.md) | Release install, source-build install, and smoke test |
 | [docs/CONTRIBUTOR_QUICKSTART.md](docs/CONTRIBUTOR_QUICKSTART.md) | Dev environment, quality checks, where to put code |
 | [docs/MCP_TOOL_INTEGRATION.md](docs/MCP_TOOL_INTEGRATION.md) | Adding tools via FastMCP |
 | [docs/EXPERT_SYSTEM_DESIGN.md](docs/EXPERT_SYSTEM_DESIGN.md) | Adding new experts |

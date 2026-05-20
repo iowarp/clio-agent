@@ -17,10 +17,10 @@ client. This guide covers the common case: both together.
 
 ## Prerequisites
 
-- Python 3.12+ and [`uv`](https://github.com/astral-sh/uv) — `pip
-  install uv` works in a pinch but the lab usually has it.
-- Go 1.26.2+ for the TUI binary (or grab a release artefact when we
-  ship them).
+- Release install: [`uv`](https://github.com/astral-sh/uv) or Python
+  3.12+ with `pip`.
+- Source-build install: `git`, `uv`, and Go 1.26+ when you set
+  `CLIO_REF` or `GACT_REF`.
 - An LM endpoint. Any of these:
   - **OpenAI / ChatGPT** — needs `OPENAI_API_KEY` (most lab
     members; same key Codex CLI uses).
@@ -39,16 +39,18 @@ curl -fsSL https://raw.githubusercontent.com/iowarp/clio-agent/main/install/inst
 irm https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.ps1 | iex
 ```
 
-Installs both repos under `~/.local/share/clio` (or `%LOCALAPPDATA%\clio`),
-builds the TUI, and drops a `clio` launcher into `~/.local/bin`. The
-launcher boots the server on `:17800` if it isn't already running and
+Installs `clio-agent` from PyPI under `~/.local/share/clio` (or
+`%LOCALAPPDATA%\clio`), downloads the matching prebuilt `gact` release
+binary for your OS/arch, and drops a `clio` launcher into `~/.local/bin`.
+The launcher boots the server on `:17800` if it isn't already running and
 attaches the TUI. Run `clio` and you're chatting.
 
-Pin a specific tag: `CLIO_REF=v0.3.1 GACT_REF=v0.2.1 curl … | sh`. See
-[install/README.md](../install/README.md) for the full env-override
-table.
+Pin a specific release: `CLIO_VERSION=0.5.1 GACT_VERSION=v0.3.0 curl ... | bash`.
+Use `CLIO_REF` or `GACT_REF` only when you intentionally want the
+source-build path. See [install/README.md](../install/README.md) for the
+full env-override table.
 
-## Install — manual (if you want to control where everything lives)
+## Install — source build (if you want unreleased work)
 
 ```bash
 # Pull both repos somewhere convenient.

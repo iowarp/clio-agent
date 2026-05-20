@@ -76,13 +76,15 @@ CLIO_REF=develop CLIO_GIT_PROTOCOL=ssh \
 
 ```sh
 # Pin the PyPI version for clio-agent and the gact release tag
-CLIO_VERSION=0.5.0 GACT_VERSION=v0.3.0 \
+CLIO_VERSION=0.5.1 GACT_VERSION=v0.3.0 \
   curl -fsSL https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.sh | bash
 ```
 
 `CLIO_VERSION` is a PyPI version string (no `v` prefix); `GACT_VERSION`
-is a GitHub Release tag (with `v` prefix). Leave either unset to track
-"latest".
+is a GitHub Release tag (with `v` prefix). The launcher and uninstaller
+scripts are fetched from the matching `v<CLIO_VERSION>` tag after install.
+Use `CLIO_INSTALLER_REF` only when you intentionally need a different
+launcher-script ref. Leave release pins unset to track "latest".
 
 ## Using `clio`
 

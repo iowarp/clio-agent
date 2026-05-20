@@ -15,6 +15,7 @@
 #   CLIO_BIN_DIR       launcher location    (default: $HOME/.local/bin)
 #   CLIO_VERSION       pin clio-agent       (default: latest from PyPI)
 #   GACT_VERSION       pin gact release tag (default: latest)
+#   CLIO_INSTALLER_REF pin launcher scripts (default: v<installed clio-agent>)
 #   CLIO_REF           clio-agent branch    (default: release mode)
 #   GACT_REF           gact-tui branch      (default: release mode)
 #   CLIO_GIT_PROTOCOL  https | ssh          (default: https; only used
@@ -49,6 +50,7 @@ PREFIX="${CLIO_PREFIX:-$HOME/.local/share/clio}"
 BIN_DIR="${CLIO_BIN_DIR:-$HOME/.local/bin}"
 CLIO_VERSION="${CLIO_VERSION:-}"
 GACT_VERSION="${GACT_VERSION:-latest}"
+CLIO_INSTALLER_REF="${CLIO_INSTALLER_REF:-}"
 CLIO_REF="${CLIO_REF:-}"
 GACT_REF="${GACT_REF:-}"
 CLIO_GIT_PROTOCOL="${CLIO_GIT_PROTOCOL:-https}"
@@ -127,6 +129,11 @@ else
   fi
 fi
 
+CLIO_INSTALLED_VERSION=""
+if [ -x "$VENV/bin/python" ]; then
+  CLIO_INSTALLED_VERSION="$("$VENV/bin/python" -c 'from importlib.metadata import version; print(version("clio-agent"))' 2>/dev/null || true)"
+fi
+
 # ---------- install gact ----------------------------------------------
 GACT_BIN="$PREFIX/gact"
 
@@ -154,9 +161,13 @@ fi
 
 # ---------- launcher + uninstaller ------------------------------------
 # When we cloned clio-agent (source mode), the scripts are already on
-# disk. In release mode, fetch them from the version-pinned ref on
-# GitHub raw.
-launcher_ref="${CLIO_REF:-main}"
+# disk. In release mode, fetch them from the ref that matches the
+# installed PyPI version, unless an explicit installer ref is provided.
+launcher_ref="${CLIO_REF:-${CLIO_INSTALLER_REF:-}}"
+if [ -z "$launcher_ref" ] && [ -n "$CLIO_INSTALLED_VERSION" ]; then
+  launcher_ref="v$CLIO_INSTALLED_VERSION"
+fi
+launcher_ref="${launcher_ref:-main}"
 RAW="https://raw.githubusercontent.com/iowarp/clio-agent/${launcher_ref}/install"
 
 LAUNCHER="$BIN_DIR/clio"
