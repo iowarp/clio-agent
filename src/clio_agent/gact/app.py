@@ -1210,6 +1210,16 @@ async def _run_turn_in_background(
         if not stream_fallback:
             stream_fallback = {"reason": "sync_execution_path"}
         assistant_metadata["stream_fallback"] = stream_fallback
+    if text_stream_source:
+        for part in assistant_parts:
+            if part.type != "text" or not part.text:
+                continue
+            part.metadata = {
+                **part.metadata,
+                "stream_source": text_stream_source,
+            }
+            if text_stream_source == "synthetic_posthoc" and stream_fallback:
+                part.metadata["stream_fallback"] = stream_fallback
     if tools_called:
         assistant_metadata["tools_called"] = tools_called
     # iowarp/clio-agent#6: when streaming actually emitted chunks,
@@ -1226,6 +1236,7 @@ async def _run_turn_in_background(
                     id=streamed_assistant_part_id,
                     type="text",
                     text=answer_text,
+                    metadata=p.metadata,
                 )
                 break
     assistant_msg = Message(
