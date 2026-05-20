@@ -87,6 +87,16 @@ class TestLMProviderConfig:
         config = LMProviderConfig()
         assert config.environment == "dev"
 
+    def test_default_codex_transport(self):
+        """Codex transport should default to exec."""
+        config = LMProviderConfig(provider="codex")
+        assert config.codex_transport == "exec"
+
+    def test_invalid_codex_transport_rejected(self):
+        """Invalid Codex transport should fail during config construction."""
+        with pytest.raises(ValueError, match="codex_transport"):
+            LMProviderConfig(provider="codex", codex_transport="telepathy")  # type: ignore[arg-type]
+
 
 class TestLoadConfigFromEnv:
     """Test load_config_from_env function."""
@@ -176,6 +186,13 @@ class TestLoadConfigFromEnv:
             config = load_config_from_env()
             assert config.api_key == "sk-native"
 
+    def test_codex_transport_from_env(self):
+        """CLIO_CODEX_TRANSPORT should select the Codex transport mode."""
+        env = {"CLIO_LM_PROVIDER": "codex", "CLIO_CODEX_TRANSPORT": "sdk"}
+        with patch.dict("os.environ", env, clear=True):
+            config = load_config_from_env()
+            assert config.codex_transport == "sdk"
+
 
 class TestCreateLM:
     """Test create_lm function."""
@@ -217,12 +234,23 @@ class TestCreateLM:
         config = LMProviderConfig(provider="codex", model="gpt-5.5")
         lm = create_lm(config)
         assert lm.model == "codex/cdx-gpt-5.5"
+        assert lm.kwargs["codex_transport"] == "exec"
 
     def test_codex_model_marker_is_not_doubled(self):
         """Codex should accept already-prefixed config values idempotently."""
         config = LMProviderConfig(provider="codex", model="codex/cdx-gpt-5.5")
         lm = create_lm(config)
         assert lm.model == "codex/cdx-gpt-5.5"
+
+    def test_codex_sdk_transport_passes_litellm_kwarg(self):
+        """Codex SDK transport should flow into dspy.LM kwargs."""
+        config = LMProviderConfig(
+            provider="codex",
+            model="gpt-5.5",
+            codex_transport="sdk",
+        )
+        lm = create_lm(config)
+        assert lm.kwargs["codex_transport"] == "sdk"
 
     def test_each_provider_returns_lm(self):
         """All providers should produce valid dspy.LM instances."""

@@ -549,6 +549,7 @@ class LMProviderInfo(BaseModel):
     temperature: float = 1.0
     max_tokens: int = 32000
     thinking_budget: int = 0
+    transport: Optional[Literal["exec", "sdk"]] = None
     presets: list["LMProviderPreset"] = Field(default_factory=list)
 
 
@@ -585,6 +586,8 @@ class LMProviderRequest(BaseModel):
     api_key: str = "x"
     temperature: float = 1.0
     max_tokens: int = 32000
+    # Codex-only transport selector. Other providers ignore it.
+    transport: Optional[Literal["exec", "sdk"]] = None
     # Reasoning/thinking budget. Mapped per-provider:
     # - Anthropic (haiku/sonnet/opus 4.6+): used as
     #   thinking.budget_tokens in the API call. 0 disables extended

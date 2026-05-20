@@ -70,6 +70,13 @@ export CLIO_CODEX_TRANSPORT=sdk
 clio
 ```
 
+From a source checkout, include the extra when invoking the script path:
+
+```sh
+CLIO_LM_PROVIDER=codex CLIO_CODEX_TRANSPORT=sdk \
+  uv run --extra codex src/clio_agent/ui/cli.py --query "hello"
+```
+
 ## What clio passes to Codex
 
 The CustomLLM:

@@ -67,10 +67,8 @@ codex = [
     # openai_codex Python SDK — controls the local Codex app-server
     # over JSON-RPC. Used by clio_agent.providers.codex_litellm's
     # in-process transport (`CLIO_CODEX_TRANSPORT=sdk`). The package
-    # is not published on PyPI; we git-pin against openai/codex's
-    # `main`. Bump the ref deliberately — there's no stable release
-    # cadence yet.
-    "openai-codex @ git+https://github.com/openai/codex.git@main#subdirectory=sdk/python",
+    # is not published on PyPI; bump this commit deliberately.
+    "openai-codex @ git+https://github.com/openai/codex.git@79f044ed34c60af815feef12e8e665f35d54871e#subdirectory=sdk/python",
 ]
 
 iowarp = [

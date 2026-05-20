@@ -432,7 +432,7 @@ requires-dist = [
     { name = "msgspec", specifier = ">=0.18.0" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.7.0" },
     { name = "numpy", marker = "extra == 'optimizers'", specifier = ">=1.24.0" },
-    { name = "openai-codex", marker = "extra == 'codex'", git = "https://github.com/openai/codex.git?subdirectory=sdk%2Fpython&rev=main" },
+    { name = "openai-codex", marker = "extra == 'codex'", git = "https://github.com/openai/codex.git?subdirectory=sdk%2Fpython&rev=79f044ed34c60af815feef12e8e665f35d54871e" },
     { name = "prompt-toolkit", specifier = ">=3.0.0" },
     { name = "pyarrow", specifier = ">=14.0.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.4.0" },
@@ -2035,7 +2035,7 @@ wheels = [
 [[package]]
 name = "openai-codex"
 version = "0.131.0a4"
-source = { git = "https://github.com/openai/codex.git?subdirectory=sdk%2Fpython&rev=main#326e31ab65dcbdf70c4a034b7adc5c8bd335d996" }
+source = { git = "https://github.com/openai/codex.git?subdirectory=sdk%2Fpython&rev=79f044ed34c60af815feef12e8e665f35d54871e#79f044ed34c60af815feef12e8e665f35d54871e" }
 dependencies = [
     { name = "openai-codex-cli-bin" },
     { name = "pydantic" },

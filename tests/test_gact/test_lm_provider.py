@@ -4,6 +4,7 @@ without redeploying the GACT process.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 
@@ -93,6 +94,59 @@ def test_get_lm_provider_when_configured_via_put(
         rows = {r["name"]: r for r in c.get("/v1/health").json()["integrations"]}
         assert rows["lm"]["status"] == "ready"
         assert "openai/claude-haiku-4-5-20251001" in rows["lm"]["detail"]
+
+
+def test_put_lm_provider_accepts_codex_sdk_transport(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The TUI can select and read back Codex SDK transport without an API key."""
+    captured: dict[str, Any] = {}
+    monkeypatch.delenv("CLIO_CODEX_TRANSPORT", raising=False)
+
+    class _StubAgent:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            self.arc = type("ARC", (), {
+                "get_cache_stats": lambda self: {
+                    "hits": 0,
+                    "misses": 0,
+                    "hit_rate": 0.0,
+                    "capacity": 10,
+                }
+            })()
+
+        def forward(self, *args: Any, **kwargs: Any) -> Any:
+            return type("Pred", (), {"answer": "ok", "selected_expert": ""})()
+
+    monkeypatch.setattr("clio_agent.agent.ClioAgent", _StubAgent)
+
+    def _stub_create_lm(cfg: Any) -> Any:
+        captured["cfg"] = cfg
+        return type("FakeLM", (), {"history": []})()
+
+    monkeypatch.setattr("clio_agent.config.create_lm", _stub_create_lm)
+
+    app = build_app(sessions_path=tmp_path / "s.json")
+    with TestClient(app) as c:
+        resp = c.put(
+            "/v1/providers/lm",
+            json={
+                "provider": "codex",
+                "api_base": "codex://exec",
+                "model": "gpt-5.5",
+                "transport": "sdk",
+            },
+        )
+        body = resp.json()
+        get_body = c.get("/v1/providers/lm").json()
+
+    assert resp.status_code == 200, resp.text
+    assert body["transport"] == "sdk"
+    assert get_body["transport"] == "sdk"
+    assert captured["cfg"].provider == "codex"
+    assert captured["cfg"].api_key == "x"
+    assert captured["cfg"].codex_transport == "sdk"
+    assert app.state.lm_config["transport"] == "sdk"
+    assert os.environ["CLIO_CODEX_TRANSPORT"] == "sdk"
 
 
 def test_put_lm_provider_invalid_returns_400(tmp_path: Path, monkeypatch) -> None:

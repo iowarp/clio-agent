@@ -1,19 +1,4 @@
-#!/usr/bin/env -S uv run
-# /// script
-# requires-python = ">=3.12"
-# dependencies = [
-#   "dspy>=3.1.3",
-#   "fastmcp>=3.2.4",
-#   "h5py>=3.10.0",
-#   "pyarrow>=14.0.0",
-#   "matplotlib>=3.8.0",
-#   "rich>=14.2.0",
-#   "prompt-toolkit>=3.0.0",
-#   "sortedcontainers>=2.4.0",
-#   "msgspec>=0.18.0",
-#   "requests>=2.31.0",
-# ]
-# ///
+#!/usr/bin/env python
 
 """
 ClioAgent Command-Line Interface
