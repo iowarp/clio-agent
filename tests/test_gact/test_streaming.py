@@ -11,7 +11,11 @@ import dspy
 import pytest
 from fastapi.testclient import TestClient
 
-from clio_agent.gact.app import _try_streamed_forward, build_app
+from clio_agent.gact.app import (
+    _StreamingOutputError,
+    _try_streamed_forward,
+    build_app,
+)
 
 
 @dataclass
@@ -111,6 +115,78 @@ async def test_streamify_setup_failure_returns_none_for_sync_fallback(
     assert result is None
     assert chunks == []
     assert agent.calls == []
+
+
+async def test_stream_failure_after_delta_raises_instead_of_sync_fallback(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    async def fail_after_chunk(*args: Any, **kwargs: Any) -> Any:
+        del args, kwargs
+        yield "partial "
+        raise RuntimeError("stream transport lost")
+
+    def fake_streamify(*args: Any, **kwargs: Any) -> Any:
+        del args, kwargs
+        return fail_after_chunk
+
+    streamify_module = importlib.import_module("dspy.streaming.streamify")
+    monkeypatch.setattr(streamify_module, "streamify", fake_streamify)
+    agent = _DspyAgent("sync fallback should not run")
+    app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
+    chunks: list[str] = []
+
+    async def emit_chunk(text: str) -> None:
+        chunks.append(text)
+
+    with pytest.raises(_StreamingOutputError, match="stream transport lost"):
+        await _try_streamed_forward(app, "stream breaks", "sid", emit_chunk)
+
+    assert chunks == ["partial "]
+    assert agent.calls == []
+
+
+def test_mid_stream_failure_surfaces_error_without_sync_rerun(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    async def fail_after_chunk(*args: Any, **kwargs: Any) -> Any:
+        del args, kwargs
+        yield "partial "
+        raise RuntimeError("stream transport lost")
+
+    def fake_streamify(*args: Any, **kwargs: Any) -> Any:
+        del args, kwargs
+        return fail_after_chunk
+
+    streamify_module = importlib.import_module("dspy.streaming.streamify")
+    monkeypatch.setattr(streamify_module, "streamify", fake_streamify)
+    agent = _DspyAgent("sync fallback should not run")
+    app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
+    client = TestClient(app)
+    sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
+
+    client.post(
+        f"/v1/sessions/{sid}/messages",
+        json={"parts": [{"type": "text", "text": "stream me"}]},
+    )
+
+    messages = client.get(f"/v1/sessions/{sid}/messages").json()["messages"]
+    assistant = [m for m in messages if m["role"] == "assistant"][-1]
+    assert agent.calls == []
+    assert assistant["stop_reason"] == "error"
+    assert assistant["error_info"]["error"] == "provider_error"
+    assert "stream transport lost" in assistant["error_info"]["message"]
+    assert assistant["parts"][0]["text"] == "partial "
+
+    history = app.state.bus._history.get(sid, [])
+    completed_parts = [
+        e for e in history
+        if e.type == "message.part.completed"
+        and e.payload.get("stream_source") == "live"
+    ]
+    completed_messages = [e for e in history if e.type == "message.completed"]
+    assert completed_parts[-1].payload["final_text"] == "partial "
+    assert completed_messages[-1].payload["stop_reason"] == "error"
+    assert completed_messages[-1].payload["error_info"]["error"] == "provider_error"
 
 
 def test_non_text_parts_skip_deltas(app_client) -> None:
