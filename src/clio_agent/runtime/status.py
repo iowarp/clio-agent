@@ -119,6 +119,16 @@ ModuleChecker = Callable[[str], bool]
 # PROVIDER_DEFAULTS, including the Codex CustomLLM entry.
 _SUPPORTED_LM_PROVIDERS = frozenset(PROVIDER_DEFAULTS.keys())
 _CLOUD_API_KEY_ENV = _CONFIG_CLOUD_API_KEY_ENV
+
+
+class ModelDiscoverySchemaError(ValueError):
+    """Raised when an OpenAI-compatible /models response is malformed."""
+
+    def __init__(self, message: str, *, code: str) -> None:
+        self.code = code
+        super().__init__(message)
+
+
 _HDF5_TOOLS = {
     "hdf5_list_datasets",
     "hdf5_analyze_dataset",
@@ -339,7 +349,25 @@ class RuntimeProbe:
                 required=True,
             )
 
-        models = self._extract_models(response)
+        try:
+            models = self._extract_models(response)
+        except ModelDiscoverySchemaError as exc:
+            return IntegrationStatus(
+                name="lm_provider",
+                state=IntegrationState.DEGRADED,
+                summary=f"{config.provider} returned a malformed model listing: {exc}",
+                config_source=source,
+                next_action="Verify the provider exposes an OpenAI-compatible /models response.",
+                endpoint=config.api_base,
+                auth_mode=auth_mode,
+                capabilities=["models"],
+                details={
+                    "provider": config.provider,
+                    "configured_model": config.model,
+                    "model_discovery_error": exc.code,
+                },
+                required=True,
+            )
         if not models:
             return IntegrationStatus(
                 name="lm_provider",
@@ -424,10 +452,7 @@ class RuntimeProbe:
                 state=IntegrationState.MISCONFIGURED,
                 summary="ALCF provider selected but no Globus tokens are stored.",
                 config_source=source,
-                next_action=(
-                    "Run once: python -m clio_agent.providers.argonne_auth "
-                    "authenticate"
-                ),
+                next_action=("Run once: python -m clio_agent.providers.argonne_auth authenticate"),
                 endpoint=config.api_base,
                 auth_mode="globus_token",
                 details=details,
@@ -976,17 +1001,38 @@ class RuntimeProbe:
     def _extract_models(response: Any) -> list[str]:
         try:
             data = response.json()
-        except Exception:
-            return []
+        except Exception as exc:
+            raise ModelDiscoverySchemaError(
+                f"invalid JSON from /models: {exc}",
+                code="invalid_json",
+            ) from exc
         if not isinstance(data, dict):
-            return []
-        raw_models = data.get("data", [])
+            raise ModelDiscoverySchemaError(
+                "/models response was not a JSON object.",
+                code="malformed_schema",
+            )
+        raw_models = data.get("data")
         if not isinstance(raw_models, list):
-            return []
+            raise ModelDiscoverySchemaError(
+                "/models response missing data[] array.",
+                code="malformed_schema",
+            )
         models: list[str] = []
+        malformed_items = 0
         for item in raw_models:
             if isinstance(item, dict) and isinstance(item.get("id"), str):
-                models.append(item["id"])
+                model_id = item["id"].strip()
+                if model_id:
+                    models.append(model_id)
+                else:
+                    malformed_items += 1
+            else:
+                malformed_items += 1
+        if raw_models and not models:
+            raise ModelDiscoverySchemaError(
+                f"/models response had {malformed_items} model row(s) but no usable id fields.",
+                code="malformed_schema",
+            )
         return models
 
 

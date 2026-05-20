@@ -10,12 +10,21 @@ from clio_agent.runtime.status import IntegrationState, RuntimeProbe
 class FakeResponse:
     """Small response object for probe tests."""
 
-    def __init__(self, body: dict, status_code: int = 200):
+    def __init__(self, body: object, status_code: int = 200):
         self._body = body
         self.status_code = status_code
 
-    def json(self) -> dict:
+    def json(self) -> object:
         return self._body
+
+
+class FakeInvalidJsonResponse:
+    """Response object whose JSON parser fails."""
+
+    status_code = 200
+
+    def json(self) -> object:
+        raise ValueError("not json")
 
 
 HDF5_CAPS = [
@@ -124,6 +133,40 @@ def test_lm_provider_misconfigured_when_cloud_key_missing(tmp_path):
     assert status.state == IntegrationState.MISCONFIGURED
     assert "requires" in status.summary
     assert "CLIO_LM_API_KEY" in status.summary
+
+
+def test_lm_provider_probe_reports_invalid_json_as_malformed(tmp_path):
+    """Doctor should not turn invalid /models JSON into a no-model status."""
+    probe = RuntimeProbe(
+        env={"CLIO_DATA_DIR": str(tmp_path)},
+        http_get=lambda *args, **kwargs: FakeInvalidJsonResponse(),
+        default_clio_core_path=None,
+    )
+
+    status = probe.probe_lm_provider()
+
+    assert status.state == IntegrationState.DEGRADED
+    assert "invalid" in status.summary.lower()
+    assert "json" in status.summary.lower()
+    assert "no loaded models" not in status.summary.lower()
+    assert status.details["model_discovery_error"] == "invalid_json"
+
+
+def test_lm_provider_probe_reports_malformed_schema_as_malformed(tmp_path):
+    """Doctor should report schema failure when /models lacks data[]."""
+    probe = RuntimeProbe(
+        env={"CLIO_DATA_DIR": str(tmp_path)},
+        http_get=lambda *args, **kwargs: FakeResponse({"models": [{"id": "x"}]}),
+        default_clio_core_path=None,
+    )
+
+    status = probe.probe_lm_provider()
+
+    assert status.state == IntegrationState.DEGRADED
+    assert "malformed" in status.summary.lower()
+    assert "data" in status.summary.lower()
+    assert "no loaded models" not in status.summary.lower()
+    assert status.details["model_discovery_error"] == "malformed_schema"
 
 
 def test_file_policy_probe_reports_configured_roots(tmp_path):
