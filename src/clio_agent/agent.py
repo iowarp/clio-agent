@@ -61,7 +61,6 @@ from clio_agent.harness import (
     RunTrace,
     compact_tool_result,
     extract_file_paths,
-    format_tool_error,
     normalize_tool_error,
     normalize_tool_result,
     tool_result_ok,
@@ -846,26 +845,6 @@ class ClioAgent(dspy.Module):
                 observations=observations[-3:],
             ),
         )
-
-    def _fallback_answer_from_observations(self, observations: list[dict[str, Any]]) -> str:
-        """Return a compact non-hallucinated answer when synthesis is unavailable."""
-        if not observations:
-            return (
-                "I could not choose a valid CLIO action. Check the configured local model "
-                "and retry with a concrete file path or task."
-            )
-
-        last = observations[-1]
-        if not last.get("ok", False):
-            result = last.get("result")
-            if isinstance(result, Mapping) and "error" in result:
-                return f"Tool {last.get('tool')} failed: {format_tool_error(result['error'])}"
-            return f"CLIO could not complete the action: {result}"
-
-        result = last.get("result")
-        if isinstance(result, Mapping) and "value" in result:
-            return f"Tool {last.get('tool')} completed: {result['value']}"
-        return f"Tool {last.get('tool')} completed.\n\n{json.dumps(result, indent=2)}"
 
     @staticmethod
     def _recovery_details(**details: Any) -> dict[str, Any]:
