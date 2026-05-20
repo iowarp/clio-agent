@@ -45,7 +45,7 @@ codex --version    # 0.128.0 or later
 
 ```sh
 export CLIO_LM_PROVIDER=codex
-export CLIO_LM_MODEL=gpt-5            # or gpt-5-codex, gpt-5.4, gpt-4.1
+export CLIO_LM_MODEL=gpt-5.5          # or gpt-5-codex, gpt-4.1
 clio                                  # launcher boots server + TUI
 ```
 

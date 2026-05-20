@@ -115,9 +115,8 @@ GatewayLister = Callable[[], list[dict[str, Any]]]
 HttpGet = Callable[..., Any]
 ModuleChecker = Callable[[str], bool]
 
-# Derived from the provider registry — the set of wire kinds with
-# entries in PROVIDER_DEFAULTS. Excludes "codex" (Literal-widened but no
-# entry yet; lands in sprint #51).
+# Derived from the provider registry: the wire kinds with entries in
+# PROVIDER_DEFAULTS, including the Codex CustomLLM entry.
 _SUPPORTED_LM_PROVIDERS = frozenset(PROVIDER_DEFAULTS.keys())
 _CLOUD_API_KEY_ENV = _CONFIG_CLOUD_API_KEY_ENV
 _HDF5_TOOLS = {
