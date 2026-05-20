@@ -17,10 +17,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 from fastapi.testclient import TestClient
 
+from clio_agent.agent import ClioAgent
 from clio_agent.gact.app import (
     _apply_edit_to_disk,
     _make_permission_gate,
@@ -129,6 +131,91 @@ def test_diffs_apply_writes_to_disk(tmp_path: Path, monkeypatch: pytest.MonkeyPa
         assert resp["applied"] == [str(target)]
         assert "write_errors" not in resp
         assert target.read_text() == "print('hello new')\n"
+
+
+def test_real_agent_propose_edit_trace_becomes_applicable_diff(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    target = workspace / "real.py"
+    monkeypatch.setenv("CLIO_ALLOWED_ROOTS", str(workspace))
+    proposed = {
+        "path": str(target),
+        "unified_diff": "--- a/real.py\n+++ b/real.py\n@@\n-old\n+new\n",
+        "new_content": "print('from promoted diff')\n",
+        "lines_added": 1,
+        "lines_removed": 1,
+    }
+    agent = ClioAgent(data_dir=str(tmp_path / "clio"), verbose=False)
+    agent._plan_next_action = MagicMock(
+        side_effect=[
+            {
+                "action": "tool",
+                "tool": "fs_propose_edit",
+                "args": {
+                    "filepath": str(target),
+                    "new_content": proposed["new_content"],
+                },
+                "reason": "propose edit",
+            },
+            {"action": "answer", "answer": "Review the proposed diff.", "reason": "done"},
+        ]
+    )
+    agent._selected_expert_for_tool = MagicMock(return_value="data")
+
+    def execute(tool_name: str, raw_args: dict, trace) -> dict:
+        trace.record_tool(
+            tool=tool_name,
+            params=raw_args,
+            result=proposed,
+            duration_ms=1.0,
+            ok=True,
+        )
+        return proposed
+
+    agent._execute_tool_action = MagicMock(side_effect=execute)
+    app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
+    app.state.workspaces.update("ws_default", root_path=str(workspace))
+
+    try:
+        with TestClient(app) as c:
+            from .conftest import complete_turn
+
+            sid = c.post(
+                "/v1/sessions",
+                json={"title": "t", "edit_mode": "patch"},
+            ).json()["id"]
+            msg = complete_turn(c, sid, "propose the edit")
+            diff_parts = [part for part in msg["parts"] if part["type"] == "file_diff"]
+            assert diff_parts == [
+                {
+                    "id": diff_parts[0]["id"],
+                    "type": "file_diff",
+                    "metadata": {},
+                    "text": "",
+                    "selected_agent": "",
+                    "rationale": "",
+                    "confidence": 0.0,
+                    "heuristic": False,
+                    "execution_path": "",
+                    "path": str(target),
+                    "unified_diff": proposed["unified_diff"],
+                    "new_content": proposed["new_content"],
+                    "status": "pending",
+                    "edit_mode": "patch",
+                    "lines_added": 1,
+                    "lines_removed": 1,
+                }
+            ]
+            assert not target.exists()
+
+            resp = c.post(f"/v1/sessions/{sid}/diffs/apply", json={}).json()
+            assert resp["applied"] == [str(target)]
+            assert "write_errors" not in resp
+            assert target.read_text(encoding="utf-8") == proposed["new_content"]
+    finally:
+        agent.shutdown()
 
 
 def test_apply_edit_uses_shared_policy_writer(

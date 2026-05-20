@@ -399,6 +399,10 @@ class ClioAgent(dspy.Module):
             answer=answer,
             selected_expert=selected,
             tools_called=[tool.to_arc_tool_call() for tool in trace.tools],
+            file_diffs=self._file_diffs_from_trace(
+                trace,
+                edit_mode=session_edit_mode,
+            ),
             route_source=route.source,
             route_reason=route.reason,
             session_id=session_id,
@@ -774,6 +778,44 @@ class ClioAgent(dspy.Module):
             ok=tool_result_ok(result),
         )
         return result
+
+    @classmethod
+    def _file_diffs_from_trace(
+        cls,
+        trace: RunTrace,
+        *,
+        edit_mode: str = "diff",
+    ) -> list[dict[str, Any]]:
+        """Return GACT file_diff rows produced by successful propose_edit tools."""
+
+        rows: list[dict[str, Any]] = []
+        for observation in trace.tools:
+            if not observation.ok or not observation.tool.endswith("propose_edit"):
+                continue
+            if not isinstance(observation.result, Mapping):
+                continue
+            path = cls._coerce_text(observation.result.get("path")).strip()
+            unified_diff = cls._coerce_text(
+                observation.result.get("unified_diff")
+            )
+            new_content = cls._coerce_text(
+                observation.result.get("new_content")
+            )
+            if not new_content:
+                new_content = cls._coerce_text(
+                    observation.params.get("new_content")
+                )
+            if not path or (not unified_diff and not new_content):
+                continue
+            rows.append({
+                "path": path,
+                "unified_diff": unified_diff,
+                "new_content": new_content,
+                "edit_mode": edit_mode,
+                "lines_added": int(observation.result.get("lines_added", 0) or 0),
+                "lines_removed": int(observation.result.get("lines_removed", 0) or 0),
+            })
+        return rows
 
     def _execute_visualization_tool(self, tool_name: str, tool: Any, args: dict[str, Any]) -> Any:
         """Execute one local visualization tool with policy-aware artifact defaults."""

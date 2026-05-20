@@ -244,6 +244,59 @@ class TestRunAgentLoop:
         assert expert_result is None
         agent._execute_tool_action.assert_called_once()
 
+    def test_forward_promotes_propose_edit_observation_to_file_diffs(self, agent):
+        proposed = {
+            "path": "/tmp/example.py",
+            "unified_diff": "--- a/example.py\n+++ b/example.py\n@@\n-old\n+new",
+            "new_content": "new\n",
+            "lines_added": 1,
+            "lines_removed": 1,
+        }
+        agent._plan_next_action = MagicMock(
+            side_effect=[
+                {
+                    "action": "tool",
+                    "tool": "fs_propose_edit",
+                    "args": {
+                        "filepath": "/tmp/example.py",
+                        "new_content": "new\n",
+                    },
+                    "reason": "propose edit",
+                },
+                {"action": "answer", "answer": "Review the proposed diff.", "reason": "done"},
+            ]
+        )
+        agent._selected_expert_for_tool = MagicMock(return_value="data")
+
+        def execute(tool_name, raw_args, trace):
+            trace.record_tool(
+                tool=tool_name,
+                params=raw_args,
+                result=proposed,
+                duration_ms=1.0,
+                ok=True,
+            )
+            return proposed
+
+        agent._execute_tool_action = MagicMock(side_effect=execute)
+
+        result = agent.forward(
+            "Change example.py",
+            session_id="diff-promotion",
+            session_edit_mode="patch",
+        )
+
+        assert result.file_diffs == [
+            {
+                "path": "/tmp/example.py",
+                "unified_diff": proposed["unified_diff"],
+                "new_content": "new\n",
+                "edit_mode": "patch",
+                "lines_added": 1,
+                "lines_removed": 1,
+            }
+        ]
+
     def test_unknown_tool_action_surfaces_routing_error(self, agent):
         agent._plan_next_action = MagicMock(
             return_value={"action": "tool", "tool": "definitely_not_a_tool", "args": {}}

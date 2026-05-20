@@ -76,7 +76,9 @@ def propose_edit(filepath: str, new_content: str) -> dict[str, Any]:
     the user approves via /v1/sessions/{sid}/diffs/apply, which
     triggers apply_edit.
 
-    Returns ``{path, unified_diff, lines_added, lines_removed}``.
+    Returns ``{path, unified_diff, new_content, lines_added,
+    lines_removed}`` so GACT can later apply the accepted diff without
+    trying to replay a patch.
     """
 
     validate_non_empty_string(filepath, field="filepath")
@@ -106,6 +108,7 @@ def propose_edit(filepath: str, new_content: str) -> dict[str, Any]:
     return {
         "path": str(p),
         "unified_diff": "\n".join(diff_lines),
+        "new_content": new,
         "lines_added": added,
         "lines_removed": removed,
     }
