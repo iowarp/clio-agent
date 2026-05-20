@@ -81,6 +81,7 @@ from clio_agent.tools.file_policy import FileAccessPolicy, FilePolicyError, vali
 from clio_agent.tools.gateway import gateway
 
 SCIENTIFIC_FILE_SUFFIXES = {".h5", ".hdf5", ".parquet", ".csv"}
+PLANNER_HIDDEN_TOOL_NAMES = {"fs_read_file", "fs_apply_edit_write"}
 _ROUTING_MODE_OVERRIDE: contextvars.ContextVar[str] = contextvars.ContextVar(
     "clio_routing_mode_override",
     default="",
@@ -1067,7 +1068,14 @@ class ClioAgent(dspy.Module):
 
     def _available_dspy_tools(self) -> list[dspy.Tool]:
         """Return gateway and local visualization tools visible to the planner."""
-        return [*self.tool_executor.to_dspy_tools(), *self._visualization_tool_map().values()]
+        return [
+            tool
+            for tool in [
+                *self.tool_executor.to_dspy_tools(),
+                *self._visualization_tool_map().values(),
+            ]
+            if tool.name not in PLANNER_HIDDEN_TOOL_NAMES
+        ]
 
     def _known_tool_names(self) -> set[str]:
         """Return every tool name currently visible to the planner."""
@@ -1322,9 +1330,7 @@ class ClioAgent(dspy.Module):
         key_end = len(key_prefix) - 1
         key_start = key_end - 1
         while key_start >= 0:
-            if key_prefix[key_start] == '"' and not ClioAgent._is_escaped(
-                key_prefix, key_start
-            ):
+            if key_prefix[key_start] == '"' and not ClioAgent._is_escaped(key_prefix, key_start):
                 return key_prefix[key_start + 1 : key_end]
             key_start -= 1
         return None

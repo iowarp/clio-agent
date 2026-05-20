@@ -250,6 +250,12 @@ class TestBuildCapabilitiesContext:
         # Experts registered in __init__ should appear.
         assert "data" in ctx and "analysis" in ctx
 
+    def test_hides_internal_fs_tools_from_planner_context(self, agent):
+        ctx = agent._build_capabilities_context()
+        assert "fs_read_file(" not in ctx
+        assert "fs_apply_edit_write(" not in ctx
+        assert "fs_propose_edit(" in ctx
+
 
 class TestSelectedExpertForTool:
     def test_known_tool_returns_registered_owner(self, agent):
