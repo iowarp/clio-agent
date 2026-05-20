@@ -280,6 +280,55 @@ def test_post_message_empty_prediction_without_error_info_sets_error_turn(
     assert sess["status"] == "error"
 
 
+def test_post_message_unsupported_session_agent_sets_error_turn(
+    tmp_path: Path,
+) -> None:
+    from .conftest import complete_turn
+
+    agent = FakeClioAgent(answer="should not run")
+    app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
+    with TestClient(app) as c:
+        sid = c.post(
+            "/v1/sessions",
+            json={"title": "x", "agent": {"id": "code_reviewer"}},
+        ).json()["id"]
+        assistant = complete_turn(c, sid, "hi")
+        sess = c.get(f"/v1/sessions/{sid}").json()
+
+    assert agent.calls == []
+    assert assistant["stop_reason"] == "error"
+    assert assistant["error_info"]["error"] == "not_implemented"
+    assert assistant["error_info"]["details"]["agent_id"] == "code_reviewer"
+    assert [part["type"] for part in assistant["parts"]] == ["routing_decision"]
+    assert assistant["parts"][0]["selected_agent"] == "code_reviewer"
+    assert sess["status"] == "error"
+
+
+def test_post_message_model_override_returns_structured_501(
+    client: TestClient,
+) -> None:
+    sid = _create_session(client)
+
+    resp = client.post(
+        f"/v1/sessions/{sid}/messages",
+        json={
+            "parts": [{"type": "text", "text": "hi"}],
+            "model": {"provider_id": "openai", "model_id": "gpt-4o-mini"},
+        },
+    )
+
+    assert resp.status_code == 501
+    body = resp.json()
+    assert body["error"]["error"] == "not_implemented"
+    assert body["error"]["details"]["model"] == {
+        "provider_id": "openai",
+        "model_id": "gpt-4o-mini",
+        "variant": "",
+    }
+    msgs = client.get(f"/v1/sessions/{sid}/messages").json()["messages"]
+    assert msgs == []
+
+
 def test_post_message_without_routing_emits_text_only(
     tmp_path: Path,
 ) -> None:

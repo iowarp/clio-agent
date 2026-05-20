@@ -22,7 +22,15 @@ def client(tmp_path: Path) -> TestClient:
 def test_post_v1_sessions_returns_created_session(client: TestClient) -> None:
     resp = client.post(
         "/v1/sessions",
-        json={"workspace_id": "ws_default", "title": "my session"},
+        json={
+            "workspace_id": "ws_default",
+            "title": "my session",
+            "agent": {"id": "code_reviewer", "mode": "review"},
+            "model": {
+                "provider_id": "lm_studio",
+                "model_id": "qwopus3.5-9b-v3",
+            },
+        },
     )
     assert resp.status_code == 200
     body = resp.json()
@@ -31,6 +39,12 @@ def test_post_v1_sessions_returns_created_session(client: TestClient) -> None:
     assert body["title"] == "my session"
     assert body["status"] == "idle"
     assert body["message_count"] == 0
+    assert body["agent"] == {"id": "code_reviewer", "mode": "review"}
+    assert body["model"] == {
+        "provider_id": "lm_studio",
+        "model_id": "qwopus3.5-9b-v3",
+        "variant": "",
+    }
 
 
 def test_post_v1_sessions_defaults_workspace_and_title(
@@ -85,6 +99,33 @@ def test_get_v1_sessions_sid_returns_single(client: TestClient) -> None:
     assert resp.status_code == 200
     assert resp.json()["id"] == created["id"]
     assert resp.json()["title"] == "x"
+
+
+def test_patch_v1_sessions_preserves_agent_and_model_refs(
+    client: TestClient,
+) -> None:
+    created = client.post("/v1/sessions", json={"title": "x"}).json()
+
+    resp = client.patch(
+        f"/v1/sessions/{created['id']}",
+        json={
+            "agent": {"id": "data"},
+            "model": {"provider_id": "openai", "model_id": "gpt-4o-mini"},
+        },
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["agent"] == {"id": "data", "mode": ""}
+    assert body["model"] == {
+        "provider_id": "openai",
+        "model_id": "gpt-4o-mini",
+        "variant": "",
+    }
+
+    fetched = client.get(f"/v1/sessions/{created['id']}").json()
+    assert fetched["agent"] == body["agent"]
+    assert fetched["model"] == body["model"]
 
 
 def test_get_v1_sessions_sid_not_found_returns_structured_404(

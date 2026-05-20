@@ -99,6 +99,8 @@ class Session:
     updated_at: str = field(default_factory=_utcnow_iso)
     message_count: int = 0
     parent_session_id: str = ""
+    model: dict[str, str] = field(default_factory=dict)
+    agent: dict[str, str] = field(default_factory=lambda: {"id": "main"})
     # CLIO-BBBBBBBBBB24: cumulative token + cost rollup. Populated
     # from Prediction.tokens / cost_usd on every turn.
     tokens_input: int = 0
@@ -210,6 +212,8 @@ class SessionStore:
         title: str = "",
         metadata: Optional[dict[str, Any]] = None,
         parent_session_id: str = "",
+        model: Optional[dict[str, str]] = None,
+        agent: Optional[dict[str, str]] = None,
         mode: str = "chat",
         edit_mode: str = "diff",
         routing_mode: str = "auto",
@@ -233,6 +237,8 @@ class SessionStore:
             updated_at=now,
             metadata=dict(metadata or {}),
             parent_session_id=parent_session_id,
+            model=dict(model or {}),
+            agent=dict(agent or {"id": "main"}),
             mode=mode if mode in {"chat", "plan", "edit", "architect"} else "chat",
             edit_mode=edit_mode if edit_mode in {"diff", "whole", "patch"} else "diff",
             routing_mode=routing_mode if routing_mode in valid_routing_modes else "auto",
@@ -283,6 +289,8 @@ class SessionStore:
         mode: Optional[str] = None,
         edit_mode: Optional[str] = None,
         routing_mode: Optional[str] = None,
+        model: Optional[dict[str, str]] = None,
+        agent: Optional[dict[str, str]] = None,
         metadata_patch: Optional[dict[str, Any]] = None,
     ) -> Optional[Session]:
         """Mutate a session in place.
@@ -319,6 +327,10 @@ class SessionStore:
                 "auto", "chat", "experts", "reasoning_only",
             }:
                 sess.routing_mode = routing_mode
+            if model is not None:
+                sess.model = dict(model)
+            if agent is not None:
+                sess.agent = dict(agent)
             if metadata_patch is not None:
                 sess.metadata.update(metadata_patch)
             sess.updated_at = _utcnow_iso()

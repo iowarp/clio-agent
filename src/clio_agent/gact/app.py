@@ -151,6 +151,33 @@ def _coerce_error_info(value: Any) -> Optional["ErrorInfo"]:
     )
 
 
+_EXECUTABLE_SESSION_AGENT_IDS = {
+    "",
+    "main",
+    "default",
+    "data",
+    "analysis",
+    "visualization",
+}
+
+
+class _UnsupportedSessionAgent(RuntimeError):
+    """Raised when a session selects an agent CLIO cannot execute yet."""
+
+    def __init__(self, agent_id: str) -> None:
+        super().__init__(agent_id)
+        self.agent_id = agent_id
+
+
+def _session_agent_id(sess: Any) -> str:
+    """Return the active session agent id from dict or object refs."""
+
+    agent = getattr(sess, "agent", None)
+    if isinstance(agent, Mapping):
+        return str(agent.get("id") or "").strip()
+    return str(getattr(agent, "id", "") or "").strip()
+
+
 async def _run_turn_in_background(
     app: "FastAPI",
     sid: str,
@@ -183,6 +210,7 @@ async def _run_turn_in_background(
     answer_text = ""
     selected_agent = ""
     rationale = ""
+    execution_path = ""
     tools_called: list[dict[str, Any]] = []
     proposed_diffs: list[Any] = []
     nanoagents: list[Any] = []
@@ -295,6 +323,10 @@ async def _run_turn_in_background(
     history_start = _snapshot_lm_history_index(app)
 
     try:
+        active_agent_id = _session_agent_id(sess)
+        if active_agent_id not in _EXECUTABLE_SESSION_AGENT_IDS:
+            raise _UnsupportedSessionAgent(active_agent_id)
+
         # Honour the session's routing override. routing_mode "chat"
         # forces the chat path (no /chat prefix needed); "experts"
         # rejects chat/none classifications. Keep the override on the
@@ -482,6 +514,32 @@ async def _run_turn_in_background(
             recoverable=True,
         )
         answer_text = "".join(streamed_assistant_buffer)
+        tools_called = []
+    except _UnsupportedSessionAgent as exc:
+        selected_agent = exc.agent_id
+        rationale = (
+            "Session selected an agent that is registered but not executable "
+            "by CLIO's current runtime."
+        )
+        error_info = ErrorInfo(
+            error="not_implemented",
+            message=(
+                f"Session agent {exc.agent_id!r} cannot be executed yet."
+            ),
+            details={
+                "agent_id": exc.agent_id,
+                "supported_agent_ids": sorted(
+                    agent_id for agent_id in _EXECUTABLE_SESSION_AGENT_IDS if agent_id
+                ),
+                "recovery_actions": [
+                    "choose_builtin_agent",
+                    "retry",
+                    "exit",
+                ],
+            },
+            recoverable=True,
+        )
+        answer_text = ""
         tools_called = []
     except Exception as exc:  # noqa: BLE001
         error_info = ErrorInfo(
@@ -2855,6 +2913,8 @@ def build_app(
             workspace_id=wid,
             title=req.title,
             metadata=req.metadata,
+            model=req.model.model_dump(exclude_none=True) if req.model else None,
+            agent=req.agent.model_dump(exclude_none=True) if req.agent else None,
             mode=req.mode,
             edit_mode=req.edit_mode,
             routing_mode=req.routing_mode,
@@ -2878,6 +2938,8 @@ def build_app(
             mode=req.mode,
             edit_mode=req.edit_mode,
             routing_mode=req.routing_mode,
+            model=req.model.model_dump(exclude_none=True) if req.model else None,
+            agent=req.agent.model_dump(exclude_none=True) if req.agent else None,
         )
         if sess is None:
             raise HTTPException(
@@ -5384,6 +5446,29 @@ def build_app(
                         ),
                         details={"session_id": sid},
                         recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+
+        if req.model is not None:
+            raise HTTPException(
+                status_code=501,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="not_implemented",
+                        message=(
+                            "Per-message model overrides are not implemented yet."
+                        ),
+                        details={
+                            "session_id": sid,
+                            "model": req.model.model_dump(exclude_none=True),
+                            "recovery_actions": [
+                                "set_session_model",
+                                "retry",
+                                "exit",
+                            ],
+                        },
+                        recoverable=True,
                     )
                 ).model_dump(exclude_none=True),
             )
