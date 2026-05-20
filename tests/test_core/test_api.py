@@ -289,7 +289,7 @@ class TestQuerySSE:
                 assert data["error"] == "internal_error"
                 break
 
-    def test_stream_done_event_includes_error_info(self, client, mock_agent):
+    def test_stream_prediction_error_info_emits_error_event(self, client, mock_agent):
         prediction = dspy.Prediction(
             answer="handled failure",
             selected_expert="data",
@@ -308,13 +308,16 @@ class TestQuerySSE:
 
         lines = resp.text.splitlines()
         for i, line in enumerate(lines):
-            if line.strip() == "event: done":
+            if line.strip() == "event: error":
                 for j in range(i + 1, min(i + 3, len(lines))):
                     if lines[j].startswith("data:"):
                         data = json.loads(lines[j][len("data:") :].strip())
                         assert data["error_info"]["error"] == "tool_error"
+                        assert data["answer"] == "handled failure"
+                        assert data["selected_expert"] == "data"
+                        assert "event: done" not in resp.text
                         return
-        raise AssertionError("No done event found in SSE stream")
+        raise AssertionError("No error event found in SSE stream")
 
 
 # ---------------------------------------------------------------------------

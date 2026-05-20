@@ -285,6 +285,23 @@ async def _stream_response(agent: Any, req: QueryRequest):
             ),
         }
 
+        error_info = getattr(result, "error_info", None)
+        if error_info is not None:
+            yield {
+                "event": "error",
+                "data": json.dumps(
+                    {
+                        "error_info": error_info,
+                        "answer": result.answer,
+                        "selected_expert": result.selected_expert,
+                        "route_source": getattr(result, "route_source", ""),
+                        "route_reason": getattr(result, "route_reason", ""),
+                        "duration_ms": duration_ms,
+                    }
+                ),
+            }
+            return
+
         # Event: chunk -- split answer into word chunks for SSE infrastructure
         words = result.answer.split()
         chunk_size = max(1, len(words) // 5) if words else 1
