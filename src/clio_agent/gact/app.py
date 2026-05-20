@@ -1354,6 +1354,7 @@ async def _run_turn_in_background(
                     "call_id": call_id,
                     "tool": call.get("name", ""),
                     "args": call.get("args", {}),
+                    "telemetry_source": "posthoc_prediction",
                 },
             )
         )
@@ -1368,6 +1369,7 @@ async def _run_turn_in_background(
                     "ok": call.get("ok", True),
                     "duration_ms": call.get("duration_ms", 0.0),
                     "cached": call.get("cached", False),
+                    "telemetry_source": "posthoc_prediction",
                 },
             )
         )
@@ -1996,6 +1998,7 @@ def _make_tool_observer(app: "FastAPI"):
                         "call_id": call_id,
                         "tool": name,
                         "args": dict(args),
+                        "telemetry_source": "live_observer",
                     },
                 )
             )
@@ -2010,6 +2013,7 @@ def _make_tool_observer(app: "FastAPI"):
                 "ok": ok,
                 "duration_ms": duration_ms,
                 "cached": False,
+                "telemetry_source": "live_observer",
                 **({"error": error} if error else {}),
             }
             app.state.bus.publish(
@@ -2031,6 +2035,7 @@ def _make_tool_observer(app: "FastAPI"):
                         "ok": ok,
                         "duration_ms": duration_ms,
                         "cached": False,
+                        "telemetry_source": "live_observer",
                         **({"error": error} if error else {}),
                     }
                 )
@@ -2713,6 +2718,9 @@ def _extract_tools_called(pred: Any) -> list[dict[str, Any]]:
         cached = get("cached")
         if cached is not None:
             row["cached"] = bool(cached)
+
+        telemetry_source = get("telemetry_source") or "posthoc_prediction"
+        row["telemetry_source"] = str(telemetry_source)
 
         if row:
             out.append(row)
