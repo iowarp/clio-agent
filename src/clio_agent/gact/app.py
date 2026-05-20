@@ -3959,12 +3959,15 @@ def build_app(
         - Path is a bare provider kind (``argonne``, ``openai``):
           live-fetch using the kind's first registered preset's
           api_base + auth.
-        - Fall through to the static catalog for anything else.
+        - Fall through to the static catalog for known provider ids
+          that do not have a live-discovery path.
 
         Live fetches are cached for _LIVE_MODELS_TTL_S so spamming
         ←/→ in the picker doesn't hammer the upstream. Failures
         (no key, network down, 5xx) silently fall back to the static
-        catalog so the picker is never empty.
+        catalog so the picker is never empty. Unknown provider ids
+        return a structured 404 instead of pretending to be an empty
+        static catalog.
         """
         # Match a preset id first.
         def _wrap(triple: tuple[list[dict[str, str]], str, str]) -> dict[str, Any]:
@@ -3991,8 +3994,18 @@ def build_app(
         for p in _LM_PRESETS:
             if p.provider == provider_id:
                 return _wrap(_openai_compat_live_models(p))
-        # Last-ditch static.
-        models = _PROVIDER_MODELS.get(provider_id, [])
+        # Last-ditch static for known provider ids only.
+        models = _PROVIDER_MODELS.get(provider_id)
+        if models is None:
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(error=ErrorInfo(
+                    error="not_found",
+                    message=f"unknown provider: {provider_id}",
+                    details={"available": sorted(_PROVIDER_MODELS)},
+                    recoverable=False,
+                )).model_dump(exclude_none=True),
+            )
         return {"models": models, "source": "static_fallback"}
 
     def _argonne_cluster_from_preset(preset: "LMProviderPreset") -> str:
