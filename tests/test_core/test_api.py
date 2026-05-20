@@ -289,6 +289,22 @@ class TestQuerySSE:
                 assert data["error"] == "internal_error"
                 break
 
+    def test_stream_success_chunks_are_marked_synthetic_posthoc(self, client):
+        resp = client.post("/query", json={"question": "Stream me", "stream": True})
+        lines = resp.text.splitlines()
+
+        for i, line in enumerate(lines):
+            if line.strip() == "event: chunk":
+                for j in range(i + 1, min(i + 3, len(lines))):
+                    if lines[j].startswith("data:"):
+                        data = json.loads(lines[j][len("data:") :].strip())
+                        assert data["stream_source"] == "synthetic_posthoc"
+                        assert data["stream_fallback"]["reason"] == (
+                            "legacy_query_sync_path"
+                        )
+                        return
+        raise AssertionError("No chunk event found in SSE stream")
+
     def test_stream_prediction_error_info_emits_error_event(self, client, mock_agent):
         prediction = dspy.Prediction(
             answer="handled failure",
@@ -431,6 +447,10 @@ class TestAPIMain:
                     if lines[j].startswith("data:"):
                         data = json.loads(lines[j][len("data:") :].strip())
                         assert "answer" in data
+                        assert data["stream_source"] == "synthetic_posthoc"
+                        assert data["stream_fallback"]["reason"] == (
+                            "legacy_query_sync_path"
+                        )
                         found_done = True
                         break
                 break
