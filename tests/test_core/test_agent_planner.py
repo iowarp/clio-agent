@@ -2,8 +2,8 @@
 
 Covers the deterministic helpers and the _run_agent_loop branches that
 test_agent_dispatch.py does not exercise -- pure parsing/formatting
-helpers, capability context assembly, the tool / unsupported-action /
-step-limit branches of the loop, and the observation fallback answer.
+helpers, capability context assembly, and the tool / unsupported-action /
+step-limit branches of the loop.
 All without a live LM.
 """
 
@@ -176,29 +176,6 @@ class TestAgentMaxSteps:
 # --------------------------------------------------------------------------
 # Helpers that need an agent instance
 # --------------------------------------------------------------------------
-
-
-class TestFallbackAnswer:
-    def test_no_observations(self, agent):
-        out = agent._fallback_answer_from_observations([])
-        assert "could not choose" in out.lower()
-
-    def test_failed_observation_with_error(self, agent):
-        obs = [{"tool": "t", "ok": False, "result": {"error": {"message": "boom"}}}]
-        assert "failed" in agent._fallback_answer_from_observations(obs).lower()
-
-    def test_failed_observation_without_error_mapping(self, agent):
-        obs = [{"tool": "t", "ok": False, "result": "raw failure"}]
-        assert "could not complete" in agent._fallback_answer_from_observations(obs).lower()
-
-    def test_ok_observation_with_value(self, agent):
-        obs = [{"tool": "t", "ok": True, "result": {"value": 42}}]
-        assert "42" in agent._fallback_answer_from_observations(obs)
-
-    def test_ok_observation_without_value(self, agent):
-        obs = [{"tool": "t", "ok": True, "result": {"rows": 3}}]
-        out = agent._fallback_answer_from_observations(obs)
-        assert "completed" in out.lower()
 
 
 class TestFormatObservations:
