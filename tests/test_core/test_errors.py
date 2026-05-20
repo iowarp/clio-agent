@@ -5,6 +5,7 @@ Tests structured error types and format_error_response.
 """
 
 from clio_agent.errors import (
+    CancellationError,
     ClioError,
     ConfigError,
     ExpertError,
@@ -77,6 +78,12 @@ class TestErrorSubclasses:
         assert err.error_type == "config_error"
         assert err.to_dict()["error"] == "config_error"
 
+    def test_cancellation_error_type(self):
+        """CancellationError should have error_type='cancelled'."""
+        err = CancellationError("Turn cancelled")
+        assert err.error_type == "cancelled"
+        assert err.to_dict()["error"] == "cancelled"
+
     def test_subclass_with_details(self):
         """Subclasses should accept and store details."""
         err = ExpertError("fail", details={"expert": "data"})
@@ -84,7 +91,14 @@ class TestErrorSubclasses:
 
     def test_all_are_clio_errors(self):
         """All subclasses should be ClioError instances."""
-        for cls in (ProviderError, RoutingError, ExpertError, ToolError, ConfigError):
+        for cls in (
+            ProviderError,
+            RoutingError,
+            ExpertError,
+            ToolError,
+            ConfigError,
+            CancellationError,
+        ):
             assert isinstance(cls("msg"), ClioError)
 
 

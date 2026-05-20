@@ -77,11 +77,13 @@ synthetic because there are no provider tokens to stream.
 
 Cancellation is also best-effort at the GACT boundary. A cancelled turn
 settles with `error_info.error="cancelled"` and status events include
-`execution_cancellation`. If a provider or tool call is already running
-inside an executor thread, the server reports
-`execution_cancellation="best_effort"` and
-`executor_work_may_continue=true`; clients must not interpret that as a
-guaranteed upstream abort.
+`execution_cancellation`. GACT now passes a cooperative cancellation
+checker into compatible agent turns, and the sync MCP bridge checks for
+cancellation before reporting normal tool success. If a provider or tool
+call is already running inside an executor thread and cannot observe the
+checker in time, the server reports `execution_cancellation="best_effort"`
+and `executor_work_may_continue=true`; clients must not interpret that as
+a guaranteed upstream abort.
 
 ## Vendor-specific (CLIO additions on top of v0.2)
 

@@ -11,7 +11,8 @@ Error hierarchy:
     ├── RoutingError   -- Router failed to classify
     ├── ExpertError    -- Expert execution failed
     ├── ToolError      -- MCP tool call failed
-    └── ConfigError    -- Configuration invalid
+    ├── ConfigError    -- Configuration invalid
+    └── CancellationError -- User-requested cancellation
 """
 
 from __future__ import annotations
@@ -88,6 +89,13 @@ class ConfigError(ClioError):
 
     def __init__(self, message: str, details: dict[str, Any] | None = None) -> None:
         super().__init__(message, error_type="config_error", details=details)
+
+
+class CancellationError(ClioError):
+    """User-requested cancellation observed by a cooperative execution path."""
+
+    def __init__(self, message: str, details: dict[str, Any] | None = None) -> None:
+        super().__init__(message, error_type="cancelled", details=details)
 
 
 def format_error_response(error: Exception) -> dict[str, Any]:
