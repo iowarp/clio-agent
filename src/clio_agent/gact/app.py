@@ -440,6 +440,85 @@ def _tool_call_event_key(call: Mapping[str, Any]) -> tuple[str, str]:
     return name, encoded_args
 
 
+def _model_ref_dict(value: Any) -> dict[str, str]:
+    """Normalize a GACT ModelRef-like value to its wire keys."""
+
+    if value is None:
+        raw: Mapping[str, Any] = {}
+    elif isinstance(value, Mapping):
+        raw = value
+    elif hasattr(value, "model_dump"):
+        raw = value.model_dump(exclude_none=True)
+    else:
+        raw = {
+            "provider_id": getattr(value, "provider_id", ""),
+            "model_id": getattr(value, "model_id", ""),
+            "variant": getattr(value, "variant", ""),
+        }
+    return {
+        "provider_id": str(raw.get("provider_id") or raw.get("provider") or ""),
+        "model_id": str(raw.get("model_id") or raw.get("model") or ""),
+        "variant": str(raw.get("variant") or ""),
+    }
+
+
+def _model_ref_is_empty(value: Any) -> bool:
+    """Return true when a model ref carries no selection."""
+
+    ref = _model_ref_dict(value)
+    return not any(ref.values())
+
+
+def _active_lm_model_ref(app: "FastAPI") -> dict[str, str]:
+    """Return the active global LM as a GACT ModelRef-shaped dict."""
+
+    cfg = getattr(app.state, "lm_config", None) or {}
+    provider = str(cfg.get("provider") or "")
+    model = str(cfg.get("model") or "")
+    if (not provider or not model) and getattr(app.state, "agent", None) is not None:
+        provider_config = getattr(app.state.agent, "_provider_config", None)
+        provider = provider or str(getattr(provider_config, "provider", "") or "")
+        model = model or str(getattr(provider_config, "model", "") or "")
+    return {"provider_id": provider, "model_id": model, "variant": ""}
+
+
+def _model_ref_matches_active(value: Any, app: "FastAPI") -> bool:
+    """Return true when a requested model ref exactly matches the active LM."""
+
+    return _model_ref_dict(value) == _active_lm_model_ref(app)
+
+
+def _unsupported_model_ref_error(
+    *,
+    session_id: str,
+    source: str,
+    model_ref: Any,
+    active_model: Mapping[str, str],
+) -> ErrorEnvelope:
+    """Build a structured error for currently unsupported model refs."""
+
+    return ErrorEnvelope(error=ErrorInfo(
+        error="not_implemented",
+        message=(
+            f"{source} model overrides are not implemented for a model "
+            "that differs from the active global LM."
+        ),
+        details={
+            "session_id": session_id,
+            "source": source,
+            "model": _model_ref_dict(model_ref),
+            "active_model": dict(active_model),
+            "recovery_actions": [
+                "put_global_lm_provider",
+                "clear_session_model",
+                "retry",
+                "exit",
+            ],
+        },
+        recoverable=True,
+    ))
+
+
 async def _run_turn_in_background(
     app: "FastAPI",
     sid: str,
@@ -5800,26 +5879,33 @@ def build_app(
                 ).model_dump(exclude_none=True),
             )
 
-        if req.model is not None:
+        if (
+            req.model is not None
+            and not _model_ref_is_empty(req.model)
+            and not _model_ref_matches_active(req.model, app)
+        ):
+            active_model = _active_lm_model_ref(app)
             raise HTTPException(
                 status_code=501,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="not_implemented",
-                        message=(
-                            "Per-message model overrides are not implemented yet."
-                        ),
-                        details={
-                            "session_id": sid,
-                            "model": req.model.model_dump(exclude_none=True),
-                            "recovery_actions": [
-                                "set_session_model",
-                                "retry",
-                                "exit",
-                            ],
-                        },
-                        recoverable=True,
-                    )
+                detail=_unsupported_model_ref_error(
+                    session_id=sid,
+                    source="per_message",
+                    model_ref=req.model,
+                    active_model=active_model,
+                ).model_dump(exclude_none=True),
+            )
+
+        if not _model_ref_is_empty(sess.model) and not _model_ref_matches_active(
+            sess.model, app
+        ):
+            active_model = _active_lm_model_ref(app)
+            raise HTTPException(
+                status_code=501,
+                detail=_unsupported_model_ref_error(
+                    session_id=sid,
+                    source="session",
+                    model_ref=sess.model,
+                    active_model=active_model,
                 ).model_dump(exclude_none=True),
             )
 
