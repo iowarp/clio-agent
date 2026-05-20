@@ -89,7 +89,7 @@ def app_client(tmp_path: Path):
     return app, TestClient(app), answer
 
 
-def test_text_parts_stream_as_deltas(app_client) -> None:
+def test_synthetic_posthoc_text_is_delivered_without_deltas(app_client) -> None:
     app, client, answer = app_client
     sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
     client.post(
@@ -105,21 +105,19 @@ def test_text_parts_stream_as_deltas(app_client) -> None:
     completed = [e for e in history if e.type == "message.part.completed"]
     message_completed = [e for e in history if e.type == "message.completed"]
 
-    # The text part arrives as one .added (empty text) + N .deltas +
-    # one .completed. The other part types (routing_decision) use
-    # .added with full content and emit no deltas.
+    # Post-hoc text arrives as a completed part rather than synthetic
+    # chunks. Only real live provider output should use delta events.
     assert len(added) == 1
-    assert added[0].payload["part"]["text"] == ""
+    assert added[0].payload["part"]["text"] == answer
     assert added[0].payload["part"]["metadata"]["stream_source"] == "synthetic_posthoc"
     assert added[0].payload["part"]["metadata"]["stream_fallback"]["reason"] == (
         "agent_not_streamable"
     )
-    assert len(deltas) == 4
-    assert all(d.payload["stream_source"] == "synthetic_posthoc" for d in deltas)
-    assert all(d.payload["stream_fallback"]["reason"] == "agent_not_streamable" for d in deltas)
+    assert deltas == []
     assert len(completed) == 1
     assert completed[0].payload["stream_source"] == "synthetic_posthoc"
     assert completed[0].payload["stream_fallback"]["reason"] == "agent_not_streamable"
+    assert completed[0].payload["final_text"] == answer
     assert message_completed[-1].payload["metadata"]["stream_fallback"]["reason"] == (
         "agent_not_streamable"
     )
@@ -128,10 +126,6 @@ def test_text_parts_stream_as_deltas(app_client) -> None:
     text_parts = [p for p in assistant["parts"] if p["type"] == "text"]
     assert text_parts[-1]["metadata"]["stream_source"] == "synthetic_posthoc"
     assert text_parts[-1]["metadata"]["stream_fallback"]["reason"] == "agent_not_streamable"
-
-    # Concatenated deltas reconstruct the full answer.
-    chunks = [d.payload["delta"]["text_append"] for d in deltas]
-    assert "".join(chunks) == answer
 
 
 async def test_streamify_setup_failure_returns_none_for_sync_fallback(
@@ -435,13 +429,23 @@ def test_streamify_final_prediction_without_chunks_has_specific_fallback(
 
     history = app.state.bus._history.get(sid, [])
     deltas = [e for e in history if e.type == "message.part.delta"]
+    added = [
+        e for e in history if e.type == "message.part.added" and e.payload["part"]["type"] == "text"
+    ]
+    completed_parts = [
+        e for e in history if e.type == "message.part.completed" and e.payload["stream_source"]
+    ]
     completed_messages = [e for e in history if e.type == "message.completed"]
 
-    assert deltas
-    assert all(d.payload["stream_source"] == "synthetic_posthoc" for d in deltas)
-    assert all(
-        d.payload["stream_fallback"]["reason"] == "stream_completed_without_chunks" for d in deltas
+    assert deltas == []
+    assert added[-1].payload["part"]["text"] == "complete answer"
+    assert added[-1].payload["part"]["metadata"]["stream_source"] == "synthetic_posthoc"
+    assert (
+        added[-1].payload["part"]["metadata"]["stream_fallback"]["reason"]
+        == "stream_completed_without_chunks"
     )
+    assert completed_parts[-1].payload["stream_source"] == "synthetic_posthoc"
+    assert completed_parts[-1].payload["final_text"] == "complete answer"
     assert completed_messages[-1].payload["metadata"]["stream_source"] == "synthetic_posthoc"
     assert (
         completed_messages[-1].payload["metadata"]["stream_fallback"]["reason"]

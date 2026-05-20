@@ -66,7 +66,7 @@ def test_capabilities_advertises_v0_2(client: TestClient) -> None:
     assert caps["x_clio_cancellation"] == "best_effort"
     assert caps["x_clio_executor_cancellation"] is False
     assert caps["x_clio_text_streaming"] == "best_effort_live"
-    assert caps["x_clio_synthetic_posthoc_streaming"] is True
+    assert caps["x_clio_synthetic_posthoc_streaming"] is False
     # Landed capabilities.
     for flag in (
         "sessions",
@@ -82,9 +82,7 @@ def test_capabilities_advertises_v0_2(client: TestClient) -> None:
         "subagents",
         "tool_telemetry",
     ):
-        assert caps[flag] is True, (
-            f"{flag} implemented — must advertise True"
-        )
+        assert caps[flag] is True, f"{flag} implemented — must advertise True"
 
 
 def test_stubbed_routes_return_501_with_v0_2_envelope() -> None:

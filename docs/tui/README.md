@@ -26,7 +26,7 @@ This folder is the spec and reference for building a first-class terminal UI on 
 - Routing is a one-pass DSPy planner over live tools and registered experts; it selects a tool, `expert:data|analysis|visualization`, `answer`/chat, or an explicit `none` route.
 - CLIO's GACT backend owns sessions through `/v1/sessions`.
 - Cancellation is available as best effort through `POST /v1/sessions/{sid}/cancel`.
-- Text deltas carry explicit stream provenance. `stream_source="live"` means the text came through the live DSPy/LiteLLM streaming path; `stream_source="synthetic_posthoc"` means the backend chunked a completed answer for rendering continuity. Deterministic tool-result summaries can still be synthetic because there are no provider tokens to stream; see [REAL_GAPS.md](REAL_GAPS.md).
+- Text delivery carries explicit provenance. `stream_source="live"` means the text came through the live DSPy/LiteLLM streaming path; `stream_source="synthetic_posthoc"` means the backend already had a completed answer before it could emit live provider-token deltas. Deterministic tool-result summaries can still be synthetic because there are no provider tokens to stream; see [REAL_GAPS.md](REAL_GAPS.md).
 
 ## What this folder does NOT cover
 

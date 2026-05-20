@@ -1360,11 +1360,10 @@ async def _run_turn_in_background(
                 ).model_dump(exclude_none=True),
             )
         )
-    # Stream text parts via message.part.added (empty) + N
-    # message.part.delta + message.part.completed. When real
-    # streaming already drained the chunks, just close out with
-    # message.part.completed for the streamed text part.
-    _CHUNK = 64
+    # Stream live text parts via message.part.delta. When a turn only has
+    # post-hoc text, publish the completed text as a normal part instead
+    # of chunking it into synthetic deltas that could be mistaken for live
+    # provider tokens.
     for part in assistant_parts:
         if part.type == "text" and part.text:
             if part.id == streamed_assistant_part_id:
@@ -1386,39 +1385,23 @@ async def _run_turn_in_background(
                     )
                 )
                 continue
-            stub = part.model_copy(deep=True)
-            stub.text = ""
-            stub.metadata = {
-                **stub.metadata,
+            delivered = part.model_copy(deep=True)
+            delivered.metadata = {
+                **delivered.metadata,
                 "stream_source": "synthetic_posthoc",
             }
             if stream_fallback:
-                stub.metadata["stream_fallback"] = stream_fallback
+                delivered.metadata["stream_fallback"] = stream_fallback
             bus.publish(
                 Event(
                     type="message.part.added",
                     session_id=sid,
                     payload={
                         "message_id": assistant_msg.id,
-                        "part": stub.model_dump(exclude_none=True),
+                        "part": delivered.model_dump(exclude_none=True),
                     },
                 )
             )
-            full = part.text
-            for i in range(0, len(full), _CHUNK):
-                bus.publish(
-                    Event(
-                        type="message.part.delta",
-                        session_id=sid,
-                        payload={
-                            "message_id": assistant_msg.id,
-                            "part_id": part.id,
-                            "stream_source": "synthetic_posthoc",
-                            "stream_fallback": stream_fallback,
-                            "delta": {"text_append": full[i : i + _CHUNK]},
-                        },
-                    )
-                )
             bus.publish(
                 Event(
                     type="message.part.completed",
@@ -1428,6 +1411,7 @@ async def _run_turn_in_background(
                         "part_id": part.id,
                         "stream_source": "synthetic_posthoc",
                         "stream_fallback": stream_fallback,
+                        "final_text": part.text,
                     },
                 )
             )
@@ -2530,7 +2514,7 @@ async def _try_streamed_forward(
     # forward implementation. dspy.Module exposes acall generically, but
     # its default implementation delegates to aforward; ClioAgent only has
     # sync forward today, so treating inherited acall as sufficient forces
-    # streamify into AttributeError and silently drops to synthetic chunks.
+    # streamify into AttributeError and silently drops to synthetic fallback.
     has_async_forward = callable(getattr(agent, "aforward", None))
     try:
         streamed = streamify(
@@ -3951,7 +3935,7 @@ def build_app(
                 x_clio_cancellation="best_effort",
                 x_clio_executor_cancellation=False,
                 x_clio_text_streaming="best_effort_live",
-                x_clio_synthetic_posthoc_streaming=True,
+                x_clio_synthetic_posthoc_streaming=False,
             ),
             transports=TransportFlags(events_sse=True, events_websocket=False),
             auth=AuthInfo(schemes=["trust_socket"], current="trust_socket"),

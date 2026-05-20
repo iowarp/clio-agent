@@ -127,12 +127,12 @@ $ clio-agent-gact --host 127.0.0.1 --port 17800
 
 ### GACT streaming
 
-Clients post the message, then consume `/events`. Text deltas include `stream_source` so the TUI can distinguish live token/proxy streaming from post-hoc rendering chunks:
+Clients post the message, then consume `/events`. Live text deltas include `stream_source` so the TUI can distinguish live token/proxy streaming from post-hoc text delivery:
 
 | `stream_source` | Meaning |
 |---|---|
 | `live` | delta arrived through the live `dspy.streamify` path |
-| `synthetic_posthoc` | final answer was already available and was chunked afterward |
+| `synthetic_posthoc` | final answer was already available before live provider-token deltas could be emitted |
 
 Cancellation is also explicit rather than hidden. Cancelling a running turn settles the GACT envelope as cancelled; if provider/tool work is already inside an executor thread, `session.status_changed` marks `execution_cancellation="best_effort"` and `executor_work_may_continue=true`.
 
