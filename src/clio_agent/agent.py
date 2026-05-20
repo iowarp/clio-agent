@@ -444,8 +444,8 @@ class ClioAgent(dspy.Module):
 
             if kind == "tool":
                 tool_name = self._coerce_text(action.get("tool")).strip()
-                result = self._execute_tool_action(tool_name, action.get("args"), trace)
                 selected = self._selected_expert_for_tool(tool_name)
+                result = self._execute_tool_action(tool_name, action.get("args"), trace)
                 route = self._route_for_selected(
                     selected,
                     reason or f"Agent planner called tool {tool_name}.",
@@ -741,9 +741,8 @@ class ClioAgent(dspy.Module):
     ) -> Any:
         """Execute a planner-selected tool and record provenance."""
         args = self._normalize_tool_args(raw_args)
-        gateway_tools = set(self.tool_executor.get_tool_names())
         visualization_tools = self._visualization_tool_map()
-        known_tools = gateway_tools | set(visualization_tools)
+        known_tools = self._known_tool_names()
 
         if not tool_name or tool_name not in known_tools:
             return {
@@ -912,6 +911,10 @@ class ClioAgent(dspy.Module):
         """Return gateway and local visualization tools visible to the planner."""
         return [*self.tool_executor.to_dspy_tools(), *self._visualization_tool_map().values()]
 
+    def _known_tool_names(self) -> set[str]:
+        """Return every tool name currently visible to the planner."""
+        return set(self.tool_executor.get_tool_names()) | set(self._visualization_tool_map())
+
     def _visualization_tool_map(self) -> dict[str, dspy.Tool]:
         """Return local visualization tools keyed by their stable names."""
         return {
@@ -926,7 +929,22 @@ class ClioAgent(dspy.Module):
             caps = self.registry.get_capabilities(agent_id)
             if caps and tool_name in caps.tools:
                 return agent_id
-        return "chat"
+        known_tools = self._known_tool_names()
+        if not tool_name or tool_name not in known_tools:
+            raise RoutingError(
+                f"Agent planner selected unknown tool {tool_name!r}.",
+                details={
+                    "tool": tool_name,
+                    "available_tools": sorted(known_tools),
+                },
+            )
+        raise RoutingError(
+            f"Tool {tool_name!r} has no registered owning expert.",
+            details={
+                "tool": tool_name,
+                "available_experts": self.registry.list_agents(),
+            },
+        )
 
     def _selected_expert_from_trace(self, trace: RunTrace) -> str:
         """Infer the public selected_expert from executed tool provenance."""
