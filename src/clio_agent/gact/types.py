@@ -86,6 +86,11 @@ class CapabilityFlags(BaseModel):
     integration_health: bool = False
     tool_telemetry: bool = False
 
+    # CLIO vendor truth flags. GACT conformance treats x_* keys as
+    # vendor metadata, so these can carry richer values than booleans.
+    x_clio_cancellation: Literal["none", "best_effort", "hard"] = "none"
+    x_clio_executor_cancellation: bool = False
+
 
 class TransportFlags(BaseModel):
     events_sse: bool = True

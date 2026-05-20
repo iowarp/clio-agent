@@ -63,6 +63,8 @@ def test_capabilities_advertises_v0_2(client: TestClient) -> None:
     assert caps["integration_health"] is True, (
         "/v1/health returns integrations[], so this must be True"
     )
+    assert caps["x_clio_cancellation"] == "best_effort"
+    assert caps["x_clio_executor_cancellation"] is False
     # Landed capabilities.
     for flag in (
         "sessions",

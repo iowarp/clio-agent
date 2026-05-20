@@ -3296,6 +3296,8 @@ def build_app(
                 structured_errors=True,  # always — we return the envelope for every error
                 integration_health=True,  # /v1/health above carries it
                 tool_telemetry=True,  # BBB18 — tool.call.started/completed events
+                x_clio_cancellation="best_effort",
+                x_clio_executor_cancellation=False,
             ),
             transports=TransportFlags(events_sse=True, events_websocket=False),
             auth=AuthInfo(schemes=["trust_socket"], current="trust_socket"),
