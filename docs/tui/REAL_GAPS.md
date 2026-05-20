@@ -42,8 +42,9 @@ Synthetic text part events and assistant completion metadata also carry
 synthetic chunks as evidence that the provider streamed live tokens.
 Known reasons include `agent_not_streamable` for non-DSPy test/runtime
 agents, `stream_setup_failed` for DSPy listener setup failures, and
-`dynamic_agent_sync_path` for registered user/skill agents that still run
-through the synchronous runner.
+`dynamic_agent_sync_path` for tool-declaring registered user/skill agents
+that still run through the synchronous ReAct/tool runner. Prompt-only
+registered agents attempt the live `dspy.streamify` path first.
 
 The TUI should render both sources, but only `live` is evidence of real
 token arrival. Treat synthetic chunks as a truthful compatibility path,
