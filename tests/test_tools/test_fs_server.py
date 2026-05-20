@@ -6,8 +6,13 @@ from pathlib import Path
 
 import pytest
 
+from clio_agent.tools.execution import (
+    create_sync_tool_executor,
+    set_global_permission_gate,
+)
 from clio_agent.tools.file_policy import FilePolicyError
 from clio_agent.tools.fs_write import write_text_with_policy
+from clio_agent.tools.gateway import get_gateway
 from clio_agent.tools.servers.fs_server import apply_edit_write, propose_edit
 
 
@@ -67,3 +72,37 @@ def test_apply_edit_write_rejects_outside_allowed_roots(
 
     assert exc.value.code == "outside_allowed_roots"
     assert not (outside / "new.txt").exists()
+
+
+def test_gateway_apply_edit_write_respects_late_global_permission_gate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("CLIO_ALLOWED_ROOTS", str(tmp_path))
+    target = tmp_path / "gated.txt"
+    executor = create_sync_tool_executor(get_gateway(), timeout=5.0, setup_timeout=5.0)
+    seen: list[str] = []
+
+    try:
+        set_global_permission_gate(
+            lambda name, _args: seen.append(name) or "allow"
+        )
+        executor.call_tool(
+            "fs_apply_edit_write",
+            {"filepath": str(target), "new_content": "allowed\n"},
+        )
+        assert target.read_text(encoding="utf-8") == "allowed\n"
+
+        set_global_permission_gate(
+            lambda name, _args: seen.append(name) or "deny"
+        )
+        with pytest.raises(PermissionError, match="denied"):
+            executor.call_tool(
+                "fs_apply_edit_write",
+                {"filepath": str(target), "new_content": "denied\n"},
+            )
+
+        assert target.read_text(encoding="utf-8") == "allowed\n"
+        assert seen == ["fs_apply_edit_write", "fs_apply_edit_write"]
+    finally:
+        set_global_permission_gate(None)
+        executor.close()
