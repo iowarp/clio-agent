@@ -65,6 +65,23 @@ loads for installs that don't use it.
 
 - [Codex (subscription)](codex.md)
 
+## Local reasoning model profiles
+
+CLIO applies a planner-specific profile for known local reasoning GGUFs
+served through LM Studio or Ollama. For Qwopus/Qwen-style model ids
+(`qwopus`, `qwen3`, `qwen-3`, `qwen35`, `qwen-3.5`), the planner LM is
+made deterministic and gets at least 4096 planner tokens even if the
+general answer cap is lower. This keeps hidden reasoning tokens from
+starving the planner's required JSON action output.
+
+Validated baseline:
+
+- `qwopus3.5-9b-v3` via LM Studio ROCm
+- 32k context loaded
+- direct LM Studio smoke: `LMSTUDIO_QWOPUS_OK`
+- CLIO smoke: `CLIO_QWOPUS_OK`
+- 26,056-token prompt push: `CTX32K_QWOPUS_OK`
+
 ## Authoring a new provider
 
 [ADDING_A_PROVIDER.md](ADDING_A_PROVIDER.md) — step-by-step walkthrough
