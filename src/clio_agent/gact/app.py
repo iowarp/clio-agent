@@ -302,19 +302,9 @@ def _dynamic_agent_lm_config(base_agent: Any, agent_def: "AgentDef") -> Any:
     )
 
 
-def _run_prompt_user_agent(
-    base_agent: Any,
-    agent_def: "AgentDef",
-    question: str,
-    session_id: str,
-) -> Any:
-    """Execute a prompt-only user/skill agent through DSPy/LiteLLM."""
+def _prompt_user_agent_signature() -> Any:
+    """Return the DSPy signature used by prompt-only dynamic agents."""
     import dspy  # noqa: PLC0415
-
-    from clio_agent.config import (  # noqa: PLC0415
-        create_chat_adapter,
-        create_lm,
-    )
 
     class PromptUserAgentSignature(dspy.Signature):
         """Run a registered CLIO user agent.
@@ -329,25 +319,71 @@ def _run_prompt_user_agent(
         question: str = dspy.InputField(desc="User message for this agent")
         answer: str = dspy.OutputField(desc="User-facing answer")
 
-    config = _dynamic_agent_lm_config(base_agent, agent_def)
-    predictor = dspy.Predict(PromptUserAgentSignature)
-    system_prompt = agent_def.system_prompt.strip() or (
-        f"You are the CLIO user agent {agent_def.id!r}. "
-        "Answer directly and do not invent tool results."
+    return PromptUserAgentSignature
+
+
+def _build_prompt_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> Any:
+    """Build a DSPy module wrapper for a streamable prompt-only dynamic agent."""
+    import dspy  # noqa: PLC0415
+
+    from clio_agent.config import (  # noqa: PLC0415
+        create_chat_adapter,
+        create_lm,
     )
-    with dspy.context(lm=create_lm(config), adapter=create_chat_adapter(config)):
-        result = predictor(system_prompt=system_prompt, question=question)
-    answer = str(getattr(result, "answer", "") or "").strip()
-    if not answer:
-        raise RuntimeError(f"user agent {agent_def.id!r} returned an empty answer")
-    return dspy.Prediction(
-        answer=answer,
-        selected_expert=agent_def.id,
-        routing_rationale=f"Session selected user agent {agent_def.id!r}.",
-        route_source="user_agent",
-        session_id=session_id,
-        error_info=None,
-    )
+
+    class PromptUserAgentModule(dspy.Module):
+        def __init__(self, base_agent: Any, agent_def: "AgentDef") -> None:
+            super().__init__()
+            self.agent_def = agent_def
+            self.config = _dynamic_agent_lm_config(base_agent, agent_def)
+            self.system_prompt = agent_def.system_prompt.strip() or (
+                f"You are the CLIO user agent {agent_def.id!r}. "
+                "Answer directly and do not invent tool results."
+            )
+            self.answer_synthesizer = dspy.Predict(_prompt_user_agent_signature())
+
+        def forward(
+            self,
+            question: str,
+            session_id: str,
+            session_mode: str = "chat",
+            session_edit_mode: str = "diff",
+        ) -> Any:
+            del session_mode, session_edit_mode
+            with dspy.context(
+                lm=create_lm(self.config),
+                adapter=create_chat_adapter(self.config),
+            ):
+                result = self.answer_synthesizer(
+                    system_prompt=self.system_prompt,
+                    question=question,
+                )
+            answer = str(getattr(result, "answer", "") or "").strip()
+            if not answer:
+                raise RuntimeError(
+                    f"user agent {self.agent_def.id!r} returned an empty answer"
+                )
+            return dspy.Prediction(
+                answer=answer,
+                selected_expert=self.agent_def.id,
+                routing_rationale=f"Session selected user agent {self.agent_def.id!r}.",
+                route_source="user_agent",
+                session_id=session_id,
+                error_info=None,
+            )
+
+    return PromptUserAgentModule(base_agent, agent_def)
+
+
+def _run_prompt_user_agent(
+    base_agent: Any,
+    agent_def: "AgentDef",
+    question: str,
+    session_id: str,
+) -> Any:
+    """Execute a prompt-only user/skill agent through DSPy/LiteLLM."""
+    module = _build_prompt_user_agent_module(base_agent, agent_def)
+    return module.forward(question=question, session_id=session_id)
 
 
 def _run_tool_user_agent(
@@ -682,26 +718,45 @@ async def _run_turn_in_background(
             dynamic_agent = _resolve_dynamic_agent(app, active_agent_id)
             if dynamic_agent is None:
                 raise _UnsupportedSessionAgent(active_agent_id)
-            _record_stream_fallback(
-                app,
-                sid,
-                "dynamic_agent_sync_path",
-                f"session agent {active_agent_id!r} executes through the synchronous runner",
-            )
             runner = _run_tool_user_agent if dynamic_agent.tools else _run_prompt_user_agent
-            with _tool_session_context(sid):
-                loop = asyncio.get_running_loop()
-                turn_context = contextvars.copy_context()
-                pred = await loop.run_in_executor(
-                    None,
-                    lambda: turn_context.run(
-                        runner,
-                        app.state.agent,
-                        dynamic_agent,
+            if not dynamic_agent.tools:
+                module = _build_prompt_user_agent_module(app.state.agent, dynamic_agent)
+                with _tool_session_context(sid):
+                    pred = await _try_streamed_forward(
+                        app,
                         enriched_text,
                         sid,
-                    ),
-                )
+                        _emit_chunk,
+                        session_mode=getattr(sess, "mode", "chat"),
+                        session_edit_mode=getattr(sess, "edit_mode", "diff"),
+                        agent_override=module,
+                    )
+            else:
+                pred = None
+            if pred is None:
+                if dynamic_agent.tools:
+                    _record_stream_fallback(
+                        app,
+                        sid,
+                        "dynamic_agent_sync_path",
+                        (
+                            f"session agent {active_agent_id!r} executes through the "
+                            "synchronous tool runner"
+                        ),
+                    )
+                with _tool_session_context(sid):
+                    loop = asyncio.get_running_loop()
+                    turn_context = contextvars.copy_context()
+                    pred = await loop.run_in_executor(
+                        None,
+                        lambda: turn_context.run(
+                            runner,
+                            app.state.agent,
+                            dynamic_agent,
+                            enriched_text,
+                            sid,
+                        ),
+                    )
         else:
             # Honour the session's routing override. routing_mode "chat"
             # forces the chat path (no /chat prefix needed); "experts"
@@ -1934,6 +1989,7 @@ async def _try_streamed_forward(
     emit_chunk,
     session_mode: str = "chat",
     session_edit_mode: str = "diff",
+    agent_override: Any | None = None,
 ) -> Optional[Any]:
     """Run the agent's forward via dspy.streamify, pumping every
     text chunk through ``emit_chunk(text)`` as it arrives. Returns
@@ -1962,7 +2018,7 @@ async def _try_streamed_forward(
         )
         return None
 
-    agent = app.state.agent
+    agent = agent_override if agent_override is not None else app.state.agent
     if agent is None:
         _record_stream_fallback(app, sid, "agent_not_available")
         return None
