@@ -615,7 +615,15 @@ class ClioAgent(dspy.Module):
             "Agent planner reached the step limit and answered from accumulated observations.",
             confidence=0.55,
         )
-        return selected, answer, None, None, route
+        error_info = RoutingError(
+            "Agent planner reached the step limit after partial observations.",
+            details=self._recovery_details(
+                partial=True,
+                step_limit=self._agent_max_steps(),
+                planner_observations=observations[-3:],
+            ),
+        ).to_dict()
+        return selected, answer, None, error_info, route
 
     def _plan_next_action(
         self,
