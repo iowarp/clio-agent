@@ -41,10 +41,10 @@ Synthetic text part events and assistant completion metadata also carry
 `stream_fallback.reason`. Render that reason when useful; do not present
 synthetic chunks as evidence that the provider streamed live tokens.
 Known reasons include `agent_not_streamable` for non-DSPy test/runtime
-agents, `stream_setup_failed` for DSPy listener setup failures, and
-`dynamic_agent_sync_path` for tool-declaring registered user/skill agents
-that still run through the synchronous ReAct/tool runner. Prompt-only
-registered agents attempt the live `dspy.streamify` path first.
+agents and `stream_setup_failed` for DSPy listener setup failures.
+Registered user/skill agents, including tool-declaring agents backed by
+DSPy ReAct, attempt the live `dspy.streamify` path first and only use
+synthetic post-hoc chunks when streaming cannot start.
 
 The TUI should render both sources, but only `live` is evidence of real
 token arrival. Treat synthetic chunks as a truthful compatibility path,
