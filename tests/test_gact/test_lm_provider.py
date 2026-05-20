@@ -170,3 +170,52 @@ def test_put_lm_provider_invalid_returns_400(tmp_path: Path, monkeypatch) -> Non
         body = resp.json()
         assert body["error"]["error"] == "config_error"
         assert "bad creds" in body["error"]["message"]
+
+
+def test_put_lm_provider_failed_first_connect_restores_env(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A rejected provider swap must not leak failed settings into env."""
+
+    before = {
+        "CLIO_LM_PROVIDER": "lm_studio",
+        "CLIO_LM_API_BASE": "http://127.0.0.1:1234/v1",
+        "CLIO_LM_MODEL": "stable-model",
+        "CLIO_LM_API_KEY": "stable-key",
+        "CLIO_CODEX_TRANSPORT": "sdk",
+    }
+    for key, value in before.items():
+        monkeypatch.setenv(key, value)
+
+    def _fake_lm(cfg: Any) -> object:
+        return object()
+
+    class _BoomAgent:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            raise RuntimeError("agent boot failed")
+
+    monkeypatch.setattr("clio_agent.config.create_lm", _fake_lm)
+    monkeypatch.setattr("clio_agent.config.create_chat_adapter", _fake_lm)
+    monkeypatch.setattr("clio_agent.config.create_planner_lm", _fake_lm)
+    monkeypatch.setattr("clio_agent.agent.ClioAgent", _BoomAgent)
+
+    app = build_app(sessions_path=tmp_path / "s.json")
+    with TestClient(app) as c:
+        resp = c.put(
+            "/v1/providers/lm",
+            json={
+                "provider": "openai",
+                "api_base": "http://rejected.example/v1",
+                "model": "rejected-model",
+                "api_key": "rejected-key",
+            },
+        )
+        body = resp.json()
+        get_body = c.get("/v1/providers/lm").json()
+
+    assert resp.status_code == 400
+    assert body["error"]["error"] == "config_error"
+    assert "agent boot failed" in body["error"]["message"]
+    assert {key: os.environ.get(key) for key in before} == before
+    assert get_body["configured"] is False
+    assert app.state.lm_config is None
