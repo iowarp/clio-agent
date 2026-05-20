@@ -70,6 +70,7 @@ def test_capabilities_advertises_v0_2(client: TestClient) -> None:
     fallback_reasons = caps["x_clio_stream_fallback_reasons"]
     assert fallback_reasons["stream_completed_without_chunks"]["live_streaming"] is False
     assert fallback_reasons["stream_setup_failed"]["recovery_actions"]
+    assert caps["x_clio_direct_delete_permissions"] is True
     # Landed capabilities.
     for flag in (
         "sessions",

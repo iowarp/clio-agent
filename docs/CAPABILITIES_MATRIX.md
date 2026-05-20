@@ -23,7 +23,7 @@ Two flags are explicitly `false` (LSP, voice — out of scope for v0.3.1).
 | `mcp` | ✅ verified | `/v1/mcp/servers` lists 3 bundled (fs/hdf5/parquet) + any installed third-party server; `clio_mcp_servers.png` |
 | `files` | ✅ verified | context_files attach + influence agent answer (test_attached_context_file_influences_answer strict pass) |
 | `diffs` | ✅ verified | Real planner `fs_propose_edit` tool observations are promoted into `file_diff` Parts; `/diffs/apply` writes the promoted `new_content` through file policy and `/diffs/reject` marks rows. Evidence: `tests/test_core/test_agent_planner.py::test_forward_promotes_propose_edit_observation_to_file_diffs`, `tests/test_gact/test_plan_edit_modes.py::test_real_agent_propose_edit_trace_becomes_applicable_diff`. |
-| `permissions` | verified; runtime partial | Destructive MCP calls, direct third-party MCP calls through `/v1/mcp/servers/{server_id}/call`, and `/diffs/apply` enforce stored deny/allow policies before destructive execution. Direct third-party MCP calls can bind an explicit `session_id` for session-scoped policy and telemetry attribution. Remaining gap tracked in #218: finish the non-tool destructive API inventory and decide whether app-state deletes should share tool permission semantics. |
+| `permissions` | verified | Destructive MCP calls, direct third-party MCP calls through `/v1/mcp/servers/{server_id}/call`, `/diffs/apply`, and direct destructive GACT DELETE endpoints enforce stored deny/allow policies before mutation and record resolved audit rows. Direct third-party MCP calls can bind an explicit `session_id` for session-scoped policy and telemetry attribution. `x_clio_direct_delete_permissions=true` advertises the direct-delete coverage. |
 | `providers` | ✅ verified | swap haiku ↔ sonnet ↔ openrouter mid-session; cost-meter delta confirms model change |
 | `commands` | ✅ verified | `/v1/commands` enumerates backend commands + TUI builtins (/mcp /tools /catalog /skills /agents-list /metrics /doctor /theme*) |
 | `metrics` | ✅ verified | `/v1/metrics` rolls up per-session counts + tokens + cost; `clio_metrics.png` |
@@ -124,4 +124,4 @@ a guaranteed upstream abort.
 | `lsp` | ⛔ false | CLIO is a scientific-data agent, not a code editor. LSP doesn't fit the data-analysis loop. |
 | `voice` | ⛔ false | Voice IO requires platform-specific audio plumbing (ffmpeg/whisper/etc.) outside CLIO's scope. Future flag may flip when we adopt a voice provider. |
 
-**28 / 30 advertised supported.** Flag inventory matches `/v1/capabilities` and the wire shapes match SPEC section 6. Rows marked `runtime partial` are not release-readiness proof by themselves; real-agent driver caveats remain tracked in `docs/tui/REAL_GAPS.md`.
+**28 / 30 advertised supported.** Flag inventory matches `/v1/capabilities` and the wire shapes match SPEC section 6. Best-effort runtime caveats, especially cancellation, remain tracked in `docs/tui/REAL_GAPS.md`.

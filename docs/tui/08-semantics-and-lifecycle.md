@@ -141,6 +141,22 @@ else: return {"error": "internal_error",
 
 Use this on the TUI side: `error_info["error"]` is the machine tag; `error_info["message"]` the user-facing line; `details` optional context.
 
+## Permission Semantics
+
+`permissions=true` means CLIO exposes the GACT permission surface and
+uses it before destructive mutations, not only after the fact.
+
+- Destructive MCP tool calls create `permission.requested` rows unless a
+  stored policy allows or denies first.
+- Session `mode="plan"` and `mode="architect"` auto-deny destructive
+  tool calls.
+- `/diffs/apply` records an auto-approved permission audit row because
+  the user explicitly clicked apply.
+- Direct destructive GACT DELETE endpoints (`sessions`, `messages`,
+  context file attachments, tasks, schedules, agents, workspaces, hooks,
+  and external MCP server registrations) consult permission policies
+  before mutation and record resolved audit rows.
+
 ### Failure surfacing
 
 CLIO does not use fallback value substitution for planner or provider failures.
