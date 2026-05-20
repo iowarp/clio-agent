@@ -202,8 +202,15 @@ class TestBuildCapabilitiesContext:
 
 
 class TestSelectedExpertForTool:
-    def test_unknown_tool_is_chat(self, agent):
-        assert agent._selected_expert_for_tool("definitely_not_a_tool") == "chat"
+    def test_known_tool_returns_registered_owner(self, agent):
+        assert agent._selected_expert_for_tool("hdf5_analyze_file") == "data"
+
+    def test_unknown_tool_surfaces_routing_error(self, agent):
+        with pytest.raises(RoutingError, match="unknown tool") as exc_info:
+            agent._selected_expert_for_tool("definitely_not_a_tool")
+
+        assert exc_info.value.details["tool"] == "definitely_not_a_tool"
+        assert "hdf5_analyze_file" in exc_info.value.details["available_tools"]
 
 
 # --------------------------------------------------------------------------
@@ -228,6 +235,23 @@ class TestRunAgentLoop:
         assert answer == "all done"
         assert expert_result is None
         agent._execute_tool_action.assert_called_once()
+
+    def test_unknown_tool_action_surfaces_routing_error(self, agent):
+        agent._plan_next_action = MagicMock(
+            return_value={"action": "tool", "tool": "definitely_not_a_tool", "args": {}}
+        )
+        agent._execute_tool_action = MagicMock(return_value={"value": "should not run"})
+
+        with pytest.raises(RoutingError, match="unknown tool") as exc_info:
+            agent._run_agent_loop(
+                question="q",
+                session_context="",
+                file_context="",
+                trace=_trace(),
+            )
+
+        assert exc_info.value.details["tool"] == "definitely_not_a_tool"
+        agent._execute_tool_action.assert_not_called()
 
     def test_unsupported_action_is_recorded(self, agent):
         agent._plan_next_action = MagicMock(
