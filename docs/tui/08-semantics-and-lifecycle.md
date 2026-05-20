@@ -70,11 +70,20 @@ Returns `dspy.Prediction` with:
 
 ### Cancellation
 
-**Not supported today.** The `forward()` loop has no cancel hooks; ReAct iterates up to 5 times unconditionally. For the TUI's integration this means:
+Cancellation is supported at the GACT boundary as **best effort** through
+`POST /v1/sessions/{sid}/cancel`.
 
-- Gracefully handle `Ctrl+C` at the HTTP boundary (kill the request, CLIO keeps churning until the current expert finishes).
-- Set reasonable request timeouts (60 s default per tool, 30 s per MCP call, plus LM latency).
-- Future v0.4 will add task-level cancellation (`PLAN.md:149-150, 339-350`).
+- Idle sessions move to `status="cancelled"` and emit `session.cancelled`.
+- If a cancel lands before the turn produces output, the assistant message
+  settles with `error_info.error="cancelled"` and no text body.
+- If a cancel lands while the turn is running in an executor thread, the
+  GACT envelope still settles as cancelled and includes
+  `details.execution_cancellation="best_effort"`.
+- Provider or tool work that is already running may continue after the
+  envelope settles. The status event exposes
+  `executor_work_may_continue=true` for this case.
+
+Tests: `tests/test_gact/test_cancellation.py`.
 
 ### Streaming
 

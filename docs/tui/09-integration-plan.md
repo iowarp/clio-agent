@@ -37,7 +37,7 @@ Two shapes to choose between (see "Adapter topology" below). Both sit inside `ad
 | `GET /v1/catalog/tools` | enumerate FastMCP gateway | Or proxy `GET /experts[].tools` |
 | `GET /v1/health` | `GET /health` | Direct map (provider, environment, integrations array) |
 | `GET /v1/metrics` | `GET /metrics` | Direct map per agent |
-| `POST /v1/sessions/{sid}/cancel` | — | **Gap**: CLIO has no cancel hook. Adapter can cancel the HTTP request; CLIO will finish the current expert turn server-side. Document as best-effort. |
+| `POST /v1/sessions/{sid}/cancel` | native GACT endpoint | Best-effort cancellation. The envelope settles as cancelled; executor-thread provider/tool work may continue and is flagged with `execution_cancellation="best_effort"`. |
 | `POST /v1/sessions/{sid}/messages/{id}/diffs/apply` | — | **Gap**: no file-diff part in CLIO. Not relevant (CLIO's tools mutate files directly via `hdf5_optimize` etc.). |
 | Permission flow | — | **Gap**: CLIO guards at the file-policy layer (`CLIO_ALLOWED_ROOTS`) rather than a per-call permission prompt. Adapter surfaces violations as a `tool_result` error; TUI renders as a warning. |
 | Workspace / context files | — | **Gap**: CLIO has `DatasetProfile` as the closest analogue. Defer; expose as read-only in v1 of the adapter. |
@@ -166,7 +166,7 @@ These are **gaps** that a better adapter needs upstream work to fill:
 
 - [ ] **Per-tool SSE events** — CLIO currently only emits routing/chunk/done. Emitting `tool.started` / `tool.completed` makes the TUI live instead of post-hoc.
 - [ ] **Token streaming** — CLIO's `chunk` events are synthesised. Real token streaming (pass-through from `dspy.LM`) would light up the TUI mid-turn.
-- [ ] **Cancellation** — `/task/{id}/cancel` (Phase 4 of CLIO's own roadmap).
+- [x] **Cancellation** — `/v1/sessions/{sid}/cancel` exists with best-effort semantics; deeper provider/tool interruption remains a runtime limitation.
 - [ ] **Session list / delete** — `GET /sessions`, `DELETE /sessions/{sid}` so the adapter doesn't need to own registry state.
 - [ ] **Artifacts** — `/artifacts/{id}` for plots + reports (already on CLIO's plan).
 
@@ -174,7 +174,7 @@ These are **gaps** that a better adapter needs upstream work to fill:
 
 - **Unit** — adapter translator round-trip: stub CLIO endpoint, assert GACT events are emitted correctly for routing / chunk / done / error.
 - **Integration** — requires `clio-agent` on PATH. Smoke test: deploy adapter, send `POST /query` with `"what datasets are in /tmp/x.h5"` (pre-populated fixture file), assert `selected_expert=="data"` in the SSE stream.
-- **Conformance** — run `contract/conformance` against the adapter port. Expect `permission`, `diff`, `context` suites to be marked "unsupported"; everything else should pass.
+- **Conformance** — run `contract/conformance` against the adapter port. LSP and voice are intentionally unsupported; diff, permission, context, and cancellation endpoints are part of the CLIO GACT surface, with real-driver caveats tracked in `REAL_GAPS.md`.
 
 ## Risks + mitigations
 
