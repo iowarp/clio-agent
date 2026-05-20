@@ -25,6 +25,7 @@ import argparse
 import asyncio
 import contextvars
 import importlib.util
+import inspect
 import json
 import os
 import threading
@@ -1791,6 +1792,11 @@ _EXPERT_TOOLS: dict[str, list[str]] = {
 }
 
 
+def _signature_prompt(signature: Any) -> str:
+    """Return a cleaned DSPy signature docstring for catalog display."""
+    return inspect.cleandoc(getattr(signature, "__doc__", "") or "")
+
+
 def _builtin_agents() -> list[AgentDef]:
     """Return CLIO's built-in tier-2 experts as AgentDef rows.
 
@@ -1807,6 +1813,20 @@ def _builtin_agents() -> list[AgentDef]:
     """
 
     from clio_agent.experts import get_expert_capabilities
+    from clio_agent.signatures.analysis_sig import AnalysisExpertSignature
+    from clio_agent.signatures.expert_sig import DataExpertSignature
+    from clio_agent.signatures.main_agent_sig import (
+        AgentActionSignature,
+        AgentAnswerSignature,
+        ChatAgentSignature,
+    )
+    from clio_agent.signatures.visualization_sig import VisualizationExpertSignature
+
+    prompts_by_agent = {
+        "data": _signature_prompt(DataExpertSignature),
+        "analysis": _signature_prompt(AnalysisExpertSignature),
+        "visualization": _signature_prompt(VisualizationExpertSignature),
+    }
 
     rows: list[AgentDef] = [
         AgentDef(
@@ -1816,6 +1836,13 @@ def _builtin_agents() -> list[AgentDef]:
             description=(
                 "Tier-1 orchestrator. Routes user queries to tier-2 "
                 "specialists based on keyword heuristics + LM classifier."
+            ),
+            system_prompt="\n\n".join(
+                part for part in (
+                    _signature_prompt(AgentActionSignature),
+                    _signature_prompt(AgentAnswerSignature),
+                    _signature_prompt(ChatAgentSignature),
+                ) if part
             ),
             tier=1,
             specialization="orchestrator",
@@ -1833,6 +1860,7 @@ def _builtin_agents() -> list[AgentDef]:
                 source="builtin",
                 title=name,
                 description=description,
+                system_prompt=prompts_by_agent.get(expert_id, ""),
                 tools=tools,
                 tier=2,
                 specialization=_EXPERT_SPECIALIZATION.get(
@@ -1923,6 +1951,9 @@ def _load_skills_from_disk() -> list[AgentDef]:
                 source="skill",
                 title=sid,
                 description=description,
+                system_prompt=body,
+                default_provider=str(meta.get("provider", "") or "").strip(),
+                default_model=str(meta.get("model", "") or "").strip(),
                 tools=tools,
                 tier=2,
                 specialization="skill",
