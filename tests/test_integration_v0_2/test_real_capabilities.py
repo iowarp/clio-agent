@@ -1,29 +1,38 @@
 """End-to-end v0.2 capability tests against a live clio-agent-gact
-backed by a real LM (OpenAI or Anthropic by default).
+backed by a real LM provider.
 
 Each test exercises ONE capability through the real ClioAgent.
-Pass = the wire shape works AND the real agent drives it. Where
-the real agent is known to NOT drive a feature (per REAL_GAPS.md
-+ the open issues), the test asserts "endpoint accepts the input
-shape" and is marked xfail with the issue link so the suite stays
-green while honestly tracking what's missing.
+Pass = the wire shape works AND the real agent drives it. The suite
+stays green only when the advertised runtime behavior is observable.
 """
 
 from __future__ import annotations
 
+import os
 import time
+from pathlib import Path
 
 import httpx
 import pytest
 
-from .conftest import post_user, turn, wait_for_assistant
+from .conftest import _backend, _backend_alive, post_user, turn, wait_for_assistant
 
 # These exercise a live clio-agent-gact + real LM. The conftest's
 # module-level skipif only applies inside conftest.py itself, so mark
 # the whole file `integration` here too -- the default CI run
 # (`-m "not integration"`) then excludes it cleanly, and an
 # integration-only job can opt in with `-m integration`.
-pytestmark = pytest.mark.integration
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.skipif(
+        not _backend_alive(_backend()),
+        reason=(
+            "CLIO_INTEGRATION_BASE not set or backend not reachable. "
+            "Boot clio-agent-gact (with LM configured) and "
+            "export CLIO_INTEGRATION_BASE=http://127.0.0.1:<port>"
+        ),
+    ),
+]
 
 # ---- /v1/health + /v1/capabilities -----------------------------------------
 
@@ -84,18 +93,14 @@ def test_workspace_create_then_use(http: httpx.Client) -> None:
 # ---- session forks (#10) --------------------------------------------------
 
 
-def test_session_fork_copies_messages(
-    http: httpx.Client, session_id: str
-) -> None:
+def test_session_fork_copies_messages(http: httpx.Client, session_id: str) -> None:
     """Fork a settled turn, assert child gets the same messages."""
 
     # Prompts that go through the planner + chat agent can take 30-60s through a slow
     # upstream proxy. 300s gives us tail-latency headroom without
     # making the test feel hung.
     turn(http, session_id, "Reply with the single word PING.", timeout=300)
-    fork = http.post(
-        f"/v1/sessions/{session_id}/fork", json={"title": "forked"}
-    ).json()
+    fork = http.post(f"/v1/sessions/{session_id}/fork", json={"title": "forked"}).json()
     assert fork["parent_session_id"] == session_id
 
     src_msgs = http.get(f"/v1/sessions/{session_id}/messages").json()["messages"]
@@ -106,9 +111,7 @@ def test_session_fork_copies_messages(
 # ---- message search (#11) -------------------------------------------------
 
 
-def test_message_search_finds_user_text(
-    http: httpx.Client, session_id: str
-) -> None:
+def test_message_search_finds_user_text(http: httpx.Client, session_id: str) -> None:
     """Substring search finds the user message we just posted."""
 
     needle = "magic-needle-12345"
@@ -124,23 +127,19 @@ def test_message_search_finds_user_text(
 # ---- /v1/messages roundtrip + tokens (#8 partial) -------------------------
 
 
-def test_real_turn_populates_tokens(
-    http: httpx.Client, session_id: str
-) -> None:
+def test_real_turn_populates_tokens(http: httpx.Client, session_id: str) -> None:
     """A real LM turn lands tokens.input + tokens.output > 0 from
-    DSPy LM history (cost may be 0 from some OpenAI-compatible
-    proxies — see #8)."""
+    DSPy LM history. Cost may be zero when the configured provider
+    does not report billable usage."""
 
     a = turn(http, session_id, "Reply with just the word PING.", timeout=300)
     assert a["tokens"]["input"] >= 0
     assert a["tokens"]["output"] > 0, (
-        f"expected >0 output tokens from real Claude turn, got {a['tokens']}"
+        f"expected >0 output tokens from real LM turn, got {a['tokens']}"
     )
 
 
-def test_metrics_reflects_session_activity(
-    http: httpx.Client, session_id: str
-) -> None:
+def test_metrics_reflects_session_activity(http: httpx.Client, session_id: str) -> None:
     """/v1/metrics rolls up session counts + tokens after a turn."""
 
     before = http.get("/v1/metrics").json()
@@ -149,10 +148,9 @@ def test_metrics_reflects_session_activity(
 
     assert after["sessions"]["total"] >= before["sessions"]["total"]
     assert after["messages"]["total"] >= before["messages"]["total"] + 2
-    assert (
-        after["tokens"]["output_total"]
-        > before["tokens"]["output_total"]
-    ), "metrics output_total should grow after a real LM turn"
+    assert after["tokens"]["output_total"] > before["tokens"]["output_total"], (
+        "metrics output_total should grow after a real LM turn"
+    )
 
 
 # ---- memory stats reflect real ARC ----------------------------------------
@@ -169,9 +167,7 @@ def test_memory_stats_real_arc(http: httpx.Client) -> None:
 # ---- routing_decision Part lands on real turns ----------------------------
 
 
-def test_routing_decision_part_present(
-    http: httpx.Client, session_id: str
-) -> None:
+def test_routing_decision_part_present(http: httpx.Client, session_id: str) -> None:
     """The real planner emits a selected_expert; the GACT layer
     materialises it as a routing_decision Part."""
 
@@ -193,9 +189,7 @@ def test_routing_decision_part_present(
 # ---- SSE stream emits per-message events ----------------------------------
 
 
-def test_sse_emits_message_lifecycle(
-    http: httpx.Client, session_id: str
-) -> None:
+def test_sse_emits_message_lifecycle(http: httpx.Client, session_id: str) -> None:
     """Verify the SSE channel publishes message.created +
     message.completed during a real turn (covers tool_telemetry's
     transport too)."""
@@ -213,7 +207,8 @@ def test_sse_emits_message_lifecycle(
             if not line.startswith("data: "):
                 continue
             import json as _json
-            env = _json.loads(line[len("data: "):])
+
+            env = _json.loads(line[len("data: ") :])
             if env["type"] == "message.created":
                 seen_created = True
             if env["type"] == "message.completed":
@@ -229,23 +224,22 @@ def test_sse_emits_message_lifecycle(
     wait_for_assistant(http, session_id, user_id)
 
 
-# ---- Wire-shape-only capabilities (issues #2/#4/#5/#6/#7/#9) ---------------
+# ---- Real-agent capability drivers -----------------------------------------
 #
-# These assert the *endpoint* accepts the request shape correctly
-# but mark the agent-driver path as xfail until the corresponding
-# CLIO issue closes. Keeps the suite green while the gap is
-# tracked honestly.
+# These tests exercise capabilities through a live backend and a real
+# configured LM provider. They should not embed provider credentials or
+# developer-local paths; callers can opt into provider overrides through
+# CLIO_INTEGRATION_STREAM_* environment variables.
 
 
-def test_real_tool_call_events_fire_during_turn(
-    http: httpx.Client, session_id: str
-) -> None:
+def test_real_tool_call_events_fire_during_turn(http: httpx.Client, session_id: str) -> None:
     """Drive a tool-using turn (data expert), assert tool.call.started
     + tool.call.completed appear on the SSE stream BEFORE
     message.completed."""
 
     user_id = post_user(
-        http, session_id,
+        http,
+        session_id,
         "Analyze /tmp/clio-demo/clio_demo.h5 and summarise the structure in one sentence.",
     )
     seen_started = False
@@ -259,7 +253,8 @@ def test_real_tool_call_events_fire_during_turn(
             if not line.startswith("data: "):
                 continue
             import json as _json
-            env = _json.loads(line[len("data: "):])
+
+            env = _json.loads(line[len("data: ") :])
             if env["type"] == "tool.call.started":
                 seen_started = True
             if env["type"] == "tool.call.completed":
@@ -267,15 +262,12 @@ def test_real_tool_call_events_fire_during_turn(
             if env["type"] == "message.completed":
                 break
     assert seen_started and seen_completed, (
-        "real ClioAgent didn't emit tool.call.* events during a "
-        "tool-using turn (issue #2)"
+        "real ClioAgent didn't emit tool.call.* events during a tool-using turn (issue #2)"
     )
     wait_for_assistant(http, session_id, user_id, timeout=300)
 
 
-def test_attached_context_file_influences_answer(
-    http: httpx.Client, session_id: str
-) -> None:
+def test_attached_context_file_influences_answer(http: httpx.Client, session_id: str) -> None:
     """Attach a file as mode=read; ask about its content; assert
     the answer references the content without an explicit read tool."""
 
@@ -284,7 +276,8 @@ def test_attached_context_file_influences_answer(
         json={"path": "/tmp/clio-demo/clio_demo.parquet", "mode": "read"},
     )
     a = turn(
-        http, session_id,
+        http,
+        session_id,
         "What's the schema of the attached file? one sentence.",
         timeout=180,
     )
@@ -293,9 +286,7 @@ def test_attached_context_file_influences_answer(
     assert "temperature" in text or "column" in text
 
 
-def test_streaming_deltas_are_temporally_distributed(
-    http: httpx.Client, session_id: str
-) -> None:
+def test_streaming_deltas_are_temporally_distributed(http: httpx.Client, session_id: str) -> None:
     """SPEC §6.10 — streaming text parts arrive as ``message.part.delta``
     events between ``message.part.added`` and ``message.part.completed``,
     BEFORE the final ``message.completed``. The exact temporal
@@ -308,25 +299,33 @@ def test_streaming_deltas_are_temporally_distributed(
     rather than a single blob, so this test asserts that.
     """
 
-    import os
-    or_key = os.environ.get(
-        "OPENROUTER_API_KEY",
-        "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",
-    )
-    swap = http.put("/v1/providers/lm", json={
-        "provider": "openai-compatible",
-        "model": "openai/gpt-oss-120b:free",
-        "api_base": "https://openrouter.ai/api/v1",
-        "api_key": or_key,
-        "temperature": 0.0,
-        "max_tokens": 256,
-    })
-    assert swap.status_code == 200, swap.text
+    stream_provider = os.environ.get("CLIO_INTEGRATION_STREAM_PROVIDER")
+    stream_model = os.environ.get("CLIO_INTEGRATION_STREAM_MODEL")
+    stream_api_base = os.environ.get("CLIO_INTEGRATION_STREAM_API_BASE")
+    stream_api_key = os.environ.get("CLIO_INTEGRATION_STREAM_API_KEY")
+    if any((stream_provider, stream_model, stream_api_base, stream_api_key)):
+        assert stream_provider and stream_model, (
+            "provider hot-swap requires CLIO_INTEGRATION_STREAM_PROVIDER "
+            "and CLIO_INTEGRATION_STREAM_MODEL"
+        )
+        payload: dict[str, object] = {
+            "provider": stream_provider,
+            "model": stream_model,
+            "temperature": 0.0,
+            "max_tokens": 256,
+        }
+        if stream_api_base:
+            payload["api_base"] = stream_api_base
+        if stream_api_key:
+            payload["api_key"] = stream_api_key
+        swap = http.put("/v1/providers/lm", json=payload)
+        assert swap.status_code == 200, swap.text
 
     # Chat-path question (planner selects answer/chat).
     # Long enough that incremental delta emission is observable.
     post_user(
-        http, session_id,
+        http,
+        session_id,
         "Hi! Tell me a 200-word story about a scientist debugging code.",
     )
     delta_count = 0
@@ -344,7 +343,8 @@ def test_streaming_deltas_are_temporally_distributed(
             if not line.startswith("data: "):
                 continue
             import json as _json
-            env = _json.loads(line[len("data: "):])
+
+            env = _json.loads(line[len("data: ") :])
             now = time.monotonic() - t0
             t = env["type"]
             if t == "message.part.added":
@@ -367,9 +367,7 @@ def test_streaming_deltas_are_temporally_distributed(
     assert delta_first_t <= completed_t, "delta arrived AFTER message.completed"
 
 
-def test_destructive_tool_requests_permission(
-    http: httpx.Client, session_id: str
-) -> None:
+def test_destructive_tool_requests_permission(http: httpx.Client, tmp_path: Path) -> None:
     """SPEC §6.13 — destructive tools must register a permission row
     (visible via /v1/permissions) before they execute. Drive the
     diff-apply path which uses fs_apply_edit_write (matches the
@@ -377,15 +375,25 @@ def test_destructive_tool_requests_permission(
     asserts the permission row appears AND has tool_call info that
     identifies the destructive call."""
 
-    import os
-    target = "/home/jcernuda/tui/clio-agent/scratch/perm-demo.py"
-    os.makedirs(os.path.dirname(target), exist_ok=True)
-    with open(target, "w") as f:
-        f.write('print("Hello, " + "world")\n')
+    root = Path(os.environ.get("CLIO_INTEGRATION_WORKSPACE_ROOT", tmp_path)).resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    target = root / "perm-demo.py"
+    target.write_text('print("Hello, " + "world")\n', encoding="utf-8")
+
+    ws = http.post(
+        "/v1/workspaces",
+        json={"name": "permission-integration", "root_path": str(root)},
+    ).json()
+    session = http.post(
+        "/v1/sessions",
+        json={"workspace_id": ws["id"], "title": "permission integration"},
+    ).json()
+    session_id = session["id"]
 
     # Drive an edit turn so the diff lands.
     a = turn(
-        http, session_id,
+        http,
+        session_id,
         f"propose an edit to {target} — replace string concatenation with an f-string",
         timeout=180,
     )
@@ -396,25 +404,25 @@ def test_destructive_tool_requests_permission(
     # permission gate.
     apply_resp = http.post(
         f"/v1/sessions/{session_id}/diffs/apply",
-        json={"path": target},
+        json={"path": str(target)},
     )
     assert apply_resp.status_code == 200, apply_resp.text
 
     # Permission row must exist for the destructive call.
-    perms = http.get("/v1/permissions").json().get("permissions", [])
+    perms = (
+        http.get("/v1/permissions", params={"session_id": session_id}).json().get("permissions", [])
+    )
     write_perms = [
-        p for p in perms
-        if "write" in (p.get("tool_call") or {}).get("tool_name", "").lower()
+        p for p in perms if "write" in (p.get("tool_call") or {}).get("tool_name", "").lower()
     ]
     assert write_perms, (
         f"no permission row recorded for destructive write; "
         f"got tool_calls: {[(p.get('tool_call') or {}).get('tool_name') for p in perms]}"
     )
+    http.delete(f"/v1/workspaces/{ws['id']}")
 
 
-def test_complex_task_spawns_nanoagent(
-    http: httpx.Client, session_id: str
-) -> None:
+def test_complex_task_spawns_nanoagent(http: httpx.Client, session_id: str) -> None:
     """Drive a multi-part analysis; assert at least one child
     session lands under the parent."""
 
@@ -422,7 +430,8 @@ def test_complex_task_spawns_nanoagent(
     # expert's deterministic short-circuit returns None and the
     # LM-driven path with parallel detection runs.
     turn(
-        http, session_id,
+        http,
+        session_id,
         "validate parquet schema and statistics in parallel",
         timeout=300,
     )
