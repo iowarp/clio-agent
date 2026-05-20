@@ -22,6 +22,7 @@ regressions, but don't treat these as unresolved release blockers:
 | LM provider config | `GET / PUT /v1/providers/lm` lets the TUI configure or hot-swap provider/model without redeploying the GACT process. | `tests/test_gact/test_lm_provider.py` |
 | Tokens + cost | Per-turn tokens/cost populate assistant messages, completion events, session rollups, and `/v1/metrics`; GACT also extracts DSPy history/usage and estimates known-model cost when upstream omits cost. | `tests/test_gact/test_cost_tracking.py`, `tests/test_gact/test_cost_estimate.py` |
 | DataExpert tool execution | Real GACT data turns complete instead of hanging, and native tool traces are exposed as `tools_called` metadata. | `tests/test_integration/test_local_filesystem_smoke.py`, `tests/test_gact/test_tools_called.py`, real LM Studio/Qwopus HDF5 smoke |
+| Diff file edits | Real planner `fs_propose_edit` calls produce `file_diff` Parts with `new_content`; `/diffs/apply` writes accepted edits through the shared file-policy path. | `tests/test_core/test_agent_planner.py::test_forward_promotes_propose_edit_observation_to_file_diffs`, `tests/test_gact/test_plan_edit_modes.py::test_real_agent_propose_edit_trace_becomes_applicable_diff` |
 
 ## Streaming provenance
 
@@ -37,18 +38,16 @@ The TUI should render both sources, but only `live` is evidence of real
 token arrival. Treat synthetic chunks as a truthful compatibility path,
 not as proof that the upstream provider streamed.
 
-## Wire-shape-only — work but no real driver
+## Wire-shape-only or partial runtime gaps
 
-These have correct wire shape + capability flags + endpoint
-behaviour but the real ClioAgent doesn't drive them. They produce
-zero events / no Parts / no rows during a real conversation; only
-the smoke server's fake agent triggers them. Documenting honestly
-so the tests prove what they prove.
+These have correct wire shape + capability flags + endpoint behaviour,
+but the real `ClioAgent` either does not drive them yet or only drives
+part of the runtime surface. Documenting honestly so the tests prove
+what they prove.
 
 | Capability | Endpoint works | Real agent emits | Notes |
 |---|---|---|---|
 | `subagents` | yes | no | ClioAgent has no Tier-3 spawn primitive yet |
-| `diffs` | yes | no | No edit_file tool that produces diffs |
 | `permissions` | yes | partial | Native MCP executor calls gate destructive tool names, and `/diffs/apply` records an auto-approved user-click audit row. Real turns only emit permission rows when a destructive MCP tool is actually invoked. |
 | `cancellation` (best-effort) | yes | partial | Server settles the GACT envelope as cancelled; executor-thread provider/tool work may continue and is flagged with `execution_cancellation="best_effort"` |
 | `tool_telemetry` events | yes | partial | Native MCP executor calls emit live `tool.call.started/completed`; paths that only expose `tools_called` after the turn are still rendered post-hoc |
