@@ -3964,10 +3964,11 @@ def build_app(
 
         Live fetches are cached for _LIVE_MODELS_TTL_S so spamming
         ←/→ in the picker doesn't hammer the upstream. Failures
-        (no key, network down, 5xx) silently fall back to the static
-        catalog so the picker is never empty. Unknown provider ids
-        return a structured 404 instead of pretending to be an empty
-        static catalog.
+        (no key, network down, 5xx) return the static catalog with
+        source="static_fallback" and an error message so the picker is
+        usable without hiding the live-discovery failure. Unknown
+        provider ids return a structured 404 instead of pretending to
+        be an empty static catalog.
         """
         # Match a preset id first.
         def _wrap(triple: tuple[list[dict[str, str]], str, str]) -> dict[str, Any]:
