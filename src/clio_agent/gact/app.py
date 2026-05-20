@@ -5817,6 +5817,7 @@ def build_app(
             temperature=float(cfg.get("temperature", 1.0) or 1.0),
             max_tokens=int(cfg.get("max_tokens", 32000) or 32000),
             thinking_budget=int(cfg.get("thinking_budget", 0) or 0),
+            transport=cfg.get("transport"),
             presets=_LM_PRESETS,
         )
 
@@ -5871,6 +5872,7 @@ def build_app(
                 temperature=req.temperature,
                 max_tokens=req.max_tokens,
                 thinking_budget=req.thinking_budget,
+                codex_transport=req.transport or "exec",
             )
             # ClioAgent.__init__ reads load_config_from_env() to
             # wire its router + experts. Stamp the env before
@@ -5882,6 +5884,10 @@ def build_app(
             os.environ["CLIO_LM_API_BASE"] = req.api_base
             os.environ["CLIO_LM_MODEL"] = req.model
             os.environ["CLIO_LM_API_KEY"] = resolved_api_key or "x"
+            if req.provider == "codex":
+                os.environ["CLIO_CODEX_TRANSPORT"] = cfg.codex_transport
+            else:
+                os.environ.pop("CLIO_CODEX_TRANSPORT", None)
             # iowarp/clio-agent — DSPy 3.x forbids dspy.configure()
             # being re-called from a different async task than the
             # first one. PUT /v1/providers/lm comes from the FastAPI
@@ -5957,6 +5963,7 @@ def build_app(
             "temperature": req.temperature,
             "max_tokens": req.max_tokens,
             "thinking_budget": req.thinking_budget,
+            "transport": cfg.codex_transport if req.provider == "codex" else None,
         }
         # Publish so live SSE subscribers see the swap (TUI updates
         # its model chip without polling).
@@ -5969,6 +5976,7 @@ def build_app(
                 "api_base": req.api_base,
                 "temperature": req.temperature,
                 "max_tokens": req.max_tokens,
+                "transport": cfg.codex_transport if req.provider == "codex" else None,
             },
         ))
         return LMProviderInfo(
@@ -5979,6 +5987,7 @@ def build_app(
             temperature=req.temperature,
             max_tokens=req.max_tokens,
             thinking_budget=req.thinking_budget,
+            transport=cfg.codex_transport if req.provider == "codex" else None,
             presets=_LM_PRESETS,
         )
 

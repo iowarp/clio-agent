@@ -191,6 +191,7 @@ class LMProviderConfig:
         max_tokens: Maximum tokens per response
         router_temperature: Lower temperature for deterministic routing
         environment: Deployment environment (dev/staging/production)
+        codex_transport: Codex transport mode, either "exec" or "sdk"
     """
 
     provider: Literal["lm_studio", "ollama", "openai", "anthropic", "argonne", "codex"] = (
@@ -206,6 +207,7 @@ class LMProviderConfig:
     max_tokens: int = 0
     router_temperature: float = 0.3
     environment: str = "dev"
+    codex_transport: Literal["exec", "sdk"] = "exec"
     # Reasoning/thinking budget. Mapped per-provider in create_lm:
     #   anthropic → thinking={"type":"enabled","budget_tokens":N}
     #   openai/openai-compat → reasoning_effort bucketed from N
@@ -245,6 +247,10 @@ class LMProviderConfig:
         # via env vars (they're wire-protocol facts about the provider),
         # so re-reading on every config load is safe.
         self.strip_openai_prefix = bool(defaults.get("strip_openai_prefix", True))
+        if self.codex_transport not in {"exec", "sdk"}:
+            raise ValueError(
+                f"codex_transport must be 'exec' or 'sdk' (got {self.codex_transport!r})"
+            )
 
 
 def _resolve_argonne_api_key() -> str:
@@ -318,6 +324,7 @@ def load_config_from_env() -> LMProviderConfig:
         CLIO_LM_API_KEY: Override API key
         CLIO_LM_TEMPERATURE: Override temperature
         CLIO_LM_MAX_TOKENS: Override max tokens
+        CLIO_CODEX_TRANSPORT: Codex transport mode (exec or sdk)
         CLIO_ENVIRONMENT: Deployment environment (dev/staging/production)
 
     Returns:
@@ -331,6 +338,7 @@ def load_config_from_env() -> LMProviderConfig:
     model = os.environ.get("CLIO_LM_MODEL", "")
     api_key = os.environ.get("CLIO_LM_API_KEY", "")
     environment = os.environ.get("CLIO_ENVIRONMENT", "dev")
+    codex_transport = os.environ.get("CLIO_CODEX_TRANSPORT", "").strip().lower()
 
     # Parse numeric env vars
     temperature_str = os.environ.get("CLIO_LM_TEMPERATURE", "")
@@ -350,6 +358,8 @@ def load_config_from_env() -> LMProviderConfig:
         kwargs["temperature"] = float(temperature_str)
     if max_tokens_str:
         kwargs["max_tokens"] = int(max_tokens_str)
+    if codex_transport:
+        kwargs["codex_transport"] = codex_transport
 
     config = LMProviderConfig(**kwargs)
 
@@ -401,7 +411,7 @@ def create_lm(config: LMProviderConfig) -> dspy.LM:
     _ensure_provider_registered(config)
     model_name = _resolve_model_name(config)
 
-    extras = _thinking_kwargs(config)
+    extras = _provider_lm_kwargs(config)
     return dspy.LM(
         model=model_name,
         api_base=config.api_base,
@@ -512,8 +522,16 @@ def create_router_lm(config: LMProviderConfig) -> dspy.LM:
         max_tokens=config.max_tokens,
         model_type="chat",
         cache=False,  # see create_lm — same rationale
-        **_thinking_kwargs(config),
+        **_provider_lm_kwargs(config),
     )
+
+
+def _provider_lm_kwargs(config: LMProviderConfig) -> dict[str, Any]:
+    """Return provider-specific LiteLLM kwargs for dspy.LM construction."""
+    extras = _thinking_kwargs(config)
+    if config.provider == "codex":
+        extras["codex_transport"] = config.codex_transport
+    return extras
 
 
 def create_chat_adapter(config: LMProviderConfig) -> Any:
