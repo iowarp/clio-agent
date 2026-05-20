@@ -269,6 +269,43 @@ class TestRunAgentLoop:
         assert selected == "none"
         assert answer == "out of scope"
 
+    def test_none_action_without_answer_surfaces_routing_error(self, agent):
+        agent._plan_next_action = MagicMock(return_value={"action": "none"})
+
+        with pytest.raises(RoutingError, match="did not provide an explanation"):
+            agent._run_agent_loop(
+                question="q",
+                session_context="",
+                file_context="",
+                trace=_trace(),
+            )
+
+    def test_experts_mode_rejects_direct_none_route(self, agent):
+        agent._plan_next_action = MagicMock(
+            return_value={"action": "none", "answer": "out of scope"}
+        )
+
+        with pytest.raises(RoutingError, match="routing_mode='experts'"):
+            agent._run_agent_loop(
+                question="q",
+                session_context="",
+                file_context="",
+                trace=_trace(),
+                routing_mode="experts",
+            )
+
+    def test_experts_mode_rejects_direct_answer_without_observations(self, agent):
+        agent._plan_next_action = MagicMock(return_value={"action": "answer", "answer": "chat"})
+
+        with pytest.raises(RoutingError, match="direct planner answer"):
+            agent._run_agent_loop(
+                question="q",
+                session_context="",
+                file_context="",
+                trace=_trace(),
+                routing_mode="experts",
+            )
+
     def test_general_question_expert_action_is_kept_in_chat(self, agent):
         agent._plan_next_action = MagicMock(
             return_value={

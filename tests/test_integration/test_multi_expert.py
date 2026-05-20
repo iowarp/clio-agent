@@ -1,40 +1,37 @@
 """
 Multi-expert integration tests for CLIO Agent.
 
-Tests the 5-way router dispatch, expert registration, routing decision storage,
+Tests one-pass planner dispatch, expert registration, routing decision storage,
 cross-expert dataset profile sharing, and gateway tool listing.
 """
 
 import json
 import time
-from typing import get_args, get_type_hints
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from clio_agent.agent import ClioAgent
 from clio_agent.arc.schema import DatasetProfile
-from clio_agent.signatures.main_agent_sig import RouterSignature
+from clio_agent.signatures.main_agent_sig import AgentActionSignature
 
 pytestmark = pytest.mark.integration
 
 
-class TestRouterLiteral:
-    """Test RouterSignature Literal type has all 5 targets."""
+class TestPlannerActionContract:
+    """Test the one-pass planner action contract is documented in the signature."""
 
-    def test_router_literal_has_five_targets(self):
-        """Inspect Literal type args to confirm all 5 routing targets."""
-        hints = get_type_hints(RouterSignature)
-        annotation = hints["selected_expert"]
-        args = get_args(annotation)
-        assert set(args) == {"chat", "data", "analysis", "visualization", "none"}
-        assert len(args) == 5
+    def test_planner_doc_lists_action_kinds(self):
+        """Planner instructions should list every accepted action kind."""
+        instructions = AgentActionSignature.instructions
+        assert '{"action":"tool"' in instructions
+        assert '{"action":"expert"' in instructions
+        assert '{"action":"answer"' in instructions
+        assert '{"action":"none"' in instructions
 
-    def test_router_literal_order(self):
-        """Literal targets should include chat first for default fallback."""
-        hints = get_type_hints(RouterSignature)
-        args = get_args(hints["selected_expert"])
-        assert args[0] == "chat"
+    def test_planner_doc_lists_experts(self):
+        """Planner expert action should be constrained to the registered expert ids."""
+        assert '"expert":"data|analysis|visualization"' in AgentActionSignature.instructions
 
 
 class TestClioAgentExperts:
@@ -66,7 +63,7 @@ class TestClioAgentExperts:
 
 
 def _make_mock_planner(selected_expert: str):
-    """Create a mock planner returning a specified expert action."""
+    """Create a mock planner returning the requested one-pass action."""
     mock_planner = MagicMock()
     if selected_expert in {"data", "analysis", "visualization"}:
         action = {"action": "expert", "expert": selected_expert, "question": "test query"}
@@ -82,10 +79,10 @@ def _make_mock_planner(selected_expert: str):
 
 
 class TestDispatch:
-    """Test dispatch to different experts based on router output."""
+    """Test dispatch to different experts based on planner output."""
 
     def test_dispatch_data_query(self, tmp_path):
-        """Router returns 'data', verify data_expert called."""
+        """Planner selects data, verify data_expert called."""
         agent = ClioAgent(data_dir=str(tmp_path / "clio"))
 
         agent.action_planner = _make_mock_planner("data")
@@ -103,7 +100,7 @@ class TestDispatch:
         agent.shutdown()
 
     def test_dispatch_analysis_query(self, tmp_path):
-        """Router returns 'analysis', verify analysis_expert called."""
+        """Planner selects analysis, verify analysis_expert called."""
         agent = ClioAgent(data_dir=str(tmp_path / "clio"))
 
         agent.action_planner = _make_mock_planner("analysis")
@@ -120,7 +117,7 @@ class TestDispatch:
         agent.shutdown()
 
     def test_dispatch_visualization_query(self, tmp_path):
-        """Router returns 'visualization', verify visualization_expert called."""
+        """Planner selects visualization, verify visualization_expert called."""
         agent = ClioAgent(data_dir=str(tmp_path / "clio"))
 
         agent.action_planner = _make_mock_planner("visualization")
@@ -137,7 +134,7 @@ class TestDispatch:
         agent.shutdown()
 
     def test_dispatch_none_query(self, tmp_path):
-        """Router returns 'none', verify fallback message returned."""
+        """Planner selects 'none', verify its explicit message is returned."""
         agent = ClioAgent(data_dir=str(tmp_path / "clio"))
         agent.action_planner = _make_mock_planner("none")
 
@@ -148,7 +145,7 @@ class TestDispatch:
         agent.shutdown()
 
     def test_dispatch_chat_query(self, tmp_path):
-        """Router returns 'chat', verify chat_agent called."""
+        """Planner selects chat answer, verify chat_agent called."""
         agent = ClioAgent(data_dir=str(tmp_path / "clio"))
 
         agent.action_planner = _make_mock_planner("chat")
@@ -306,7 +303,7 @@ class TestGateway:
             assert "name" in cap
             assert "description" in cap
             assert "server" in cap
-            assert cap["server"] in ("hdf5", "parquet", "unknown")
+            assert cap["server"] in ("hdf5", "parquet", "fs", "unknown")
 
         # Check compact format (description should be single sentence)
         for cap in caps:

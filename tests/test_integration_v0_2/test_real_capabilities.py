@@ -89,8 +89,7 @@ def test_session_fork_copies_messages(
 ) -> None:
     """Fork a settled turn, assert child gets the same messages."""
 
-    # Prompts that don't hit the heuristic router fall back to the
-    # router LM + chat agent, which can take 30-60s through a slow
+    # Prompts that go through the planner + chat agent can take 30-60s through a slow
     # upstream proxy. 300s gives us tail-latency headroom without
     # making the test feel hung.
     turn(http, session_id, "Reply with the single word PING.", timeout=300)
@@ -173,7 +172,7 @@ def test_memory_stats_real_arc(http: httpx.Client) -> None:
 def test_routing_decision_part_present(
     http: httpx.Client, session_id: str
 ) -> None:
-    """The real router emits a selected_expert; the GACT layer
+    """The real planner emits a selected_expert; the GACT layer
     materialises it as a routing_decision Part."""
 
     # Use a question that maps cleanly to the chat path (no tool
@@ -324,7 +323,7 @@ def test_streaming_deltas_are_temporally_distributed(
     })
     assert swap.status_code == 200, swap.text
 
-    # Chat-path question (no heuristic match → router LM picks chat).
+    # Chat-path question (planner selects answer/chat).
     # Long enough that incremental delta emission is observable.
     post_user(
         http, session_id,

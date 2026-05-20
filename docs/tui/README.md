@@ -22,7 +22,7 @@ This folder is the spec and reference for building a first-class terminal UI on 
 
 - CLIO ships **`clio-agent-api`** — FastAPI server on `:8000` with `POST /query`, `GET /health`, `GET /experts`, `GET /metrics`. That's the TUI's main interface.
 - One turn = `POST /query {question, session_id}` → `{answer, selected_expert, duration_ms, error_info}`. Add `stream: true` for an SSE feed with `routing` / `chunk` / `done` events.
-- Routing is deterministic-first (filename heuristics) with a DSPy LM router fallback; selects one of `data` / `analysis` / `visualization` / `chat` / `none`.
+- Routing is a one-pass DSPy planner over live tools and registered experts; it selects a tool, `expert:data|analysis|visualization`, `answer`/chat, or an explicit `none` route.
 - CLIO doesn't issue `session_id`s — the adapter/TUI owns them.
 - Cancellation, per-tool SSE events, and token streaming are **not** available today. Plan to fall back to post-hoc rendering, and upstream these as Phase 4 of the integration (see [09-integration-plan.md](09-integration-plan.md)).
 

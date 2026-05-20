@@ -25,7 +25,7 @@ The v0.2 bump in the GACT contract ([gact-tui/contract/SPEC.md](https://github.c
 
 | v0.2 capability | CLIO's native implementation |
 |---|---|
-| `agent_routing` | Tier-1 → Tier-2 experts (DataExpert / AnalysisExpert / VisualizationExpert / chat) via RouterSignature |
+| `agent_routing` | One-pass planner selects tool, expert:data, expert:analysis, expert:visualization, answer/chat, or an explicit no-action error |
 | `memory` | ARC cache + session context retrieval surface |
 | `structured_errors` | `ClioError` hierarchy (ProviderError / RoutingError / ExpertError / ToolError / ConfigError) |
 | `integration_health` | CLIO's `/health` integrations array (lm / gateway / arc / file_policy / clio_core) |

@@ -4,11 +4,8 @@ ClioAgent planner and chat signatures.
 Defines the input/output interfaces for:
 - AgentActionSignature: planner loop action selection over registered tools/experts
 - AgentAnswerSignature: final answer synthesis from loop observations
-- RouterSignature: legacy Literal router contract retained for compatibility tests
 - ChatAgentSignature: conversational responses for non-data queries
 """
-
-from typing import Literal
 
 import dspy
 
@@ -69,21 +66,6 @@ class AgentAnswerSignature(dspy.Signature):
     session_context: str = dspy.InputField(desc="Relevant conversation history")
     observations: str = dspy.InputField(desc="Tool/expert observations from this request")
     answer: str = dspy.OutputField(desc="Final user-facing answer")
-
-
-class RouterSignature(dspy.Signature):
-    """Legacy typed route contract retained for compatibility.
-
-    Production CLIO uses AgentActionSignature for the tool/expert loop. This
-    older signature remains importable for integrations that still expect a
-    Literal selected_expert output covering chat, data, analysis, visualization,
-    and none.
-    """
-
-    question: str = dspy.InputField(desc="User's question or message")
-    selected_expert: Literal["chat", "data", "analysis", "visualization", "none"] = (
-        dspy.OutputField(desc="Legacy route id: chat, data, analysis, visualization, or none")
-    )
 
 
 class ChatAgentSignature(dspy.Signature):

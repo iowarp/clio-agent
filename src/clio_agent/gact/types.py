@@ -280,12 +280,11 @@ class UpdateSessionRequest(BaseModel):
     title: Optional[str] = None
     mode: Optional[Literal["chat", "plan", "edit", "architect"]] = None
     edit_mode: Optional[Literal["diff", "whole", "patch"]] = None
-    # routing_mode overrides the LM-based router. "auto" runs the
-    # router; "chat" forces every turn through the chat path so users
-    # don't need a /chat prefix; "experts" rejects chat/none routes;
-    # "reasoning_only" (issue #25) skips the deterministic fast path
-    # inside the data branch so every turn reaches the DataExpert
-    # ReAct loop.
+    # routing_mode overrides the planner. "auto" runs the normal planner;
+    # "chat" forces every turn through chat so users don't need a /chat
+    # prefix; "experts" rejects direct chat/none routes; "reasoning_only"
+    # asks the planner to prefer tool/expert reasoning over deterministic
+    # shortcuts.
     routing_mode: Optional[Literal["auto", "chat", "experts", "reasoning_only"]] = None
 
 

@@ -29,7 +29,7 @@ Design notes
   ``astreaming()`` raise ``NotImplementedError`` for now.
 
 - **Registration is lazy + idempotent.** ``ensure_registered()`` is
-  called from ``config.create_lm()`` / ``create_router_lm()`` only when
+  called from ``config.create_lm()`` / ``create_planner_lm()`` only when
   ``config.provider == "codex"`` — keeps Codex out of the import graph
   for tests / installs that don't use it.
 """

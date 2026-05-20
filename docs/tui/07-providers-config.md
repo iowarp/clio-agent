@@ -61,7 +61,8 @@ All overridable with `CLIO_LM_API_BASE`, `CLIO_LM_MODEL`, `CLIO_LM_API_KEY`.
 | `CLIO_LM_API_BASE` | provider-specific | endpoint URL |
 | `CLIO_LM_MODEL` | provider-specific | model ID |
 | `CLIO_LM_API_KEY` | provider-specific or env | API key |
-| `CLIO_LM_TEMPERATURE` | `1.0` | sampling temperature (reasoner); router is forced to `0.3` |
+| `CLIO_LM_TEMPERATURE` | `1.0` | sampling temperature for reasoner/chat paths |
+| `CLIO_LM_PLANNER_TEMPERATURE` | `0.3` | sampling temperature for planner action selection |
 | `CLIO_LM_MAX_TOKENS` | `32000` | per-response cap |
 | `CLIO_ENVIRONMENT` | `dev` | `dev` / `staging` / `production` |
 | `CLIO_ARC_BACKEND` | `local` | `local` or `cte` (future) |
@@ -80,8 +81,8 @@ All overridable with `CLIO_LM_API_BASE`, `CLIO_LM_MODEL`, `CLIO_LM_API_KEY`.
 
 Two LMs exist:
 
-- **Router LM** — low temperature (`0.3`), model defaults to `ibm/granite-4-h-tiny`. Drives `RouterSignature` classification.
-- **Reasoner LM** — default temperature `1.0`, same model by default. Drives all expert ReAct loops.
+- **Planner LM** — low temperature (`0.3`), model defaults to `ibm/granite-4-h-tiny`. Drives `AgentActionSignature` planning for direct tools, experts, chat answers, or explicit no-action decisions.
+- **Reasoner LM** — default temperature `1.0`, same model by default. Drives expert ReAct loops, chat answers, and synthesis after tool observations.
 
 Both are scoped per request via `dspy.context()` — no global model mutation (`CLAUDE.md` L30–133).
 
