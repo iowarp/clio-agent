@@ -8,6 +8,7 @@ from contextlib import contextmanager
 from unittest.mock import patch
 
 import dspy
+import pytest
 
 from clio_agent.agent import ClioAgent
 
@@ -211,6 +212,22 @@ class TestClioAgent:
             assert agent._provider_config.model == "nemotron-cascade-2-30b-a3b-i1"
         finally:
             agent.shutdown()
+
+    def test_lm_studio_empty_discovery_surfaces_configuration_error(
+        self, tmp_path, monkeypatch
+    ):
+        """No discovered LM Studio models should fail before creating a guessed LM."""
+        monkeypatch.setenv("CLIO_LM_PROVIDER", "lm_studio")
+        monkeypatch.setenv("CLIO_LM_API_BASE", "http://127.0.0.1:1234/v1")
+        monkeypatch.delenv("CLIO_LM_MODEL", raising=False)
+
+        with patch("clio_agent.agent.fetch_lm_studio_models", return_value=[]):
+            with patch(
+                "clio_agent.agent.create_lm",
+                side_effect=AssertionError("create_lm should not be called"),
+            ):
+                with pytest.raises(ValueError, match="reported no loaded models"):
+                    ClioAgent(data_dir=str(tmp_path / "clio"))
 
     def test_get_session_context_empty(self):
         """Test session context retrieval with no history."""
