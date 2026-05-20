@@ -62,7 +62,7 @@ what they prove.
 
 | Capability | Endpoint works | Real agent emits | Notes |
 |---|---|---|---|
-| `permissions` | yes | partial | Native MCP executor calls, direct third-party MCP calls through `/v1/mcp/servers/{server_id}/call`, and `/diffs/apply` enforce stored deny/allow policies before destructive execution. Remaining gap tracked in #218: finish the non-tool destructive API inventory and decide whether app-state deletes should share tool permission semantics. |
+| `permissions` | yes | partial | Native MCP executor calls, direct third-party MCP calls through `/v1/mcp/servers/{server_id}/call`, and `/diffs/apply` enforce stored deny/allow policies before destructive execution. Direct third-party MCP calls can bind an explicit `session_id` so session-scoped policies and telemetry do not fall back to recency. Remaining gap tracked in #218: finish the non-tool destructive API inventory and decide whether app-state deletes should share tool permission semantics. |
 | `cancellation` (best-effort) | yes | partial | Server settles the GACT envelope as cancelled; compatible agents and the sync MCP bridge observe cooperative cancellation between execution boundaries, but already-running provider/tool work may continue and is flagged with `execution_cancellation="best_effort"` |
 | `tool_telemetry` events | yes | partial | Native MCP executor calls emit `telemetry_source="live_observer"` `tool.call.started/completed` events without duplicate post-turn lifecycle events; paths that only expose `tools_called` after the turn emit `telemetry_source="posthoc_prediction"` so clients do not mistake reconstructed events for live execution timing. |
 

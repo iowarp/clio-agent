@@ -271,6 +271,88 @@ def test_external_mcp_call_policy_allow_executes_without_prompt(
         assert app.state.permissions == {}
 
 
+def test_external_mcp_call_uses_explicit_session_for_policy_and_telemetry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class FakeClient:
+        def __init__(self, transport: Any) -> None:
+            self.transport = transport
+
+        async def __aenter__(self) -> "FakeClient":
+            return self
+
+        async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+            return None
+
+        async def call_tool(self, name: str, args: dict[str, Any]) -> Any:
+            return SimpleNamespace(
+                content=[SimpleNamespace(type="text", text=f"{name}:{args['cmd']}")],
+                isError=False,
+            )
+
+    import fastmcp
+    import fastmcp.client.transports as transports
+
+    monkeypatch.setattr(fastmcp, "Client", FakeClient)
+    monkeypatch.setattr(transports, "StdioTransport", lambda command, args: (command, args))
+
+    app = build_app(sessions_path=tmp_path / "s.json")
+    app.state.external_mcp_servers = {
+        "mcp_ext_test": {
+            "id": "mcp_ext_test",
+            "name": "shell",
+            "spec": {"transport": "stdio", "command": "fake", "args": []},
+        }
+    }
+
+    with TestClient(app) as c:
+        older_sid = c.post("/v1/sessions", json={"title": "older"}).json()["id"]
+        newer_sid = c.post("/v1/sessions", json={"title": "newer"}).json()["id"]
+        c.put(
+            "/v1/policies",
+            json={
+                "policies": [
+                    {
+                        "scope": "session",
+                        "scope_id": older_sid,
+                        "tool_name_pattern": "shell.*",
+                        "action": "allow",
+                    },
+                    {
+                        "scope": "session",
+                        "scope_id": newer_sid,
+                        "tool_name_pattern": "shell.*",
+                        "action": "deny",
+                    },
+                ]
+            },
+        )
+
+        resp = c.post(
+            "/v1/mcp/servers/mcp_ext_test/call",
+            json={
+                "session_id": older_sid,
+                "tool": "exec",
+                "args": {"cmd": "echo ok"},
+            },
+        )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["session_id"] == older_sid
+        assert body["content"] == [{"type": "text", "text": "exec:echo ok"}]
+
+        older_history = app.state.bus._history.get(older_sid, [])
+        newer_history = app.state.bus._history.get(newer_sid, [])
+        assert [e.type for e in older_history] == [
+            "tool.call.started",
+            "tool.call.completed",
+        ]
+        assert newer_history == []
+        assert app.state.tool_call_ledger[older_sid][0]["name"] == "shell.exec"
+        assert newer_sid not in app.state.tool_call_ledger
+
+
 def test_observer_publishes_tool_call_events(tmp_path: Path) -> None:
     app = build_app(sessions_path=tmp_path / "s.json")
     with TestClient(app) as c:
