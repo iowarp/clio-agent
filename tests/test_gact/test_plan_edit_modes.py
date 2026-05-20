@@ -47,9 +47,7 @@ class _Agent:
 
 @pytest.fixture()
 def client(tmp_path: Path) -> TestClient:
-    return TestClient(
-        build_app(sessions_path=tmp_path / "s.json", agent=_Agent(_Pred()))
-    )
+    return TestClient(build_app(sessions_path=tmp_path / "s.json", agent=_Agent(_Pred())))
 
 
 def test_capabilities_advertise_plan_and_edit_modes(client: TestClient) -> None:
@@ -69,9 +67,7 @@ def test_create_session_with_explicit_mode(client: TestClient) -> None:
 
 def test_patch_session_flips_mode(client: TestClient) -> None:
     sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
-    patched = client.patch(
-        f"/v1/sessions/{sid}", json={"mode": "edit", "edit_mode": "whole"}
-    )
+    patched = client.patch(f"/v1/sessions/{sid}", json={"mode": "edit", "edit_mode": "whole"})
     assert patched.status_code == 200
     body = patched.json()
     assert body["mode"] == "edit"
@@ -88,9 +84,7 @@ def test_patch_session_unknown_session_404s(client: TestClient) -> None:
 def test_plan_mode_auto_denies_destructive_tools(tmp_path: Path) -> None:
     app = build_app(sessions_path=tmp_path / "s.json")
     with TestClient(app) as c:
-        sid = c.post(
-            "/v1/sessions", json={"title": "ro", "mode": "plan"}
-        ).json()["id"]
+        sid = c.post("/v1/sessions", json={"title": "ro", "mode": "plan"}).json()["id"]
         gate = _make_permission_gate(app)
         # Most-recently-active session is the one we just created
         # with mode=plan; destructive call must be auto-denied
@@ -108,14 +102,16 @@ def test_diffs_apply_writes_to_disk(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     sample_diff = "--- a/x\n+++ b/x\n@@ -1 +1 @@\n-old\n+new\n"
     workspace = tmp_path / "ws"
     monkeypatch.setenv("CLIO_ALLOWED_ROOTS", str(workspace))
-    pred = _Pred(file_diffs=[{
-        "path": str(workspace / "x.py"),
-        "unified_diff": sample_diff,
-        "new_content": "print('hello new')\n",
-    }])
-    app = build_app(
-        sessions_path=tmp_path / "s.json", agent=_Agent(pred)
+    pred = _Pred(
+        file_diffs=[
+            {
+                "path": str(workspace / "x.py"),
+                "unified_diff": sample_diff,
+                "new_content": "print('hello new')\n",
+            }
+        ]
     )
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent(pred))
     # Pin ws_default's root to tmp_path/ws so the write passes
     # the workspace boundary check.
     workspace.mkdir()
@@ -129,12 +125,49 @@ def test_diffs_apply_writes_to_disk(tmp_path: Path, monkeypatch: pytest.MonkeyPa
         target = workspace / "x.py"
         assert not target.exists(), "should not have been written before /apply"
 
-        resp = c.post(
-            f"/v1/sessions/{sid}/diffs/apply", json={}
-        ).json()
+        resp = c.post(f"/v1/sessions/{sid}/diffs/apply", json={}).json()
         assert resp["applied"] == [str(target)]
         assert "write_errors" not in resp
         assert target.read_text() == "print('hello new')\n"
+
+
+def test_apply_edit_uses_shared_policy_writer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """GACT diff apply must not maintain a separate raw disk-write path."""
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    monkeypatch.setenv("CLIO_ALLOWED_ROOTS", str(workspace))
+
+    app = build_app(sessions_path=tmp_path / "s.json")
+    app.state.workspaces.update("ws_default", root_path=str(workspace))
+    sess = app.state.sessions.create(
+        workspace_id="ws_default",
+        title="t",
+        mode="edit",
+    )
+    calls: list[tuple[str, str]] = []
+
+    def spy_writer(filepath: str, new_content: str) -> dict[str, object]:
+        calls.append((filepath, new_content))
+        target = Path(filepath)
+        target.write_text(new_content, encoding="utf-8")
+        return {"path": str(target), "size_bytes": target.stat().st_size, "ok": True}
+
+    monkeypatch.setattr("clio_agent.gact.app.write_text_with_policy", spy_writer)
+
+    target = workspace / "x.txt"
+    result = _apply_edit_to_disk(
+        path=str(target),
+        new_content="shared\n",
+        session=sess,
+        app=app,
+    )
+
+    assert calls == [(str(target.resolve()), "shared\n")]
+    assert result["ok"] is True
+    assert target.read_text(encoding="utf-8") == "shared\n"
 
 
 def test_apply_edit_refuses_outside_workspace(tmp_path: Path) -> None:
@@ -145,7 +178,8 @@ def test_apply_edit_refuses_outside_workspace(tmp_path: Path) -> None:
     (tmp_path / "ws").mkdir()
     app.state.workspaces.update("ws_default", root_path=str(tmp_path / "ws"))
     sess = app.state.sessions.create(
-        workspace_id="ws_default", title="t",
+        workspace_id="ws_default",
+        title="t",
     )
     with pytest.raises(PermissionError, match="outside workspace root"):
         _apply_edit_to_disk(
@@ -164,7 +198,9 @@ def test_apply_edit_refuses_in_plan_mode(tmp_path: Path) -> None:
     (tmp_path / "ws").mkdir()
     app.state.workspaces.update("ws_default", root_path=str(tmp_path / "ws"))
     sess = app.state.sessions.create(
-        workspace_id="ws_default", title="t", mode="plan",
+        workspace_id="ws_default",
+        title="t",
+        mode="plan",
     )
     with pytest.raises(PermissionError, match="session.mode"):
         _apply_edit_to_disk(
@@ -189,7 +225,9 @@ def test_apply_edit_refuses_outside_allowed_roots(
     app = build_app(sessions_path=tmp_path / "s.json")
     app.state.workspaces.update("ws_default", root_path=str(workspace))
     sess = app.state.sessions.create(
-        workspace_id="ws_default", title="t", mode="edit",
+        workspace_id="ws_default",
+        title="t",
+        mode="edit",
     )
     with pytest.raises(FilePolicyError) as exc:
         _apply_edit_to_disk(
