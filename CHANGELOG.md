@@ -4,6 +4,14 @@ All notable changes to clio-agent's GACT-contract surface are
 documented in this file. Internal changes that don't affect the
 TUI/HTTP surface aren't tracked here.
 
+## Unreleased
+
+### Removed
+- Retired the legacy Codex HTTP bridge process. Switch
+  `provider=codex` to the LiteLLM CustomLLM path; no bridge process is
+  needed. Users pointing at `:18900/v1` should re-pick the `codex`
+  preset so config resolves through the registered provider.
+
 ## [0.3.1] — 2026-04-27
 
 The "every advertised capability actually works" release. Every flag
