@@ -5419,6 +5419,36 @@ def build_app(
                 ).model_dump(exclude_none=True),
             )
 
+        observer_name = f"{info.get('name', 'ext')}.{tool_name}"
+        gate = getattr(app.state, "pending_permission_gate", None) or _make_permission_gate(app)
+        try:
+            decision = await asyncio.get_running_loop().run_in_executor(
+                None,
+                lambda: gate(observer_name, tool_args),
+            )
+        except PermissionError as exc:
+            raise HTTPException(
+                status_code=403,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="permission_error",
+                        message=str(exc),
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            ) from exc
+        if decision != "allow":
+            raise HTTPException(
+                status_code=403,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="permission_error",
+                        message=f"tool call {observer_name!r} denied by permission gate",
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+
         try:
             from fastmcp import Client
             from fastmcp.client.transports import (
@@ -5464,7 +5494,6 @@ def build_app(
             from clio_agent.tools.execution import _GLOBAL_TOOL_OBSERVER
         except Exception:
             _GLOBAL_TOOL_OBSERVER = None
-        observer_name = f"{info.get('name', 'ext')}.{tool_name}"
         if _GLOBAL_TOOL_OBSERVER is not None:
             try:
                 _GLOBAL_TOOL_OBSERVER(observer_name, tool_args, "started", None)
