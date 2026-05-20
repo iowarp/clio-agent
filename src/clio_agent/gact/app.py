@@ -3514,6 +3514,79 @@ def build_app(
         allow = set(paths)
         return [r for r in rows if r["path"] in allow and r["status"] == "pending"]
 
+    def _diff_row_to_wire(row: dict[str, Any]) -> dict[str, Any]:
+        """Convert an internal pending-diff row to the GACT file_diff shape."""
+
+        status = str(row.get("status") or "pending")
+        out: dict[str, Any] = {
+            "path": row.get("path", ""),
+            "applied": status == "applied",
+            "status": status,
+        }
+        if row.get("unified_diff") is not None:
+            out["unified_diff"] = row.get("unified_diff")
+        if row.get("part_id"):
+            out["part_id"] = row.get("part_id")
+        if row.get("message_id"):
+            out["message_id"] = row.get("message_id")
+        return out
+
+    @app.get("/v1/sessions/{sid}/diffs")
+    async def list_session_diffs(sid: str) -> dict[str, Any]:
+        """SPEC §6.6/§6.9 read endpoint for pending/applied file diffs."""
+
+        if app.state.sessions.get(sid) is None:
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="internal_error",
+                        message=f"session not found: {sid}",
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        return {
+            "diffs": [
+                _diff_row_to_wire(row)
+                for row in app.state.pending_diffs.get(sid, [])
+            ]
+        }
+
+    @app.get("/v1/sessions/{sid}/messages/{message_id}/diffs")
+    async def list_message_diffs(sid: str, message_id: str) -> dict[str, Any]:
+        """Return file diffs associated with a specific assistant message."""
+
+        if app.state.sessions.get(sid) is None:
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="internal_error",
+                        message=f"session not found: {sid}",
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        if not any(m.id == message_id for m in app.state.messages.get(sid, [])):
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="not_found",
+                        message=f"message not found: {message_id}",
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        return {
+            "diffs": [
+                _diff_row_to_wire(row)
+                for row in app.state.pending_diffs.get(sid, [])
+                if row.get("message_id") == message_id
+            ]
+        }
+
     @app.post("/v1/sessions/{sid}/diffs/apply")
     async def diffs_apply(
         sid: str, request: Request
@@ -4215,6 +4288,25 @@ def build_app(
 
         return ["none"], True
 
+    def _provider_to_wire(preset: "LMProviderPreset") -> dict[str, Any]:
+        auth_methods, is_authed = _provider_auth_state(preset)
+        return {
+            "id": preset.id,
+            "name": preset.label,
+            "auth_methods": auth_methods,
+            "is_authenticated": is_authed,
+            "default_model": preset.suggested_model,
+            "api_base": preset.api_base,
+            "env_keys": (
+                ["CLIO_LM_API_KEY"] if preset.requires_api_key else []
+            ),
+            "description": preset.description,
+            "metadata": {
+                "provider_kind": preset.provider,
+                "requires_api_key": preset.requires_api_key,
+            },
+        }
+
     @app.get("/v1/providers")
     async def list_providers() -> dict[str, Any]:
         """SPEC §6.12 — generic LM provider catalog.
@@ -4225,33 +4317,11 @@ def build_app(
         and decide whether to surface a "Login" affordance.
         """
 
-        rows = []
-        for p in _LM_PRESETS:
-            auth_methods, is_authed = _provider_auth_state(p)
-            rows.append({
-                "id": p.id,
-                "name": p.label,
-                "auth_methods": auth_methods,
-                "is_authenticated": is_authed,
-                "default_model": p.suggested_model,
-                "api_base": p.api_base,
-                "env_keys": (
-                    ["CLIO_LM_API_KEY"] if p.requires_api_key else []
-                ),
-                "description": p.description,
-                "metadata": {
-                    "provider_kind": p.provider,
-                    "requires_api_key": p.requires_api_key,
-                },
-            })
-        return {"providers": rows}
+        return {"providers": [_provider_to_wire(p) for p in _LM_PRESETS]}
 
-    # NOTE: GET /v1/providers/{provider_id} is in the v0.1 spec but
-    # we deliberately don't register it — it would shadow the literal
-    # /v1/providers/lm route (FastAPI matches by registration order),
-    # and the gact-tui client only uses ListProviders + ListProviderModels
-    # so the per-id GET has no real consumer. If a consumer appears,
-    # move the lm route registration earlier than the dynamic match.
+    # GET /v1/providers/{provider_id} is registered after the literal
+    # /v1/providers/lm route so the LM configuration endpoint keeps
+    # winning FastAPI's order-based route match.
 
     @app.post("/v1/providers/{provider_id}/auth")
     async def auth_provider(provider_id: str, request: Request) -> dict[str, Any]:
@@ -4773,8 +4843,12 @@ def build_app(
         Each row carries id/name/status/transport/tools_count/tools.
         """
 
-        rows = []
+        rows = _mcp_server_rows()
+        return {"servers": rows}
 
+    def _mcp_server_rows() -> list[dict[str, Any]]:
+        """Return bundled plus installed MCP server catalog rows."""
+        rows: list[dict[str, Any]] = []
         # In-process bundled servers (fs/hdf5/parquet via gateway).
         try:
             from clio_agent.tools.gateway import list_capabilities
@@ -4815,7 +4889,7 @@ def build_app(
                 "tools": list(info.get("tools") or []),
                 "spec": info.get("spec", {}),
             })
-        return {"servers": rows}
+        return rows
 
     @app.post("/v1/mcp/servers", status_code=201)
     async def install_mcp_server(request: Request) -> dict[str, Any]:
@@ -5222,6 +5296,22 @@ def build_app(
             )
         installed.pop(sid, None)
         return None
+
+    @app.get("/v1/mcp/servers/{sid}")
+    async def get_mcp_server(sid: str) -> dict[str, Any]:
+        """SPEC §6.7 detail endpoint for one MCP server row."""
+
+        for row in _mcp_server_rows():
+            if row.get("id") == sid:
+                return row
+        raise HTTPException(
+            status_code=404,
+            detail=ErrorEnvelope(error=ErrorInfo(
+                error="not_found",
+                message=f"no MCP server: {sid}",
+                recoverable=False,
+            )).model_dump(exclude_none=True),
+        )
 
     # ---- /v1/mcp/servers/{sid}/(tools|resources|prompts) ----------------
     # Detail enumeration for the TUI MCP browser. Bundled servers are
@@ -6004,7 +6094,45 @@ def build_app(
             "next_cursor": None,
         }
 
+    @app.get("/v1/sessions/{sid}/messages/{message_id}")
+    async def get_message(sid: str, message_id: str) -> dict[str, Any]:
+        """SPEC §6.3 drill-down for one stored message."""
+
+        if app.state.sessions.get(sid) is None:
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="internal_error",
+                        message=f"session not found: {sid}",
+                        details={"session_id": sid},
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        for msg in app.state.messages.get(sid, []):
+            if msg.id == message_id:
+                return msg.model_dump(exclude_none=True)
+        raise HTTPException(
+            status_code=404,
+            detail=ErrorEnvelope(
+                error=ErrorInfo(
+                    error="not_found",
+                    message=f"message not found: {message_id}",
+                    details={"session_id": sid, "message_id": message_id},
+                    recoverable=False,
+                )
+            ).model_dump(exclude_none=True),
+        )
+
     # ---- /v1/agents catalog (BBB10) + dynamic registry (#19) ---------
+
+    def _agent_rows() -> list[AgentDef]:
+        return (
+            _builtin_agents()
+            + [AgentDef(**row.to_wire()) for row in app.state.user_agents.list()]
+            + _load_skills_from_disk()
+        )
 
     @app.get("/v1/agents", response_model=ListAgentsResponse)
     async def list_agents(tier: Optional[int] = None) -> ListAgentsResponse:
@@ -6015,14 +6143,28 @@ def build_app(
         so the TUI's sidebar groups consistently.
         """
 
-        rows = (
-            _builtin_agents()
-            + [AgentDef(**row.to_wire()) for row in app.state.user_agents.list()]
-            + _load_skills_from_disk()
-        )
+        rows = _agent_rows()
         if tier is not None:
             rows = [a for a in rows if a.tier == tier]
         return ListAgentsResponse(agents=rows)
+
+    @app.get("/v1/agents/{agent_id}", response_model=AgentDef)
+    async def get_agent(agent_id: str) -> AgentDef:
+        """SPEC §6.5 detail endpoint for built-in/user/skill agents."""
+
+        for row in _agent_rows():
+            if row.id == agent_id:
+                return row
+        raise HTTPException(
+            status_code=404,
+            detail=ErrorEnvelope(
+                error=ErrorInfo(
+                    error="not_found",
+                    message=f"agent not found: {agent_id}",
+                    recoverable=False,
+                )
+            ).model_dump(exclude_none=True),
+        )
 
     @app.post(
         "/v1/agents", response_model=AgentDef, status_code=201
@@ -6520,6 +6662,62 @@ def build_app(
         _walk(root)
         return {"entries": entries}
 
+    @app.get("/v1/workspaces/{wid}/repo_map")
+    async def workspace_repo_map(wid: str) -> dict[str, Any]:
+        """SPEC §6.9 repo-map envelope for the workspace file tree.
+
+        The map intentionally reuses the capped file picker walk so a
+        large repository cannot turn the read-only contract endpoint
+        into an unbounded filesystem scan.
+        """
+
+        ws = app.state.workspaces.get(wid)
+        if ws is None:
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(error=ErrorInfo(
+                    error="not_found",
+                    message=f"workspace not found: {wid}",
+                    recoverable=False,
+                )).model_dump(exclude_none=True),
+            )
+        root = Path(ws.root_path or os.getcwd()).expanduser()
+        tree: dict[str, Any] = {
+            "name": root.name or str(root),
+            "path": "",
+            "type": "dir",
+            "children": [],
+        }
+        body = await list_workspace_files(wid)
+        entries = body.get("entries", [])
+        nodes_by_path: dict[str, dict[str, Any]] = {"": tree}
+        token_estimate = 0
+        for entry in entries:
+            path = str(entry.get("path") or "")
+            if not path:
+                continue
+            normalized = path.replace("\\", "/")
+            parent_key = "/".join(normalized.split("/")[:-1])
+            parent = nodes_by_path.get(parent_key, tree)
+            node = {
+                "name": normalized.split("/")[-1],
+                "path": normalized,
+                "type": entry.get("type") or "file",
+            }
+            if node["type"] == "dir":
+                node["children"] = []
+            size = entry.get("size")
+            if isinstance(size, int):
+                node["size"] = size
+                token_estimate += max(1, size // 4)
+            parent.setdefault("children", []).append(node)
+            nodes_by_path[normalized] = node
+        return {
+            "tree": tree,
+            "tokens": token_estimate,
+            "truncated": len(entries) >= _FILE_PICKER_LIMIT,
+        }
+
     @app.get("/v1/workspaces/{wid}/files/read")
     async def read_workspace_file(wid: str, path: str) -> JSONResponse:
         """SPEC §6.9 — read one file's content.
@@ -6856,6 +7054,23 @@ def build_app(
             transport=cfg.codex_transport if req.provider == "codex" else None,
             presets=_LM_PRESETS,
         )
+
+    @app.get("/v1/providers/{provider_id}")
+    async def get_provider(provider_id: str) -> dict[str, Any]:
+        """SPEC §6.12 detail endpoint for one provider preset."""
+
+        preset = next((p for p in _LM_PRESETS if p.id == provider_id), None)
+        if preset is None:
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(error=ErrorInfo(
+                    error="not_found",
+                    message=f"unknown provider: {provider_id}",
+                    details={"available": [p.id for p in _LM_PRESETS]},
+                    recoverable=False,
+                )).model_dump(exclude_none=True),
+            )
+        return _provider_to_wire(preset)
 
     # ---- 501 stubs for the still-unwired v0.2 surface ----------------
 
