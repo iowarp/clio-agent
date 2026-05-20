@@ -28,11 +28,13 @@ def test_empty_context_files_list(tmp_path: Path) -> None:
 def test_add_then_list_then_remove(tmp_path: Path) -> None:
     client = _client(tmp_path)
     sid = _sid(client)
+    target = tmp_path / "a.py"
+    target.write_text("print('hello')\n")
     row = client.post(
         f"/v1/sessions/{sid}/context/files",
-        json={"path": "/tmp/a.py", "mode": "edit", "size": 120},
+        json={"path": str(target), "mode": "edit", "size": 120},
     ).json()
-    assert row["path"] == "/tmp/a.py"
+    assert row["path"] == str(target)
     assert row["mode"] == "edit"
     assert row["size"] == 120
     assert row["added_at"]
@@ -43,7 +45,7 @@ def test_add_then_list_then_remove(tmp_path: Path) -> None:
     # Upsert with a new mode keeps the row but flips mode.
     row2 = client.post(
         f"/v1/sessions/{sid}/context/files",
-        json={"path": "/tmp/a.py", "mode": "pin"},
+        json={"path": str(target), "mode": "pin"},
     ).json()
     assert row2["mode"] == "pin"
     body = client.get(f"/v1/sessions/{sid}/context/files").json()
@@ -53,7 +55,7 @@ def test_add_then_list_then_remove(tmp_path: Path) -> None:
     resp = client.request(
         "DELETE",
         f"/v1/sessions/{sid}/context/files",
-        json={"path": "/tmp/a.py"},
+        json={"path": str(target)},
     )
     assert resp.status_code == 204
     body = client.get(f"/v1/sessions/{sid}/context/files").json()
@@ -74,11 +76,41 @@ def test_unknown_session_404s(tmp_path: Path) -> None:
     assert resp.status_code == 404
 
 
-def test_invalid_mode_defaults_to_read(tmp_path: Path) -> None:
+def test_invalid_mode_is_structured_422(tmp_path: Path) -> None:
     client = _client(tmp_path)
     sid = _sid(client)
-    row = client.post(
+    resp = client.post(
         f"/v1/sessions/{sid}/context/files",
         json={"path": "/tmp/b.py", "mode": "nonsense"},
-    ).json()
-    assert row["mode"] == "read"
+    )
+    assert resp.status_code == 422
+    body = resp.json()
+    assert body["error"]["error"] == "bad_request"
+    assert "mode" in body["error"]["message"]
+
+
+def test_read_context_file_must_exist(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    sid = _sid(client)
+    missing = tmp_path / "missing.txt"
+    resp = client.post(
+        f"/v1/sessions/{sid}/context/files",
+        json={"path": str(missing), "mode": "read"},
+    )
+    assert resp.status_code == 404
+    body = resp.json()
+    assert body["error"]["error"] == "not_found"
+    assert str(missing) in body["error"]["message"]
+
+
+def test_pin_context_file_must_be_a_file(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    sid = _sid(client)
+    resp = client.post(
+        f"/v1/sessions/{sid}/context/files",
+        json={"path": str(tmp_path), "mode": "pin"},
+    )
+    assert resp.status_code == 422
+    body = resp.json()
+    assert body["error"]["error"] == "bad_request"
+    assert "not a file" in body["error"]["message"]
