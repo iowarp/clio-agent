@@ -230,7 +230,7 @@ kind.
 
 Drop a `docs/providers/myprovider.md` similar to
 [`codex.md`](codex.md) — install / auth / troubleshooting. Link it
-from [`README.md`](README.md).
+from the root [`README.md`](../../README.md).
 
 ## Design rules
 

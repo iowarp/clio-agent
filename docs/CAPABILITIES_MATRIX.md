@@ -82,6 +82,13 @@ guaranteed upstream abort.
 | `agent_write` | ✅ verified | `POST/PUT/DELETE /v1/agents` lifecycle; user agents appear in `/v1/agents` with `source="user"` |
 | `skills_extraction` | ✅ verified | `POST /v1/agents/extract` mines `tools_called` from past sessions → produces a routable agent |
 
+## Provider-Specific Verification
+
+| Provider path | Status | How verified |
+|---|---|---|
+| `codex` / `exec` | ✅ verified | `CLIO_LM_PROVIDER=codex CLIO_CODEX_TRANSPORT=exec uv run --extra codex src/clio_agent/ui/cli.py --query ... --json` returned the requested sentinel through `route_source="dspy"` with `error_info=null`. |
+| `codex` / `sdk` | ✅ verified | `CLIO_LM_PROVIDER=codex CLIO_CODEX_TRANSPORT=sdk uv run --extra codex src/clio_agent/ui/cli.py --query ... --json` returned the requested sentinel through `route_source="dspy"` with `error_info=null`. |
+
 ## Intentionally out of scope (false)
 
 | Capability | Status | Why |
