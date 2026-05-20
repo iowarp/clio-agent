@@ -93,6 +93,7 @@ class CapabilityFlags(BaseModel):
     x_clio_text_streaming: Literal["none", "synthetic_posthoc", "best_effort_live"] = "none"
     x_clio_synthetic_posthoc_streaming: bool = False
     x_clio_stream_fallback_reasons: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    x_clio_direct_delete_permissions: bool = False
 
 
 class TransportFlags(BaseModel):

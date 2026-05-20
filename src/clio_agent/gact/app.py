@@ -36,6 +36,7 @@ from collections.abc import Mapping
 from contextlib import asynccontextmanager, contextmanager, nullcontext
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, AsyncIterator, Iterator, Optional
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
@@ -2002,6 +2003,84 @@ def _record_resolved_permission(
             )
         )
     return pid
+
+
+def _direct_permission_denied(
+    *,
+    tool_name: str,
+    args: Mapping[str, Any],
+    summary: str,
+) -> HTTPException:
+    return HTTPException(
+        status_code=403,
+        detail=ErrorEnvelope(
+            error=ErrorInfo(
+                error="permission_error",
+                message=f"{summary} blocked by permission policy",
+                details={
+                    "tool_name": tool_name,
+                    "input": dict(args),
+                    "reason": "policy_deny",
+                    "recovery_actions": ["change_policy", "retry", "exit"],
+                },
+                recoverable=True,
+            )
+        ).model_dump(exclude_none=True),
+    )
+
+
+def _guard_direct_destructive_action(
+    app: "FastAPI",
+    *,
+    session_id: str = "",
+    workspace_id: str = "",
+    tool_name: str,
+    args: Mapping[str, Any],
+    summary: str,
+    reason: str,
+) -> None:
+    """Apply permission policy/audit semantics to direct GACT DELETE actions.
+
+    These routes are already explicit user actions, so there is no extra
+    interactive prompt. Policies can still deny before mutation, and all
+    allowed direct destructive actions land in `/v1/permissions` as resolved
+    audit rows.
+    """
+
+    session = app.state.sessions.get(session_id) if session_id else None
+    if session is None and workspace_id:
+        session = SimpleNamespace(workspace_id=workspace_id)
+    policy_action = _policy_action_for_tool(
+        app,
+        session_id=session_id,
+        session=session,
+        tool_name=tool_name,
+        args=args,
+    )
+    if policy_action == "deny":
+        _record_resolved_permission(
+            app,
+            session_id=session_id,
+            tool_name=tool_name,
+            args=args,
+            status="auto_denied",
+            action="deny",
+            summary=f"{summary} blocked by permission policy",
+            reason="policy_deny",
+        )
+        raise _direct_permission_denied(tool_name=tool_name, args=args, summary=summary)
+    _record_resolved_permission(
+        app,
+        session_id=session_id,
+        tool_name=tool_name,
+        args=args,
+        status="auto_approved",
+        action="allow",
+        summary=summary,
+        reason="policy_allow"
+        if policy_action in {"allow", "allow_session", "allow_workspace"}
+        else reason,
+    )
 
 
 def _make_permission_gate(app: "FastAPI"):
@@ -4003,6 +4082,7 @@ def build_app(
                 x_clio_text_streaming="best_effort_live",
                 x_clio_synthetic_posthoc_streaming=False,
                 x_clio_stream_fallback_reasons=_stream_fallback_reason_capabilities(),
+                x_clio_direct_delete_permissions=True,
             ),
             transports=TransportFlags(events_sse=True, events_websocket=False),
             auth=AuthInfo(schemes=["trust_socket"], current="trust_socket"),
@@ -4109,6 +4189,28 @@ def build_app(
 
     @app.delete("/v1/sessions/{sid}")
     async def delete_session(sid: str) -> JSONResponse:
+        sess = app.state.sessions.get(sid)
+        if sess is None:
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="internal_error",
+                        message=f"session not found: {sid}",
+                        details={"session_id": sid},
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        _guard_direct_destructive_action(
+            app,
+            session_id=sid,
+            workspace_id=sess.workspace_id,
+            tool_name="gact.session.delete",
+            args={"session_id": sid},
+            summary=f"delete session {sid}",
+            reason="user_requested_session_delete",
+        )
         existed = app.state.sessions.delete(sid)
         if not existed:
             raise HTTPException(
@@ -4235,7 +4337,8 @@ def build_app(
     async def list_session_diffs(sid: str) -> dict[str, Any]:
         """SPEC §6.6/§6.9 read endpoint for pending/applied file diffs."""
 
-        if app.state.sessions.get(sid) is None:
+        sess = app.state.sessions.get(sid)
+        if sess is None:
             raise HTTPException(
                 status_code=404,
                 detail=ErrorEnvelope(
@@ -4252,7 +4355,8 @@ def build_app(
     async def list_message_diffs(sid: str, message_id: str) -> dict[str, Any]:
         """Return file diffs associated with a specific assistant message."""
 
-        if app.state.sessions.get(sid) is None:
+        sess = app.state.sessions.get(sid)
+        if sess is None:
             raise HTTPException(
                 status_code=404,
                 detail=ErrorEnvelope(
@@ -4378,7 +4482,8 @@ def build_app(
     async def diffs_reject(sid: str, request: Request) -> dict[str, list[str]]:
         """Mark pending diffs as rejected + publish events."""
 
-        if app.state.sessions.get(sid) is None:
+        sess = app.state.sessions.get(sid)
+        if sess is None:
             raise HTTPException(
                 status_code=404,
                 detail=ErrorEnvelope(
@@ -4555,7 +4660,8 @@ def build_app(
         pane and doesn't want to error if the file was already
         removed."""
 
-        if app.state.sessions.get(sid) is None:
+        sess = app.state.sessions.get(sid)
+        if sess is None:
             raise HTTPException(
                 status_code=404,
                 detail=ErrorEnvelope(
@@ -4576,6 +4682,16 @@ def build_app(
             body = {}
         path = (body.get("path") or "").strip()
         bucket = app.state.context_files.get(sid, {})
+        if path and path in bucket:
+            _guard_direct_destructive_action(
+                app,
+                session_id=sid,
+                workspace_id=sess.workspace_id,
+                tool_name="gact.context_file.delete",
+                args={"session_id": sid, "path": path},
+                summary=f"detach context file {path} from session {sid}",
+                reason="user_requested_context_file_delete",
+            )
         removed = bucket.pop(path, None) if path else None
         if removed is not None:
             app.state.bus.publish(
@@ -4764,7 +4880,17 @@ def build_app(
                     )
                 ).model_dump(exclude_none=True),
             )
-        sid_key, _ = found
+        sid_key, _row = found
+        sess = app.state.sessions.get(sid_key)
+        _guard_direct_destructive_action(
+            app,
+            session_id=sid_key,
+            workspace_id=getattr(sess, "workspace_id", ""),
+            tool_name="gact.task.delete",
+            args={"task_id": tid, "session_id": sid_key},
+            summary=f"delete task {tid}",
+            reason="user_requested_task_delete",
+        )
         app.state.session_tasks[sid_key].pop(tid, None)
         return JSONResponse(status_code=204, content=None)
 
@@ -6105,6 +6231,13 @@ def build_app(
                     )
                 ).model_dump(exclude_none=True),
             )
+        _guard_direct_destructive_action(
+            app,
+            tool_name="gact.mcp_server.delete",
+            args={"server_id": sid},
+            summary=f"uninstall MCP server {sid}",
+            reason="user_requested_mcp_server_delete",
+        )
         installed.pop(sid, None)
         return None
 
@@ -6331,6 +6464,28 @@ def build_app(
 
     @app.delete("/v1/schedules/{schedule_id}")
     async def delete_schedule(schedule_id: str) -> JSONResponse:
+        sch = app.state.schedules.get(schedule_id)
+        if sch is None:
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="internal_error",
+                        message=f"schedule not found: {schedule_id}",
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        sess = app.state.sessions.get(sch.session_id)
+        _guard_direct_destructive_action(
+            app,
+            session_id=sch.session_id,
+            workspace_id=getattr(sess, "workspace_id", ""),
+            tool_name="gact.schedule.delete",
+            args={"schedule_id": schedule_id, "session_id": sch.session_id},
+            summary=f"delete schedule {schedule_id}",
+            reason="user_requested_schedule_delete",
+        )
         existed = app.state.schedules.delete(schedule_id)
         if not existed:
             raise HTTPException(
@@ -7075,8 +7230,7 @@ def build_app(
                     )
                 ).model_dump(exclude_none=True),
             )
-        existed = app.state.user_agents.delete(agent_id)
-        if not existed:
+        if app.state.user_agents.get(agent_id) is None:
             raise HTTPException(
                 status_code=404,
                 detail=ErrorEnvelope(
@@ -7087,6 +7241,14 @@ def build_app(
                     )
                 ).model_dump(exclude_none=True),
             )
+        _guard_direct_destructive_action(
+            app,
+            tool_name="gact.agent.delete",
+            args={"agent_id": agent_id},
+            summary=f"delete agent {agent_id}",
+            reason="user_requested_agent_delete",
+        )
+        app.state.user_agents.delete(agent_id)
         return JSONResponse(status_code=204, content=None)
 
     @app.get("/v1/catalog/tools", response_model=ListToolsResponse)
@@ -7343,8 +7505,7 @@ def build_app(
                     )
                 ).model_dump(exclude_none=True),
             )
-        existed = app.state.workspaces.delete(wid)
-        if not existed:
+        if app.state.workspaces.get(wid) is None:
             raise HTTPException(
                 status_code=404,
                 detail=ErrorEnvelope(
@@ -7355,6 +7516,15 @@ def build_app(
                     )
                 ).model_dump(exclude_none=True),
             )
+        _guard_direct_destructive_action(
+            app,
+            workspace_id=wid,
+            tool_name="gact.workspace.delete",
+            args={"workspace_id": wid},
+            summary=f"delete workspace {wid}",
+            reason="user_requested_workspace_delete",
+        )
+        app.state.workspaces.delete(wid)
         return JSONResponse(status_code=204, content=None)
 
     # ---- /v1/workspaces/{wid}/files (gact-tui @-picker) -------------
@@ -8157,7 +8327,8 @@ def build_app(
 
     @app.delete("/v1/hooks/{hook_id}")
     async def delete_hook(hook_id: str) -> JSONResponse:
-        if app.state.declarative_hooks.pop(hook_id, None) is None:
+        hook = app.state.declarative_hooks.get(hook_id)
+        if hook is None:
             raise HTTPException(
                 status_code=404,
                 detail=ErrorEnvelope(
@@ -8168,6 +8339,16 @@ def build_app(
                     )
                 ).model_dump(exclude_none=True),
             )
+        _guard_direct_destructive_action(
+            app,
+            session_id=str(hook.get("session_id") or ""),
+            workspace_id=str(hook.get("workspace_id") or ""),
+            tool_name="gact.hook.delete",
+            args={"hook_id": hook_id},
+            summary=f"delete hook {hook_id}",
+            reason="user_requested_hook_delete",
+        )
+        app.state.declarative_hooks.pop(hook_id, None)
         return JSONResponse(status_code=204, content=None)
 
     # ---- /v1/policies (SPEC §6.11.b permission policies) -------------
@@ -8234,8 +8415,17 @@ def build_app(
         for i, message in enumerate(msgs):
             if message.id != message_id:
                 continue
-            msgs.pop(i)
             sess = app.state.sessions.get(sid)
+            _guard_direct_destructive_action(
+                app,
+                session_id=sid,
+                workspace_id=getattr(sess, "workspace_id", ""),
+                tool_name="gact.message.delete",
+                args={"message_id": message_id, "session_id": sid},
+                summary=f"delete message {message_id} from session {sid}",
+                reason="user_requested_message_delete",
+            )
+            msgs.pop(i)
             if sess is not None:
                 app.state.sessions.update(sid, message_count=len(msgs))
             app.state.bus.publish(

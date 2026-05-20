@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import threading
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -25,6 +26,7 @@ from clio_agent.gact.app import (
     _tool_session_context,
     build_app,
 )
+from clio_agent.gact.types import Message, Part
 from tests.test_gact.conftest import complete_turn
 
 
@@ -163,6 +165,178 @@ def test_permission_policy_allow_skips_prompt(tmp_path: Path) -> None:
 
         assert decision == "allow"
         assert app.state.permissions == {}
+
+
+def _put_single_policy(
+    client: TestClient,
+    *,
+    tool_name_pattern: str,
+    action: str,
+    scope: str = "session",
+    scope_id: str = "",
+) -> None:
+    resp = client.put(
+        "/v1/policies",
+        json={
+            "policies": [
+                {
+                    "scope": scope,
+                    "scope_id": scope_id,
+                    "tool_name_pattern": tool_name_pattern,
+                    "action": action,
+                }
+            ]
+        },
+    )
+    assert resp.status_code == 200, resp.text
+
+
+def _last_permission(app: Any) -> dict[str, Any]:
+    rows = list(app.state.permissions.values())
+    assert rows
+    return rows[-1]
+
+
+def test_direct_delete_policy_deny_blocks_app_state_routes(tmp_path: Path) -> None:
+    app = build_app(sessions_path=tmp_path / "s.json")
+    with TestClient(app) as c:
+        sid = c.post("/v1/sessions", json={"title": "t"}).json()["id"]
+
+        # Session delete.
+        _put_single_policy(c, tool_name_pattern="gact.session.delete", action="deny")
+        resp = c.delete(f"/v1/sessions/{sid}")
+        assert resp.status_code == 403
+        assert c.get(f"/v1/sessions/{sid}").status_code == 200
+        row = _last_permission(app)
+        assert row["status"] == "auto_denied"
+        assert row["tool_call"]["tool_name"] == "gact.session.delete"
+
+        # Message delete.
+        msg = Message(
+            id="msg_policy_keep",
+            session_id=sid,
+            role="assistant",
+            created_at=datetime.now(timezone.utc).isoformat(),
+            updated_at=datetime.now(timezone.utc).isoformat(),
+            parts=[Part(id="part_policy_keep", type="text", text="keep")],
+        )
+        app.state.messages.setdefault(sid, []).append(msg)
+        _put_single_policy(
+            c,
+            tool_name_pattern="gact.message.delete",
+            action="deny",
+            scope_id=sid,
+        )
+        resp = c.delete(f"/v1/sessions/{sid}/messages/{msg.id}")
+        assert resp.status_code == 403
+        assert any(m.id == msg.id for m in app.state.messages[sid])
+        assert _last_permission(app)["tool_call"]["tool_name"] == "gact.message.delete"
+
+        # Context attachment delete.
+        app.state.context_files.setdefault(sid, {})["notes.md"] = {
+            "path": "notes.md",
+            "mode": "read",
+        }
+        _put_single_policy(
+            c,
+            tool_name_pattern="gact.context_file.delete",
+            action="deny",
+            scope_id=sid,
+        )
+        resp = c.request(
+            "DELETE",
+            f"/v1/sessions/{sid}/context/files",
+            json={"path": "notes.md"},
+        )
+        assert resp.status_code == 403
+        assert "notes.md" in app.state.context_files[sid]
+
+        # Task delete.
+        task = c.post(f"/v1/sessions/{sid}/tasks", json={"title": "todo"}).json()
+        _put_single_policy(c, tool_name_pattern="gact.task.delete", action="deny", scope_id=sid)
+        resp = c.delete(f"/v1/tasks/{task['id']}")
+        assert resp.status_code == 403
+        assert task["id"] in app.state.session_tasks[sid]
+
+        # Schedule delete.
+        schedule = c.post(
+            f"/v1/sessions/{sid}/schedules",
+            json={"cron": "0 9 * * *", "question": "morning summary"},
+        ).json()
+        _put_single_policy(
+            c,
+            tool_name_pattern="gact.schedule.delete",
+            action="deny",
+            scope_id=sid,
+        )
+        resp = c.delete(f"/v1/schedules/{schedule['id']}")
+        assert resp.status_code == 403
+        assert app.state.schedules.get(schedule["id"]) is not None
+
+        # Agent delete.
+        c.post("/v1/agents", json={"id": "policy_agent", "title": "Policy Agent"})
+        _put_single_policy(c, tool_name_pattern="gact.agent.delete", action="deny")
+        resp = c.delete("/v1/agents/policy_agent")
+        assert resp.status_code == 403
+        assert c.get("/v1/agents/policy_agent").status_code == 200
+
+        # Workspace delete.
+        workspace = c.post("/v1/workspaces", json={"name": "policy ws"}).json()
+        _put_single_policy(
+            c,
+            tool_name_pattern="gact.workspace.delete",
+            action="deny",
+            scope="workspace",
+            scope_id=workspace["id"],
+        )
+        resp = c.delete(f"/v1/workspaces/{workspace['id']}")
+        assert resp.status_code == 403
+        assert c.get(f"/v1/workspaces/{workspace['id']}").status_code == 200
+
+        # Hook delete.
+        hook = c.post("/v1/hooks", json={"event": "post_message", "command": "echo ok"}).json()
+        _put_single_policy(c, tool_name_pattern="gact.hook.delete", action="deny")
+        resp = c.delete(f"/v1/hooks/{hook['id']}")
+        assert resp.status_code == 403
+        assert hook["id"] in app.state.declarative_hooks
+
+        # External MCP server delete.
+        app.state.external_mcp_servers = {
+            "mcp_policy": {
+                "id": "mcp_policy",
+                "name": "policy",
+                "spec": {"transport": "stdio", "command": "fake", "args": []},
+            }
+        }
+        _put_single_policy(c, tool_name_pattern="gact.mcp_server.delete", action="deny")
+        resp = c.delete("/v1/mcp/servers/mcp_policy")
+        assert resp.status_code == 403
+        assert "mcp_policy" in app.state.external_mcp_servers
+
+
+def test_direct_delete_auto_approves_and_audits_user_action(tmp_path: Path) -> None:
+    app = build_app(sessions_path=tmp_path / "s.json")
+    with TestClient(app) as c:
+        sid = c.post("/v1/sessions", json={"title": "t"}).json()["id"]
+        msg = Message(
+            id="msg_policy_delete",
+            session_id=sid,
+            role="assistant",
+            created_at=datetime.now(timezone.utc).isoformat(),
+            updated_at=datetime.now(timezone.utc).isoformat(),
+            parts=[Part(id="part_policy_delete", type="text", text="delete me")],
+        )
+        app.state.messages.setdefault(sid, []).append(msg)
+
+        resp = c.delete(f"/v1/sessions/{sid}/messages/{msg.id}")
+
+        assert resp.status_code == 204
+        assert all(m.id != msg.id for m in app.state.messages[sid])
+        row = _last_permission(app)
+        assert row["status"] == "auto_approved"
+        assert row["action"] == "allow"
+        assert row["reason"] == "user_requested_message_delete"
+        assert row["tool_call"]["tool_name"] == "gact.message.delete"
 
 
 def test_put_policies_rejects_malformed_policy_without_replacing_existing(
