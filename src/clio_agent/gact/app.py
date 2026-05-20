@@ -164,9 +164,17 @@ _EXECUTABLE_SESSION_AGENT_IDS = {
 class _UnsupportedSessionAgent(RuntimeError):
     """Raised when a session selects an agent CLIO cannot execute yet."""
 
-    def __init__(self, agent_id: str) -> None:
+    def __init__(
+        self,
+        agent_id: str,
+        *,
+        reason: str = "unknown_or_non_executable_agent",
+        tools: list[str] | None = None,
+    ) -> None:
         super().__init__(agent_id)
         self.agent_id = agent_id
+        self.reason = reason
+        self.tools = tools or []
 
 
 class _ContextFileAccessError(RuntimeError):
@@ -216,6 +224,120 @@ def _session_agent_id(sess: Any) -> str:
     if isinstance(agent, Mapping):
         return str(agent.get("id") or "").strip()
     return str(getattr(agent, "id", "") or "").strip()
+
+
+def _resolve_dynamic_agent(app: "FastAPI", agent_id: str) -> "AgentDef | None":
+    """Return a registered user/skill agent definition by id."""
+    if not agent_id:
+        return None
+    row = app.state.user_agents.get(agent_id)
+    if row is not None:
+        return AgentDef(**row.to_wire())
+    for skill in _load_skills_from_disk():
+        if skill.id == agent_id:
+            return skill
+    return None
+
+
+def _user_agent_param(agent_def: "AgentDef", name: str) -> Any:
+    """Return one user-agent generation parameter, if present."""
+    params = agent_def.parameters if isinstance(agent_def.parameters, Mapping) else {}
+    return params.get(name)
+
+
+def _user_agent_int_param(agent_def: "AgentDef", name: str, default: int) -> int:
+    """Parse an integer user-agent parameter with an explicit error."""
+    value = _user_agent_param(agent_def, name)
+    if value in (None, ""):
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"user agent parameter {name!r} must be an integer") from exc
+
+
+def _user_agent_float_param(agent_def: "AgentDef", name: str, default: float) -> float:
+    """Parse a float user-agent parameter with an explicit error."""
+    value = _user_agent_param(agent_def, name)
+    if value in (None, ""):
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"user agent parameter {name!r} must be a number") from exc
+
+
+def _run_prompt_user_agent(
+    base_agent: Any,
+    agent_def: "AgentDef",
+    question: str,
+    session_id: str,
+) -> Any:
+    """Execute a prompt-only user/skill agent through DSPy/LiteLLM."""
+    import dspy  # noqa: PLC0415
+
+    from clio_agent.config import (  # noqa: PLC0415
+        LMProviderConfig,
+        create_chat_adapter,
+        create_lm,
+        load_config_from_env,
+    )
+
+    class PromptUserAgentSignature(dspy.Signature):
+        """Run a registered CLIO user agent.
+
+        Follow the supplied system_prompt exactly. Answer from the
+        prompt and user request. Do not claim to have called tools.
+        If a requested fact requires unavailable tool execution, say
+        what is missing instead of inventing it.
+        """
+
+        system_prompt: str = dspy.InputField(desc="Registered agent instructions")
+        question: str = dspy.InputField(desc="User message for this agent")
+        answer: str = dspy.OutputField(desc="User-facing answer")
+
+    base_config = getattr(base_agent, "_provider_config", None)
+    if base_config is None:
+        base_config = load_config_from_env()
+    provider = agent_def.default_provider or base_config.provider
+    same_provider = provider == base_config.provider
+    params = agent_def.parameters if isinstance(agent_def.parameters, Mapping) else {}
+    api_base = str(params.get("api_base") or (base_config.api_base if same_provider else ""))
+    api_key = base_config.api_key if same_provider else ""
+    config = LMProviderConfig(
+        provider=provider,  # type: ignore[arg-type]
+        api_base=api_base,
+        model=agent_def.default_model or (base_config.model if same_provider else ""),
+        api_key=api_key,
+        temperature=_user_agent_float_param(agent_def, "temperature", base_config.temperature),
+        max_tokens=_user_agent_int_param(agent_def, "max_tokens", base_config.max_tokens),
+        planner_temperature=base_config.planner_temperature,
+        planner_max_tokens=base_config.planner_max_tokens,
+        codex_transport=base_config.codex_transport,
+        thinking_budget=_user_agent_int_param(
+            agent_def,
+            "thinking_budget",
+            base_config.thinking_budget,
+        ),
+    )
+    predictor = dspy.Predict(PromptUserAgentSignature)
+    system_prompt = agent_def.system_prompt.strip() or (
+        f"You are the CLIO user agent {agent_def.id!r}. "
+        "Answer directly and do not invent tool results."
+    )
+    with dspy.context(lm=create_lm(config), adapter=create_chat_adapter(config)):
+        result = predictor(system_prompt=system_prompt, question=question)
+    answer = str(getattr(result, "answer", "") or "").strip()
+    if not answer:
+        raise RuntimeError(f"user agent {agent_def.id!r} returned an empty answer")
+    return dspy.Prediction(
+        answer=answer,
+        selected_expert=agent_def.id,
+        routing_rationale=f"Session selected user agent {agent_def.id!r}.",
+        route_source="user_agent",
+        session_id=session_id,
+        error_info=None,
+    )
 
 
 async def _run_turn_in_background(
@@ -374,50 +496,70 @@ async def _run_turn_in_background(
 
         active_agent_id = _session_agent_id(sess)
         if active_agent_id not in _EXECUTABLE_SESSION_AGENT_IDS:
-            raise _UnsupportedSessionAgent(active_agent_id)
-
-        # Honour the session's routing override. routing_mode "chat"
-        # forces the chat path (no /chat prefix needed); "experts"
-        # rejects chat/none classifications. Keep the override on the
-        # agent for the duration of this turn so ClioAgent.forward and
-        # streamed forward see the same mode.
-        routing_override = getattr(sess, "routing_mode", "auto") or "auto"
-        agent_obj = app.state.agent
-        prev_routing = getattr(agent_obj, "_routing_mode_override", "auto")
-        routing_override_applied = False
-        try:
-            agent_obj._routing_mode_override = routing_override  # type: ignore[attr-defined]
-            routing_override_applied = True
-        except Exception:  # noqa: BLE001
-            pass
-
-        try:
-            with _tool_session_context(sid):
-                pred = await _try_streamed_forward(
-                    app, enriched_text, sid, _emit_chunk,
-                    session_mode=getattr(sess, "mode", "chat"),
-                    session_edit_mode=getattr(sess, "edit_mode", "diff"),
+            dynamic_agent = _resolve_dynamic_agent(app, active_agent_id)
+            if dynamic_agent is None:
+                raise _UnsupportedSessionAgent(active_agent_id)
+            if dynamic_agent.tools:
+                raise _UnsupportedSessionAgent(
+                    active_agent_id,
+                    reason="custom_agent_tools_not_implemented",
+                    tools=list(dynamic_agent.tools),
                 )
-                if pred is None:
-                    loop = asyncio.get_running_loop()
-                    turn_context = contextvars.copy_context()
-                    pred = await loop.run_in_executor(
-                        None,
-                        lambda: turn_context.run(
-                            _agent_forward_compat,
-                            app.state.agent,
-                            enriched_text,
-                            sid,
-                            getattr(sess, "mode", "chat"),
-                            getattr(sess, "edit_mode", "diff"),
-                        ),
+            loop = asyncio.get_running_loop()
+            turn_context = contextvars.copy_context()
+            pred = await loop.run_in_executor(
+                None,
+                lambda: turn_context.run(
+                    _run_prompt_user_agent,
+                    app.state.agent,
+                    dynamic_agent,
+                    enriched_text,
+                    sid,
+                ),
+            )
+        else:
+            # Honour the session's routing override. routing_mode "chat"
+            # forces the chat path (no /chat prefix needed); "experts"
+            # rejects chat/none classifications. Keep the override on the
+            # agent for the duration of this turn so ClioAgent.forward and
+            # streamed forward see the same mode.
+            routing_override = getattr(sess, "routing_mode", "auto") or "auto"
+            agent_obj = app.state.agent
+            prev_routing = getattr(agent_obj, "_routing_mode_override", "auto")
+            routing_override_applied = False
+            try:
+                agent_obj._routing_mode_override = routing_override  # type: ignore[attr-defined]
+                routing_override_applied = True
+            except Exception:  # noqa: BLE001
+                pass
+
+            try:
+                with _tool_session_context(sid):
+                    pred = await _try_streamed_forward(
+                        app, enriched_text, sid, _emit_chunk,
+                        session_mode=getattr(sess, "mode", "chat"),
+                        session_edit_mode=getattr(sess, "edit_mode", "diff"),
                     )
-        finally:
-            if routing_override_applied:
-                try:
-                    agent_obj._routing_mode_override = prev_routing  # type: ignore[attr-defined]
-                except Exception:  # noqa: BLE001
-                    pass
+                    if pred is None:
+                        loop = asyncio.get_running_loop()
+                        turn_context = contextvars.copy_context()
+                        pred = await loop.run_in_executor(
+                            None,
+                            lambda: turn_context.run(
+                                _agent_forward_compat,
+                                app.state.agent,
+                                enriched_text,
+                                sid,
+                                getattr(sess, "mode", "chat"),
+                                getattr(sess, "edit_mode", "diff"),
+                            ),
+                        )
+            finally:
+                if routing_override_applied:
+                    try:
+                        agent_obj._routing_mode_override = prev_routing  # type: ignore[attr-defined]
+                    except Exception:  # noqa: BLE001
+                        pass
         answer_text = getattr(pred, "answer", "")
         selected_agent = getattr(pred, "selected_expert", "") or ""
         rationale = getattr(pred, "routing_rationale", "")
@@ -582,11 +724,14 @@ async def _run_turn_in_background(
             ),
             details={
                 "agent_id": exc.agent_id,
+                "reason": exc.reason,
                 "supported_agent_ids": sorted(
                     agent_id for agent_id in _EXECUTABLE_SESSION_AGENT_IDS if agent_id
                 ),
+                "unsupported_tools": exc.tools,
                 "recovery_actions": [
                     "choose_builtin_agent",
+                    "remove_custom_agent_tools",
                     "retry",
                     "exit",
                 ],
