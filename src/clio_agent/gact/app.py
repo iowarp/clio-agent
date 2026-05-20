@@ -181,6 +181,32 @@ class _ContextFileAccessError(RuntimeError):
         self.error_info = error_info
 
 
+class _TurnCancelled(RuntimeError):
+    """Raised internally to settle a turn as cancelled without running forward."""
+
+    def __init__(self, error_info: "ErrorInfo") -> None:
+        super().__init__(error_info.message)
+        self.error_info = error_info
+
+
+def _cancelled_error_info(
+    sid: str,
+    *,
+    execution_cancellation: str,
+    executor_work_may_continue: bool,
+) -> "ErrorInfo":
+    return ErrorInfo(
+        error="cancelled",
+        message="turn cancelled by client",
+        details={
+            "session_id": sid,
+            "execution_cancellation": execution_cancellation,
+            "executor_work_may_continue": executor_work_may_continue,
+        },
+        recoverable=True,
+    )
+
+
 def _context_file_access_error(
     *,
     path: str,
@@ -761,6 +787,16 @@ async def _run_turn_in_background(
         if context_file_error is not None:
             raise _ContextFileAccessError(context_file_error)
 
+        if sid in app.state.cancel_flags:
+            app.state.cancel_flags.discard(sid)
+            raise _TurnCancelled(
+                _cancelled_error_info(
+                    sid,
+                    execution_cancellation="turn_boundary",
+                    executor_work_may_continue=False,
+                )
+            )
+
         active_agent_id = _session_agent_id(sess)
         if active_agent_id not in _EXECUTABLE_SESSION_AGENT_IDS:
             dynamic_agent = _resolve_dynamic_agent(app, active_agent_id)
@@ -949,28 +985,22 @@ async def _run_turn_in_background(
             )
         if sid in app.state.cancel_flags:
             app.state.cancel_flags.discard(sid)
-            error_info = ErrorInfo(
-                error="cancelled",
-                message="turn cancelled by client",
-                details={
-                    "session_id": sid,
-                    "execution_cancellation": "turn_boundary",
-                    "executor_work_may_continue": False,
-                },
-                recoverable=True,
+            error_info = _cancelled_error_info(
+                sid,
+                execution_cancellation="turn_boundary",
+                executor_work_may_continue=False,
             )
             answer_text = ""
             tools_called = []
+    except _TurnCancelled as exc:
+        error_info = exc.error_info
+        answer_text = ""
+        tools_called = []
     except asyncio.CancelledError:
-        error_info = ErrorInfo(
-            error="cancelled",
-            message="turn cancelled by client",
-            details={
-                "session_id": sid,
-                "execution_cancellation": "best_effort",
-                "executor_work_may_continue": True,
-            },
-            recoverable=True,
+        error_info = _cancelled_error_info(
+            sid,
+            execution_cancellation="best_effort",
+            executor_work_may_continue=True,
         )
         answer_text = ""
         tools_called = []
