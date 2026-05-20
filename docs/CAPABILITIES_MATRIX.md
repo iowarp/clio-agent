@@ -47,7 +47,7 @@ Two flags are explicitly `false` (LSP, voice — out of scope for v0.3.1).
 | `memory` | ✅ verified | ARC cache stats reported on `/v1/memory/stats`; `clio_doctor_health.png` shows hit rate |
 | `structured_errors` | ✅ verified | every 4xx/5xx returns the v0.2 envelope (error/message/details/recoverable) |
 | `integration_health` | ✅ verified | `/v1/health.integrations[]` reports per-subsystem status; `clio_doctor_health.png` |
-| `tool_telemetry` | verified; runtime partial | Native MCP executor calls emit live `tool.call.started/completed`; paths that only expose `tools_called` after the turn are still rendered post-hoc. See `docs/tui/REAL_GAPS.md`. |
+| `tool_telemetry` | verified; runtime partial | Native MCP executor calls emit `telemetry_source="live_observer"` `tool.call.started/completed`; paths that only expose `tools_called` after the turn emit `telemetry_source="posthoc_prediction"` so clients can distinguish reconstructed events from live execution timing. See `docs/tui/REAL_GAPS.md`. |
 
 ## Transport Truthfulness
 

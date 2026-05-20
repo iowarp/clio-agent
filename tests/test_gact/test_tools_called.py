@@ -41,11 +41,7 @@ class _Agent:
 
 
 def _client(tmp_path: Path, pred) -> TestClient:
-    return TestClient(
-        build_app(
-            sessions_path=tmp_path / "sessions.json", agent=_Agent(pred)
-        )
-    )
+    return TestClient(build_app(sessions_path=tmp_path / "sessions.json", agent=_Agent(pred)))
 
 
 def test_no_tools_called_keeps_metadata_empty(tmp_path: Path) -> None:
@@ -72,13 +68,17 @@ def test_tools_called_propagates_to_message_and_completion(tmp_path: Path) -> No
             "cached": False,
         },
         # One already wrapped as a msgspec-like with attribute access:
-        type("ToolCall", (), {
-            "name": "parquet_summarise",
-            "args": {},
-            "ok": True,
-            "duration_ms": 12.0,
-            "cached": True,
-        })(),
+        type(
+            "ToolCall",
+            (),
+            {
+                "name": "parquet_summarise",
+                "args": {},
+                "ok": True,
+                "duration_ms": 12.0,
+                "cached": True,
+            },
+        )(),
         ToolCall(
             tool="hdf5_list_datasets",
             params={"filepath": "/tmp/x.h5"},
@@ -100,6 +100,7 @@ def test_tools_called_propagates_to_message_and_completion(tmp_path: Path) -> No
     assert rows[0]["ok"] is True
     assert rows[0]["duration_ms"] == 42.5
     assert rows[0]["cached"] is False
+    assert rows[0]["telemetry_source"] == "posthoc_prediction"
     # The second row came from an object-with-attrs, not a dict;
     # the extractor should still have normalised it to the same wire shape.
     assert rows[1]["name"] == "parquet_summarise"

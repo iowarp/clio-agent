@@ -28,10 +28,12 @@ class _Pred:
 
 class _Agent:
     def forward(self, question: str, session_id: str):
-        return _Pred(tools_called=[
-            {"name": "hdf5.analyze", "ok": True, "duration_ms": 14.0, "cached": False},
-            {"name": "parquet.summarise", "ok": True, "duration_ms": 22.3, "cached": True},
-        ])
+        return _Pred(
+            tools_called=[
+                {"name": "hdf5.analyze", "ok": True, "duration_ms": 14.0, "cached": False},
+                {"name": "parquet.summarise", "ok": True, "duration_ms": 22.3, "cached": True},
+            ]
+        )
 
 
 class _LiveObservedAgent:
@@ -64,15 +66,16 @@ def test_tool_call_events_emit_in_pairs(app_client) -> None:
     completed = [e for e in history if e.type == "tool.call.completed"]
 
     assert [e.payload["tool"] for e in completed] == [
-        "hdf5.analyze", "parquet.summarise",
+        "hdf5.analyze",
+        "parquet.summarise",
     ]
     assert completed[0].payload["cached"] is False
     assert completed[1].payload["cached"] is True
     assert completed[0].payload["duration_ms"] == 14.0
+    assert all(e.payload["telemetry_source"] == "posthoc_prediction" for e in started)
+    assert all(e.payload["telemetry_source"] == "posthoc_prediction" for e in completed)
     # started + completed line up by call_id.
-    assert {e.payload["call_id"] for e in started} == {
-        e.payload["call_id"] for e in completed
-    }
+    assert {e.payload["call_id"] for e in started} == {e.payload["call_id"] for e in completed}
     # Started appears before completed for every call.
     for s, c in zip(started, completed, strict=True):
         assert s.id < c.id
@@ -92,5 +95,8 @@ def test_live_observed_tool_call_is_not_reemitted_post_turn(tmp_path: Path) -> N
 
     assert [e.payload["tool"] for e in started] == ["hdf5_list_datasets"]
     assert [e.payload["tool"] for e in completed] == ["hdf5_list_datasets"]
+    assert started[0].payload["telemetry_source"] == "live_observer"
+    assert completed[0].payload["telemetry_source"] == "live_observer"
     assert assistant["metadata"]["tools_called"][0]["name"] == "hdf5_list_datasets"
     assert assistant["metadata"]["tools_called"][0]["args"] == {"filepath": "x.h5"}
+    assert assistant["metadata"]["tools_called"][0]["telemetry_source"] == "live_observer"
