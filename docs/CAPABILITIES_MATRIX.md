@@ -84,8 +84,8 @@ guaranteed upstream abort.
 | `session_sharing` | ✅ verified | `/v1/sessions/{sid}/share` issues `shr_…` token; `/v1/shared/{token}` returns the session |
 | `edit_modes` | ✅ verified | session.edit_mode (diff/whole/patch) shapes the file_diff Part — diff: unified_diff, whole: new_content only, patch: both |
 | `plan_mode` | ✅ verified | session.mode=plan refuses `/diffs/apply` with `PermissionError("refused to write under session.mode='plan'")`; file unchanged |
-| `agent_write` | ✅ verified | `POST/PUT/DELETE /v1/agents` lifecycle; user agents appear in `/v1/agents` with `source="user"`; prompt-only user/skill agents can be selected by a session and executed through DSPy/LiteLLM. Tool-declaring custom agents remain a runtime gap. |
-| `skills_extraction` | verified; runtime partial | `POST /v1/agents/extract` mines `tools_called` from past sessions → produces a user agent definition visible in `/v1/agents`; prompt-only extracted agents can execute, but extracted tool lists are still not executable. See `docs/tui/REAL_GAPS.md`. |
+| `agent_write` | ✅ verified | `POST/PUT/DELETE /v1/agents` lifecycle; user agents appear in `/v1/agents` with `source="user"`; prompt-only agents execute through DSPy/LiteLLM, and tool-declaring agents execute through a DSPy ReAct runner scoped to their declared MCP tools. |
+| `skills_extraction` | ✅ verified | `POST /v1/agents/extract` mines `tools_called` from past sessions → produces a user agent definition visible in `/v1/agents`; extracted agents execute with prompt-only or declared-tool semantics. |
 
 ## Provider-Specific Verification
 
