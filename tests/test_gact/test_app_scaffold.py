@@ -65,6 +65,8 @@ def test_capabilities_advertises_v0_2(client: TestClient) -> None:
     )
     assert caps["x_clio_cancellation"] == "best_effort"
     assert caps["x_clio_executor_cancellation"] is False
+    assert caps["x_clio_text_streaming"] == "best_effort_live"
+    assert caps["x_clio_synthetic_posthoc_streaming"] is True
     # Landed capabilities.
     for flag in (
         "sessions",

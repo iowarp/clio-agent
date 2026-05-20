@@ -671,6 +671,7 @@ async def _run_turn_in_background(
     # across threads — list.append under the GIL gives us a clean,
     # thread-safe ledger. We diff history[start:end] post-turn.
     history_start = _snapshot_lm_history_index(app)
+    _pop_stream_fallback(app, sid)
 
     try:
         if context_file_error is not None:
@@ -1000,6 +1001,11 @@ async def _run_turn_in_background(
     ) if answer_text else ""
     if text_stream_source:
         assistant_metadata["stream_source"] = text_stream_source
+    stream_fallback = _pop_stream_fallback(app, sid)
+    if text_stream_source == "synthetic_posthoc":
+        if not stream_fallback:
+            stream_fallback = {"reason": "sync_execution_path"}
+        assistant_metadata["stream_fallback"] = stream_fallback
     if tools_called:
         assistant_metadata["tools_called"] = tools_called
     # iowarp/clio-agent#6: when streaming actually emitted chunks,
@@ -1160,6 +1166,8 @@ async def _run_turn_in_background(
                 **stub.metadata,
                 "stream_source": "synthetic_posthoc",
             }
+            if stream_fallback:
+                stub.metadata["stream_fallback"] = stream_fallback
             bus.publish(Event(
                 type="message.part.added",
                 session_id=sid,
@@ -1177,6 +1185,7 @@ async def _run_turn_in_background(
                         "message_id": assistant_msg.id,
                         "part_id": part.id,
                         "stream_source": "synthetic_posthoc",
+                        "stream_fallback": stream_fallback,
                         "delta": {"text_append": full[i:i + _CHUNK]},
                     },
                 ))
@@ -1187,6 +1196,7 @@ async def _run_turn_in_background(
                     "message_id": assistant_msg.id,
                     "part_id": part.id,
                     "stream_source": "synthetic_posthoc",
+                    "stream_fallback": stream_fallback,
                 },
             ))
         else:
@@ -1796,6 +1806,30 @@ class _StreamingOutputError(RuntimeError):
     """Raised when live streaming fails after user-visible output was emitted."""
 
 
+def _stream_fallback_reasons(app: "FastAPI") -> dict[str, dict[str, Any]]:
+    reasons = getattr(app.state, "stream_fallback_reasons", None)
+    if not isinstance(reasons, dict):
+        reasons = {}
+        app.state.stream_fallback_reasons = reasons
+    return reasons
+
+
+def _record_stream_fallback(
+    app: "FastAPI",
+    sid: str,
+    reason: str,
+    message: str = "",
+) -> None:
+    payload: dict[str, Any] = {"reason": reason}
+    if message:
+        payload["message"] = message
+    _stream_fallback_reasons(app)[sid] = payload
+
+
+def _pop_stream_fallback(app: "FastAPI", sid: str) -> dict[str, Any]:
+    return _stream_fallback_reasons(app).pop(sid, {})
+
+
 def _append_stream_listener(
     listeners: list[Any],
     stream_listener_cls: Any,
@@ -1913,11 +1947,21 @@ async def _try_streamed_forward(
         from dspy.streaming.streamify import streamify
         from dspy.streaming.streaming_listener import StreamListener  # noqa: PLC0415
         from litellm.types.utils import ModelResponseStream  # noqa: F401
-    except Exception:
+    except Exception as exc:
+        _record_stream_fallback(
+            app,
+            sid,
+            "streaming_dependency_unavailable",
+            f"{type(exc).__name__}: {exc}",
+        )
         return None
 
     agent = app.state.agent
-    if agent is None or not isinstance(agent, dspy.Module):
+    if agent is None:
+        _record_stream_fallback(app, sid, "agent_not_available")
+        return None
+    if not isinstance(agent, dspy.Module):
+        _record_stream_fallback(app, sid, "agent_not_streamable")
         return None
 
     # iowarp/clio-agent#158: bind listeners to explicit Predict instances
@@ -1936,10 +1980,16 @@ async def _try_streamed_forward(
             stream_listeners=listeners,
             is_async_program=has_async_forward,
         )
-    except Exception:
+    except Exception as exc:
         # Stream binding is best-effort. If DSPy cannot attach the
         # listener to this program shape, let the canonical sync path
         # run and surface any real agent/provider error from there.
+        _record_stream_fallback(
+            app,
+            sid,
+            "stream_setup_failed",
+            f"{type(exc).__name__}: {exc}",
+        )
         return None
 
     final_pred = None
@@ -1995,7 +2045,19 @@ async def _try_streamed_forward(
             ) from exc
         # No visible output was emitted, so the sync fallback can
         # still run without duplicating user-visible content.
+        _record_stream_fallback(
+            app,
+            sid,
+            "stream_failed_before_output",
+            f"{type(exc).__name__}: {exc}",
+        )
         return None
+    if emitted_any and final_pred is None:
+        raise _StreamingOutputError(
+            "live streaming ended after emitting output without a final prediction"
+        )
+    if final_pred is None:
+        _record_stream_fallback(app, sid, "stream_no_prediction")
     return final_pred
 
 
@@ -3298,6 +3360,8 @@ def build_app(
                 tool_telemetry=True,  # BBB18 — tool.call.started/completed events
                 x_clio_cancellation="best_effort",
                 x_clio_executor_cancellation=False,
+                x_clio_text_streaming="best_effort_live",
+                x_clio_synthetic_posthoc_streaming=True,
             ),
             transports=TransportFlags(events_sse=True, events_websocket=False),
             auth=AuthInfo(schemes=["trust_socket"], current="trust_socket"),

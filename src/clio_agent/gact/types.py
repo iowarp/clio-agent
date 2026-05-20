@@ -90,6 +90,8 @@ class CapabilityFlags(BaseModel):
     # vendor metadata, so these can carry richer values than booleans.
     x_clio_cancellation: Literal["none", "best_effort", "hard"] = "none"
     x_clio_executor_cancellation: bool = False
+    x_clio_text_streaming: Literal["none", "synthetic_posthoc", "best_effort_live"] = "none"
+    x_clio_synthetic_posthoc_streaming: bool = False
 
 
 class TransportFlags(BaseModel):
