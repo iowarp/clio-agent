@@ -32,6 +32,7 @@ from clio_agent.tools.file_policy import (
     validate_read_path,
     validate_write_path,
 )
+from clio_agent.tools.fs_write import write_text_with_policy
 
 fs_server = FastMCP("fs")
 
@@ -122,16 +123,7 @@ def apply_edit_write(filepath: str, new_content: str) -> dict[str, Any]:
     fragile; we always write the whole file.)
     """
 
-    validate_non_empty_string(filepath, field="filepath")
-    safe = validate_write_path(filepath, field="filepath")
-    p = Path(safe)
-    body = new_content if isinstance(new_content, str) else str(new_content)
-    p.write_text(body, encoding="utf-8")
-    return {
-        "path": str(p),
-        "size_bytes": p.stat().st_size,
-        "ok": True,
-    }
+    return write_text_with_policy(filepath, new_content)
 
 
 __all__ = ["fs_server"]

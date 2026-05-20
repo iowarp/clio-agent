@@ -95,8 +95,10 @@ curl -s -X POST http://127.0.0.1:17800/v1/sessions/$SID/messages \
 When the LM calls `fs_apply_edit_write` directly, the gate fires the
 interactive path → TUI banner → user keypress → backend resolves.
 
-## Known gap
+## Diff apply write path
 
-The `_apply_edit_to_disk` write doesn't always actually flush to disk
-when the gate auto-approves via the user-click path. Tracked separately
-(see TODO).
+`/v1/sessions/{sid}/diffs/apply` keeps its user-click auto-approval and
+permission audit row in the GACT layer, then delegates the actual disk write
+to the same policy-enforced implementation used by `fs_apply_edit_write`.
+This keeps direct tool calls and user-approved diff applies aligned on path
+validation, text encoding, and structured failure behavior.

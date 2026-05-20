@@ -40,6 +40,7 @@ from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from clio_agent.tools.file_policy import validate_write_path
+from clio_agent.tools.fs_write import write_text_with_policy
 
 _ACTIVE_TOOL_SESSION_ID: contextvars.ContextVar[str] = contextvars.ContextVar(
     "clio_gact_active_tool_session_id",
@@ -1425,7 +1426,7 @@ def _apply_edit_to_disk(
     new_content: str,
     session: Any,
     app: "FastAPI",
-) -> None:
+) -> dict[str, Any]:
     """Write ``new_content`` to ``path`` after enforcing the
     workspace + file_policy boundary.
 
@@ -1490,7 +1491,7 @@ def _apply_edit_to_disk(
             },
         ))
 
-    target.write_text(new_content, encoding="utf-8")
+    return write_text_with_policy(str(target), new_content)
 
 
 def _enrich_with_context_files(
