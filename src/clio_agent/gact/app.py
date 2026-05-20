@@ -1346,12 +1346,18 @@ async def _try_streamed_forward(
     # runs in an executor thread -> ContextVar lost -> zero live
     # chunks. Requires the agent expose acall.
     has_acall = hasattr(agent, "acall") and callable(agent.acall)
-    streamed = streamify(
-        agent,
-        async_streaming=True,
-        stream_listeners=listeners,
-        is_async_program=has_acall,
-    )
+    try:
+        streamed = streamify(
+            agent,
+            async_streaming=True,
+            stream_listeners=listeners,
+            is_async_program=has_acall,
+        )
+    except Exception:
+        # Stream binding is best-effort. If DSPy cannot attach the
+        # listener to this program shape, let the canonical sync path
+        # run and surface any real agent/provider error from there.
+        return None
 
     final_pred = None
     try:

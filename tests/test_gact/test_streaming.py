@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
+import importlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import dspy
 import pytest
 from fastapi.testclient import TestClient
 
-from clio_agent.gact.app import build_app
+from clio_agent.gact.app import _try_streamed_forward, build_app
 
 
 @dataclass
@@ -24,6 +26,24 @@ class _Agent:
         self._answer = answer
 
     def forward(self, question: str, session_id: str):
+        return _Pred(answer=self._answer)
+
+
+class _DspyAgent(dspy.Module):
+    def __init__(self, answer: str) -> None:
+        super().__init__()
+        self._answer = answer
+        self.calls: list[tuple[str, str]] = []
+
+    def forward(
+        self,
+        question: str,
+        session_id: str,
+        session_mode: str = "chat",
+        session_edit_mode: str = "diff",
+    ) -> _Pred:
+        del session_mode, session_edit_mode
+        self.calls.append((question, session_id))
         return _Pred(answer=self._answer)
 
 
@@ -65,6 +85,32 @@ def test_text_parts_stream_as_deltas(app_client) -> None:
     # Concatenated deltas reconstruct the full answer.
     chunks = [d.payload["delta"]["text_append"] for d in deltas]
     assert "".join(chunks) == answer
+
+
+async def test_streamify_setup_failure_returns_none_for_sync_fallback(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    def fail_streamify(*args: Any, **kwargs: Any) -> Any:
+        del args, kwargs
+        raise ValueError(
+            "Signature field answer is not unique in the program, cannot "
+            "automatically determine which predictor to use for streaming."
+        )
+
+    streamify_module = importlib.import_module("dspy.streaming.streamify")
+    monkeypatch.setattr(streamify_module, "streamify", fail_streamify)
+    agent = _DspyAgent("fallback answer")
+    app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
+    chunks: list[str] = []
+
+    async def emit_chunk(text: str) -> None:
+        chunks.append(text)
+
+    result = await _try_streamed_forward(app, "stream setup fails", "sid", emit_chunk)
+
+    assert result is None
+    assert chunks == []
+    assert agent.calls == []
 
 
 def test_non_text_parts_skip_deltas(app_client) -> None:
