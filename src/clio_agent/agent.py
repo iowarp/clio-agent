@@ -1088,29 +1088,6 @@ class ClioAgent(dspy.Module):
         except ValueError:
             return None
 
-    @classmethod
-    def _parse_text_from_adapter_error(cls, error: Exception, field: str) -> str:
-        """Recover text from a DSPy ChatAdapter field-marker parse error."""
-        message = str(error)
-        marker = "LM Response:"
-        expected = "Expected to find output fields"
-        if marker not in message or expected not in message or field not in message:
-            return ""
-
-        raw_response = message.split(marker, 1)[1].split(expected, 1)[0].strip()
-        field_marker = f"[[ ## {field} ##"
-        start = raw_response.find(field_marker)
-        if start >= 0:
-            text = raw_response[start + len(field_marker) :]
-            if text.startswith(" ]]"):
-                text = text[3:]
-            end = text.find("[[ ##")
-            if end >= 0:
-                text = text[:end]
-            return text.strip(" ]\n\t")
-
-        return raw_response.strip()
-
     def _format_observations_for_prompt(self, observations: list[dict[str, Any]]) -> str:
         """Format loop observations as compact JSON for planner prompts."""
         if not observations:
@@ -1296,13 +1273,6 @@ class ClioAgent(dspy.Module):
                 return answer
             raise ValueError("Chat agent returned an empty answer.")
         except Exception as chat_error:
-            answer = self._parse_text_from_adapter_error(chat_error, "answer")
-            if answer:
-                if self._question_requests_summary(question):
-                    summary = self._summarize_assistant_context(session_context)
-                    if summary:
-                        return summary
-                return answer
             if self.verbose:
                 print(f"[ClioAgent] ChatAgent failed: {chat_error}")
             raise
