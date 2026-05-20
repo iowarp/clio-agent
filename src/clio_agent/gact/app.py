@@ -425,6 +425,21 @@ def _run_tool_user_agent(
     )
 
 
+def _tool_call_event_key(call: Mapping[str, Any]) -> tuple[str, str]:
+    """Return a stable identity for de-duplicating tool telemetry events."""
+    name = str(call.get("name") or call.get("tool") or "")
+    args = call.get("args")
+    if args is None:
+        args = call.get("arguments")
+    if args is None:
+        args = call.get("params")
+    try:
+        encoded_args = json.dumps(args or {}, sort_keys=True, default=str)
+    except TypeError:
+        encoded_args = str(args or {})
+    return name, encoded_args
+
+
 async def _run_turn_in_background(
     app: "FastAPI",
     sid: str,
@@ -462,6 +477,7 @@ async def _run_turn_in_background(
     proposed_diffs: list[Any] = []
     nanoagents: list[Any] = []
     thinking_text = ""
+    live_tool_event_keys: set[tuple[str, str]] = set()
     turn_tokens: dict[str, int] = {
         "input": 0, "output": 0, "cache_read": 0, "cache_write": 0,
     }
@@ -661,6 +677,7 @@ async def _run_turn_in_background(
         ledger = getattr(app.state, "tool_call_ledger", None)
         if ledger is not None:
             observed = ledger.pop(sid, [])
+            live_tool_event_keys = {_tool_call_event_key(o) for o in observed}
             if observed and not tools_called:
                 tools_called = observed
             elif observed:
@@ -1118,6 +1135,8 @@ async def _run_turn_in_background(
     # MCPToolBridge.call_tool publishes the same wire shape live;
     # the TUI's renderer doesn't care which flavour it is.
     for idx, call in enumerate(tools_called):
+        if _tool_call_event_key(call) in live_tool_event_keys:
+            continue
         call_id = f"call_{assistant_msg.id}_{idx}"
         bus.publish(Event(
             type="tool.call.started",

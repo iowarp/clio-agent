@@ -52,7 +52,7 @@ what they prove.
 |---|---|---|---|
 | `permissions` | yes | partial | Native MCP executor calls gate destructive tool names, and `/diffs/apply` records an auto-approved user-click audit row. Real turns only emit permission rows when a destructive MCP tool is actually invoked. |
 | `cancellation` (best-effort) | yes | partial | Server settles the GACT envelope as cancelled; executor-thread provider/tool work may continue and is flagged with `execution_cancellation="best_effort"` |
-| `tool_telemetry` events | yes | partial | Native MCP executor calls emit live `tool.call.started/completed`; paths that only expose `tools_called` after the turn are still rendered post-hoc |
+| `tool_telemetry` events | yes | partial | Native MCP executor calls emit live `tool.call.started/completed` without duplicate post-turn lifecycle events; paths that only expose `tools_called` after the turn are still rendered post-hoc |
 
 ## What does work end-to-end against real Claude
 

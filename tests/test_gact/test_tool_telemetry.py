@@ -34,6 +34,16 @@ class _Agent:
         ])
 
 
+class _LiveObservedAgent:
+    def forward(self, question: str, session_id: str):
+        from clio_agent.tools.execution import _GLOBAL_TOOL_OBSERVER
+
+        assert _GLOBAL_TOOL_OBSERVER is not None
+        _GLOBAL_TOOL_OBSERVER("hdf5_list_datasets", {"filepath": "x.h5"}, "started", None)
+        _GLOBAL_TOOL_OBSERVER("hdf5_list_datasets", {"filepath": "x.h5"}, "completed", None)
+        return _Pred()
+
+
 @pytest.fixture()
 def app_client(tmp_path: Path):
     app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
@@ -66,3 +76,21 @@ def test_tool_call_events_emit_in_pairs(app_client) -> None:
     # Started appears before completed for every call.
     for s, c in zip(started, completed, strict=True):
         assert s.id < c.id
+
+
+def test_live_observed_tool_call_is_not_reemitted_post_turn(tmp_path: Path) -> None:
+    from .conftest import complete_turn
+
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_LiveObservedAgent())
+    client = TestClient(app)
+    sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
+    assistant = complete_turn(client, sid, "analyze")
+
+    history = app.state.bus._history.get(sid, [])
+    started = [e for e in history if e.type == "tool.call.started"]
+    completed = [e for e in history if e.type == "tool.call.completed"]
+
+    assert [e.payload["tool"] for e in started] == ["hdf5_list_datasets"]
+    assert [e.payload["tool"] for e in completed] == ["hdf5_list_datasets"]
+    assert assistant["metadata"]["tools_called"][0]["name"] == "hdf5_list_datasets"
+    assert assistant["metadata"]["tools_called"][0]["args"] == {"filepath": "x.h5"}
