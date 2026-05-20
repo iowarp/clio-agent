@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 from fastapi.testclient import TestClient
@@ -34,9 +35,37 @@ def test_health_lm_row_when_unconfigured(tmp_path: Path) -> None:
         assert "PUT /v1/providers/lm" in rows["lm"]["detail"]
 
 
-def test_get_lm_provider_when_configured_via_put(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_get_lm_provider_when_configured_from_boot_agent(tmp_path: Path) -> None:
+    """Env-booted agents should expose their effective provider config."""
+
+    agent = SimpleNamespace(
+        _provider_config=SimpleNamespace(
+            provider="lm_studio",
+            api_base="http://127.0.0.1:1234/v1",
+            model="qwopus3.5-9b-v3",
+            temperature=0.0,
+            max_tokens=4096,
+            thinking_budget=0,
+            codex_transport="exec",
+        )
+    )
+    app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
+    with TestClient(app) as c:
+        body = c.get("/v1/providers/lm").json()
+        rows = {r["name"]: r for r in c.get("/v1/health").json()["integrations"]}
+
+    assert body["configured"] is True
+    assert body["provider"] == "lm_studio"
+    assert body["api_base"] == "http://127.0.0.1:1234/v1"
+    assert body["model"] == "qwopus3.5-9b-v3"
+    assert body["temperature"] == 0.0
+    assert body["max_tokens"] == 4096
+    assert body["transport"] is None
+    assert rows["lm"]["status"] == "ready"
+    assert rows["lm"]["detail"] == "lm_studio/qwopus3.5-9b-v3"
+
+
+def test_get_lm_provider_when_configured_via_put(tmp_path: Path, monkeypatch) -> None:
     """Stub out ClioAgent + create_lm so we can exercise the PUT
     code path without an LM endpoint."""
 
@@ -45,18 +74,23 @@ def test_get_lm_provider_when_configured_via_put(
     class _StubAgent:
         def __init__(self, *args: Any, **kwargs: Any) -> None:
             fake_agent_constructed["called"] = True
-            self.arc = type("ARC", (), {
-                "get_cache_stats": lambda self: {
-                    "hits": 1, "misses": 0, "hit_rate": 1.0, "capacity": 10,
-                }
-            })()
+            self.arc = type(
+                "ARC",
+                (),
+                {
+                    "get_cache_stats": lambda self: {
+                        "hits": 1,
+                        "misses": 0,
+                        "hit_rate": 1.0,
+                        "capacity": 10,
+                    }
+                },
+            )()
 
         def forward(self, *args: Any, **kwargs: Any) -> Any:
             return type("Pred", (), {"answer": "ok", "selected_expert": ""})()
 
-    monkeypatch.setattr(
-        "clio_agent.agent.ClioAgent", _StubAgent
-    )
+    monkeypatch.setattr("clio_agent.agent.ClioAgent", _StubAgent)
 
     def _stub_create_lm(cfg: Any) -> Any:
         return type("FakeLM", (), {"history": []})()
@@ -96,23 +130,25 @@ def test_get_lm_provider_when_configured_via_put(
         assert "openai/claude-haiku-4-5-20251001" in rows["lm"]["detail"]
 
 
-def test_put_lm_provider_accepts_codex_sdk_transport(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_put_lm_provider_accepts_codex_sdk_transport(tmp_path: Path, monkeypatch) -> None:
     """The TUI can select and read back Codex SDK transport without an API key."""
     captured: dict[str, Any] = {}
     monkeypatch.delenv("CLIO_CODEX_TRANSPORT", raising=False)
 
     class _StubAgent:
         def __init__(self, *args: Any, **kwargs: Any) -> None:
-            self.arc = type("ARC", (), {
-                "get_cache_stats": lambda self: {
-                    "hits": 0,
-                    "misses": 0,
-                    "hit_rate": 0.0,
-                    "capacity": 10,
-                }
-            })()
+            self.arc = type(
+                "ARC",
+                (),
+                {
+                    "get_cache_stats": lambda self: {
+                        "hits": 0,
+                        "misses": 0,
+                        "hit_rate": 0.0,
+                        "capacity": 10,
+                    }
+                },
+            )()
 
         def forward(self, *args: Any, **kwargs: Any) -> Any:
             return type("Pred", (), {"answer": "ok", "selected_expert": ""})()
@@ -172,9 +208,7 @@ def test_put_lm_provider_invalid_returns_400(tmp_path: Path, monkeypatch) -> Non
         assert "bad creds" in body["error"]["message"]
 
 
-def test_put_lm_provider_failed_first_connect_restores_env(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_put_lm_provider_failed_first_connect_restores_env(tmp_path: Path, monkeypatch) -> None:
     """A rejected provider swap must not leak failed settings into env."""
 
     before = {
