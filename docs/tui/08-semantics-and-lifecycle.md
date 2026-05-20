@@ -84,7 +84,7 @@ What the TUI *can* stream today: **routing + expert-selection progress** (emitte
 
 ## Error semantics
 
-`errors.py:26-164` defines the hierarchy:
+`errors.py:26-126` defines the hierarchy:
 
 ```
 ClioError (base)
@@ -117,26 +117,19 @@ else: return {"error": "internal_error",
 
 Use this on the TUI side: `error_info["error"]` is the machine tag; `error_info["message"]` the user-facing line; `details` optional context.
 
-### Graceful degradation
+### Failure surfacing
 
-```python
-result = with_degradation(
-    primary=lambda: risky_llm_call(),
-    fallback=lambda: safe_default(),
-    error_cls=ProviderError,
-)
-```
-
-Returns primary on success, fallback on `ProviderError`, re-raises anything else. CLIO uses this for:
+CLIO does not use fallback value substitution for planner or provider failures.
+Failed routes and failed LM calls surface as structured `error_info` with retry,
+reconfigure-provider, and exit recovery actions.
 
 - Planner route failure → structured `routing_error`, not a canned answer.
-- Provider/LM failure → structured `error_info` with retry,
-  reconfigure-provider, and exit recovery actions. CLIO must not hide
-  an upstream/provider failure behind repeated, canned, or locally
-  synthesized assistant text.
+- Provider/LM failure → structured `provider_error`; CLIO must not hide
+  an upstream/provider failure behind repeated, canned, or locally synthesized
+  assistant text.
 - Tool failure → return `{"error": {...}}` dict, not raise (see `05-tools.md`).
 
-(`test_errors.py:1-183`, `test_agent_dispatch.py`, `agent.py`)
+(`test_errors.py`, `test_agent_dispatch.py`, `agent.py`)
 
 ## Storage & persistence semantics
 
@@ -269,7 +262,7 @@ $ curl -s -X POST http://127.0.0.1:8000/query \
 | Per-message call | `test_agent_dispatch.py:26-44` — `forward(question, session_id?) → Prediction(...)` |
 | Conversation | `test_end_to_end.py:59-71` — `arc.get_conversation(sid).messages` |
 | Streaming | `test_api.py:238-271` — SSE composed in FastAPI, not token-native |
-| Errors | `test_errors.py:1-183` — structured `to_dict()`, no traceback leak |
+| Errors | `test_errors.py` — structured `to_dict()`, no traceback leak |
 | ARC memory | `test_memory_coverage.py:35-150` — Invocation + Metrics schemas pinned |
 | Context window | `test_context_compiler.py:24-109` — 2K (T1) / 4K (T2) budgets |
 | Tools | `test_hdf5_server.py:37-120` — file_policy validation BEFORE open, error dict on failure |
