@@ -259,6 +259,27 @@ class TestRunAgentLoop:
         )
         assert answer == "recovered"
 
+    def test_repeated_planner_errors_surface_routing_error(self, agent, monkeypatch, tmp_path):
+        monkeypatch.setenv("CLIO_AGENT_MAX_STEPS", "2")
+        hdf5_path = tmp_path / "run.h5"
+        hdf5_path.touch()
+        agent._plan_next_action = MagicMock(
+            return_value={"action": "expert", "expert": "analysis", "question": "analyze it"}
+        )
+
+        with pytest.raises(RoutingError, match="without producing a valid action") as exc_info:
+            agent._run_agent_loop(
+                question="q",
+                session_context="",
+                file_context=str(hdf5_path),
+                trace=_trace(),
+            )
+
+        details = exc_info.value.details
+        assert details["step_limit"] == 2
+        assert details["recovery_actions"] == ["retry", "reconfigure_provider", "exit"]
+        assert details["planner_observations"][0]["type"] == "planner_error"
+
     def test_none_action_returns_out_of_scope(self, agent):
         agent._plan_next_action = MagicMock(
             return_value={"action": "none", "answer": "out of scope", "reason": "no handler"}

@@ -591,6 +591,15 @@ class ClioAgent(dspy.Module):
                 }
             )
 
+        if not observations or all(obs.get("type") == "planner_error" for obs in observations):
+            raise RoutingError(
+                "Agent planner reached the step limit without producing a valid action.",
+                details=self._recovery_details(
+                    step_limit=self._agent_max_steps(),
+                    planner_observations=observations[-3:],
+                ),
+            )
+
         answer = self._synthesize_agent_answer(
             question=question,
             session_context=session_context,
