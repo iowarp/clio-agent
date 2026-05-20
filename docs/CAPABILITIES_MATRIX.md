@@ -1,11 +1,15 @@
 # Capabilities matrix — v0.3.1
 
-Every capability `true` in `/v1/capabilities` is verified end-to-end.
-"End-to-end" means a real LM call drove it through the live CLIO and
-the documented behaviour was observed (curl evidence, screenshot, or
-strict integration test pass).
+This matrix records the capability flags advertised by
+`/v1/capabilities` and the contract-level evidence behind each flag.
+It does not claim that every true flag is driven by the real
+`ClioAgent` on every possible turn path. For that release-readiness
+audit, use `docs/tui/REAL_GAPS.md`.
 
-**No downgrades.** If a flag is `true` here, it works in the released binary.
+**No silent downgrades.** If a flag is `true` here, the GACT API surface
+exists in the released binary and has targeted evidence. Partial runtime
+semantics, such as post-hoc tool telemetry or best-effort cancellation,
+must be called out explicitly.
 Two flags are explicitly `false` (LSP, voice — out of scope for v0.3.1).
 
 ## Core (v0.1)
@@ -96,4 +100,4 @@ guaranteed upstream abort.
 | `lsp` | ⛔ false | CLIO is a scientific-data agent, not a code editor. LSP doesn't fit the data-analysis loop. |
 | `voice` | ⛔ false | Voice IO requires platform-specific audio plumbing (ffmpeg/whisper/etc.) outside CLIO's scope. Future flag may flip when we adopt a voice provider. |
 
-**28 / 30 supported, all verified.** Flag inventory matches /v1/capabilities and the wire shapes match SPEC §6.
+**28 / 30 advertised supported.** Flag inventory matches `/v1/capabilities` and the wire shapes match SPEC section 6. Real-agent driver caveats remain tracked in `docs/tui/REAL_GAPS.md`.
