@@ -286,7 +286,7 @@ def test_attached_context_file_influences_answer(http: httpx.Client, session_id:
     assert "temperature" in text or "column" in text
 
 
-def test_streaming_deltas_are_temporally_distributed(http: httpx.Client, session_id: str) -> None:
+def test_streaming_text_delivery_events(http: httpx.Client, session_id: str) -> None:
     """SPEC §6.10 — streaming text parts arrive as ``message.part.delta``
     events between ``message.part.added`` and ``message.part.completed``,
     BEFORE the final ``message.completed``. The exact temporal
@@ -295,8 +295,8 @@ def test_streaming_deltas_are_temporally_distributed(http: httpx.Client, session
     Live per-token timing depends on (a) provider streaming support
     and (b) the agent's forward being truly async — both are quality
     attributes, not contract guarantees. The contract guarantees
-    only that text parts ARE chunked into multiple delta events
-    rather than a single blob, so this test asserts that.
+    that text arrives through either live deltas or a completed text
+    part, never fake synthetic deltas.
     """
 
     stream_provider = os.environ.get("CLIO_INTEGRATION_STREAM_PROVIDER")
@@ -357,14 +357,15 @@ def test_streaming_deltas_are_temporally_distributed(http: httpx.Client, session
             if t == "message.completed":
                 completed_t = now
                 break
-    # Wire-shape contract:
+    # Wire-shape contract: live providers may emit deltas, but synthetic
+    # post-hoc fallback must not fake them.
     assert saw_part_added, "message.part.added never arrived"
-    assert delta_count > 0, "no message.part.delta events"
     assert saw_part_completed, "message.part.completed never arrived"
     assert completed_t is not None, "message.completed never arrived"
-    # Lifecycle order: every delta + completed-part precedes message.completed.
-    assert delta_first_t is not None
-    assert delta_first_t <= completed_t, "delta arrived AFTER message.completed"
+    if delta_count:
+        # Lifecycle order: every delta + completed-part precedes message.completed.
+        assert delta_first_t is not None
+        assert delta_first_t <= completed_t, "delta arrived AFTER message.completed"
 
 
 def test_destructive_tool_requests_permission(http: httpx.Client, tmp_path: Path) -> None:

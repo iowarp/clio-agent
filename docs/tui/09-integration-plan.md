@@ -60,20 +60,20 @@ Expected event flow for a turn:
 4. `/events` emits `tool.call.started` / `tool.call.completed` when tool provenance is available.
 5. `/events` emits `message.completed` with metadata, token/cost usage, and `error_info` when applicable.
 
-Text deltas include `stream_source`:
+Text delivery includes `stream_source`:
 
 | `stream_source` | Meaning |
 |---|---|
 | `live` | Delta arrived through the live `dspy.streamify` path. |
-| `synthetic_posthoc` | Backend already had the final answer and chunked it after completion for rendering continuity. |
+| `synthetic_posthoc` | Backend already had the final answer before live provider-token deltas could be emitted. |
 
 Live streaming is best-effort: chat answers, provider-backed expert
 synthesis, and registered user/skill agents attempt the live
 `dspy.streamify` path when the upstream DSPy/LiteLLM stack emits chunks.
-Paths that cannot start a live stream fall back to `synthetic_posthoc`
-with an explicit `stream_fallback.reason`; deterministic non-token
-summaries may also be synthetic because there are no provider tokens to
-stream.
+Paths that cannot start a live stream mark completed text as
+`synthetic_posthoc` with an explicit `stream_fallback.reason`;
+deterministic non-token summaries may also be synthetic because there
+are no provider tokens to stream.
 
 ## Cancellation Semantics
 
@@ -86,8 +86,8 @@ The TUI should render that as cancellation acknowledged, with no implication tha
 Keep these visible to the engineering team rather than hiding them behind a normal-looking response:
 
 - Streaming is live only where the upstream DSPy/LiteLLM path exposes
-  answer chunks; otherwise synthetic chunks remain a truthful
-  compatibility path.
+  answer chunks; otherwise synthetic post-hoc text remains a truthful
+  fallback path.
 - Tool telemetry can still be post-hoc when a path only exposes `tools_called` after the turn.
 - Some GACT endpoint families are definition/catalog surfaces rather than full runtime routes for CLIO's core agent loop.
 
