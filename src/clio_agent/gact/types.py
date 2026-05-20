@@ -417,15 +417,19 @@ class PostMessageRequest(BaseModel):
 class AgentDef(BaseModel):
     """GACT §6.5 + v0.2 §4.3.1 multi-tier additions.
 
-    Fields CLIO can't populate (system_prompt, default_model,
-    parameters, etc.) stay absent from the wire — SPEC §3.2 says
-    clients tolerate missing-optional fields.
+    Prompt/provider/model fields are explicit so clients can inspect
+    and persist user or skill agent definitions without hiding their
+    execution semantics in metadata.
     """
 
     id: str
     source: Literal["builtin", "user", "recipe", "skill"] = "builtin"
     title: str
     description: str = ""
+    system_prompt: str = ""
+    default_provider: str = ""
+    default_model: str = ""
+    parameters: dict[str, Any] = Field(default_factory=dict)
     tools: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
 

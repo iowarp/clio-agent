@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from clio_agent.gact.app import build_app
+from clio_agent.gact.app import _load_skills_from_disk, build_app
 
 
 @pytest.fixture()
@@ -25,6 +25,10 @@ def test_post_agent_then_list(client: TestClient) -> None:
         "id": "code_reviewer",
         "title": "Code Reviewer",
         "description": "Reviews diffs for style + correctness",
+        "system_prompt": "Review the diff and report correctness issues.",
+        "default_provider": "lm_studio",
+        "default_model": "qwopus3.5-9b-v3",
+        "parameters": {"temperature": 0.1, "max_tokens": 2048},
         "tier": 2,
         "specialization": "code_editing",
         "keywords": ["review", "lint"],
@@ -35,12 +39,19 @@ def test_post_agent_then_list(client: TestClient) -> None:
     assert body["id"] == "code_reviewer"
     assert body["source"] == "user"
     assert body["tier"] == 2
+    assert body["system_prompt"] == "Review the diff and report correctness issues."
+    assert body["default_provider"] == "lm_studio"
+    assert body["default_model"] == "qwopus3.5-9b-v3"
+    assert body["parameters"] == {"temperature": 0.1, "max_tokens": 2048}
 
     # GET /v1/agents now includes it (and the built-ins).
     rows = client.get("/v1/agents").json()["agents"]
     ids = {a["id"] for a in rows}
     assert "code_reviewer" in ids
     assert "main" in ids  # built-in still listed
+    listed = next(a for a in rows if a["id"] == "code_reviewer")
+    assert listed["system_prompt"] == "Review the diff and report correctness issues."
+    assert listed["default_model"] == "qwopus3.5-9b-v3"
 
 
 def test_put_agent_replaces_existing(client: TestClient) -> None:
@@ -103,7 +114,54 @@ def test_persistence_round_trip(tmp_path: Path) -> None:
     the same path sees it."""
 
     c1 = TestClient(build_app(sessions_path=tmp_path / "s.json"))
-    c1.post("/v1/agents", json={"id": "persisted", "title": "x"})
+    c1.post("/v1/agents", json={
+        "id": "persisted",
+        "title": "x",
+        "system_prompt": "Persist this prompt.",
+        "default_provider": "openai",
+        "default_model": "gpt-4o-mini",
+        "parameters": {"temperature": 0},
+    })
     c2 = TestClient(build_app(sessions_path=tmp_path / "s.json"))
     rows = c2.get("/v1/agents").json()["agents"]
-    assert any(a["id"] == "persisted" for a in rows)
+    restored = next(a for a in rows if a["id"] == "persisted")
+    assert restored["system_prompt"] == "Persist this prompt."
+    assert restored["default_provider"] == "openai"
+    assert restored["default_model"] == "gpt-4o-mini"
+    assert restored["parameters"] == {"temperature": 0}
+
+
+def test_builtin_agents_surface_prompts(client: TestClient) -> None:
+    rows = client.get("/v1/agents").json()["agents"]
+    main = next(a for a in rows if a["id"] == "main")
+    data = next(a for a in rows if a["id"] == "data")
+
+    assert "CLIO's agent planner" in main["system_prompt"]
+    assert "CLIO Data Expert" in data["system_prompt"]
+
+
+def test_skill_agents_surface_prompt_and_model(monkeypatch, tmp_path: Path) -> None:
+    skill_dir = tmp_path / ".claude" / "skills"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "semantic-agent.md").write_text(
+        "\n".join([
+            "---",
+            "name: semantic-agent",
+            "description: Uses a custom external prompt",
+            "provider: lm_studio",
+            "model: qwopus3.5-9b-v3",
+            "allowed-tools: fs_read_file, parquet_analyze_schema",
+            "---",
+            "Act as the semantic agent.",
+        ]),
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+
+    rows = _load_skills_from_disk()
+    agent = next(a for a in rows if a.id == "semantic-agent")
+
+    assert agent.system_prompt == "Act as the semantic agent."
+    assert agent.default_provider == "lm_studio"
+    assert agent.default_model == "qwopus3.5-9b-v3"
+    assert agent.tools == ["fs_read_file", "parquet_analyze_schema"]

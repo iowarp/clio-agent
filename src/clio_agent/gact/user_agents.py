@@ -33,6 +33,10 @@ class UserAgent:
     title: str = ""
     description: str = ""
     source: str = "user"
+    system_prompt: str = ""
+    default_provider: str = ""
+    default_model: str = ""
+    parameters: dict[str, Any] = field(default_factory=dict)
     tier: int = 2
     specialization: str = ""
     keywords: list[str] = field(default_factory=list)
@@ -67,10 +71,12 @@ class UserAgentStore:
                     k: row[k]
                     for k in (
                         "id", "title", "description", "source",
+                        "system_prompt", "default_provider", "default_model",
                         "tier", "specialization",
                     )
                     if k in row
                 } | {
+                    "parameters": dict(row.get("parameters", {})),
                     "keywords": list(row.get("keywords", [])),
                     "tools": list(row.get("tools", [])),
                     "metadata": dict(row.get("metadata", {})),
@@ -98,6 +104,10 @@ class UserAgentStore:
             title=payload.get("title", "") or payload["id"],
             description=payload.get("description", ""),
             source=payload.get("source") or "user",
+            system_prompt=payload.get("system_prompt", "") or "",
+            default_provider=payload.get("default_provider", "") or "",
+            default_model=payload.get("default_model", "") or "",
+            parameters=dict(payload.get("parameters") or {}),
             tier=int(payload.get("tier") or 2),
             specialization=payload.get("specialization", "") or "",
             keywords=list(payload.get("keywords") or []),
