@@ -7,9 +7,10 @@ It does not claim that every true flag is driven by the real
 audit, use `docs/tui/REAL_GAPS.md`.
 
 **No silent downgrades.** If a flag is `true` here, the GACT API surface
-exists in the released binary and has targeted evidence. Partial runtime
-semantics, such as post-hoc tool telemetry or best-effort cancellation,
-must be called out explicitly.
+exists in the released binary and has targeted evidence. The status column
+distinguishes endpoint/wire verification from real `ClioAgent` runtime
+driver verification. Partial runtime semantics, such as post-hoc tool
+telemetry or best-effort cancellation, must be called out explicitly.
 Two flags are explicitly `false` (LSP, voice — out of scope for v0.3.1).
 
 ## Core (v0.1)
@@ -18,11 +19,11 @@ Two flags are explicitly `false` (LSP, voice — out of scope for v0.3.1).
 |---|---|---|
 | `workspaces` | ✅ verified | `POST /v1/workspaces` + scoped session create; `clio_doctor_caps_final.png` |
 | `sessions` | ✅ verified | full CRUD + fork + branching driven by integration suite |
-| `subagents` | ✅ verified | `analysis_validator subagent` rows under parent → `clio_subagent.png` |
+| `subagents` | wire verified; real-driver gap | Synthetic/fake predictions can produce child-session rows and `subagent.*` events, but real `ClioAgent` has no Tier-3 spawn primitive yet. See `docs/tui/REAL_GAPS.md`. |
 | `mcp` | ✅ verified | `/v1/mcp/servers` lists 3 bundled (fs/hdf5/parquet) + any installed third-party server; `clio_mcp_servers.png` |
 | `files` | ✅ verified | context_files attach + influence agent answer (test_attached_context_file_influences_answer strict pass) |
-| `diffs` | ✅ verified | propose-edit produces file_diff Part; apply changes file on disk; reject leaves it; audit row recorded — `clio_diff.png` |
-| `permissions` | ✅ verified | every destructive write logs an audit row in `/v1/permissions` (test_destructive_tool_requests_permission strict pass) |
+| `diffs` | wire verified; real-driver gap | Synthetic/fake predictions can produce `file_diff` Parts; `/diffs/apply` writes through file policy and `/diffs/reject` marks rows. Real `ClioAgent` still lacks an edit-file tool that emits diffs. See `docs/tui/REAL_GAPS.md`. |
+| `permissions` | verified; runtime partial | Destructive MCP calls are gated and `/diffs/apply` records a user-click audit row. Real turns only emit permission rows when a destructive MCP tool is actually invoked. |
 | `providers` | ✅ verified | swap haiku ↔ sonnet ↔ openrouter mid-session; cost-meter delta confirms model change |
 | `commands` | ✅ verified | `/v1/commands` enumerates backend commands + TUI builtins (/mcp /tools /catalog /skills /agents-list /metrics /doctor /theme*) |
 | `metrics` | ✅ verified | `/v1/metrics` rolls up per-session counts + tokens + cost; `clio_metrics.png` |
@@ -46,7 +47,7 @@ Two flags are explicitly `false` (LSP, voice — out of scope for v0.3.1).
 | `memory` | ✅ verified | ARC cache stats reported on `/v1/memory/stats`; `clio_doctor_health.png` shows hit rate |
 | `structured_errors` | ✅ verified | every 4xx/5xx returns the v0.2 envelope (error/message/details/recoverable) |
 | `integration_health` | ✅ verified | `/v1/health.integrations[]` reports per-subsystem status; `clio_doctor_health.png` |
-| `tool_telemetry` | ✅ verified | `tool.call.started/completed` SSE events fire BEFORE `message.completed` (strict integration test) |
+| `tool_telemetry` | verified; runtime partial | Native MCP executor calls emit live `tool.call.started/completed`; paths that only expose `tools_called` after the turn are still rendered post-hoc. See `docs/tui/REAL_GAPS.md`. |
 
 ## Transport Truthfulness
 
@@ -100,4 +101,4 @@ guaranteed upstream abort.
 | `lsp` | ⛔ false | CLIO is a scientific-data agent, not a code editor. LSP doesn't fit the data-analysis loop. |
 | `voice` | ⛔ false | Voice IO requires platform-specific audio plumbing (ffmpeg/whisper/etc.) outside CLIO's scope. Future flag may flip when we adopt a voice provider. |
 
-**28 / 30 advertised supported.** Flag inventory matches `/v1/capabilities` and the wire shapes match SPEC section 6. Real-agent driver caveats remain tracked in `docs/tui/REAL_GAPS.md`.
+**28 / 30 advertised supported.** Flag inventory matches `/v1/capabilities` and the wire shapes match SPEC section 6. Rows marked `wire verified; real-driver gap` or `runtime partial` are not release-readiness proof by themselves; real-agent driver caveats remain tracked in `docs/tui/REAL_GAPS.md`.
