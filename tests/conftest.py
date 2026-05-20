@@ -16,11 +16,15 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def allow_pytest_tmp_path(tmp_path, monkeypatch):
-    """Let file-policy tests read/write their own pytest temp files.
+    """Isolate tests from developer shell defaults.
 
     Developer shells often set CLIO_ALLOWED_ROOTS narrowly for manual
     use. Tests should not inherit that and then reject their own
     tmp_path fixtures.
+
+    Unit tests also should not depend on a live LM Studio server for
+    model discovery. Tests that need discovery unset CLIO_LM_MODEL
+    explicitly.
     """
 
     existing = os.environ.get("CLIO_ALLOWED_ROOTS", "")
@@ -28,6 +32,9 @@ def allow_pytest_tmp_path(tmp_path, monkeypatch):
     if existing.strip():
         roots.extend(item for item in existing.split(os.pathsep) if item)
     monkeypatch.setenv("CLIO_ALLOWED_ROOTS", os.pathsep.join(roots))
+
+    if "CLIO_LM_MODEL" not in os.environ:
+        monkeypatch.setenv("CLIO_LM_MODEL", "ibm/granite-4-h-tiny")
 
 
 @pytest.fixture
