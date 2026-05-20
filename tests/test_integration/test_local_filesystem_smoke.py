@@ -161,12 +161,18 @@ def test_direct_agent_answers_for_local_hdf5_parquet_csv(
 
     assert hdf5.selected_expert == "data"
     assert "simulation/temperature" in hdf5.answer
+    assert [tool.tool for tool in hdf5.tools_called] == [
+        "hdf5_analyze_file",
+        "hdf5_list_datasets",
+    ]
     assert parquet.selected_expert == "analysis"
     assert "Column statistics" in parquet.answer
     assert "temperature" in parquet.answer
+    assert any(tool.tool == "parquet_analyze_schema" for tool in parquet.tools_called)
     assert csv.selected_expert == "analysis"
     assert "Inspected CSV file" in csv.answer
     assert "temperature" in csv.answer
+    assert any(tool.tool == "csv_read_table" for tool in csv.tools_called)
     assert any(
         tool.tool == "hdf5_analyze_file"
         for invocation in data_invocations

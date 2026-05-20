@@ -398,6 +398,7 @@ class ClioAgent(dspy.Module):
         return dspy.Prediction(
             answer=answer,
             selected_expert=selected,
+            tools_called=[tool.to_arc_tool_call() for tool in trace.tools],
             route_source=route.source,
             route_reason=route.reason,
             session_id=session_id,

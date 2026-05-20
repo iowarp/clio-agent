@@ -42,7 +42,7 @@ ClientFactory = Callable[[Any], MCPClientProtocol]
 
 # iowarp/clio-agent#7 + #2: process-global hooks. The GACT layer
 # (or any other harness) sets these once and every SyncMCPToolExecutor
-# constructed thereafter picks them up. None means "no-op".
+# consults them at call time. None means "no-op".
 _GLOBAL_PERMISSION_GATE: Optional[
     Callable[[str, Mapping[str, Any]], str]
 ] = None
@@ -301,14 +301,14 @@ class SyncMCPToolExecutor:
         #   "allow"  → run the tool unchanged
         #   "deny"   → raise a PermissionError; the agent sees the
         #              traceback in its tool_result and reports it.
-        # Defaults to the module-level _GLOBAL_PERMISSION_GATE so the
-        # GACT layer can wire a single check across every expert at
-        # startup without monkey-patching individual bridges.
-        self._permission_gate = permission_gate or _GLOBAL_PERMISSION_GATE
+        # Explicit instance hook wins. When omitted, call_tool consults
+        # the module-level _GLOBAL_PERMISSION_GATE dynamically so GACT
+        # deferred startup can wire hooks after an executor exists.
+        self._permission_gate = permission_gate
         # iowarp/clio-agent#2: optional observer called BEFORE
         # ("started") and AFTER ("completed", error?) every tool
         # invocation. Same global-fallback story.
-        self._tool_observer = tool_observer or _GLOBAL_TOOL_OBSERVER
+        self._tool_observer = tool_observer
         self._closed = False
         self._close_lock = threading.Lock()
 
@@ -386,9 +386,12 @@ class SyncMCPToolExecutor:
         if self._closed:
             raise RuntimeError("SyncMCPToolExecutor is closed")
 
-        if self._permission_gate is not None:
+        permission_gate = self._permission_gate or _GLOBAL_PERMISSION_GATE
+        tool_observer = self._tool_observer or _GLOBAL_TOOL_OBSERVER
+
+        if permission_gate is not None:
             try:
-                decision = self._permission_gate(name, dict(args))
+                decision = permission_gate(name, dict(args))
             except Exception as exc:  # noqa: BLE001
                 raise PermissionError(
                     f"permission gate raised: {exc!r}"
@@ -398,9 +401,9 @@ class SyncMCPToolExecutor:
                     f"tool call {name!r} denied by permission gate"
                 )
 
-        if self._tool_observer is not None:
+        if tool_observer is not None:
             try:
-                self._tool_observer(name, dict(args), "started", None)
+                tool_observer(name, dict(args), "started", None)
             except Exception:
                 pass
 
@@ -411,15 +414,15 @@ class SyncMCPToolExecutor:
                 action=f"MCP tool {name!r}",
             )
         except Exception as exc:
-            if self._tool_observer is not None:
+            if tool_observer is not None:
                 try:
-                    self._tool_observer(name, dict(args), "completed", repr(exc))
+                    tool_observer(name, dict(args), "completed", repr(exc))
                 except Exception:
                     pass
             raise
-        if self._tool_observer is not None:
+        if tool_observer is not None:
             try:
-                self._tool_observer(name, dict(args), "completed", None)
+                tool_observer(name, dict(args), "completed", None)
             except Exception:
                 pass
 

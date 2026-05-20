@@ -1761,6 +1761,8 @@ def _extract_tools_called(pred: Any) -> list[dict[str, Any]]:
         args = get("args")
         if args is None:
             args = get("arguments")
+        if args is None:
+            args = get("params")
         if args is not None:
             row["args"] = args
 
@@ -2185,6 +2187,16 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
             await t
         except (asyncio.CancelledError, Exception):
             pass
+    try:
+        from clio_agent.tools.execution import (  # noqa: PLC0415
+            set_global_permission_gate,
+            set_global_tool_observer,
+        )
+
+        set_global_permission_gate(None)
+        set_global_tool_observer(None)
+    except Exception:  # pragma: no cover - defensive shutdown cleanup
+        pass
 
 
 async def _construct_agent_async(app: "FastAPI") -> None:
