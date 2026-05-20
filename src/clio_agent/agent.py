@@ -49,7 +49,9 @@ from clio_agent.config import (
     select_models_for_agents,
 )
 from clio_agent.errors import (
+    ClioError,
     ExpertError,
+    ProviderError,
     RoutingError,
     ToolError,
 )
@@ -352,6 +354,9 @@ class ClioAgent(dspy.Module):
         except Exception as e:
             success = False
             if isinstance(e, RoutingError):
+                error_info = self._with_recovery_actions(e.to_dict())
+                answer = ""
+            elif isinstance(e, ClioError):
                 error_info = self._with_recovery_actions(e.to_dict())
                 answer = ""
             else:
@@ -810,7 +815,7 @@ class ClioAgent(dspy.Module):
         session_context: str,
         observations: list[dict[str, Any]],
     ) -> str:
-        """Produce a final answer from observations, with a deterministic fallback."""
+        """Produce a final answer from observations or surface synthesis failure."""
         observations_text = self._format_observations_for_prompt(observations)
         try:
             with dspy.context(lm=self._main_lm, adapter=self._dspy_adapter):
@@ -825,7 +830,22 @@ class ClioAgent(dspy.Module):
         except Exception as exc:
             if self.verbose:
                 print(f"[Planner] Answer synthesis failed: {exc}")
-        return self._fallback_answer_from_observations(observations)
+            raise ProviderError(
+                "CLIO could not synthesize a final answer from the completed observations.",
+                details=self._recovery_details(
+                    stage="answer_synthesis",
+                    original_error=str(exc),
+                    observations=observations[-3:],
+                ),
+            ) from exc
+        raise ProviderError(
+            "CLIO could not synthesize a final answer from the completed observations.",
+            details=self._recovery_details(
+                stage="answer_synthesis",
+                original_error="answer synthesizer returned an empty answer",
+                observations=observations[-3:],
+            ),
+        )
 
     def _fallback_answer_from_observations(self, observations: list[dict[str, Any]]) -> str:
         """Return a compact non-hallucinated answer when synthesis is unavailable."""
@@ -1094,7 +1114,7 @@ class ClioAgent(dspy.Module):
         field_marker = f"[[ ## {field} ##"
         start = raw_response.find(field_marker)
         if start >= 0:
-            text = raw_response[start + len(field_marker):]
+            text = raw_response[start + len(field_marker) :]
             if text.startswith(" ]]"):
                 text = text[3:]
             end = text.find("[[ ##")
@@ -1143,7 +1163,9 @@ class ClioAgent(dspy.Module):
             "safe next step",
             "workflow",
         )
-        return lowered.startswith(general_prefixes) or any(term in lowered for term in general_terms)
+        return lowered.startswith(general_prefixes) or any(
+            term in lowered for term in general_terms
+        )
 
     @classmethod
     def _should_replace_planner_text(
