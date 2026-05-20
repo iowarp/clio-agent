@@ -23,6 +23,7 @@ regressions, but don't treat these as unresolved release blockers:
 | Tokens + cost | Per-turn tokens/cost populate assistant messages, completion events, session rollups, and `/v1/metrics`; GACT also extracts DSPy history/usage and estimates known-model cost when upstream omits cost. | `tests/test_gact/test_cost_tracking.py`, `tests/test_gact/test_cost_estimate.py` |
 | DataExpert tool execution | Real GACT data turns complete instead of hanging, and native tool traces are exposed as `tools_called` metadata. | `tests/test_integration/test_local_filesystem_smoke.py`, `tests/test_gact/test_tools_called.py`, real LM Studio/Qwopus HDF5 smoke |
 | Diff file edits | Real planner `fs_propose_edit` calls produce `file_diff` Parts with `new_content`; `/diffs/apply` writes accepted edits through the shared file-policy path. | `tests/test_core/test_agent_planner.py::test_forward_promotes_propose_edit_observation_to_file_diffs`, `tests/test_gact/test_plan_edit_modes.py::test_real_agent_propose_edit_trace_becomes_applicable_diff` |
+| Prompt-only custom agents | Sessions selecting registered user or skill agents with no declared tools execute through DSPy/LiteLLM using the stored prompt and optional provider/model fields. | `tests/test_gact/test_post_messages.py::test_post_message_prompt_user_agent_executes_registered_agent` |
 
 ## Streaming provenance
 
@@ -51,7 +52,7 @@ what they prove.
 | `permissions` | yes | partial | Native MCP executor calls gate destructive tool names, and `/diffs/apply` records an auto-approved user-click audit row. Real turns only emit permission rows when a destructive MCP tool is actually invoked. |
 | `cancellation` (best-effort) | yes | partial | Server settles the GACT envelope as cancelled; executor-thread provider/tool work may continue and is flagged with `execution_cancellation="best_effort"` |
 | `tool_telemetry` events | yes | partial | Native MCP executor calls emit live `tool.call.started/completed`; paths that only expose `tools_called` after the turn are still rendered post-hoc |
-| `user` / `skill` / `extracted` agents | yes | no | `/v1/agents` surfaces definitions, prompts, tools, provider, and model metadata; ClioAgent's planner still routes only built-in experts/tools |
+| tool-declaring `user` / `skill` / `extracted` agents | yes | partial | Prompt-only custom agents execute. Custom agents with declared tools still return structured `not_implemented` because the planner/tool loop does not yet scope execution to an arbitrary user-agent tool list. |
 
 ## What does work end-to-end against real Claude
 

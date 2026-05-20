@@ -326,6 +326,96 @@ def test_post_message_unsupported_session_agent_sets_error_turn(
     assert sess["status"] == "error"
 
 
+def test_post_message_prompt_user_agent_executes_registered_agent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from .conftest import complete_turn
+
+    calls: list[tuple[str, str, str]] = []
+
+    def fake_prompt_agent(base_agent: Any, agent_def: Any, question: str, session_id: str) -> Any:
+        calls.append((agent_def.id, question, session_id))
+        return FakePrediction(
+            answer="USER_AGENT_OK",
+            selected_expert=agent_def.id,
+            routing_rationale="selected registered user agent",
+        )
+
+    monkeypatch.setattr("clio_agent.gact.app._run_prompt_user_agent", fake_prompt_agent)
+
+    agent = FakeClioAgent(answer="should not run")
+    app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
+    with TestClient(app) as c:
+        created = c.post(
+            "/v1/agents",
+            json={
+                "id": "reviewer",
+                "title": "Reviewer",
+                "system_prompt": "Reply exactly USER_AGENT_OK.",
+            },
+        )
+        assert created.status_code == 201
+        sid = c.post(
+            "/v1/sessions",
+            json={"title": "x", "agent": {"id": "reviewer"}},
+        ).json()["id"]
+        assistant = complete_turn(c, sid, "hi")
+        sess = c.get(f"/v1/sessions/{sid}").json()
+
+    assert agent.calls == []
+    assert calls == [("reviewer", "hi", sid)]
+    assert assistant["stop_reason"] == "end_turn"
+    assert assistant.get("error_info") is None
+    assert [part["type"] for part in assistant["parts"]] == [
+        "routing_decision",
+        "text",
+    ]
+    assert assistant["parts"][0]["selected_agent"] == "reviewer"
+    assert assistant["parts"][1]["text"] == "USER_AGENT_OK"
+    assert sess["status"] == "idle"
+
+
+def test_post_message_tool_user_agent_remains_structured_unsupported(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from .conftest import complete_turn
+
+    def fail_prompt_agent(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("tool-declaring user agent should not run prompt helper")
+
+    monkeypatch.setattr("clio_agent.gact.app._run_prompt_user_agent", fail_prompt_agent)
+
+    agent = FakeClioAgent(answer="should not run")
+    app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
+    with TestClient(app) as c:
+        created = c.post(
+            "/v1/agents",
+            json={
+                "id": "tool_reviewer",
+                "title": "Tool Reviewer",
+                "system_prompt": "Read files before answering.",
+                "tools": ["fs_read_file"],
+            },
+        )
+        assert created.status_code == 201
+        sid = c.post(
+            "/v1/sessions",
+            json={"title": "x", "agent": {"id": "tool_reviewer"}},
+        ).json()["id"]
+        assistant = complete_turn(c, sid, "hi")
+
+    assert agent.calls == []
+    assert assistant["stop_reason"] == "error"
+    assert assistant["error_info"]["error"] == "not_implemented"
+    assert assistant["error_info"]["details"]["agent_id"] == "tool_reviewer"
+    assert assistant["error_info"]["details"]["reason"] == "custom_agent_tools_not_implemented"
+    assert assistant["error_info"]["details"]["unsupported_tools"] == ["fs_read_file"]
+    assert [part["type"] for part in assistant["parts"]] == ["routing_decision"]
+    assert assistant["parts"][0]["selected_agent"] == "tool_reviewer"
+
+
 def test_post_message_model_override_returns_structured_501(
     client: TestClient,
 ) -> None:
