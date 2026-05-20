@@ -518,7 +518,7 @@ class TestPlannerNoBypass:
 
 
 class TestChatAgentNoBypass:
-    def test_chat_accepts_text_from_malformed_adapter_marker(self, agent):
+    def test_chat_adapter_parse_failure_surfaces(self, agent):
         agent.chat_agent = MagicMock(
             side_effect=ValueError(
                 "Adapter ChatAdapter failed to parse the LM response.\n\n"
@@ -529,7 +529,8 @@ class TestChatAgentNoBypass:
             )
         )
 
-        assert agent._run_chat_agent("hi", "") == "Useful answer text."
+        with pytest.raises(ValueError, match="ChatAdapter failed"):
+            agent._run_chat_agent("hi", "")
 
     def test_chat_summary_replaces_repeated_previous_answer(self, agent):
         repeated = "If a provider fails, retry or reconfigure the provider."
