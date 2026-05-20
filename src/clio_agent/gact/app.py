@@ -1304,6 +1304,97 @@ class _StreamingOutputError(RuntimeError):
     """Raised when live streaming fails after user-visible output was emitted."""
 
 
+def _append_stream_listener(
+    listeners: list[Any],
+    stream_listener_cls: Any,
+    *,
+    signature_field_name: str,
+    predict: Any,
+) -> None:
+    if predict is None:
+        return
+    try:
+        listeners.append(
+            stream_listener_cls(
+                signature_field_name=signature_field_name,
+                predict=predict,
+            )
+        )
+    except Exception:  # noqa: BLE001
+        return
+
+
+def _build_stream_listeners(agent: Any, stream_listener_cls: Any) -> list[Any]:
+    """Build explicit DSPy stream listeners for CLIO's known predictors.
+
+    Auto-discovering by field name is fragile here because several CLIO
+    predictors expose the same output fields. Explicit predictor binding
+    lets chat, final synthesis, and expert outputs stream live without
+    fighting over repeated names like ``answer`` or ``analysis``.
+    """
+
+    listeners: list[Any] = []
+    _append_stream_listener(
+        listeners,
+        stream_listener_cls,
+        signature_field_name="answer",
+        predict=getattr(agent, "chat_agent", None),
+    )
+    _append_stream_listener(
+        listeners,
+        stream_listener_cls,
+        signature_field_name="answer",
+        predict=getattr(agent, "answer_synthesizer", None),
+    )
+
+    for expert_name in ("data_expert", "analysis_expert"):
+        expert_predict = getattr(getattr(agent, expert_name, None), "agent", None)
+        _append_stream_listener(
+            listeners,
+            stream_listener_cls,
+            signature_field_name="analysis",
+            predict=expert_predict,
+        )
+        _append_stream_listener(
+            listeners,
+            stream_listener_cls,
+            signature_field_name="recommendations",
+            predict=expert_predict,
+        )
+
+    visualization_extract = getattr(
+        getattr(getattr(agent, "visualization_expert", None), "agent", None),
+        "extract",
+        None,
+    )
+    visualization_predict = getattr(visualization_extract, "predict", None)
+    _append_stream_listener(
+        listeners,
+        stream_listener_cls,
+        signature_field_name="visualization_description",
+        predict=visualization_predict,
+    )
+    _append_stream_listener(
+        listeners,
+        stream_listener_cls,
+        signature_field_name="file_path",
+        predict=visualization_predict,
+    )
+    return listeners
+
+
+def _stream_response_prefix(field_name: str, previous_field_name: str) -> str:
+    """Return formatting to insert when a streamed output field starts."""
+
+    if not field_name or field_name == previous_field_name:
+        return ""
+    if field_name == "recommendations":
+        return "\n\nRecommendations:\n"
+    if field_name == "file_path":
+        return "\n\nFile: "
+    return ""
+
+
 async def _try_streamed_forward(
     app: "FastAPI",
     enriched_text: str,
@@ -1337,42 +1428,21 @@ async def _try_streamed_forward(
     if agent is None or not isinstance(agent, dspy.Module):
         return None
 
-    # iowarp/clio-agent#6 + ChatAdapter polish: streamify wraps the
-    # whole agent, so without listeners the stream pumps every LM
-    # call's RAW chunks (ChatAdapter delimiters: ``[[ ## answer ## ]]``,
-    # ``[[ ## reasoning ## ]]``, etc.) into the user-visible part.
-    # StreamListener filters to a single signature output field —
-    # we listen on ``answer`` (the chat agent's output field) so the
-    # router's reasoning stream gets dropped and only the chat
-    # agent's clean answer streams live. When the agent never
-    # produces an ``answer`` field (e.g. expert paths return
-    # ``analysis`` / ``recommendations``), the listener simply
-    # stays silent and the synchronous fallback handles emit.
-    # Single listener on the chat agent's "answer" field. Adding
-    # listeners for other expert outputs (analysis/recommendations)
-    # broke streaming entirely because find_predictor_for_stream_listeners
-    # walks the program tree looking for matching Predicts and gets
-    # confused by ClioAgent's complex dispatch — net result was zero
-    # deltas. With one listener bound to "answer", the chat path
-    # streams cleanly; expert paths fall back to the post-hoc
-    # chunked emission already in the GACT layer.
-    listeners = []
-    try:
-        listeners = [StreamListener(signature_field_name="answer")]
-    except Exception:  # noqa: BLE001
-        listeners = []
-    # is_async_program=True keeps the agent call in the running
-    # asyncio task so dspy's send_stream ContextVar propagates.
-    # Without this, streamify wraps sync forward() in asyncify ->
-    # runs in an executor thread -> ContextVar lost -> zero live
-    # chunks. Requires the agent expose acall.
-    has_acall = hasattr(agent, "acall") and callable(agent.acall)
+    # iowarp/clio-agent#158: bind listeners to explicit Predict instances
+    # instead of asking DSPy to infer them by output field name.
+    listeners = _build_stream_listeners(agent, StreamListener)
+    # is_async_program=True is only valid for modules with a real async
+    # forward implementation. dspy.Module exposes acall generically, but
+    # its default implementation delegates to aforward; ClioAgent only has
+    # sync forward today, so treating inherited acall as sufficient forces
+    # streamify into AttributeError and silently drops to synthetic chunks.
+    has_async_forward = callable(getattr(agent, "aforward", None))
     try:
         streamed = streamify(
             agent,
             async_streaming=True,
             stream_listeners=listeners,
-            is_async_program=has_acall,
+            is_async_program=has_async_forward,
         )
     except Exception:
         # Stream binding is best-effort. If DSPy cannot attach the
@@ -1382,11 +1452,18 @@ async def _try_streamed_forward(
 
     final_pred = None
     emitted_any = False
+    previous_stream_field = ""
 
-    async def _emit_visible_chunk(text: str) -> None:
-        nonlocal emitted_any
+    async def _emit_visible_chunk(text: str, field_name: str = "") -> None:
+        nonlocal emitted_any, previous_stream_field
+        prefix = _stream_response_prefix(field_name, previous_stream_field)
+        if prefix:
+            await emit_chunk(prefix)
+            emitted_any = True
         await emit_chunk(text)
         emitted_any = True
+        if field_name:
+            previous_stream_field = field_name
 
     try:
         # StreamListener emits ``StreamResponse`` instances that
@@ -1412,7 +1489,9 @@ async def _try_streamed_forward(
                 continue
             if isinstance(piece, StreamResponse):
                 if piece.chunk:
-                    await _emit_visible_chunk(piece.chunk)
+                    await _emit_visible_chunk(
+                        piece.chunk, getattr(piece, "signature_field_name", "") or ""
+                    )
                 continue
             text_chunk = _chunk_text(piece)
             if text_chunk:

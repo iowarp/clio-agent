@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import dspy
@@ -12,6 +13,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from clio_agent.gact.app import (
+    _build_stream_listeners,
     _StreamingOutputError,
     _try_streamed_forward,
     build_app,
@@ -51,6 +53,34 @@ class _DspyAgent(dspy.Module):
         return _Pred(answer=self._answer)
 
 
+class _ExpertStreamingAgent(dspy.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.chat_agent = object()
+        self.answer_synthesizer = object()
+        self.data_expert = SimpleNamespace(agent=object())
+        self.analysis_expert = SimpleNamespace(agent=object())
+        self.visualization_expert = SimpleNamespace(
+            agent=SimpleNamespace(extract=SimpleNamespace(predict=object()))
+        )
+
+    def forward(
+        self,
+        question: str,
+        session_id: str,
+        session_mode: str = "chat",
+        session_edit_mode: str = "diff",
+    ) -> _Pred:
+        del question, session_id, session_mode, session_edit_mode
+        return _Pred(answer="sync fallback should not run")
+
+
+class _FakeStreamListener:
+    def __init__(self, signature_field_name: str, predict: Any) -> None:
+        self.signature_field_name = signature_field_name
+        self.predict = predict
+
+
 @pytest.fixture()
 def app_client(tmp_path: Path):
     answer = "X" * 200  # 200 chars -> 4 chunks at 64-char window.
@@ -68,9 +98,7 @@ def test_text_parts_stream_as_deltas(app_client) -> None:
 
     history = app.state.bus._history.get(sid, [])
     added = [
-        e for e in history
-        if e.type == "message.part.added"
-        and e.payload["part"]["type"] == "text"
+        e for e in history if e.type == "message.part.added" and e.payload["part"]["type"] == "text"
     ]
     deltas = [e for e in history if e.type == "message.part.delta"]
     completed = [e for e in history if e.type == "message.part.completed"]
@@ -115,6 +143,91 @@ async def test_streamify_setup_failure_returns_none_for_sync_fallback(
     assert result is None
     assert chunks == []
     assert agent.calls == []
+
+
+def test_build_stream_listeners_binds_known_predictors_explicitly() -> None:
+    agent = _ExpertStreamingAgent()
+
+    listeners = _build_stream_listeners(agent, _FakeStreamListener)
+
+    assert [listener.signature_field_name for listener in listeners] == [
+        "answer",
+        "answer",
+        "analysis",
+        "recommendations",
+        "analysis",
+        "recommendations",
+        "visualization_description",
+        "file_path",
+    ]
+    assert all(listener.predict is not None for listener in listeners)
+    assert listeners[0].predict is agent.chat_agent
+    assert listeners[1].predict is agent.answer_synthesizer
+    assert listeners[2].predict is agent.data_expert.agent
+    assert listeners[4].predict is agent.analysis_expert.agent
+    assert listeners[6].predict is agent.visualization_expert.agent.extract.predict
+
+
+async def test_expert_stream_responses_emit_live_field_chunks(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from dspy.streaming.messages import StreamResponse
+
+    captured: dict[str, Any] = {}
+
+    def fake_streamify(program: Any, **kwargs: Any) -> Any:
+        captured["program"] = program
+        captured.update(kwargs)
+
+        async def fake_streamed(*args: Any, **kwargs: Any) -> Any:
+            del args, kwargs
+            yield StreamResponse(
+                predict_name="data_expert.agent",
+                signature_field_name="analysis",
+                chunk="Analysis",
+                is_last_chunk=False,
+            )
+            yield StreamResponse(
+                predict_name="data_expert.agent",
+                signature_field_name="recommendations",
+                chunk="Do this",
+                is_last_chunk=False,
+            )
+            yield dspy.Prediction(
+                answer="Analysis\n\nRecommendations:\nDo this",
+                selected_expert="data_expert",
+                routing_rationale="",
+            )
+
+        return fake_streamed
+
+    streamify_module = importlib.import_module("dspy.streaming.streamify")
+    monkeypatch.setattr(streamify_module, "streamify", fake_streamify)
+    agent = _ExpertStreamingAgent()
+    app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
+    chunks: list[str] = []
+
+    async def emit_chunk(text: str) -> None:
+        chunks.append(text)
+
+    result = await _try_streamed_forward(
+        app,
+        "stream expert",
+        "sid",
+        emit_chunk,
+        session_mode="experts",
+    )
+
+    assert result is not None
+    assert result.answer == "Analysis\n\nRecommendations:\nDo this"
+    assert chunks == ["Analysis", "\n\nRecommendations:\n", "Do this"]
+    assert captured["program"] is agent
+    assert captured["is_async_program"] is False
+    listeners = captured["stream_listeners"]
+    assert all(listener.predict is not None for listener in listeners)
+    assert {"analysis", "recommendations"}.issubset(
+        {listener.signature_field_name for listener in listeners}
+    )
 
 
 async def test_stream_failure_after_delta_raises_instead_of_sync_fallback(
@@ -179,9 +292,9 @@ def test_mid_stream_failure_surfaces_error_without_sync_rerun(
 
     history = app.state.bus._history.get(sid, [])
     completed_parts = [
-        e for e in history
-        if e.type == "message.part.completed"
-        and e.payload.get("stream_source") == "live"
+        e
+        for e in history
+        if e.type == "message.part.completed" and e.payload.get("stream_source") == "live"
     ]
     completed_messages = [e for e in history if e.type == "message.completed"]
     assert completed_parts[-1].payload["final_text"] == "partial "
@@ -199,9 +312,9 @@ def test_non_text_parts_skip_deltas(app_client) -> None:
     history = app.state.bus._history.get(sid, [])
     # routing_decision arrives via .added, not .delta.
     routing_added = [
-        e for e in history
-        if e.type == "message.part.added"
-        and e.payload["part"]["type"] == "routing_decision"
+        e
+        for e in history
+        if e.type == "message.part.added" and e.payload["part"]["type"] == "routing_decision"
     ]
     assert len(routing_added) == 1
     assert routing_added[0].payload["part"]["selected_agent"] == "data_expert"
@@ -223,9 +336,7 @@ def test_live_streamed_deltas_are_marked_live(
         await emit_chunk("lo")
         return _Pred(answer="Hello", selected_expert="", routing_rationale="")
 
-    monkeypatch.setattr(
-        "clio_agent.gact.app._try_streamed_forward", fake_streamed_forward
-    )
+    monkeypatch.setattr("clio_agent.gact.app._try_streamed_forward", fake_streamed_forward)
     app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent("fallback"))
     client = TestClient(app)
     sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
@@ -237,9 +348,9 @@ def test_live_streamed_deltas_are_marked_live(
     history = app.state.bus._history.get(sid, [])
     deltas = [e for e in history if e.type == "message.part.delta"]
     completed = [
-        e for e in history
-        if e.type == "message.part.completed"
-        and e.payload.get("final_text") == "Hello"
+        e
+        for e in history
+        if e.type == "message.part.completed" and e.payload.get("final_text") == "Hello"
     ]
     message_completed = [e for e in history if e.type == "message.completed"]
 
