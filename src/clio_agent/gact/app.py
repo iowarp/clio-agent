@@ -424,6 +424,20 @@ async def _run_turn_in_background(
         )
         answer_text = ""
         tools_called = []
+    except _StreamingOutputError as exc:
+        original = exc.__cause__ or exc
+        error_info = ErrorInfo(
+            error="provider_error",
+            message=str(exc),
+            details={
+                "original_error": type(original).__name__,
+                "partial_output": bool(streamed_assistant_buffer),
+                "stream_source": "live",
+            },
+            recoverable=True,
+        )
+        answer_text = "".join(streamed_assistant_buffer)
+        tools_called = []
     except Exception as exc:  # noqa: BLE001
         error_info = ErrorInfo(
             error="agent_error",
@@ -1286,6 +1300,10 @@ def _agent_forward_compat(
 _OBSERVER_CALL_IDS = threading.local()
 
 
+class _StreamingOutputError(RuntimeError):
+    """Raised when live streaming fails after user-visible output was emitted."""
+
+
 async def _try_streamed_forward(
     app: "FastAPI",
     enriched_text: str,
@@ -1297,9 +1315,11 @@ async def _try_streamed_forward(
     """Run the agent's forward via dspy.streamify, pumping every
     text chunk through ``emit_chunk(text)`` as it arrives. Returns
     the final dspy.Prediction on success, or None if streaming is
-    unavailable / fails — caller falls back to the synchronous path.
+    unavailable before any user-visible output. After a chunk is
+    emitted, streaming failures raise ``_StreamingOutputError`` so the
+    caller can surface the failed partial turn instead of rerunning it.
 
-    Falls through silently when the agent isn't a DSPy module, when
+    Falls back before output when the agent isn't a DSPy module, when
     streamify import fails, or when the wrapped call doesn't yield
     parsable text chunks. The fallback synchronous path produces
     the same wire shape (just no live deltas).
@@ -1361,6 +1381,13 @@ async def _try_streamed_forward(
         return None
 
     final_pred = None
+    emitted_any = False
+
+    async def _emit_visible_chunk(text: str) -> None:
+        nonlocal emitted_any
+        await emit_chunk(text)
+        emitted_any = True
+
     try:
         # StreamListener emits ``StreamResponse`` instances that
         # carry the cleaned chunk in ``.chunk``. Keep the legacy
@@ -1385,14 +1412,18 @@ async def _try_streamed_forward(
                 continue
             if isinstance(piece, StreamResponse):
                 if piece.chunk:
-                    await emit_chunk(piece.chunk)
+                    await _emit_visible_chunk(piece.chunk)
                 continue
             text_chunk = _chunk_text(piece)
             if text_chunk:
-                await emit_chunk(text_chunk)
-    except Exception:
-        # Streaming blew up partway through — bail to the sync
-        # fallback so the user still gets an answer.
+                await _emit_visible_chunk(text_chunk)
+    except Exception as exc:
+        if emitted_any:
+            raise _StreamingOutputError(
+                f"live streaming failed after emitting output: {exc}"
+            ) from exc
+        # No visible output was emitted, so the sync fallback can
+        # still run without duplicating user-visible content.
         return None
     return final_pred
 
