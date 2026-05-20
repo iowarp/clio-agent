@@ -213,9 +213,7 @@ class TestClioAgent:
         finally:
             agent.shutdown()
 
-    def test_lm_studio_empty_discovery_surfaces_configuration_error(
-        self, tmp_path, monkeypatch
-    ):
+    def test_lm_studio_empty_discovery_surfaces_configuration_error(self, tmp_path, monkeypatch):
         """No discovered LM Studio models should fail before creating a guessed LM."""
         monkeypatch.setenv("CLIO_LM_PROVIDER", "lm_studio")
         monkeypatch.setenv("CLIO_LM_API_BASE", "http://127.0.0.1:1234/v1")
@@ -227,6 +225,25 @@ class TestClioAgent:
                 side_effect=AssertionError("create_lm should not be called"),
             ):
                 with pytest.raises(ValueError, match="reported no loaded models"):
+                    ClioAgent(data_dir=str(tmp_path / "clio"))
+
+    def test_lm_studio_discovery_exception_surfaces_original_error(self, tmp_path, monkeypatch):
+        """Discovery transport/schema errors should not become generic no-model errors."""
+        from clio_agent.config import LMStudioDiscoveryError
+
+        monkeypatch.setenv("CLIO_LM_PROVIDER", "lm_studio")
+        monkeypatch.setenv("CLIO_LM_API_BASE", "http://127.0.0.1:1234/v1")
+        monkeypatch.delenv("CLIO_LM_MODEL", raising=False)
+
+        with patch(
+            "clio_agent.agent.fetch_lm_studio_models",
+            side_effect=LMStudioDiscoveryError("LM Studio invalid JSON from /models"),
+        ):
+            with patch(
+                "clio_agent.agent.create_lm",
+                side_effect=AssertionError("create_lm should not be called"),
+            ):
+                with pytest.raises(LMStudioDiscoveryError, match="invalid JSON"):
                     ClioAgent(data_dir=str(tmp_path / "clio"))
 
     def test_get_session_context_empty(self):

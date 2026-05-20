@@ -603,6 +603,10 @@ def create_chat_adapter(config: LMProviderConfig) -> Any:
 # ============================================================================
 
 
+class LMStudioDiscoveryError(RuntimeError):
+    """LM Studio model discovery failed before a usable chat model was found."""
+
+
 def fetch_lm_studio_models(
     base_url: str = "http://127.0.0.1:1234", max_retries: int = 10, retry_delay: float = 2.0
 ) -> List[str]:
@@ -619,13 +623,19 @@ def fetch_lm_studio_models(
     import time
 
     models_url = _lm_studio_models_url(base_url)
+    last_connection_error: requests.exceptions.ConnectionError | None = None
 
     for attempt in range(max_retries):
         try:
             response = requests.get(models_url, timeout=10)
             response.raise_for_status()
-            data = response.json()
-            models = [model["id"] for model in data["data"]]
+            try:
+                data = response.json()
+            except ValueError as exc:
+                raise LMStudioDiscoveryError(
+                    f"LM Studio model discovery returned invalid JSON from {models_url}: {exc}"
+                ) from exc
+            models = _extract_lm_studio_model_ids(data, models_url=models_url)
             if models:
                 return models
             else:
@@ -633,19 +643,63 @@ def fetch_lm_studio_models(
                     f"Waiting for models to load in LM Studio... (attempt {attempt + 1}/{max_retries})"
                 )
                 time.sleep(retry_delay)
-        except requests.exceptions.ConnectionError:
+        except requests.exceptions.ConnectionError as exc:
+            last_connection_error = exc
             if attempt == 0:
                 print(f"Connecting to LM Studio at {base_url}...")
             print(f"   Retry {attempt + 1}/{max_retries}... (waiting {retry_delay}s)")
             time.sleep(retry_delay)
-        except Exception as e:
-            print(f"Error fetching models: {e}")
-            return []
+        except LMStudioDiscoveryError:
+            raise
+        except requests.exceptions.RequestException as exc:
+            raise LMStudioDiscoveryError(
+                f"LM Studio model discovery failed at {models_url}: {exc}"
+            ) from exc
+        except Exception as exc:
+            raise LMStudioDiscoveryError(
+                f"LM Studio model discovery failed unexpectedly at {models_url}: {exc}"
+            ) from exc
 
-    print(f"Could not connect to LM Studio after {max_retries} attempts")
-    print(f"   Please ensure LM Studio is running at {base_url}")
-    print("   and a model is loaded")
-    return []
+    if last_connection_error is not None:
+        raise LMStudioDiscoveryError(
+            f"Could not connect to LM Studio at {models_url} after "
+            f"{max_retries} attempts: {last_connection_error}. Start LM Studio, "
+            "load a chat/instruct model, or set CLIO_LM_API_BASE."
+        ) from last_connection_error
+    raise LMStudioDiscoveryError(
+        f"LM Studio reported no loaded models at {models_url} after "
+        f"{max_retries} attempts. Load a chat/instruct model or set CLIO_LM_MODEL."
+    )
+
+
+def _extract_lm_studio_model_ids(data: Any, *, models_url: str) -> List[str]:
+    """Extract model IDs from an OpenAI-compatible /models response."""
+    if not isinstance(data, Mapping):
+        raise LMStudioDiscoveryError(
+            f"LM Studio model discovery response from {models_url} was not an object."
+        )
+    raw_models = data.get("data")
+    if not isinstance(raw_models, list):
+        raise LMStudioDiscoveryError(
+            f"LM Studio model discovery response from {models_url} missing data[] array."
+        )
+    models: list[str] = []
+    malformed_items = 0
+    for item in raw_models:
+        if not isinstance(item, Mapping):
+            malformed_items += 1
+            continue
+        model_id = str(item.get("id") or "").strip()
+        if model_id:
+            models.append(model_id)
+        else:
+            malformed_items += 1
+    if raw_models and not models:
+        raise LMStudioDiscoveryError(
+            f"LM Studio model discovery response from {models_url} had "
+            f"{malformed_items} model row(s) but no usable id fields."
+        )
+    return models
 
 
 def _lm_studio_models_url(base_url: str) -> str:
