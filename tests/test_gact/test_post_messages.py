@@ -12,6 +12,7 @@ Drives the app with a FakeClioAgent so no LM is needed. Covers:
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -498,6 +499,7 @@ def test_post_message_model_override_returns_structured_501(
     assert resp.status_code == 501
     body = resp.json()
     assert body["error"]["error"] == "not_implemented"
+    assert body["error"]["details"]["source"] == "per_message"
     assert body["error"]["details"]["model"] == {
         "provider_id": "openai",
         "model_id": "gpt-4o-mini",
@@ -505,6 +507,114 @@ def test_post_message_model_override_returns_structured_501(
     }
     msgs = client.get(f"/v1/sessions/{sid}/messages").json()["messages"]
     assert msgs == []
+
+
+def test_post_message_session_model_mismatch_returns_structured_501(
+    client: TestClient,
+    fake_agent: FakeClioAgent,
+) -> None:
+    sid = client.post(
+        "/v1/sessions",
+        json={
+            "title": "t",
+            "model": {"provider_id": "openai", "model_id": "gpt-4o-mini"},
+        },
+    ).json()["id"]
+
+    resp = client.post(
+        f"/v1/sessions/{sid}/messages",
+        json={"parts": [{"type": "text", "text": "hi"}]},
+    )
+
+    assert resp.status_code == 501
+    body = resp.json()
+    assert body["error"]["error"] == "not_implemented"
+    assert body["error"]["details"]["source"] == "session"
+    assert body["error"]["details"]["model"] == {
+        "provider_id": "openai",
+        "model_id": "gpt-4o-mini",
+        "variant": "",
+    }
+    assert body["error"]["details"]["recovery_actions"] == [
+        "put_global_lm_provider",
+        "clear_session_model",
+        "retry",
+        "exit",
+    ]
+    assert fake_agent.calls == []
+    msgs = client.get(f"/v1/sessions/{sid}/messages").json()["messages"]
+    assert msgs == []
+
+
+def test_post_message_session_model_matching_global_config_runs(
+    tmp_path: Path,
+) -> None:
+    from .conftest import complete_turn
+
+    fake_agent = FakeClioAgent(answer="model matched")
+    app = build_app(sessions_path=tmp_path / "sessions.json", agent=fake_agent)
+    app.state.lm_config = {
+        "provider": "lm_studio",
+        "model": "qwopus3.5-9b-v3",
+    }
+    client = TestClient(app)
+    sid = client.post(
+        "/v1/sessions",
+        json={
+            "title": "t",
+            "model": {
+                "provider_id": "lm_studio",
+                "model_id": "qwopus3.5-9b-v3",
+            },
+        },
+    ).json()["id"]
+
+    assistant = complete_turn(client, sid, "hi")
+
+    assert assistant["parts"][1]["text"] == "model matched"
+    assert fake_agent.calls == [("hi", sid)]
+
+
+def test_post_message_model_matching_global_config_runs(
+    tmp_path: Path,
+) -> None:
+    fake_agent = FakeClioAgent(answer="message model matched")
+    app = build_app(sessions_path=tmp_path / "sessions.json", agent=fake_agent)
+    app.state.lm_config = {
+        "provider": "lm_studio",
+        "model": "qwopus3.5-9b-v3",
+    }
+    client = TestClient(app)
+    sid = _create_session(client)
+
+    resp = client.post(
+        f"/v1/sessions/{sid}/messages",
+        json={
+            "parts": [{"type": "text", "text": "hi"}],
+            "model": {
+                "provider_id": "lm_studio",
+                "model_id": "qwopus3.5-9b-v3",
+            },
+        },
+    )
+
+    assert resp.status_code == 200
+    user_id = resp.json()["message_id"]
+    assistant = None
+    deadline = time.monotonic() + 10.0
+    while time.monotonic() < deadline:
+        messages = client.get(f"/v1/sessions/{sid}/messages").json()["messages"]
+        for i, msg in enumerate(messages):
+            if msg.get("id") == user_id and i > 0:
+                assistant = messages[i - 1]
+                break
+        if assistant is not None:
+            break
+        time.sleep(0.05)
+
+    assert assistant is not None
+    assert assistant["parts"][1]["text"] == "message model matched"
+    assert fake_agent.calls == [("hi", sid)]
 
 
 def test_post_message_without_routing_emits_text_only(
