@@ -370,8 +370,17 @@ def _build_prompt_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> A
             session_id: str,
             session_mode: str = "chat",
             session_edit_mode: str = "diff",
+            cancel_requested: Any | None = None,
         ) -> Any:
             del session_mode, session_edit_mode
+            if cancel_requested is not None and cancel_requested():
+                raise _TurnCancelled(
+                    _cancelled_error_info(
+                        session_id,
+                        execution_cancellation="cooperative",
+                        executor_work_may_continue=False,
+                    )
+                )
             with dspy.context(
                 lm=create_lm(self.config),
                 adapter=create_chat_adapter(self.config),
@@ -379,6 +388,14 @@ def _build_prompt_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> A
                 result = self.answer_synthesizer(
                     system_prompt=self.system_prompt,
                     question=question,
+                )
+            if cancel_requested is not None and cancel_requested():
+                raise _TurnCancelled(
+                    _cancelled_error_info(
+                        session_id,
+                        execution_cancellation="cooperative",
+                        executor_work_may_continue=False,
+                    )
                 )
             answer = str(getattr(result, "answer", "") or "").strip()
             if not answer:
@@ -476,8 +493,17 @@ def _build_tool_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> Any
             session_id: str,
             session_mode: str = "chat",
             session_edit_mode: str = "diff",
+            cancel_requested: Any | None = None,
         ) -> Any:
             del session_mode, session_edit_mode
+            if cancel_requested is not None and cancel_requested():
+                raise _TurnCancelled(
+                    _cancelled_error_info(
+                        session_id,
+                        execution_cancellation="cooperative",
+                        executor_work_may_continue=False,
+                    )
+                )
             with dspy.context(
                 lm=create_lm(self.config),
                 adapter=create_chat_adapter(self.config),
@@ -485,6 +511,14 @@ def _build_tool_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> Any
                 result = self.react_agent(
                     system_prompt=self.system_prompt,
                     question=question,
+                )
+            if cancel_requested is not None and cancel_requested():
+                raise _TurnCancelled(
+                    _cancelled_error_info(
+                        session_id,
+                        execution_cancellation="cooperative",
+                        executor_work_may_continue=False,
+                    )
                 )
             answer = str(getattr(result, "answer", "") or "").strip()
             if not answer:
@@ -507,10 +541,15 @@ def _run_prompt_user_agent(
     agent_def: "AgentDef",
     question: str,
     session_id: str,
+    cancel_requested: Any | None = None,
 ) -> Any:
     """Execute a prompt-only user/skill agent through DSPy/LiteLLM."""
     module = _build_prompt_user_agent_module(base_agent, agent_def)
-    return module.forward(question=question, session_id=session_id)
+    return module.forward(
+        question=question,
+        session_id=session_id,
+        cancel_requested=cancel_requested,
+    )
 
 
 def _run_tool_user_agent(
@@ -518,10 +557,15 @@ def _run_tool_user_agent(
     agent_def: "AgentDef",
     question: str,
     session_id: str,
+    cancel_requested: Any | None = None,
 ) -> Any:
     """Execute a tool-declaring user/skill agent through DSPy ReAct."""
     module = _build_tool_user_agent_module(base_agent, agent_def)
-    return module.forward(question=question, session_id=session_id)
+    return module.forward(
+        question=question,
+        session_id=session_id,
+        cancel_requested=cancel_requested,
+    )
 
 
 def _tool_call_event_key(call: Mapping[str, Any]) -> tuple[str, str]:
@@ -782,6 +826,13 @@ async def _run_turn_in_background(
     # thread-safe ledger. We diff history[start:end] post-turn.
     history_start = _snapshot_lm_history_index(app)
     _pop_stream_fallback(app, sid)
+    turn_cancel_event = threading.Event()
+    app.state.cancel_events[sid] = turn_cancel_event
+    if sid in app.state.cancel_flags:
+        turn_cancel_event.set()
+
+    def cancel_requested() -> bool:
+        return turn_cancel_event.is_set()
 
     try:
         if context_file_error is not None:
@@ -798,6 +849,8 @@ async def _run_turn_in_background(
             )
 
         active_agent_id = _session_agent_id(sess)
+        from clio_agent.agent import cancellation_checker as _cancellation_checker  # noqa: PLC0415
+
         if active_agent_id not in _EXECUTABLE_SESSION_AGENT_IDS:
             dynamic_agent = _resolve_dynamic_agent(app, active_agent_id)
             if dynamic_agent is None:
@@ -808,8 +861,8 @@ async def _run_turn_in_background(
                 if dynamic_agent.tools
                 else _build_prompt_user_agent_module(app.state.agent, dynamic_agent)
             )
-            with _tool_session_context(sid):
-                pred = await _try_streamed_forward(
+            with _cancellation_checker(cancel_requested), _tool_session_context(sid):
+                pred = await _try_streamed_forward_compat(
                     app,
                     enriched_text,
                     sid,
@@ -817,19 +870,22 @@ async def _run_turn_in_background(
                     session_mode=getattr(sess, "mode", "chat"),
                     session_edit_mode=getattr(sess, "edit_mode", "diff"),
                     agent_override=module,
+                    cancel_requested=cancel_requested,
                 )
             if pred is None:
-                with _tool_session_context(sid):
+                with _cancellation_checker(cancel_requested), _tool_session_context(sid):
                     loop = asyncio.get_running_loop()
                     turn_context = contextvars.copy_context()
                     pred = await loop.run_in_executor(
                         None,
                         lambda: turn_context.run(
+                            _run_dynamic_agent_compat,
                             runner,
                             app.state.agent,
                             dynamic_agent,
                             enriched_text,
                             sid,
+                            cancel_requested,
                         ),
                     )
         else:
@@ -841,15 +897,16 @@ async def _run_turn_in_background(
             routing_override = getattr(sess, "routing_mode", "auto") or "auto"
             from clio_agent.agent import routing_mode_override as _routing_override  # noqa: PLC0415
 
-            with _routing_override(routing_override):
+            with _routing_override(routing_override), _cancellation_checker(cancel_requested):
                 with _tool_session_context(sid):
-                    pred = await _try_streamed_forward(
+                    pred = await _try_streamed_forward_compat(
                         app,
                         enriched_text,
                         sid,
                         _emit_chunk,
                         session_mode=getattr(sess, "mode", "chat"),
                         session_edit_mode=getattr(sess, "edit_mode", "diff"),
+                        cancel_requested=cancel_requested,
                     )
                     if pred is None:
                         loop = asyncio.get_running_loop()
@@ -863,6 +920,7 @@ async def _run_turn_in_background(
                                 sid,
                                 getattr(sess, "mode", "chat"),
                                 getattr(sess, "edit_mode", "diff"),
+                                cancel_requested,
                             ),
                         )
         answer_text = getattr(pred, "answer", "")
@@ -870,6 +928,8 @@ async def _run_turn_in_background(
         rationale = getattr(pred, "routing_rationale", "")
         pred_error_info = _coerce_error_info(getattr(pred, "error_info", None))
         if pred_error_info is not None:
+            if pred_error_info.error == "cancelled":
+                pred_error_info.details.setdefault("session_id", sid)
             error_info = pred_error_info
             if not error_info.details.get("partial", False):
                 answer_text = ""
@@ -1133,6 +1193,10 @@ async def _run_turn_in_background(
             )
         )
 
+    cancelled_turn = error_info is not None and error_info.error == "cancelled"
+    if cancelled_turn:
+        app.state.cancel_flags.discard(sid)
+
     assistant_metadata: dict[str, Any] = {}
     text_stream_source = (
         ("live" if streamed_assistant_part_id is not None else "synthetic_posthoc")
@@ -1173,7 +1237,7 @@ async def _run_turn_in_background(
         parts=assistant_parts,
         tokens=Tokens(**turn_tokens),
         cost_usd=turn_cost,
-        stop_reason="error" if error_info else "end_turn",
+        stop_reason="cancelled" if cancelled_turn else ("error" if error_info else "end_turn"),
         error_info=error_info,
         metadata=assistant_metadata,
     )
@@ -1405,7 +1469,7 @@ async def _run_turn_in_background(
         )
     completed_payload: dict[str, Any] = {
         "message_id": assistant_msg.id,
-        "stop_reason": "error" if error_info else "end_turn",
+        "stop_reason": "cancelled" if cancelled_turn else ("error" if error_info else "end_turn"),
         "tokens": dict(turn_tokens),
         "cost_usd": turn_cost,
     }
@@ -1422,23 +1486,31 @@ async def _run_turn_in_background(
     )
 
     # Persist + settle.
+    final_status = "cancelled" if cancelled_turn else ("error" if error_info else "idle")
     app.state.messages.setdefault(sid, []).append(assistant_msg)
     app.state.sessions.update(
         sid,
-        status="idle" if error_info is None else "error",
+        status=final_status,
         message_count=sess.message_count + 2,
         add_tokens_input=turn_tokens["input"],
         add_tokens_output=turn_tokens["output"],
         add_cost_usd=turn_cost,
     )
+    cancellation_status: dict[str, Any] = {}
+    if cancelled_turn and error_info is not None:
+        cancellation_status = {
+            "execution_cancellation": error_info.details.get("execution_cancellation"),
+            "executor_work_may_continue": error_info.details.get("executor_work_may_continue"),
+        }
     bus.publish(
         Event(
             type="session.status_changed",
             session_id=sid,
             payload={
                 "session_id": sid,
-                "status": "error" if error_info else "idle",
+                "status": final_status,
                 "prev_status": "running",
+                **cancellation_status,
             },
         )
     )
@@ -1455,6 +1527,13 @@ async def _run_turn_in_background(
         )
     except Exception:  # noqa: BLE001
         pass
+    if not (
+        cancelled_turn
+        and error_info is not None
+        and error_info.details.get("execution_cancellation") == "best_effort"
+    ):
+        if app.state.cancel_events.get(sid) is turn_cancel_event:
+            app.state.cancel_events.pop(sid, None)
 
 
 def _current_lm_model_id() -> str:
@@ -1990,6 +2069,21 @@ def _make_permission_gate(app: "FastAPI"):
     return gate
 
 
+def _make_cancellation_checker(app: "FastAPI"):
+    """Build a tool-executor cancellation checker for the active GACT session."""
+
+    def check() -> bool:
+        sid, _current = _resolve_tool_session(app)
+        if not sid:
+            return False
+        event = app.state.cancel_events.get(sid)
+        if event is not None and event.is_set():
+            return True
+        return sid in app.state.cancel_flags
+
+    return check
+
+
 def _make_tool_observer(app: "FastAPI"):
     """Build a callable suitable for MCPToolBridge.tool_observer.
 
@@ -2082,6 +2176,7 @@ def _agent_forward_compat(
     session_id: str,
     session_mode: str,
     session_edit_mode: str,
+    cancel_requested: Any | None = None,
 ) -> Any:
     """Call agent.forward, threading session_mode + session_edit_mode
     when the agent accepts them, falling back to the legacy
@@ -2097,9 +2192,82 @@ def _agent_forward_compat(
             session_id=session_id,
             session_mode=session_mode,
             session_edit_mode=session_edit_mode,
+            cancel_requested=cancel_requested,
         )
     except TypeError:
-        return agent.forward(question, session_id=session_id)
+        try:
+            return agent.forward(
+                question,
+                session_id=session_id,
+                session_mode=session_mode,
+                session_edit_mode=session_edit_mode,
+            )
+        except TypeError:
+            return agent.forward(question, session_id=session_id)
+
+
+async def _try_streamed_forward_compat(
+    app: "FastAPI",
+    enriched_text: str,
+    sid: str,
+    emit_chunk: Any,
+    *,
+    session_mode: str = "chat",
+    session_edit_mode: str = "diff",
+    agent_override: Any | None = None,
+    cancel_requested: Any | None = None,
+) -> Optional[Any]:
+    """Call _try_streamed_forward with a legacy-signature fallback for tests/plugins."""
+
+    kwargs: dict[str, Any] = {
+        "session_mode": session_mode,
+        "session_edit_mode": session_edit_mode,
+        "cancel_requested": cancel_requested,
+    }
+    if agent_override is not None:
+        kwargs["agent_override"] = agent_override
+    try:
+        return await _try_streamed_forward(
+            app,
+            enriched_text,
+            sid,
+            emit_chunk,
+            **kwargs,
+        )
+    except TypeError as exc:
+        if "cancel_requested" not in str(exc):
+            raise
+        legacy_kwargs: dict[str, Any] = {
+            "session_mode": session_mode,
+            "session_edit_mode": session_edit_mode,
+        }
+        if agent_override is not None:
+            legacy_kwargs["agent_override"] = agent_override
+        return await _try_streamed_forward(
+            app,
+            enriched_text,
+            sid,
+            emit_chunk,
+            **legacy_kwargs,
+        )
+
+
+def _run_dynamic_agent_compat(
+    runner: Any,
+    base_agent: Any,
+    dynamic_agent: Any,
+    question: str,
+    sid: str,
+    cancel_requested: Any | None,
+) -> Any:
+    """Run a dynamic agent while preserving older runner call signatures."""
+
+    try:
+        return runner(base_agent, dynamic_agent, question, sid, cancel_requested)
+    except TypeError as exc:
+        if "positional" not in str(exc) and "argument" not in str(exc):
+            raise
+        return runner(base_agent, dynamic_agent, question, sid)
 
 
 _OBSERVER_CALL_IDS = threading.local()
@@ -2232,6 +2400,7 @@ async def _try_streamed_forward(
     session_mode: str = "chat",
     session_edit_mode: str = "diff",
     agent_override: Any | None = None,
+    cancel_requested: Any | None = None,
 ) -> Optional[Any]:
     """Run the agent's forward via dspy.streamify, pumping every
     text chunk through ``emit_chunk(text)`` as it arrives. Returns
@@ -2327,9 +2496,18 @@ async def _try_streamed_forward(
                 session_id=sid,
                 session_mode=session_mode,
                 session_edit_mode=session_edit_mode,
+                cancel_requested=cancel_requested,
             )
         except TypeError:
-            stream_iter = streamed(question=enriched_text, session_id=sid)
+            try:
+                stream_iter = streamed(
+                    question=enriched_text,
+                    session_id=sid,
+                    session_mode=session_mode,
+                    session_edit_mode=session_edit_mode,
+                )
+            except TypeError:
+                stream_iter = streamed(question=enriched_text, session_id=sid)
         async for piece in stream_iter:
             if isinstance(piece, dspy.Prediction):
                 final_pred = piece
@@ -3163,10 +3341,12 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
             pass
     try:
         from clio_agent.tools.execution import (  # noqa: PLC0415
+            set_global_cancellation_checker,
             set_global_permission_gate,
             set_global_tool_observer,
         )
 
+        set_global_cancellation_checker(None)
         set_global_permission_gate(None)
         set_global_tool_observer(None)
     except Exception:  # pragma: no cover - defensive shutdown cleanup
@@ -3225,12 +3405,16 @@ async def _construct_agent_async(app: "FastAPI") -> None:
     # installed at construction time.
     try:
         from clio_agent.tools.execution import (  # noqa: PLC0415
+            set_global_cancellation_checker,
             set_global_permission_gate,
             set_global_tool_observer,
         )
 
+        checker = getattr(app.state, "pending_cancellation_checker", None)
         gate = getattr(app.state, "pending_permission_gate", None)
         observer = getattr(app.state, "pending_tool_observer", None)
+        if checker is not None:
+            set_global_cancellation_checker(checker)
         if gate is not None:
             set_global_permission_gate(gate)
         if observer is not None:
@@ -3356,6 +3540,7 @@ def build_app(
     # agent returns. Set (not dict) because the flag's presence IS
     # the signal — no payload.
     app.state.cancel_flags = set()
+    app.state.cancel_events = {}
     # CLIO-BBBBBBBBBB22: per-session context files. Keyed by
     # session_id, each value is an ordered dict of
     # path -> ContextFile dict.
@@ -3416,15 +3601,18 @@ def build_app(
     if agent is not None:
         try:
             from clio_agent.tools.execution import (
+                set_global_cancellation_checker,
                 set_global_permission_gate,
                 set_global_tool_observer,
             )
 
+            set_global_cancellation_checker(_make_cancellation_checker(app))
             set_global_permission_gate(_make_permission_gate(app))
             set_global_tool_observer(_make_tool_observer(app))
         except Exception:  # pragma: no cover - defensive
             pass
     else:
+        app.state.pending_cancellation_checker = _make_cancellation_checker(app)
         app.state.pending_permission_gate = _make_permission_gate(app)
         app.state.pending_tool_observer = _make_tool_observer(app)
 
@@ -6300,10 +6488,10 @@ def build_app(
     async def cancel_session(sid: str) -> JSONResponse:
         """Best-effort cancel of an in-flight turn on this session.
 
-        The agent's ``forward()`` checks ``agent.is_cancelled(sid)``
-        periodically (or honors a threading.Event we hand it) and
-        returns early with ``error_info.error == "cancelled"``. The
-        endpoint itself just flips the flag + publishes a
+        The agent loop and sync MCP bridge observe a scoped cancellation
+        checker between planner/expert/tool boundaries and return early
+        with ``error_info.error == "cancelled"`` when possible. The
+        endpoint itself flips the flag + publishes a
         ``session.cancelled`` event so any live SSE subscriber sees
         the transition without waiting for the next turn boundary.
 
@@ -6332,15 +6520,25 @@ def build_app(
                 ).model_dump(exclude_none=True),
             )
 
-        # Set the cancellation flag. The POST-message handler checks
-        # this after forward() returns so even agents that don't
-        # cooperate produce a cancelled-looking turn envelope.
+        # Set the cancellation flag. Cooperative agent/tool paths check
+        # it between expensive boundaries; the turn handler also checks
+        # it after forward() returns so non-cooperative agents still
+        # produce a truthful cancelled envelope.
         app.state.cancel_flags.add(sid)
+        event = app.state.cancel_events.get(sid)
+        if event is not None:
+            event.set()
         in_flight = app.state.in_flight_turns.get(sid)
-        cancelled_task = False
+        cancellation_pending = False
         if in_flight is not None and not in_flight.done():
-            in_flight.cancel()
-            cancelled_task = True
+            cancellation_pending = True
+
+            async def _cancel_after_grace(task: asyncio.Task, session_id: str) -> None:
+                await asyncio.sleep(0.1)
+                if session_id in app.state.cancel_flags and not task.done():
+                    task.cancel()
+
+            asyncio.create_task(_cancel_after_grace(in_flight, sid))
         app.state.sessions.update(sid, status="cancelled")
         app.state.bus.publish(
             Event(
@@ -6350,8 +6548,10 @@ def build_app(
                     "session_id": sid,
                     "status": "cancelled",
                     "prev_status": sess.status,
-                    "execution_cancellation": ("best_effort" if cancelled_task else "none"),
-                    "executor_work_may_continue": cancelled_task,
+                    "execution_cancellation": (
+                        "cooperative_pending" if cancellation_pending else "none"
+                    ),
+                    "executor_work_may_continue": cancellation_pending,
                 },
             )
         )
@@ -6486,9 +6686,10 @@ def build_app(
 
         # iowarp/clio-agent#3: switched from BackgroundTasks (which
         # doesn't expose the task back) to asyncio.create_task so
-        # /v1/sessions/{sid}/cancel can hard-abort mid-flight.
-        # Task is registered in app.state.in_flight_turns; the cancel
-        # handler calls .cancel() on it. We schedule the task on the
+        # /v1/sessions/{sid}/cancel can track the in-flight turn.
+        # The cancel handler gives cooperative checks a short grace
+        # window, then calls .cancel() if the task is still running.
+        # We schedule the task on the
         # running loop AFTER queueing background_tasks (which
         # FastAPI now runs nothing in, but kept as a hook in case
         # we want a post-response side-effect later).

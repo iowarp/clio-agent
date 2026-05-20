@@ -28,7 +28,7 @@ import uuid
 from collections.abc import Mapping
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Dict, Iterator, List
+from typing import Any, Callable, Dict, Iterator, List
 
 import dspy
 
@@ -52,6 +52,7 @@ from clio_agent.config import (
     select_models_for_agents,
 )
 from clio_agent.errors import (
+    CancellationError,
     ClioError,
     ExpertError,
     ProviderError,
@@ -84,6 +85,9 @@ _ROUTING_MODE_OVERRIDE: contextvars.ContextVar[str] = contextvars.ContextVar(
     "clio_routing_mode_override",
     default="",
 )
+_CANCELLATION_CHECKER: contextvars.ContextVar[Callable[[], bool] | None] = contextvars.ContextVar(
+    "clio_cancellation_checker", default=None
+)
 
 
 @contextmanager
@@ -95,6 +99,26 @@ def routing_mode_override(mode: str) -> Iterator[None]:
         yield
     finally:
         _ROUTING_MODE_OVERRIDE.reset(token)
+
+
+@contextmanager
+def cancellation_checker(checker: Callable[[], bool] | None) -> Iterator[None]:
+    """Scope a cooperative cancellation checker to the current agent turn."""
+
+    token = _CANCELLATION_CHECKER.set(checker)
+    try:
+        yield
+    finally:
+        _CANCELLATION_CHECKER.reset(token)
+
+
+def cancellation_requested() -> bool:
+    """Return whether the active cooperative cancellation checker is set."""
+
+    checker = _CANCELLATION_CHECKER.get()
+    return bool(checker is not None and checker())
+
+
 DEFAULT_AGENT_MAX_STEPS = 4
 ERROR_RECOVERY_ACTIONS = ("retry", "reconfigure_provider", "exit")
 
@@ -303,6 +327,7 @@ class ClioAgent(dspy.Module):
         *,
         session_mode: str = "chat",
         session_edit_mode: str = "diff",
+        cancel_requested: Callable[[], bool] | None = None,
     ) -> dspy.Prediction:
         """Process a question through the CLIO agent loop.
 
@@ -320,11 +345,22 @@ class ClioAgent(dspy.Module):
                 boundary; write enforcement happens in the GACT layer.
             session_edit_mode: GACT edit shaping mode. File-diff shaping
                 happens in the GACT layer.
+            cancel_requested: Optional cooperative cancellation checker
+                supplied by service frontends such as GACT.
 
         Returns:
             dspy.Prediction with answer, selected_expert, session_id,
             duration_ms, arc_stats, lsm_stats
         """
+        if cancel_requested is not None:
+            with cancellation_checker(cancel_requested):
+                return self.forward(
+                    question,
+                    session_id=session_id,
+                    session_mode=session_mode,
+                    session_edit_mode=session_edit_mode,
+                )
+
         start_time = time.time()
 
         # Step 1: Retrieve context from ARC Memory
@@ -451,6 +487,7 @@ class ClioAgent(dspy.Module):
         routing_mode: str = "auto",
     ) -> tuple[str, str, Any, dict[str, Any] | None, RouteDecision]:
         """Run the planner/executor loop for one user request."""
+        self._raise_if_cancelled("agent_loop_start")
         if routing_mode == "chat":
             answer = self._run_chat_agent(question, session_context)
             route = self._route_for_selected(
@@ -466,6 +503,7 @@ class ClioAgent(dspy.Module):
         route = trace.route
 
         for step in range(self._agent_max_steps()):
+            self._raise_if_cancelled("planner_before")
             action = self._plan_next_action(
                 question=question,
                 session_context=session_context,
@@ -473,13 +511,16 @@ class ClioAgent(dspy.Module):
                 capabilities=capabilities,
                 observations=observations,
             )
+            self._raise_if_cancelled("planner_after")
             kind = self._coerce_text(action.get("action")).strip().lower()
             reason = self._coerce_text(action.get("reason")).strip()
 
             if kind == "tool":
                 tool_name = self._coerce_text(action.get("tool")).strip()
                 selected = self._selected_expert_for_tool(tool_name)
+                self._raise_if_cancelled("tool_before")
                 result = self._execute_tool_action(tool_name, action.get("args"), trace)
+                self._raise_if_cancelled("tool_after")
                 route = self._route_for_selected(
                     selected,
                     reason or f"Agent planner called tool {tool_name}.",
@@ -535,12 +576,14 @@ class ClioAgent(dspy.Module):
                         }
                     )
                     continue
+                self._raise_if_cancelled("expert_before")
                 selected, answer, expert_result, error_info = self._dispatch_expert_action(
                     expert_id=expert_id,
                     question=expert_question,
                     file_context=file_context,
                     trace=trace,
                 )
+                self._raise_if_cancelled("expert_after")
                 route = self._route_for_selected(
                     selected,
                     reason or f"Agent planner delegated to the {selected} expert.",
@@ -638,11 +681,13 @@ class ClioAgent(dspy.Module):
                 ),
             )
 
+        self._raise_if_cancelled("answer_synthesis_before")
         answer = self._synthesize_agent_answer(
             question=question,
             session_context=session_context,
             observations=observations,
         )
+        self._raise_if_cancelled("answer_synthesis_after")
         selected = self._selected_expert_from_trace(trace)
         route = self._route_for_selected(
             selected,
@@ -757,6 +802,8 @@ class ClioAgent(dspy.Module):
                 expert_result,
                 getattr(expert_result, "error_info", None),
             )
+        except CancellationError:
+            raise
         except Exception as exc:
             error = ExpertError(
                 f"The {expert_id} expert encountered an issue processing your request.",
@@ -796,6 +843,8 @@ class ClioAgent(dspy.Module):
         try:
             raw_result = self.tool_executor.call_tool(tool_name, args)
             result = normalize_tool_result(self._decode_tool_result(raw_result), tool=tool_name)
+        except CancellationError:
+            raise
         except Exception as exc:
             result = {"error": normalize_tool_error(exc, tool=tool_name, code="tool_exception")}
         duration_ms = (time.time() - start) * 1000
@@ -824,26 +873,22 @@ class ClioAgent(dspy.Module):
             if not isinstance(observation.result, Mapping):
                 continue
             path = cls._coerce_text(observation.result.get("path")).strip()
-            unified_diff = cls._coerce_text(
-                observation.result.get("unified_diff")
-            )
-            new_content = cls._coerce_text(
-                observation.result.get("new_content")
-            )
+            unified_diff = cls._coerce_text(observation.result.get("unified_diff"))
+            new_content = cls._coerce_text(observation.result.get("new_content"))
             if not new_content:
-                new_content = cls._coerce_text(
-                    observation.params.get("new_content")
-                )
+                new_content = cls._coerce_text(observation.params.get("new_content"))
             if not path or (not unified_diff and not new_content):
                 continue
-            rows.append({
-                "path": path,
-                "unified_diff": unified_diff,
-                "new_content": new_content,
-                "edit_mode": edit_mode,
-                "lines_added": int(observation.result.get("lines_added", 0) or 0),
-                "lines_removed": int(observation.result.get("lines_removed", 0) or 0),
-            })
+            rows.append(
+                {
+                    "path": path,
+                    "unified_diff": unified_diff,
+                    "new_content": new_content,
+                    "edit_mode": edit_mode,
+                    "lines_added": int(observation.result.get("lines_added", 0) or 0),
+                    "lines_removed": int(observation.result.get("lines_removed", 0) or 0),
+                }
+            )
         return rows
 
     def _execute_visualization_tool(self, tool_name: str, tool: Any, args: dict[str, Any]) -> Any:
@@ -864,6 +909,8 @@ class ClioAgent(dspy.Module):
                 self._call_tool_function(tool, **args),
                 tool=tool_name,
             )
+        except CancellationError:
+            raise
         except Exception as exc:
             result = {"error": normalize_tool_error(exc, tool=tool_name, code="tool_exception")}
         duration_ms = (time.time() - start) * 1000
@@ -894,6 +941,7 @@ class ClioAgent(dspy.Module):
         observations: list[dict[str, Any]],
     ) -> str:
         """Produce a final answer from observations or surface synthesis failure."""
+        self._raise_if_cancelled("answer_synthesis_before")
         observations_text = self._format_observations_for_prompt(observations)
         try:
             with dspy.context(lm=self._main_lm, adapter=self._dspy_adapter):
@@ -903,8 +951,11 @@ class ClioAgent(dspy.Module):
                     observations=observations_text,
                 )
             answer = self._coerce_text(getattr(result, "answer", "")).strip()
+            self._raise_if_cancelled("answer_synthesis_after")
             if answer:
                 return answer
+        except CancellationError:
+            raise
         except Exception as exc:
             if self.verbose:
                 print(f"[Planner] Answer synthesis failed: {exc}")
@@ -939,6 +990,19 @@ class ClioAgent(dspy.Module):
         else:
             error_info["details"] = cls._recovery_details()
         return error_info
+
+    @staticmethod
+    def _raise_if_cancelled(stage: str) -> None:
+        """Raise a structured cancellation if the active turn was cancelled."""
+        if cancellation_requested():
+            raise CancellationError(
+                "turn cancelled by client",
+                details={
+                    "execution_cancellation": "cooperative",
+                    "executor_work_may_continue": False,
+                    "stage": stage,
+                },
+            )
 
     def _effective_routing_mode(self) -> str:
         """Return the active GACT routing override, if one is set."""
@@ -1355,10 +1419,12 @@ class ClioAgent(dspy.Module):
 
     def _run_chat_agent(self, question: str, session_context: str) -> str:
         """Generate a conversational reply through DSPy/LiteLLM."""
+        self._raise_if_cancelled("chat_before")
         try:
             with dspy.context(lm=self._main_lm, adapter=self._dspy_adapter):
                 result = self.chat_agent(question=question, session_context=session_context)
             answer = self._coerce_text(getattr(result, "answer", None)).strip()
+            self._raise_if_cancelled("chat_after")
             if answer:
                 if self._question_requests_summary(question):
                     summary = self._summarize_assistant_context(session_context)
@@ -1831,24 +1897,21 @@ class ClioAgent(dspy.Module):
                 or "nanoagent"
             )
             trace_id = str(spawn.get("trace_id") or spawn.get("id") or uuid.uuid4())
-            task = str(
-                spawn.get("task")
-                or spawn.get("question")
-                or spawn.get("input")
-                or ""
-            )
+            task = str(spawn.get("task") or spawn.get("question") or spawn.get("input") or "")
             try:
                 duration_ms = float(spawn.get("duration_ms", 0.0) or 0.0)
             except (TypeError, ValueError):
                 duration_ms = 0.0
             status = str(spawn.get("status") or ("failure" if spawn.get("error") else "success"))
-            out.append(NanoagentSpawn(
-                nanoagent_id=agent_id,
-                trace_id=trace_id,
-                task=task,
-                duration_ms=duration_ms,
-                status=status,
-            ))
+            out.append(
+                NanoagentSpawn(
+                    nanoagent_id=agent_id,
+                    trace_id=trace_id,
+                    task=task,
+                    duration_ms=duration_ms,
+                    status=status,
+                )
+            )
         return out
 
     def _store_conversation(self, question: str, answer: str, session_id: str) -> None:

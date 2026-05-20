@@ -5,12 +5,14 @@ from typing import Any
 
 import pytest
 
+from clio_agent.errors import CancellationError
 from clio_agent.tools.execution import (
     AsyncMCPToolExecutor,
     MCPToolBridge,
     SyncMCPToolExecutor,
     create_async_tool_executor,
     create_sync_tool_executor,
+    set_global_cancellation_checker,
     set_global_permission_gate,
     set_global_tool_observer,
 )
@@ -152,9 +154,7 @@ def test_sync_mcp_tool_executor_uses_late_global_hooks():
 
     try:
         set_global_tool_observer(
-            lambda name, args, phase, error: observed.append(
-                (name, dict(args), phase, error)
-            )
+            lambda name, args, phase, error: observed.append((name, dict(args), phase, error))
         )
 
         result = executor.call_tool("fake_echo", {"value": "hello"})
@@ -170,6 +170,37 @@ def test_sync_mcp_tool_executor_uses_late_global_hooks():
             executor.call_tool("fake_echo", {"value": "blocked"})
     finally:
         set_global_permission_gate(None)
+        set_global_tool_observer(None)
+        executor.close()
+
+
+def test_sync_mcp_tool_executor_reports_cooperative_cancel_after_tool_result():
+    """Cancellation after a tool returns should not publish normal success telemetry."""
+    fake_client = FakeClient()
+    executor = SyncMCPToolExecutor(
+        object(),
+        timeout=1.0,
+        client_factory=lambda _: fake_client,
+    )
+    checks = iter([False, True])
+    observed: list[tuple[str, dict[str, Any], str | None, str | None]] = []
+
+    try:
+        set_global_cancellation_checker(lambda: next(checks, True))
+        set_global_tool_observer(
+            lambda name, args, phase, error: observed.append((name, dict(args), phase, error))
+        )
+
+        with pytest.raises(CancellationError, match="tool call cancelled"):
+            executor.call_tool("fake_echo", {"value": "late-cancel"})
+
+        assert fake_client.started_call is True
+        assert observed[0] == ("fake_echo", {"value": "late-cancel"}, "started", None)
+        assert observed[-1][2] == "completed"
+        assert observed[-1][3] is not None
+        assert "CancellationError" in observed[-1][3]
+    finally:
+        set_global_cancellation_checker(None)
         set_global_tool_observer(None)
         executor.close()
 

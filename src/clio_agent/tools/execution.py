@@ -14,6 +14,8 @@ from typing import Any, Optional, Protocol
 import dspy
 from fastmcp import Client
 
+from clio_agent.errors import CancellationError
+
 logger = logging.getLogger(__name__)
 
 
@@ -43,12 +45,11 @@ ClientFactory = Callable[[Any], MCPClientProtocol]
 # iowarp/clio-agent#7 + #2: process-global hooks. The GACT layer
 # (or any other harness) sets these once and every SyncMCPToolExecutor
 # consults them at call time. None means "no-op".
-_GLOBAL_PERMISSION_GATE: Optional[
-    Callable[[str, Mapping[str, Any]], str]
-] = None
+_GLOBAL_PERMISSION_GATE: Optional[Callable[[str, Mapping[str, Any]], str]] = None
 _GLOBAL_TOOL_OBSERVER: Optional[
     Callable[[str, Mapping[str, Any], Optional[str], Optional[str]], None]
 ] = None
+_GLOBAL_CANCELLATION_CHECKER: Optional[Callable[[], bool]] = None
 
 
 def set_global_permission_gate(
@@ -61,14 +62,19 @@ def set_global_permission_gate(
 
 
 def set_global_tool_observer(
-    observer: Optional[
-        Callable[[str, Mapping[str, Any], Optional[str], Optional[str]], None]
-    ],
+    observer: Optional[Callable[[str, Mapping[str, Any], Optional[str], Optional[str]], None]],
 ) -> None:
     """Install a process-global tool-call observer. Pass None to disable."""
 
     global _GLOBAL_TOOL_OBSERVER
     _GLOBAL_TOOL_OBSERVER = observer
+
+
+def set_global_cancellation_checker(checker: Optional[Callable[[], bool]]) -> None:
+    """Install a process-global cooperative cancellation checker."""
+
+    global _GLOBAL_CANCELLATION_CHECKER
+    _GLOBAL_CANCELLATION_CHECKER = checker
 
 
 class AsyncToolExecutor(Protocol):
@@ -231,9 +237,7 @@ class AsyncMCPToolExecutor:
                     timeout=self._timeout,
                 )
             except TimeoutError as exc:
-                raise TimeoutError(
-                    f"MCP tool {name!r} timed out after {self._timeout:g}s"
-                ) from exc
+                raise TimeoutError(f"MCP tool {name!r} timed out after {self._timeout:g}s") from exc
         return _result_to_text(result)
 
     def get_tool_names(self) -> list[str]:
@@ -361,9 +365,7 @@ class SyncMCPToolExecutor:
             for task in pending:
                 task.cancel()
             if pending:
-                self._loop.run_until_complete(
-                    asyncio.gather(*pending, return_exceptions=True)
-                )
+                self._loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
             with suppress(Exception):
                 self._loop.run_until_complete(self._loop.shutdown_asyncgens())
             self._loop.close()
@@ -388,18 +390,29 @@ class SyncMCPToolExecutor:
 
         permission_gate = self._permission_gate or _GLOBAL_PERMISSION_GATE
         tool_observer = self._tool_observer or _GLOBAL_TOOL_OBSERVER
+        cancellation_checker = _GLOBAL_CANCELLATION_CHECKER
+
+        def raise_if_cancelled(stage: str) -> None:
+            if cancellation_checker is not None and cancellation_checker():
+                raise CancellationError(
+                    "tool call cancelled by client",
+                    details={
+                        "tool": name,
+                        "execution_cancellation": "cooperative",
+                        "executor_work_may_continue": False,
+                        "stage": stage,
+                    },
+                )
 
         if permission_gate is not None:
             try:
                 decision = permission_gate(name, dict(args))
             except Exception as exc:  # noqa: BLE001
-                raise PermissionError(
-                    f"permission gate raised: {exc!r}"
-                ) from exc
+                raise PermissionError(f"permission gate raised: {exc!r}") from exc
             if decision != "allow":
-                raise PermissionError(
-                    f"tool call {name!r} denied by permission gate"
-                )
+                raise PermissionError(f"tool call {name!r} denied by permission gate")
+
+        raise_if_cancelled("tool_call_before")
 
         if tool_observer is not None:
             try:
@@ -413,6 +426,7 @@ class SyncMCPToolExecutor:
                 timeout=self._timeout,
                 action=f"MCP tool {name!r}",
             )
+            raise_if_cancelled("tool_call_after")
         except Exception as exc:
             if tool_observer is not None:
                 try:
@@ -490,10 +504,7 @@ def _make_dspy_tools(
     call_tool: Callable[[str, Mapping[str, Any]], str],
 ) -> list[dspy.Tool]:
     """Convert discovered MCP tool definitions to DSPy Tool objects."""
-    return [
-        _make_dspy_tool(name, mcp_tool, call_tool)
-        for name, mcp_tool in mcp_tools.items()
-    ]
+    return [_make_dspy_tool(name, mcp_tool, call_tool) for name, mcp_tool in mcp_tools.items()]
 
 
 def _make_dspy_tool(
@@ -532,4 +543,5 @@ __all__ = [
     "ToolExecutor",
     "create_async_tool_executor",
     "create_sync_tool_executor",
+    "set_global_cancellation_checker",
 ]

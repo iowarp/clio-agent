@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, patch
 import dspy
 import pytest
 
-from clio_agent.agent import ClioAgent, routing_mode_override
+from clio_agent.agent import ClioAgent, cancellation_checker, routing_mode_override
 
 
 @pytest.fixture
@@ -226,6 +226,27 @@ class TestForwardDispatch:
 
         assert agent._effective_routing_mode() == "experts"
 
+    def test_agent_loop_cooperative_cancel_after_planner(self, agent):
+        """A cancel observed after planning should not become a normal answer."""
+        cancelled = False
+
+        def plan_then_cancel(**_: object) -> dspy.Prediction:
+            nonlocal cancelled
+            cancelled = True
+            return _plan_action({"action": "answer", "answer": "late normal answer"})
+
+        agent.action_planner = MagicMock(side_effect=plan_then_cancel)
+
+        with cancellation_checker(lambda: cancelled):
+            result = agent.forward(question="cancel me", session_id="test_session")
+
+        assert result.answer == ""
+        assert result.error_info is not None
+        assert result.error_info["error"] == "cancelled"
+        assert result.error_info["details"]["execution_cancellation"] == "cooperative"
+        assert result.error_info["details"]["executor_work_may_continue"] is False
+        assert result.error_info["details"]["stage"] == "planner_after"
+
     def test_routing_mode_experts_rejects_direct_answer(self, agent):
         """routing_mode=experts should surface a route error instead of chatting."""
         agent._routing_mode_override = "experts"
@@ -386,9 +407,7 @@ class TestForwardDispatch:
             "exit",
         ]
 
-    def test_planner_error_step_limit_returns_structured_error(
-        self, agent, monkeypatch, tmp_path
-    ):
+    def test_planner_error_step_limit_returns_structured_error(self, agent, monkeypatch, tmp_path):
         """Repeated planner errors should not become normal assistant text."""
         monkeypatch.setenv("CLIO_AGENT_MAX_STEPS", "2")
         hdf5_path = tmp_path / "run.h5"
