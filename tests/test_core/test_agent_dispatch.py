@@ -180,16 +180,18 @@ class TestForwardDispatch:
         assert "Histogram" in result.answer
 
     def test_dispatch_chat(self, agent):
-        """Test routing to chat agent."""
-        self._set_planner(agent, {"action": "answer", "answer": ""})
-
-        chat_result = dspy.Prediction(answer="I can help with data analysis.")
-        agent.chat_agent = MagicMock(return_value=chat_result)
+        """Test direct planner answers remain chat-routed without fallback calls."""
+        self._set_planner(
+            agent,
+            {"action": "answer", "answer": "I can help with data analysis."},
+        )
+        agent.chat_agent = MagicMock(return_value=dspy.Prediction(answer="fallback should not run"))
 
         result = agent.forward(question="Hello!", session_id="test_session")
 
         assert result.selected_expert == "chat"
         assert "help with data" in result.answer
+        agent.chat_agent.assert_not_called()
 
     def test_forward_accepts_session_knobs(self, agent):
         """GACT session mode/edit mode kwargs should reach real ClioAgent.forward."""
@@ -322,13 +324,11 @@ class TestForwardDispatch:
         assert str(parquet_path) in call["question"]
         assert str(parquet_path) in call["file_context"]
 
-    def test_dispatch_chat_failure_surfaces_error_without_direct_provider_bypass(self, agent):
-        """Local chat failures must surface instead of using raw HTTP fallback."""
+    def test_dispatch_empty_direct_answer_surfaces_error_without_provider_bypass(self, agent):
+        """Malformed planner answer routes must surface instead of using raw fallback."""
         self._set_planner(agent, {"action": "answer", "answer": ""})
 
-        agent.chat_agent = MagicMock(
-            side_effect=RuntimeError("Adapter ChatAdapter failed to parse the LM response")
-        )
+        agent.chat_agent = MagicMock(return_value="fallback should not run")
         agent._provider_config.provider = "lm_studio"
         agent._provider_config.api_base = "http://192.168.86.143:1234/v1"
         agent._provider_config.api_key = "lm-studio"
@@ -342,13 +342,15 @@ class TestForwardDispatch:
         assert result.selected_expert == "chat"
         assert result.answer == ""
         assert result.error_info is not None
-        assert result.error_info["error"] == "expert_error"
-        assert "ChatAdapter failed" in result.error_info["details"]["original_error"]
+        assert result.error_info["error"] == "routing_error"
+        assert "did not provide usable text" in result.error_info["message"]
+        assert result.error_info["details"]["planner_action"]["action"] == "answer"
         assert result.error_info["details"]["recovery_actions"] == [
             "retry",
             "reconfigure_provider",
             "exit",
         ]
+        agent.chat_agent.assert_not_called()
         assert not hasattr(ClioAgent, "_direct_chat_completion")
         assert not hasattr(ClioAgent, "_direct_action_completion")
 
@@ -492,10 +494,7 @@ class TestVariantLoading:
 
     def test_forward_stores_conversation(self, agent):
         """Test that forward() stores conversation in ARC."""
-        _set_planner(agent, {"action": "answer", "answer": ""})
-
-        chat_result = dspy.Prediction(answer="Hello!")
-        agent.chat_agent = MagicMock(return_value=chat_result)
+        _set_planner(agent, {"action": "answer", "answer": "Hello!"})
 
         agent.forward(question="Hi", session_id="conv_test")
 

@@ -394,6 +394,21 @@ class TestRunAgentLoop:
                 routing_mode="experts",
             )
 
+    def test_answer_action_without_text_surfaces_routing_error(self, agent):
+        agent._plan_next_action = MagicMock(return_value={"action": "answer", "answer": ""})
+        agent._run_chat_agent = MagicMock(return_value="fallback should not run")
+
+        with pytest.raises(RoutingError, match="did not provide usable text") as exc_info:
+            agent._run_agent_loop(
+                question="Tell me about CLIO capabilities.",
+                session_context="",
+                file_context="",
+                trace=_trace(),
+            )
+
+        assert exc_info.value.details["planner_action"]["action"] == "answer"
+        agent._run_chat_agent.assert_not_called()
+
     def test_general_question_expert_action_is_kept_in_chat(self, agent):
         agent._plan_next_action = MagicMock(
             return_value={
@@ -418,26 +433,25 @@ class TestRunAgentLoop:
         assert "no concrete file" in route.reason
         agent.data_expert.assert_not_called()
 
-    def test_none_action_with_stale_in_scope_answer_uses_chat(self, agent):
+    def test_none_action_with_stale_in_scope_answer_surfaces_routing_error(self, agent):
         stale = "HDF5 and Parquet are scientific data formats."
         agent._plan_next_action = MagicMock(
             return_value={"action": "none", "answer": stale, "reason": "no handler"}
         )
         agent._run_chat_agent = MagicMock(return_value="summary answer")
 
-        selected, answer, _, error_info, route = agent._run_agent_loop(
-            question="Summarize your previous answers in one sentence.",
-            session_context=f"user: What can you do?\nassistant: {stale}",
-            file_context="",
-            trace=_trace(),
-        )
+        with pytest.raises(RoutingError, match="stale or in-scope answer text") as exc_info:
+            agent._run_agent_loop(
+                question="Summarize your previous answers in one sentence.",
+                session_context=f"user: What can you do?\nassistant: {stale}",
+                file_context="",
+                trace=_trace(),
+            )
 
-        assert selected == "chat"
-        assert answer == "summary answer"
-        assert error_info is None
-        assert "replaced" in route.reason
+        assert exc_info.value.details["replacement_reason"] == "stale_or_in_scope_text"
+        agent._run_chat_agent.assert_not_called()
 
-    def test_planner_answer_leaking_file_context_uses_chat(self, agent):
+    def test_planner_answer_leaking_file_context_surfaces_routing_error(self, agent):
         agent._plan_next_action = MagicMock(
             return_value={
                 "action": "answer",
@@ -446,16 +460,16 @@ class TestRunAgentLoop:
         )
         agent._run_chat_agent = MagicMock(return_value="clean answer")
 
-        selected, answer, _, error_info, _ = agent._run_agent_loop(
-            question="Explain one safe next step for analyzing a local data file.",
-            session_context="",
-            file_context="",
-            trace=_trace(),
-        )
+        with pytest.raises(RoutingError, match="stale or invalid direct answer text") as exc_info:
+            agent._run_agent_loop(
+                question="Explain one safe next step for analyzing a local data file.",
+                session_context="",
+                file_context="",
+                trace=_trace(),
+            )
 
-        assert selected == "chat"
-        assert answer == "clean answer"
-        assert error_info is None
+        assert exc_info.value.details["replacement_reason"] == "stale_or_invalid_answer_text"
+        agent._run_chat_agent.assert_not_called()
 
     def test_step_limit_synthesizes_partial_answer_with_error_info(self, agent, monkeypatch):
         monkeypatch.setenv("CLIO_AGENT_MAX_STEPS", "1")
