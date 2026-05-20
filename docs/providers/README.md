@@ -10,7 +10,7 @@ provider is one new `Provider(...)` entry; see
 Every provider routes through **DSPy → LiteLLM**. There are no raw
 HTTP side channels; if a backend doesn't work through LiteLLM
 directly, it goes through a LiteLLM `CustomLLM` (see [codex](codex.md)
-for the canonical example).
+and [claude_code](claude_code.md) for CLI-backed examples).
 
 ## Supported providers
 
@@ -22,6 +22,7 @@ for the canonical example).
 | `anthropic` | `anthropic` | `ANTHROPIC_API_KEY` | Direct Anthropic API (per-token billing) |
 | `openrouter` | `openai` | api_key | OpenAI-compat gateway to many providers; free tier available |
 | [`codex`](codex.md) | `codex` | `codex login` | Your ChatGPT / Codex subscription, no per-token cost |
+| [`claude_code`](claude_code.md) | `claude_code` | `claude login` | Your Claude Code subscription, no Anthropic API key |
 | `argonne_sophia` | `argonne` | Globus OAuth | ALCF Sophia inference gateway (vLLM) |
 | `argonne_metis` | `argonne` | Globus OAuth | ALCF Metis inference gateway (gpt-oss-120b) |
 | `argonne_local_vllm` | `openai` | none | Compute-node-local vLLM (Aurora / Polaris) |
@@ -54,16 +55,17 @@ litellm.completion()              (matches provider prefix → handler)
   ↓
 either:
   - native LiteLLM handler        (openai/, anthropic/, …)
-  - CustomLLM in custom_provider_map  (codex/)
+  - CustomLLM in custom_provider_map  (codex/, claude_code/)
 ```
 
-The `CustomLLM` for codex is registered lazily at `create_lm()` time
-when `config.provider == "codex"`, so the codex dependency never
-loads for installs that don't use it.
+The `CustomLLM` handlers for codex and Claude Code are registered lazily
+at `create_lm()` time, so CLI-specific code never loads for installs
+that do not use those providers.
 
 ## Provider-specific docs
 
 - [Codex (subscription)](codex.md)
+- [Claude Code (subscription)](claude_code.md)
 
 ## Local reasoning model profiles
 

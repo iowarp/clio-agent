@@ -1,0 +1,53 @@
+# Claude Code provider
+
+Use your Claude Code subscription as a CLIO LM provider without setting an
+`ANTHROPIC_API_KEY`.
+
+CLIO registers a LiteLLM `CustomLLM`
+(`src/clio_agent/providers/claude_code_litellm.py`) for the
+`claude_code/` model prefix. When `CLIO_LM_PROVIDER=claude_code`, DSPy
+constructs `dspy.LM(model="claude_code/<model>")`, LiteLLM routes that
+call to the custom handler, and the handler invokes `claude -p`.
+
+Claude Code is used only as a model transport. The provider passes
+`--tools ""` and `--no-session-persistence` so Claude Code's built-in
+agent tools are disabled; CLIO's planner, experts, and MCP tools remain
+the only tool execution path.
+
+## Setup
+
+Install and authenticate Claude Code:
+
+```powershell
+claude --version
+claude login
+```
+
+Run CLIO/GACT with Claude Code:
+
+```powershell
+$env:CLIO_LM_PROVIDER='claude_code'
+$env:CLIO_LM_MODEL='sonnet'
+$env:CLIO_CLAUDE_CODE_TRANSPORT='exec'
+uv run clio-agent-gact --host 127.0.0.1 --port 17920
+```
+
+`sonnet` is the recommended default alias because Claude Code resolves it
+to the currently available Sonnet model for the authenticated account.
+Full model names such as `claude-sonnet-4-6` can also be used when the
+local Claude Code version supports them.
+
+## Troubleshooting
+
+**`claude` not on PATH.** Install Claude Code and verify `claude --version`
+works from the same shell that starts CLIO.
+
+**Authentication errors.** Run `claude login`. This provider uses Claude
+Code subscription auth, not `ANTHROPIC_API_KEY`.
+
+**Wrong provider for direct API usage.** Use `CLIO_LM_PROVIDER=anthropic`
+when you want direct Anthropic API billing with `ANTHROPIC_API_KEY`.
+
+**Unexpected tool behavior.** The provider disables Claude Code tools.
+If a CLIO turn uses a tool, it should appear in CLIO/GACT tool telemetry,
+not in Claude Code's internal tool system.

@@ -35,6 +35,7 @@ ProviderKind = Literal[
     "anthropic",
     "argonne",
     "codex",
+    "claude_code",
 ]
 
 AuthMethod = Literal["none", "api_key", "oauth"]
@@ -317,6 +318,40 @@ PROVIDERS: tuple[Provider, ...] = (
             ),
         ),
     ),
+    Provider(
+        id="claude_code",
+        label="Claude Code (subscription)",
+        description=(
+            "Routes through the local `claude` CLI (`claude -p`) so "
+            "calls use Claude Code subscription auth instead of direct "
+            "Anthropic API keys. Requires Claude Code on PATH and "
+            "`claude login` done once per machine. Implemented as a "
+            "LiteLLM CustomLLM with Claude Code tools disabled."
+        ),
+        provider_kind="claude_code",
+        api_base="claude-code://exec",
+        suggested_model="sonnet",
+        requires_api_key=False,
+        auth_method="none",
+        is_kind_default=True,
+        model_catalog=(
+            ModelEntry(
+                "sonnet",
+                "Claude Sonnet (Claude Code alias)",
+                "Claude Code's Sonnet alias for the currently available Sonnet model.",
+            ),
+            ModelEntry(
+                "claude-sonnet-4-6",
+                "Claude Sonnet 4.6 (Claude Code)",
+                "Full model name when available in Claude Code.",
+            ),
+            ModelEntry(
+                "opus",
+                "Claude Opus (Claude Code alias)",
+                "Claude Code's Opus alias, subscription-permitting.",
+            ),
+        ),
+    ),
     # ----- argonne ALCF ----------------------------------------------
     # NB: api_key for argonne presets is resolved lazily via
     # providers.argonne_auth (Globus OAuth), not from the registry.
@@ -447,9 +482,7 @@ def as_cloud_api_key_env() -> dict[str, str]:
     is blank.
     """
     return {
-        p.provider_kind: p.api_key_env
-        for p in PROVIDERS
-        if p.is_kind_default and p.api_key_env
+        p.provider_kind: p.api_key_env for p in PROVIDERS if p.is_kind_default and p.api_key_env
     }
 
 
@@ -486,8 +519,7 @@ def as_provider_models_dict() -> dict[str, list[dict[str, str]]]:
     out: dict[str, list[dict[str, str]]] = {}
     for p in PROVIDERS:
         out[p.id] = [
-            {"id": m.id, "name": m.name, "description": m.description}
-            for m in p.model_catalog
+            {"id": m.id, "name": m.name, "description": m.description} for m in p.model_catalog
         ]
     # Add bare-kind keys for providers whose preset id != kind.
     for p in PROVIDERS:

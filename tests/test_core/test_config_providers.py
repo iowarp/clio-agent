@@ -130,6 +130,19 @@ class TestLMProviderConfig:
         with pytest.raises(ValueError, match="codex_transport"):
             LMProviderConfig(provider="codex", codex_transport="telepathy")  # type: ignore[arg-type]
 
+    def test_claude_code_defaults(self):
+        """Claude Code should not require an API key."""
+        config = LMProviderConfig(provider="claude_code")
+        assert config.api_base == "claude-code://exec"
+        assert config.model == "sonnet"
+        assert config.api_key == ""
+        assert config.claude_code_transport == "exec"
+
+    def test_invalid_claude_code_transport_rejected(self):
+        """Invalid Claude Code transport should fail during config construction."""
+        with pytest.raises(ValueError, match="claude_code_transport"):
+            LMProviderConfig(provider="claude_code", claude_code_transport="sdk")  # type: ignore[arg-type]
+
 
 class TestLoadConfigFromEnv:
     """Test load_config_from_env function."""
@@ -246,6 +259,13 @@ class TestLoadConfigFromEnv:
             config = load_config_from_env()
             assert config.codex_transport == "sdk"
 
+    def test_claude_code_transport_from_env(self):
+        """CLIO_CLAUDE_CODE_TRANSPORT should select the Claude Code transport mode."""
+        env = {"CLIO_LM_PROVIDER": "claude_code", "CLIO_CLAUDE_CODE_TRANSPORT": "exec"}
+        with patch.dict("os.environ", env, clear=True):
+            config = load_config_from_env()
+            assert config.claude_code_transport == "exec"
+
 
 class TestCreateLM:
     """Test create_lm function."""
@@ -304,6 +324,19 @@ class TestCreateLM:
         )
         lm = create_lm(config)
         assert lm.kwargs["codex_transport"] == "sdk"
+
+    def test_claude_code_uses_custom_provider_prefix(self):
+        """Claude Code should keep user-facing model ids clean and mark internally."""
+        config = LMProviderConfig(provider="claude_code", model="sonnet")
+        lm = create_lm(config)
+        assert lm.model == "claude_code/cc-sonnet"
+        assert lm.kwargs["claude_code_transport"] == "exec"
+
+    def test_claude_code_model_marker_is_not_doubled(self):
+        """Claude Code should accept already-prefixed config values idempotently."""
+        config = LMProviderConfig(provider="claude_code", model="claude_code/cc-sonnet")
+        lm = create_lm(config)
+        assert lm.model == "claude_code/cc-sonnet"
 
     def test_each_provider_returns_lm(self):
         """All providers should produce valid dspy.LM instances."""

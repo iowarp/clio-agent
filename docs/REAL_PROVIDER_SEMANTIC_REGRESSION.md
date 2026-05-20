@@ -106,8 +106,10 @@ fallback reasons when no live deltas were emitted.
 - #243: Qwopus planner sometimes rejects recoverable near-JSON actions in real provider runs. Fixed by PR #252.
 - #244: GACT `message.completed` can omit stream provenance metadata on real-provider error turns. Fixed by PR #251.
 - #245: GACT `/v1/providers/lm` omits boot-time LM provider/model for env-configured agents. Fixed by PR #249.
-- #246: CLIO has no Claude Code provider path for real-provider semantic regression runs.
+- #246: CLIO has no Claude Code provider path for real-provider semantic regression runs. Fixed by PR #255.
 - #247: Cancelling a live Qwopus GACT turn can break the polling connection with h11 Content-Length error. Fixed by PR #250.
+- #253: Claude Code run can route CSV inspection to `fs_read_file` with no owning expert.
+- #254: Claude Code provider fails visualization expert path with LiteLLM async streaming error.
 
 ## Claude Status
 
@@ -121,13 +123,46 @@ claude -p --output-format json --model sonnet "Return exactly CLAUDE_CODE_OK and
 # result: CLAUDE_CODE_OK
 ```
 
-CLIO does not currently expose a Claude Code provider path. Direct Anthropic
-API is available through `CLIO_LM_PROVIDER=anthropic`, but this environment did
-not have `ANTHROPIC_API_KEY`, `CLAUDE_API_KEY`, or
-`CLAUDE_CODE_OAUTH_TOKEN` set. This is tracked in #246.
+CLIO now exposes a Claude Code provider path through
+`CLIO_LM_PROVIDER=claude_code`. It routes through the local `claude -p`
+CLI as a LiteLLM `CustomLLM` and disables Claude Code tools so CLIO's own
+planner/tool loop remains authoritative.
+
+Direct Anthropic API remains available through `CLIO_LM_PROVIDER=anthropic`
+when `ANTHROPIC_API_KEY` is set.
+
+Claude Code provider smoke:
+
+```powershell
+$env:CLIO_LM_PROVIDER='claude_code'
+$env:CLIO_LM_MODEL='sonnet'
+$env:CLIO_CLAUDE_CODE_TRANSPORT='exec'
+```
+
+Direct DSPy smoke returned `CLIO_CLAUDE_CODE_OK`.
+
+GACT suite result on 2026-05-20:
+
+```text
+7 passed, 2 failed in 161.10s
+```
+
+Passing Claude Code cases:
+
+- HDF5: routed `data`, called `hdf5_list_datasets`.
+- Parquet: routed `analysis`, called `parquet_analyze_schema`.
+- Multi-turn: first Parquet turn called `parquet_analyze_schema`; follow-up answered `pressure`.
+- Missing file: surfaced structured `tool_error`.
+- Provider endpoint: reported `claude_code/sonnet`.
+- Cancellation: surfaced structured `cancelled`.
+- Streaming provenance: emitted explicit `synthetic_posthoc` provenance.
+
+Filed Claude Code failures:
+
+- #253: CSV prompt selected `fs_read_file`, a planner-visible tool with no registered owning expert.
+- #254: visualization expert path hit LiteLLM async/streaming incompatibility in the Claude Code custom provider.
 
 ## Remaining Work
 
-- Add or document the supported Claude path, then run the same prompt matrix
-  against that provider.
-- Re-run the full suite on merged `develop` after #243 lands.
+- Fix #253 and #254 on separate branches/PRs, then rerun the full Claude
+  Code prompt matrix.
