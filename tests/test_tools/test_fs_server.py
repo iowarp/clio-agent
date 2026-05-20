@@ -27,6 +27,7 @@ def test_propose_edit_allows_new_file_under_write_policy(
     assert result["path"] == str(target.resolve())
     assert result["lines_added"] == 1
     assert result["lines_removed"] == 0
+    assert result["new_content"] == "hello\n"
     assert "hello" in result["unified_diff"]
     assert not target.exists()
 
