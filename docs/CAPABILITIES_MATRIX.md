@@ -68,9 +68,12 @@ assistant `message.completed.metadata` include `stream_fallback.reason`
 so clients can explain why live provider token streaming was not used
 instead of treating the chunks as normal live tokens.
 
-As of v0.3.1, the chat `answer` path can stream live when the upstream
-DSPy/LiteLLM provider supports it. Expert paths that do not expose that
-`answer` stream still fall back to `synthetic_posthoc`.
+As of v0.3.1, chat answers, provider-backed expert synthesis, and
+registered user/skill agents attempt live streaming when the upstream
+DSPy/LiteLLM provider supports it. Paths that cannot start a live stream
+still fall back to `synthetic_posthoc` with an explicit
+`stream_fallback.reason`; deterministic non-token summaries may also be
+synthetic because there are no provider tokens to stream.
 
 Cancellation is also best-effort at the GACT boundary. A cancelled turn
 settles with `error_info.error="cancelled"` and status events include

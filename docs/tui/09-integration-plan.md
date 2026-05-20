@@ -67,7 +67,13 @@ Text deltas include `stream_source`:
 | `live` | Delta arrived through the live `dspy.streamify` path. |
 | `synthetic_posthoc` | Backend already had the final answer and chunked it after completion for rendering continuity. |
 
-Current limitation: the chat `answer` path can stream live when the upstream DSPy/LiteLLM stack emits chunks. Expert paths and paths that do not emit an `answer` stream still fall back to `synthetic_posthoc`.
+Live streaming is best-effort: chat answers, provider-backed expert
+synthesis, and registered user/skill agents attempt the live
+`dspy.streamify` path when the upstream DSPy/LiteLLM stack emits chunks.
+Paths that cannot start a live stream fall back to `synthetic_posthoc`
+with an explicit `stream_fallback.reason`; deterministic non-token
+summaries may also be synthetic because there are no provider tokens to
+stream.
 
 ## Cancellation Semantics
 
@@ -79,7 +85,9 @@ The TUI should render that as cancellation acknowledged, with no implication tha
 
 Keep these visible to the engineering team rather than hiding them behind a normal-looking response:
 
-- Expert-output streaming may still be `synthetic_posthoc`.
+- Streaming is live only where the upstream DSPy/LiteLLM path exposes
+  answer chunks; otherwise synthetic chunks remain a truthful
+  compatibility path.
 - Tool telemetry can still be post-hoc when a path only exposes `tools_called` after the turn.
 - Some GACT endpoint families are definition/catalog surfaces rather than full runtime routes for CLIO's core agent loop.
 
