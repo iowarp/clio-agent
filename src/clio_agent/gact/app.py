@@ -1114,7 +1114,7 @@ async def _run_turn_in_background(
             details={
                 "original_error": type(original).__name__,
                 "partial_output": bool(streamed_assistant_buffer),
-                "stream_source": "live",
+                "stream_source": ("live" if streamed_assistant_buffer else "synthetic_posthoc"),
             },
             recoverable=True,
         )
@@ -1243,9 +1243,10 @@ async def _run_turn_in_background(
             ledger.pop(sid, None)
 
     assistant_metadata: dict[str, Any] = {}
+    should_report_stream_provenance = bool(answer_text) or error_info is not None
     text_stream_source = (
         ("live" if streamed_assistant_part_id is not None else "synthetic_posthoc")
-        if answer_text
+        if should_report_stream_provenance
         else ""
     )
     if text_stream_source:
@@ -2483,6 +2484,13 @@ _STREAM_FALLBACK_REASON_DEFINITIONS: dict[str, dict[str, Any]] = {
         "recovery_actions": ["retry", "reconfigure", "continue_without_live_streaming"],
         "description": "DSPy stream listener setup failed before user-visible output.",
     },
+    "stream_failed_before_output": {
+        "category": "provider_streaming_error",
+        "synthetic_posthoc": True,
+        "live_streaming": False,
+        "recovery_actions": ["retry", "reconfigure", "continue_without_live_streaming"],
+        "description": "The live provider stream failed before emitting user-visible output.",
+    },
     "stream_no_prediction": {
         "category": "streaming_contract_violation",
         "synthetic_posthoc": True,
@@ -2795,6 +2803,12 @@ async def _try_streamed_forward(
             raise _StreamingOutputError(
                 f"live streaming failed after emitting output: {exc}"
             ) from exc
+        _record_stream_fallback(
+            app,
+            sid,
+            "stream_failed_before_output",
+            f"{type(exc).__name__}: {exc}",
+        )
         raise _StreamingOutputError(f"live streaming failed before emitting output: {exc}") from exc
     if emitted_any and final_pred is None:
         raise _StreamingOutputError(

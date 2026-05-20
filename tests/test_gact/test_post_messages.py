@@ -292,6 +292,9 @@ def test_post_message_prediction_error_info_sets_error_turn(
         "retry_with_auto_routing"
     ]
     assert [part["type"] for part in assistant["parts"]] == ["routing_decision"]
+    assert assistant["metadata"]["stream_source"] == "synthetic_posthoc"
+    assert assistant["metadata"]["stream_fallback"]["reason"] == "agent_not_streamable"
+    assert assistant["metadata"]["stream_fallback"]["live_streaming"] is False
 
     completed = [
         ev for ev in app.state.bus._history.get(sid, [])
@@ -302,6 +305,9 @@ def test_post_message_prediction_error_info_sets_error_turn(
     assert payload["message_id"] == assistant["id"]
     assert payload["stop_reason"] == "error"
     assert payload["error_info"]["error"] == "routing_error"
+    assert payload["metadata"]["stream_source"] == "synthetic_posthoc"
+    assert payload["metadata"]["stream_fallback"]["reason"] == "agent_not_streamable"
+    assert payload["metadata"]["stream_fallback"]["live_streaming"] is False
 
 
 def test_post_message_empty_prediction_without_error_info_sets_error_turn(

@@ -150,6 +150,7 @@ def test_stream_fallback_reasons_are_audited_and_reject_unknowns(tmp_path: Path)
         "agent_not_available",
         "agent_not_streamable",
         "stream_setup_failed",
+        "stream_failed_before_output",
         "stream_no_prediction",
         "stream_completed_without_chunks",
         "sync_execution_path",
@@ -476,7 +477,17 @@ def test_pre_stream_failure_surfaces_error_without_sync_rerun(
     assert deltas == []
     assert completed_messages[-1].payload["stop_reason"] == "error"
     assert completed_messages[-1].payload["error_info"]["details"]["partial_output"] is False
-    assert "stream_fallback" not in completed_messages[-1].payload.get("metadata", {})
+    assert (
+        completed_messages[-1].payload["error_info"]["details"]["stream_source"]
+        == "synthetic_posthoc"
+    )
+    assert completed_messages[-1].payload["metadata"]["stream_source"] == "synthetic_posthoc"
+    _assert_structured_stream_fallback(
+        completed_messages[-1].payload["metadata"], "stream_failed_before_output"
+    )
+    assert (
+        "RuntimeError" in completed_messages[-1].payload["metadata"]["stream_fallback"]["message"]
+    )
 
 
 def test_non_text_parts_skip_deltas(app_client) -> None:
