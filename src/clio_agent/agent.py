@@ -76,7 +76,7 @@ from clio_agent.signatures.main_agent_sig import (
     AgentAnswerSignature,
     ChatAgentSignature,
 )
-from clio_agent.tools.execution import create_sync_tool_executor
+from clio_agent.tools.execution import create_sync_tool_executor, notify_global_tool_observer
 from clio_agent.tools.file_policy import FileAccessPolicy, FilePolicyError, validate_write_path
 from clio_agent.tools.gateway import gateway
 
@@ -910,20 +910,27 @@ class ClioAgent(dspy.Module):
             prepared = self._prepare_visualization_output_path(tool_name, filepath)
             if isinstance(prepared, dict) and "error" in prepared:
                 start = time.time()
+                notify_global_tool_observer(tool_name, args, "started", None)
+                notify_global_tool_observer(tool_name, args, "completed", repr(prepared["error"]))
                 self._record_tool_call(tool_name, args, prepared, (time.time() - start) * 1000)
                 return prepared
             args["output_path"] = str(prepared)
 
         start = time.time()
+        notify_global_tool_observer(tool_name, args, "started", None)
         try:
             result = normalize_tool_result(
                 self._call_tool_function(tool, **args),
                 tool=tool_name,
             )
-        except CancellationError:
+        except CancellationError as exc:
+            notify_global_tool_observer(tool_name, args, "completed", repr(exc))
             raise
         except Exception as exc:
             result = {"error": normalize_tool_error(exc, tool=tool_name, code="tool_exception")}
+            notify_global_tool_observer(tool_name, args, "completed", repr(exc))
+        else:
+            notify_global_tool_observer(tool_name, args, "completed", None)
         duration_ms = (time.time() - start) * 1000
         self._record_tool_call(tool_name, args, result, duration_ms)
         return result
@@ -1529,10 +1536,16 @@ class ClioAgent(dspy.Module):
 
     def _run_local_tool(self, name: str, tool: Any, *args: Any, **kwargs: Any) -> Any:
         """Run a local tool and record its result in the active harness trace."""
-        start = time.time()
-        result = self._call_tool_function(tool, *args, **kwargs)
-        duration_ms = (time.time() - start) * 1000
         params = self._bind_tool_params(tool, args, kwargs)
+        start = time.time()
+        notify_global_tool_observer(name, params, "started", None)
+        try:
+            result = self._call_tool_function(tool, *args, **kwargs)
+        except Exception as exc:
+            notify_global_tool_observer(name, params, "completed", repr(exc))
+            raise
+        notify_global_tool_observer(name, params, "completed", None)
+        duration_ms = (time.time() - start) * 1000
         self._record_tool_call(name, params, result, duration_ms)
         return result
 

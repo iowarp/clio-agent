@@ -70,6 +70,34 @@ def set_global_tool_observer(
     _GLOBAL_TOOL_OBSERVER = observer
 
 
+def notify_tool_observer(
+    observer: Optional[Callable[[str, Mapping[str, Any], Optional[str], Optional[str]], None]],
+    name: str,
+    args: Mapping[str, Any],
+    phase: str,
+    error: str | None = None,
+) -> None:
+    """Notify a tool observer, swallowing observer failures."""
+
+    if observer is None:
+        return
+    try:
+        observer(name, dict(args), phase, error)
+    except Exception:
+        pass
+
+
+def notify_global_tool_observer(
+    name: str,
+    args: Mapping[str, Any],
+    phase: str,
+    error: str | None = None,
+) -> None:
+    """Notify the process-global tool observer, swallowing observer failures."""
+
+    notify_tool_observer(_GLOBAL_TOOL_OBSERVER, name, args, phase, error)
+
+
 def set_global_cancellation_checker(checker: Optional[Callable[[], bool]]) -> None:
     """Install a process-global cooperative cancellation checker."""
 
@@ -414,11 +442,7 @@ class SyncMCPToolExecutor:
 
         raise_if_cancelled("tool_call_before")
 
-        if tool_observer is not None:
-            try:
-                tool_observer(name, dict(args), "started", None)
-            except Exception:
-                pass
+        notify_tool_observer(tool_observer, name, args, "started", None)
 
         try:
             result = self._run_coroutine(
@@ -428,17 +452,9 @@ class SyncMCPToolExecutor:
             )
             raise_if_cancelled("tool_call_after")
         except Exception as exc:
-            if tool_observer is not None:
-                try:
-                    tool_observer(name, dict(args), "completed", repr(exc))
-                except Exception:
-                    pass
+            notify_tool_observer(tool_observer, name, args, "completed", repr(exc))
             raise
-        if tool_observer is not None:
-            try:
-                tool_observer(name, dict(args), "completed", None)
-            except Exception:
-                pass
+        notify_tool_observer(tool_observer, name, args, "completed", None)
 
         return result
 
@@ -543,5 +559,9 @@ __all__ = [
     "ToolExecutor",
     "create_async_tool_executor",
     "create_sync_tool_executor",
+    "notify_global_tool_observer",
+    "notify_tool_observer",
     "set_global_cancellation_checker",
+    "set_global_permission_gate",
+    "set_global_tool_observer",
 ]

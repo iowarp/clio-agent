@@ -15,6 +15,7 @@ import pytest
 from clio_agent.agent import ClioAgent
 from clio_agent.errors import RoutingError
 from clio_agent.harness import RouteDecision, RunTrace
+from clio_agent.tools.execution import set_global_tool_observer
 
 
 @pytest.fixture
@@ -536,6 +537,119 @@ class TestExecuteToolAction:
         result = agent._execute_tool_action("not_a_real_tool", {}, _trace())
         assert "error" in result
         assert result["error"]["code"] == "unknown_tool"
+
+    def test_visualization_tool_notifies_global_observer(self, agent, tmp_path):
+        observed = []
+
+        def observer(name, args, phase, error):
+            observed.append((name, dict(args), phase, error))
+
+        def fake_tool(filepath: str, output_path: str) -> dict[str, str]:
+            return {"filepath": filepath, "output_path": output_path}
+
+        output_path = tmp_path / "plot.png"
+        set_global_tool_observer(observer)
+        try:
+            result = agent._execute_visualization_tool(
+                "plot_summary",
+                fake_tool,
+                {"filepath": "data.parquet", "output_path": str(output_path)},
+            )
+        finally:
+            set_global_tool_observer(None)
+
+        assert result == {"filepath": "data.parquet", "output_path": str(output_path)}
+        assert observed == [
+            (
+                "plot_summary",
+                {"filepath": "data.parquet", "output_path": str(output_path)},
+                "started",
+                None,
+            ),
+            (
+                "plot_summary",
+                {"filepath": "data.parquet", "output_path": str(output_path)},
+                "completed",
+                None,
+            ),
+        ]
+
+    def test_visualization_tool_notifies_global_observer_on_error(self, agent, tmp_path):
+        observed = []
+
+        def observer(name, args, phase, error):
+            observed.append((name, dict(args), phase, error))
+
+        def failing_tool(filepath: str, output_path: str) -> dict[str, str]:
+            raise ValueError(f"cannot render {filepath} to {output_path}")
+
+        output_path = tmp_path / "plot.png"
+        set_global_tool_observer(observer)
+        try:
+            result = agent._execute_visualization_tool(
+                "plot_summary",
+                failing_tool,
+                {"filepath": "data.parquet", "output_path": str(output_path)},
+            )
+        finally:
+            set_global_tool_observer(None)
+
+        assert "error" in result
+        assert observed[0] == (
+            "plot_summary",
+            {"filepath": "data.parquet", "output_path": str(output_path)},
+            "started",
+            None,
+        )
+        assert observed[1][0] == "plot_summary"
+        assert observed[1][1] == {"filepath": "data.parquet", "output_path": str(output_path)}
+        assert observed[1][2] == "completed"
+        assert observed[1][3] is not None
+        assert "cannot render data.parquet" in observed[1][3]
+
+    def test_run_local_tool_notifies_global_observer(self, agent):
+        observed = []
+
+        def observer(name, args, phase, error):
+            observed.append((name, dict(args), phase, error))
+
+        def local_echo(value: str) -> str:
+            return f"ok:{value}"
+
+        set_global_tool_observer(observer)
+        try:
+            result = agent._run_local_tool("local_echo", local_echo, "hello")
+        finally:
+            set_global_tool_observer(None)
+
+        assert result == "ok:hello"
+        assert observed == [
+            ("local_echo", {"value": "hello"}, "started", None),
+            ("local_echo", {"value": "hello"}, "completed", None),
+        ]
+
+    def test_run_local_tool_notifies_global_observer_on_error(self, agent):
+        observed = []
+
+        def observer(name, args, phase, error):
+            observed.append((name, dict(args), phase, error))
+
+        def failing_tool(value: str) -> str:
+            raise RuntimeError(f"failed {value}")
+
+        set_global_tool_observer(observer)
+        try:
+            with pytest.raises(RuntimeError, match="failed hello"):
+                agent._run_local_tool("local_fail", failing_tool, value="hello")
+        finally:
+            set_global_tool_observer(None)
+
+        assert observed[0] == ("local_fail", {"value": "hello"}, "started", None)
+        assert observed[1][0] == "local_fail"
+        assert observed[1][1] == {"value": "hello"}
+        assert observed[1][2] == "completed"
+        assert observed[1][3] is not None
+        assert "failed hello" in observed[1][3]
 
 
 # --------------------------------------------------------------------------
