@@ -45,8 +45,10 @@ same rich event stream as the smoke/fake agents.
 Use `REAL_GAPS.md` for the honest "does a real CLIO turn drive this?"
 audit. In short:
 
-- Streaming can be live for supported chat paths, but many expert paths
-  still emit `stream_source="synthetic_posthoc"`.
+- Streaming can be live for supported chat paths and provider-backed
+  expert synthesis. Deterministic tool-result summaries can still emit
+  `stream_source="synthetic_posthoc"` because no provider tokens exist
+  to stream.
 - Cancellation is truthful but best-effort; Python executor work may keep
   running after the GACT envelope settles.
 - Some capabilities have correct endpoints/events but limited real-agent
