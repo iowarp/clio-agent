@@ -30,10 +30,17 @@ class _Agent:
         return _Pred()
 
 
+class _CountingAgent:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def forward(self, question: str, session_id: str):
+        self.calls += 1
+        return _Pred()
+
+
 def _client(tmp_path: Path) -> TestClient:
-    return TestClient(
-        build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
-    )
+    return TestClient(build_app(sessions_path=tmp_path / "s.json", agent=_Agent()))
 
 
 def test_cancel_flips_status_and_publishes_event(tmp_path: Path) -> None:
@@ -67,17 +74,19 @@ class _SlowAgent:
 
     def forward(self, question: str, session_id: str):
         import time
+
         time.sleep(self.sleep_s)
         self.completed = True
-        return type("Pred", (), {"answer": "late",
-                                 "selected_expert": "",
-                                 "routing_rationale": ""})()
+        return type(
+            "Pred", (), {"answer": "late", "selected_expert": "", "routing_rationale": ""}
+        )()
 
 
 def test_cancel_reports_best_effort_for_executor_thread(tmp_path: Path) -> None:
     """Cancelling the asyncio task does not kill executor-thread work."""
 
     import time as _time
+
     agent = _SlowAgent(sleep_s=0.6)
     app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
     with TestClient(app) as c:
@@ -109,9 +118,9 @@ def test_cancel_reports_best_effort_for_executor_thread(tmp_path: Path) -> None:
         assert assistant["error_info"]["details"]["execution_cancellation"] == "best_effort"
         assert assistant["error_info"]["details"]["executor_work_may_continue"] is True
         status_events = [
-            e for e in app.state.bus._history.get(sid, [])
-            if e.type == "session.status_changed"
-            and e.payload.get("status") == "cancelled"
+            e
+            for e in app.state.bus._history.get(sid, [])
+            if e.type == "session.status_changed" and e.payload.get("status") == "cancelled"
         ]
         assert status_events
         assert status_events[-1].payload["execution_cancellation"] == "best_effort"
@@ -143,6 +152,26 @@ def test_cancel_during_turn_marks_turn_as_cancelled(tmp_path: Path) -> None:
     client.post(f"/v1/sessions/{sid}/cancel")
     a = complete_turn(client, sid, "hi")
     assert a["error_info"]["error"] == "cancelled"
+    assert a["error_info"]["details"]["execution_cancellation"] == "turn_boundary"
+    assert a["error_info"]["details"]["executor_work_may_continue"] is False
     # No text part with body — turn was cancelled before producing.
     parts = a["parts"]
     assert all(p["type"] != "text" or not p.get("text") for p in parts)
+
+
+def test_cancel_before_turn_skips_agent_forward(tmp_path: Path) -> None:
+    """A pre-set cancel flag should short-circuit before provider/tool work starts."""
+
+    from .conftest import complete_turn
+
+    agent = _CountingAgent()
+    client = TestClient(build_app(sessions_path=tmp_path / "s.json", agent=agent))
+    sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
+
+    client.post(f"/v1/sessions/{sid}/cancel")
+    assistant = complete_turn(client, sid, "this should not call the agent")
+
+    assert agent.calls == 0
+    assert assistant["error_info"]["error"] == "cancelled"
+    assert assistant["error_info"]["details"]["execution_cancellation"] == "turn_boundary"
+    assert assistant["error_info"]["details"]["executor_work_may_continue"] is False
