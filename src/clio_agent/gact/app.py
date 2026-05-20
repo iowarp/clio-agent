@@ -8172,31 +8172,93 @@ def build_app(
     # ---- DELETE /v1/messages/{id} ------------------------------------
     #
     # gact-tui's "delete this message" gesture (used in the search
-    # palette + the per-message context menu) hits this. We scan every
-    # session's in-memory log for a matching id; not indexed because
-    # message lists are short and deletion is rare. Publishes
-    # message.deleted so SSE subscribers can redraw without polling.
+    # palette + the per-message context menu) historically hit the
+    # global route. Prefer the session-scoped route so destructive
+    # message deletion cannot accidentally cross session boundaries.
+    # Publishes message.deleted so SSE subscribers can redraw without
+    # polling.
+
+    def _delete_message_from_session(sid: str, message_id: str) -> bool:
+        msgs = app.state.messages.get(sid, [])
+        for i, message in enumerate(msgs):
+            if message.id != message_id:
+                continue
+            msgs.pop(i)
+            sess = app.state.sessions.get(sid)
+            if sess is not None:
+                app.state.sessions.update(sid, message_count=len(msgs))
+            app.state.bus.publish(
+                Event(
+                    type="message.deleted",
+                    session_id=sid,
+                    payload={"message_id": message_id, "session_id": sid},
+                )
+            )
+            return True
+        return False
+
+    def _message_not_found(message_id: str, *, session_id: str = "") -> HTTPException:
+        details = {"message_id": message_id}
+        if session_id:
+            details["session_id"] = session_id
+        return HTTPException(
+            status_code=404,
+            detail=ErrorEnvelope(
+                error=ErrorInfo(
+                    error="not_found",
+                    message=f"message not found: {message_id}",
+                    details=details,
+                    recoverable=False,
+                )
+            ).model_dump(exclude_none=True),
+        )
+
+    @app.delete("/v1/sessions/{sid}/messages/{message_id}")
+    async def delete_session_message(sid: str, message_id: str) -> JSONResponse:
+        if app.state.sessions.get(sid) is None:
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="internal_error",
+                        message=f"session not found: {sid}",
+                        details={"session_id": sid},
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        if _delete_message_from_session(sid, message_id):
+            return JSONResponse(status_code=204, content=None)
+        raise _message_not_found(message_id, session_id=sid)
 
     @app.delete("/v1/messages/{message_id}")
-    async def delete_message(message_id: str) -> JSONResponse:
-        for sid, msgs in app.state.messages.items():
-            for i, m in enumerate(msgs):
-                if m.id == message_id:
-                    msgs.pop(i)
-                    app.state.bus.publish(
-                        Event(
-                            type="message.deleted",
-                            session_id=sid,
-                            payload={"message_id": message_id, "session_id": sid},
+    async def delete_message(message_id: str, session_id: str = "") -> JSONResponse:
+        if session_id:
+            if app.state.sessions.get(session_id) is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail=ErrorEnvelope(
+                        error=ErrorInfo(
+                            error="internal_error",
+                            message=f"session not found: {session_id}",
+                            details={"session_id": session_id},
+                            recoverable=False,
                         )
-                    )
-                    return JSONResponse(status_code=204, content=None)
+                    ).model_dump(exclude_none=True),
+                )
+            if _delete_message_from_session(session_id, message_id):
+                return JSONResponse(status_code=204, content=None)
+            raise _message_not_found(message_id, session_id=session_id)
+        for sid in list(app.state.messages):
+            if _delete_message_from_session(sid, message_id):
+                return JSONResponse(status_code=204, content=None)
         raise HTTPException(
             status_code=404,
             detail=ErrorEnvelope(
                 error=ErrorInfo(
                     error="not_found",
                     message=f"message not found: {message_id}",
+                    details={"message_id": message_id},
                     recoverable=False,
                 )
             ).model_dump(exclude_none=True),

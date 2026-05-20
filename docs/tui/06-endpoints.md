@@ -120,6 +120,7 @@ $ clio-agent-gact --host 127.0.0.1 --port 17800
 | **GET / POST** | `/v1/sessions` | session list/create |
 | **GET / PATCH / DELETE** | `/v1/sessions/{sid}` | session metadata and lifecycle |
 | **POST** | `/v1/sessions/{sid}/messages` | enqueue a user turn; response acks quickly |
+| **DELETE** | `/v1/sessions/{sid}/messages/{message_id}` | delete one message from a specific session |
 | **GET** | `/v1/sessions/{sid}/events` | SSE stream for `message.*`, `tool.call.*`, and session status events |
 | **POST** | `/v1/sessions/{sid}/cancel` | best-effort cancellation envelope |
 | **GET / PUT** | `/v1/providers/lm` | inspect or hot-swap LM provider config |
