@@ -226,8 +226,9 @@ curl -s http://127.0.0.1:17800/v1/mcp/servers | python3 -m json.tool
 The TUI's `/mcp` slash command shows bundled (fs/hdf5/parquet) AND
 any installed third-party server in one list. Tools called through
 the TUI's interactive chat OR via the `/v1/mcp/servers/{id}/call`
-endpoint both register in `tools_called` metadata + emit
-`tool.call.started/completed` SSE events.
+endpoint both register in `tools_called` metadata. Real execution
+boundaries also emit live `tool.call.started/completed` SSE events;
+post-turn summaries are not reconstructed into lifecycle events.
 
 ## Troubleshooting
 

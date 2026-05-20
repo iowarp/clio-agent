@@ -1,5 +1,5 @@
 """CLIO-BBBBBBBBBB18: tool.call.started + tool.call.completed events
-get published for every tool the agent reports.
+are live lifecycle telemetry, not reconstructed from post-turn summaries.
 
 Reads from EventBus history after the POST instead of streaming SSE
 — TestClient deadlocks on unbounded SSE responses (same story as
@@ -46,6 +46,27 @@ class _LiveObservedAgent:
         return _Pred()
 
 
+class _LiveObservedWithPosthocTraceAgent:
+    def forward(self, question: str, session_id: str):
+        from clio_agent.tools.execution import _GLOBAL_TOOL_OBSERVER
+
+        assert _GLOBAL_TOOL_OBSERVER is not None
+        args = {"filepath": "x.h5"}
+        _GLOBAL_TOOL_OBSERVER("hdf5_list_datasets", args, "started", None)
+        _GLOBAL_TOOL_OBSERVER("hdf5_list_datasets", args, "completed", None)
+        return _Pred(
+            tools_called=[
+                {
+                    "name": "hdf5_list_datasets",
+                    "args": args,
+                    "ok": True,
+                    "duration_ms": 999.0,
+                    "cached": True,
+                }
+            ]
+        )
+
+
 @pytest.fixture()
 def app_client(tmp_path: Path):
     app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
@@ -53,32 +74,35 @@ def app_client(tmp_path: Path):
     return app, client
 
 
-def test_tool_call_events_emit_in_pairs(app_client) -> None:
+def test_posthoc_tools_called_metadata_does_not_emit_lifecycle_events(app_client) -> None:
+    from .conftest import complete_turn
+
     app, client = app_client
     sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
-    client.post(
-        f"/v1/sessions/{sid}/messages",
-        json={"parts": [{"type": "text", "text": "analyze"}]},
-    )
+    assistant = complete_turn(client, sid, "analyze")
 
     history = app.state.bus._history.get(sid, [])
     started = [e for e in history if e.type == "tool.call.started"]
     completed = [e for e in history if e.type == "tool.call.completed"]
 
-    assert [e.payload["tool"] for e in completed] == [
-        "hdf5.analyze",
-        "parquet.summarise",
+    assert started == []
+    assert completed == []
+    assert assistant["metadata"]["tools_called"] == [
+        {
+            "name": "hdf5.analyze",
+            "ok": True,
+            "duration_ms": 14.0,
+            "cached": False,
+            "telemetry_source": "posthoc_prediction",
+        },
+        {
+            "name": "parquet.summarise",
+            "ok": True,
+            "duration_ms": 22.3,
+            "cached": True,
+            "telemetry_source": "posthoc_prediction",
+        },
     ]
-    assert completed[0].payload["cached"] is False
-    assert completed[1].payload["cached"] is True
-    assert completed[0].payload["duration_ms"] == 14.0
-    assert all(e.payload["telemetry_source"] == "posthoc_prediction" for e in started)
-    assert all(e.payload["telemetry_source"] == "posthoc_prediction" for e in completed)
-    # started + completed line up by call_id.
-    assert {e.payload["call_id"] for e in started} == {e.payload["call_id"] for e in completed}
-    # Started appears before completed for every call.
-    for s, c in zip(started, completed, strict=True):
-        assert s.id < c.id
 
 
 def test_live_observed_tool_call_is_not_reemitted_post_turn(tmp_path: Path) -> None:
@@ -100,3 +124,27 @@ def test_live_observed_tool_call_is_not_reemitted_post_turn(tmp_path: Path) -> N
     assert assistant["metadata"]["tools_called"][0]["name"] == "hdf5_list_datasets"
     assert assistant["metadata"]["tools_called"][0]["args"] == {"filepath": "x.h5"}
     assert assistant["metadata"]["tools_called"][0]["telemetry_source"] == "live_observer"
+
+
+def test_live_observer_upgrades_matching_posthoc_trace_metadata(tmp_path: Path) -> None:
+    from .conftest import complete_turn
+
+    app = build_app(
+        sessions_path=tmp_path / "s.json",
+        agent=_LiveObservedWithPosthocTraceAgent(),
+    )
+    client = TestClient(app)
+    sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
+    assistant = complete_turn(client, sid, "analyze")
+
+    history = app.state.bus._history.get(sid, [])
+    started = [e for e in history if e.type == "tool.call.started"]
+    completed = [e for e in history if e.type == "tool.call.completed"]
+    tools_called = assistant["metadata"]["tools_called"]
+
+    assert len(started) == 1
+    assert len(completed) == 1
+    assert tools_called[0]["name"] == "hdf5_list_datasets"
+    assert tools_called[0]["telemetry_source"] == "live_observer"
+    assert tools_called[0]["duration_ms"] != 999.0
+    assert tools_called[0]["cached"] is False
