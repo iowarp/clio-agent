@@ -375,30 +375,9 @@ def _build_prompt_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> A
     return PromptUserAgentModule(base_agent, agent_def)
 
 
-def _run_prompt_user_agent(
-    base_agent: Any,
-    agent_def: "AgentDef",
-    question: str,
-    session_id: str,
-) -> Any:
-    """Execute a prompt-only user/skill agent through DSPy/LiteLLM."""
-    module = _build_prompt_user_agent_module(base_agent, agent_def)
-    return module.forward(question=question, session_id=session_id)
-
-
-def _run_tool_user_agent(
-    base_agent: Any,
-    agent_def: "AgentDef",
-    question: str,
-    session_id: str,
-) -> Any:
-    """Execute a tool-declaring user/skill agent through DSPy ReAct."""
+def _tool_user_agent_signature() -> Any:
+    """Return the DSPy signature used by tool-declaring dynamic agents."""
     import dspy  # noqa: PLC0415
-
-    from clio_agent.config import (  # noqa: PLC0415
-        create_chat_adapter,
-        create_lm,
-    )
 
     class ToolUserAgentSignature(dspy.Signature):
         """Run a registered CLIO user agent with its declared MCP tools.
@@ -412,6 +391,11 @@ def _run_tool_user_agent(
         question: str = dspy.InputField(desc="User message for this agent")
         answer: str = dspy.OutputField(desc="User-facing answer")
 
+    return ToolUserAgentSignature
+
+
+def _dynamic_agent_tools(base_agent: Any, agent_def: "AgentDef") -> list[Any]:
+    """Resolve the exact DSPy tools a tool-declaring dynamic agent may use."""
     requested_tools = [str(t).strip() for t in agent_def.tools if str(t).strip()]
     tool_executor = getattr(base_agent, "tool_executor", None)
     if tool_executor is None or not hasattr(tool_executor, "to_dspy_tools"):
@@ -433,34 +417,93 @@ def _run_tool_user_agent(
             reason="custom_agent_tools_unavailable",
             tools=missing_tools,
         )
+    return [available_tools[name] for name in requested_tools]
 
+
+def _tool_user_agent_max_iters(agent_def: "AgentDef") -> int:
     max_iters = _user_agent_int_param(agent_def, "max_iters", 5)
     if max_iters <= 0:
         raise ValueError("user agent parameter 'max_iters' must be positive")
+    return max_iters
 
-    tools = [available_tools[name] for name in requested_tools]
-    config = _dynamic_agent_lm_config(base_agent, agent_def)
-    with dspy.context(lm=create_lm(config), adapter=create_chat_adapter(config)):
-        result = dspy.ReAct(
-            ToolUserAgentSignature,
-            tools=tools,
-            max_iters=max_iters,
-        )(
-            system_prompt=agent_def.system_prompt.strip() or agent_def.description,
-            question=question,
-        )
-    answer = str(getattr(result, "answer", "") or "").strip()
-    if not answer:
-        raise RuntimeError(f"user agent {agent_def.id!r} returned an empty answer")
-    return dspy.Prediction(
-        answer=answer,
-        selected_expert=agent_def.id,
-        routing_rationale=f"Session selected tool user agent {agent_def.id!r}.",
-        route_source="user_agent",
-        session_id=session_id,
-        trajectory=getattr(result, "trajectory", None),
-        error_info=None,
+
+def _build_tool_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> Any:
+    """Build a DSPy ReAct wrapper for a streamable tool-declaring dynamic agent."""
+    import dspy  # noqa: PLC0415
+
+    from clio_agent.config import (  # noqa: PLC0415
+        create_chat_adapter,
+        create_lm,
     )
+
+    class ToolUserAgentModule(dspy.Module):
+        def __init__(self, base_agent: Any, agent_def: "AgentDef") -> None:
+            super().__init__()
+            self.agent_def = agent_def
+            self.config = _dynamic_agent_lm_config(base_agent, agent_def)
+            self.tools = _dynamic_agent_tools(base_agent, agent_def)
+            self.system_prompt = agent_def.system_prompt.strip() or agent_def.description
+            self.react_agent = dspy.ReAct(
+                _tool_user_agent_signature(),
+                tools=self.tools,
+                max_iters=_tool_user_agent_max_iters(agent_def),
+            )
+            self.answer_synthesizer = self.react_agent.extract.predict
+
+        def forward(
+            self,
+            question: str,
+            session_id: str,
+            session_mode: str = "chat",
+            session_edit_mode: str = "diff",
+        ) -> Any:
+            del session_mode, session_edit_mode
+            with dspy.context(
+                lm=create_lm(self.config),
+                adapter=create_chat_adapter(self.config),
+            ):
+                result = self.react_agent(
+                    system_prompt=self.system_prompt,
+                    question=question,
+                )
+            answer = str(getattr(result, "answer", "") or "").strip()
+            if not answer:
+                raise RuntimeError(
+                    f"user agent {self.agent_def.id!r} returned an empty answer"
+                )
+            return dspy.Prediction(
+                answer=answer,
+                selected_expert=self.agent_def.id,
+                routing_rationale=f"Session selected tool user agent {self.agent_def.id!r}.",
+                route_source="user_agent",
+                session_id=session_id,
+                trajectory=getattr(result, "trajectory", None),
+                error_info=None,
+            )
+
+    return ToolUserAgentModule(base_agent, agent_def)
+
+
+def _run_prompt_user_agent(
+    base_agent: Any,
+    agent_def: "AgentDef",
+    question: str,
+    session_id: str,
+) -> Any:
+    """Execute a prompt-only user/skill agent through DSPy/LiteLLM."""
+    module = _build_prompt_user_agent_module(base_agent, agent_def)
+    return module.forward(question=question, session_id=session_id)
+
+
+def _run_tool_user_agent(
+    base_agent: Any,
+    agent_def: "AgentDef",
+    question: str,
+    session_id: str,
+) -> Any:
+    """Execute a tool-declaring user/skill agent through DSPy ReAct."""
+    module = _build_tool_user_agent_module(base_agent, agent_def)
+    return module.forward(question=question, session_id=session_id)
 
 
 def _tool_call_event_key(call: Mapping[str, Any]) -> tuple[str, str]:
@@ -719,31 +762,22 @@ async def _run_turn_in_background(
             if dynamic_agent is None:
                 raise _UnsupportedSessionAgent(active_agent_id)
             runner = _run_tool_user_agent if dynamic_agent.tools else _run_prompt_user_agent
-            if not dynamic_agent.tools:
-                module = _build_prompt_user_agent_module(app.state.agent, dynamic_agent)
-                with _tool_session_context(sid):
-                    pred = await _try_streamed_forward(
-                        app,
-                        enriched_text,
-                        sid,
-                        _emit_chunk,
-                        session_mode=getattr(sess, "mode", "chat"),
-                        session_edit_mode=getattr(sess, "edit_mode", "diff"),
-                        agent_override=module,
-                    )
-            else:
-                pred = None
+            module = (
+                _build_tool_user_agent_module(app.state.agent, dynamic_agent)
+                if dynamic_agent.tools
+                else _build_prompt_user_agent_module(app.state.agent, dynamic_agent)
+            )
+            with _tool_session_context(sid):
+                pred = await _try_streamed_forward(
+                    app,
+                    enriched_text,
+                    sid,
+                    _emit_chunk,
+                    session_mode=getattr(sess, "mode", "chat"),
+                    session_edit_mode=getattr(sess, "edit_mode", "diff"),
+                    agent_override=module,
+                )
             if pred is None:
-                if dynamic_agent.tools:
-                    _record_stream_fallback(
-                        app,
-                        sid,
-                        "dynamic_agent_sync_path",
-                        (
-                            f"session agent {active_agent_id!r} executes through the "
-                            "synchronous tool runner"
-                        ),
-                    )
                 with _tool_session_context(sid):
                     loop = asyncio.get_running_loop()
                     turn_context = contextvars.copy_context()

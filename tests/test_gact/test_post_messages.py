@@ -492,6 +492,7 @@ def test_post_message_tool_user_agent_executes_registered_agent(
     from .conftest import complete_turn
 
     calls: list[tuple[str, str, str]] = []
+    tool_module = object()
 
     def fake_tool_agent(base_agent: Any, agent_def: Any, question: str, session_id: str) -> Any:
         from clio_agent.tools.execution import _GLOBAL_TOOL_OBSERVER
@@ -509,6 +510,26 @@ def test_post_message_tool_user_agent_executes_registered_agent(
     def fail_prompt_agent(*args: Any, **kwargs: Any) -> Any:
         raise AssertionError("tool-declaring user agent should use the tool runner")
 
+    def fake_tool_module(base_agent: Any, agent_def: Any) -> object:
+        assert agent_def.id == "tool_reviewer"
+        return tool_module
+
+    async def fake_stream_unavailable(
+        app: Any,
+        enriched_text: str,
+        sid: str,
+        emit_chunk: Any,
+        **kwargs: Any,
+    ) -> Any:
+        del enriched_text, emit_chunk
+        assert kwargs["agent_override"] is tool_module
+        from clio_agent.gact.app import _record_stream_fallback
+
+        _record_stream_fallback(app, sid, "dynamic_tool_stream_unavailable")
+        return None
+
+    monkeypatch.setattr("clio_agent.gact.app._build_tool_user_agent_module", fake_tool_module)
+    monkeypatch.setattr("clio_agent.gact.app._try_streamed_forward", fake_stream_unavailable)
     monkeypatch.setattr("clio_agent.gact.app._run_tool_user_agent", fake_tool_agent)
     monkeypatch.setattr("clio_agent.gact.app._run_prompt_user_agent", fail_prompt_agent)
 
@@ -543,10 +564,86 @@ def test_post_message_tool_user_agent_executes_registered_agent(
     assert assistant["parts"][0]["selected_agent"] == "tool_reviewer"
     assert assistant["parts"][1]["text"] == "TOOL_USER_AGENT_OK"
     assert assistant["metadata"]["stream_source"] == "synthetic_posthoc"
-    assert assistant["metadata"]["stream_fallback"]["reason"] == "dynamic_agent_sync_path"
+    assert assistant["metadata"]["stream_fallback"]["reason"] == (
+        "dynamic_tool_stream_unavailable"
+    )
     assert assistant["metadata"]["tools_called"][0]["name"] == "fs_read_file"
     assert assistant["metadata"]["tools_called"][0]["args"] == {"path": "README.md"}
     assert sess["status"] == "idle"
+
+
+def test_post_message_tool_user_agent_streams_live_when_available(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from .conftest import complete_turn
+
+    tool_module = object()
+
+    def fake_tool_module(base_agent: Any, agent_def: Any) -> object:
+        assert agent_def.id == "tool_reviewer"
+        return tool_module
+
+    def fail_tool_agent(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("streamed tool user agent should not use sync runner")
+
+    def fail_prompt_agent(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("tool-declaring user agent should use the tool runner")
+
+    async def fake_streamed_forward(
+        app: Any,
+        enriched_text: str,
+        sid: str,
+        emit_chunk: Any,
+        **kwargs: Any,
+    ) -> Any:
+        del app, enriched_text, sid
+        assert kwargs["agent_override"] is tool_module
+        await emit_chunk("TOOL_")
+        await emit_chunk("USER_AGENT_LIVE_OK")
+        return FakePrediction(
+            answer="TOOL_USER_AGENT_LIVE_OK",
+            selected_expert="tool_reviewer",
+            routing_rationale="selected registered tool user agent",
+        )
+
+    monkeypatch.setattr("clio_agent.gact.app._build_tool_user_agent_module", fake_tool_module)
+    monkeypatch.setattr("clio_agent.gact.app._try_streamed_forward", fake_streamed_forward)
+    monkeypatch.setattr("clio_agent.gact.app._run_tool_user_agent", fail_tool_agent)
+    monkeypatch.setattr("clio_agent.gact.app._run_prompt_user_agent", fail_prompt_agent)
+
+    agent = FakeClioAgent(answer="should not run")
+    app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
+    with TestClient(app) as c:
+        created = c.post(
+            "/v1/agents",
+            json={
+                "id": "tool_reviewer",
+                "title": "Tool Reviewer",
+                "system_prompt": "Read files before answering.",
+                "tools": ["fs_read_file"],
+            },
+        )
+        assert created.status_code == 201
+        sid = c.post(
+            "/v1/sessions",
+            json={"title": "x", "agent": {"id": "tool_reviewer"}},
+        ).json()["id"]
+        assistant = complete_turn(c, sid, "hi")
+
+    history = app.state.bus._history.get(sid, [])
+    deltas = [ev for ev in history if ev.type == "message.part.delta"]
+    completed = [ev for ev in history if ev.type == "message.completed"]
+
+    assert agent.calls == []
+    assert assistant["parts"][1]["text"] == "TOOL_USER_AGENT_LIVE_OK"
+    assert assistant["metadata"]["stream_source"] == "live"
+    assert [d.payload["delta"]["text_append"] for d in deltas] == [
+        "TOOL_",
+        "USER_AGENT_LIVE_OK",
+    ]
+    assert all(d.payload["stream_source"] == "live" for d in deltas)
+    assert completed[-1].payload["metadata"]["stream_source"] == "live"
 
 
 def test_post_message_tool_user_agent_missing_declared_tool_sets_error_turn(
