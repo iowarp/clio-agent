@@ -29,7 +29,7 @@ same rich event stream as the smoke/fake agents.
 | `cancellation` | `/v1/sessions/{sid}/cancel` is best-effort. The GACT envelope settles as cancelled; executor-thread provider/tool work may continue and is flagged. |
 | `tool_telemetry` | `tool.call.started/completed` events and `metadata.tools_called` are emitted when tool provenance is available. Some events are post-hoc. |
 | `cost_tracking` | Per-session token/cost fields exist and are populated from DSPy history where available. |
-| `subagents` | Wire surface exists for subagent lifecycle events and child sessions. Real-agent spawn coverage is tracked in `REAL_GAPS.md`. |
+| `subagents` | Real expert nanoagent spawns propagate through `ClioAgent`, GACT child sessions, `subagent.*` events, and ARC invocation records. |
 | `session_branching` | Session fork endpoints copy conversation state for alternate analysis paths. |
 | `search_messages` | Message search endpoint returns stored conversation matches. |
 | `files` | Workspace/context-file endpoints exist with workspace-root checks. |

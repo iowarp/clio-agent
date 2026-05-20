@@ -25,6 +25,7 @@ regressions, but don't treat these as unresolved release blockers:
 | Diff file edits | Real planner `fs_propose_edit` calls produce `file_diff` Parts with `new_content`; `/diffs/apply` writes accepted edits through the shared file-policy path. | `tests/test_core/test_agent_planner.py::test_forward_promotes_propose_edit_observation_to_file_diffs`, `tests/test_gact/test_plan_edit_modes.py::test_real_agent_propose_edit_trace_becomes_applicable_diff` |
 | Prompt-only custom agents | Sessions selecting registered user or skill agents with no declared tools execute through DSPy/LiteLLM using the stored prompt and optional provider/model fields. | `tests/test_gact/test_post_messages.py::test_post_message_prompt_user_agent_executes_registered_agent` |
 | Tool-declaring custom agents | Sessions selecting registered user/skill/extracted agents with declared tools execute through DSPy ReAct with the tool list restricted to the agent definition; unavailable declared tools surface as structured errors. | `tests/test_gact/test_post_messages.py::test_post_message_tool_user_agent_executes_registered_agent`, `tests/test_gact/test_post_messages.py::test_post_message_tool_user_agent_missing_declared_tool_sets_error_turn` |
+| Subagents / nanoagents | Analysis expert nanoagent spawns are propagated by real `ClioAgent` predictions, materialized by GACT as child sessions/events, and retained in ARC invocation records. | `tests/test_core/test_agent_dispatch.py::TestForwardDispatch::test_dispatch_analysis_expert_propagates_nanoagent_spawns`, `tests/test_gact/test_nanoagents.py` |
 
 ## Streaming provenance
 
@@ -49,7 +50,6 @@ what they prove.
 
 | Capability | Endpoint works | Real agent emits | Notes |
 |---|---|---|---|
-| `subagents` | yes | no | ClioAgent has no Tier-3 spawn primitive yet |
 | `permissions` | yes | partial | Native MCP executor calls gate destructive tool names, and `/diffs/apply` records an auto-approved user-click audit row. Real turns only emit permission rows when a destructive MCP tool is actually invoked. |
 | `cancellation` (best-effort) | yes | partial | Server settles the GACT envelope as cancelled; executor-thread provider/tool work may continue and is flagged with `execution_cancellation="best_effort"` |
 | `tool_telemetry` events | yes | partial | Native MCP executor calls emit live `tool.call.started/completed`; paths that only expose `tools_called` after the turn are still rendered post-hoc |

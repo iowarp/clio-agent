@@ -19,7 +19,7 @@ Two flags are explicitly `false` (LSP, voice — out of scope for v0.3.1).
 |---|---|---|
 | `workspaces` | ✅ verified | `POST /v1/workspaces` + scoped session create; `clio_doctor_caps_final.png` |
 | `sessions` | ✅ verified | full CRUD + fork + branching driven by integration suite |
-| `subagents` | wire verified; real-driver gap | Synthetic/fake predictions can produce child-session rows and `subagent.*` events, but real `ClioAgent` has no Tier-3 spawn primitive yet. See `docs/tui/REAL_GAPS.md`. |
+| `subagents` | ✅ verified | Real expert `nanoagents_spawned` provenance is propagated through `ClioAgent.forward()` to GACT child sessions and `subagent.*` events; ARC invocation records retain the spawn rows. |
 | `mcp` | ✅ verified | `/v1/mcp/servers` lists 3 bundled (fs/hdf5/parquet) + any installed third-party server; `clio_mcp_servers.png` |
 | `files` | ✅ verified | context_files attach + influence agent answer (test_attached_context_file_influences_answer strict pass) |
 | `diffs` | ✅ verified | Real planner `fs_propose_edit` tool observations are promoted into `file_diff` Parts; `/diffs/apply` writes the promoted `new_content` through file policy and `/diffs/reject` marks rows. Evidence: `tests/test_core/test_agent_planner.py::test_forward_promotes_propose_edit_observation_to_file_diffs`, `tests/test_gact/test_plan_edit_modes.py::test_real_agent_propose_edit_trace_becomes_applicable_diff`. |
@@ -101,4 +101,4 @@ guaranteed upstream abort.
 | `lsp` | ⛔ false | CLIO is a scientific-data agent, not a code editor. LSP doesn't fit the data-analysis loop. |
 | `voice` | ⛔ false | Voice IO requires platform-specific audio plumbing (ffmpeg/whisper/etc.) outside CLIO's scope. Future flag may flip when we adopt a voice provider. |
 
-**28 / 30 advertised supported.** Flag inventory matches `/v1/capabilities` and the wire shapes match SPEC section 6. Rows marked `wire verified; real-driver gap` or `runtime partial` are not release-readiness proof by themselves; real-agent driver caveats remain tracked in `docs/tui/REAL_GAPS.md`.
+**28 / 30 advertised supported.** Flag inventory matches `/v1/capabilities` and the wire shapes match SPEC section 6. Rows marked `runtime partial` are not release-readiness proof by themselves; real-agent driver caveats remain tracked in `docs/tui/REAL_GAPS.md`.
