@@ -31,13 +31,11 @@ discovered.
   instead of `claude-haiku-4-5`). Some gateways rejected it. **Fixed**
   in commit `15fc2aa`; the prefix is stripped before the HTTP call.
 
-- **OpenRouter free-tier rate limits.** The shared key in tests works
-  for low-traffic verification, but heavy use (e.g. running the full
-  16-test integration suite back-to-back via OpenRouter) hits 429s
-  pretty quickly. The suite swaps to OpenRouter only for the
-  streaming-temporal-distribution test; other tests use direct API
-  providers. If a lab user wants to drive everything through OpenRouter,
-  expect occasional rate-limit failures.
+- **Provider rate limits.** The 16-test integration suite uses the
+  backend's configured provider by default. If a lab user opts into a
+  free-tier or rate-limited provider through explicit
+  `CLIO_INTEGRATION_STREAM_*` settings, repeated full-suite runs may
+  hit provider 429s. The suite must not rely on shared embedded keys.
 
 - **Some gateway streaming is buffered.** A gateway may return only a
   terminal `data: [DONE]` event instead of upstream SSE chunks. Live

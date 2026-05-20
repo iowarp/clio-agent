@@ -1,6 +1,5 @@
 """Integration tests against a live clio-agent-gact backed by a
-real LM provider (OpenAI or Anthropic by default; OpenRouter free
-models for cross-provider sanity).
+real LM provider.
 
 Skipped automatically when:
   - CLIO_INTEGRATION_BASE not set, or
@@ -13,4 +12,10 @@ not just wire-shaped.
 Run:
     CLIO_INTEGRATION_BASE=http://127.0.0.1:17779 \\
       uv run --extra dev pytest tests/test_integration_v0_2/ -v
+
+Optional:
+    Set CLIO_INTEGRATION_STREAM_PROVIDER, CLIO_INTEGRATION_STREAM_MODEL,
+    CLIO_INTEGRATION_STREAM_API_BASE, and CLIO_INTEGRATION_STREAM_API_KEY
+    to make the streaming test hot-swap providers before the turn. When
+    unset, the suite uses the backend's current provider.
 """

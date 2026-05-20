@@ -1,8 +1,9 @@
 # Real-readiness gap log
 
 Honest list of what's wire-shape-only vs end-to-end-working when CLIO
-runs against a real LM (Anthropic Claude direct, OpenRouter + a free
-model). Drives what to fix before declaring v0.2 ready.
+runs against a real configured LM provider, including direct cloud
+providers and local OpenAI-compatible providers such as LM Studio.
+Drives what to fix before declaring v0.2 ready.
 
 Updated as gaps land or close.
 
@@ -63,7 +64,7 @@ what they prove.
 | `cancellation` (best-effort) | yes | partial | Server settles the GACT envelope as cancelled; executor-thread provider/tool work may continue and is flagged with `execution_cancellation="best_effort"` |
 | `tool_telemetry` events | yes | partial | Native MCP executor calls emit live `tool.call.started/completed` without duplicate post-turn lifecycle events; paths that only expose `tools_called` after the turn are still rendered post-hoc |
 
-## What does work end-to-end against real Claude
+## What does work end-to-end against real LM providers
 
 - POST messages → planner decision → explicit no-action explanation
   or chat path → text answer → `message.completed`
@@ -79,9 +80,11 @@ We DO NOT close an issue until:
 1. The capability flag is `true`.
 2. An integration test in `tests/test_integration_v0_2/` drives the
    capability through `clio-agent-gact` against a real LM.
-3. The test passes against a real Anthropic Claude turn AND a sanity
-   check passes against an OpenRouter free model (proves no
-   Claude-specific assumption sneaked in).
+3. The test passes against at least one explicitly configured real LM
+   provider. Cross-provider sanity should be run when credentials or a
+   local provider are available, but the tests must not embed provider
+   credentials.
 
-Status today: zero issues actually closeable. Wire shapes correct,
-real-driver coverage partial.
+Status today: the hard blockers listed above are clearable only when
+their endpoint behavior, real-agent driver, and provenance evidence all
+match this document and `docs/CAPABILITIES_MATRIX.md`.
