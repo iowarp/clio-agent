@@ -10,6 +10,7 @@ from unittest.mock import MagicMock
 
 import dspy
 import pytest
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from clio_agent.registry.registry import AgentCapability, AgentRegistry
@@ -141,6 +142,24 @@ class TestHealth:
         body = resp.json()
         assert body["status"] == "degraded"
         assert body["error"] == "LM Studio unreachable"
+
+    @pytest.mark.asyncio
+    async def test_lifespan_config_failure_does_not_invent_default_provider(self, monkeypatch):
+        from clio_agent.ui import api as api_module
+
+        monkeypatch.setattr(api_module, "load_project_env_file", lambda: None)
+        monkeypatch.setattr(
+            api_module,
+            "load_config_from_env",
+            MagicMock(side_effect=ValueError("bad CLIO_LM_PROVIDER")),
+        )
+        test_app = FastAPI()
+
+        async with api_module.lifespan(test_app):
+            assert test_app.state.agent is None
+            assert test_app.state.healthy is False
+            assert test_app.state.startup_error == "bad CLIO_LM_PROVIDER"
+            assert test_app.state.provider_config is None
 
     def test_health_includes_integration_details(self, client, monkeypatch):
         from clio_agent.runtime.status import (

@@ -134,10 +134,9 @@ async def lifespan(app: FastAPI):
         # Store config even on failure for health endpoint
         try:
             app.state.provider_config = load_config_from_env()
-        except Exception:
-            from clio_agent.config import LMProviderConfig
-
-            app.state.provider_config = LMProviderConfig()
+        except Exception as config_error:
+            logger.error("Failed to load provider config after startup failure: %s", config_error)
+            app.state.provider_config = None
 
     yield
 
