@@ -384,35 +384,40 @@ async def _run_turn_in_background(
         routing_override = getattr(sess, "routing_mode", "auto") or "auto"
         agent_obj = app.state.agent
         prev_routing = getattr(agent_obj, "_routing_mode_override", "auto")
+        routing_override_applied = False
         try:
             agent_obj._routing_mode_override = routing_override  # type: ignore[attr-defined]
+            routing_override_applied = True
         except Exception:  # noqa: BLE001
             pass
 
-        with _tool_session_context(sid):
-            pred = await _try_streamed_forward(
-                app, enriched_text, sid, _emit_chunk,
-                session_mode=getattr(sess, "mode", "chat"),
-                session_edit_mode=getattr(sess, "edit_mode", "diff"),
-            )
-            if pred is None:
-                loop = asyncio.get_running_loop()
-                turn_context = contextvars.copy_context()
-                pred = await loop.run_in_executor(
-                    None,
-                    lambda: turn_context.run(
-                        _agent_forward_compat,
-                        app.state.agent,
-                        enriched_text,
-                        sid,
-                        getattr(sess, "mode", "chat"),
-                        getattr(sess, "edit_mode", "diff"),
-                    ),
-                )
         try:
-            agent_obj._routing_mode_override = prev_routing  # type: ignore[attr-defined]
-        except Exception:  # noqa: BLE001
-            pass
+            with _tool_session_context(sid):
+                pred = await _try_streamed_forward(
+                    app, enriched_text, sid, _emit_chunk,
+                    session_mode=getattr(sess, "mode", "chat"),
+                    session_edit_mode=getattr(sess, "edit_mode", "diff"),
+                )
+                if pred is None:
+                    loop = asyncio.get_running_loop()
+                    turn_context = contextvars.copy_context()
+                    pred = await loop.run_in_executor(
+                        None,
+                        lambda: turn_context.run(
+                            _agent_forward_compat,
+                            app.state.agent,
+                            enriched_text,
+                            sid,
+                            getattr(sess, "mode", "chat"),
+                            getattr(sess, "edit_mode", "diff"),
+                        ),
+                    )
+        finally:
+            if routing_override_applied:
+                try:
+                    agent_obj._routing_mode_override = prev_routing  # type: ignore[attr-defined]
+                except Exception:  # noqa: BLE001
+                    pass
         answer_text = getattr(pred, "answer", "")
         selected_agent = getattr(pred, "selected_expert", "") or ""
         rationale = getattr(pred, "routing_rationale", "")

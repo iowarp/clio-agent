@@ -210,6 +210,28 @@ def test_post_message_agent_exception_includes_error_info_on_completed_event(
     assert "simulated agent failure" in payload["error_info"]["message"]
 
 
+def test_routing_override_restored_after_agent_exception(
+    tmp_path: Path,
+) -> None:
+    from .conftest import complete_turn
+
+    failing_agent = FakeClioAgent(raise_on_forward=True)
+    failing_agent._routing_mode_override = "auto"
+    app = build_app(
+        sessions_path=tmp_path / "s.json", agent=failing_agent
+    )
+    with TestClient(app) as c:
+        sid = c.post(
+            "/v1/sessions",
+            json={"title": "x", "routing_mode": "experts"},
+        ).json()["id"]
+        assistant = complete_turn(c, sid, "hi")
+
+    assert assistant["stop_reason"] == "error"
+    assert assistant["error_info"]["error"] == "agent_error"
+    assert failing_agent._routing_mode_override == "auto"
+
+
 def test_post_message_prediction_error_info_sets_error_turn(
     tmp_path: Path,
 ) -> None:
