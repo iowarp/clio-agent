@@ -130,10 +130,13 @@ result = with_degradation(
 Returns primary on success, fallback on `ProviderError`, re-raises anything else. CLIO uses this for:
 
 - Router failure → chat fallback (not a fatal).
-- Cloud LM failure → local LM via `_direct_chat_completion`.
+- Provider/LM failure → structured `error_info` with retry,
+  reconfigure-provider, and exit recovery actions. CLIO must not hide
+  an upstream/provider failure behind repeated, canned, or locally
+  synthesized assistant text.
 - Tool failure → return `{"error": {...}}` dict, not raise (see `05-tools.md`).
 
-(`test_errors.py:1-183`, `agent.py:273-352`)
+(`test_errors.py:1-183`, `test_agent_dispatch.py`, `agent.py`)
 
 ## Storage & persistence semantics
 
