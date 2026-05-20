@@ -302,6 +302,11 @@ async def _stream_response(agent: Any, req: QueryRequest):
             }
             return
 
+        stream_fallback = {
+            "reason": "legacy_query_sync_path",
+            "message": "Legacy /query stream chunks a completed answer after agent execution.",
+        }
+
         # Event: chunk -- split answer into word chunks for SSE infrastructure
         words = result.answer.split()
         chunk_size = max(1, len(words) // 5) if words else 1
@@ -309,7 +314,13 @@ async def _stream_response(agent: Any, req: QueryRequest):
             chunk_text = " ".join(words[i : i + chunk_size])
             yield {
                 "event": "chunk",
-                "data": json.dumps({"text": chunk_text}),
+                "data": json.dumps(
+                    {
+                        "text": chunk_text,
+                        "stream_source": "synthetic_posthoc",
+                        "stream_fallback": stream_fallback,
+                    }
+                ),
             }
             await asyncio.sleep(0.02)
 
@@ -324,6 +335,8 @@ async def _stream_response(agent: Any, req: QueryRequest):
                     "route_reason": getattr(result, "route_reason", ""),
                     "duration_ms": duration_ms,
                     "error_info": getattr(result, "error_info", None),
+                    "stream_source": "synthetic_posthoc",
+                    "stream_fallback": stream_fallback,
                 }
             ),
         }
