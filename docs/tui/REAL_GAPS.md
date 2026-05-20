@@ -60,7 +60,7 @@ what they prove.
 
 | Capability | Endpoint works | Real agent emits | Notes |
 |---|---|---|---|
-| `permissions` | yes | partial | Native MCP executor calls gate destructive tool names, and `/diffs/apply` enforces stored deny/allow policies before writing. Remaining gap tracked in #218: inventory any non-tool destructive API paths that should share the same policy semantics. |
+| `permissions` | yes | partial | Native MCP executor calls, direct third-party MCP calls through `/v1/mcp/servers/{server_id}/call`, and `/diffs/apply` enforce stored deny/allow policies before destructive execution. Remaining gap tracked in #218: finish the non-tool destructive API inventory and decide whether app-state deletes should share tool permission semantics. |
 | `cancellation` (best-effort) | yes | partial | Server settles the GACT envelope as cancelled; executor-thread provider/tool work may continue and is flagged with `execution_cancellation="best_effort"` |
 | `tool_telemetry` events | yes | partial | Native MCP executor calls emit live `tool.call.started/completed` without duplicate post-turn lifecycle events; paths that only expose `tools_called` after the turn are still rendered post-hoc |
 

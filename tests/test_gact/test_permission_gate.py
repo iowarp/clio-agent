@@ -14,6 +14,7 @@ import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
@@ -161,6 +162,112 @@ def test_permission_policy_allow_skips_prompt(tmp_path: Path) -> None:
             decision = gate("shell.exec", {"cmd": "echo ok"})
 
         assert decision == "allow"
+        assert app.state.permissions == {}
+
+
+def test_external_mcp_call_policy_deny_blocks_before_tool_execution(tmp_path: Path) -> None:
+    app = build_app(sessions_path=tmp_path / "s.json")
+    app.state.external_mcp_servers = {
+        "mcp_ext_test": {
+            "id": "mcp_ext_test",
+            "name": "shell",
+            "spec": {"transport": "stdio", "command": "should-not-run", "args": []},
+        }
+    }
+
+    with TestClient(app) as c:
+        sid = c.post("/v1/sessions", json={"title": "t"}).json()["id"]
+        c.put(
+            "/v1/policies",
+            json={
+                "policies": [
+                    {
+                        "scope": "session",
+                        "scope_id": sid,
+                        "tool_name_pattern": "shell.*",
+                        "action": "deny",
+                    }
+                ]
+            },
+        )
+
+        resp = c.post(
+            "/v1/mcp/servers/mcp_ext_test/call",
+            json={"tool": "exec", "args": {"cmd": "rm -rf /"}},
+        )
+
+        assert resp.status_code == 403
+        detail = resp.json()["error"]
+        assert detail["error"] == "permission_error"
+        rows = list(app.state.permissions.values())
+        assert len(rows) == 1
+        assert rows[0]["status"] == "auto_denied"
+        assert rows[0]["reason"] == "policy_deny"
+        assert rows[0]["tool_call"]["tool_name"] == "shell.exec"
+
+
+def test_external_mcp_call_policy_allow_executes_without_prompt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class FakeClient:
+        called = False
+
+        def __init__(self, transport: Any) -> None:
+            self.transport = transport
+
+        async def __aenter__(self) -> "FakeClient":
+            return self
+
+        async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+            return None
+
+        async def call_tool(self, name: str, args: dict[str, Any]) -> Any:
+            FakeClient.called = True
+            return SimpleNamespace(
+                content=[SimpleNamespace(type="text", text=f"{name}:{args['cmd']}")],
+                isError=False,
+            )
+
+    import fastmcp
+    import fastmcp.client.transports as transports
+
+    monkeypatch.setattr(fastmcp, "Client", FakeClient)
+    monkeypatch.setattr(transports, "StdioTransport", lambda command, args: (command, args))
+
+    app = build_app(sessions_path=tmp_path / "s.json")
+    app.state.external_mcp_servers = {
+        "mcp_ext_test": {
+            "id": "mcp_ext_test",
+            "name": "shell",
+            "spec": {"transport": "stdio", "command": "fake", "args": []},
+        }
+    }
+
+    with TestClient(app) as c:
+        sid = c.post("/v1/sessions", json={"title": "t"}).json()["id"]
+        c.put(
+            "/v1/policies",
+            json={
+                "policies": [
+                    {
+                        "scope": "session",
+                        "scope_id": sid,
+                        "tool_name_pattern": "shell.*",
+                        "action": "allow",
+                    }
+                ]
+            },
+        )
+
+        resp = c.post(
+            "/v1/mcp/servers/mcp_ext_test/call",
+            json={"tool": "exec", "args": {"cmd": "echo ok"}},
+        )
+
+        assert resp.status_code == 200
+        assert FakeClient.called is True
+        body = resp.json()
+        assert body["content"] == [{"type": "text", "text": "exec:echo ok"}]
         assert app.state.permissions == {}
 
 
