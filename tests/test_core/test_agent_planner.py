@@ -367,7 +367,7 @@ class TestRunAgentLoop:
         assert answer == "clean answer"
         assert error_info is None
 
-    def test_step_limit_synthesizes_answer(self, agent, monkeypatch):
+    def test_step_limit_synthesizes_partial_answer_with_error_info(self, agent, monkeypatch):
         monkeypatch.setenv("CLIO_AGENT_MAX_STEPS", "1")
         agent._plan_next_action = MagicMock(
             return_value={"action": "tool", "tool": "hdf5_analyze_file", "args": {}}
@@ -375,11 +375,20 @@ class TestRunAgentLoop:
         agent._execute_tool_action = MagicMock(return_value={"value": "partial"})
         agent._synthesize_agent_answer = MagicMock(return_value="synthesized")
 
-        selected, answer, _, _, route = agent._run_agent_loop(
+        selected, answer, _, error_info, route = agent._run_agent_loop(
             question="q", session_context="", file_context="", trace=_trace()
         )
         assert answer == "synthesized"
         assert "step limit" in route.reason.lower()
+        assert error_info is not None
+        assert error_info["error"] == "routing_error"
+        assert error_info["details"]["partial"] is True
+        assert error_info["details"]["step_limit"] == 1
+        assert error_info["details"]["recovery_actions"] == [
+            "retry",
+            "reconfigure_provider",
+            "exit",
+        ]
 
     def test_answer_synthesis_exception_surfaces_error_info(self, agent, monkeypatch):
         monkeypatch.setenv("CLIO_AGENT_MAX_STEPS", "1")
