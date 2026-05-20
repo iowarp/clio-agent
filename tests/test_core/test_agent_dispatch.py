@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, patch
 import dspy
 import pytest
 
-from clio_agent.agent import ClioAgent
+from clio_agent.agent import ClioAgent, routing_mode_override
 
 
 @pytest.fixture
@@ -216,6 +216,15 @@ class TestForwardDispatch:
         assert result.answer == "chat override answer"
         assert "routing_mode='chat'" in result.route_reason
         agent.action_planner.assert_not_called()
+
+    def test_routing_mode_context_override_is_scoped(self, agent):
+        """Context-scoped routing overrides should not mutate legacy state."""
+        agent._routing_mode_override = "experts"
+
+        with routing_mode_override("chat"):
+            assert agent._effective_routing_mode() == "chat"
+
+        assert agent._effective_routing_mode() == "experts"
 
     def test_routing_mode_experts_rejects_direct_answer(self, agent):
         """routing_mode=experts should surface a route error instead of chatting."""

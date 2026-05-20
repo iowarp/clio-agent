@@ -20,13 +20,15 @@ Usage:
     >>> print(result.selected_expert)
 """
 
+import contextvars
 import json
 import os
 import time
 import uuid
 from collections.abc import Mapping
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, Iterator, List
 
 import dspy
 
@@ -78,6 +80,21 @@ from clio_agent.tools.file_policy import FileAccessPolicy, FilePolicyError, vali
 from clio_agent.tools.gateway import gateway
 
 SCIENTIFIC_FILE_SUFFIXES = {".h5", ".hdf5", ".parquet", ".csv"}
+_ROUTING_MODE_OVERRIDE: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "clio_routing_mode_override",
+    default="",
+)
+
+
+@contextmanager
+def routing_mode_override(mode: str) -> Iterator[None]:
+    """Scope a GACT routing override to the current turn context."""
+
+    token = _ROUTING_MODE_OVERRIDE.set(str(mode or "auto"))
+    try:
+        yield
+    finally:
+        _ROUTING_MODE_OVERRIDE.reset(token)
 DEFAULT_AGENT_MAX_STEPS = 4
 ERROR_RECOVERY_ACTIONS = ("retry", "reconfigure_provider", "exit")
 
@@ -925,7 +942,9 @@ class ClioAgent(dspy.Module):
 
     def _effective_routing_mode(self) -> str:
         """Return the active GACT routing override, if one is set."""
-        mode = str(getattr(self, "_routing_mode_override", "auto") or "auto").strip().lower()
+        mode = str(_ROUTING_MODE_OVERRIDE.get() or "").strip().lower()
+        if not mode:
+            mode = str(getattr(self, "_routing_mode_override", "auto") or "auto").strip().lower()
         if mode in {"auto", "chat", "experts", "reasoning_only"}:
             return mode
         return "auto"

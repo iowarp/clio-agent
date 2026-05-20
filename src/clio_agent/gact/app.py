@@ -696,20 +696,13 @@ async def _run_turn_in_background(
         else:
             # Honour the session's routing override. routing_mode "chat"
             # forces the chat path (no /chat prefix needed); "experts"
-            # rejects chat/none classifications. Keep the override on the
-            # agent for the duration of this turn so ClioAgent.forward and
-            # streamed forward see the same mode.
+            # rejects chat/none classifications. Keep the override scoped
+            # to this turn context so concurrent sessions do not mutate the
+            # shared ClioAgent instance.
             routing_override = getattr(sess, "routing_mode", "auto") or "auto"
-            agent_obj = app.state.agent
-            prev_routing = getattr(agent_obj, "_routing_mode_override", "auto")
-            routing_override_applied = False
-            try:
-                agent_obj._routing_mode_override = routing_override  # type: ignore[attr-defined]
-                routing_override_applied = True
-            except Exception:  # noqa: BLE001
-                pass
+            from clio_agent.agent import routing_mode_override as _routing_override  # noqa: PLC0415
 
-            try:
+            with _routing_override(routing_override):
                 with _tool_session_context(sid):
                     pred = await _try_streamed_forward(
                         app, enriched_text, sid, _emit_chunk,
@@ -730,12 +723,6 @@ async def _run_turn_in_background(
                                 getattr(sess, "edit_mode", "diff"),
                             ),
                         )
-            finally:
-                if routing_override_applied:
-                    try:
-                        agent_obj._routing_mode_override = prev_routing  # type: ignore[attr-defined]
-                    except Exception:  # noqa: BLE001
-                        pass
         answer_text = getattr(pred, "answer", "")
         selected_agent = getattr(pred, "selected_expert", "") or ""
         rationale = getattr(pred, "routing_rationale", "")

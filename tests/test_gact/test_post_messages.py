@@ -233,6 +233,34 @@ def test_routing_override_restored_after_agent_exception(
     assert failing_agent._routing_mode_override == "auto"
 
 
+def test_session_routing_override_does_not_mutate_agent_attr(
+    tmp_path: Path,
+) -> None:
+    from .conftest import complete_turn
+
+    class AttrObservingAgent(FakeClioAgent):
+        def __init__(self) -> None:
+            super().__init__(answer="ok")
+            self._routing_mode_override = "auto"
+            self.seen_overrides: list[str] = []
+
+        def forward(self, question: str, session_id: str) -> Any:
+            self.seen_overrides.append(self._routing_mode_override)
+            return super().forward(question, session_id)
+
+    agent = AttrObservingAgent()
+    app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
+    with TestClient(app) as c:
+        sid = c.post(
+            "/v1/sessions",
+            json={"title": "x", "routing_mode": "experts"},
+        ).json()["id"]
+        complete_turn(c, sid, "hi")
+
+    assert agent.seen_overrides == ["auto"]
+    assert agent._routing_mode_override == "auto"
+
+
 def test_post_message_prediction_error_info_sets_error_turn(
     tmp_path: Path,
 ) -> None:
