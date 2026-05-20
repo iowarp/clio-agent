@@ -13,6 +13,7 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
+from clio_agent.arc.schema import ToolCall
 from clio_agent.gact.app import build_app
 
 
@@ -78,6 +79,13 @@ def test_tools_called_propagates_to_message_and_completion(tmp_path: Path) -> No
             "duration_ms": 12.0,
             "cached": True,
         })(),
+        ToolCall(
+            tool="hdf5_list_datasets",
+            params={"filepath": "/tmp/x.h5"},
+            result={"datasets": []},
+            duration_ms=8.0,
+            cached=False,
+        ),
     ]
     pred = _PredWithTools(tools_called=tools)
     client = _client(tmp_path, pred)
@@ -87,7 +95,7 @@ def test_tools_called_propagates_to_message_and_completion(tmp_path: Path) -> No
     md = a["metadata"]
     assert "tools_called" in md
     rows = md["tools_called"]
-    assert len(rows) == 2
+    assert len(rows) == 3
     assert rows[0]["name"] == "hdf5_analyze"
     assert rows[0]["ok"] is True
     assert rows[0]["duration_ms"] == 42.5
@@ -96,3 +104,8 @@ def test_tools_called_propagates_to_message_and_completion(tmp_path: Path) -> No
     # the extractor should still have normalised it to the same wire shape.
     assert rows[1]["name"] == "parquet_summarise"
     assert rows[1]["cached"] is True
+    # ARC ToolCall uses ``tool`` + ``params``; GACT normalises that
+    # to the same ``name`` + ``args`` wire shape.
+    assert rows[2]["name"] == "hdf5_list_datasets"
+    assert rows[2]["args"] == {"filepath": "/tmp/x.h5"}
+    assert rows[2]["duration_ms"] == 8.0

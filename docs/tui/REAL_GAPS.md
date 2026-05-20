@@ -8,23 +8,7 @@ Updated as gaps land or close.
 
 ## Hard blockers — must fix before "ready"
 
-### 1. Tool execution hangs
-
-DataExpert's `MCPToolBridge` doesn't return through the executor
-path. A `data` route times out client-side; server stays stuck
-mid-`forward()`. Symptoms include
-`coroutine 'list_capabilities.<locals>._list' was never awaited`
-warnings, no SSE deltas after the user message, no eventual
-`message.completed`.
-
-Repro: HDF5 fixture in /tmp/clio-demo, `gact agent deploy clio`,
-ask "Analyze /tmp/clio-demo/clio_demo.h5". Hangs.
-
-Fix scope: investigate MCPToolBridge thread/loop interaction with
-FastAPI's executor + the running uvicorn loop; surface tool errors
-as `tool.call.completed{ok:false}` events instead of swallowing.
-
-### 2. Streaming is only partially live
+### 1. Streaming is only partially live
 
 `message.part.delta` events can come from two different sources:
 
@@ -53,6 +37,7 @@ regressions, but don't treat these as unresolved release blockers:
 |---|---|---|
 | LM provider config | `GET / PUT /v1/providers/lm` lets the TUI configure or hot-swap provider/model without redeploying the GACT process. | `tests/test_gact/test_lm_provider.py` |
 | Tokens + cost | Per-turn tokens/cost populate assistant messages, completion events, session rollups, and `/v1/metrics`; GACT also extracts DSPy history/usage and estimates known-model cost when upstream omits cost. | `tests/test_gact/test_cost_tracking.py`, `tests/test_gact/test_cost_estimate.py` |
+| DataExpert tool execution | Real GACT data turns complete instead of hanging, and native tool traces are exposed as `tools_called` metadata. | `tests/test_integration/test_local_filesystem_smoke.py`, `tests/test_gact/test_tools_called.py`, real LM Studio/Qwopus HDF5 smoke |
 
 ## Wire-shape-only — work but no real driver
 
@@ -68,7 +53,7 @@ so the tests prove what they prove.
 | `diffs` | yes | no | No edit_file tool that produces diffs |
 | `permissions` | yes | no | MCPToolBridge doesn't gate destructive ops |
 | `cancellation` (best-effort) | yes | partial | Server settles the GACT envelope as cancelled; executor-thread provider/tool work may continue and is flagged with `execution_cancellation="best_effort"` |
-| `tool_telemetry` events | yes | partial | Synthesised from `tools_called` post-hoc; not live |
+| `tool_telemetry` events | yes | partial | Native MCP executor calls emit live `tool.call.started/completed`; paths that only expose `tools_called` after the turn are still rendered post-hoc |
 | `user` / `skill` / `extracted` agents | yes | no | `/v1/agents` surfaces definitions, prompts, tools, provider, and model metadata; ClioAgent's planner still routes only built-in experts/tools |
 
 ## What does work end-to-end against real Claude

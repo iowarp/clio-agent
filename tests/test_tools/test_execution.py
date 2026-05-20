@@ -11,6 +11,8 @@ from clio_agent.tools.execution import (
     SyncMCPToolExecutor,
     create_async_tool_executor,
     create_sync_tool_executor,
+    set_global_permission_gate,
+    set_global_tool_observer,
 )
 
 
@@ -136,6 +138,40 @@ def test_sync_mcp_tool_executor_timeout_cancels_tool_call():
 
     assert fake_client.exited is True
     assert executor.closed is True
+
+
+def test_sync_mcp_tool_executor_uses_late_global_hooks():
+    """Deferred GACT hook install should affect already-built executors."""
+    fake_client = FakeClient()
+    executor = SyncMCPToolExecutor(
+        object(),
+        timeout=1.0,
+        client_factory=lambda _: fake_client,
+    )
+    observed: list[tuple[str, dict[str, Any], str | None, str | None]] = []
+
+    try:
+        set_global_tool_observer(
+            lambda name, args, phase, error: observed.append(
+                (name, dict(args), phase, error)
+            )
+        )
+
+        result = executor.call_tool("fake_echo", {"value": "hello"})
+
+        assert '"name": "fake_echo"' in result
+        assert observed == [
+            ("fake_echo", {"value": "hello"}, "started", None),
+            ("fake_echo", {"value": "hello"}, "completed", None),
+        ]
+
+        set_global_permission_gate(lambda _name, _args: "deny")
+        with pytest.raises(PermissionError, match="denied"):
+            executor.call_tool("fake_echo", {"value": "blocked"})
+    finally:
+        set_global_permission_gate(None)
+        set_global_tool_observer(None)
+        executor.close()
 
 
 def test_mcp_tool_bridge_remains_sync_compatibility_shim():
