@@ -88,7 +88,7 @@ Keep these visible to the engineering team rather than hiding them behind a norm
 - Streaming is live only where the upstream DSPy/LiteLLM path exposes
   answer chunks; otherwise synthetic post-hoc text remains a truthful
   fallback path.
-- Tool telemetry can still be post-hoc when a path only exposes `tools_called` after the turn.
+- Tool lifecycle telemetry is live-only; post-turn `tools_called` remains summary metadata.
 - Some GACT endpoint families are definition/catalog surfaces rather than full runtime routes for CLIO's core agent loop.
 
 The authoritative tracker is `REAL_GAPS.md`; the broader capability table is `../CAPABILITIES_MATRIX.md`.

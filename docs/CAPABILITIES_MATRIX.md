@@ -9,8 +9,8 @@ audit, use `docs/tui/REAL_GAPS.md`.
 **No silent downgrades.** If a flag is `true` here, the GACT API surface
 exists in the released binary and has targeted evidence. The status column
 distinguishes endpoint/wire verification from real `ClioAgent` runtime
-driver verification. Partial runtime semantics, such as post-hoc tool
-telemetry or best-effort cancellation, must be called out explicitly.
+driver verification. Partial runtime semantics, such as best-effort
+cancellation, must be called out explicitly.
 Two flags are explicitly `false` (LSP, voice — out of scope for v0.3.1).
 
 ## Core (v0.1)
@@ -47,7 +47,7 @@ Two flags are explicitly `false` (LSP, voice — out of scope for v0.3.1).
 | `memory` | ✅ verified | ARC cache stats reported on `/v1/memory/stats`; `clio_doctor_health.png` shows hit rate |
 | `structured_errors` | ✅ verified | every 4xx/5xx returns the v0.2 envelope (error/message/details/recoverable) |
 | `integration_health` | ✅ verified | `/v1/health.integrations[]` reports per-subsystem status; `clio_doctor_health.png` |
-| `tool_telemetry` | verified; runtime partial | Native MCP executor calls emit `telemetry_source="live_observer"` `tool.call.started/completed`; paths that only expose `tools_called` after the turn emit `telemetry_source="posthoc_prediction"` so clients can distinguish reconstructed events from live execution timing. See `docs/tui/REAL_GAPS.md`. |
+| `tool_telemetry` | ✅ verified | Tool lifecycle events are emitted only from live execution observers (`telemetry_source="live_observer"`). Post-turn `tools_called` traces remain assistant metadata summaries and are not reconstructed into fake lifecycle events. Evidence: `tests/test_gact/test_tool_telemetry.py`, `tests/test_integration_v0_2/test_real_capabilities.py::test_real_tool_call_events_fire_during_turn`. |
 
 ## Transport Truthfulness
 

@@ -701,7 +701,6 @@ async def _run_turn_in_background(
     proposed_diffs: list[Any] = []
     nanoagents: list[Any] = []
     thinking_text = ""
-    live_tool_event_keys: set[tuple[str, str]] = set()
     turn_tokens: dict[str, int] = {
         "input": 0,
         "output": 0,
@@ -945,16 +944,31 @@ async def _run_turn_in_background(
         ledger = getattr(app.state, "tool_call_ledger", None)
         if ledger is not None:
             observed = ledger.pop(sid, [])
-            live_tool_event_keys = {_tool_call_event_key(o) for o in observed}
             if observed and not tools_called:
                 tools_called = observed
             elif observed:
-                # Both populated — the expert's own list takes
-                # precedence (richer payload), but append any
-                # observed-only calls the expert didn't enumerate.
-                seen = {(t.get("name"), str(t.get("args"))) for t in tools_called}
+                # Both populated. Keep the expert's richer row shape, but
+                # upgrade matching rows with live observer timing/provenance
+                # so metadata does not claim the same real call was post-hoc.
+                observed_by_key = {_tool_call_event_key(o): o for o in observed}
+                seen: set[tuple[str, str]] = set()
+                for row in tools_called:
+                    call_key = _tool_call_event_key(row)
+                    seen.add(call_key)
+                    live_row = observed_by_key.get(call_key)
+                    if live_row is None:
+                        continue
+                    for field_name in (
+                        "duration_ms",
+                        "cached",
+                        "telemetry_source",
+                        "ok",
+                        "error",
+                    ):
+                        if field_name in live_row:
+                            row[field_name] = live_row[field_name]
                 for o in observed:
-                    if (o.get("name"), str(o.get("args"))) not in seen:
+                    if _tool_call_event_key(o) not in seen:
                         tools_called.append(o)
         # iowarp/clio-agent#17 — surface DSPy reasoning as a
         # `thinking` Part. ChainOfThought predictions expose
@@ -1426,42 +1440,10 @@ async def _run_turn_in_background(
                     },
                 )
             )
-    # Per-tool telemetry events synthesised from the prediction's
-    # tool_called trace. A real ReAct agent that instruments
-    # MCPToolBridge.call_tool publishes the same wire shape live;
-    # the TUI's renderer doesn't care which flavour it is.
-    for idx, call in enumerate(tools_called):
-        if _tool_call_event_key(call) in live_tool_event_keys:
-            continue
-        call_id = f"call_{assistant_msg.id}_{idx}"
-        bus.publish(
-            Event(
-                type="tool.call.started",
-                session_id=sid,
-                payload={
-                    "message_id": assistant_msg.id,
-                    "call_id": call_id,
-                    "tool": call.get("name", ""),
-                    "args": call.get("args", {}),
-                    "telemetry_source": "posthoc_prediction",
-                },
-            )
-        )
-        bus.publish(
-            Event(
-                type="tool.call.completed",
-                session_id=sid,
-                payload={
-                    "message_id": assistant_msg.id,
-                    "call_id": call_id,
-                    "tool": call.get("name", ""),
-                    "ok": call.get("ok", True),
-                    "duration_ms": call.get("duration_ms", 0.0),
-                    "cached": call.get("cached", False),
-                    "telemetry_source": "posthoc_prediction",
-                },
-            )
-        )
+    # Tool lifecycle events are only emitted by the live observer at the
+    # execution boundary. Prediction.tools_called remains summary metadata;
+    # do not reconstruct started/completed events after the turn, because
+    # that makes post-hoc facts look like live tool timing.
     completed_payload: dict[str, Any] = {
         "message_id": assistant_msg.id,
         "stop_reason": "cancelled" if cancelled_turn else ("error" if error_info else "end_turn"),
