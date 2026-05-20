@@ -25,6 +25,12 @@ Provider:
 - `CLIO_LM_PLANNER_MAX_TOKENS=4096`
 - `CLIO_LM_PLANNER_TEMPERATURE=0`
 
+Qwopus needs the planner token budget above the default small-model smoke
+settings. With `CLIO_LM_MAX_TOKENS=1024`, the model spent too many tokens in
+reasoning and the planner failed to emit usable JSON. Keep planner
+temperature deterministic (`0`) and use at least `4096` planner tokens for
+this regression suite.
+
 Server:
 
 ```powershell
@@ -66,27 +72,42 @@ After #245 was fixed and merged, `/v1/providers/lm` was retested on
 }
 ```
 
+After #247 and #244 were fixed and merged, cancellation and stream provenance
+were retested on `develop` with the same prompts and provider settings.
+
+After the #243 planner JSON recovery fix, the full Qwopus suite was retested
+with the same provider, datasets, and prompts:
+
+```text
+9 passed in 213.73s
+```
+
+The audit log showed real tool calls for HDF5, Parquet, CSV, and plotting;
+structured `tool_error` for a missing file; structured `cancelled` for client
+cancellation; and explicit `stream_source=synthetic_posthoc` plus structured
+fallback reasons when no live deltas were emitted.
+
 ## Evidence Matrix
 
 | Case | Provider | Dataset/workflow | Expected behavior | Observed behavior | Status |
 | --- | --- | --- | --- | --- | --- |
 | `hdf5_tool_loop` | Qwopus / LM Studio | `data/atmospheric.h5` | Route to data, call HDF5 tool, answer with dataset names | Routed `data`, called `hdf5_list_datasets`, answered `simulation/pressure`, `simulation/temperature`, `time_step` | Pass |
 | `parquet_tool_loop` | Qwopus / LM Studio | `data/measurements.parquet` | Route to analysis, call Parquet tool, answer with schema columns | Routed `analysis`, called `parquet_analyze_schema`, answered expected columns | Pass |
-| `csv_tool_loop` | Qwopus / LM Studio | `data/observations.csv` | Route to analysis, call CSV tool, answer with headers | Planner emitted truncated near-JSON and CLIO surfaced `routing_error` | Fail: #243 |
-| `multiturn_dataset_context_setup` | Qwopus / LM Studio | `data/measurements.parquet` | First turn should inspect data so follow-up can use state | Planner emitted near-JSON missing final brace and CLIO surfaced `routing_error` | Fail: #243 |
+| `csv_tool_loop` | Qwopus / LM Studio | `data/observations.csv` | Route to analysis, call CSV tool, answer with headers | Routed `analysis`, called `csv_read_table`, answered `sample_id`, `temperature_k`, `pressure_pa` | Fixed: #243 |
+| `multiturn_dataset_context_setup` | Qwopus / LM Studio | `data/measurements.parquet` | First turn should inspect data so follow-up can use state | Routed `analysis`, called `parquet_analyze_schema`, then follow-up answered `pressure` | Fixed: #243 |
 | `missing_file_tool_error` | Qwopus / LM Studio | Missing HDF5 path | Surface structured tool error without normal answer text | `error_info.error=tool_error`, `tool_error.code=file_not_found`, empty answer text | Pass |
 | `visualization_tool_loop` | Qwopus / LM Studio | Parquet summary dashboard | Route to visualization, call plotting tool, return artifact path | Routed `visualization`, called `plot_summary`, wrote `measurements_dashboard.png`, returned `.png` path | Pass |
 | `provider_endpoint_effective_config` | Qwopus / LM Studio | `/v1/providers/lm` | Report effective provider/model/api_base | Initially failed with blank provider/model/api_base; retest after #245 returned Qwopus/LM Studio config | Fixed: #245 |
-| `cancellation_truth` | Qwopus / LM Studio | Long Parquet turn plus `/cancel` | Settle as structured cancellation and keep polling healthy | `POST /cancel` returned 204, then polling hit `RemoteProtocolError`; server logged h11 `Content-Length` error | Fail: #247 |
-| `streaming_provenance_truthful` | Qwopus / LM Studio | SSE text turn | Completed event must identify live vs post-hoc provenance | Planner error surfaced, but `message.completed.metadata` was empty | Fail: #244 |
+| `cancellation_truth` | Qwopus / LM Studio | Long Parquet turn plus `/cancel` | Settle as structured cancellation and keep polling healthy | `POST /cancel` returned empty 204; final turn surfaced structured `cancelled` | Fixed: #247 |
+| `streaming_provenance_truthful` | Qwopus / LM Studio | SSE text turn | Completed event must identify live vs post-hoc provenance | Planner error surfaced without fake answer; completed metadata reported `synthetic_posthoc` and fallback reason | Fixed: #244 |
 
 ## Filed Issues
 
-- #243: Qwopus planner sometimes rejects recoverable near-JSON actions in real provider runs.
-- #244: GACT `message.completed` can omit stream provenance metadata on real-provider error turns.
+- #243: Qwopus planner sometimes rejects recoverable near-JSON actions in real provider runs. Fixed by PR #252.
+- #244: GACT `message.completed` can omit stream provenance metadata on real-provider error turns. Fixed by PR #251.
 - #245: GACT `/v1/providers/lm` omits boot-time LM provider/model for env-configured agents. Fixed by PR #249.
 - #246: CLIO has no Claude Code provider path for real-provider semantic regression runs.
-- #247: Cancelling a live Qwopus GACT turn can break the polling connection with h11 Content-Length error.
+- #247: Cancelling a live Qwopus GACT turn can break the polling connection with h11 Content-Length error. Fixed by PR #250.
 
 ## Claude Status
 
@@ -107,8 +128,6 @@ not have `ANTHROPIC_API_KEY`, `CLAUDE_API_KEY`, or
 
 ## Remaining Work
 
-- Land the harness so future real-provider regressions are repeatable.
-- Fix #243, #244, and #247 on separate branches/PRs.
 - Add or document the supported Claude path, then run the same prompt matrix
   against that provider.
-- Re-run the full suite after each fix using the same prompts and datasets.
+- Re-run the full suite on merged `develop` after #243 lands.
