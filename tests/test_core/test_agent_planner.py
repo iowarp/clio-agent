@@ -292,6 +292,48 @@ class TestRunAgentLoop:
         assert expert_result is None
         agent._execute_tool_action.assert_called_once()
 
+    def test_tool_observation_then_planner_failure_synthesizes_partial_answer(self, agent):
+        agent._plan_next_action = MagicMock(
+            side_effect=[
+                {"action": "tool", "tool": "hdf5_analyze_file", "args": {}, "reason": "inspect"},
+                RoutingError(
+                    "Agent planner failed to produce an action.",
+                    details={"original_error": "Planner returned invalid JSON action: None"},
+                ),
+            ]
+        )
+        agent._execute_tool_action = MagicMock(return_value={"summary": "datasets inspected"})
+        agent._synthesize_agent_answer = MagicMock(return_value="Synthesized from tool results.")
+
+        selected, answer, expert_result, error_info, route = agent._run_agent_loop(
+            question="q", session_context="", file_context="", trace=_trace()
+        )
+
+        assert selected == "data"
+        assert answer == "Synthesized from tool results."
+        assert expert_result is None
+        assert error_info is not None
+        assert error_info["error"] == "routing_error"
+        assert error_info["details"]["partial"] is True
+        assert error_info["details"]["stage"] == "post_observation_planning"
+        assert "invalid JSON" in error_info["details"]["original_error"]
+        assert route.target == "data"
+        agent._synthesize_agent_answer.assert_called_once()
+
+    def test_planner_failure_without_tool_observation_still_surfaces(self, agent):
+        agent._plan_next_action = MagicMock(
+            side_effect=RoutingError(
+                "Agent planner failed to produce an action.",
+                details={"original_error": "provider refused"},
+            )
+        )
+        agent._synthesize_agent_answer = MagicMock(return_value="should not run")
+
+        with pytest.raises(RoutingError, match="failed to produce an action"):
+            agent._run_agent_loop(question="q", session_context="", file_context="", trace=_trace())
+
+        agent._synthesize_agent_answer.assert_not_called()
+
     def test_forward_promotes_propose_edit_observation_to_file_diffs(self, agent):
         proposed = {
             "path": "/tmp/example.py",
