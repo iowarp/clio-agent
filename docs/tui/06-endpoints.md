@@ -95,11 +95,11 @@ event: routing
 data: {"selected_expert": "data"}
 
 event: done
-data: {"duration_ms": 1234.5, "selected_expert": "data", "stream_source": "synthetic_posthoc"}
+data: {"duration_ms": 1234.5, "selected_expert": "data", "stream_source": "batch"}
 ```
 
 > **Note:** legacy `/query` no longer emits synthetic `chunk` events.
-> The completed answer is labeled with `stream_source="synthetic_posthoc"`
+> The completed answer is labeled with `stream_source="batch"`
 > and `stream_fallback.reason="legacy_query_sync_path"`. Use native GACT
 > `/v1/sessions/{sid}/events` for best-effort live provider-token streaming.
 
@@ -134,15 +134,15 @@ Clients post the message, then consume `/events`. Live text deltas include `stre
 | `stream_source` | Meaning |
 |---|---|
 | `live` | delta arrived through the live `dspy.streamify` path |
-| `synthetic_posthoc` | final answer was already available before live provider-token deltas could be emitted |
+| `batch` | final answer was already available before live provider-token deltas could be emitted |
 
-Synthetic post-hoc payloads include a structured `stream_fallback`
+Batch fallback payloads include a structured `stream_fallback`
 object with `reason`, `category`, `description`, `recovery_actions`,
-`synthetic_posthoc=true`, and `live_streaming=false`. The allowed reason
+legacy `synthetic_posthoc=true`, and `live_streaming=false`. The allowed reason
 catalog is advertised in `/v1/capabilities` as
 `capabilities.x_clio_stream_fallback_reasons`.
 Provider/planner failures during live stream execution settle the turn
-with structured `error_info` instead of falling back to synthetic answer
+with structured `error_info` instead of falling back to fabricated answer
 text.
 
 Cancellation is also explicit rather than hidden. Cancelling a running turn settles the GACT envelope as cancelled; if provider/tool work is already inside an executor thread, `session.status_changed` marks `execution_cancellation="best_effort"` and `executor_work_may_continue=true`.
@@ -223,7 +223,7 @@ resp, _ := http.Post(url+"/query", "application/json",
 
 **Pros:** long-running server, health endpoint, simple query response.
 **Cons:** old `/query` SSE shape; it only returns a completed answer
-with synthetic post-hoc provenance and must not be presented as live
+with batch provenance and must not be presented as live
 token streaming.
 
 ### D. Direct Python import (same-process)

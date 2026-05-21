@@ -352,8 +352,6 @@ class ClaudeCodeLLM(CustomLLM):
             timeout,
             client,
         )
-        if False:  # pragma: no cover - makes this an async generator for LiteLLM.
-            yield {}
         raise ClaudeCodeExecError(
             "Claude Code provider does not support live streaming; use non-streaming completion"
         )

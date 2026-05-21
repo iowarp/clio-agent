@@ -270,7 +270,7 @@ async def _stream_response(agent: Any, req: QueryRequest):
     """Legacy SSE generator: routing -> done | error events.
 
     This endpoint does not have provider-token streaming. It emits a single
-    completed answer with explicit synthetic post-hoc provenance instead of
+    completed answer with explicit batch provenance instead of
     slicing the answer into fake partial chunks.
     """
     try:
@@ -326,7 +326,7 @@ async def _stream_response(agent: Any, req: QueryRequest):
                     "route_reason": getattr(result, "route_reason", ""),
                     "duration_ms": duration_ms,
                     "error_info": getattr(result, "error_info", None),
-                    "stream_source": "synthetic_posthoc",
+                    "stream_source": "batch",
                     "stream_fallback": stream_fallback,
                 }
             ),

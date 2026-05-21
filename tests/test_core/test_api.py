@@ -289,7 +289,7 @@ class TestQuerySSE:
                 assert data["error"] == "internal_error"
                 break
 
-    def test_stream_success_done_is_marked_synthetic_posthoc_without_chunks(self, client):
+    def test_stream_success_done_is_marked_batch_without_chunks(self, client):
         resp = client.post("/query", json={"question": "Stream me", "stream": True})
         lines = resp.text.splitlines()
 
@@ -299,7 +299,7 @@ class TestQuerySSE:
                 for j in range(i + 1, min(i + 3, len(lines))):
                     if lines[j].startswith("data:"):
                         data = json.loads(lines[j][len("data:") :].strip())
-                        assert data["stream_source"] == "synthetic_posthoc"
+                        assert data["stream_source"] == "batch"
                         assert data["stream_fallback"]["reason"] == ("legacy_query_sync_path")
                         assert data["stream_fallback"]["synthetic_posthoc"] is True
                         assert data["stream_fallback"]["live_streaming"] is False
@@ -449,7 +449,7 @@ class TestAPIMain:
                     if lines[j].startswith("data:"):
                         data = json.loads(lines[j][len("data:") :].strip())
                         assert "answer" in data
-                        assert data["stream_source"] == "synthetic_posthoc"
+                        assert data["stream_source"] == "batch"
                         assert data["stream_fallback"]["reason"] == ("legacy_query_sync_path")
                         found_done = True
                         break

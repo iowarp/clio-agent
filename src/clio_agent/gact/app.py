@@ -1114,7 +1114,7 @@ async def _run_turn_in_background(
             details={
                 "original_error": type(original).__name__,
                 "partial_output": bool(streamed_assistant_buffer),
-                "stream_source": ("live" if streamed_assistant_buffer else "synthetic_posthoc"),
+                "stream_source": ("live" if streamed_assistant_buffer else "batch"),
             },
             recoverable=True,
         )
@@ -1245,14 +1245,14 @@ async def _run_turn_in_background(
     assistant_metadata: dict[str, Any] = {}
     should_report_stream_provenance = bool(answer_text) or error_info is not None
     text_stream_source = (
-        ("live" if streamed_assistant_part_id is not None else "synthetic_posthoc")
+        ("live" if streamed_assistant_part_id is not None else "batch")
         if should_report_stream_provenance
         else ""
     )
     if text_stream_source:
         assistant_metadata["stream_source"] = text_stream_source
     stream_fallback = _pop_stream_fallback(app, sid)
-    if text_stream_source == "synthetic_posthoc":
+    if text_stream_source == "batch":
         if not stream_fallback:
             stream_fallback = _stream_fallback_payload("sync_execution_path")
         assistant_metadata["stream_fallback"] = stream_fallback
@@ -1264,7 +1264,7 @@ async def _run_turn_in_background(
                 **part.metadata,
                 "stream_source": text_stream_source,
             }
-            if text_stream_source == "synthetic_posthoc" and stream_fallback:
+            if text_stream_source == "batch" and stream_fallback:
                 part.metadata["stream_fallback"] = stream_fallback
     if tools_called:
         assistant_metadata["tools_called"] = tools_called
@@ -1434,7 +1434,7 @@ async def _run_turn_in_background(
             delivered = part.model_copy(deep=True)
             delivered.metadata = {
                 **delivered.metadata,
-                "stream_source": "synthetic_posthoc",
+                "stream_source": "batch",
             }
             if stream_fallback:
                 delivered.metadata["stream_fallback"] = stream_fallback
@@ -1455,7 +1455,7 @@ async def _run_turn_in_background(
                     payload={
                         "message_id": assistant_msg.id,
                         "part_id": part.id,
-                        "stream_source": "synthetic_posthoc",
+                        "stream_source": "batch",
                         "stream_fallback": stream_fallback,
                         "final_text": part.text,
                     },
@@ -2548,7 +2548,7 @@ def _stream_fallback_reason_capabilities() -> dict[str, dict[str, Any]]:
 
 
 def _stream_fallback_payload(reason: str, message: str = "") -> dict[str, Any]:
-    """Build structured metadata for a synthetic post-hoc text delivery path."""
+    """Build structured metadata for a batch text delivery path."""
 
     definition = _STREAM_FALLBACK_REASON_DEFINITIONS.get(reason)
     if definition is None:
@@ -2702,7 +2702,7 @@ async def _try_streamed_forward(
     the final dspy.Prediction on success, or None if streaming is
     unavailable before invoking the agent. Streaming execution failures
     raise ``_StreamingOutputError`` so the caller can surface the failed
-    turn instead of rerunning it as synthetic post-hoc text.
+    turn instead of rerunning it as batch fallback text.
 
     Falls back before output when the agent isn't a DSPy module, when
     streamify import fails, or when the wrapped call doesn't yield
@@ -4269,7 +4269,7 @@ def build_app(
         return Session(**sess.to_wire())
 
     @app.delete("/v1/sessions/{sid}")
-    async def delete_session(sid: str) -> JSONResponse:
+    async def delete_session(sid: str) -> Response:
         sess = app.state.sessions.get(sid)
         if sess is None:
             raise HTTPException(
@@ -4325,7 +4325,7 @@ def build_app(
         return {"permissions": rows}
 
     @app.post("/v1/permissions/{pid}")
-    async def respond_permission(pid: str, request: Request) -> JSONResponse:
+    async def respond_permission(pid: str, request: Request) -> Response:
         """Resolve a pending permission. Body: ``{action}`` where
         action is ``allow | deny | allow_session | allow_workspace``.
         Idempotent when the row is already resolved (returns the
@@ -4735,7 +4735,7 @@ def build_app(
         return row
 
     @app.delete("/v1/sessions/{sid}/context/files")
-    async def remove_context_file(sid: str, request: Request) -> JSONResponse:
+    async def remove_context_file(sid: str, request: Request) -> Response:
         """Detach a file by path. 204 whether the path was attached
         — the TUI fires this optimistically on `d` in the context
         pane and doesn't want to error if the file was already
@@ -4787,7 +4787,7 @@ def build_app(
     # ---- POST /v1/sessions/{sid}/fork (BBB26) -------------------------
 
     @app.post("/v1/sessions/{sid}/fork")
-    async def fork_session(sid: str, request: Request) -> JSONResponse:
+    async def fork_session(sid: str, request: Request) -> Response:
         """Copy a session + its messages into a fresh session.
 
         Body (optional): ``{"at_message_id": "<id>", "title": "..."}``
@@ -4948,7 +4948,7 @@ def build_app(
         return row
 
     @app.delete("/v1/tasks/{tid}")
-    async def delete_task(tid: str) -> JSONResponse:
+    async def delete_task(tid: str) -> Response:
         found = _find_task(tid)
         if found is None:
             raise HTTPException(
@@ -6544,7 +6544,7 @@ def build_app(
         return sch.to_wire()
 
     @app.delete("/v1/schedules/{schedule_id}")
-    async def delete_schedule(schedule_id: str) -> JSONResponse:
+    async def delete_schedule(schedule_id: str) -> Response:
         sch = app.state.schedules.get(schedule_id)
         if sch is None:
             raise HTTPException(
@@ -6886,7 +6886,7 @@ def build_app(
     # ---- POST /v1/sessions/{sid}/cancel (BBB20) -----------------------
 
     @app.post("/v1/sessions/{sid}/cancel")
-    async def cancel_session(sid: str) -> JSONResponse:
+    async def cancel_session(sid: str) -> Response:
         """Best-effort cancel of an in-flight turn on this session.
 
         The agent loop and sync MCP bridge observe a scoped cancellation
@@ -7297,7 +7297,7 @@ def build_app(
         return AgentDef(**agent.to_wire())
 
     @app.delete("/v1/agents/{agent_id}")
-    async def delete_agent(agent_id: str) -> JSONResponse:
+    async def delete_agent(agent_id: str) -> Response:
         """Drop a user-registered agent. Built-ins are immutable."""
 
         if agent_id in {"main", "data", "analysis", "visualization"}:
@@ -7571,7 +7571,7 @@ def build_app(
         return Workspace(**ws.to_wire())
 
     @app.delete("/v1/workspaces/{wid}")
-    async def delete_workspace(wid: str) -> JSONResponse:
+    async def delete_workspace(wid: str) -> Response:
         """Refuses to delete ws_default — every CLIO install needs
         one workspace alive so sessions have a parent."""
 
@@ -8409,7 +8409,7 @@ def build_app(
         return row
 
     @app.delete("/v1/hooks/{hook_id}")
-    async def delete_hook(hook_id: str) -> JSONResponse:
+    async def delete_hook(hook_id: str) -> Response:
         hook = app.state.declarative_hooks.get(hook_id)
         if hook is None:
             raise HTTPException(
@@ -8538,7 +8538,7 @@ def build_app(
         )
 
     @app.delete("/v1/sessions/{sid}/messages/{message_id}")
-    async def delete_session_message(sid: str, message_id: str) -> JSONResponse:
+    async def delete_session_message(sid: str, message_id: str) -> Response:
         if app.state.sessions.get(sid) is None:
             raise HTTPException(
                 status_code=404,
@@ -8556,7 +8556,7 @@ def build_app(
         raise _message_not_found(message_id, session_id=sid)
 
     @app.delete("/v1/messages/{message_id}")
-    async def delete_message(message_id: str, session_id: str = "") -> JSONResponse:
+    async def delete_message(message_id: str, session_id: str = "") -> Response:
         if session_id:
             if app.state.sessions.get(session_id) is None:
                 raise HTTPException(

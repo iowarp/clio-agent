@@ -92,21 +92,21 @@ Tests: `tests/test_gact/test_cancellation.py`.
 Text streaming has explicit provenance:
 
 - `stream_source="live"` means the delta arrived through the live `dspy.streamify` path.
-- `stream_source="synthetic_posthoc"` means the backend already had the final answer before live provider-token deltas could be emitted.
+- `stream_source="batch"` means the backend already had the final answer before live provider-token deltas could be emitted.
 
-Synthetic post-hoc payloads include a structured `stream_fallback`
+Batch fallback payloads include a structured `stream_fallback`
 object with `reason`, `category`, `description`, `recovery_actions`,
-`synthetic_posthoc=true`, and `live_streaming=false`. The audited
+legacy `synthetic_posthoc=true`, and `live_streaming=false`. The audited
 reason catalog is advertised in `/v1/capabilities`; unknown reasons are
 rejected instead of becoming unclassified fallback metadata.
 
-Current limitation: the chat `answer` path can stream live when the upstream DSPy/LiteLLM path emits chunks. Expert outputs and paths that do not emit an `answer` stream are marked as synthetic post-hoc and delivered as completed text parts, not fake deltas. Live stream execution failures surface as structured `provider_error` messages, not as hidden sync reruns; `details.partial_output` tells clients whether any live text was already emitted.
+Current limitation: the chat `answer` path can stream live when the upstream DSPy/LiteLLM path emits chunks. Expert outputs and paths that do not emit an `answer` stream are marked as `batch` and delivered as completed text parts, not fake deltas. Live stream execution failures surface as structured `provider_error` messages, not as hidden sync reruns; `details.partial_output` tells clients whether any live text was already emitted.
 
 Tests: `tests/test_gact/test_streaming.py`.
 
 The legacy `clio-agent-api` `/query` endpoint still has its own SSE
 shape (`routing`, `done`) and returns a completed answer with
-`stream_source="synthetic_posthoc"` plus
+`stream_source="batch"` plus
 `stream_fallback.reason="legacy_query_sync_path"`. It does not emit live
 provider-token deltas or synthetic chunk events; use native GACT events
 for best-effort live streaming.
