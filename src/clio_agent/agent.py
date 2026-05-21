@@ -120,7 +120,7 @@ def cancellation_requested() -> bool:
     return bool(checker is not None and checker())
 
 
-DEFAULT_AGENT_MAX_STEPS = 4
+DEFAULT_AGENT_MAX_STEPS = 6
 ERROR_RECOVERY_ACTIONS = ("retry", "reconfigure_provider", "exit")
 
 
