@@ -207,7 +207,10 @@ class AnalysisExpert(dspy.Module):
             )
             nanoagents_spawned = [s.to_wire() for s in spawns]
 
-        result = self.run(ExpertRequest(question=question, file_context=file_context))
+        if nanoagents_spawned and self._spawns_have_tool_provenance(nanoagents_spawned):
+            result = self._aggregate_tool_backed_spawns(nanoagents_spawned)
+        else:
+            result = self.run(ExpertRequest(question=question, file_context=file_context))
         prediction = self._to_prediction(result)
         # iowarp/clio-agent#9: attach Tier-3 spawn provenance so the
         # GACT layer can render the child sessions.
@@ -217,6 +220,58 @@ class AnalysisExpert(dspy.Module):
             except Exception:
                 pass
         return prediction
+
+    @staticmethod
+    def _spawns_have_tool_provenance(spawns: list[dict[str, Any]]) -> bool:
+        """Return whether all worker rows include concrete tool-call provenance."""
+        return bool(spawns) and all(spawn.get("tools_called") for spawn in spawns)
+
+    @staticmethod
+    def _aggregate_tool_backed_spawns(spawns: list[dict[str, Any]]) -> ExpertResult:
+        """Build the parent answer and provenance from tool-backed nanoagent outputs."""
+        answer_blocks: list[str] = []
+        observations: list[ToolObservation] = []
+        formats: list[str] = []
+
+        for spawn in spawns:
+            agent_id = str(spawn.get("agent_id") or "nanoagent")
+            answer = str(spawn.get("answer") or "").strip()
+            if answer:
+                answer_blocks.append(f"{agent_id}:\n{answer}")
+            if agent_id not in formats:
+                formats.append(agent_id)
+
+            for row in spawn.get("tools_called", []) or []:
+                if not isinstance(row, dict):
+                    continue
+                name = str(row.get("name") or row.get("tool") or "").strip()
+                if not name:
+                    continue
+                observations.append(
+                    ToolObservation(
+                        tool=name,
+                        params=dict(row.get("args") or row.get("params") or {}),
+                        result=row.get("result"),
+                        duration_ms=float(row.get("duration_ms") or 0.0),
+                        ok=bool(row.get("ok", True)),
+                    )
+                )
+
+        analysis = (
+            "Parallel validation completed with tool-backed nanoagents.\n\n"
+            + "\n\n".join(answer_blocks)
+        ).strip()
+        recommendations = (
+            "Use the independent worker findings together; each worker result is backed by "
+            "the tool calls recorded in provenance."
+        )
+        return ExpertResult(
+            analysis=analysis,
+            recommendations=recommendations,
+            source="deterministic",
+            tools=tuple(observations),
+            metadata={"expert": "analysis", "mode": "parallel_tool_backed", "workers": formats},
+        )
 
     def _spawn_tool_backed_nanoagents(
         self,
