@@ -3197,6 +3197,7 @@ def _extract_tools_called(pred: Any) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for call in raw:
         row: dict[str, Any] = {}
+        agent_trace_call = False
         if isinstance(call, dict):
 
             def get(key: str, default: Any = None, _src: Any = call) -> Any:
@@ -3205,6 +3206,10 @@ def _extract_tools_called(pred: Any) -> list[dict[str, Any]]:
             # msgspec structs + DSPy trace records — attribute access.
             def get(key: str, default: Any = None, _src: Any = call) -> Any:
                 return getattr(_src, key, default)
+
+            agent_trace_call = (
+                hasattr(call, "tool") and hasattr(call, "params") and hasattr(call, "result")
+            )
 
         name = get("name") or get("tool") or ""
         if name:
@@ -3232,7 +3237,13 @@ def _extract_tools_called(pred: Any) -> list[dict[str, Any]]:
         if cached is not None:
             row["cached"] = bool(cached)
 
-        telemetry_source = get("telemetry_source") or "posthoc_prediction"
+        result = get("result")
+        if result is not None:
+            row["result"] = result
+
+        telemetry_source = get("telemetry_source") or (
+            "agent_trace" if agent_trace_call else "posthoc_prediction"
+        )
         row["telemetry_source"] = str(telemetry_source)
 
         if row:
