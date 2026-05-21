@@ -24,13 +24,18 @@ Example:
 
 import logging
 import os
+import threading
+import time
+from collections.abc import Callable, Mapping
 from typing import Any, Optional
 
 import dspy
 import pyarrow.csv as pcsv
 import pyarrow.parquet as pq
 
+from clio_agent.harness import ToolObservation, normalize_tool_result, tool_result_ok
 from clio_agent.signatures.visualization_sig import VisualizationExpertSignature
+from clio_agent.tools.execution import notify_global_tool_observer
 from clio_agent.tools.file_policy import (
     FilePolicyError,
     validate_non_empty_string,
@@ -93,9 +98,7 @@ def _resolve_output_path(output_path: str, default_filename: str) -> str:
     return str(validate_write_path(target).resolve(strict=False))
 
 
-def plot_histogram(
-    filepath: str, column: str, bins: int = 30, output_path: str = ""
-) -> str:
+def plot_histogram(filepath: str, column: str, bins: int = 30, output_path: str = "") -> str:
     """Create a histogram of a numeric column from a Parquet or CSV file.
 
     Loads the specified column, generates a matplotlib histogram with labeled
@@ -144,9 +147,7 @@ def plot_histogram(
         return f"Error: {e}"
 
 
-def plot_bar_chart(
-    filepath: str, column: str, top_n: int = 10, output_path: str = ""
-) -> str:
+def plot_bar_chart(filepath: str, column: str, top_n: int = 10, output_path: str = "") -> str:
     """Create a horizontal bar chart of value counts for a column.
 
     Loads the specified column, computes value counts, plots the top N values
@@ -209,9 +210,7 @@ def plot_bar_chart(
         return f"Error: {e}"
 
 
-def plot_scatter(
-    filepath: str, x_column: str, y_column: str, output_path: str = ""
-) -> str:
+def plot_scatter(filepath: str, x_column: str, y_column: str, output_path: str = "") -> str:
     """Create a scatter plot of two numeric columns from a Parquet or CSV file.
 
     Loads both columns, creates a scatter plot with labeled axes and a
@@ -244,8 +243,7 @@ def plot_scatter(
 
         # Filter paired None values
         pairs = [
-            (x, y) for x, y in zip(x_data, y_data, strict=False)
-            if x is not None and y is not None
+            (x, y) for x, y in zip(x_data, y_data, strict=False) if x is not None and y is not None
         ]
         if not pairs:
             return f"Error: No valid data pairs for {x_column} vs {y_column}"
@@ -339,12 +337,21 @@ def plot_summary(filepath: str, output_path: str = "") -> str:
         import pyarrow as pa
 
         numeric_types = (
-            pa.int8(), pa.int16(), pa.int32(), pa.int64(),
-            pa.uint8(), pa.uint16(), pa.uint32(), pa.uint64(),
-            pa.float16(), pa.float32(), pa.float64(),
+            pa.int8(),
+            pa.int16(),
+            pa.int32(),
+            pa.int64(),
+            pa.uint8(),
+            pa.uint16(),
+            pa.uint32(),
+            pa.uint64(),
+            pa.float16(),
+            pa.float32(),
+            pa.float64(),
         )
         numeric_cols = [
-            name for name in col_names
+            name
+            for name in col_names
             if any(table.schema.field(name).type == t for t in numeric_types)
         ]
         if numeric_cols:
@@ -384,9 +391,7 @@ def plot_summary(filepath: str, output_path: str = "") -> str:
             ax_corr.set_title("Correlation Heatmap")
             fig.colorbar(im, ax=ax_corr, fraction=0.046, pad=0.04)
         else:
-            ax_corr.text(
-                0.5, 0.5, "Need 2+ numeric columns", ha="center", va="center"
-            )
+            ax_corr.text(0.5, 0.5, "Need 2+ numeric columns", ha="center", va="center")
             ax_corr.set_title("Correlation Heatmap")
 
         fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.96))
@@ -425,9 +430,7 @@ class VisualizationExpert(dspy.Module):
         >>> print(result.file_path)
     """
 
-    def __init__(
-        self, arc_memory: Optional[Any] = None, output_dir: Optional[str] = None
-    ):
+    def __init__(self, arc_memory: Optional[Any] = None, output_dir: Optional[str] = None):
         """Initialize Visualization Expert with ReAct and chart tools.
 
         Args:
@@ -437,11 +440,12 @@ class VisualizationExpert(dspy.Module):
         super().__init__()
         self.arc_memory = arc_memory
         self.output_dir = output_dir or os.getcwd()
+        self._tool_observations = threading.local()
 
         # Build dspy.Tool list from chart functions
         self._tools = [
             dspy.Tool(
-                func=plot_histogram,
+                func=self._observed_tool("plot_histogram", plot_histogram),
                 name="plot_histogram",
                 desc=plot_histogram.__doc__,
                 args={
@@ -464,7 +468,7 @@ class VisualizationExpert(dspy.Module):
                 },
             ),
             dspy.Tool(
-                func=plot_bar_chart,
+                func=self._observed_tool("plot_bar_chart", plot_bar_chart),
                 name="plot_bar_chart",
                 desc=plot_bar_chart.__doc__,
                 args={
@@ -487,7 +491,7 @@ class VisualizationExpert(dspy.Module):
                 },
             ),
             dspy.Tool(
-                func=plot_scatter,
+                func=self._observed_tool("plot_scatter", plot_scatter),
                 name="plot_scatter",
                 desc=plot_scatter.__doc__,
                 args={
@@ -510,7 +514,7 @@ class VisualizationExpert(dspy.Module):
                 },
             ),
             dspy.Tool(
-                func=plot_summary,
+                func=self._observed_tool("plot_summary", plot_summary),
                 name="plot_summary",
                 desc=plot_summary.__doc__,
                 args={
@@ -549,7 +553,84 @@ class VisualizationExpert(dspy.Module):
         Returns:
             dspy.Prediction with visualization_description and file_path fields
         """
-        return self.agent(question=question, file_context=file_context)
+        self._set_tool_observations([])
+        result = self.agent(question=question, file_context=file_context)
+        try:
+            result.tool_provenance = list(self._get_tool_observations())  # type: ignore[attr-defined]
+        except Exception:
+            pass
+        finally:
+            self._set_tool_observations([])
+        return result
+
+    def _observed_tool(self, name: str, func: Callable[..., Any]) -> Callable[..., Any]:
+        """Wrap a local chart helper with CLIO tool provenance hooks."""
+
+        def run(*args: Any, **kwargs: Any) -> Any:
+            params = self._bind_tool_params(func, args, kwargs)
+            start = time.time()
+            notify_global_tool_observer(name, params, "started", None)
+            try:
+                raw_result = func(*args, **kwargs)
+                result = normalize_tool_result(raw_result, tool=name)
+            except Exception as exc:
+                result = {"error": str(exc)}
+                notify_global_tool_observer(name, params, "completed", repr(exc))
+                self._record_tool_observation(name, params, result, start)
+                raise
+            completion_error = None if tool_result_ok(result) else repr(result["error"])
+            notify_global_tool_observer(name, params, "completed", completion_error)
+            self._record_tool_observation(name, params, result, start)
+            return raw_result
+
+        run.__name__ = getattr(func, "__name__", name)
+        run.__doc__ = getattr(func, "__doc__", None)
+        return run
+
+    def _record_tool_observation(
+        self,
+        name: str,
+        params: Mapping[str, Any],
+        result: Any,
+        start: float,
+    ) -> None:
+        observations = self._get_tool_observations()
+        observations.append(
+            ToolObservation(
+                tool=name,
+                params=dict(params),
+                result=result,
+                duration_ms=(time.time() - start) * 1000,
+                ok=tool_result_ok(result),
+            )
+        )
+        self._set_tool_observations(observations)
+
+    def _get_tool_observations(self) -> list[ToolObservation]:
+        observations = getattr(self._tool_observations, "value", None)
+        if not isinstance(observations, list):
+            observations = []
+            self._set_tool_observations(observations)
+        return observations
+
+    def _set_tool_observations(self, observations: list[ToolObservation]) -> None:
+        self._tool_observations.value = observations
+
+    @staticmethod
+    def _bind_tool_params(
+        func: Callable[..., Any],
+        args: tuple[Any, ...],
+        kwargs: dict[str, Any],
+    ) -> dict[str, Any]:
+        import inspect
+
+        try:
+            bound = inspect.signature(func).bind_partial(*args, **kwargs)
+            return dict(bound.arguments)
+        except Exception:
+            params: dict[str, Any] = {"args": list(args)}
+            params.update(kwargs)
+            return params
 
     @staticmethod
     def get_capabilities() -> dict[str, Any]:

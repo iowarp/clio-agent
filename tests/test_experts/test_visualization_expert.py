@@ -10,6 +10,8 @@ import inspect
 import os
 from unittest.mock import Mock
 
+import dspy
+
 import clio_agent.experts.visualization_expert as viz_module
 from clio_agent.experts.visualization_expert import (
     VisualizationExpert,
@@ -104,6 +106,33 @@ class TestVisualizationExpert:
         """Test expert defaults to cwd for output."""
         expert = VisualizationExpert()
         assert expert.output_dir == os.getcwd()
+
+    def test_forward_attaches_chart_tool_provenance(self, sample_parquet, tmp_path):
+        """Tool calls inside the ReAct visualization expert remain observable."""
+        expert = VisualizationExpert()
+        tool = next(t for t in expert._tools if t.name == "plot_summary")
+        output = str(tmp_path / "summary.png")
+
+        class FakeAgent:
+            def __call__(self, question, file_context):
+                del question, file_context
+                path = tool.func(filepath=sample_parquet, output_path=output)
+                return dspy.Prediction(
+                    visualization_description="summary dashboard",
+                    file_path=path,
+                )
+
+        expert.agent = FakeAgent()
+
+        result = expert.forward("make a dashboard", file_context=sample_parquet)
+
+        assert result.file_path == os.path.abspath(output)
+        assert os.path.exists(result.file_path)
+        assert [tool.tool for tool in result.tool_provenance] == ["plot_summary"]
+        observation = result.tool_provenance[0]
+        assert observation.params == {"filepath": sample_parquet, "output_path": output}
+        assert observation.ok is True
+        assert observation.to_arc_tool_call().tool == "plot_summary"
 
 
 class TestPlotHistogram:

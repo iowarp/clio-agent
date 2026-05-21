@@ -162,9 +162,8 @@ Filed Claude Code failures:
 
 - #253: CSV prompt selected `fs_read_file`, a planner-visible tool with no registered owning expert. Fixed by PR #256; focused live retest selected `analysis` and called `csv_read_table`.
 - #254: visualization expert path hit LiteLLM async/streaming incompatibility in the Claude Code custom provider. Current fix marks Claude Code as non-live-streaming and bypasses DSPy streamify with `provider_streaming_unsupported`.
-- #257: after #254's streaming bypass, the same visualization prompt selected `visualization` and produced a `.png` artifact path, but GACT reported no `plot_` tool telemetry.
+- #257: after #254's streaming bypass, the same visualization prompt selected `visualization` and produced a `.png` artifact path, but GACT reported no `plot_` tool telemetry. Current focused retest on the fix branch reported `plot_summary` with `telemetry_source=live_observer`.
 
 ## Remaining Work
 
-- Fix #254 and #257 on separate branches/PRs, then rerun the full Claude
-  Code prompt matrix.
+- Merge the #257 fix, then rerun the full Claude Code prompt matrix.
