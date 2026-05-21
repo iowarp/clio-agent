@@ -82,6 +82,14 @@ with the same provider, datasets, and prompts:
 9 passed in 213.73s
 ```
 
+After #253, #254, and #257 were fixed and merged, the full Qwopus suite was
+run again on `develop` (`cced236`) to verify the later Claude/provider and
+visualization provenance changes did not regress the local-model path:
+
+```text
+9 passed in 174.31s
+```
+
 The audit log showed real tool calls for HDF5, Parquet, CSV, and plotting;
 structured `tool_error` for a missing file; structured `cancelled` for client
 cancellation; and explicit `stream_source=synthetic_posthoc` plus structured
@@ -109,8 +117,8 @@ fallback reasons when no live deltas were emitted.
 - #246: CLIO has no Claude Code provider path for real-provider semantic regression runs. Fixed by PR #255.
 - #247: Cancelling a live Qwopus GACT turn can break the polling connection with h11 Content-Length error. Fixed by PR #250.
 - #253: Claude Code run can route CSV inspection to `fs_read_file` with no owning expert. Fixed by PR #256.
-- #254: Claude Code provider fails visualization expert path with LiteLLM async streaming error.
-- #257: Claude Code visualization route can report chart artifact without tool telemetry.
+- #254: Claude Code provider fails visualization expert path with LiteLLM async streaming error. Fixed by PR #258.
+- #257: Claude Code visualization route can report chart artifact without tool telemetry. Fixed by PR #259.
 
 ## Claude Status
 
@@ -161,9 +169,31 @@ Passing Claude Code cases:
 Filed Claude Code failures:
 
 - #253: CSV prompt selected `fs_read_file`, a planner-visible tool with no registered owning expert. Fixed by PR #256; focused live retest selected `analysis` and called `csv_read_table`.
-- #254: visualization expert path hit LiteLLM async/streaming incompatibility in the Claude Code custom provider. Current fix marks Claude Code as non-live-streaming and bypasses DSPy streamify with `provider_streaming_unsupported`.
-- #257: after #254's streaming bypass, the same visualization prompt selected `visualization` and produced a `.png` artifact path, but GACT reported no `plot_` tool telemetry. Current focused retest on the fix branch reported `plot_summary` with `telemetry_source=live_observer`.
+- #254: visualization expert path hit LiteLLM async/streaming incompatibility in the Claude Code custom provider. Fixed by PR #258; Claude Code is marked non-live-streaming and GACT records `provider_streaming_unsupported`.
+- #257: after #254's streaming bypass, the same visualization prompt selected `visualization` and produced a `.png` artifact path, but GACT reported no `plot_` tool telemetry. Fixed by PR #259; focused live retest reported `plot_summary` with `telemetry_source=live_observer`.
+
+After #253, #254, and #257 were fixed and merged, the full Claude Code suite
+was rerun on `develop` (`cced236`) with the same datasets and prompts:
+
+```text
+9 passed in 146.12s
+```
+
+Final Claude Code audit rows showed:
+
+- HDF5: `selected_agent=data`, `tools_called=hdf5_list_datasets`.
+- Parquet: `selected_agent=analysis`, `tools_called=parquet_analyze_schema`.
+- CSV: `selected_agent=analysis`, `tools_called=csv_read_table`.
+- Multi-turn: first turn called `parquet_analyze_schema`; follow-up answered from session context.
+- Missing file: structured `error_info.error=tool_error`.
+- Visualization: `selected_agent=visualization`, `tools_called=plot_summary`.
+- Provider endpoint: reported `claude_code/sonnet`.
+- Cancellation: structured `error_info.error=cancelled`.
+- Streaming provenance: `stream_source=synthetic_posthoc` with explicit fallback metadata.
 
 ## Remaining Work
 
-- Merge the #257 fix, then rerun the full Claude Code prompt matrix.
+- No open failures remain from the real-provider semantic matrix. Remaining
+  caveat: CLI-backed providers (`claude_code`, `codex`) are non-live-streaming;
+  GACT reports completed text as `synthetic_posthoc` with
+  `provider_streaming_unsupported` rather than fake live token deltas.
