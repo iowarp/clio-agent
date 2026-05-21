@@ -647,6 +647,21 @@ class TestExecuteToolAction:
 
         assert args["filepath"] == str(degraded)
 
+    def test_repair_question_filepaths_from_explicit_context(self, tmp_path):
+        actual = tmp_path / "data" / "sensor_events.csv"
+        actual.parent.mkdir()
+        actual.write_text("event_id,status\n1,ok\n", encoding="utf-8")
+        degraded = tmp_path / "sensor_events.csv"
+
+        text = ClioAgent._repair_question_filepaths_from_context(
+            f"Inspect {degraded}",
+            source_question=f"Please inspect {actual}",
+            file_context="",
+        )
+
+        assert str(actual) in text
+        assert str(degraded) not in text
+
     def test_unknown_tool_returns_structured_error(self, agent):
         result = agent._execute_tool_action("not_a_real_tool", {}, _trace())
         assert "error" in result
