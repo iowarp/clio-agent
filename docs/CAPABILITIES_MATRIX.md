@@ -47,7 +47,7 @@ Two flags are explicitly `false` (LSP, voice — out of scope for v0.3.1).
 | `memory` | ✅ verified | ARC cache stats reported on `/v1/memory/stats`; `clio_doctor_health.png` shows hit rate |
 | `structured_errors` | ✅ verified | every 4xx/5xx returns the v0.2 envelope (error/message/details/recoverable) |
 | `integration_health` | ✅ verified | `/v1/health.integrations[]` reports per-subsystem status; `clio_doctor_health.png` |
-| `tool_telemetry` | ✅ verified | Tool lifecycle events are emitted only from live execution observers (`telemetry_source="live_observer"`). Post-turn `tools_called` traces remain assistant metadata summaries and are not reconstructed into fake lifecycle events. Evidence: `tests/test_gact/test_tool_telemetry.py`, `tests/test_integration_v0_2/test_real_capabilities.py::test_real_tool_call_events_fire_during_turn`. |
+| `tool_telemetry` | ✅ verified | Tool lifecycle events are emitted only from live execution observers (`telemetry_source="live_observer"`). Post-turn `tools_called` traces remain assistant metadata summaries and are not reconstructed into fake lifecycle events. Evidence: `tests/test_gact/test_tool_telemetry.py`, `tests/test_integration_contract/test_real_capabilities.py::test_real_tool_call_events_fire_during_turn`. |
 
 ## Transport Truthfulness
 

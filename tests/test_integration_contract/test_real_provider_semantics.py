@@ -8,7 +8,7 @@ truthful stream/error metadata.
 Run against a live ``clio-agent-gact`` with a real provider configured:
 
     CLIO_INTEGRATION_BASE=http://127.0.0.1:17901 \
-      uv run pytest tests/test_integration_v0_2/test_real_provider_semantics.py -m integration
+      uv run pytest tests/test_integration_contract/test_real_provider_semantics.py -m integration
 
 Set ``CLIO_REAL_AUDIT_LOG=path.jsonl`` to persist one evidence row per
 case. The tests do not embed provider credentials.

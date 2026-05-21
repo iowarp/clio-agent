@@ -23,7 +23,7 @@ regressions, but don't treat these as unresolved release blockers:
 | LM provider config | `GET / PUT /v1/providers/lm` lets the TUI configure or hot-swap provider/model without redeploying the GACT process. | `tests/test_gact/test_lm_provider.py` |
 | Tokens + cost | Per-turn tokens/cost populate assistant messages, completion events, session rollups, and `/v1/metrics`; GACT also extracts DSPy history/usage and estimates known-model cost when upstream omits cost. | `tests/test_gact/test_cost_tracking.py`, `tests/test_gact/test_cost_estimate.py` |
 | DataExpert tool execution | Real GACT data turns complete instead of hanging, and native tool traces are exposed as `tools_called` metadata. | `tests/test_integration/test_local_filesystem_smoke.py`, `tests/test_gact/test_tools_called.py`, real LM Studio/Qwopus HDF5 smoke |
-| Tool telemetry events | Real tool execution boundaries emit `tool.call.started/completed` with `telemetry_source="live_observer"`. Post-turn `tools_called` traces remain metadata summaries and are not reconstructed into fake lifecycle events. | `tests/test_gact/test_tool_telemetry.py`, `tests/test_integration_v0_2/test_real_capabilities.py::test_real_tool_call_events_fire_during_turn` |
+| Tool telemetry events | Real tool execution boundaries emit `tool.call.started/completed` with `telemetry_source="live_observer"`. Post-turn `tools_called` traces remain metadata summaries and are not reconstructed into fake lifecycle events. | `tests/test_gact/test_tool_telemetry.py`, `tests/test_integration_contract/test_real_capabilities.py::test_real_tool_call_events_fire_during_turn` |
 | Diff file edits | Real planner `fs_propose_edit` calls produce `file_diff` Parts with `new_content`; `/diffs/apply` writes accepted edits through the shared file-policy path. | `tests/test_core/test_agent_planner.py::test_forward_promotes_propose_edit_observation_to_file_diffs`, `tests/test_gact/test_plan_edit_modes.py::test_real_agent_propose_edit_trace_becomes_applicable_diff` |
 | Permissions | Destructive MCP executor calls, direct third-party MCP calls, `/diffs/apply`, and direct destructive GACT DELETE endpoints enforce stored permission policies before mutation and record resolved audit rows. | `tests/test_gact/test_permission_gate.py`, `tests/test_gact/test_plan_edit_modes.py`, `tests/test_gact/test_message_delete.py` |
 | Prompt-only custom agents | Sessions selecting registered user or skill agents with no declared tools execute through DSPy/LiteLLM using the stored prompt and optional provider/model fields. | `tests/test_gact/test_post_messages.py::test_post_message_prompt_user_agent_executes_registered_agent` |
@@ -87,7 +87,7 @@ Each iowarp/clio-agent issue (#2-#11) maps to one v0.2 capability.
 We DO NOT close an issue until:
 
 1. The capability flag is `true`.
-2. An integration test in `tests/test_integration_v0_2/` drives the
+2. An integration test in `tests/test_integration_contract/` drives the
    capability through `clio-agent-gact` against a real LM.
 3. The test passes against at least one explicitly configured real LM
    provider. Cross-provider sanity should be run when credentials or a
