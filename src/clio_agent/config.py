@@ -519,12 +519,13 @@ def _resolve_model_name(config: LMProviderConfig) -> str:
     - everything else (lm_studio, ollama, argonne, …): treated as
       OpenAI-compatible by litellm, so we prefix with ``openai/``.
 
-    The only id we rewrite is ``openai/<rest>`` — strip the leading
-    ``openai/`` to avoid the ``openai/openai/claude-haiku-4-5`` shape
-    DSPy/litellm rejects (commit a2bac1a). HuggingFace-style ids like
-    ``ibm/granite-4-h-tiny`` or ``meta-llama/Meta-Llama-3.1-8B-Instruct``
-    pass through intact — the earlier "split at first slash" was too
-    eager and silently mangled them.
+    Generic OpenAI-compatible endpoints receive one LiteLLM ``openai/``
+    provider prefix. Argonne's Sophia gateway is a special case: some
+    served model ids themselves start with ``openai/`` (for example
+    ``openai/gpt-oss-120b``), and LiteLLM strips the first segment as
+    the provider name. Sending ``openai/openai/gpt-oss-120b`` is how we
+    preserve the actual Sophia model id on the wire. Metis does not need
+    that double prefix.
     """
     if config.provider in ("openai", "anthropic"):
         return f"{config.provider}/{config.model}"
@@ -535,9 +536,17 @@ def _resolve_model_name(config: LMProviderConfig) -> str:
         bare = config.model.removeprefix("claude_code/").removeprefix("cc-")
         return f"claude_code/cc-{bare}"
     bare = config.model
+    if _is_argonne_sophia(config) and bare.startswith("openai/"):
+        return f"openai/{bare}"
     if bare.startswith("openai/"):
         bare = bare[len("openai/") :]
     return f"openai/{bare}"
+
+
+def _is_argonne_sophia(config: LMProviderConfig) -> bool:
+    """Return whether the Argonne config targets Sophia's vLLM gateway."""
+    parsed = urlparse(config.api_base)
+    return config.provider == "argonne" and "/resource_server/sophia/" in parsed.path
 
 
 def _thinking_kwargs(config: LMProviderConfig) -> dict:
