@@ -515,6 +515,14 @@ class ClioAgent(dspy.Module):
                 )
             except RoutingError as planner_error:
                 if not self._has_successful_execution_observation(observations):
+                    recovered = self._recover_parallel_validation_after_planner_failure(
+                        planner_error=planner_error,
+                        question=question,
+                        file_context=file_context,
+                        trace=trace,
+                    )
+                    if recovered is not None:
+                        return recovered
                     raise
                 answer = self._synthesize_agent_answer(
                     question=question,
@@ -761,6 +769,64 @@ class ClioAgent(dspy.Module):
             ),
         ).to_dict()
         return selected, answer, None, error_info, route
+
+    def _recover_parallel_validation_after_planner_failure(
+        self,
+        *,
+        planner_error: RoutingError,
+        question: str,
+        file_context: str,
+        trace: RunTrace,
+    ) -> tuple[str, str, Any, dict[str, Any] | None, RouteDecision] | None:
+        """Dispatch explicit parallel file-validation requests when planning fails."""
+        lower = question.lower()
+        if not any(token in lower for token in ("parallel", "nanoagent", "nano agent")):
+            return None
+        paths = extract_file_paths(question, file_context, SCIENTIFIC_FILE_SUFFIXES)
+        if len(paths) < 2:
+            return None
+
+        selected, answer, expert_result, expert_error = self._dispatch_expert_action(
+            expert_id="analysis",
+            question=question,
+            file_context=file_context,
+            trace=trace,
+        )
+        if expert_error is not None:
+            return (
+                selected,
+                answer,
+                expert_result,
+                expert_error,
+                self._route_for_selected(
+                    selected,
+                    "Agent planner failed; deterministic parallel validation recovery also failed.",
+                    confidence=0.4,
+                ),
+            )
+
+        planner_error_details = planner_error.details
+        planner_original_error = (
+            self._coerce_text(planner_error_details.get("original_error")).strip()
+            if isinstance(planner_error_details, dict)
+            else ""
+        )
+        error_info = RoutingError(
+            "Agent planner failed before an explicit parallel file-validation request.",
+            details=self._recovery_details(
+                partial=True,
+                stage="parallel_validation_recovery",
+                original_error=planner_original_error or str(planner_error),
+                planner_error=planner_error.to_dict(),
+                recovered_expert=selected,
+            ),
+        ).to_dict()
+        route = self._route_for_selected(
+            selected,
+            "Agent planner failed; CLIO recovered via deterministic parallel validation.",
+            confidence=0.55,
+        )
+        return selected, answer, expert_result, error_info, route
 
     @staticmethod
     def _has_successful_execution_observation(observations: list[dict[str, Any]]) -> bool:

@@ -188,9 +188,9 @@ class AnalysisExpert(dspy.Module):
             the results to ``Prediction.nanoagents_spawned``. The
             GACT layer materialises them as child sessions.
         """
-        nanoagents_spawned: list[dict[str, Any]] = []
+        nanoagents_spawned = self._spawn_tool_backed_nanoagents(question, file_context)
         items = _detect_parallel_items(question)
-        if items:
+        if items and not nanoagents_spawned:
             from clio_agent.runtime.nanoagent import spawn_many
 
             spawns = spawn_many(
@@ -217,6 +217,65 @@ class AnalysisExpert(dspy.Module):
             except Exception:
                 pass
         return prediction
+
+    def _spawn_tool_backed_nanoagents(
+        self,
+        question: str,
+        file_context: str,
+    ) -> list[dict[str, Any]]:
+        """Run deterministic tool-backed nanoagents for explicit multi-file validation."""
+        if not _detect_parallel_items(question):
+            return []
+
+        spawns: list[dict[str, Any]] = []
+        for hdf5_path in extract_file_paths(question, file_context, {".h5", ".hdf5"}):
+            from clio_agent.experts.data_expert import DataExpert
+
+            sub_question = f"Validate HDF5 structure for {hdf5_path}"
+            result = DataExpert(tool_executor=self._tool_executor).run(
+                ExpertRequest(question=sub_question, file_context=file_context)
+            )
+            spawns.append(self._tool_backed_spawn("data_validator", sub_question, result))
+
+        for parquet_path in extract_file_paths(question, file_context, {".parquet"}):
+            sub_question = f"Validate Parquet statistics for {parquet_path}"
+            result = self._inspect_parquet_file(
+                ExpertRequest(question=sub_question, file_context=file_context),
+                str(parquet_path),
+            )
+            spawns.append(self._tool_backed_spawn("analysis_validator", sub_question, result))
+
+        for csv_path in extract_file_paths(question, file_context, {".csv"}):
+            sub_question = f"Validate CSV schema for {csv_path}"
+            result = self._inspect_csv_file(str(csv_path))
+            spawns.append(self._tool_backed_spawn("csv_validator", sub_question, result))
+
+        return spawns
+
+    @staticmethod
+    def _tool_backed_spawn(
+        agent_id: str,
+        question: str,
+        result: ExpertResult,
+    ) -> dict[str, Any]:
+        """Convert an ExpertResult into the nanoagent wire shape."""
+        return {
+            "agent_id": agent_id,
+            "input": {"question": question},
+            "answer": f"{result.analysis}\n\n{result.recommendations}".strip(),
+            "tools_called": [
+                {
+                    "name": observation.tool,
+                    "args": observation.params,
+                    "result": observation.result,
+                    "duration_ms": observation.duration_ms,
+                    "cached": False,
+                    "ok": observation.ok,
+                    "telemetry_source": "nanoagent",
+                }
+                for observation in result.tools
+            ],
+        }
 
     def run(self, request: ExpertRequest) -> ExpertResult:
         """Run the typed native expert boundary."""
