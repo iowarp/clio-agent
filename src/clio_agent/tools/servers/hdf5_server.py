@@ -51,12 +51,16 @@ def _collect_datasets(group: h5py.Group, prefix: str = "") -> list[dict[str, Any
     for name, item in group.items():
         path = f"{prefix}/{name}" if prefix else name
         if isinstance(item, h5py.Dataset):
-            datasets.append({
+            entry: dict[str, Any] = {
                 "path": path,
                 "shape": list(item.shape),
                 "dtype": str(item.dtype),
                 "size_bytes": int(item.nbytes),
-            })
+            }
+            attrs = {key: str(value) for key, value in item.attrs.items()}
+            if attrs:
+                entry["attributes"] = attrs
+            datasets.append(entry)
         elif isinstance(item, h5py.Group):
             datasets.extend(_collect_datasets(item, path))
     return datasets
@@ -165,7 +169,7 @@ def analyze_dataset(filepath: str, dataset: str) -> dict[str, Any]:
                         first_dim_size = ds.shape[0]
                         rows_needed = min(
                             first_dim_size,
-                            max(1, sample_size // max(1, int(np.prod(ds.shape[1:]))))
+                            max(1, sample_size // max(1, int(np.prod(ds.shape[1:])))),
                         )
                         data = ds[:rows_needed]
 
@@ -315,9 +319,7 @@ def optimize_chunking(
             else:
                 # Balanced chunks: roughly equal along all dimensions
                 elements_per_dim = max(1, int(target_elements ** (1.0 / ndim)))
-                recommended = tuple(
-                    min(elements_per_dim, s) for s in shape
-                )
+                recommended = tuple(min(elements_per_dim, s) for s in shape)
 
             # Ensure chunk dims don't exceed dataset dims
             recommended = tuple(min(r, s) for r, s in zip(recommended, shape, strict=True))

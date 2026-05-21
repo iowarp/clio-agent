@@ -107,6 +107,11 @@ async def test_list_datasets_shapes(sample_hdf5):
 
         assert ds_by_path["simulation/temperature"]["shape"] == [100, 100]
         assert ds_by_path["simulation/temperature"]["dtype"] == "float64"
+        assert ds_by_path["simulation/temperature"]["attributes"]["units"] == "Kelvin"
+        assert (
+            ds_by_path["simulation/temperature"]["attributes"]["description"]
+            == "Surface temperature"
+        )
         assert ds_by_path["timestamps"]["shape"] == [1000]
         assert ds_by_path["timestamps"]["dtype"] == "int64"
 
@@ -236,7 +241,9 @@ async def test_optimize_chunking_contiguous(sample_hdf5):
 
         assert "error" not in data
         assert data["is_currently_chunked"] is False
-        assert "contiguous" in data["rationale"].lower() or "not chunked" in data["rationale"].lower()
+        assert (
+            "contiguous" in data["rationale"].lower() or "not chunked" in data["rationale"].lower()
+        )
 
 
 @pytest.mark.asyncio

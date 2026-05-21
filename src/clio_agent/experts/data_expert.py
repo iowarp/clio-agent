@@ -312,11 +312,7 @@ class DataExpert(dspy.Module):
             return self._hdf5_failure_result(filepath, rows_valid.error, runner)
 
         dataset_rows = datasets_data["datasets"]
-        dataset_lines = [
-            f"- {d['path']}: shape={d['shape']}, dtype={d['dtype']}, "
-            f"size={format_bytes(d['size_bytes'])}"
-            for d in dataset_rows[:12]
-        ]
+        dataset_lines = [self._hdf5_dataset_summary_line(d) for d in dataset_rows[:12]]
         if len(dataset_rows) > 12:
             dataset_lines.append(f"- ... {len(dataset_rows) - 12} more datasets")
 
@@ -379,6 +375,20 @@ class DataExpert(dspy.Module):
             if path and path.lower() in q_lower:
                 return path
         return None
+
+    @staticmethod
+    def _hdf5_dataset_summary_line(row: dict[str, Any]) -> str:
+        """Format a dataset row for file-level HDF5 summaries."""
+        line = (
+            f"- {row['path']}: shape={row['shape']}, dtype={row['dtype']}, "
+            f"size={format_bytes(row['size_bytes'])}"
+        )
+        attrs = row.get("attributes")
+        if isinstance(attrs, dict):
+            unit = str(attrs.get("units") or attrs.get("unit") or "").strip()
+            if unit:
+                line += f", units={unit}"
+        return line
 
     @staticmethod
     def _hdf5_recommendations(*, uncompressed: int, question: str) -> str:
