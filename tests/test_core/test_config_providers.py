@@ -288,6 +288,45 @@ class TestCreateLM:
         lm = create_lm(config)
         assert "openai/" in lm.model
 
+    def test_argonne_sophia_preserves_openai_prefixed_model_ids(self):
+        """Sophia GPT-OSS ids include openai/ as part of the served model id."""
+        config = LMProviderConfig(
+            provider="argonne",
+            api_base="https://inference-api.alcf.anl.gov/resource_server/sophia/vllm/v1",
+            model="openai/gpt-oss-120b",
+            api_key="token",
+        )
+
+        lm = create_lm(config)
+
+        assert lm.model == "openai/openai/gpt-oss-120b"
+
+    def test_argonne_metis_keeps_single_openai_provider_prefix(self):
+        """Metis GPT-OSS ids do not need Sophia's double-prefix workaround."""
+        config = LMProviderConfig(
+            provider="argonne",
+            api_base="https://inference-api.alcf.anl.gov/resource_server/metis/api/v1",
+            model="openai/gpt-oss-120b",
+            api_key="token",
+        )
+
+        lm = create_lm(config)
+
+        assert lm.model == "openai/gpt-oss-120b"
+
+    def test_argonne_sophia_huggingface_ids_keep_single_provider_prefix(self):
+        """Sophia non-openai model ids still use the normal LiteLLM provider prefix."""
+        config = LMProviderConfig(
+            provider="argonne",
+            api_base="https://inference-api.alcf.anl.gov/resource_server/sophia/vllm/v1",
+            model="meta-llama/Llama-4-Scout-17B-16E-Instruct",
+            api_key="token",
+        )
+
+        lm = create_lm(config)
+
+        assert lm.model == "openai/meta-llama/Llama-4-Scout-17B-16E-Instruct"
+
     def test_openai_uses_native_prefix(self):
         """OpenAI models should get openai/ prefix (native)."""
         with patch.dict("os.environ", {"OPENAI_API_KEY": "sk-test"}, clear=False):
