@@ -216,6 +216,18 @@ class TestDataExpert:
         finally:
             expert.close()
 
+    def test_expert_file_summary_includes_dataset_units(self, sample_hdf5):
+        """File-level HDF5 summaries should expose dataset units when present."""
+        expert = DataExpert()
+        try:
+            result = expert(question=f"What datasets and units are in {sample_hdf5}?")
+
+            assert result.synthesis_source == "deterministic"
+            assert "simulation/temperature" in result.analysis
+            assert "units=Kelvin" in result.analysis
+        finally:
+            expert.close()
+
     def test_analyze_dataset_without_dataset_lists_available_datasets(self, sample_hdf5):
         """hdf5_analyze_dataset needs a dataset argument and should not fake one."""
         expert = DataExpert()
