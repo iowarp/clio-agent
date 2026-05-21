@@ -5,6 +5,9 @@ local model and real scientific files. It is not a mock demo. The prompts below
 exercise routing, tool calling, multi-agent delegation, nano-agent fan-out,
 memory, visualization, streaming provenance, cancellation, and error surfacing.
 
+For the current verified evidence matrix and known gaps, see
+`docs/STRESS_BENCHMARK_REPORT.md`.
+
 The baseline path is local-first: LM Studio serving Qwopus through the
 OpenAI-compatible API. ALCF is optional and useful for provider comparison after
 the local path is stable.
