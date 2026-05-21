@@ -109,4 +109,6 @@ def test_tools_called_propagates_to_message_and_completion(tmp_path: Path) -> No
     # to the same ``name`` + ``args`` wire shape.
     assert rows[2]["name"] == "hdf5_list_datasets"
     assert rows[2]["args"] == {"filepath": "/tmp/x.h5"}
+    assert rows[2]["result"] == {"datasets": []}
     assert rows[2]["duration_ms"] == 8.0
+    assert rows[2]["telemetry_source"] == "agent_trace"
