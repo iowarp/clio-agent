@@ -49,7 +49,7 @@ Suite:
 ```powershell
 $env:CLIO_INTEGRATION_BASE='http://127.0.0.1:17902'
 $env:CLIO_REAL_AUDIT_LOG='D:\Libraries\Documents\projects\clio-agent\.tmp-real-provider\audit-qwopus-expanded.jsonl'
-uv run pytest tests/test_integration_v0_2/test_real_provider_semantics.py -m integration -vv -s
+uv run pytest tests/test_integration_contract/test_real_provider_semantics.py -m integration -vv -s
 ```
 
 Initial result on 2026-05-20 before product fixes:
