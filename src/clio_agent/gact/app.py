@@ -2505,6 +2505,13 @@ _STREAM_FALLBACK_REASON_DEFINITIONS: dict[str, dict[str, Any]] = {
         "recovery_actions": ["continue_without_live_streaming", "reconfigure", "retry"],
         "description": "DSPy streaming returned a final prediction but no visible token chunks.",
     },
+    "provider_streaming_unsupported": {
+        "category": "provider_streaming_limitation",
+        "synthetic_posthoc": True,
+        "live_streaming": False,
+        "recovery_actions": ["continue_without_live_streaming", "reconfigure"],
+        "description": "The configured provider does not expose a live streaming contract.",
+    },
     "sync_execution_path": {
         "category": "non_streamed_execution",
         "synthetic_posthoc": True,
@@ -2658,6 +2665,16 @@ def _build_stream_listeners(agent: Any, stream_listener_cls: Any) -> list[Any]:
     return listeners
 
 
+def _agent_streaming_unsupported_reason(agent: Any) -> str:
+    """Return a fallback reason when the active provider cannot stream live."""
+
+    provider_config = getattr(agent, "_provider_config", None)
+    provider = str(getattr(provider_config, "provider", "") or "")
+    if provider in {"claude_code", "codex"}:
+        return "provider_streaming_unsupported"
+    return ""
+
+
 def _stream_response_prefix(field_name: str, previous_field_name: str) -> str:
     """Return formatting to insert when a streamed output field starts."""
 
@@ -2714,6 +2731,10 @@ async def _try_streamed_forward(
         return None
     if not isinstance(agent, dspy.Module):
         _record_stream_fallback(app, sid, "agent_not_streamable")
+        return None
+    unsupported_reason = _agent_streaming_unsupported_reason(agent)
+    if unsupported_reason:
+        _record_stream_fallback(app, sid, unsupported_reason)
         return None
 
     # iowarp/clio-agent#158: bind listeners to explicit Predict instances

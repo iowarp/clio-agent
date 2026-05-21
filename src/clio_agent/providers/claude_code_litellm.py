@@ -17,6 +17,7 @@ import shutil
 import subprocess
 import time
 import uuid
+from collections.abc import AsyncIterator, Iterator
 from typing import Any
 
 try:
@@ -271,6 +272,90 @@ class ClaudeCodeLLM(CustomLLM):
             headers=headers,
             timeout=timeout,
             client=client,
+        )
+
+    def streaming(
+        self,
+        model: str,
+        messages: list,
+        api_base: str,
+        custom_prompt_dict: dict,
+        model_response: ModelResponse,
+        print_verbose: Any,
+        encoding: Any,
+        api_key: Any,
+        logging_obj: Any,
+        optional_params: dict,
+        acompletion: Any = None,
+        litellm_params: Any = None,
+        logger_fn: Any = None,
+        headers: dict | None = None,
+        timeout: Any = None,
+        client: Any = None,
+    ) -> Iterator[Any]:
+        del (
+            model,
+            messages,
+            api_base,
+            custom_prompt_dict,
+            model_response,
+            print_verbose,
+            encoding,
+            api_key,
+            logging_obj,
+            optional_params,
+            acompletion,
+            litellm_params,
+            logger_fn,
+            headers,
+            timeout,
+            client,
+        )
+        raise ClaudeCodeExecError(
+            "Claude Code provider does not support live streaming; use non-streaming completion"
+        )
+
+    async def astreaming(
+        self,
+        model: str,
+        messages: list,
+        api_base: str,
+        custom_prompt_dict: dict,
+        model_response: ModelResponse,
+        print_verbose: Any,
+        encoding: Any,
+        api_key: Any,
+        logging_obj: Any,
+        optional_params: dict,
+        acompletion: Any = None,
+        litellm_params: Any = None,
+        logger_fn: Any = None,
+        headers: dict | None = None,
+        timeout: Any = None,
+        client: Any = None,
+    ) -> AsyncIterator[Any]:
+        del (
+            model,
+            messages,
+            api_base,
+            custom_prompt_dict,
+            model_response,
+            print_verbose,
+            encoding,
+            api_key,
+            logging_obj,
+            optional_params,
+            acompletion,
+            litellm_params,
+            logger_fn,
+            headers,
+            timeout,
+            client,
+        )
+        if False:  # pragma: no cover - makes this an async generator for LiteLLM.
+            yield {}
+        raise ClaudeCodeExecError(
+            "Claude Code provider does not support live streaming; use non-streaming completion"
         )
 
 

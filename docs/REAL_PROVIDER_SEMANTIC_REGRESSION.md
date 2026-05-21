@@ -108,8 +108,9 @@ fallback reasons when no live deltas were emitted.
 - #245: GACT `/v1/providers/lm` omits boot-time LM provider/model for env-configured agents. Fixed by PR #249.
 - #246: CLIO has no Claude Code provider path for real-provider semantic regression runs. Fixed by PR #255.
 - #247: Cancelling a live Qwopus GACT turn can break the polling connection with h11 Content-Length error. Fixed by PR #250.
-- #253: Claude Code run can route CSV inspection to `fs_read_file` with no owning expert.
+- #253: Claude Code run can route CSV inspection to `fs_read_file` with no owning expert. Fixed by PR #256.
 - #254: Claude Code provider fails visualization expert path with LiteLLM async streaming error.
+- #257: Claude Code visualization route can report chart artifact without tool telemetry.
 
 ## Claude Status
 
@@ -159,10 +160,11 @@ Passing Claude Code cases:
 
 Filed Claude Code failures:
 
-- #253: CSV prompt selected `fs_read_file`, a planner-visible tool with no registered owning expert.
-- #254: visualization expert path hit LiteLLM async/streaming incompatibility in the Claude Code custom provider.
+- #253: CSV prompt selected `fs_read_file`, a planner-visible tool with no registered owning expert. Fixed by PR #256; focused live retest selected `analysis` and called `csv_read_table`.
+- #254: visualization expert path hit LiteLLM async/streaming incompatibility in the Claude Code custom provider. Current fix marks Claude Code as non-live-streaming and bypasses DSPy streamify with `provider_streaming_unsupported`.
+- #257: after #254's streaming bypass, the same visualization prompt selected `visualization` and produced a `.png` artifact path, but GACT reported no `plot_` tool telemetry.
 
 ## Remaining Work
 
-- Fix #253 and #254 on separate branches/PRs, then rerun the full Claude
+- Fix #254 and #257 on separate branches/PRs, then rerun the full Claude
   Code prompt matrix.

@@ -153,6 +153,7 @@ def test_stream_fallback_reasons_are_audited_and_reject_unknowns(tmp_path: Path)
         "stream_failed_before_output",
         "stream_no_prediction",
         "stream_completed_without_chunks",
+        "provider_streaming_unsupported",
         "sync_execution_path",
         "dynamic_prompt_stream_unavailable",
         "dynamic_tool_stream_unavailable",
@@ -225,6 +226,34 @@ async def test_streamify_setup_failure_returns_none_for_sync_fallback(
     assert fallback["live_streaming"] is False
     assert fallback["recovery_actions"]
     assert "ValueError" in fallback["message"]
+
+
+async def test_provider_without_live_streaming_skips_streamify(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    def fail_streamify(*args: Any, **kwargs: Any) -> Any:
+        del args, kwargs
+        raise AssertionError("streamify should not be called for non-streaming providers")
+
+    streamify_module = importlib.import_module("dspy.streaming.streamify")
+    monkeypatch.setattr(streamify_module, "streamify", fail_streamify)
+    agent = _DspyAgent("sync answer")
+    agent._provider_config = SimpleNamespace(provider="claude_code")
+    app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
+    chunks: list[str] = []
+
+    async def emit_chunk(text: str) -> None:
+        chunks.append(text)
+
+    result = await _try_streamed_forward(app, "visualize", "sid", emit_chunk)
+
+    assert result is None
+    assert chunks == []
+    assert agent.calls == []
+    fallback = _pop_stream_fallback(app, "sid")
+    assert fallback["reason"] == "provider_streaming_unsupported"
+    assert fallback["synthetic_posthoc"] is True
+    assert fallback["live_streaming"] is False
 
 
 def test_build_stream_listeners_binds_known_predictors_explicitly() -> None:

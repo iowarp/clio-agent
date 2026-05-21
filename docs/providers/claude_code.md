@@ -14,6 +14,12 @@ Claude Code is used only as a model transport. The provider passes
 agent tools are disabled; CLIO's planner, experts, and MCP tools remain
 the only tool execution path.
 
+Claude Code does not expose a live token-streaming contract through this
+provider. GACT skips DSPy live streaming for `CLIO_LM_PROVIDER=claude_code`
+and marks completed text as `stream_source="synthetic_posthoc"` with
+`stream_fallback.reason="provider_streaming_unsupported"` instead of
+emitting fake live deltas.
+
 ## Setup
 
 Install and authenticate Claude Code:
@@ -51,3 +57,7 @@ when you want direct Anthropic API billing with `ANTHROPIC_API_KEY`.
 **Unexpected tool behavior.** The provider disables Claude Code tools.
 If a CLIO turn uses a tool, it should appear in CLIO/GACT tool telemetry,
 not in Claude Code's internal tool system.
+
+**No live streaming.** This provider shells out to `claude -p`, which returns
+a completed JSON result. Use GACT stream metadata to distinguish this
+post-hoc delivery from providers that emit live token chunks.
