@@ -3240,6 +3240,11 @@ def _extract_tools_called(pred: Any) -> list[dict[str, Any]]:
         result = get("result")
         if result is not None:
             row["result"] = result
+            if "ok" not in row and agent_trace_call:
+                row["ok"] = not (
+                    (isinstance(result, dict) and "error" in result)
+                    or (isinstance(result, str) and result.startswith("Error:"))
+                )
 
         telemetry_source = get("telemetry_source") or (
             "agent_trace" if agent_trace_call else "posthoc_prediction"
