@@ -189,6 +189,14 @@ class TestAnalysisExpert:
             assert any(name.startswith("hdf5_") for name in tool_names)
             assert any(name.startswith("parquet_") for name in tool_names)
             assert any(name.startswith("csv_") for name in tool_names)
+            assert "Parallel validation completed" in result.analysis
+            assert "data_validator" in result.analysis
+            assert "analysis_validator" in result.analysis
+            assert "csv_validator" in result.analysis
+            provenance_names = [row.tool for row in result.tool_provenance]
+            assert any(name.startswith("hdf5_") for name in provenance_names)
+            assert any(name.startswith("parquet_") for name in provenance_names)
+            assert any(name.startswith("csv_") for name in provenance_names)
         finally:
             expert.close()
 
