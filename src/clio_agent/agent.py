@@ -803,6 +803,7 @@ class ClioAgent(dspy.Module):
                     question=expert_question,
                     file_context=file_context,
                 )
+                self._merge_expert_provenance(trace, expert_result)
             description = self._coerce_text(
                 getattr(expert_result, "visualization_description", "")
             ).strip()
