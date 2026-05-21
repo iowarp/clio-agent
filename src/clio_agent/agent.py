@@ -586,6 +586,11 @@ class ClioAgent(dspy.Module):
             if kind == "expert":
                 expert_id = self._coerce_text(action.get("expert")).strip().lower()
                 expert_question = self._coerce_text(action.get("question")).strip() or question
+                expert_question = self._repair_question_filepaths_from_context(
+                    expert_question,
+                    source_question=question,
+                    file_context=file_context,
+                )
                 if self._should_answer_with_chat(question, file_context):
                     if routing_mode == "experts":
                         raise RoutingError(
@@ -1298,6 +1303,32 @@ class ClioAgent(dspy.Module):
 
         repaired = dict(args)
         repaired["filepath"] = str(matches[0].expanduser())
+        return repaired
+
+    @staticmethod
+    def _repair_question_filepaths_from_context(
+        text: str,
+        *,
+        source_question: str,
+        file_context: str,
+    ) -> str:
+        """Repair degraded file paths in a planner-rewritten expert question."""
+        repaired = text
+        source_paths = extract_file_paths(source_question, file_context, SCIENTIFIC_FILE_SUFFIXES)
+        if not source_paths:
+            return repaired
+
+        for degraded in extract_file_paths(text, "", SCIENTIFIC_FILE_SUFFIXES):
+            expanded = degraded.expanduser()
+            if expanded.exists() or not degraded.name:
+                continue
+            matches = [
+                candidate
+                for candidate in source_paths
+                if candidate.name == degraded.name and candidate.expanduser().exists()
+            ]
+            if len(matches) == 1:
+                repaired = repaired.replace(str(degraded), str(matches[0].expanduser()))
         return repaired
 
     @staticmethod
