@@ -16,7 +16,7 @@ the only tool execution path.
 
 Claude Code does not expose a live token-streaming contract through this
 provider. GACT skips DSPy live streaming for `CLIO_LM_PROVIDER=claude_code`
-and marks completed text as `stream_source="synthetic_posthoc"` with
+and marks completed text as `stream_source="batch"` with
 `stream_fallback.reason="provider_streaming_unsupported"` instead of
 emitting fake live deltas.
 

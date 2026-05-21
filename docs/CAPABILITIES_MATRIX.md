@@ -61,31 +61,32 @@ assistant `message.completed.metadata.stream_source`:
 | `stream_source` | Meaning |
 |---|---|
 | `live` | Delta arrived through the live `dspy.streamify` path. |
-| `synthetic_posthoc` | Backend already had the final answer before it could emit live provider-token deltas. |
+| `batch` | Backend already had the final answer before it could emit live provider-token deltas. |
 
-Synthetic post-hoc text is delivered as a completed text part, not as
+Batch fallback text is delivered as a completed text part, not as
 fake `message.part.delta` chunks. The text part metadata and assistant
 `message.completed.metadata` include `stream_fallback.reason` so clients
 can explain why live provider token streaming was not used.
 `stream_fallback` also includes `category`, `description`,
-`recovery_actions`, `synthetic_posthoc=true`, and `live_streaming=false`.
+`recovery_actions`, legacy `synthetic_posthoc=true`, and
+`live_streaming=false`.
 The audited reason catalog is advertised in
 `/v1/capabilities.capabilities.x_clio_stream_fallback_reasons`; unknown
 fallback reasons are rejected instead of silently creating a new
 semantics bucket.
 Failures while executing the live stream surface as structured
 `provider_error` turns, before or after visible output; they are not
-rerun through the sync path to create synthetic post-hoc answer text.
+rerun through the sync path to create batch fallback answer text.
 
 As of v0.3.1, chat answers, provider-backed expert synthesis, and
 registered user/skill agents attempt live streaming when the upstream
 DSPy/LiteLLM provider supports it. Paths that cannot start a live stream
-still label completed text as `synthetic_posthoc` with an explicit
-`stream_fallback.reason`, but they do not emit synthetic delta events. If
+still label completed text as `batch` with an explicit
+`stream_fallback.reason`, but they do not emit fake delta events. If
 streaming starts but produces only a final prediction and no visible
 chunks, the reason is `stream_completed_without_chunks` rather than the
-generic sync fallback. Deterministic non-token summaries may also be
-synthetic because there are no provider tokens to stream.
+generic sync fallback. Deterministic non-token summaries may also use
+batch fallback metadata because there are no provider tokens to stream.
 
 Cancellation is also best-effort at the GACT boundary. A cancelled turn
 settles with `error_info.error="cancelled"` and status events include
@@ -110,7 +111,7 @@ than normal tool success and are not carried into later turn metadata.
 | `plan_mode` | ✅ verified | session.mode=plan refuses `/diffs/apply` with `PermissionError("refused to write under session.mode='plan'")`; file unchanged |
 | `agent_write` | ✅ verified | `POST/PUT/DELETE /v1/agents` lifecycle; user agents appear in `/v1/agents` with `source="user"`; prompt-only agents execute through DSPy/LiteLLM, and tool-declaring agents execute through a DSPy ReAct runner scoped to their declared MCP tools. |
 | `skills_extraction` | ✅ verified | `POST /v1/agents/extract` mines `tools_called` from past sessions → produces a user agent definition visible in `/v1/agents`; extracted agents execute with prompt-only or declared-tool semantics. |
-| `x_clio_text_streaming` | best-effort live | `best_effort_live` means live provider-token streaming is attempted. `x_clio_synthetic_posthoc_streaming=false` means completed fallback text is delivered as a normal text part rather than fake streaming chunks. `x_clio_stream_fallback_reasons` lists every allowed synthetic post-hoc reason and recovery action. |
+| `x_clio_text_streaming` | best-effort live | `best_effort_live` means live provider-token streaming is attempted. `x_clio_synthetic_posthoc_streaming=false` means completed fallback text is delivered as a normal text part rather than fake streaming chunks. `x_clio_stream_fallback_reasons` lists every allowed batch fallback reason and recovery action. |
 
 ## Provider-Specific Verification
 

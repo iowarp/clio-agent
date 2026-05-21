@@ -92,7 +92,7 @@ visualization provenance changes did not regress the local-model path:
 
 The audit log showed real tool calls for HDF5, Parquet, CSV, and plotting;
 structured `tool_error` for a missing file; structured `cancelled` for client
-cancellation; and explicit `stream_source=synthetic_posthoc` plus structured
+cancellation; and explicit `stream_source=batch` plus structured
 fallback reasons when no live deltas were emitted.
 
 ## Evidence Matrix
@@ -107,7 +107,7 @@ fallback reasons when no live deltas were emitted.
 | `visualization_tool_loop` | Qwopus / LM Studio | Parquet summary dashboard | Route to visualization, call plotting tool, return artifact path | Routed `visualization`, called `plot_summary`, wrote `measurements_dashboard.png`, returned `.png` path | Pass |
 | `provider_endpoint_effective_config` | Qwopus / LM Studio | `/v1/providers/lm` | Report effective provider/model/api_base | Initially failed with blank provider/model/api_base; retest after #245 returned Qwopus/LM Studio config | Fixed: #245 |
 | `cancellation_truth` | Qwopus / LM Studio | Long Parquet turn plus `/cancel` | Settle as structured cancellation and keep polling healthy | `POST /cancel` returned empty 204; final turn surfaced structured `cancelled` | Fixed: #247 |
-| `streaming_provenance_truthful` | Qwopus / LM Studio | SSE text turn | Completed event must identify live vs post-hoc provenance | Planner error surfaced without fake answer; completed metadata reported `synthetic_posthoc` and fallback reason | Fixed: #244 |
+| `streaming_provenance_truthful` | Qwopus / LM Studio | SSE text turn | Completed event must identify live vs post-hoc provenance | Planner error surfaced without fake answer; completed metadata reported `batch` and fallback reason | Fixed: #244 |
 
 ## Filed Issues
 
@@ -164,7 +164,7 @@ Passing Claude Code cases:
 - Missing file: surfaced structured `tool_error`.
 - Provider endpoint: reported `claude_code/sonnet`.
 - Cancellation: surfaced structured `cancelled`.
-- Streaming provenance: emitted explicit `synthetic_posthoc` provenance.
+- Streaming provenance: emitted explicit `batch` provenance.
 
 Filed Claude Code failures:
 
@@ -189,11 +189,11 @@ Final Claude Code audit rows showed:
 - Visualization: `selected_agent=visualization`, `tools_called=plot_summary`.
 - Provider endpoint: reported `claude_code/sonnet`.
 - Cancellation: structured `error_info.error=cancelled`.
-- Streaming provenance: `stream_source=synthetic_posthoc` with explicit fallback metadata.
+- Streaming provenance: `stream_source=batch` with explicit fallback metadata.
 
 ## Remaining Work
 
 - No open failures remain from the real-provider semantic matrix. Remaining
   caveat: CLI-backed providers (`claude_code`, `codex`) are non-live-streaming;
-  GACT reports completed text as `synthetic_posthoc` with
+  GACT reports completed text as `batch` with
   `provider_streaming_unsupported` rather than fake live token deltas.

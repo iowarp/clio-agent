@@ -104,7 +104,7 @@ def _assert_structured_stream_fallback(payload: dict[str, Any], reason: str) -> 
     assert fallback["recovery_actions"]
 
 
-def test_synthetic_posthoc_text_is_delivered_without_deltas(app_client) -> None:
+def test_batch_text_is_delivered_without_deltas(app_client) -> None:
     app, client, answer = app_client
     sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
     client.post(
@@ -124,11 +124,11 @@ def test_synthetic_posthoc_text_is_delivered_without_deltas(app_client) -> None:
     # chunks. Only real live provider output should use delta events.
     assert len(added) == 1
     assert added[0].payload["part"]["text"] == answer
-    assert added[0].payload["part"]["metadata"]["stream_source"] == "synthetic_posthoc"
+    assert added[0].payload["part"]["metadata"]["stream_source"] == "batch"
     _assert_structured_stream_fallback(added[0].payload["part"]["metadata"], "agent_not_streamable")
     assert deltas == []
     assert len(completed) == 1
-    assert completed[0].payload["stream_source"] == "synthetic_posthoc"
+    assert completed[0].payload["stream_source"] == "batch"
     _assert_structured_stream_fallback(completed[0].payload, "agent_not_streamable")
     assert completed[0].payload["final_text"] == answer
     _assert_structured_stream_fallback(
@@ -137,7 +137,7 @@ def test_synthetic_posthoc_text_is_delivered_without_deltas(app_client) -> None:
     messages = client.get(f"/v1/sessions/{sid}/messages").json()["messages"]
     assistant = [m for m in messages if m["role"] == "assistant"][-1]
     text_parts = [p for p in assistant["parts"] if p["type"] == "text"]
-    assert text_parts[-1]["metadata"]["stream_source"] == "synthetic_posthoc"
+    assert text_parts[-1]["metadata"]["stream_source"] == "batch"
     _assert_structured_stream_fallback(text_parts[-1]["metadata"], "agent_not_streamable")
 
 
@@ -506,11 +506,8 @@ def test_pre_stream_failure_surfaces_error_without_sync_rerun(
     assert deltas == []
     assert completed_messages[-1].payload["stop_reason"] == "error"
     assert completed_messages[-1].payload["error_info"]["details"]["partial_output"] is False
-    assert (
-        completed_messages[-1].payload["error_info"]["details"]["stream_source"]
-        == "synthetic_posthoc"
-    )
-    assert completed_messages[-1].payload["metadata"]["stream_source"] == "synthetic_posthoc"
+    assert completed_messages[-1].payload["error_info"]["details"]["stream_source"] == "batch"
+    assert completed_messages[-1].payload["metadata"]["stream_source"] == "batch"
     _assert_structured_stream_fallback(
         completed_messages[-1].payload["metadata"], "stream_failed_before_output"
     )
@@ -617,13 +614,13 @@ def test_streamify_final_prediction_without_chunks_has_specific_fallback(
 
     assert deltas == []
     assert added[-1].payload["part"]["text"] == "complete answer"
-    assert added[-1].payload["part"]["metadata"]["stream_source"] == "synthetic_posthoc"
+    assert added[-1].payload["part"]["metadata"]["stream_source"] == "batch"
     _assert_structured_stream_fallback(
         added[-1].payload["part"]["metadata"], "stream_completed_without_chunks"
     )
-    assert completed_parts[-1].payload["stream_source"] == "synthetic_posthoc"
+    assert completed_parts[-1].payload["stream_source"] == "batch"
     assert completed_parts[-1].payload["final_text"] == "complete answer"
-    assert completed_messages[-1].payload["metadata"]["stream_source"] == "synthetic_posthoc"
+    assert completed_messages[-1].payload["metadata"]["stream_source"] == "batch"
     _assert_structured_stream_fallback(
         completed_messages[-1].payload["metadata"], "stream_completed_without_chunks"
     )

@@ -90,7 +90,7 @@ class CapabilityFlags(BaseModel):
     # vendor metadata, so these can carry richer values than booleans.
     x_clio_cancellation: Literal["none", "best_effort", "hard"] = "none"
     x_clio_executor_cancellation: bool = False
-    x_clio_text_streaming: Literal["none", "synthetic_posthoc", "best_effort_live"] = "none"
+    x_clio_text_streaming: Literal["none", "batch", "best_effort_live"] = "none"
     x_clio_synthetic_posthoc_streaming: bool = False
     x_clio_stream_fallback_reasons: dict[str, dict[str, Any]] = Field(default_factory=dict)
     x_clio_direct_delete_permissions: bool = False

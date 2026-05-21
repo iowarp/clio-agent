@@ -69,18 +69,14 @@ def fake_agent() -> FakeClioAgent:
 
 @pytest.fixture()
 def client(tmp_path: Path, fake_agent: FakeClioAgent) -> TestClient:
-    return TestClient(
-        build_app(sessions_path=tmp_path / "sessions.json", agent=fake_agent)
-    )
+    return TestClient(build_app(sessions_path=tmp_path / "sessions.json", agent=fake_agent))
 
 
 def _create_session(client: TestClient, title: str = "t") -> str:
     return client.post("/v1/sessions", json={"title": title}).json()["id"]
 
 
-def test_post_message_happy_path(
-    client: TestClient, fake_agent: FakeClioAgent
-) -> None:
+def test_post_message_happy_path(client: TestClient, fake_agent: FakeClioAgent) -> None:
     from .conftest import complete_turn
 
     sid = _create_session(client)
@@ -136,9 +132,7 @@ def test_post_message_transitions_session_to_idle(client: TestClient) -> None:
 def test_post_message_session_not_found_is_structured_404(
     client: TestClient,
 ) -> None:
-    resp = client.post(
-        "/v1/sessions/sess_nope/messages", json={"text": "hi"}
-    )
+    resp = client.post("/v1/sessions/sess_nope/messages", json={"text": "hi"})
     assert resp.status_code == 404
     body = resp.json()
     assert "error" in body
@@ -169,9 +163,7 @@ def test_post_message_agent_exception_populates_error_info(
     from .conftest import complete_turn
 
     failing_agent = FakeClioAgent(raise_on_forward=True)
-    app = build_app(
-        sessions_path=tmp_path / "s.json", agent=failing_agent
-    )
+    app = build_app(sessions_path=tmp_path / "s.json", agent=failing_agent)
     with TestClient(app) as c:
         sid = c.post("/v1/sessions", json={"title": "x"}).json()["id"]
         a = complete_turn(c, sid, "hi")
@@ -192,17 +184,12 @@ def test_post_message_agent_exception_includes_error_info_on_completed_event(
     from .conftest import complete_turn
 
     failing_agent = FakeClioAgent(raise_on_forward=True)
-    app = build_app(
-        sessions_path=tmp_path / "s.json", agent=failing_agent
-    )
+    app = build_app(sessions_path=tmp_path / "s.json", agent=failing_agent)
     with TestClient(app) as c:
         sid = c.post("/v1/sessions", json={"title": "x"}).json()["id"]
         assistant = complete_turn(c, sid, "hi")
 
-    completed = [
-        ev for ev in app.state.bus._history.get(sid, [])
-        if ev.type == "message.completed"
-    ]
+    completed = [ev for ev in app.state.bus._history.get(sid, []) if ev.type == "message.completed"]
     assert completed, "turn did not publish message.completed"
     payload = completed[-1].payload
     assert payload["message_id"] == assistant["id"]
@@ -218,9 +205,7 @@ def test_routing_override_restored_after_agent_exception(
 
     failing_agent = FakeClioAgent(raise_on_forward=True)
     failing_agent._routing_mode_override = "auto"
-    app = build_app(
-        sessions_path=tmp_path / "s.json", agent=failing_agent
-    )
+    app = build_app(sessions_path=tmp_path / "s.json", agent=failing_agent)
     with TestClient(app) as c:
         sid = c.post(
             "/v1/sessions",
@@ -288,24 +273,19 @@ def test_post_message_prediction_error_info_sets_error_turn(
     assert assistant["stop_reason"] == "error"
     assert assistant["error_info"]["error"] == "routing_error"
     assert "rejected chat" in assistant["error_info"]["message"]
-    assert assistant["error_info"]["details"]["recovery_actions"] == [
-        "retry_with_auto_routing"
-    ]
+    assert assistant["error_info"]["details"]["recovery_actions"] == ["retry_with_auto_routing"]
     assert [part["type"] for part in assistant["parts"]] == ["routing_decision"]
-    assert assistant["metadata"]["stream_source"] == "synthetic_posthoc"
+    assert assistant["metadata"]["stream_source"] == "batch"
     assert assistant["metadata"]["stream_fallback"]["reason"] == "agent_not_streamable"
     assert assistant["metadata"]["stream_fallback"]["live_streaming"] is False
 
-    completed = [
-        ev for ev in app.state.bus._history.get(sid, [])
-        if ev.type == "message.completed"
-    ]
+    completed = [ev for ev in app.state.bus._history.get(sid, []) if ev.type == "message.completed"]
     assert completed, "turn did not publish message.completed"
     payload = completed[-1].payload
     assert payload["message_id"] == assistant["id"]
     assert payload["stop_reason"] == "error"
     assert payload["error_info"]["error"] == "routing_error"
-    assert payload["metadata"]["stream_source"] == "synthetic_posthoc"
+    assert payload["metadata"]["stream_source"] == "batch"
     assert payload["metadata"]["stream_fallback"]["reason"] == "agent_not_streamable"
     assert payload["metadata"]["stream_fallback"]["live_streaming"] is False
 
@@ -422,7 +402,7 @@ def test_post_message_prompt_user_agent_executes_registered_agent(
     ]
     assert assistant["parts"][0]["selected_agent"] == "reviewer"
     assert assistant["parts"][1]["text"] == "USER_AGENT_OK"
-    assert assistant["metadata"]["stream_source"] == "synthetic_posthoc"
+    assert assistant["metadata"]["stream_source"] == "batch"
     assert assistant["metadata"]["stream_fallback"]["reason"] == (
         "dynamic_prompt_stream_unavailable"
     )
@@ -569,10 +549,8 @@ def test_post_message_tool_user_agent_executes_registered_agent(
     ]
     assert assistant["parts"][0]["selected_agent"] == "tool_reviewer"
     assert assistant["parts"][1]["text"] == "TOOL_USER_AGENT_OK"
-    assert assistant["metadata"]["stream_source"] == "synthetic_posthoc"
-    assert assistant["metadata"]["stream_fallback"]["reason"] == (
-        "dynamic_tool_stream_unavailable"
-    )
+    assert assistant["metadata"]["stream_source"] == "batch"
+    assert assistant["metadata"]["stream_fallback"]["reason"] == ("dynamic_tool_stream_unavailable")
     assert assistant["metadata"]["tools_called"][0]["name"] == "fs_read_file"
     assert assistant["metadata"]["tools_called"][0]["args"] == {"path": "README.md"}
     assert sess["status"] == "idle"
@@ -840,9 +818,7 @@ def test_post_message_without_routing_emits_text_only(
     from .conftest import complete_turn
 
     nochat_agent = FakeClioAgent(answer="chat reply", selected_expert="")
-    app = build_app(
-        sessions_path=tmp_path / "s.json", agent=nochat_agent
-    )
+    app = build_app(sessions_path=tmp_path / "s.json", agent=nochat_agent)
     with TestClient(app) as c:
         sid = c.post("/v1/sessions", json={}).json()["id"]
         a = complete_turn(c, sid, "hi")

@@ -67,17 +67,17 @@ Text delivery includes `stream_source`:
 | `stream_source` | Meaning |
 |---|---|
 | `live` | Delta arrived through the live `dspy.streamify` path. |
-| `synthetic_posthoc` | Backend already had the final answer before live provider-token deltas could be emitted. |
+| `batch` | Backend already had the final answer before live provider-token deltas could be emitted. |
 
 Live streaming is best-effort: chat answers, provider-backed expert
 synthesis, and registered user/skill agents attempt the live
 `dspy.streamify` path when the upstream DSPy/LiteLLM stack emits chunks.
 Paths that cannot start a live stream mark completed text as
-`synthetic_posthoc` with an explicit `stream_fallback.reason`;
-deterministic non-token summaries may also be synthetic because there
+`batch` with an explicit `stream_fallback.reason`; deterministic
+non-token summaries may also use batch fallback metadata because there
 are no provider tokens to stream.
 The fallback object also carries `category`, `description`,
-`recovery_actions`, `synthetic_posthoc=true`, and `live_streaming=false`;
+`recovery_actions`, legacy `synthetic_posthoc=true`, and `live_streaming=false`;
 the allowed reason catalog is advertised as
 `/v1/capabilities.capabilities.x_clio_stream_fallback_reasons`.
 Once live stream execution has started, failures are surfaced as
@@ -94,7 +94,7 @@ The TUI should render that as cancellation acknowledged, with no implication tha
 Keep these visible to the engineering team rather than hiding them behind a normal-looking response:
 
 - Streaming is live only where the upstream DSPy/LiteLLM path exposes
-  answer chunks; otherwise synthetic post-hoc text remains a truthful
+  answer chunks; otherwise batch fallback text remains a truthful
   fallback path.
 - Tool lifecycle telemetry is live-only; post-turn `tools_called` remains summary metadata.
 - Some GACT endpoint families are definition/catalog surfaces rather than full runtime routes for CLIO's core agent loop.

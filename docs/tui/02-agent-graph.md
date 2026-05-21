@@ -56,7 +56,7 @@ USER INPUT (question, session_id)
 ## Execution Model
 
 - **Synchronous core.** `forward()` blocks until the agent loop finishes.
-- **GACT may stream text live when DSPy/LiteLLM exposes listener chunks.** Expert paths that do not stream live are marked as `synthetic_posthoc`.
+- **GACT may stream text live when DSPy/LiteLLM exposes listener chunks.** Expert paths that do not stream live are marked as `batch`.
 - **Cancellation is best-effort at the GACT boundary.** If provider/tool work is already running in an executor thread, the backend reports that upstream work may continue.
 - The planner has a bounded step limit; when it cannot complete cleanly, CLIO surfaces structured routing/tool/provider errors instead of hiding the failure behind canned text.
 

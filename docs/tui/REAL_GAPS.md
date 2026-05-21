@@ -19,7 +19,7 @@ regressions, but don't treat these as unresolved release blockers:
 
 | Area | Current status | Evidence |
 |---|---|---|
-| Streaming provenance | Chat answers and provider-backed expert synthesis attempt live `message.part.delta` events when DSPy/LiteLLM streams. Deterministic or fallback text can still be marked `stream_source="synthetic_posthoc"` because no provider tokens were available to stream, but it is delivered as a completed part with a structured fallback reason rather than synthetic deltas. | `tests/test_gact/test_streaming.py`, real LM Studio/Qwopus data-expert smoke with `stream_completed_without_chunks` provenance |
+| Streaming provenance | Chat answers and provider-backed expert synthesis attempt live `message.part.delta` events when DSPy/LiteLLM streams. Deterministic or fallback text can still be marked `stream_source="batch"` because no provider tokens were available to stream, but it is delivered as a completed part with a structured fallback reason rather than synthetic deltas. | `tests/test_gact/test_streaming.py`, real LM Studio/Qwopus data-expert smoke with `stream_completed_without_chunks` provenance |
 | LM provider config | `GET / PUT /v1/providers/lm` lets the TUI configure or hot-swap provider/model without redeploying the GACT process. | `tests/test_gact/test_lm_provider.py` |
 | Tokens + cost | Per-turn tokens/cost populate assistant messages, completion events, session rollups, and `/v1/metrics`; GACT also extracts DSPy history/usage and estimates known-model cost when upstream omits cost. | `tests/test_gact/test_cost_tracking.py`, `tests/test_gact/test_cost_estimate.py` |
 | DataExpert tool execution | Real GACT data turns complete instead of hanging, and native tool traces are exposed as `tools_called` metadata. | `tests/test_integration/test_local_filesystem_smoke.py`, `tests/test_gact/test_tools_called.py`, real LM Studio/Qwopus HDF5 smoke |
@@ -36,13 +36,13 @@ regressions, but don't treat these as unresolved release blockers:
 
 - `stream_source="live"`: text arrived through the live
   `dspy.streamify` path.
-- `stream_source="synthetic_posthoc"`: the backend already had the
+- `stream_source="batch"`: the backend already had the
   final assistant text before it could emit live provider-token deltas.
 
-Synthetic text part events and assistant completion metadata also carry
+Batch fallback text part events and assistant completion metadata also carry
 `stream_fallback.reason`, `category`, `description`, `recovery_actions`,
-`synthetic_posthoc=true`, and `live_streaming=false`. Render that reason
-when useful; do not present synthetic post-hoc text as evidence that the
+legacy `synthetic_posthoc=true`, and `live_streaming=false`. Render that reason
+when useful; do not present batch fallback text as evidence that the
 provider streamed live tokens. The complete audited reason catalog is
 available from `/v1/capabilities.capabilities.x_clio_stream_fallback_reasons`;
 unknown reasons are rejected so new downgrade paths cannot appear as
@@ -53,13 +53,13 @@ agents, `stream_setup_failed` for DSPy listener setup failures, and
 prediction but no user-visible token chunks.
 Registered user/skill agents, including tool-declaring agents backed by
 DSPy ReAct, attempt the live `dspy.streamify` path first and only label
-completed text as synthetic post-hoc when streaming cannot start.
+completed text as `batch` when streaming cannot start.
 If streaming starts executing the agent and fails before or after visible
 output, GACT surfaces a structured `provider_error` turn instead of
-rerunning the sync path and returning synthetic answer text.
+rerunning the sync path and returning fabricated answer text.
 
 The TUI should render both sources, but only `live` is evidence of real
-token arrival. Treat synthetic post-hoc text as truthful fallback
+token arrival. Treat batch text as truthful fallback
 delivery, not as proof that the upstream provider streamed.
 
 ## Wire-shape-only or partial runtime gaps

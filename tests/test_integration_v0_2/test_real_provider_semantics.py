@@ -403,7 +403,7 @@ def test_real_provider_streaming_provenance_truthful(http: httpx.Client, session
         assert source == "live", metadata
         assert "stream_fallback" not in metadata
     else:
-        assert source == "synthetic_posthoc", metadata
+        assert source == "batch", metadata
         fallback = metadata.get("stream_fallback") or {}
         assert fallback.get("reason"), metadata
         assert fallback.get("live_streaming") is False, metadata
