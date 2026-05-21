@@ -334,6 +334,43 @@ class TestRunAgentLoop:
 
         agent._synthesize_agent_answer.assert_not_called()
 
+    def test_parallel_file_validation_recovers_from_initial_planner_failure(
+        self,
+        agent,
+        tmp_path,
+    ):
+        first_path = tmp_path / "run.h5"
+        second_path = tmp_path / "events.csv"
+        first_path.touch()
+        second_path.write_text("event_id,status\n1,ok\n", encoding="utf-8")
+        expert_result = MagicMock()
+        agent._plan_next_action = MagicMock(
+            side_effect=RoutingError(
+                "Agent planner failed to produce an action.",
+                details={"original_error": "Planner returned invalid JSON action: None"},
+            )
+        )
+        agent._dispatch_expert_action = MagicMock(
+            return_value=("analysis", "validated files", expert_result, None)
+        )
+
+        selected, answer, result, error_info, route = agent._run_agent_loop(
+            question=f"Validate these files in parallel with nanoagents: {first_path} {second_path}",
+            session_context="",
+            file_context="",
+            trace=_trace(),
+        )
+
+        assert selected == "analysis"
+        assert answer == "validated files"
+        assert result is expert_result
+        assert route.target == "analysis"
+        assert error_info is not None
+        assert error_info["details"]["partial"] is True
+        assert error_info["details"]["stage"] == "parallel_validation_recovery"
+        assert "invalid JSON" in error_info["details"]["original_error"]
+        agent._dispatch_expert_action.assert_called_once()
+
     def test_forward_promotes_propose_edit_observation_to_file_diffs(self, agent):
         proposed = {
             "path": "/tmp/example.py",

@@ -170,6 +170,28 @@ class TestAnalysisExpert:
         finally:
             expert.close()
 
+    def test_parallel_file_validation_spawns_tool_backed_nanoagents(
+        self, sample_hdf5, sample_parquet, tmp_path
+    ):
+        csv_path = tmp_path / "sensor_events.csv"
+        csv_path.write_text("event_id,status\n1,ok\n", encoding="utf-8")
+        expert = AnalysisExpert()
+        try:
+            result = expert(
+                question=(
+                    f"Validate HDF5 structure for {sample_hdf5}, "
+                    f"Parquet statistics for {sample_parquet}, and CSV schema for {csv_path}."
+                )
+            )
+            spawns = result.nanoagents_spawned
+            assert len(spawns) == 3
+            tool_names = [row["name"] for spawn in spawns for row in spawn.get("tools_called", [])]
+            assert any(name.startswith("hdf5_") for name in tool_names)
+            assert any(name.startswith("parquet_") for name in tool_names)
+            assert any(name.startswith("csv_") for name in tool_names)
+        finally:
+            expert.close()
+
     def test_analysis_expert_rejects_invalid_parquet_schema_shape(self):
         """Malformed Parquet schema payloads should not produce file facts."""
 

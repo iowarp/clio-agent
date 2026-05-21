@@ -46,6 +46,7 @@ class NanoagentResult:
     tokens: dict[str, int] = field(default_factory=dict)
     cost_usd: float = 0.0
     error: str = ""
+    tools_called: list[dict[str, Any]] = field(default_factory=list)
 
     def to_wire(self) -> dict[str, Any]:
         out: dict[str, Any] = {
@@ -59,6 +60,8 @@ class NanoagentResult:
             out["tokens"] = self.tokens
         if self.error:
             out["error"] = self.error
+        if self.tools_called:
+            out["tools_called"] = self.tools_called
         return out
 
 
@@ -89,11 +92,7 @@ def spawn_one(
             duration_ms=(time.time() - t0) * 1000,
             error=repr(exc),
         )
-    answer = (
-        getattr(result, "answer", None)
-        or getattr(result, "analysis", None)
-        or str(result)
-    )
+    answer = getattr(result, "answer", None) or getattr(result, "analysis", None) or str(result)
     return NanoagentResult(
         agent_id=agent_id,
         input=input,
@@ -147,22 +146,22 @@ def spawn_many(
     out: list[NanoagentResult] = []
     for item, result in zip(items, raw_results, strict=True):
         if result is None or isinstance(result, Exception):
-            out.append(NanoagentResult(
+            out.append(
+                NanoagentResult(
+                    agent_id=item.get("agent_id", "nanoagent"),
+                    input=item.get("input", {}),
+                    error=repr(result) if result else "no result",
+                )
+            )
+            continue
+        answer = getattr(result, "answer", None) or getattr(result, "analysis", None) or str(result)
+        out.append(
+            NanoagentResult(
                 agent_id=item.get("agent_id", "nanoagent"),
                 input=item.get("input", {}),
-                error=repr(result) if result else "no result",
-            ))
-            continue
-        answer = (
-            getattr(result, "answer", None)
-            or getattr(result, "analysis", None)
-            or str(result)
+                answer=answer,
+            )
         )
-        out.append(NanoagentResult(
-            agent_id=item.get("agent_id", "nanoagent"),
-            input=item.get("input", {}),
-            answer=answer,
-        ))
     return out
 
 

@@ -1328,6 +1328,7 @@ async def _run_turn_in_background(
         agent_id = get("agent_id") or get("agent") or "nanoagent"
         spawn_input = get("input") or {}
         answer = get("answer") or ""
+        tools_called = get("tools_called") or get("tools") or []
         subsess = app.state.sessions.create(
             workspace_id=sess.workspace_id,
             title=f"{agent_id} subagent",
@@ -1356,6 +1357,7 @@ async def _run_turn_in_background(
             updated_at=_iso_from_epoch(sub_now),
             parts=[Part(id=_new_part_id(), type="text", text=answer)] if answer else [],
             stop_reason="end_turn",
+            metadata={"tools_called": tools_called} if tools_called else {},
         )
         app.state.messages.setdefault(subsess.id, []).extend([sub_user, sub_asst])
         app.state.sessions.update(subsess.id, message_count=2, status="idle")
