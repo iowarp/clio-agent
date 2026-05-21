@@ -505,13 +505,48 @@ class ClioAgent(dspy.Module):
 
         for step in range(self._agent_max_steps()):
             self._raise_if_cancelled("planner_before")
-            action = self._plan_next_action(
-                question=question,
-                session_context=session_context,
-                file_context=file_context,
-                capabilities=capabilities,
-                observations=observations,
-            )
+            try:
+                action = self._plan_next_action(
+                    question=question,
+                    session_context=session_context,
+                    file_context=file_context,
+                    capabilities=capabilities,
+                    observations=observations,
+                )
+            except RoutingError as planner_error:
+                if not self._has_successful_execution_observation(observations):
+                    raise
+                answer = self._synthesize_agent_answer(
+                    question=question,
+                    session_context=session_context,
+                    observations=observations,
+                )
+                trace_selected = self._selected_expert_from_trace(trace)
+                if trace_selected != "chat":
+                    selected = trace_selected
+                route = self._route_for_selected(
+                    selected,
+                    "Agent planner failed after completed tool observations; "
+                    "CLIO answered from accumulated observations.",
+                    confidence=0.55,
+                )
+                planner_error_details = planner_error.details
+                planner_original_error = (
+                    self._coerce_text(planner_error_details.get("original_error")).strip()
+                    if isinstance(planner_error_details, dict)
+                    else ""
+                )
+                error_info = RoutingError(
+                    "Agent planner failed after completed tool observations.",
+                    details=self._recovery_details(
+                        partial=True,
+                        stage="post_observation_planning",
+                        original_error=planner_original_error or str(planner_error),
+                        planner_error=planner_error.to_dict(),
+                        planner_observations=observations[-3:],
+                    ),
+                ).to_dict()
+                return selected, answer, None, error_info, route
             self._raise_if_cancelled("planner_after")
             kind = self._coerce_text(action.get("action")).strip().lower()
             reason = self._coerce_text(action.get("reason")).strip()
@@ -715,6 +750,14 @@ class ClioAgent(dspy.Module):
             ),
         ).to_dict()
         return selected, answer, None, error_info, route
+
+    @staticmethod
+    def _has_successful_execution_observation(observations: list[dict[str, Any]]) -> bool:
+        """Return whether the loop has a completed non-planner observation to answer from."""
+        return any(
+            observation.get("type") != "planner_error" and observation.get("ok") is True
+            for observation in observations
+        )
 
     def _plan_next_action(
         self,
