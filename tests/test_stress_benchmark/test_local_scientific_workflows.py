@@ -222,7 +222,7 @@ def test_local_multistage_scientific_workflow_records_grounded_evidence(
         hdf5_answer,
         expected_agent="data",
         expected_tool_prefix="hdf5_",
-        expected_terms=("electron_temperature", "density", "heat_flux"),
+        expected_terms=("electron_temperature", "density", "heat_flux", "eV", "m^-3", "MW/m^2"),
     )
 
     parquet_prompt = (
