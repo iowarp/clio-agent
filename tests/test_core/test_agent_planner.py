@@ -662,6 +662,19 @@ class TestExecuteToolAction:
         assert str(actual) in text
         assert str(degraded) not in text
 
+    def test_repair_question_relative_filepath_from_explicit_context(self, tmp_path):
+        actual = tmp_path / "data" / "sensor_events.csv"
+        actual.parent.mkdir()
+        actual.write_text("event_id,status\n1,ok\n", encoding="utf-8")
+
+        text = ClioAgent._repair_question_filepaths_from_context(
+            "Inspect sensor_events.csv",
+            source_question=f"Please inspect {actual}",
+            file_context="",
+        )
+
+        assert text == f"Inspect {actual}"
+
     def test_unknown_tool_returns_structured_error(self, agent):
         result = agent._execute_tool_action("not_a_real_tool", {}, _trace())
         assert "error" in result

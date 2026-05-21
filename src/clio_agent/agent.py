@@ -1328,7 +1328,11 @@ class ClioAgent(dspy.Module):
                 if candidate.name == degraded.name and candidate.expanduser().exists()
             ]
             if len(matches) == 1:
-                repaired = repaired.replace(str(degraded), str(matches[0].expanduser()))
+                replacement = str(matches[0].expanduser())
+                if str(degraded) in repaired:
+                    repaired = repaired.replace(str(degraded), replacement)
+                else:
+                    repaired = repaired.replace(degraded.name, replacement)
         return repaired
 
     @staticmethod
