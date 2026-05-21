@@ -209,7 +209,7 @@ class TestRouteForSelected:
 class TestAgentMaxSteps:
     def test_default(self, monkeypatch):
         monkeypatch.delenv("CLIO_AGENT_MAX_STEPS", raising=False)
-        assert ClioAgent._agent_max_steps() >= 1
+        assert ClioAgent._agent_max_steps() == 6
 
     def test_env_override(self, monkeypatch):
         monkeypatch.setenv("CLIO_AGENT_MAX_STEPS", "5")
