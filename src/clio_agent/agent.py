@@ -555,7 +555,13 @@ class ClioAgent(dspy.Module):
                 tool_name = self._coerce_text(action.get("tool")).strip()
                 selected = self._selected_expert_for_tool(tool_name)
                 self._raise_if_cancelled("tool_before")
-                result = self._execute_tool_action(tool_name, action.get("args"), trace)
+                result = self._execute_tool_action(
+                    tool_name,
+                    action.get("args"),
+                    trace,
+                    question=question,
+                    file_context=file_context,
+                )
                 self._raise_if_cancelled("tool_after")
                 route = self._route_for_selected(
                     selected,
@@ -875,9 +881,17 @@ class ClioAgent(dspy.Module):
         tool_name: str,
         raw_args: Any,
         trace: RunTrace,
+        *,
+        question: str = "",
+        file_context: str = "",
     ) -> Any:
         """Execute a planner-selected tool and record provenance."""
         args = self._normalize_tool_args(raw_args)
+        args = self._repair_filepath_arg_from_context(
+            args,
+            question=question,
+            file_context=file_context,
+        )
         visualization_tools = self._visualization_tool_map()
         known_tools = self._known_tool_names()
 
@@ -1253,6 +1267,38 @@ class ClioAgent(dspy.Module):
             if isinstance(decoded, Mapping):
                 return dict(decoded)
         return {}
+
+    @staticmethod
+    def _repair_filepath_arg_from_context(
+        args: dict[str, Any],
+        *,
+        question: str,
+        file_context: str,
+    ) -> dict[str, Any]:
+        """Repair a degraded filepath arg using explicit paths from the turn context."""
+        raw_filepath = ClioAgent._coerce_text(args.get("filepath")).strip()
+        if not raw_filepath:
+            return args
+        filepath = Path(raw_filepath).expanduser()
+        if filepath.exists():
+            return args
+
+        basename = filepath.name
+        if not basename:
+            return args
+
+        candidates = extract_file_paths(question, file_context, SCIENTIFIC_FILE_SUFFIXES)
+        matches = [
+            candidate
+            for candidate in candidates
+            if candidate.name == basename and candidate.expanduser().exists()
+        ]
+        if len(matches) != 1:
+            return args
+
+        repaired = dict(args)
+        repaired["filepath"] = str(matches[0].expanduser())
+        return repaired
 
     @staticmethod
     def _decode_tool_result(raw_result: Any) -> Any:

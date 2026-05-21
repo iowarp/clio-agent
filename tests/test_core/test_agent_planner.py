@@ -358,7 +358,7 @@ class TestRunAgentLoop:
         )
         agent._selected_expert_for_tool = MagicMock(return_value="data")
 
-        def execute(tool_name, raw_args, trace):
+        def execute(tool_name, raw_args, trace, **_kwargs):
             trace.record_tool(
                 tool=tool_name,
                 params=raw_args,
@@ -622,6 +622,31 @@ class TestRunAgentLoop:
 
 
 class TestExecuteToolAction:
+    def test_repair_filepath_arg_from_explicit_context(self, tmp_path):
+        actual = tmp_path / "data" / "sensor_events.csv"
+        actual.parent.mkdir()
+        actual.write_text("event_id,status\n1,ok\n", encoding="utf-8")
+        degraded = tmp_path / "sensor_events.csv"
+
+        args = ClioAgent._repair_filepath_arg_from_context(
+            {"filepath": str(degraded)},
+            question=f"Inspect {actual}",
+            file_context="",
+        )
+
+        assert args["filepath"] == str(actual)
+
+    def test_repair_filepath_arg_keeps_unmatched_missing_path(self, tmp_path):
+        degraded = tmp_path / "missing.csv"
+
+        args = ClioAgent._repair_filepath_arg_from_context(
+            {"filepath": str(degraded)},
+            question="Inspect a CSV file.",
+            file_context="",
+        )
+
+        assert args["filepath"] == str(degraded)
+
     def test_unknown_tool_returns_structured_error(self, agent):
         result = agent._execute_tool_action("not_a_real_tool", {}, _trace())
         assert "error" in result
