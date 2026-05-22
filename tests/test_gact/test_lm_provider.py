@@ -65,6 +65,67 @@ def test_get_lm_provider_reports_argonne_auto_refresh_ready(tmp_path: Path, monk
     assert "auto-refresh" in sophia["status_message"]
 
 
+def test_get_lm_provider_reports_argonne_refresh_failure(tmp_path: Path, monkeypatch) -> None:
+    """A stored but unrefreshable Globus token must not look ready."""
+
+    monkeypatch.delenv("CLIO_ARGONNE_TOKEN", raising=False)
+    monkeypatch.delenv("ALCF_INFERENCE_TOKEN", raising=False)
+    monkeypatch.delenv("access_token", raising=False)
+    monkeypatch.setattr("clio_agent.providers.argonne_auth.tokens_exist", lambda: True)
+    monkeypatch.setattr("clio_agent.providers.argonne_auth.check_auth_status", lambda: False)
+
+    app = build_app(sessions_path=tmp_path / "s.json")
+    with TestClient(app) as c:
+        body = c.get("/v1/providers/lm").json()
+
+    sophia = next(p for p in body["presets"] if p["id"] == "argonne_sophia")
+    assert sophia["is_authenticated"] is False
+    assert sophia["status"] == "auth_required"
+    assert "could not refresh" in sophia["status_message"]
+
+
+def test_auth_provider_returns_interactive_argonne_instructions(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """ALCF auth must launch/describe an interactive flow, not block the backend."""
+
+    import importlib.util
+
+    from clio_agent.providers import argonne_auth
+
+    popen_calls: list[list[str]] = []
+    original_find_spec = importlib.util.find_spec
+
+    def _find_spec(name: str, *args: Any, **kwargs: Any) -> Any:
+        if name == "globus_sdk":
+            return object()
+        return original_find_spec(name, *args, **kwargs)
+
+    def _popen(cmd: list[str], *args: Any, **kwargs: Any) -> object:
+        popen_calls.append(cmd)
+        return object()
+
+    monkeypatch.setattr("clio_agent.gact.app.importlib.util.find_spec", _find_spec)
+    monkeypatch.setattr(argonne_auth, "check_auth_status", lambda: False)
+    monkeypatch.setattr("clio_agent.gact.app.subprocess.Popen", _popen)
+    if os.name != "nt":
+        monkeypatch.setattr("clio_agent.gact.app.shutil.which", lambda name: None)
+
+    app = build_app(sessions_path=tmp_path / "s.json")
+    with TestClient(app) as c:
+        resp = c.post("/v1/providers/argonne_sophia/auth", json={"force": True})
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["is_authenticated"] is False
+    assert body["provider_id"] == "argonne_sophia"
+    assert "interactive terminal" in body["instructions"] or "Opened" in body["instructions"]
+    if os.name == "nt":
+        assert popen_calls
+        assert popen_calls[0][1:4] == ["-m", "clio_agent.providers.argonne_auth", "authenticate"]
+        assert "--force" in popen_calls[0]
+
+
 def test_provider_model_catalog_filters_embedding_models(tmp_path: Path, monkeypatch) -> None:
     """LM Studio/OpenAI-compatible catalogs should not offer embedding models as chat choices."""
 
