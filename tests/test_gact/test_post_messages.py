@@ -71,6 +71,17 @@ class FakeClioAgent:
         )
 
 
+class SlowClioAgent(FakeClioAgent):
+    def __init__(self, delay_s: float) -> None:
+        super().__init__(answer="too late")
+        self.delay_s = delay_s
+
+    def forward(self, question: str, session_id: str) -> Any:
+        self.calls.append((question, session_id))
+        time.sleep(self.delay_s)
+        return FakePrediction(answer=self.answer)
+
+
 @pytest.fixture()
 def fake_agent() -> FakeClioAgent:
     return FakeClioAgent()
@@ -781,6 +792,31 @@ def test_post_message_clears_stale_session_model_when_global_lm_active(
     assert assistant["parts"][-1]["text"] == "hello from fake"
     assert refreshed["model"] == {"provider_id": "", "model_id": "", "variant": ""}
     assert fake_agent.calls == [("hi", sid)]
+
+
+def test_post_message_turn_timeout_surfaces_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Provider/planner hangs must settle as visible errors, not permanent running state."""
+
+    from .conftest import complete_turn
+
+    monkeypatch.setenv("CLIO_GACT_TURN_TIMEOUT_S", "0.2")
+    agent = SlowClioAgent(delay_s=0.5)
+    app = build_app(sessions_path=tmp_path / "sessions.json", agent=agent)
+    with TestClient(app) as c:
+        sid = _create_session(c)
+        assistant = complete_turn(c, sid, "hi", timeout=2.0)
+        sess = c.get(f"/v1/sessions/{sid}").json()
+
+    assert assistant["stop_reason"] == "error"
+    assert assistant["error_info"]["error"] == "provider_timeout"
+    assert assistant["error_info"]["details"]["timeout_s"] == 0.2
+    assert assistant["error_info"]["details"]["executor_work_may_continue"] is True
+    assert sess["status"] == "error"
+    assert sess["message_count"] == 2
+    assert len(agent.calls) <= 1
 
 
 def test_post_message_session_model_matching_global_config_runs(

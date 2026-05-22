@@ -193,6 +193,24 @@ class _TurnCancelled(RuntimeError):
         self.error_info = error_info
 
 
+class _TurnTimedOut(RuntimeError):
+    """Raised internally when an agent turn exceeds the configured wall clock."""
+
+    def __init__(self, timeout_s: float) -> None:
+        super().__init__(f"agent turn exceeded {timeout_s:g}s timeout")
+        self.timeout_s = timeout_s
+
+
+def _gact_turn_timeout_s() -> float:
+    """Return the per-turn timeout in seconds; <=0 disables the watchdog."""
+
+    raw = os.environ.get("CLIO_GACT_TURN_TIMEOUT_S", "300").strip()
+    try:
+        return float(raw)
+    except ValueError:
+        return 300.0
+
+
 def _cancelled_error_info(
     sid: str,
     *,
@@ -881,9 +899,27 @@ async def _run_turn_in_background(
     app.state.cancel_events[sid] = turn_cancel_event
     if sid in app.state.cancel_flags:
         turn_cancel_event.set()
+    turn_timeout_s = _gact_turn_timeout_s()
+    turn_deadline = time.monotonic() + turn_timeout_s if turn_timeout_s > 0 else 0.0
 
     def cancel_requested() -> bool:
         return turn_cancel_event.is_set()
+
+    async def _await_turn_work(awaitable: Any) -> Any:
+        if turn_timeout_s <= 0:
+            return await awaitable
+        remaining = turn_deadline - time.monotonic()
+        if remaining <= 0:
+            turn_cancel_event.set()
+            close = getattr(awaitable, "close", None)
+            if callable(close):
+                close()
+            raise _TurnTimedOut(turn_timeout_s)
+        try:
+            return await asyncio.wait_for(awaitable, timeout=remaining)
+        except TimeoutError as exc:
+            turn_cancel_event.set()
+            raise _TurnTimedOut(turn_timeout_s) from exc
 
     try:
         if context_file_error is not None:
@@ -913,30 +949,34 @@ async def _run_turn_in_background(
                 else _build_prompt_user_agent_module(app.state.agent, dynamic_agent)
             )
             with _cancellation_checker(cancel_requested), _tool_session_context(sid):
-                pred = await _try_streamed_forward_compat(
-                    app,
-                    enriched_text,
-                    sid,
-                    _emit_chunk,
-                    session_mode=getattr(sess, "mode", "chat"),
-                    session_edit_mode=getattr(sess, "edit_mode", "diff"),
-                    agent_override=module,
-                    cancel_requested=cancel_requested,
+                pred = await _await_turn_work(
+                    _try_streamed_forward_compat(
+                        app,
+                        enriched_text,
+                        sid,
+                        _emit_chunk,
+                        session_mode=getattr(sess, "mode", "chat"),
+                        session_edit_mode=getattr(sess, "edit_mode", "diff"),
+                        agent_override=module,
+                        cancel_requested=cancel_requested,
+                    )
                 )
             if pred is None:
                 with _cancellation_checker(cancel_requested), _tool_session_context(sid):
                     loop = asyncio.get_running_loop()
                     turn_context = contextvars.copy_context()
-                    pred = await loop.run_in_executor(
-                        None,
-                        lambda: turn_context.run(
-                            _run_dynamic_agent_compat,
-                            runner,
-                            app.state.agent,
-                            dynamic_agent,
-                            enriched_text,
-                            sid,
-                            cancel_requested,
+                    pred = await _await_turn_work(
+                        loop.run_in_executor(
+                            None,
+                            lambda: turn_context.run(
+                                _run_dynamic_agent_compat,
+                                runner,
+                                app.state.agent,
+                                dynamic_agent,
+                                enriched_text,
+                                sid,
+                                cancel_requested,
+                            ),
                         ),
                     )
         else:
@@ -950,28 +990,32 @@ async def _run_turn_in_background(
 
             with _routing_override(routing_override), _cancellation_checker(cancel_requested):
                 with _tool_session_context(sid):
-                    pred = await _try_streamed_forward_compat(
-                        app,
-                        enriched_text,
-                        sid,
-                        _emit_chunk,
-                        session_mode=getattr(sess, "mode", "chat"),
-                        session_edit_mode=getattr(sess, "edit_mode", "diff"),
-                        cancel_requested=cancel_requested,
+                    pred = await _await_turn_work(
+                        _try_streamed_forward_compat(
+                            app,
+                            enriched_text,
+                            sid,
+                            _emit_chunk,
+                            session_mode=getattr(sess, "mode", "chat"),
+                            session_edit_mode=getattr(sess, "edit_mode", "diff"),
+                            cancel_requested=cancel_requested,
+                        )
                     )
                     if pred is None:
                         loop = asyncio.get_running_loop()
                         turn_context = contextvars.copy_context()
-                        pred = await loop.run_in_executor(
-                            None,
-                            lambda: turn_context.run(
-                                _agent_forward_compat,
-                                app.state.agent,
-                                enriched_text,
-                                sid,
-                                getattr(sess, "mode", "chat"),
-                                getattr(sess, "edit_mode", "diff"),
-                                cancel_requested,
+                        pred = await _await_turn_work(
+                            loop.run_in_executor(
+                                None,
+                                lambda: turn_context.run(
+                                    _agent_forward_compat,
+                                    app.state.agent,
+                                    enriched_text,
+                                    sid,
+                                    getattr(sess, "mode", "chat"),
+                                    getattr(sess, "edit_mode", "diff"),
+                                    cancel_requested,
+                                ),
                             ),
                         )
         answer_text = getattr(pred, "answer", "")
@@ -1141,6 +1185,28 @@ async def _run_turn_in_background(
                 "original_error": type(original).__name__,
                 "partial_output": bool(streamed_assistant_buffer),
                 "stream_source": ("live" if streamed_assistant_buffer else "batch"),
+            },
+            recoverable=True,
+        )
+        answer_text = "".join(streamed_assistant_buffer)
+        tools_called = []
+    except _TurnTimedOut as exc:
+        partial_output = bool(streamed_assistant_buffer)
+        error_info = ErrorInfo(
+            error="provider_timeout",
+            message=f"agent turn exceeded {exc.timeout_s:g}s timeout",
+            details={
+                "session_id": sid,
+                "timeout_s": exc.timeout_s,
+                "partial_output": partial_output,
+                "execution_cancellation": "best_effort",
+                "executor_work_may_continue": True,
+                "recovery_actions": [
+                    "retry",
+                    "increase_turn_timeout",
+                    "reconfigure_provider",
+                    "exit",
+                ],
             },
             recoverable=True,
         )
