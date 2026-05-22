@@ -86,6 +86,18 @@ CSV_COLUMN_FIELDS: dict[str, type | tuple[type, ...]] = {
     "null_count": int,
 }
 
+NDP_ORGANIZATION_FIELDS: dict[str, type | tuple[type, ...]] = {
+    "organizations": list,
+    "count": int,
+    "server": str,
+}
+
+NDP_DATASET_FIELDS: dict[str, type | tuple[type, ...]] = {
+    "datasets": list,
+    "count": int,
+    "server": str,
+}
+
 
 _PARALLEL_TRIGGERS = (
     "validate ",
@@ -93,6 +105,52 @@ _PARALLEL_TRIGGERS = (
     "analyze ",
     "compare ",
     "profile ",
+)
+
+_MULTI_FILE_INTENT_TERMS = (
+    "across",
+    "all of",
+    "all three",
+    "both",
+    "compare",
+    "each",
+    "fit together",
+    "line up",
+    "multi-file",
+    "quality",
+    "review",
+    "same run",
+    "sanity check",
+    "these files",
+    "triage",
+    "together",
+)
+
+_NDP_INTENT_TERMS = (
+    "catalog",
+    "ckan",
+    "dataset discovery",
+    "discover datasets",
+    "find datasets",
+    "list organizations",
+    "national data platform",
+    "ndp",
+    "search datasets",
+)
+
+_NDP_SEARCH_TERMS = (
+    "carbon",
+    "climate",
+    "earth observation",
+    "fire",
+    "forest",
+    "hurricane",
+    "netcdf",
+    "ocean",
+    "precipitation",
+    "temperature",
+    "weather",
+    "wildfire",
 )
 
 
@@ -106,6 +164,19 @@ def _detect_parallel_items(question: str) -> list[str]:
     """
 
     q = question.lower().strip()
+    paths = extract_file_paths(
+        question,
+        "",
+        {".h5", ".hdf5", ".parquet", ".csv", ".bp", ".bp4", ".bp5"},
+    )
+    if len(paths) >= 2 and (
+        any(term in q for term in _MULTI_FILE_INTENT_TERMS)
+        or len({path.suffix.lower() for path in paths}) >= 2
+    ):
+        return [str(path) for path in paths]
+    if paths:
+        return []
+
     trigger = next((t for t in _PARALLEL_TRIGGERS if t in q), None)
     if trigger is None:
         return []
@@ -161,8 +232,10 @@ class AnalysisExpert(dspy.Module):
         self._bridge = self._tool_executor
         all_tools = self._tool_executor.to_dspy_tools()
 
-        # Filter to only parquet-prefixed tools
-        self._tools = [t for t in all_tools if t.name.startswith("parquet_")]
+        # Filter to analysis-owned gateway tools.
+        self._tools = [
+            t for t in all_tools if t.name.startswith(("parquet_", "ndp_"))
+        ]
 
         logger.info(
             "AnalysisExpert initialized with %d tools: %s",
@@ -292,6 +365,15 @@ class AnalysisExpert(dspy.Module):
             )
             spawns.append(self._tool_backed_spawn("data_validator", sub_question, result))
 
+        for adios_path in extract_file_paths(question, file_context, {".bp", ".bp4", ".bp5"}):
+            from clio_agent.experts.data_expert import DataExpert
+
+            sub_question = f"Validate ADIOS/BP container for {adios_path}"
+            result = DataExpert(tool_executor=self._tool_executor).run(
+                ExpertRequest(question=sub_question, file_context=file_context)
+            )
+            spawns.append(self._tool_backed_spawn("adios_validator", sub_question, result))
+
         for parquet_path in extract_file_paths(question, file_context, {".parquet"}):
             sub_question = f"Validate Parquet statistics for {parquet_path}"
             result = self._inspect_parquet_file(
@@ -341,6 +423,9 @@ class AnalysisExpert(dspy.Module):
         csv_paths = extract_file_paths(request.question, request.file_context, {".csv"})
         if csv_paths:
             return self._inspect_csv_file(str(csv_paths[0]))
+
+        if self._wants_ndp_discovery(request.question):
+            return self._inspect_ndp_request(request)
 
         return self._synthesize_without_tools(request)
 
@@ -593,6 +678,172 @@ class AnalysisExpert(dspy.Module):
             metadata={"expert": "analysis", "format": "csv", "filepath": filepath},
         )
 
+    def _inspect_ndp_request(self, request: ExpertRequest) -> ExpertResult:
+        """Discover NDP catalog rows through clio-kit MCP-backed gateway tools."""
+        runner = NativeToolRunner(self._tool_executor)
+        q_lower = request.question.lower()
+        org_filter = self._ndp_organization_filter(request.question)
+        search_terms = self._ndp_search_terms(request.question)
+        resource_format = self._ndp_resource_format(request.question)
+
+        organizations: dict[str, Any] | None = None
+        if org_filter or "organization" in q_lower or "noaa" in q_lower:
+            organizations = runner.call(
+                "ndp_list_organizations",
+                {"name_filter": org_filter, "server": "global"},
+            )
+            organizations_valid = validate_tool_result(
+                "ndp_list_organizations",
+                organizations,
+                NDP_ORGANIZATION_FIELDS,
+            )
+            if not organizations_valid.ok:
+                assert organizations_valid.error is not None
+                runner.mark_validation_error(
+                    "ndp_list_organizations", organizations_valid.error
+                )
+                return self._ndp_failure_result(
+                    "list organizations", organizations_valid.error, runner
+                )
+            organizations = organizations_valid.data or {}
+
+        should_search = any(
+            term in q_lower
+            for term in ("dataset", "discover", "find", "search", "data product")
+        )
+        datasets: dict[str, Any] | None = None
+        if should_search:
+            params: dict[str, Any] = {"server": "global", "limit": 5}
+            if search_terms:
+                params["search_terms"] = search_terms
+            if resource_format:
+                params["resource_format"] = resource_format
+            datasets = runner.call("ndp_search_datasets", params)
+            datasets_valid = validate_tool_result(
+                "ndp_search_datasets",
+                datasets,
+                NDP_DATASET_FIELDS,
+            )
+            if not datasets_valid.ok:
+                assert datasets_valid.error is not None
+                runner.mark_validation_error("ndp_search_datasets", datasets_valid.error)
+                return self._ndp_failure_result("search datasets", datasets_valid.error, runner)
+            datasets = datasets_valid.data or {}
+
+        if organizations is None and datasets is None:
+            organizations = runner.call(
+                "ndp_list_organizations",
+                {"name_filter": org_filter, "server": "global"},
+            )
+            organizations_valid = validate_tool_result(
+                "ndp_list_organizations",
+                organizations,
+                NDP_ORGANIZATION_FIELDS,
+            )
+            if not organizations_valid.ok:
+                assert organizations_valid.error is not None
+                runner.mark_validation_error(
+                    "ndp_list_organizations", organizations_valid.error
+                )
+                return self._ndp_failure_result(
+                    "list organizations", organizations_valid.error, runner
+                )
+            organizations = organizations_valid.data or {}
+
+        analysis_lines = ["Queried the National Data Platform catalog through clio-kit MCP."]
+        if organizations is not None:
+            org_rows = [str(row) for row in organizations.get("organizations", [])[:8]]
+            analysis_lines.append(
+                f"Organizations matched: {organizations.get('count', 0)}"
+                + (("\n- " + "\n- ".join(org_rows)) if org_rows else "")
+            )
+        if datasets is not None:
+            dataset_lines = [
+                self._ndp_dataset_summary_line(row)
+                for row in datasets.get("datasets", [])[:5]
+                if isinstance(row, dict)
+            ]
+            analysis_lines.append(
+                f"Datasets matched: {datasets.get('count', 0)}"
+                + (("\n- " + "\n- ".join(dataset_lines)) if dataset_lines else "")
+            )
+
+        recommendations = (
+            "Use ndp_get_dataset_details with a dataset id or name before downloading data. "
+            "The rows above are live catalog results, so availability and formats should be "
+            "verified again at execution time."
+        )
+        return ExpertResult(
+            analysis="\n\n".join(analysis_lines),
+            recommendations=recommendations,
+            source="deterministic",
+            tools=runner.observations,
+            metadata={"expert": "analysis", "format": "ndp", "source": "clio-kit"},
+        )
+
+    @staticmethod
+    def _ndp_failure_result(
+        action: str,
+        error: dict[str, Any],
+        runner: NativeToolRunner,
+    ) -> ExpertResult:
+        return ExpertResult(
+            analysis=f"Could not {action} in NDP: {format_tool_error(error)}",
+            recommendations="Verify clio-kit is installed and the NDP endpoint is reachable.",
+            source="deterministic",
+            tools=runner.observations,
+            metadata={"expert": "analysis", "format": "ndp", "source": "clio-kit"},
+        )
+
+    @staticmethod
+    def _wants_ndp_discovery(question: str) -> bool:
+        """Return whether the request asks for NDP/catalog discovery."""
+        q_lower = question.lower()
+        return any(term in q_lower for term in _NDP_INTENT_TERMS)
+
+    @staticmethod
+    def _ndp_organization_filter(question: str) -> str | None:
+        """Extract an obvious organization filter from natural catalog requests."""
+        q_lower = question.lower()
+        if "noaa" in q_lower:
+            return "noaa"
+        if "nasa" in q_lower:
+            return "nasa"
+        if "doe" in q_lower:
+            return "doe"
+        return None
+
+    @staticmethod
+    def _ndp_search_terms(question: str) -> list[str]:
+        """Extract conservative search terms for NDP dataset discovery."""
+        q_lower = question.lower()
+        return [term for term in _NDP_SEARCH_TERMS if term in q_lower]
+
+    @staticmethod
+    def _ndp_resource_format(question: str) -> str | None:
+        """Extract common resource-format filters from a catalog request."""
+        q_lower = question.lower()
+        for fmt in ("csv", "json", "netcdf", "zarr", "hdf5", "parquet"):
+            if fmt in q_lower:
+                return fmt.upper()
+        return None
+
+    @staticmethod
+    def _ndp_dataset_summary_line(row: dict[str, Any]) -> str:
+        """Format one NDP dataset row for a compact expert answer."""
+        title = str(row.get("title") or row.get("name") or row.get("id") or "<untitled>")
+        owner = str(row.get("owner_org") or "unknown owner")
+        resources = row.get("resources") or []
+        formats = sorted(
+            {
+                str(resource.get("format")).upper()
+                for resource in resources
+                if isinstance(resource, dict) and resource.get("format")
+            }
+        )
+        format_text = ", ".join(formats[:5]) if formats else "formats not listed"
+        return f"{title} ({owner}; {format_text})"
+
     def _synthesize_without_tools(self, request: ExpertRequest) -> ExpertResult:
         """Use DSPy for conceptual guidance when no file can be inspected."""
         synthesis = self.agent(
@@ -636,11 +887,13 @@ class AnalysisExpert(dspy.Module):
             "name": "Analysis Expert",
             "description": (
                 "Specializes in statistical analysis, data profiling, and quality "
-                "assessment of tabular datasets (Parquet). Computes column-level "
-                "statistics, identifies distributions, and flags data quality issues."
+                "assessment of tabular datasets (Parquet/CSV) and external dataset "
+                "discovery through NDP/clio-kit MCP. Computes column-level statistics, "
+                "identifies distributions, and flags data quality issues."
             ),
             "keywords": [
                 "parquet",
+                "csv",
                 "statistics",
                 "analysis",
                 "schema",
@@ -650,6 +903,10 @@ class AnalysisExpert(dspy.Module):
                 "profiling",
                 "null count",
                 "outliers",
+                "ndp",
+                "national data platform",
+                "dataset discovery",
+                "catalog",
             ],
             "priority": 2,
         }

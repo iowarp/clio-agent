@@ -23,6 +23,7 @@ Usage:
 import contextvars
 import json
 import os
+import re
 import time
 import uuid
 from collections.abc import Mapping
@@ -80,8 +81,26 @@ from clio_agent.tools.execution import create_sync_tool_executor, notify_global_
 from clio_agent.tools.file_policy import FileAccessPolicy, FilePolicyError, validate_write_path
 from clio_agent.tools.gateway import gateway
 
-SCIENTIFIC_FILE_SUFFIXES = {".h5", ".hdf5", ".parquet", ".csv"}
+SCIENTIFIC_FILE_SUFFIXES = {".h5", ".hdf5", ".parquet", ".csv", ".bp", ".bp4", ".bp5"}
 PLANNER_HIDDEN_TOOL_NAMES = {"fs_read_file", "fs_apply_edit_write"}
+MULTI_FILE_ANALYSIS_TERMS = (
+    "across",
+    "all of",
+    "all three",
+    "both",
+    "compare",
+    "each",
+    "fit together",
+    "line up",
+    "multi-file",
+    "quality",
+    "review",
+    "same run",
+    "sanity check",
+    "these files",
+    "triage",
+    "together",
+)
 _ROUTING_MODE_OVERRIDE: contextvars.ContextVar[str] = contextvars.ContextVar(
     "clio_routing_mode_override",
     default="",
@@ -235,17 +254,23 @@ class ClioAgent(dspy.Module):
             "data",
             self.data_expert,
             AgentCapability(
-                keywords=["hdf5", "compression", "chunking", "data", "io"],
-                description="Data I/O optimization expert with HDF5 tools",
+                keywords=["hdf5", "adios", "bp5", "compression", "chunking", "data", "io"],
+                description="Data I/O optimization expert with HDF5 and ADIOS/BP tools",
                 tools=[
                     "hdf5_list_datasets",
                     "hdf5_analyze_dataset",
                     "hdf5_check_compression",
                     "hdf5_optimize_chunking",
                     "hdf5_analyze_file",
+                    "adios_inspect_file",
+                    "adios_inspect_variables",
+                    "adios_inspect_profiling",
                 ],
                 specialization="data_io",
-                metadata={"file_suffixes": [".h5", ".hdf5"]},
+                metadata={
+                    "file_suffixes": [".h5", ".hdf5", ".bp", ".bp4", ".bp5"],
+                    "guard_direct_suffixes": [".bp", ".bp4", ".bp5"],
+                },
             ),
         )
 
@@ -261,16 +286,40 @@ class ClioAgent(dspy.Module):
                     "analysis",
                     "data quality",
                     "csv",
+                    "ndp",
+                    "national data platform",
+                    "dataset discovery",
+                    "catalog",
                 ],
-                description="Statistical analysis and data profiling expert with Parquet tools",
+                description=(
+                    "Statistical analysis, data profiling, data quality triage, and "
+                    "cross-file scientific review expert. Coordinates HDF5, Parquet, "
+                    "and CSV worker checks for multi-file questions, and discovers "
+                    "external NDP catalog datasets through clio-kit MCP."
+                ),
                 tools=[
                     "parquet_analyze_schema",
                     "parquet_query_data",
                     "parquet_compute_statistics",
                     "csv_read_table",
+                    "ndp_list_organizations",
+                    "ndp_search_datasets",
+                    "ndp_get_dataset_details",
                 ],
                 specialization="data_analysis",
-                metadata={"file_suffixes": [".parquet", ".csv"]},
+                metadata={
+                    "file_suffixes": [".parquet", ".csv"],
+                    "guard_coordinator_intents": ["multi_file_analysis"],
+                    "coordinated_file_suffixes": [
+                        ".h5",
+                        ".hdf5",
+                        ".bp",
+                        ".bp4",
+                        ".bp5",
+                        ".parquet",
+                        ".csv",
+                    ],
+                },
             ),
         )
 
@@ -502,6 +551,18 @@ class ClioAgent(dspy.Module):
         observations: list[dict[str, Any]] = []
         selected = "chat"
         route = trace.route
+        paths = extract_file_paths(question, file_context, SCIENTIFIC_FILE_SUFFIXES)
+        guard_route = self._pre_planner_guard_route(question, paths, routing_mode)
+        if guard_route is not None:
+            self._raise_if_cancelled("pre_planner_guard_before")
+            selected, answer, expert_result, error_info = self._dispatch_expert_action(
+                expert_id=guard_route.target,
+                question=question,
+                file_context=file_context,
+                trace=trace,
+            )
+            self._raise_if_cancelled("pre_planner_guard_after")
+            return selected, answer, expert_result, error_info, guard_route
 
         for step in range(self._agent_max_steps()):
             self._raise_if_cancelled("planner_before")
@@ -569,6 +630,7 @@ class ClioAgent(dspy.Module):
                     trace,
                     question=question,
                     file_context=file_context,
+                    session_context=session_context,
                 )
                 self._raise_if_cancelled("tool_after")
                 route = self._route_for_selected(
@@ -764,6 +826,7 @@ class ClioAgent(dspy.Module):
             "Agent planner reached the step limit after partial observations.",
             details=self._recovery_details(
                 partial=True,
+                stage="step_limit_after_observations",
                 step_limit=self._agent_max_steps(),
                 planner_observations=observations[-3:],
             ),
@@ -778,12 +841,9 @@ class ClioAgent(dspy.Module):
         file_context: str,
         trace: RunTrace,
     ) -> tuple[str, str, Any, dict[str, Any] | None, RouteDecision] | None:
-        """Dispatch explicit parallel file-validation requests when planning fails."""
-        lower = question.lower()
-        if not any(token in lower for token in ("parallel", "nanoagent", "nano agent")):
-            return None
+        """Dispatch natural multi-file analysis requests when planning fails."""
         paths = extract_file_paths(question, file_context, SCIENTIFIC_FILE_SUFFIXES)
-        if len(paths) < 2:
+        if len(paths) < 2 or not self._question_requests_multi_file_analysis(question, paths):
             return None
 
         selected, answer, expert_result, expert_error = self._dispatch_expert_action(
@@ -798,10 +858,15 @@ class ClioAgent(dspy.Module):
                 answer,
                 expert_result,
                 expert_error,
-                self._route_for_selected(
-                    selected,
-                    "Agent planner failed; deterministic parallel validation recovery also failed.",
+                RouteDecision(
+                    target=selected,  # type: ignore[arg-type]
+                    source="recovery",
+                    reason=(
+                        "Agent planner failed; deterministic parallel validation recovery "
+                        "also failed."
+                    ),
                     confidence=0.4,
+                    capabilities=("multi_file_analysis", "tool_backed_workers"),
                 ),
             )
 
@@ -812,7 +877,7 @@ class ClioAgent(dspy.Module):
             else ""
         )
         error_info = RoutingError(
-            "Agent planner failed before an explicit parallel file-validation request.",
+            "Agent planner failed before a natural multi-file scientific request.",
             details=self._recovery_details(
                 partial=True,
                 stage="parallel_validation_recovery",
@@ -821,10 +886,12 @@ class ClioAgent(dspy.Module):
                 recovered_expert=selected,
             ),
         ).to_dict()
-        route = self._route_for_selected(
-            selected,
-            "Agent planner failed; CLIO recovered via deterministic parallel validation.",
+        route = RouteDecision(
+            target=selected,  # type: ignore[arg-type]
+            source="recovery",
+            reason="Agent planner failed; CLIO recovered via deterministic parallel validation.",
             confidence=0.55,
+            capabilities=("multi_file_analysis", "tool_backed_workers"),
         )
         return selected, answer, expert_result, error_info, route
 
@@ -835,6 +902,106 @@ class ClioAgent(dspy.Module):
             observation.get("type") != "planner_error" and observation.get("ok") is True
             for observation in observations
         )
+
+    @staticmethod
+    def _question_requests_multi_file_analysis(question: str, paths: list[Path]) -> bool:
+        """Return whether a natural prompt should be treated as cross-file work."""
+        if len(paths) < 2:
+            return False
+        lowered = " ".join(question.lower().split())
+        if any(term in lowered for term in MULTI_FILE_ANALYSIS_TERMS):
+            return True
+        return len({path.suffix.lower() for path in paths}) >= 2
+
+    def _pre_planner_guard_route(
+        self,
+        question: str,
+        paths: list[Path],
+        routing_mode: str,
+    ) -> RouteDecision | None:
+        """Return a registry-declared deterministic route, if one is unambiguous."""
+        if not paths or not self._routing_guards_enabled(routing_mode):
+            return None
+
+        suffixes = {path.suffix.lower() for path in paths}
+        if self._question_requests_multi_file_analysis(question, paths):
+            return self._coordinator_guard_route(suffixes)
+
+        if len(suffixes) == 1:
+            suffix = next(iter(suffixes))
+            direct_agent = self._unique_agent_for_metadata_suffix(
+                metadata_key="guard_direct_suffixes",
+                suffixes={suffix},
+            )
+            if direct_agent:
+                return RouteDecision(
+                    target=direct_agent,  # type: ignore[arg-type]
+                    source="guard",
+                    reason=(
+                        f"Registry guard delegated {suffix} file request to "
+                        f"{direct_agent} based on guard_direct_suffixes metadata."
+                    ),
+                    confidence=0.9,
+                    capabilities=(f"file_suffix:{suffix}", "registry_declared_guard"),
+                )
+        return None
+
+    def _coordinator_guard_route(self, suffixes: set[str]) -> RouteDecision | None:
+        """Return the single registry-declared coordinator for a suffix set."""
+        candidates: list[str] = []
+        for agent_id in self.registry.list_agents():
+            caps = self.registry.get_capabilities(agent_id)
+            if caps is None:
+                continue
+            intents = {
+                str(intent).lower()
+                for intent in caps.metadata.get("guard_coordinator_intents", [])
+            }
+            if "multi_file_analysis" not in intents:
+                continue
+            coordinated = {
+                str(suffix).lower()
+                for suffix in caps.metadata.get("coordinated_file_suffixes", [])
+                if str(suffix).strip()
+            }
+            if suffixes and suffixes.issubset(coordinated):
+                candidates.append(agent_id)
+
+        if len(candidates) != 1:
+            return None
+
+        agent_id = candidates[0]
+        return RouteDecision(
+            target=agent_id,  # type: ignore[arg-type]
+            source="guard",
+            reason=(
+                "Registry guard delegated natural multi-file scientific request to "
+                f"{agent_id} based on guard_coordinator_intents metadata."
+            ),
+            confidence=0.85,
+            capabilities=("multi_file_analysis", "registry_declared_coordinator"),
+        )
+
+    def _unique_agent_for_metadata_suffix(
+        self,
+        *,
+        metadata_key: str,
+        suffixes: set[str],
+    ) -> str:
+        """Return one agent whose metadata suffix set covers the requested suffixes."""
+        candidates: list[str] = []
+        for agent_id in self.registry.list_agents():
+            caps = self.registry.get_capabilities(agent_id)
+            if caps is None:
+                continue
+            supported = {
+                str(suffix).lower()
+                for suffix in caps.metadata.get(metadata_key, [])
+                if str(suffix).strip()
+            }
+            if suffixes.issubset(supported):
+                candidates.append(agent_id)
+        return candidates[0] if len(candidates) == 1 else ""
 
     def _plan_next_action(
         self,
@@ -853,26 +1020,183 @@ class ClioAgent(dspy.Module):
         HTTP side channel with different semantics.
         """
         observations_text = self._format_observations_for_prompt(observations)
+        planner_context = self._planner_session_context(session_context)
         try:
-            with dspy.context(lm=self._planner_lm, adapter=self._dspy_adapter):
-                result = self.action_planner(
-                    question=question,
-                    session_context=session_context,
-                    file_context=file_context or "No current file context",
-                    capabilities=capabilities,
-                    observations=observations_text,
-                )
+            result = self._call_action_planner(
+                question=self._planner_question(question),
+                session_context=planner_context,
+                file_context=file_context,
+                capabilities=capabilities,
+                observations=observations_text,
+            )
             return self._parse_action_json(getattr(result, "action_json", ""))
         except Exception as planner_error:
             raw_action = self._parse_action_from_adapter_error(planner_error)
             if raw_action is not None:
                 return raw_action
+            retry_capabilities = self._compact_planner_capabilities(capabilities)
+            if retry_capabilities != capabilities:
+                try:
+                    result = self._call_action_planner(
+                        question=self._planner_retry_question(question),
+                        session_context=planner_context,
+                        file_context=file_context,
+                        capabilities=retry_capabilities,
+                        observations=observations_text,
+                    )
+                    return self._parse_action_json(getattr(result, "action_json", ""))
+                except Exception as retry_error:
+                    raw_action = self._parse_action_from_adapter_error(retry_error)
+                    if raw_action is not None:
+                        return raw_action
+                    if self.verbose:
+                        print(f"[Planner] DSPy compact planner failed: {retry_error}")
+                    raise RoutingError(
+                        "Agent planner failed to produce an action.",
+                        details={
+                            "original_error": str(planner_error),
+                            "retry_error": str(retry_error),
+                        },
+                    ) from retry_error
             if self.verbose:
                 print(f"[Planner] DSPy planner failed: {planner_error}")
             raise RoutingError(
                 "Agent planner failed to produce an action.",
                 details={"original_error": str(planner_error)},
             ) from planner_error
+
+    def _call_action_planner(
+        self,
+        *,
+        question: str,
+        session_context: str,
+        file_context: str,
+        capabilities: str,
+        observations: str,
+    ) -> Any:
+        """Invoke the DSPy/LiteLLM action planner."""
+        with dspy.context(lm=self._planner_lm, adapter=self._dspy_adapter):
+            return self.action_planner(
+                question=question,
+                session_context=session_context,
+                file_context=file_context or "No current file context",
+                capabilities=capabilities,
+                observations=observations,
+            )
+
+    @classmethod
+    def _planner_session_context(cls, session_context: str) -> str:
+        """Return ARC session context suitable for planner routing prompts.
+
+        ContextCompiler enriches expert context with an ``[Available Tools]``
+        section. The action planner already receives the live registry/tool
+        capability context separately, so duplicating tool lists here makes
+        local structured-output models more likely to spend their small
+        planner budget on repeated capability text instead of the JSON action.
+        """
+        return cls._strip_context_sections(session_context, {"Available Tools"})
+
+    @staticmethod
+    def _strip_context_sections(session_context: str, excluded: set[str]) -> str:
+        """Remove named bracketed sections from compiled ARC context."""
+        text = session_context.strip()
+        if not text:
+            return "No prior context"
+
+        output: list[str] = []
+        skipping = False
+        for line in text.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("[") and stripped.endswith("]"):
+                section_name = stripped[1:-1].strip()
+                skipping = section_name in excluded
+                if not skipping:
+                    output.append(line)
+                continue
+            if not skipping:
+                output.append(line)
+
+        cleaned = "\n".join(output).strip()
+        return cleaned or "No prior context"
+
+    def _planner_question(self, question: str) -> str:
+        """Return the user question with planner-only local reasoning controls."""
+        if not self._uses_no_think_planner_profile():
+            return question
+        return (
+            "/no_think\n"
+            "Return only the action_json JSON object. Do not include reasoning, "
+            "analysis, markdown, or prose outside the JSON object. For expert "
+            "actions, set question to an empty string unless narrowing is required.\n"
+            f"{question}"
+        )
+
+    def _planner_retry_question(self, question: str) -> str:
+        """Return a stricter planner prompt for compact retry attempts."""
+        if not self._uses_no_think_planner_profile():
+            return question
+        return (
+            "/no_think\n"
+            "Return exactly one minified JSON action. Prefer expert delegation "
+            "over listing tool calls when the request is a natural multi-file "
+            "scientific triage. For expert actions use question:\"\".\n"
+            f"{question}"
+        )
+
+    @staticmethod
+    def _compact_planner_capabilities(capabilities: str) -> str:
+        """Shorten capability text for a structured-output retry."""
+        lines: list[str] = []
+        in_tools = False
+        for raw_line in capabilities.splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            if line == "Tools:":
+                in_tools = True
+                lines.append(line)
+                continue
+            if line == "Experts:":
+                in_tools = False
+                lines.append(line)
+                continue
+            if line.startswith("Routing strategy:"):
+                in_tools = False
+                lines.append(line)
+                continue
+            if line.startswith("Routing override:"):
+                in_tools = False
+                lines.append(line)
+                continue
+            if in_tools and line.startswith("- "):
+                lines.append(line.split(":", 1)[0])
+                continue
+            if line.startswith("- ") and "; tools:" in line:
+                expert_part, tools_part = line.split("; tools:", 1)
+                tools = ", ".join(tool.strip() for tool in tools_part.split(",") if tool.strip())
+                lines.append(f"{expert_part}; tools: {tools}")
+                continue
+            lines.append(line)
+        compacted = "\n".join(lines).strip()
+        return compacted or capabilities
+
+    def _uses_no_think_planner_profile(self) -> bool:
+        """Return whether the configured local planner supports /no_think control."""
+        provider = self._coerce_text(getattr(self._provider_config, "provider", "")).lower()
+        if provider not in {"lm_studio", "ollama"}:
+            return False
+        model = self._coerce_text(getattr(self._provider_config, "model", "")).lower()
+        normalized = model.replace("_", "-")
+        return any(
+            marker in normalized
+            for marker in (
+                "qwopus",
+                "qwen3",
+                "qwen-3",
+                "qwen35",
+                "qwen-3.5",
+            )
+        )
 
     def _dispatch_expert_action(
         self,
@@ -955,6 +1279,7 @@ class ClioAgent(dspy.Module):
         *,
         question: str = "",
         file_context: str = "",
+        session_context: str = "",
     ) -> Any:
         """Execute a planner-selected tool and record provenance."""
         args = self._normalize_tool_args(raw_args)
@@ -962,6 +1287,7 @@ class ClioAgent(dspy.Module):
             args,
             question=question,
             file_context=file_context,
+            session_context=session_context,
         )
         visualization_tools = self._visualization_tool_map()
         known_tools = self._known_tool_names()
@@ -1093,10 +1419,11 @@ class ClioAgent(dspy.Module):
         """Produce a final answer from observations or surface synthesis failure."""
         self._raise_if_cancelled("answer_synthesis_before")
         observations_text = self._format_observations_for_prompt(observations)
+        answer_question = self._answer_synthesis_question(question)
         try:
             with dspy.context(lm=self._main_lm, adapter=self._dspy_adapter):
                 result = self.answer_synthesizer(
-                    question=question,
+                    question=answer_question,
                     session_context=session_context,
                     observations=observations_text,
                 )
@@ -1107,6 +1434,10 @@ class ClioAgent(dspy.Module):
         except CancellationError:
             raise
         except Exception as exc:
+            recovered = self._parse_answer_from_adapter_error(exc)
+            if recovered:
+                self._raise_if_cancelled("answer_synthesis_after")
+                return recovered
             if self.verbose:
                 print(f"[Planner] Answer synthesis failed: {exc}")
             raise ProviderError(
@@ -1124,6 +1455,18 @@ class ClioAgent(dspy.Module):
                 original_error="answer synthesizer returned an empty answer",
                 observations=observations[-3:],
             ),
+        )
+
+    def _answer_synthesis_question(self, question: str) -> str:
+        """Return provider-profile-specific instructions for answer synthesis."""
+        if not self._uses_no_think_planner_profile():
+            return question
+        return (
+            "/no_think\n"
+            "Answer from the observations only. Do not include reasoning or hidden "
+            "analysis. Return visible final answer text in the answer field; never "
+            "leave it empty when tool observations succeeded.\n\n"
+            f"User question: {question}"
         )
 
     @staticmethod
@@ -1163,6 +1506,14 @@ class ClioAgent(dspy.Module):
             return mode
         return "auto"
 
+    @staticmethod
+    def _routing_guards_enabled(routing_mode: str = "auto") -> bool:
+        """Return whether deterministic pre-planner routing guards may run."""
+        if routing_mode == "reasoning_only":
+            return False
+        raw = os.environ.get("CLIO_ROUTING_GUARDS", "1").strip().lower()
+        return raw not in {"0", "false", "no", "off", "disabled"}
+
     def _build_capabilities_context(self, routing_mode: str = "auto") -> str:
         """Describe live experts and tools for the planner without query heuristics."""
         lines = ["Experts:"]
@@ -1171,9 +1522,9 @@ class ClioAgent(dspy.Module):
             if caps is None:
                 continue
             tools = ", ".join(caps.tools) if caps.tools else "no direct tools"
-            suffixes = ", ".join(caps.metadata.get("file_suffixes", []))
-            file_note = f"; files: {suffixes}" if suffixes else ""
-            lines.append(f"- {agent_id}: {caps.description}{file_note}; tools: {tools}")
+            metadata_notes = self._planner_capability_metadata_notes(caps.metadata)
+            metadata_text = f"; {metadata_notes}" if metadata_notes else ""
+            lines.append(f"- {agent_id}: {caps.description}{metadata_text}; tools: {tools}")
 
         lines.append("Tools:")
         for tool in sorted(self._available_dspy_tools(), key=lambda t: t.name):
@@ -1183,6 +1534,13 @@ class ClioAgent(dspy.Module):
                 lines.append(f"- {tool.name}({arg_names}): {desc}")
             else:
                 lines.append(f"- {tool.name}: {desc}")
+        lines.append(
+            "Routing strategy: for natural requests that compare, triage, review, "
+            "or summarize multiple scientific files, delegate to expert:analysis. "
+            "The analysis expert coordinates independent HDF5, Parquet, and CSV "
+            "workers and aggregates their tool-backed findings; users do not need "
+            "to ask for nanoagents explicitly."
+        )
         if routing_mode == "experts":
             lines.append(
                 "Routing override: experts mode is active. Do not choose answer or none "
@@ -1194,6 +1552,33 @@ class ClioAgent(dspy.Module):
                 "tool/expert reasoning path over deterministic shortcuts."
             )
         return "\n".join(lines)
+
+    @staticmethod
+    def _planner_capability_metadata_notes(metadata: Mapping[str, Any]) -> str:
+        """Return compact registry metadata notes for planner capability text."""
+        notes: list[str] = []
+        suffixes = [
+            str(suffix)
+            for suffix in metadata.get("file_suffixes", [])
+            if str(suffix).strip()
+        ]
+        if suffixes:
+            notes.append(f"direct files: {', '.join(suffixes)}")
+        coordinated = [
+            str(suffix)
+            for suffix in metadata.get("coordinated_file_suffixes", [])
+            if str(suffix).strip()
+        ]
+        if coordinated:
+            notes.append(f"coordinates multi-file bundles: {', '.join(coordinated)}")
+        intents = [
+            str(intent)
+            for intent in metadata.get("guard_coordinator_intents", [])
+            if str(intent).strip()
+        ]
+        if intents:
+            notes.append(f"coordination intents: {', '.join(intents)}")
+        return "; ".join(notes)
 
     def _available_dspy_tools(self) -> list[dspy.Tool]:
         """Return gateway and local visualization tools visible to the planner."""
@@ -1345,6 +1730,7 @@ class ClioAgent(dspy.Module):
         *,
         question: str,
         file_context: str,
+        session_context: str = "",
     ) -> dict[str, Any]:
         """Repair a degraded filepath arg using explicit paths from the turn context."""
         raw_filepath = ClioAgent._coerce_text(args.get("filepath")).strip()
@@ -1358,7 +1744,11 @@ class ClioAgent(dspy.Module):
         if not basename:
             return args
 
-        candidates = extract_file_paths(question, file_context, SCIENTIFIC_FILE_SUFFIXES)
+        candidates = extract_file_paths(
+            question,
+            "\n".join(part for part in (file_context, session_context) if part),
+            SCIENTIFIC_FILE_SUFFIXES,
+        )
         matches = [
             candidate
             for candidate in candidates
@@ -1384,9 +1774,21 @@ class ClioAgent(dspy.Module):
         if not source_paths:
             return repaired
 
+        for source_path in source_paths:
+            replacement = str(source_path.expanduser())
+            if replacement in repaired or not source_path.name:
+                continue
+            updated = ClioAgent._replace_degraded_path_token(
+                repaired,
+                source_path.name,
+                replacement,
+            )
+            if updated != repaired:
+                repaired = updated
+
         for degraded in extract_file_paths(text, "", SCIENTIFIC_FILE_SUFFIXES):
             expanded = degraded.expanduser()
-            if expanded.exists() or not degraded.name:
+            if (expanded.exists() and degraded.is_absolute()) or not degraded.name:
                 continue
             matches = [
                 candidate
@@ -1398,8 +1800,18 @@ class ClioAgent(dspy.Module):
                 if str(degraded) in repaired:
                     repaired = repaired.replace(str(degraded), replacement)
                 else:
-                    repaired = repaired.replace(degraded.name, replacement)
+                    repaired = ClioAgent._replace_degraded_path_token(
+                        repaired,
+                        degraded.name,
+                        replacement,
+                    )
         return repaired
+
+    @staticmethod
+    def _replace_degraded_path_token(text: str, basename: str, replacement: str) -> str:
+        """Replace a malformed path token ending in basename with replacement."""
+        pattern = re.compile(rf"(?:[A-Za-z]:)?[^\s'\"`]*{re.escape(basename)}")
+        return pattern.sub(lambda _match: replacement, text, count=1)
 
     @staticmethod
     def _decode_tool_result(raw_result: Any) -> Any:
@@ -1423,7 +1835,10 @@ class ClioAgent(dspy.Module):
                 if text.lower().startswith("json"):
                     text = text[4:].strip()
             if not text.startswith("{"):
-                raise ValueError(f"Planner returned invalid JSON action: {raw!r}")
+                extracted = cls._extract_json_object_text(text)
+                if extracted is None:
+                    raise ValueError(f"Planner returned invalid JSON action: {raw!r}")
+                text = extracted
             try:
                 decoded = json.loads(text)
             except json.JSONDecodeError:
@@ -1437,7 +1852,7 @@ class ClioAgent(dspy.Module):
                 else:
                     trailing = text[end:].strip()
                     # DSPy ChatAdapter error strings can append one bracket after the LM payload.
-                    if trailing != "]":
+                    if trailing != "]" and not trailing.startswith("[[ ## completed ## ]]"):
                         raise ValueError(f"Planner returned invalid JSON action: {raw!r}") from None
             if not isinstance(decoded, dict):
                 raise ValueError(f"Planner action must be a JSON object: {raw!r}")
@@ -1458,6 +1873,7 @@ class ClioAgent(dspy.Module):
         the repaired object is usable.
         """
 
+        truncated_key = cls._truncated_string_key(text)
         repaired = cls._close_truncated_json(text)
         if repaired is None or repaired == text:
             return None
@@ -1466,6 +1882,11 @@ class ClioAgent(dspy.Module):
         except json.JSONDecodeError:
             return None
         if not isinstance(decoded, dict):
+            return None
+        if (
+            truncated_key == "question"
+            and cls._coerce_text(decoded.get("action")).strip().lower() != "expert"
+        ):
             return None
         return decoded
 
@@ -1500,13 +1921,73 @@ class ClioAgent(dspy.Module):
                 if not stack or stack.pop() != char:
                     return None
 
-        if in_string and ClioAgent._unterminated_string_key(text, string_start) != "reason":
+        if in_string and ClioAgent._unterminated_string_key(
+            text, string_start
+        ) not in {"question", "reason"}:
             return None
         suffix = '"' if in_string else ""
         suffix += "".join(reversed(stack))
         if not suffix:
             return None
         return text + suffix
+
+    @staticmethod
+    def _truncated_string_key(text: str) -> str | None:
+        """Return the key for an unterminated trailing string, if present."""
+
+        in_string = False
+        escaped = False
+        string_start = -1
+        for index, char in enumerate(text):
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == '"':
+                    in_string = False
+                    string_start = -1
+                continue
+            if char == '"':
+                in_string = True
+                string_start = index
+        if not in_string:
+            return None
+        return ClioAgent._unterminated_string_key(text, string_start)
+
+    @staticmethod
+    def _extract_json_object_text(text: str) -> str | None:
+        """Extract the first balanced JSON object from model text."""
+        start = text.find("{")
+        if start < 0:
+            return None
+
+        stack: list[str] = []
+        in_string = False
+        escaped = False
+        for index in range(start, len(text)):
+            char = text[index]
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == '"':
+                    in_string = False
+                continue
+
+            if char == '"':
+                in_string = True
+            elif char == "{":
+                stack.append("}")
+            elif char == "[":
+                stack.append("]")
+            elif char in {"}", "]"}:
+                if not stack or stack.pop() != char:
+                    return None
+                if not stack:
+                    return text[start : index + 1]
+        return None
 
     @staticmethod
     def _unterminated_string_key(text: str, string_start: int) -> str | None:
@@ -1557,6 +2038,44 @@ class ClioAgent(dspy.Module):
             return cls._parse_action_json(raw_response)
         except ValueError:
             return None
+
+    @classmethod
+    def _parse_answer_from_adapter_error(cls, error: Exception) -> str | None:
+        """Recover visible answer text from a DSPy answer-field parse error.
+
+        Local models sometimes return useful prose while omitting DSPy's
+        ``answer`` marker. This accepts only the already-returned model text
+        and only when DSPy was explicitly expecting an ``answer`` field.
+        """
+        if not cls._is_answer_adapter_parse_error(error):
+            return None
+        message = str(error)
+        marker = "LM Response:"
+        expected = "Expected to find output fields"
+
+        raw_response = message.split(marker, 1)[1].split(expected, 1)[0].strip()
+        if not raw_response:
+            return None
+        raw_response = re.sub(r"\[\[\s*##\s*completed\s*##\s*\]\]", "", raw_response).strip()
+        raw_response = re.sub(
+            r"^\[\[\s*##\s*answer\s*##\s*(?:\]\])?\s*",
+            "",
+            raw_response,
+        ).strip()
+        if raw_response.startswith("[[") or raw_response in {"[", "]"}:
+            return None
+        return raw_response or None
+
+    @staticmethod
+    def _is_answer_adapter_parse_error(error: Exception) -> bool:
+        """Return whether an exception contains an unparsed answer-field response."""
+        message = str(error)
+        marker = "LM Response:"
+        expected = "Expected to find output fields"
+        if marker not in message or expected not in message:
+            return False
+        expected_fields = message.split(expected, 1)[1].lower()
+        return "answer" in expected_fields
 
     def _format_observations_for_prompt(self, observations: list[dict[str, Any]]) -> str:
         """Format loop observations as compact JSON for planner prompts."""
@@ -1745,6 +2264,14 @@ class ClioAgent(dspy.Module):
                 return answer
             raise ValueError("Chat agent returned an empty answer.")
         except Exception as chat_error:
+            recovered = self._parse_answer_from_adapter_error(chat_error)
+            if recovered:
+                self._raise_if_cancelled("chat_after")
+                if self._question_requests_summary(question):
+                    summary = self._summarize_assistant_context(session_context)
+                    if summary:
+                        return summary
+                return recovered
             if self.verbose:
                 print(f"[ClioAgent] ChatAgent failed: {chat_error}")
             raise
@@ -1991,10 +2518,32 @@ class ClioAgent(dspy.Module):
         explicit_paths = extract_file_paths(question, "", SCIENTIFIC_FILE_SUFFIXES)
         if explicit_paths:
             return explicit_paths[0]
-        return self._last_session_file_path(session_id)
+        suffixes = self._requested_file_suffixes(question)
+        return self._last_session_file_path(session_id, suffixes=suffixes)
 
-    def _last_session_file_path(self, session_id: str) -> Path | None:
+    @staticmethod
+    def _requested_file_suffixes(question: str) -> set[str]:
+        """Infer requested file type from natural follow-up wording."""
+        lowered = question.lower()
+        suffixes: set[str] = set()
+        if "parquet" in lowered:
+            suffixes.add(".parquet")
+        if "hdf5" in lowered or "h5" in lowered:
+            suffixes.update({".h5", ".hdf5"})
+        if "adios" in lowered or "bp5" in lowered or " bp" in lowered:
+            suffixes.update({".bp", ".bp4", ".bp5"})
+        if "csv" in lowered:
+            suffixes.add(".csv")
+        return suffixes or SCIENTIFIC_FILE_SUFFIXES
+
+    def _last_session_file_path(
+        self,
+        session_id: str,
+        *,
+        suffixes: set[str] | None = None,
+    ) -> Path | None:
         """Find the last local scientific file path mentioned in this session."""
+        suffix_filter = suffixes or SCIENTIFIC_FILE_SUFFIXES
         try:
             conv = self.arc.get_conversation(session_id)
         except Exception:
@@ -2002,11 +2551,16 @@ class ClioAgent(dspy.Module):
         if conv is None:
             return None
 
+        fallback: Path | None = None
         for message in reversed(conv.messages):
-            paths = extract_file_paths(message.content, "", SCIENTIFIC_FILE_SUFFIXES)
+            paths = extract_file_paths(message.content, "", suffix_filter)
             if paths:
-                return paths[0]
-        return None
+                if fallback is None:
+                    fallback = paths[0]
+                for path in paths:
+                    if path.expanduser().exists():
+                        return path
+        return fallback
 
     @staticmethod
     def _question_with_session_file(question: str, active_file: Path | None) -> str:

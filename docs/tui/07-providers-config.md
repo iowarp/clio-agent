@@ -8,7 +8,7 @@ CLIO's `LMProviderConfig` (`config.py:75-115`) ships with four built-in provider
 
 | `CLIO_LM_PROVIDER` | Default `API_BASE` | Default `MODEL` | `API_KEY` source |
 |---|---|---|---|
-| `lm_studio` (default) | `http://127.0.0.1:1234/v1` | `ibm/granite-4-h-tiny` | literal `"lm-studio"` |
+| `lm_studio` (default) | `http://127.0.0.1:1234/v1` | auto-discovered from `/v1/models` when blank | literal `"lm-studio"` |
 | `ollama` | `http://127.0.0.1:11434/v1` | `granite3.1-dense:8b` | literal `"ollama"` |
 | `openai` | `https://api.openai.com/v1` | `gpt-4o-mini` | `OPENAI_API_KEY` env |
 | `anthropic` | `https://api.anthropic.com/v1` | `claude-sonnet-4-20250514` | `ANTHROPIC_API_KEY` env |
@@ -38,10 +38,11 @@ clio-agent
 ```
 
 The TUI's Settings → Model picker also exposes "ALCF Sophia (Globus
-Auth)", "ALCF Polaris (Globus Auth)", and "ALCF local vLLM (compute-
-node)" presets — picking one issues `PUT /v1/providers/lm` with
-`provider=argonne`, and the backend resolves a token via
-`providers.argonne_auth` if the request body leaves `api_key` blank.
+Auth)", "ALCF Metis (Globus Auth)", and "vLLM (localhost)" presets.
+The ALCF presets issue `PUT /v1/providers/lm` with `provider=argonne`,
+and the backend resolves a token via `providers.argonne_auth` if the
+request body leaves `api_key` blank. The local vLLM preset is plain
+OpenAI-compatible localhost configuration and does not use Globus.
 
 `/health` and `/doctor` report on Argonne separately:
 

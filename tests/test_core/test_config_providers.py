@@ -30,7 +30,7 @@ class TestLMProviderConfig:
         """LM Studio defaults should match PROVIDER_DEFAULTS."""
         config = LMProviderConfig(provider="lm_studio")
         assert config.api_base == "http://127.0.0.1:1234/v1"
-        assert config.model == "ibm/granite-4-h-tiny"
+        assert config.model == ""
         assert config.api_key == "lm-studio"
 
     def test_ollama_defaults(self):
@@ -103,8 +103,8 @@ class TestLMProviderConfig:
         assert config.router_temperature == 0.0
         assert config.planner_max_tokens == 4096
 
-    def test_qwopus_profile_respects_explicit_planner_knobs(self):
-        """Explicit planner settings should win over profile defaults."""
+    def test_qwopus_profile_respects_temperature_but_enforces_planner_token_floor(self):
+        """Qwopus should keep manual temperature but reject too-small planner caps."""
         config = LMProviderConfig(
             provider="lm_studio",
             model="qwopus3.5-9b-v3",
@@ -113,7 +113,17 @@ class TestLMProviderConfig:
             planner_max_tokens=2048,
         )
         assert config.planner_temperature == 0.2
-        assert config.planner_max_tokens == 2048
+        assert config.planner_max_tokens == 4096
+
+    def test_qwopus_profile_respects_explicit_planner_cap_above_floor(self):
+        """Explicit planner caps above the local reasoning floor should win."""
+        config = LMProviderConfig(
+            provider="lm_studio",
+            model="qwopus3.5-9b-v3",
+            max_tokens=1024,
+            planner_max_tokens=8192,
+        )
+        assert config.planner_max_tokens == 8192
 
     def test_default_environment(self):
         """Default environment should be 'dev'."""
@@ -217,6 +227,19 @@ class TestLoadConfigFromEnv:
             assert config.planner_temperature == 0.0
             assert config.planner_max_tokens == 4096
 
+    def test_env_qwopus_profile_raises_too_small_manual_planner_cap(self):
+        """Qwopus planner caps below the known reliable floor are raised."""
+        env = {
+            "CLIO_LM_PROVIDER": "lm_studio",
+            "CLIO_LM_MODEL": "qwopus3.5-9b-v3",
+            "CLIO_LM_MAX_TOKENS": "8192",
+            "CLIO_LM_PLANNER_MAX_TOKENS": "1024",
+        }
+        with patch.dict("os.environ", env, clear=True):
+            config = load_config_from_env()
+            assert config.max_tokens == 8192
+            assert config.planner_max_tokens == 4096
+
     def test_env_environment(self):
         """CLIO_ENVIRONMENT should set environment field."""
         env = {"CLIO_ENVIRONMENT": "production"}
@@ -272,15 +295,22 @@ class TestCreateLM:
 
     def test_returns_dspy_lm(self):
         """create_lm should return a dspy.LM instance."""
-        config = LMProviderConfig(provider="lm_studio")
+        config = LMProviderConfig(provider="lm_studio", model="loaded-model")
         lm = create_lm(config)
         assert isinstance(lm, dspy.LM)
 
     def test_lm_studio_uses_openai_prefix(self):
         """LM Studio models should get openai/ prefix."""
-        config = LMProviderConfig(provider="lm_studio")
+        config = LMProviderConfig(provider="lm_studio", model="loaded-model")
         lm = create_lm(config)
         assert "openai/" in lm.model
+
+    def test_lm_studio_empty_model_discovers_loaded_model(self):
+        """Blank LM Studio model means use the currently loaded model."""
+        config = LMProviderConfig(provider="lm_studio")
+        with patch("clio_agent.config.fetch_lm_studio_models", return_value=["qwopus3.5-9b-v3"]):
+            lm = create_lm(config)
+        assert lm.model == "openai/qwopus3.5-9b-v3"
 
     def test_ollama_uses_openai_prefix(self):
         """Ollama models should get openai/ prefix."""
@@ -380,7 +410,8 @@ class TestCreateLM:
     def test_each_provider_returns_lm(self):
         """All providers should produce valid dspy.LM instances."""
         for provider in ("lm_studio", "ollama"):
-            config = LMProviderConfig(provider=provider)
+            model = "loaded-model" if provider == "lm_studio" else ""
+            config = LMProviderConfig(provider=provider, model=model)
             lm = create_lm(config)
             assert isinstance(lm, dspy.LM), f"Failed for {provider}"
 
@@ -390,7 +421,7 @@ class TestCreatePlannerLM:
 
     def test_returns_dspy_lm(self):
         """create_planner_lm should return a dspy.LM instance."""
-        config = LMProviderConfig(provider="lm_studio")
+        config = LMProviderConfig(provider="lm_studio", model="loaded-model")
         lm = create_planner_lm(config)
         assert isinstance(lm, dspy.LM)
 
@@ -398,6 +429,7 @@ class TestCreatePlannerLM:
         """Planner LM should use planner_temperature, not temperature."""
         config = LMProviderConfig(
             provider="lm_studio",
+            model="loaded-model",
             temperature=1.0,
             planner_temperature=0.3,
         )
@@ -409,6 +441,7 @@ class TestCreatePlannerLM:
         """Planner LM should use planner_max_tokens, not answer max_tokens."""
         config = LMProviderConfig(
             provider="lm_studio",
+            model="loaded-model",
             max_tokens=1024,
             planner_max_tokens=4096,
         )
@@ -426,7 +459,7 @@ class TestCreatePlannerLM:
 
     def test_router_lm_alias(self):
         """create_router_lm remains as a compatibility alias."""
-        config = LMProviderConfig(provider="lm_studio")
+        config = LMProviderConfig(provider="lm_studio", model="loaded-model")
         lm = create_router_lm(config)
         assert isinstance(lm, dspy.LM)
 
@@ -438,7 +471,7 @@ class TestSetupDspy:
         """setup_dspy should return a dspy.LM instance."""
         from clio_agent.config import setup_dspy
 
-        with patch.dict("os.environ", {}, clear=True):
+        with patch.dict("os.environ", {"CLIO_LM_MODEL": "loaded-model"}, clear=True):
             lm = setup_dspy(verbose=False)
             assert isinstance(lm, dspy.LM)
 
@@ -454,7 +487,7 @@ class TestSetupDspy:
         """setup_dspy with verbose=True should print config info."""
         from clio_agent.config import setup_dspy
 
-        with patch.dict("os.environ", {}, clear=True):
+        with patch.dict("os.environ", {"CLIO_LM_MODEL": "loaded-model"}, clear=True):
             setup_dspy(verbose=True)
             captured = capsys.readouterr()
             assert "LM configured" in captured.out

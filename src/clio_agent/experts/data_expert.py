@@ -85,6 +85,19 @@ HDF5_DATASET_ANALYSIS_FIELDS: dict[str, type | tuple[type, ...]] = {
     "is_chunked": bool,
 }
 
+ADIOS_FILE_FIELDS: dict[str, type | tuple[type, ...]] = {
+    "filepath": str,
+    "format": str,
+    "is_directory": bool,
+    "total_size_bytes": int,
+    "member_count": int,
+    "members": list,
+    "has_profiling": bool,
+    "variable_count": int,
+    "variables": dict,
+    "variable_source": str,
+}
+
 
 class DataExpert(dspy.Module):
     """Scientific data expert with native HDF5 tool execution.
@@ -124,7 +137,9 @@ class DataExpert(dspy.Module):
         self._tool_executor = tool_executor or create_sync_tool_executor(gateway)
         self._bridge = self._tool_executor
         self._tools = [
-            tool for tool in self._tool_executor.to_dspy_tools() if tool.name.startswith("hdf5_")
+            tool
+            for tool in self._tool_executor.to_dspy_tools()
+            if tool.name.startswith(("hdf5_", "adios_"))
         ]
 
         logger.info(
@@ -150,12 +165,19 @@ class DataExpert(dspy.Module):
 
     def run(self, request: ExpertRequest) -> ExpertResult:
         """Run the typed native expert boundary."""
-        paths = extract_file_paths(request.question, request.file_context, {".h5", ".hdf5"})
-        if not paths:
+        hdf5_paths = extract_file_paths(request.question, request.file_context, {".h5", ".hdf5"})
+        adios_paths = extract_file_paths(
+            request.question,
+            request.file_context,
+            {".bp", ".bp4", ".bp5"},
+        )
+        if adios_paths:
+            return self._inspect_adios_file(request, str(adios_paths[0]))
+        if not hdf5_paths:
             return self._synthesize_without_tools(request)
         if self._wants_dataset_analysis(request.question):
-            return self._inspect_hdf5_dataset_request(request, str(paths[0]))
-        return self._inspect_hdf5_file(request, str(paths[0]))
+            return self._inspect_hdf5_dataset_request(request, str(hdf5_paths[0]))
+        return self._inspect_hdf5_file(request, str(hdf5_paths[0]))
 
     def _inspect_hdf5_dataset_request(self, request: ExpertRequest, filepath: str) -> ExpertResult:
         """Run hdf5_analyze_dataset when a concrete dataset is named."""
@@ -359,6 +381,96 @@ class DataExpert(dspy.Module):
             metadata={"expert": "data", "format": "hdf5", "filepath": filepath},
         )
 
+    def _inspect_adios_file(self, request: ExpertRequest, filepath: str) -> ExpertResult:
+        """Inspect a concrete ADIOS/BP path through deterministic gateway tools."""
+        runner = NativeToolRunner(self._tool_executor)
+        overview = runner.call("adios_inspect_file", {"filepath": filepath})
+        overview_valid = validate_tool_result(
+            "adios_inspect_file",
+            overview,
+            ADIOS_FILE_FIELDS,
+        )
+        if not overview_valid.ok:
+            assert overview_valid.error is not None
+            runner.mark_validation_error("adios_inspect_file", overview_valid.error)
+            return self._adios_failure_result(filepath, overview_valid.error, runner)
+
+        data = overview_valid.data or {}
+        members = data["members"]
+        member_lines = [
+            f"- {row['name']}: {format_bytes(int(row['size_bytes']))}"
+            for row in members[:8]
+            if isinstance(row, dict) and "name" in row and "size_bytes" in row
+        ]
+        if len(members) > 8:
+            member_lines.append(f"- ... {len(members) - 8} more members")
+
+        profiling = data.get("profiling")
+        profiling_line = "No ADIOS profiling.json was found."
+        if isinstance(profiling, dict):
+            profiling_line = (
+                f"Profiling covers {profiling.get('rank_count', 0)} ranks with "
+                f"{format_bytes(int(profiling.get('transport_write_bytes') or 0))} "
+                "of transport writes."
+            )
+
+        adios2_status = data.get("adios2_status")
+        variable_line = (
+            f"ADIOS2 variable metadata is available for {data['variable_count']} variables."
+        )
+        if isinstance(adios2_status, dict):
+            variable_line = (
+                "ADIOS2 variable metadata is not available in this environment: "
+                f"{adios2_status.get('message', adios2_status)}"
+            )
+
+        analysis = (
+            f"Inspected ADIOS/{data['format']} container {data['filepath']}. "
+            f"It has {data['member_count']} members and totals "
+            f"{format_bytes(data['total_size_bytes'])}.\n"
+            + ("\n".join(member_lines) if member_lines else "No BP member files were found.")
+            + "\n\n"
+            + profiling_line
+            + "\n"
+            + variable_line
+        )
+        recommendations = (
+            "Use profiling metadata for I/O health checks. Install ADIOS2 bindings when "
+            "variable-level BP inspection is required, then re-run adios_inspect_variables."
+        )
+        if "variable" in request.question.lower() and isinstance(adios2_status, dict):
+            recommendations = (
+                "Variable-level inspection was requested but ADIOS2 is unavailable. "
+                f"{adios2_status.get('next_action', 'Install ADIOS2 and retry.')}"
+            )
+
+        return ExpertResult(
+            analysis=analysis,
+            recommendations=recommendations,
+            source="deterministic",
+            tools=runner.observations,
+            metadata={
+                "expert": "data",
+                "format": "adios",
+                "filepath": filepath,
+                "variable_source": data["variable_source"],
+            },
+        )
+
+    @staticmethod
+    def _adios_failure_result(
+        filepath: str,
+        error: dict[str, Any],
+        runner: NativeToolRunner,
+    ) -> ExpertResult:
+        return ExpertResult(
+            analysis=f"Could not inspect ADIOS/BP path {filepath}: {format_tool_error(error)}",
+            recommendations="Verify the path, allowed roots, and ADIOS/BP tool contract.",
+            source="deterministic",
+            tools=runner.observations,
+            metadata={"expert": "data", "format": "adios", "filepath": filepath},
+        )
+
     @staticmethod
     def _wants_dataset_analysis(question: str) -> bool:
         q_lower = question.lower()
@@ -459,7 +571,8 @@ class DataExpert(dspy.Module):
             ),
             "keywords": [
                 "hdf5",
-                "parquet",
+                "adios",
+                "bp5",
                 "compression",
                 "chunking",
                 "data format",

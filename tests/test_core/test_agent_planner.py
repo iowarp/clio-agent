@@ -15,6 +15,7 @@ import pytest
 from clio_agent.agent import ClioAgent, cancellation_checker
 from clio_agent.errors import CancellationError, RoutingError
 from clio_agent.harness import RouteDecision, RunTrace
+from clio_agent.registry.registry import AgentCapability
 from clio_agent.tools.execution import set_global_tool_observer
 
 
@@ -81,9 +82,20 @@ class TestParseActionJson:
         out = ClioAgent._parse_action_json('```json\n{"action": "none"}\n```')
         assert out["action"] == "none"
 
-    def test_embedded_object_rejected(self):
-        with pytest.raises(ValueError):
-            ClioAgent._parse_action_json('noise before {"action": "expert"} noise after')
+    def test_embedded_object_is_recovered_from_local_model_preamble(self):
+        out = ClioAgent._parse_action_json(
+            'Here is the action:\n{"action": "expert", "expert": "analysis"}'
+        )
+        assert out == {"action": "expert", "expert": "analysis"}
+
+    def test_embedded_object_with_nested_args_is_recovered(self):
+        out = ClioAgent._parse_action_json(
+            'Action:\n{"action":"tool","tool":"parquet_analyze_schema",'
+            '"args":{"filepath":"D:\\\\data\\\\measurements.parquet"},"reason":"inspect"}'
+            "\nDone."
+        )
+        assert out["action"] == "tool"
+        assert out["args"]["filepath"].endswith("measurements.parquet")
 
     def test_trailing_text_rejected(self):
         with pytest.raises(ValueError):
@@ -92,6 +104,16 @@ class TestParseActionJson:
     def test_dspy_adapter_trailing_bracket_artifact_allowed(self):
         out = ClioAgent._parse_action_json('{"action": "answer", "answer": "x"}]')
         assert out == {"action": "answer", "answer": "x"}
+
+    def test_dspy_completed_marker_after_json_is_allowed(self):
+        out = ClioAgent._parse_action_json(
+            '{"action":"answer","answer":"ALCF_CLIO_OK","reason":"exact"}[[ ## completed ## ]]'
+        )
+        assert out == {
+            "action": "answer",
+            "answer": "ALCF_CLIO_OK",
+            "reason": "exact",
+        }
 
     def test_truncated_object_with_complete_tool_args_is_repaired(self):
         raw = (
@@ -125,6 +147,26 @@ class TestParseActionJson:
             "reason": "User wants to inspect a",
         }
 
+    def test_truncated_expert_question_is_repaired(self):
+        raw = (
+            '{"action":"expert","expert":"analysis",'
+            '"question":"Please inspect D:\\\\data\\\\fusion_run.h5'
+        )
+
+        out = ClioAgent._parse_action_json(raw)
+
+        assert out == {
+            "action": "expert",
+            "expert": "analysis",
+            "question": "Please inspect D:\\data\\fusion_run.h5",
+        }
+
+    def test_truncated_non_expert_question_is_rejected(self):
+        raw = '{"action":"tool","tool":"x","question":"not part of tool schema'
+
+        with pytest.raises(ValueError):
+            ClioAgent._parse_action_json(raw)
+
     def test_truncated_required_string_value_is_rejected(self):
         raw = (
             '{"action":"tool","tool":"parquet_analyze_schema",'
@@ -150,6 +192,40 @@ class TestParseActionJson:
     def test_unsupported_action_raises(self):
         with pytest.raises(ValueError):
             ClioAgent._parse_action_json({"action": "explode"})
+
+
+class TestParseAnswerFromAdapterError:
+    def test_plain_prose_answer_is_recovered_from_dspy_parse_error(self):
+        error = ValueError(
+            "Adapter failure\n"
+            "LM Response:\n"
+            "Scientific workflow agents need evidence logs because tool outputs and "
+            "routing choices must be auditable.\n"
+            "Expected to find output fields in response: [answer]"
+        )
+
+        answer = ClioAgent._parse_answer_from_adapter_error(error)
+
+        assert answer is not None
+        assert answer.startswith("Scientific workflow agents")
+
+    def test_non_answer_parse_error_is_not_recovered(self):
+        error = ValueError(
+            "Adapter failure\n"
+            'LM Response:\n{"action":"answer","answer":"x"}\n'
+            "Expected to find output fields in response: [action_json]"
+        )
+
+        assert ClioAgent._parse_answer_from_adapter_error(error) is None
+
+    def test_marker_fragment_is_not_recovered_as_answer(self):
+        error = ValueError(
+            "Adapter failure\n"
+            "LM Response:\n[[\n"
+            "Expected to find output fields in response: [answer]"
+        )
+
+        assert ClioAgent._parse_answer_from_adapter_error(error) is None
 
 
 class TestNormalizeToolArgs:
@@ -228,6 +304,21 @@ class TestAgentMaxSteps:
         assert ClioAgent._agent_max_steps() == 1
 
 
+class TestRoutingGuards:
+    def test_enabled_by_default(self, monkeypatch):
+        monkeypatch.delenv("CLIO_ROUTING_GUARDS", raising=False)
+        assert ClioAgent._routing_guards_enabled("auto") is True
+
+    @pytest.mark.parametrize("value", ["0", "false", "no", "off", "disabled"])
+    def test_env_can_disable(self, monkeypatch, value):
+        monkeypatch.setenv("CLIO_ROUTING_GUARDS", value)
+        assert ClioAgent._routing_guards_enabled("auto") is False
+
+    def test_reasoning_only_disables_guards(self, monkeypatch):
+        monkeypatch.setenv("CLIO_ROUTING_GUARDS", "1")
+        assert ClioAgent._routing_guards_enabled("reasoning_only") is False
+
+
 # --------------------------------------------------------------------------
 # Helpers that need an agent instance
 # --------------------------------------------------------------------------
@@ -255,6 +346,108 @@ class TestBuildCapabilitiesContext:
         assert "fs_read_file(" not in ctx
         assert "fs_apply_edit_write(" not in ctx
         assert "fs_propose_edit(" in ctx
+
+    def test_multi_file_strategy_is_visible_to_planner(self, agent):
+        ctx = agent._build_capabilities_context()
+        assert "multiple scientific files" in ctx
+        assert "users do not need to ask for nanoagents explicitly" in ctx
+
+    def test_coordinator_metadata_is_visible_to_planner(self, agent):
+        ctx = agent._build_capabilities_context()
+        analysis_line = next(line for line in ctx.splitlines() if line.startswith("- analysis:"))
+        assert "direct files: .parquet, .csv" in analysis_line
+        assert "coordinates multi-file bundles:" in analysis_line
+        assert ".h5" in analysis_line
+        assert ".bp5" in analysis_line
+        assert "coordination intents: multi_file_analysis" in analysis_line
+
+
+class TestSessionFileResolution:
+    def test_quoted_bp5_path_with_spaces_is_extracted(self, agent, tmp_path):
+        bp_path = tmp_path / "dataset 1" / "noise=0.01" / "data.bp5"
+        bp_path.mkdir(parents=True)
+
+        paths = agent._resolve_session_file_reference(
+            f'Inspect this ADIOS output: "{bp_path}"',
+            "session-1",
+        )
+
+        assert paths == bp_path
+
+    def test_unquoted_windows_bp5_path_with_spaces_is_extracted(self, agent, tmp_path):
+        bp_path = tmp_path / "dataset 1" / "noise=0.01" / "data.bp5"
+        bp_path.mkdir(parents=True)
+
+        resolved = agent._resolve_session_file_reference(f"Inspect ADIOS output: {bp_path}", "s")
+
+        assert resolved == bp_path
+
+    def test_bp5_suffix_is_not_truncated_to_bp(self, agent, tmp_path):
+        bp_path = tmp_path / "data.bp5"
+        bp_path.mkdir()
+
+        resolved = agent._resolve_session_file_reference(f"Inspect {bp_path}", "session-1")
+
+        assert resolved == bp_path
+
+    def test_mixed_scientific_paths_keep_textual_order(self, agent, tmp_path):
+        hdf5_path = tmp_path / "fusion_run.h5"
+        parquet_path = tmp_path / "facility.parquet"
+        csv_path = tmp_path / "events.csv"
+        bp_path = tmp_path / "dataset 1" / "data.bp5"
+        hdf5_path.touch()
+        parquet_path.touch()
+        csv_path.touch()
+        bp_path.mkdir(parents=True)
+
+        resolved = agent._resolve_session_file_reference(
+            f'I have {hdf5_path}, {parquet_path}, {csv_path}, and "{bp_path}".',
+            "session-1",
+        )
+
+        assert resolved == hdf5_path
+
+    def test_natural_parquet_followup_prefers_last_parquet_over_later_csv(self, agent, tmp_path):
+        parquet_path = tmp_path / "facility.parquet"
+        csv_path = tmp_path / "events.csv"
+        parquet_path.touch()
+        csv_path.write_text("event_id,status\n1,ok\n", encoding="utf-8")
+        conversation = MagicMock()
+        conversation.messages = [
+            MagicMock(content=f"Profile {parquet_path}"),
+            MagicMock(content=f"Inspect {csv_path}"),
+        ]
+        agent.arc.get_conversation = MagicMock(return_value=conversation)
+
+        resolved = agent._resolve_session_file_reference(
+            "Create a dashboard from the Parquet file we just profiled.",
+            "session-1",
+        )
+
+        assert resolved == parquet_path
+
+    def test_followup_ignores_degraded_missing_basename_when_full_path_exists(
+        self,
+        agent,
+        tmp_path,
+    ):
+        parquet_path = tmp_path / "benchmark-data" / "facility_measurements.parquet"
+        parquet_path.parent.mkdir()
+        parquet_path.touch()
+        degraded = tmp_path / "facility_measurements.parquet"
+        conversation = MagicMock()
+        conversation.messages = [
+            MagicMock(content=f"Profile {parquet_path}"),
+            MagicMock(content=f"Assistant mentioned {degraded} without creating it."),
+        ]
+        agent.arc.get_conversation = MagicMock(return_value=conversation)
+
+        resolved = agent._resolve_session_file_reference(
+            "Create a dashboard from the Parquet file we just profiled.",
+            "session-1",
+        )
+
+        assert resolved == parquet_path
 
 
 class TestSelectedExpertForTool:
@@ -344,32 +537,274 @@ class TestRunAgentLoop:
         first_path.touch()
         second_path.write_text("event_id,status\n1,ok\n", encoding="utf-8")
         expert_result = MagicMock()
-        agent._plan_next_action = MagicMock(
-            side_effect=RoutingError(
-                "Agent planner failed to produce an action.",
-                details={"original_error": "Planner returned invalid JSON action: None"},
-            )
-        )
         agent._dispatch_expert_action = MagicMock(
             return_value=("analysis", "validated files", expert_result, None)
         )
 
+        recovered = agent._recover_parallel_validation_after_planner_failure(
+            planner_error=RoutingError(
+                "Agent planner failed to produce an action.",
+                details={"original_error": "Planner returned invalid JSON action: None"},
+            ),
+            question=(
+                "I have two related run files and need a cross-file triage summary: "
+                f"{first_path} {second_path}"
+            ),
+            file_context="",
+            trace=_trace(),
+        )
+        assert recovered is not None
+        selected, answer, result, error_info, route = recovered
+
+        assert selected == "analysis"
+        assert answer == "validated files"
+        assert result is expert_result
+        assert route.target == "analysis"
+        assert route.source == "recovery"
+        assert error_info is not None
+        assert error_info["details"]["partial"] is True
+        assert error_info["details"]["stage"] == "parallel_validation_recovery"
+        assert "invalid JSON" in error_info["details"]["original_error"]
+        agent._dispatch_expert_action.assert_called_once()
+
+    def test_natural_multi_file_request_uses_semantic_guard_before_planner(
+        self,
+        agent,
+        tmp_path,
+    ):
+        first_path = tmp_path / "run.h5"
+        second_path = tmp_path / "events.csv"
+        first_path.touch()
+        second_path.write_text("event_id,status\n1,ok\n", encoding="utf-8")
+        expert_result = MagicMock()
+        agent._plan_next_action = MagicMock(return_value={"action": "answer", "answer": "bad"})
+        agent._dispatch_expert_action = MagicMock(
+            return_value=("analysis", "triaged files", expert_result, None)
+        )
+
         selected, answer, result, error_info, route = agent._run_agent_loop(
-            question=f"Validate these files in parallel with nanoagents: {first_path} {second_path}",
+            question=(
+                "I have two related run files and need a cross-file triage summary: "
+                f"{first_path} {second_path}"
+            ),
             session_context="",
             file_context="",
             trace=_trace(),
         )
 
         assert selected == "analysis"
-        assert answer == "validated files"
+        assert answer == "triaged files"
         assert result is expert_result
+        assert error_info is None
+        assert route.source == "guard"
         assert route.target == "analysis"
-        assert error_info is not None
-        assert error_info["details"]["partial"] is True
-        assert error_info["details"]["stage"] == "parallel_validation_recovery"
-        assert "invalid JSON" in error_info["details"]["original_error"]
-        agent._dispatch_expert_action.assert_called_once()
+        assert "guard_coordinator_intents" in route.reason
+        agent._plan_next_action.assert_not_called()
+
+    def test_bp5_guard_uses_registry_direct_suffix_metadata(self, agent, tmp_path):
+        adios_path = tmp_path / "run.bp5"
+        adios_path.mkdir()
+        expert_result = MagicMock()
+        agent._plan_next_action = MagicMock(return_value={"action": "answer", "answer": "bad"})
+        agent._dispatch_expert_action = MagicMock(
+            return_value=("data", "inspected bp5", expert_result, None)
+        )
+
+        selected, answer, result, error_info, route = agent._run_agent_loop(
+            question=f"Inspect this ADIOS BP5 file: {adios_path}",
+            session_context="",
+            file_context="",
+            trace=_trace(),
+        )
+
+        assert selected == "data"
+        assert answer == "inspected bp5"
+        assert result is expert_result
+        assert error_info is None
+        assert route.source == "guard"
+        assert route.target == "data"
+        assert "guard_direct_suffixes" in route.reason
+        agent._plan_next_action.assert_not_called()
+
+    def test_multi_file_guard_does_not_fire_when_registry_coordinator_is_ambiguous(
+        self,
+        agent,
+        tmp_path,
+    ):
+        first_path = tmp_path / "run.h5"
+        second_path = tmp_path / "events.csv"
+        first_path.touch()
+        second_path.write_text("event_id,status\n1,ok\n", encoding="utf-8")
+        agent.registry.register_agent(
+            "second_coordinator",
+            MagicMock(),
+            AgentCapability(
+                keywords=["triage"],
+                description="Second coordinator used to prove guard ambiguity handling",
+                tools=[],
+                specialization="coordination",
+                metadata={
+                    "guard_coordinator_intents": ["multi_file_analysis"],
+                    "coordinated_file_suffixes": [".h5", ".csv"],
+                },
+            ),
+        )
+        expert_result = MagicMock()
+        agent._plan_next_action = MagicMock(
+            return_value={
+                "action": "expert",
+                "expert": "analysis",
+                "question": "triage the related files",
+                "reason": "planner resolves ambiguous coordinators",
+            }
+        )
+        agent._dispatch_expert_action = MagicMock(
+            return_value=("analysis", "planner triaged files", expert_result, None)
+        )
+
+        selected, answer, result, error_info, route = agent._run_agent_loop(
+            question=(
+                "I have two related run files and need a cross-file triage summary: "
+                f"{first_path} {second_path}"
+            ),
+            session_context="",
+            file_context="",
+            trace=_trace(),
+        )
+
+        assert selected == "analysis"
+        assert answer == "planner triaged files"
+        assert result is expert_result
+        assert error_info is None
+        assert route.source == "dspy"
+        agent._plan_next_action.assert_called_once()
+
+    def test_multi_file_guard_uses_registry_coordinator_with_many_agents(
+        self,
+        agent,
+        tmp_path,
+    ):
+        first_path = tmp_path / "run.h5"
+        second_path = tmp_path / "events.csv"
+        first_path.touch()
+        second_path.write_text("event_id,status\n1,ok\n", encoding="utf-8")
+        for index in range(25):
+            agent.registry.register_agent(
+                f"extra_{index}",
+                MagicMock(),
+                AgentCapability(
+                    keywords=[f"extra_{index}"],
+                    description=f"Additional expert {index}",
+                    tools=[],
+                    specialization="extra",
+                    metadata={
+                        "guard_coordinator_intents": ["multi_file_analysis"],
+                        "coordinated_file_suffixes": [f".extra{index}"],
+                    },
+                ),
+            )
+        expert_result = MagicMock()
+        agent._plan_next_action = MagicMock(return_value={"action": "answer", "answer": "bad"})
+        agent._dispatch_expert_action = MagicMock(
+            return_value=("analysis", "registry triaged files", expert_result, None)
+        )
+
+        selected, answer, result, error_info, route = agent._run_agent_loop(
+            question=(
+                "Please triage this related experiment bundle for a collaborator: "
+                f"{first_path} and {second_path}"
+            ),
+            session_context="",
+            file_context="",
+            trace=_trace(),
+        )
+
+        assert selected == "analysis"
+        assert answer == "registry triaged files"
+        assert result is expert_result
+        assert error_info is None
+        assert route.source == "guard"
+        assert route.target == "analysis"
+        assert "guard_coordinator_intents" in route.reason
+        agent._plan_next_action.assert_not_called()
+
+    def test_natural_multi_file_guard_can_be_disabled_for_planner_benchmarks(
+        self,
+        agent,
+        tmp_path,
+        monkeypatch,
+    ):
+        monkeypatch.setenv("CLIO_ROUTING_GUARDS", "0")
+        first_path = tmp_path / "run.h5"
+        second_path = tmp_path / "events.csv"
+        first_path.touch()
+        second_path.write_text("event_id,status\n1,ok\n", encoding="utf-8")
+        expert_result = MagicMock()
+        agent._plan_next_action = MagicMock(
+            return_value={
+                "action": "expert",
+                "expert": "analysis",
+                "question": "triage the related files",
+                "reason": "planner selected cross-file analysis",
+            }
+        )
+        agent._dispatch_expert_action = MagicMock(
+            return_value=("analysis", "planner triaged files", expert_result, None)
+        )
+
+        selected, answer, result, error_info, route = agent._run_agent_loop(
+            question=(
+                "I have two related run files and need a cross-file triage summary: "
+                f"{first_path} {second_path}"
+            ),
+            session_context="",
+            file_context="",
+            trace=_trace(),
+        )
+
+        assert selected == "analysis"
+        assert answer == "planner triaged files"
+        assert result is expert_result
+        assert error_info is None
+        assert route.source == "dspy"
+        assert route.reason == "planner selected cross-file analysis"
+        agent._plan_next_action.assert_called_once()
+
+    def test_reasoning_only_bypasses_adios_guard_for_planner_benchmarks(
+        self,
+        agent,
+        tmp_path,
+    ):
+        adios_path = tmp_path / "run.bp5"
+        adios_path.mkdir()
+        expert_result = MagicMock()
+        agent._plan_next_action = MagicMock(
+            return_value={
+                "action": "expert",
+                "expert": "data",
+                "question": f"inspect {adios_path}",
+                "reason": "planner selected data expert for BP5",
+            }
+        )
+        agent._dispatch_expert_action = MagicMock(
+            return_value=("data", "planner inspected bp5", expert_result, None)
+        )
+
+        selected, answer, result, error_info, route = agent._run_agent_loop(
+            question=f"Inspect this ADIOS BP5 file: {adios_path}",
+            session_context="",
+            file_context="",
+            trace=_trace(),
+            routing_mode="reasoning_only",
+        )
+
+        assert selected == "data"
+        assert answer == "planner inspected bp5"
+        assert result is expert_result
+        assert error_info is None
+        assert route.source == "dspy"
+        assert route.reason == "planner selected data expert for BP5"
+        agent._plan_next_action.assert_called_once()
 
     def test_forward_promotes_propose_edit_observation_to_file_diffs(self, agent):
         proposed = {
@@ -614,6 +1049,7 @@ class TestRunAgentLoop:
         assert error_info is not None
         assert error_info["error"] == "routing_error"
         assert error_info["details"]["partial"] is True
+        assert error_info["details"]["stage"] == "step_limit_after_observations"
         assert error_info["details"]["step_limit"] == 1
         assert error_info["details"]["recovery_actions"] == [
             "retry",
@@ -640,7 +1076,54 @@ class TestRunAgentLoop:
         assert details["original_error"] == "provider down"
         assert details["recovery_actions"] == ["retry", "reconfigure_provider", "exit"]
 
-    def test_empty_answer_synthesis_surfaces_error_info(self, agent, monkeypatch):
+    def test_answer_synthesis_exception_uses_observation_fallback(self, agent):
+        agent.answer_synthesizer = MagicMock(
+            side_effect=ValueError(
+                "Adapter failure\n"
+                "LM Response:\n[[\n"
+                "Expected to find output fields in response: [answer]"
+            )
+        )
+
+        answer = agent._synthesize_agent_answer(
+            question="Review data quality",
+            session_context="",
+            observations=[
+                {
+                    "step": 1,
+                    "type": "tool",
+                    "tool": "parquet_compute_statistics",
+                    "ok": True,
+                    "result": {
+                        "column": "temperature_k",
+                        "null_count": 18,
+                        "total_count": 3000,
+                    },
+                }
+            ],
+        )
+
+        assert "temperature_k" in answer
+        assert "null_count=18" in answer
+
+    def test_observation_fallback_labels_ndp_tools(self):
+        answer = ClioAgent._fallback_answer_from_observations(
+            [
+                {
+                    "tool": "ndp_search_datasets",
+                    "ok": True,
+                    "result": {
+                        "datasets": {"items": [{"name": "noaa-example-dataset"}]},
+                        "ok": True,
+                    },
+                }
+            ]
+        )
+
+        assert "National Data Platform" in answer
+        assert "noaa-example-dataset" in answer
+
+    def test_empty_answer_synthesis_uses_observation_fallback(self, agent, monkeypatch):
         monkeypatch.setenv("CLIO_AGENT_MAX_STEPS", "1")
         agent._plan_next_action = MagicMock(
             return_value={"action": "tool", "tool": "hdf5_analyze_file", "args": {}}
@@ -650,12 +1133,10 @@ class TestRunAgentLoop:
 
         result = agent.forward("summarize the file", session_id="empty-synthesis")
 
-        assert result.answer == ""
+        assert "hdf5_analyze_file" in result.answer
+        assert '"value": "partial"' in result.answer
         assert result.error_info is not None
-        assert result.error_info["error"] == "provider_error"
-        details = result.error_info["details"]
-        assert details["stage"] == "answer_synthesis"
-        assert details["original_error"] == "answer synthesizer returned an empty answer"
+        assert result.error_info["details"]["stage"] == "step_limit_after_observations"
 
 
 class TestExecuteToolAction:
@@ -669,6 +1150,21 @@ class TestExecuteToolAction:
             {"filepath": str(degraded)},
             question=f"Inspect {actual}",
             file_context="",
+        )
+
+        assert args["filepath"] == str(actual)
+
+    def test_repair_filepath_arg_from_session_context(self, tmp_path):
+        actual = tmp_path / "data" / "facility_measurements.parquet"
+        actual.parent.mkdir()
+        actual.touch()
+        degraded = tmp_path / "facility_measurements.parquet"
+
+        args = ClioAgent._repair_filepath_arg_from_context(
+            {"filepath": str(degraded)},
+            question="Create a dashboard from the Parquet file we just profiled.",
+            file_context="",
+            session_context=f"assistant: Profiled Parquet file {actual}",
         )
 
         assert args["filepath"] == str(actual)
@@ -711,6 +1207,24 @@ class TestExecuteToolAction:
         )
 
         assert text == f"Inspect {actual}"
+
+    def test_repair_question_drive_relative_windows_filepath_from_explicit_context(
+        self,
+        tmp_path,
+    ):
+        actual_path = tmp_path / "clio-benchmark-data" / "facility_measurements_dirty.parquet"
+        actual_path.parent.mkdir()
+        actual_path.touch()
+        actual = str(actual_path)
+        degraded = actual.replace(":\\", ":", 1)
+
+        text = ClioAgent._repair_question_filepaths_from_context(
+            f"Review {degraded}",
+            source_question=f"Review {actual}",
+            file_context="",
+        )
+
+        assert text == f"Review {actual}"
 
     def test_unknown_tool_returns_structured_error(self, agent):
         result = agent._execute_tool_action("not_a_real_tool", {}, _trace())
@@ -907,6 +1421,98 @@ class TestExecuteToolAction:
 
 
 class TestPlannerNoBypass:
+    def test_planner_strips_duplicate_available_tools_context(self, agent):
+        agent.action_planner = MagicMock(
+            return_value=MagicMock(action_json='{"action":"answer","answer":"ok"}')
+        )
+        session_context = (
+            "[Session Context]\n"
+            "user: compare these files\n\n"
+            "[Available Tools]\n"
+            "hdf5_list_datasets: list HDF5 datasets\n"
+            "parquet_analyze_schema: inspect parquet schema\n\n"
+            "[Routing History]\n"
+            "previous query -> analysis"
+        )
+
+        action = agent._plan_next_action(
+            question="compare files",
+            session_context=session_context,
+            file_context="",
+            capabilities="analysis: cross-file scientific analysis",
+            observations=[],
+        )
+
+        assert action == {"action": "answer", "answer": "ok"}
+        planner_context = agent.action_planner.call_args.kwargs["session_context"]
+        assert "[Session Context]" in planner_context
+        assert "user: compare these files" in planner_context
+        assert "[Routing History]" in planner_context
+        assert "previous query -> analysis" in planner_context
+        assert "[Available Tools]" not in planner_context
+        assert "hdf5_list_datasets" not in planner_context
+
+    def test_planner_context_is_never_empty_after_tool_section_strip(self):
+        assert (
+            ClioAgent._planner_session_context("[Available Tools]\nhdf5_list_datasets: list")
+            == "No prior context"
+        )
+
+    def test_qwopus_planner_question_uses_no_think_control(self, agent):
+        agent._provider_config.provider = "lm_studio"
+        agent._provider_config.model = "qwopus3.5-9b-v3"
+        agent.action_planner = MagicMock(
+            return_value=MagicMock(action_json='{"action":"answer","answer":"ok"}')
+        )
+
+        agent._plan_next_action(
+            question="triage these scientific files",
+            session_context="",
+            file_context="",
+            capabilities="analysis: cross-file analysis",
+            observations=[],
+        )
+
+        planner_question = agent.action_planner.call_args.kwargs["question"]
+        assert planner_question.startswith("/no_think\n")
+        assert "Return only the action_json JSON object" in planner_question
+        assert planner_question.endswith("triage these scientific files")
+
+    def test_non_reasoning_planner_question_is_unchanged(self, agent):
+        agent._provider_config.provider = "lm_studio"
+        agent._provider_config.model = "granite-4-h-tiny"
+
+        assert agent._planner_question("hello") == "hello"
+
+    def test_planner_retries_with_compact_capabilities(self, agent):
+        agent.action_planner = MagicMock(
+            side_effect=[
+                RuntimeError("truncated full prompt"),
+                MagicMock(action_json='{"action":"expert","expert":"analysis","question":""}'),
+            ]
+        )
+        capabilities = (
+            "Experts:\n"
+            "- analysis: Cross-file analysis.; tools: parquet_analyze_schema, csv_read_table\n"
+            "Tools:\n"
+            "- parquet_analyze_schema(filepath): Inspect the schema and metadata.\n"
+            "Routing strategy: delegate natural multi-file review to expert:analysis."
+        )
+
+        action = agent._plan_next_action(
+            question="triage files",
+            session_context="",
+            file_context="",
+            capabilities=capabilities,
+            observations=[],
+        )
+
+        assert action == {"action": "expert", "expert": "analysis", "question": ""}
+        assert agent.action_planner.call_count == 2
+        retry_capabilities = agent.action_planner.call_args.kwargs["capabilities"]
+        assert "- parquet_analyze_schema(filepath)" in retry_capabilities
+        assert "Inspect the schema and metadata" not in retry_capabilities
+
     def test_planner_accepts_raw_json_from_chat_adapter_error(self, agent):
         agent.action_planner = MagicMock(
             side_effect=ValueError(
@@ -981,7 +1587,7 @@ class TestPlannerNoBypass:
 
 
 class TestChatAgentNoBypass:
-    def test_chat_adapter_parse_failure_surfaces(self, agent):
+    def test_chat_adapter_parse_failure_recovers_visible_model_answer(self, agent):
         agent.chat_agent = MagicMock(
             side_effect=ValueError(
                 "Adapter ChatAdapter failed to parse the LM response.\n\n"
@@ -992,8 +1598,7 @@ class TestChatAgentNoBypass:
             )
         )
 
-        with pytest.raises(ValueError, match="ChatAdapter failed"):
-            agent._run_chat_agent("hi", "")
+        assert agent._run_chat_agent("hi", "") == "Useful answer text."
 
     def test_chat_summary_replaces_repeated_previous_answer(self, agent):
         repeated = "If a provider fails, retry or reconfigure the provider."

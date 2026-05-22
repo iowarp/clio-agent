@@ -4,6 +4,9 @@ This guide is for running CLIO in front of external collaborators with a real
 local model and real scientific files. It is not a mock demo. The prompts below
 exercise routing, tool calling, multi-agent delegation, nano-agent fan-out,
 memory, visualization, streaming provenance, cancellation, and error surfacing.
+The main prompts are intentionally human-natural: they do not ask for specific
+experts, tool names, or nano-agents unless the section is explaining what to
+inspect in the evidence.
 
 For the current verified evidence matrix and known gaps, see
 `docs/STRESS_BENCHMARK_REPORT.md`.
@@ -34,6 +37,11 @@ The data generator creates a deterministic benchmark bundle:
 - `tmp/clio-benchmark-data/sensor_events.csv`
   420-row event stream with timestamps, sensor values, status, and operator
   notes.
+- `tmp/clio-benchmark-data/gray scott noise 0.01 data.bp5`
+  Real ADIOS/BP5 Gray-Scott output when the adjacent BP5 dataset collection is
+  available, otherwise a BP-like container with profiling metadata. CLIO can
+  inspect the container and profiling metadata without ADIOS2. Variable-level
+  metadata requires the optional ADIOS2 Python bindings.
 
 ## 2. Configure LM Studio
 
@@ -103,17 +111,18 @@ $h5 = Join-Path $data 'fusion_run.h5'
 $parquet = Join-Path $data 'facility_measurements.parquet'
 $dirty = Join-Path $data 'facility_measurements_dirty.parquet'
 $csv = Join-Path $data 'sensor_events.csv'
+$adios = Join-Path $data 'gray scott noise 0.01 data.bp5'
 ```
 
-Replace `$h5`, `$parquet`, `$dirty`, and `$csv` in the prompts below with the
-resolved full paths if you are typing directly into the TUI.
+Replace `$h5`, `$parquet`, `$dirty`, `$csv`, and `$adios` in the prompts below
+with the resolved full paths if you are typing directly into the TUI.
 
 ### Tooling: Inspect A Scientific HDF5 File
 
 Prompt:
 
 ```text
-Use CLIO tools to inspect this HDF5 benchmark file. File: $h5. Report the dataset names, shapes, compression, and units where available. Also explain which datasets look most important for downstream analysis.
+I need to understand this fusion run before sharing it. File: $h5. What datasets are inside, what are their shapes, and what units or compression details should I know about? Also explain which datasets look most important for downstream analysis.
 ```
 
 What you should see:
@@ -137,25 +146,25 @@ Run these prompts in the same session, in order.
 Prompt 1:
 
 ```text
-Use CLIO tools to inspect this HDF5 benchmark file. File: $h5. Report the dataset names, shapes, compression, and units where available.
+I need to understand this fusion run before sharing it. File: $h5. What datasets are inside, what are their shapes, and what units or compression details should I know about?
 ```
 
 Prompt 2:
 
 ```text
-Use CLIO tools to profile this Parquet benchmark file. File: $parquet. Include schema, row groups, and statistics for temperature_k, pressure_pa, humidity_pct, and anomaly_score.
+Profile the facility measurements in this Parquet file: $parquet. I care about the schema, row groups, and whether temperature_k, pressure_pa, humidity_pct, and anomaly_score look sane.
 ```
 
 Prompt 3:
 
 ```text
-Use CLIO tools to inspect this CSV benchmark event stream. File: $csv. List the columns and identify the status and operator_note fields.
+This event stream came with the run: $csv. What columns does it contain, and where are the status and operator_note fields?
 ```
 
 Prompt 4:
 
 ```text
-Using the Parquet benchmark file we just profiled, use CLIO visualization tools to create a summary dashboard for $parquet. Return the PNG artifact path and explain what the chart is summarizing.
+Create a compact PNG dashboard from the Parquet file we just profiled. Tell me where it was saved and what the chart is summarizing.
 ```
 
 What you should see:
@@ -172,27 +181,73 @@ The model has to choose different experts, preserve enough context to understand
 "the file we just profiled", use tools with correct arguments, and produce a
 real artifact.
 
-### Nano-Agents: Parallel File Validation
+### ADIOS/BP5: Container And Profiling Inspection
 
 Prompt:
 
 ```text
-Validate in parallel: HDF5 structure for $h5, Parquet statistics for $parquet, and CSV schema for $csv. Spawn nanoagents for the independent checks and use CLIO tools in each worker. Summarize all worker findings in the parent answer.
+This ADIOS BP5 output came from a Gray-Scott run: "$adios". Tell me what the container looks like, whether profiling metadata is present, and what extra runtime is needed if variable-level metadata is unavailable.
+```
+
+What you should see:
+
+CLIO should route to the data expert and call `adios_inspect_file`. The answer
+should mention BP5 container members such as `data.0`, metadata/index members,
+and `profiling.json` when present. On Windows without ADIOS2 installed, CLIO
+should explicitly say that ADIOS2 Python bindings are needed for variable-level
+metadata rather than pretending the variables were read.
+
+Why this is interesting:
+
+This adds a real HPC format to the demo without hiding platform limitations. It
+proves BP5 path extraction, spaces in paths, container/profiling inspection, and
+structured dependency surfacing for the ADIOS2 runtime.
+
+### Nano-Agents: Natural Cross-File Triage
+
+Prompt:
+
+```text
+I have four related files from the same experiment: $h5, $parquet, $csv, and "$adios". Give me a cross-file triage summary: what is in each file, whether the measurements look ready for downstream analysis, and what I should check next.
 ```
 
 What you should see:
 
 CLIO should create child sessions for workers such as `data_validator`,
-`analysis_validator`, and `csv_validator`. The parent answer should summarize
-all three workers. Child assistant messages should include real tool provenance:
-HDF5 tools in the HDF5 worker, Parquet tools in the Parquet worker, and
-`csv_read_table` in the CSV worker.
+`analysis_validator`, `csv_validator`, and `adios_validator`. The parent answer
+should summarize all four workers. Child assistant messages should include real
+tool provenance: HDF5 tools in the HDF5 worker, Parquet tools in the Parquet
+worker, `csv_read_table` in the CSV worker, and `adios_inspect_file` in the BP5
+worker.
 
 Why this is interesting:
 
 This is a high-value stress case. It checks that nano-agents are not just
-prompt-only summaries. Each worker must run real CLIO tools, and the parent
-turn must aggregate the independent findings.
+prompt-only summaries. The user does not name nano-agents or tools; CLIO has to
+infer the decomposition from the natural cross-file request. Each worker must
+run real CLIO tools, and the parent turn must aggregate the independent
+findings.
+
+### Dirty Data: Quality Triage
+
+Prompt:
+
+```text
+This Parquet export looks suspicious: $dirty. Review it for data quality problems and tell me what fields need attention before downstream analysis.
+```
+
+What you should see:
+
+CLIO should route to the analysis expert, call Parquet schema/statistics tools,
+and ground the answer in the dirty file's actual columns and null counts. It
+should not produce generic data-cleaning advice without tool evidence.
+
+Why this is interesting:
+
+This catches a different class of failure from the clean demo files: local
+models often degrade paths or make generic quality claims. A good run repairs
+path formatting when needed, reads the dirty Parquet file, and names concrete
+fields such as `temperature_k`, `pressure_pa`, and `quality_flag`.
 
 ### Memory: Follow-Up Without Repeating The Path
 
@@ -217,6 +272,75 @@ Why this is interesting:
 This demonstrates memory and context reuse. The user does not restate the file
 path, so CLIO has to use session state instead of hallucinating a new dataset or
 asking a needless clarification.
+
+### Core CLIO Path: NDP Catalog Discovery
+
+Prompt:
+
+```text
+I need live catalog evidence for external collaborators. Find NOAA climate-related datasets in the National Data Platform catalog, include the organization evidence you used, and mention any resource formats that look useful for downstream analysis.
+```
+
+What you should see:
+
+CLIO should route through the core `analysis` path and call gateway-visible
+`ndp_` tools backed by clio-kit. A good answer should mention the National Data
+Platform, NOAA-related catalog evidence, dataset titles such as NOAA flash-flood
+or hurricane-flooding entries when present, and useful downstream formats such
+as CSV, GEOJSON, ESRI REST, HTML, or KML.
+
+Why this is interesting:
+
+This is the path collaborators normally care about: the user asks a natural
+catalog question, and CLIO reaches clio-kit/NDP through its own planner/tool
+surface. The benchmark also records a current local-model caveat: Qwopus may
+emit a malformed follow-up planner action after successful NDP tool calls. CLIO
+answers from the accumulated observations and marks that as a partial
+post-observation routing error instead of hiding it.
+
+### Direct External MCP: CLIO Kit NDP Discovery
+
+Use the GACT MCP server panel or API to install the clio-kit NDP server:
+
+```json
+{
+  "name": "clio-kit-ndp",
+  "transport": "stdio",
+  "command": "uv",
+  "args": ["--directory", "../clio-kit", "run", "clio-kit", "mcp-server", "ndp"]
+}
+```
+
+Then call `list_organizations` with:
+
+```json
+{"name_filter": "noaa", "server": "global"}
+```
+
+If `../clio-kit` is not available, use `uvx` instead:
+
+```json
+{
+  "name": "clio-kit-ndp",
+  "transport": "stdio",
+  "command": "uvx",
+  "args": ["clio-kit", "mcp-server", "ndp"]
+}
+```
+
+What you should see:
+
+The server should install with tools `list_organizations`, `search_datasets`,
+and `get_dataset_details`. The `list_organizations` call should return real NDP
+catalog organizations containing `noaa`, such as NOAA Global Systems Laboratory
+or NOAA NCEI rows, with `_meta.status="success"`.
+
+Why this is interesting:
+
+This proves CLIO/GACT can connect to an arbitrary external clio-kit MCP server
+and execute a real National Data Platform tool call through the same MCP
+install/call surface used by the TUI. It is separate from the core CLIO
+planner/tool path above.
 
 ### Error Surface: Missing File
 
@@ -273,20 +397,46 @@ uv run pytest tests/test_stress_benchmark -m "integration and benchmark" -vv -s
 Current local Qwopus evidence from this branch:
 
 ```text
-5 passed in 334.37s
+7 passed in 201.46s
+clio-kit NDP core CLIO path: 1 passed in 140.09s
+clio-kit NDP focused lane: 1 passed in 4.24s
 ```
 
 The suite covers:
 
 - multi-turn HDF5, Parquet, CSV, and visualization workflow
-- tool-backed nano-agent fan-out and parent aggregation
+- natural cross-file prompt decomposition into tool-backed nano-agent workers
+- ADIOS/BP5 container and profiling inspection, with explicit ADIOS2 dependency
+  surfacing for variable metadata on Windows
+- clio-kit NDP gateway tools in the core CLIO planner/expert path
+- clio-kit NDP external MCP install and real `list_organizations` tool call
+- dirty Parquet quality review grounded in real schema/statistics tools
 - missing-file error surfacing with no fake answer
 - cancellation surfacing as structured cancellation
 - streaming provenance with live-or-batch truth
 
 The audit log is JSONL. Each row records provider/model, prompt, dataset,
-selected expert, tools called, artifacts, child sessions, error info, stream
-metadata, answer excerpt, and caveats.
+selected expert, routing decision, elapsed runtime, tools called, artifacts,
+child sessions, error info, stream metadata, answer excerpt, and caveats.
+
+To test planner routing without deterministic pre-planner guards, restart GACT
+with:
+
+```powershell
+$env:CLIO_ROUTING_GUARDS = '0'
+$env:CLIO_LM_PLANNER_MAX_TOKENS = '4096'
+```
+
+This mode is slower and more diagnostic. It should be used to find planner
+weaknesses that the production guard path intentionally avoids. In audit rows,
+`route_source="guard"` means a registry-declared guard selected the route before
+the planner; `route_source="dspy"` means the planner selected it;
+`route_source="recovery"` means the planner failed and CLIO recovered through a
+deterministic fallback while surfacing `error_info`.
+
+Do not force Qwopus below a `4096` planner cap. CLIO now raises too-small
+Qwopus/Qwen planner caps to `4096` because lower caps repeatedly cut off valid
+planner output and produce structured `routing_error` turns.
 
 ## 6. Reading Demo Results
 
@@ -294,6 +444,9 @@ For a healthy demo, look for:
 
 - `selected_agent`: matches the task domain (`data`, `analysis`,
   `visualization`, or `chat`).
+- `routing_decision.metadata.route_source`: `dspy` for planner-selected routes,
+  `guard` for deterministic pre-planner routing, or `recovery` for fallback
+  after planner failure.
 - `tools_called`: includes the real tools expected for the file type.
 - `metadata.tools_called[*].telemetry_source`: `live_observer` for live
   lifecycle telemetry, `agent_trace` for real agent trace rows, or
@@ -342,9 +495,12 @@ Then configure CLIO, for example:
 ```powershell
 $env:CLIO_LM_PROVIDER = 'argonne'
 $env:CLIO_LM_API_BASE = 'https://inference-api.alcf.anl.gov/resource_server/sophia/vllm/v1'
-$env:CLIO_LM_MODEL = 'meta-llama/Llama-4-Scout-17B-16E-Instruct'
+$env:CLIO_LM_MODEL = 'openai/gpt-oss-20b'
 $env:CLIO_LM_MAX_TOKENS = '4096'
 $env:CLIO_LM_PLANNER_TEMPERATURE = '0'
 ```
 
 Model availability is volatile. Re-run discovery before benchmark work.
+Prefer currently active modern models such as `openai/gpt-oss-20b`,
+`openai/gpt-oss-120b`, or Llama 4 variants over older Llama 3.1 models when
+they are available.

@@ -63,6 +63,14 @@ tools = [
     # pyarrow moved to core dependencies (v0.2.0)
 ]
 
+adios = [
+    # Optional because PyPI wheels are not available for all Windows/Python
+    # combinations; CLIO still exposes BP container/profiling inspection
+    # without this package and surfaces structured dependency errors for
+    # variable reads.
+    "adios2>=2.10.0; platform_system != 'Windows'",
+]
+
 codex = [
     # openai_codex Python SDK — controls the local Codex app-server
     # over JSON-RPC. Used by clio_agent.providers.codex_litellm's
@@ -91,7 +99,7 @@ dev = [
 ]
 
 all = [
-    "clio-agent[optimizers,tools,iowarp,argonne,dev]",
+    "clio-agent[optimizers,tools,adios,iowarp,argonne,dev]",
 ]
 
 [project.urls]

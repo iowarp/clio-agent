@@ -21,7 +21,7 @@ class AgentActionSignature(dspy.Signature):
     of these forms:
 
     {"action":"tool","tool":"<listed tool name>","args":{...},"reason":"..."}
-    {"action":"expert","expert":"data|analysis|visualization","question":"...","reason":"..."}
+    {"action":"expert","expert":"<expert id from capabilities>","question":"","reason":"..."}
     {"action":"answer","answer":"...","reason":"..."}
     {"action":"none","answer":"...","reason":"..."}
 
@@ -30,11 +30,16 @@ class AgentActionSignature(dspy.Signature):
     - Keep planner "answer" and "none" text to one concise sentence with no
       markdown lists; full prose belongs to chat or expert synthesis.
     - Choose only tools and experts present in capabilities.
+    - For expert delegation, set "question" to "" unless you must narrow the
+      task. CLIO will pass the original user request to the expert.
     - Call tools when local file facts, schema, datasets, statistics, or chart
       artifacts are needed.
     - Delegate to an expert only when the user asks to inspect, analyze, query,
       visualize, or transform actual data/files, or current file context exists.
       Use "answer" for general capability, workflow, or safety questions.
+    - For natural multi-file scientific bundles that mix formats, choose the
+      listed expert with matching coordination metadata instead of choosing one
+      single-format expert.
     - Do not choose an expert whose listed tools/file formats cannot inspect
       the current file context.
     - Answer directly only for conversation, capability questions, or after
@@ -60,6 +65,9 @@ class AgentAnswerSignature(dspy.Signature):
     schemas, datasets, statistics, or artifact paths that are not in the
     observations. If the observations contain an error, explain the error and
     the next useful action.
+
+    Return a concise final answer in the answer field. Do not leave the answer
+    empty when observations contain successful tool results.
     """
 
     question: str = dspy.InputField(desc="User's current message")

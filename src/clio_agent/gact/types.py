@@ -579,6 +579,7 @@ class LMProviderInfo(BaseModel):
     model: str = ""
     temperature: float = 1.0
     max_tokens: int = 32000
+    context_length: int = 0
     thinking_budget: int = 0
     transport: Optional[Literal["exec", "sdk"]] = None
     presets: list["LMProviderPreset"] = Field(default_factory=list)
@@ -587,7 +588,7 @@ class LMProviderInfo(BaseModel):
 class LMProviderPreset(BaseModel):
     """One row in the TUI's provider picker. ``requires_api_key``
     tells the modal whether to render the api_key field; some
-    presets (LM Studio, Ollama, ALCF local vLLM) don't need one."""
+    presets (LM Studio, Ollama, local vLLM) don't need one."""
 
     id: str
     label: str
@@ -595,7 +596,13 @@ class LMProviderPreset(BaseModel):
     api_base: str
     suggested_model: str
     requires_api_key: bool = True
+    api_key_env: str = ""
+    auth_method: Literal["none", "api_key", "oauth"] = "api_key"
+    is_authenticated: bool = False
     description: str = ""
+    status: Literal["ready", "missing_key", "auth_required", "unavailable", "unknown"] = "unknown"
+    status_message: str = ""
+    supports_live_catalog: bool = True
 
 
 class LMProviderRequest(BaseModel):
@@ -603,7 +610,7 @@ class LMProviderRequest(BaseModel):
     `openai|anthropic|openrouter|lm_studio|ollama|...` — anything
     LiteLLM understands. ``api_key`` is required for cloud
     providers; locally-OpenAI-compatible backends (LM Studio,
-    Ollama, ALCF local vLLM) tolerate any non-empty string.
+    Ollama, local vLLM) tolerate any non-empty string.
 
     ``temperature`` + ``max_tokens`` are forwarded to dspy.LM so
     the user can tune behaviour from the TUI without touching env
@@ -617,6 +624,11 @@ class LMProviderRequest(BaseModel):
     api_key: str = "x"
     temperature: float = 1.0
     max_tokens: int = 32000
+    # Context window requested/expected for the model load. This is
+    # not forwarded to DSPy/LiteLLM as a completion parameter; local
+    # runtimes such as LM Studio must load the model with this context
+    # separately.
+    context_length: int = 0
     # Codex-only transport selector. Other providers ignore it.
     transport: Optional[Literal["exec", "sdk"]] = None
     # Reasoning/thinking budget. Mapped per-provider:

@@ -25,7 +25,7 @@ and [claude_code](claude_code.md) for CLI-backed examples).
 | [`claude_code`](claude_code.md) | `claude_code` | `claude login` | Your Claude Code subscription, no Anthropic API key |
 | `argonne_sophia` | `argonne` | Globus OAuth | ALCF Sophia inference gateway (vLLM) |
 | `argonne_metis` | `argonne` | Globus OAuth | ALCF Metis inference gateway (gpt-oss-120b) |
-| `argonne_local_vllm` | `openai` | none | Compute-node-local vLLM (Aurora / Polaris) |
+| `argonne_local_vllm` | `openai` | none | Local OpenAI-compatible vLLM endpoint |
 
 ## Switching providers
 

@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -221,6 +222,50 @@ def create_csv(filepath: Path) -> dict[str, Any]:
     }
 
 
+def create_adios_bp5(output_dir: Path) -> dict[str, Any]:
+    """Copy a real BP5 sample when present, otherwise create a BP-like container."""
+    destination = output_dir / "gray scott noise 0.01 data.bp5"
+    source = (
+        Path(__file__).resolve().parents[2]
+        / "bp5-dataset-collection"
+        / "Gray-Scott"
+        / "dataset 1"
+        / "noise=0.01"
+        / "data.bp5"
+    )
+    if source.exists():
+        if destination.exists():
+            shutil.rmtree(destination)
+        shutil.copytree(source, destination)
+        source_kind = "bp5-dataset-collection"
+    else:
+        destination.mkdir(parents=True, exist_ok=True)
+        (destination / "data.0").write_bytes(b"x" * 1024)
+        (destination / "md.0").write_bytes(b"m" * 256)
+        (destination / "md.idx").write_bytes(b"i" * 64)
+        (destination / "mmd.0").write_bytes(b"q" * 128)
+        profiling = [
+            {
+                "rank": 0,
+                "transport_0": {
+                    "type": "File_POSIX",
+                    "wbytes": 1024,
+                    "write": {"nCalls": 4},
+                    "open": {"nCalls": 1},
+                    "close": {"nCalls": 1},
+                },
+            }
+        ]
+        (destination / "profiling.json").write_text(json.dumps(profiling), encoding="utf-8")
+        source_kind = "synthetic-bp5-container"
+
+    return {
+        "path": str(destination),
+        "source": source_kind,
+        "expected_terms": ["BP5", "profiling", "transport", "ADIOS2"],
+    }
+
+
 def create_benchmark_data(output_dir: Path) -> dict[str, Any]:
     """Create all benchmark files and return a manifest dictionary."""
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -230,6 +275,7 @@ def create_benchmark_data(output_dir: Path) -> dict[str, Any]:
         output_dir / "facility_measurements_dirty.parquet",
     )
     csv_info = create_csv(output_dir / "sensor_events.csv")
+    adios = create_adios_bp5(output_dir)
 
     manifest: dict[str, Any] = {
         "version": 1,
@@ -237,6 +283,7 @@ def create_benchmark_data(output_dir: Path) -> dict[str, Any]:
         "hdf5": hdf5,
         "parquet": parquet,
         "csv": csv_info,
+        "adios": adios,
     }
     manifest_path = output_dir / "manifest.json"
     manifest["manifest_path"] = str(manifest_path)

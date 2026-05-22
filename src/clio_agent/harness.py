@@ -18,8 +18,18 @@ RouteTarget = Literal["chat", "data", "analysis", "visualization", "none"]
 RouteSource = Literal["deterministic", "dspy", "guard"]
 ExpertSource = Literal["deterministic", "dspy", "fallback"]
 
+SCIENTIFIC_PATH_SUFFIX_PATTERN = r"(?:hdf5|h5|parquet|csv|bp5|bp4|bp)"
+
 FILE_PATH_RE = re.compile(
-    r"(?P<path>(?:~|/|\.{1,2}/)?[^\s'\"`]+?\.(?:h5|hdf5|parquet|csv))",
+    rf"(?P<path>(?:~|/|\.{{1,2}}/)?[^\s'\"`]+?\.{SCIENTIFIC_PATH_SUFFIX_PATTERN})",
+    re.IGNORECASE,
+)
+QUOTED_FILE_PATH_RE = re.compile(
+    rf"(?P<quote>['\"`])(?P<path>.+?\.{SCIENTIFIC_PATH_SUFFIX_PATTERN})(?P=quote)",
+    re.IGNORECASE,
+)
+WINDOWS_FILE_PATH_RE = re.compile(
+    rf"(?<![A-Za-z])(?P<path>[A-Za-z]:[^\r\n'\"`]*?\.{SCIENTIFIC_PATH_SUFFIX_PATTERN})",
     re.IGNORECASE,
 )
 
@@ -169,20 +179,35 @@ def extract_file_paths(question: str, file_context: str, suffixes: set[str]) -> 
     paths: list[Path] = []
     seen: set[str] = set()
 
+    def add_path(raw_path: str, *, include_missing: bool) -> None:
+        raw_path = raw_path.rstrip(".,;:)]}")
+        path = Path(raw_path).expanduser()
+        if path.suffix.lower() not in suffixes:
+            return
+        if not path.is_absolute():
+            path = path.resolve()
+        if not include_missing and not path.exists():
+            return
+        key = str(path)
+        if key not in seen:
+            paths.append(path)
+            seen.add(key)
+
     def add_matches(text: str, *, include_missing: bool) -> None:
+        candidates: list[tuple[int, int, int, str]] = []
+        for match in QUOTED_FILE_PATH_RE.finditer(text):
+            candidates.append((match.start(), match.end(), 0, match.group("path")))
+        for match in WINDOWS_FILE_PATH_RE.finditer(text):
+            candidates.append((match.start(), match.end(), 1, match.group("path")))
         for match in FILE_PATH_RE.finditer(text):
-            raw = match.group("path").rstrip(".,;:)]}")
-            path = Path(raw).expanduser()
-            if path.suffix.lower() not in suffixes:
+            candidates.append((match.start(), match.end(), 2, match.group("path")))
+
+        handled_spans: list[tuple[int, int]] = []
+        for start, end, _priority, raw_path in sorted(candidates):
+            if any(span_start <= start < span_end for span_start, span_end in handled_spans):
                 continue
-            if not path.is_absolute():
-                path = path.resolve()
-            if not include_missing and not path.exists():
-                continue
-            key = str(path)
-            if key not in seen:
-                paths.append(path)
-                seen.add(key)
+            handled_spans.append((start, end))
+            add_path(raw_path, include_missing=include_missing)
 
     add_matches(question, include_missing=True)
     add_matches(file_context, include_missing=False)

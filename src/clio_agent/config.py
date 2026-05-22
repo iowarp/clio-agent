@@ -282,6 +282,8 @@ class LMProviderConfig:
             self.router_temperature = self.planner_temperature
         if self.planner_max_tokens == 0:
             self.planner_max_tokens = max(self.max_tokens, 4096)
+        elif self.planner_max_tokens < 4096:
+            self.planner_max_tokens = 4096
 
 
 def _uses_local_reasoning_model_profile(provider: str, model: str) -> bool:
@@ -471,6 +473,7 @@ def create_lm(config: LMProviderConfig) -> dspy.LM:
     """
     dspy = _dspy()
     _ensure_provider_registered(config)
+    _resolve_lm_studio_model_if_needed(config)
     model_name = _resolve_model_name(config)
 
     extras = _provider_lm_kwargs(config)
@@ -599,6 +602,7 @@ def create_planner_lm(config: LMProviderConfig) -> dspy.LM:
     """
     dspy = _dspy()
     _ensure_provider_registered(config)
+    _resolve_lm_studio_model_if_needed(config)
     model_name = _resolve_model_name(config)
 
     return dspy.LM(
@@ -616,6 +620,13 @@ def create_planner_lm(config: LMProviderConfig) -> dspy.LM:
 def create_router_lm(config: LMProviderConfig) -> dspy.LM:
     """Backward-compatible alias for create_planner_lm."""
     return create_planner_lm(config)
+
+
+def _resolve_lm_studio_model_if_needed(config: LMProviderConfig) -> None:
+    """Fill a blank LM Studio model from the currently loaded model list."""
+    if config.provider == "lm_studio" and not config.model.strip():
+        models = fetch_lm_studio_models(base_url=config.api_base)
+        config.model, _ = select_models_for_agents(models)
 
 
 def _provider_lm_kwargs(config: LMProviderConfig) -> dict[str, Any]:

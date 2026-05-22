@@ -149,6 +149,21 @@ async def test_query_data_specific_columns(sample_parquet):
 
 
 @pytest.mark.asyncio
+async def test_query_data_accepts_list_columns_from_planners(sample_parquet):
+    """Real planners sometimes emit column selections as a JSON list."""
+    async with Client(parquet_server) as client:
+        result = await client.call_tool(
+            "query_data", {"filepath": sample_parquet, "columns": ["id", "temperature"]}
+        )
+        data = _parse_result(result)
+
+        assert "error" not in data
+        assert data["columns"] == ["id", "temperature"]
+        for row in data["rows"]:
+            assert set(row.keys()) == {"id", "temperature"}
+
+
+@pytest.mark.asyncio
 async def test_query_data_with_row_limit(sample_parquet):
     """Test query_data respects row_limit parameter."""
     async with Client(parquet_server) as client:

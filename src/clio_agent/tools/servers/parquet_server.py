@@ -107,7 +107,7 @@ def analyze_schema(filepath: str) -> dict[str, Any]:
 @parquet_server.tool()
 def query_data(
     filepath: str,
-    columns: str = "",
+    columns: str | list[str] = "",
     row_limit: int = 100,
 ) -> dict[str, Any]:
     """Read rows from a Parquet file, optionally selecting specific columns.
@@ -117,7 +117,8 @@ def query_data(
 
     Args:
         filepath: Path to the Parquet file
-        columns: Comma-separated column names to select (empty string = all columns)
+        columns: Comma-separated column names, or a list of column names, to select
+            (empty string = all columns)
         row_limit: Maximum number of rows to return (default 100)
 
     Returns:
@@ -129,8 +130,12 @@ def query_data(
         safe_path = validate_read_path(filepath)
         # Parse column selection
         col_list = None
-        if columns and columns.strip():
+        if isinstance(columns, list):
+            col_list = [str(c).strip() for c in columns if str(c).strip()]
+        elif columns and columns.strip():
             col_list = [c.strip() for c in columns.split(",") if c.strip()]
+        if col_list == []:
+            col_list = None
 
         parquet_file = pq.ParquetFile(safe_path)
         total_rows = parquet_file.metadata.num_rows

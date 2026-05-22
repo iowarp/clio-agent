@@ -24,8 +24,10 @@ from typing import Any, cast
 
 from fastmcp import Client, FastMCP
 
+from clio_agent.tools.servers.adios_server import adios_server
 from clio_agent.tools.servers.fs_server import fs_server
 from clio_agent.tools.servers.hdf5_server import hdf5_server
+from clio_agent.tools.servers.ndp_server import ndp_server
 from clio_agent.tools.servers.parquet_server import parquet_server
 
 
@@ -43,6 +45,8 @@ def _mount_with_namespace(parent: FastMCP, server: FastMCP, namespace: str) -> N
 gateway = FastMCP("clio-gateway")
 _mount_with_namespace(gateway, hdf5_server, "hdf5")
 _mount_with_namespace(gateway, parquet_server, "parquet")
+_mount_with_namespace(gateway, adios_server, "adios")
+_mount_with_namespace(gateway, ndp_server, "ndp")
 _mount_with_namespace(gateway, fs_server, "fs")
 
 
@@ -101,6 +105,10 @@ def list_capabilities() -> list[dict[str, str]]:
             server = "hdf5"
         elif t.name.startswith("parquet_"):
             server = "parquet"
+        elif t.name.startswith("adios_"):
+            server = "adios"
+        elif t.name.startswith("ndp_"):
+            server = "ndp"
         elif t.name.startswith("fs_"):
             server = "fs"
         else:

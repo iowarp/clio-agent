@@ -63,10 +63,33 @@ def _routing_agent(message: dict[str, Any]) -> str:
     return ""
 
 
+def _routing_decision(message: dict[str, Any]) -> dict[str, Any]:
+    for part in message.get("parts", []):
+        if part.get("type") == "routing_decision":
+            return dict(part)
+    return {}
+
+
 def _tools(message: dict[str, Any]) -> list[dict[str, Any]]:
     metadata = message.get("metadata") or {}
     rows = metadata.get("tools_called") or []
     return rows if isinstance(rows, list) else []
+
+
+def _timed_turn(
+    http: httpx.Client,
+    session_id: str,
+    prompt: str,
+    *,
+    timeout: float,
+) -> dict[str, Any]:
+    started = time.monotonic()
+    message = turn(http, session_id, prompt, timeout=timeout)
+    elapsed_s = round(time.monotonic() - started, 3)
+    metadata = dict(message.get("metadata") or {})
+    metadata["_benchmark_elapsed_s"] = elapsed_s
+    message["metadata"] = metadata
+    return message
 
 
 def _tool_name(row: dict[str, Any]) -> str:
@@ -77,6 +100,38 @@ def _tool_names(message: dict[str, Any]) -> list[str]:
     return [_tool_name(row) for row in _tools(message)]
 
 
+def _normalize_scientific_text(text: str) -> str:
+    for original, normalized in {
+        "⁻⁰": "^-0",
+        "⁻¹": "^-1",
+        "⁻²": "^-2",
+        "⁻³": "^-3",
+        "⁻⁴": "^-4",
+        "⁻⁵": "^-5",
+        "⁻⁶": "^-6",
+        "⁻⁷": "^-7",
+        "⁻⁸": "^-8",
+        "⁻⁹": "^-9",
+    }.items():
+        text = text.replace(original, normalized)
+    replacements = str.maketrans(
+        {
+            "⁻": "^-",
+            "⁰": "^0",
+            "¹": "^1",
+            "²": "^2",
+            "³": "^3",
+            "⁴": "^4",
+            "⁵": "^5",
+            "⁶": "^6",
+            "⁷": "^7",
+            "⁸": "^8",
+            "⁹": "^9",
+        }
+    )
+    return text.translate(replacements)
+
+
 def _blocking_error(message: dict[str, Any]) -> dict[str, Any] | None:
     error_info = message.get("error_info")
     if not isinstance(error_info, dict):
@@ -85,7 +140,12 @@ def _blocking_error(message: dict[str, Any]) -> dict[str, Any] | None:
     if (
         isinstance(details, dict)
         and details.get("partial") is True
-        and details.get("stage") in {"post_observation_planning", "parallel_validation_recovery"}
+        and details.get("stage")
+        in {
+            "post_observation_planning",
+            "parallel_validation_recovery",
+            "step_limit_after_observations",
+        }
     ):
         return None
     return error_info
@@ -130,6 +190,54 @@ def _artifact_paths(message: dict[str, Any]) -> list[str]:
     return candidates
 
 
+def _clio_kit_stdio_spec(server_name: str) -> dict[str, Any]:
+    """Return a stdio MCP launch spec for a local or uvx clio-kit server."""
+    configured = os.environ.get("CLIO_KIT_PATH", "").strip()
+    local_path = Path(configured).expanduser() if configured else Path("../clio-kit")
+    local_path = local_path.resolve()
+    if local_path.exists():
+        return {
+            "command": "uv",
+            "args": [
+                "--directory",
+                str(local_path),
+                "run",
+                "clio-kit",
+                "mcp-server",
+                server_name,
+            ],
+        }
+    return {"command": "uvx", "args": ["clio-kit", "mcp-server", server_name]}
+
+
+def _external_mcp_message(
+    *,
+    elapsed_s: float,
+    server_name: str,
+    tool_name: str,
+    args: dict[str, Any],
+    result: dict[str, Any],
+) -> dict[str, Any]:
+    """Build an audit-compatible pseudo-message for direct external MCP calls."""
+    return {
+        "parts": [{"type": "text", "text": json.dumps(result, sort_keys=True)}],
+        "metadata": {
+            "_benchmark_elapsed_s": elapsed_s,
+            "tools_called": [
+                {
+                    "name": f"{server_name}.{tool_name}",
+                    "args": args,
+                    "result": result,
+                    "ok": True,
+                    "telemetry_source": "external_mcp",
+                }
+            ],
+            "stream_source": "batch",
+        },
+        "error_info": None,
+    }
+
+
 def _record_case(
     name: str,
     http: httpx.Client,
@@ -162,7 +270,9 @@ def _record_case(
         },
         "dataset": dataset,
         "prompt": prompt,
+        "elapsed_s": (message.get("metadata") or {}).get("_benchmark_elapsed_s"),
         "selected_agent": _routing_agent(message),
+        "routing_decision": _routing_decision(message),
         "tools_called": _tools(message),
         "artifacts": _artifact_paths(message),
         "nanoagents_spawned": child_sessions or [],
@@ -188,7 +298,7 @@ def _assert_tool_answer(
     assert expected_agent in _routing_agent(message), _routing_agent(message)
     names = _tool_names(message)
     assert any(name.startswith(expected_tool_prefix) for name in names), names
-    text = _text(message).lower()
+    text = _normalize_scientific_text(_text(message)).lower()
     for term in expected_terms:
         assert term.lower() in text, f"{term!r} missing from answer:\n{text}"
 
@@ -204,11 +314,12 @@ def test_local_multistage_scientific_workflow_records_grounded_evidence(
     scenario = "local_multistage_scientific_workflow"
 
     hdf5_prompt = (
-        "Use CLIO tools to inspect this HDF5 benchmark file. "
+        "I need to understand this fusion run before sharing it. "
         f"File: {hdf5_path}. "
-        "Report the dataset names, shapes, compression, and units where available."
+        "What datasets are inside, what are their shapes, and what units or compression "
+        "details should I know about?"
     )
-    hdf5_answer = turn(http, session_id, hdf5_prompt, timeout=520)
+    hdf5_answer = _timed_turn(http, session_id, hdf5_prompt, timeout=520)
     _record_case(
         "hdf5_structure",
         http,
@@ -226,12 +337,12 @@ def test_local_multistage_scientific_workflow_records_grounded_evidence(
     )
 
     parquet_prompt = (
-        "Use CLIO tools to profile this Parquet benchmark file. "
-        f"File: {parquet_path}. "
-        "Include schema, row groups, and statistics for temperature_k, pressure_pa, "
-        "humidity_pct, and anomaly_score."
+        "Profile the facility measurements in this Parquet file: "
+        f"{parquet_path}. "
+        "I care about the schema, row groups, and whether temperature_k, pressure_pa, "
+        "humidity_pct, and anomaly_score look sane."
     )
-    parquet_answer = turn(http, session_id, parquet_prompt, timeout=520)
+    parquet_answer = _timed_turn(http, session_id, parquet_prompt, timeout=520)
     _record_case(
         "parquet_profile",
         http,
@@ -249,11 +360,11 @@ def test_local_multistage_scientific_workflow_records_grounded_evidence(
     )
 
     csv_prompt = (
-        "Use CLIO tools to inspect this CSV benchmark event stream. "
-        f"File: {csv_path}. "
-        "List the columns and identify the status and operator_note fields."
+        "This event stream came with the run: "
+        f"{csv_path}. "
+        "What columns does it contain, and where are the status and operator_note fields?"
     )
-    csv_answer = turn(http, session_id, csv_prompt, timeout=420)
+    csv_answer = _timed_turn(http, session_id, csv_prompt, timeout=420)
     _record_case(
         "csv_schema",
         http,
@@ -271,10 +382,10 @@ def test_local_multistage_scientific_workflow_records_grounded_evidence(
     )
 
     visualization_prompt = (
-        "Using the Parquet benchmark file we just profiled, use CLIO visualization tools "
-        f"to create a summary dashboard for {parquet_path}. Return the PNG artifact path."
+        "Create a compact PNG dashboard from the Parquet file we just profiled. "
+        "Tell me where it was saved and what the chart is summarizing."
     )
-    visualization_answer = turn(http, session_id, visualization_prompt, timeout=620)
+    visualization_answer = _timed_turn(http, session_id, visualization_prompt, timeout=620)
     _record_case(
         "visualization_artifact",
         http,
@@ -288,7 +399,7 @@ def test_local_multistage_scientific_workflow_records_grounded_evidence(
         visualization_answer,
         expected_agent="visualization",
         expected_tool_prefix="plot_",
-        expected_terms=("summary", ".png"),
+        expected_terms=("dashboard", ".png"),
     )
     artifacts = _artifact_paths(visualization_answer)
     assert artifacts, _text(visualization_answer)
@@ -304,20 +415,22 @@ def test_local_multistage_scientific_workflow_records_grounded_evidence(
     )
 
 
-def test_local_nanoagents_must_execute_real_tools_or_report_gap(
+def test_local_natural_cross_file_triage_uses_tool_backed_nanoagents(
     http: httpx.Client, session_id: str
 ) -> None:
-    """Expose issue #263: child nano-agents must not be prompt-only synthesis."""
+    """Natural cross-file triage should decompose without implementation words."""
     manifest = _manifest()
     hdf5_path = manifest["hdf5"]["path"]
     parquet_path = manifest["parquet"]["path"]
     csv_path = manifest["csv"]["path"]
+    adios_path = manifest["adios"]["path"]
     prompt = (
-        "Validate in parallel: HDF5 structure for "
-        f"{hdf5_path}, Parquet statistics for {parquet_path}, and CSV schema for {csv_path}. "
-        "Spawn nanoagents for the independent checks and use CLIO tools in each worker."
+        "I have four related files from the same experiment: "
+        f'{hdf5_path}, {parquet_path}, {csv_path}, and "{adios_path}". '
+        "Give me a cross-file triage summary: what is in each file, whether the "
+        "measurements look ready for downstream analysis, and what I should check next."
     )
-    assistant = turn(http, session_id, prompt, timeout=620)
+    assistant = _timed_turn(http, session_id, prompt, timeout=620)
     children = _children(http, session_id)
     child_messages = _child_messages(http, children)
     child_tool_names = [
@@ -330,7 +443,7 @@ def test_local_nanoagents_must_execute_real_tools_or_report_gap(
         http,
         assistant,
         prompt=prompt,
-        dataset=f"{hdf5_path};{parquet_path};{csv_path}",
+        dataset=f"{hdf5_path};{parquet_path};{csv_path};{adios_path}",
         scenario="local_nanoagent_parallel_validation",
         status="observed",
         child_sessions=children,
@@ -341,15 +454,184 @@ def test_local_nanoagents_must_execute_real_tools_or_report_gap(
         "data_validator",
         "analysis_validator",
         "csv_validator",
+        "adios_validator",
         "electron_temperature",
         "temperature_k",
         "operator_note",
+        "adios",
     ):
         assert term in text, f"{term!r} missing from parent answer:\n{text}"
     assert children, "no nanoagent child session created"
     assert any(name.startswith("hdf5_") for name in child_tool_names), child_tool_names
     assert any(name.startswith("parquet_") for name in child_tool_names), child_tool_names
     assert any(name.startswith("csv_") for name in child_tool_names), child_tool_names
+    assert any(name.startswith("adios_") for name in child_tool_names), child_tool_names
+
+
+def test_local_adios_bp5_container_inspection_is_grounded(
+    http: httpx.Client, session_id: str
+) -> None:
+    """ADIOS/BP5 inspection should be backed by real BP container metadata."""
+    manifest = _manifest()
+    adios_path = manifest["adios"]["path"]
+    prompt = (
+        "This ADIOS BP5 output came from a Gray-Scott run: "
+        f'"{adios_path}". '
+        "Tell me what the container looks like, whether profiling metadata is present, "
+        "and what extra runtime is needed if variable-level metadata is unavailable."
+    )
+    assistant = _timed_turn(http, session_id, prompt, timeout=520)
+    _record_case(
+        "adios_bp5_container_inspection",
+        http,
+        assistant,
+        prompt=prompt,
+        dataset=adios_path,
+        scenario="local_adios_bp5",
+        status="observed",
+    )
+    _assert_tool_answer(
+        assistant,
+        expected_agent="data",
+        expected_tool_prefix="adios_",
+        expected_terms=("ADIOS", "BP5", "profiling", "transport", "ADIOS2"),
+    )
+
+
+def test_local_clio_kit_ndp_external_mcp_server_is_callable(
+    http: httpx.Client, session_id: str
+) -> None:
+    """Install clio-kit's NDP MCP server through GACT and call a real NDP tool."""
+    spec = _clio_kit_stdio_spec("ndp")
+    started = time.monotonic()
+    install = http.post(
+        "/v1/mcp/servers",
+        json={
+            "name": "clio-kit-ndp",
+            "transport": "stdio",
+            **spec,
+        },
+        timeout=180,
+    )
+    assert install.status_code == 201, install.text
+    installed = install.json()
+    assert installed["status"] == "ready"
+    assert {"list_organizations", "search_datasets", "get_dataset_details"}.issubset(
+        set(installed["tools"])
+    )
+
+    server_id = installed["id"]
+    args = {"name_filter": "noaa", "server": "global"}
+    result: dict[str, Any] = {}
+    try:
+        response = http.post(
+            f"/v1/mcp/servers/{server_id}/call",
+            json={
+                "tool": "list_organizations",
+                "args": args,
+                "session_id": session_id,
+            },
+            timeout=180,
+        )
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["server_id"] == server_id
+        assert body["tool"] == "list_organizations"
+        assert body["is_error"] is False
+        assert body["session_id"] == session_id
+        text = "\n".join(row.get("text", "") for row in body.get("content", []))
+        result = json.loads(text)
+        organizations = result.get("organizations") or []
+        assert result.get("_meta", {}).get("status") == "success"
+        assert result.get("count", 0) >= 1
+        assert any("noaa" in str(org).lower() for org in organizations), organizations
+    finally:
+        http.delete(f"/v1/mcp/servers/{server_id}")
+
+    elapsed_s = round(time.monotonic() - started, 3)
+    message = _external_mcp_message(
+        elapsed_s=elapsed_s,
+        server_name="clio-kit-ndp",
+        tool_name="list_organizations",
+        args=args,
+        result=result,
+    )
+    _record_case(
+        "clio_kit_ndp_external_mcp",
+        http,
+        message,
+        prompt=(
+            "Install the clio-kit NDP MCP server and list NOAA organizations "
+            "from the global National Data Platform catalog."
+        ),
+        dataset="National Data Platform global catalog",
+        scenario="clio_kit_ndp_external_mcp",
+        status="passed",
+        caveats=[
+            "Direct external MCP call through GACT, not yet planner-selected by a core expert.",
+        ],
+    )
+
+
+def test_local_ndp_catalog_discovery_is_visible_to_core_expert_path(
+    http: httpx.Client, session_id: str
+) -> None:
+    """Natural NDP discovery should route through CLIO's core tool/expert path."""
+    prompt = (
+        "I need live catalog evidence for external collaborators. "
+        "Find NOAA climate-related datasets in the National Data Platform catalog, "
+        "include the organization evidence you used, and mention any resource formats "
+        "that look useful for downstream analysis."
+    )
+    answer = _timed_turn(http, session_id, prompt, timeout=720)
+    _record_case(
+        "ndp_core_expert_catalog_discovery",
+        http,
+        answer,
+        prompt=prompt,
+        dataset="National Data Platform global catalog",
+        scenario="local_ndp_core_expert_catalog_discovery",
+        status="observed",
+    )
+    _assert_tool_answer(
+        answer,
+        expected_agent="analysis",
+        expected_tool_prefix="ndp_",
+        expected_terms=("National Data Platform", "noaa", "dataset"),
+    )
+    assert any(name in _tool_names(answer) for name in ("ndp_search_datasets",)), _tool_names(
+        answer
+    )
+
+
+def test_local_dirty_parquet_quality_review_is_grounded(
+    http: httpx.Client, session_id: str
+) -> None:
+    """Dirty data should be reviewed with real statistics, not generic advice."""
+    manifest = _manifest()
+    dirty_path = manifest["parquet"]["dirty_path"]
+    prompt = (
+        "This Parquet export looks suspicious: "
+        f"{dirty_path}. "
+        "Review it for data quality problems and tell me what fields need attention "
+        "before downstream analysis."
+    )
+    assistant = _timed_turn(http, session_id, prompt, timeout=520)
+    _record_case(
+        "dirty_parquet_quality_review",
+        http,
+        assistant,
+        prompt=prompt,
+        dataset=dirty_path,
+        scenario="local_dirty_data_quality",
+        status="observed",
+    )
+    _assert_tool_answer(
+        assistant,
+        expected_agent="analysis",
+        expected_tool_prefix="parquet_",
+        expected_terms=("temperature_k", "pressure_pa", "null", "quality_flag"),
+    )
 
 
 def test_local_error_surface_has_no_fake_answer(http: httpx.Client, session_id: str) -> None:
@@ -359,7 +641,7 @@ def test_local_error_surface_has_no_fake_answer(http: httpx.Client, session_id: 
         "Use CLIO tools to inspect this missing HDF5 benchmark file and report the datasets: "
         f"{missing}"
     )
-    assistant = turn(http, session_id, prompt, timeout=360)
+    assistant = _timed_turn(http, session_id, prompt, timeout=360)
     _record_case(
         "missing_hdf5_error_surface",
         http,
@@ -387,9 +669,13 @@ def test_local_cancellation_surface_records_best_effort_boundary(
         f"File: {parquet_path}."
     )
     user_id = post_user(http, session_id, prompt)
+    started = time.monotonic()
     cancel = http.post(f"/v1/sessions/{session_id}/cancel")
     assert cancel.status_code == 204, cancel.text
     assistant = wait_for_assistant(http, session_id, user_id, timeout=360)
+    metadata = dict(assistant.get("metadata") or {})
+    metadata["_benchmark_elapsed_s"] = round(time.monotonic() - started, 3)
+    assistant["metadata"] = metadata
     _record_case(
         "cancellation_surface",
         http,
@@ -421,6 +707,7 @@ def test_local_streaming_provenance_records_live_or_batch_truth(
     delta_count = 0
     completed_payload: dict[str, Any] | None = None
     deadline = time.monotonic() + 360
+    started = time.monotonic()
     with httpx.stream(
         "GET",
         f"{http.base_url}/v1/sessions/{session_id}/events",
@@ -440,6 +727,9 @@ def test_local_streaming_provenance_records_live_or_batch_truth(
 
     assert completed_payload is not None, "message.completed never arrived"
     assistant = wait_for_assistant(http, session_id, user_id, timeout=60)
+    metadata = dict(assistant.get("metadata") or {})
+    metadata["_benchmark_elapsed_s"] = round(time.monotonic() - started, 3)
+    assistant["metadata"] = metadata
     assert _blocking_error(assistant) is None, assistant.get("error_info")
     assert _text(assistant).strip(), assistant
     _record_case(

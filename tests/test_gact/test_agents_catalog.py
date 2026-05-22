@@ -94,3 +94,10 @@ def test_catalog_tools_flattens_expert_tools(client: TestClient) -> None:
     # Dedup: no repeats across experts.
     names = [t["name"] for t in tools]
     assert len(names) == len(set(names)), f"expected deduped tools; got {names}"
+    assert {
+        "adios_inspect_file",
+        "csv_read_table",
+        "ndp_list_organizations",
+        "ndp_search_datasets",
+        "ndp_get_dataset_details",
+    } <= set(names)

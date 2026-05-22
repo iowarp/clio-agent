@@ -85,6 +85,12 @@ async def test_gateway_preserves_stable_tool_names():
         "parquet_analyze_schema",
         "parquet_query_data",
         "parquet_compute_statistics",
+        "adios_inspect_file",
+        "adios_inspect_variables",
+        "adios_inspect_profiling",
+        "ndp_list_organizations",
+        "ndp_search_datasets",
+        "ndp_get_dataset_details",
     }
     async with Client(gateway) as client:
         tools = await client.list_tools()
@@ -149,7 +155,7 @@ async def test_list_capabilities_inside_running_loop_has_no_unawaited_warning(re
     """Sync capability listing must not leak coroutine warnings in async callers."""
 
     caps = list_capabilities()
-    assert {c["server"] for c in caps} >= {"hdf5", "parquet", "fs"}
+    assert {c["server"] for c in caps} >= {"hdf5", "parquet", "adios", "ndp", "fs"}
 
     gc.collect()
     leaked = [

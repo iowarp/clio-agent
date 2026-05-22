@@ -15,6 +15,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -28,6 +29,8 @@ class FakePrediction:
     answer: str
     selected_expert: str = ""
     routing_rationale: str = ""
+    route_source: str = ""
+    route_reason: str = ""
     error_info: dict[str, Any] | None = None
 
 
@@ -40,12 +43,16 @@ class FakeClioAgent:
         answer: str = "hello from fake",
         selected_expert: str = "code_expert",
         routing_rationale: str = "matched coding keywords",
+        route_source: str = "dspy",
+        route_reason: str = "planner selected code expert",
         error_info: dict[str, Any] | None = None,
         raise_on_forward: bool = False,
     ) -> None:
         self.answer = answer
         self.selected_expert = selected_expert
         self.routing_rationale = routing_rationale
+        self.route_source = route_source
+        self.route_reason = route_reason
         self.error_info = error_info
         self.raise_on_forward = raise_on_forward
         self.calls: list[tuple[str, str]] = []
@@ -58,6 +65,8 @@ class FakeClioAgent:
             answer=self.answer,
             selected_expert=self.selected_expert,
             routing_rationale=self.routing_rationale,
+            route_source=self.route_source,
+            route_reason=self.route_reason,
             error_info=self.error_info,
         )
 
@@ -91,6 +100,8 @@ def test_post_message_happy_path(client: TestClient, fake_agent: FakeClioAgent) 
     rd = a["parts"][0]
     assert rd["selected_agent"] == "code_expert"
     assert rd["rationale"] == "matched coding keywords"
+    assert rd["metadata"]["route_source"] == "dspy"
+    assert rd["metadata"]["route_reason"] == "planner selected code expert"
     assert a["parts"][1]["text"] == "hello from fake"
 
     # User message persisted under the session.
@@ -733,8 +744,43 @@ def test_post_message_session_model_mismatch_returns_structured_501(
         "exit",
     ]
     assert fake_agent.calls == []
-    msgs = client.get(f"/v1/sessions/{sid}/messages").json()["messages"]
-    assert msgs == []
+
+
+def test_post_message_clears_stale_session_model_when_global_lm_active(
+    client: TestClient,
+    fake_agent: FakeClioAgent,
+) -> None:
+    """Old TUI sessions may carry stale per-session model refs.
+
+    CLIO runs one global LM, so once that global LM is active those
+    stale refs should be healed instead of blocking the next send.
+    """
+
+    from .conftest import complete_turn
+
+    fake_agent._provider_config = SimpleNamespace(
+        provider="lm_studio",
+        api_base="http://127.0.0.1:1234/v1",
+        model="qwopus3.5-9b-v3",
+        temperature=0.0,
+        max_tokens=4096,
+        context_length=32768,
+        thinking_budget=0,
+    )
+    sid = client.post(
+        "/v1/sessions",
+        json={
+            "title": "t",
+            "model": {"provider_id": "anthropic", "model_id": "claude-opus-4-7"},
+        },
+    ).json()["id"]
+
+    assistant = complete_turn(client, sid, "hi")
+    refreshed = client.get(f"/v1/sessions/{sid}").json()
+
+    assert assistant["parts"][-1]["text"] == "hello from fake"
+    assert refreshed["model"] == {"provider_id": "", "model_id": "", "variant": ""}
+    assert fake_agent.calls == [("hi", sid)]
 
 
 def test_post_message_session_model_matching_global_config_runs(

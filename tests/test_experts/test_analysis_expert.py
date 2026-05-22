@@ -11,7 +11,7 @@ from unittest.mock import Mock
 import dspy
 import pytest
 
-from clio_agent.experts.analysis_expert import AnalysisExpert
+from clio_agent.experts.analysis_expert import AnalysisExpert, _detect_parallel_items
 from clio_agent.tools.execution import SyncMCPToolExecutor
 
 
@@ -40,33 +40,36 @@ class TestAnalysisExpertSignature:
 class TestAnalysisExpert:
     """Test Analysis Expert functionality."""
 
-    def test_analysis_expert_loads_parquet_tools(self):
-        """Test expert tools all start with parquet_ prefix."""
+    def test_analysis_expert_loads_analysis_tools(self):
+        """Test expert tools are analysis-owned gateway tools."""
         expert = AnalysisExpert()
         try:
             for tool in expert._tools:
-                assert tool.name.startswith("parquet_"), (
-                    f"Tool {tool.name} does not have parquet_ prefix"
+                assert tool.name.startswith(("parquet_", "ndp_")), (
+                    f"Tool {tool.name} does not have an analysis-owned prefix"
                 )
         finally:
             expert.close()
 
     def test_analysis_expert_tool_count(self):
-        """Test expert has exactly 3 parquet tools."""
+        """Test expert has Parquet and NDP gateway tools."""
         expert = AnalysisExpert()
         try:
-            assert len(expert._tools) == 3
+            assert len(expert._tools) == 6
         finally:
             expert.close()
 
     def test_analysis_expert_tool_names(self):
-        """Test expert has the expected parquet tools."""
+        """Test expert has the expected Parquet and NDP tools."""
         expert = AnalysisExpert()
         try:
             tool_names = [t.name for t in expert._tools]
             assert "parquet_analyze_schema" in tool_names
             assert "parquet_query_data" in tool_names
             assert "parquet_compute_statistics" in tool_names
+            assert "ndp_list_organizations" in tool_names
+            assert "ndp_search_datasets" in tool_names
+            assert "ndp_get_dataset_details" in tool_names
         finally:
             expert.close()
 
@@ -91,6 +94,8 @@ class TestAnalysisExpert:
         assert "distribution" in keywords
         assert "data quality" in keywords
         assert "columnar" in keywords
+        assert "ndp" in keywords
+        assert "dataset discovery" in keywords
 
     def test_analysis_expert_capabilities_description(self):
         """Test expert capabilities have meaningful description."""
@@ -200,6 +205,61 @@ class TestAnalysisExpert:
         finally:
             expert.close()
 
+    def test_natural_multi_file_prompt_spawns_tool_backed_nanoagents(
+        self, sample_hdf5, sample_parquet, tmp_path
+    ):
+        """Users should not need to say nanoagent or tool for obvious fan-out work."""
+        csv_path = tmp_path / "sensor_events.csv"
+        csv_path.write_text("event_id,status\n1,ok\n", encoding="utf-8")
+        expert = AnalysisExpert()
+        try:
+            result = expert(
+                question=(
+                    "I have three related files from the same experiment: "
+                    f"{sample_hdf5}, {sample_parquet}, and {csv_path}. "
+                    "Give me a cross-file triage summary and tell me whether they line up."
+                )
+            )
+            spawns = result.nanoagents_spawned
+            assert len(spawns) == 3
+            tool_names = [row["name"] for spawn in spawns for row in spawn.get("tools_called", [])]
+            assert any(name.startswith("hdf5_") for name in tool_names)
+            assert any(name.startswith("parquet_") for name in tool_names)
+            assert any(name.startswith("csv_") for name in tool_names)
+            assert "Parallel validation completed" in result.analysis
+        finally:
+            expert.close()
+
+    def test_detect_parallel_items_for_natural_multi_file_prompt(self):
+        prompt = (
+            "I have three related files from the same experiment: "
+            "C:\\data\\run.h5, C:\\data\\measurements.parquet, and C:\\data\\events.csv. "
+            "Give me a cross-file triage summary and tell me whether they line up."
+        )
+
+        items = _detect_parallel_items(prompt)
+
+        assert len(items) == 3
+        assert any(item.endswith("run.h5") for item in items)
+        assert any(item.endswith("measurements.parquet") for item in items)
+        assert any(item.endswith("events.csv") for item in items)
+
+    def test_single_file_profile_does_not_spawn_from_commas(self, sample_parquet):
+        expert = AnalysisExpert()
+        try:
+            result = expert(
+                question=(
+                    f"Profile the facility measurements in this Parquet file: {sample_parquet}. "
+                    "I care about the schema, row groups, and whether temperature, pressure, "
+                    "humidity, and anomaly_score look sane."
+                )
+            )
+
+            assert not hasattr(result, "nanoagents_spawned")
+            assert "Parallel validation completed" not in result.analysis
+        finally:
+            expert.close()
+
     def test_analysis_expert_rejects_invalid_parquet_schema_shape(self):
         """Malformed Parquet schema payloads should not produce file facts."""
 
@@ -293,6 +353,72 @@ class TestAnalysisExpert:
         assert result.tool_provenance[-1].ok is False
         error = result.tool_provenance[-1].result["error"]
         assert error["type"] == "tool_contract"
+        expert.close()
+
+    def test_analysis_expert_uses_ndp_tools_for_catalog_discovery(self):
+        """Natural NDP catalog requests should use clio-kit-backed gateway tools."""
+
+        class FakeExecutor:
+            closed = False
+
+            def to_dspy_tools(self):
+                def fake_tool(**kwargs):
+                    return "{}"
+
+                return [
+                    dspy.Tool(
+                        func=fake_tool,
+                        name="ndp_list_organizations",
+                        desc="List NDP organizations.",
+                        args={},
+                    ),
+                    dspy.Tool(
+                        func=fake_tool,
+                        name="ndp_search_datasets",
+                        desc="Search NDP datasets.",
+                        args={},
+                    ),
+                ]
+
+            def call_tool(self, name, args):
+                if name == "ndp_list_organizations":
+                    assert args == {"name_filter": "noaa", "server": "global"}
+                    return (
+                        '{"organizations":["noaa-global-systems-laboratory"],'
+                        '"count":1,"server":"global"}'
+                    )
+                assert name == "ndp_search_datasets"
+                assert args == {
+                    "server": "global",
+                    "limit": 5,
+                    "search_terms": ["climate"],
+                }
+                return (
+                    '{"datasets":[{"id":"ds1","name":"climate-run",'
+                    '"title":"Climate Run","owner_org":"noaa-global-systems-laboratory",'
+                    '"resources":[{"format":"CSV"}]}],"count":1,"server":"global"}'
+                )
+
+            def close(self):
+                self.closed = True
+
+        expert = AnalysisExpert(tool_executor=FakeExecutor())
+
+        result = expert(
+            question=(
+                "Use the National Data Platform catalog to find NOAA climate datasets "
+                "that could be useful for this analysis."
+            )
+        )
+
+        assert result.synthesis_source == "deterministic"
+        assert "National Data Platform" in result.analysis
+        assert "noaa-global-systems-laboratory" in result.analysis
+        assert "Climate Run" in result.analysis
+        assert [row.tool for row in result.tool_provenance] == [
+            "ndp_list_organizations",
+            "ndp_search_datasets",
+        ]
         expert.close()
 
     def test_analysis_expert_uses_sync_tool_executor_boundary(self):

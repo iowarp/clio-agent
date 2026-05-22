@@ -5,6 +5,7 @@ Tests DataExpert initialization, native tool execution via the MCP execution
 boundary, and capabilities. Does not require LM Studio.
 """
 
+from pathlib import Path
 from unittest.mock import Mock
 
 import dspy
@@ -13,6 +14,20 @@ import pytest
 from clio_agent.experts.data_expert import DataExpert, MCPToolBridge
 from clio_agent.tools.execution import SyncMCPToolExecutor
 from clio_agent.tools.gateway import gateway
+
+
+def _make_bp5_container(tmp_path: Path) -> Path:
+    bp_path = tmp_path / "adios run" / "data.bp5"
+    bp_path.mkdir(parents=True)
+    (bp_path / "data.0").write_bytes(b"x" * 256)
+    (bp_path / "md.0").write_bytes(b"m" * 64)
+    (bp_path / "md.idx").write_bytes(b"i" * 16)
+    (bp_path / "mmd.0").write_bytes(b"q" * 32)
+    (bp_path / "profiling.json").write_text(
+        '[{"rank":0,"transport_0":{"wbytes":256,"write":{"nCalls":4}}}]',
+        encoding="utf-8",
+    )
+    return bp_path
 
 
 class TestMCPToolBridge:
@@ -51,6 +66,7 @@ class TestMCPToolBridge:
             assert "hdf5_analyze_dataset" in tool_names
             assert "hdf5_check_compression" in tool_names
             assert "hdf5_optimize_chunking" in tool_names
+            assert "adios_inspect_file" in tool_names
         finally:
             bridge.close()
 
@@ -75,7 +91,7 @@ class TestDataExpert:
 
         assert caps["name"] == "Data Expert"
         assert "hdf5" in caps["keywords"]
-        assert "parquet" in caps["keywords"]
+        assert "adios" in caps["keywords"]
         assert caps["priority"] == 1
 
     def test_expert_initialization(self):
@@ -116,6 +132,7 @@ class TestDataExpert:
             tool_names = [t.name for t in expert._tools]
             assert "hdf5_analyze_file" in tool_names
             assert "hdf5_list_datasets" in tool_names
+            assert "adios_inspect_file" in tool_names
         finally:
             expert.close()
 
@@ -126,6 +143,22 @@ class TestDataExpert:
         try:
             assert expert is not None
             assert expert.arc_memory is mock_arc
+        finally:
+            expert.close()
+
+    def test_expert_forward_uses_native_adios_tools(self, tmp_path, monkeypatch):
+        """Explicit ADIOS/BP questions should run BP tools without LM calls."""
+        bp_path = _make_bp5_container(tmp_path)
+        monkeypatch.setenv("CLIO_ALLOWED_ROOTS", str(tmp_path))
+        expert = DataExpert()
+        try:
+            result = expert(question=f'Inspect this ADIOS BP5 container: "{bp_path}"')
+
+            assert result.synthesis_source == "deterministic"
+            assert "Inspected ADIOS/BP5 container" in result.analysis
+            assert "Profiling covers 1 ranks" in result.analysis
+            assert [tool.tool for tool in result.tool_provenance] == ["adios_inspect_file"]
+            assert result.metadata["format"] == "adios"
         finally:
             expert.close()
 

@@ -181,14 +181,20 @@ class TestDerivedViews:
     def test_codex_catalog_uses_user_facing_model_ids(self) -> None:
         models = as_provider_models_dict()["codex"]
         ids = {row["id"] for row in models}
-        assert "gpt-5.5" in ids
+        assert {"gpt-5.5", "gpt-5.5-codex", "gpt-5.1"} <= ids
         assert all(not model_id.startswith("cdx-") for model_id in ids)
 
     def test_claude_code_catalog_uses_user_facing_model_ids(self) -> None:
         models = as_provider_models_dict()["claude_code"]
         ids = {row["id"] for row in models}
-        assert "sonnet" in ids
+        assert {"sonnet", "opus", "haiku"} <= ids
         assert all(not model_id.startswith("cc-") for model_id in ids)
+
+    def test_local_vllm_is_not_labeled_as_alcf_provider(self) -> None:
+        provider = get_provider("argonne_local_vllm")
+        assert provider is not None
+        assert provider.label == "vLLM (localhost)"
+        assert "ALCF" not in provider.label
 
 
 # ---------------------------------------------------------------------

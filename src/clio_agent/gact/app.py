@@ -29,6 +29,9 @@ import importlib.util
 import inspect
 import json
 import os
+import shutil
+import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -37,7 +40,7 @@ from contextlib import asynccontextmanager, contextmanager, nullcontext
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, AsyncIterator, Iterator, Optional
+from typing import Any, AsyncIterator, Iterator, Literal, Optional
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
@@ -633,6 +636,7 @@ def _effective_lm_config(app: "FastAPI") -> dict[str, Any]:
         "model",
         "temperature",
         "max_tokens",
+        "context_length",
         "thinking_budget",
     ):
         if not cfg.get(key):
@@ -657,6 +661,24 @@ def _model_ref_matches_active(value: Any, app: "FastAPI") -> bool:
     """Return true when a requested model ref exactly matches the active LM."""
 
     return _model_ref_dict(value) == _active_lm_model_ref(app)
+
+
+def _clear_session_model_refs(app: "FastAPI") -> None:
+    """Clear per-session model refs after a global LM provider swap.
+
+    CLIO executes every turn through the active global LM. Existing
+    sessions may still carry stale GACT ModelRefs from older TUI
+    versions or emulator-compatible defaults; leaving those refs in
+    place makes the next send fail with a per-session override error
+    even though the user just changed the global provider correctly.
+    """
+
+    sessions = getattr(app.state, "sessions", None)
+    if sessions is None:
+        return
+    for sess in sessions.list():
+        if not _model_ref_is_empty(sess.model):
+            sessions.update(sess.id, model={})
 
 
 def _unsupported_model_ref_error(
@@ -724,6 +746,8 @@ async def _run_turn_in_background(
     answer_text = ""
     selected_agent = ""
     rationale = ""
+    route_source = ""
+    route_reason = ""
     execution_path = ""
     tools_called: list[dict[str, Any]] = []
     proposed_diffs: list[Any] = []
@@ -953,6 +977,8 @@ async def _run_turn_in_background(
         answer_text = getattr(pred, "answer", "")
         selected_agent = getattr(pred, "selected_expert", "") or ""
         rationale = getattr(pred, "routing_rationale", "")
+        route_source = getattr(pred, "route_source", "") or ""
+        route_reason = getattr(pred, "route_reason", "") or rationale
         pred_error_info = _coerce_error_info(getattr(pred, "error_info", None))
         if pred_error_info is not None:
             if pred_error_info.error == "cancelled":
@@ -1186,6 +1212,14 @@ async def _run_turn_in_background(
             Part(
                 id=_new_part_id(),
                 type="routing_decision",
+                metadata={
+                    k: v
+                    for k, v in {
+                        "route_source": route_source,
+                        "route_reason": route_reason,
+                    }.items()
+                    if v
+                },
                 selected_agent=selected_agent,
                 rationale=rationale,
                 confidence=0.0,
@@ -3281,11 +3315,18 @@ _EXPERT_TOOLS: dict[str, list[str]] = {
         "hdf5_check_compression",
         "hdf5_optimize_chunking",
         "hdf5_analyze_file",
+        "adios_inspect_file",
+        "adios_inspect_variables",
+        "adios_inspect_profiling",
     ],
     "analysis": [
         "parquet_analyze_schema",
         "parquet_query_data",
         "parquet_compute_statistics",
+        "csv_read_table",
+        "ndp_list_organizations",
+        "ndp_search_datasets",
+        "ndp_get_dataset_details",
     ],
     "visualization": [
         "plot_histogram",
@@ -4081,10 +4122,26 @@ def build_app(
         cfg = _effective_lm_config(app)
         if app.state.agent is not None and cfg:
             detail = f"{cfg.get('provider', '?')}/{cfg.get('model', '?')}"
+            lm_status: Literal["ready", "degraded", "unavailable"] = "ready"
+            if cfg.get("provider") == "argonne":
+                try:
+                    from clio_agent.providers import argonne_auth  # noqa: PLC0415
+
+                    if not argonne_auth.tokens_exist():
+                        lm_status = "unavailable"
+                        detail += " (ALCF Globus token missing)"
+                    elif not argonne_auth.check_auth_status():
+                        lm_status = "unavailable"
+                        detail += " (ALCF Globus token refresh failed)"
+                    else:
+                        detail += " (ALCF Globus token ready)"
+                except Exception as exc:
+                    lm_status = "unavailable"
+                    detail += f" (ALCF auth check failed: {exc})"
             rows.append(
                 Integration(
                     name="lm",
-                    status="ready",
+                    status=lm_status,
                     detail=detail,
                 )
             )
@@ -5356,34 +5413,66 @@ def build_app(
                 "instructions": "",
             }
 
-        loop = asyncio.get_running_loop()
+        command = [
+            sys.executable,
+            "-m",
+            "clio_agent.providers.argonne_auth",
+            "authenticate",
+        ]
+        if force:
+            command.append("--force")
         try:
-            await loop.run_in_executor(None, lambda: argonne_auth.authenticate(force=force))
+            if os.name == "nt":
+                subprocess.Popen(  # noqa: S603
+                    command,
+                    creationflags=subprocess.CREATE_NEW_CONSOLE,
+                )
+                instructions = (
+                    "Opened a new terminal for ALCF Globus login. Complete the "
+                    "authorization code flow there, then press Ctrl+R here to refresh provider status."
+                )
+            else:
+                terminal = next(
+                    (
+                        shutil.which(name)
+                        for name in ("x-terminal-emulator", "gnome-terminal", "konsole", "xterm")
+                        if shutil.which(name)
+                    ),
+                    None,
+                )
+                if terminal:
+                    term_name = os.path.basename(terminal)
+                    args = (
+                        [terminal, "--", *command]
+                        if term_name == "gnome-terminal"
+                        else [terminal, "-e", *command]
+                    )
+                    subprocess.Popen(args)  # noqa: S603
+                    instructions = (
+                        "Opened a terminal for ALCF Globus login. Complete the "
+                        "authorization code flow there, then press Ctrl+R here to refresh provider status."
+                    )
+                else:
+                    instructions = (
+                        "Run this in an interactive terminal, then press Ctrl+R here: "
+                        + " ".join(command)
+                    )
         except Exception as exc:
             raise HTTPException(
                 status_code=502,
                 detail=ErrorEnvelope(
                     error=ErrorInfo(
                         error="argonne_auth_failed",
-                        message=f"Globus authentication failed: {exc}",
+                        message=f"Could not launch interactive Globus authentication: {exc}",
                         recoverable=True,
                     )
                 ).model_dump(exclude_none=True),
             ) from exc
 
-        is_authed = argonne_auth.check_auth_status()
         return {
-            "is_authenticated": is_authed,
+            "is_authenticated": False,
             "provider_id": provider_id,
-            "instructions": (
-                ""
-                if is_authed
-                else (
-                    "Globus printed an OAuth URL to the backend host's "
-                    "terminal — visit it and paste the code there to "
-                    "complete login, then retry."
-                )
-            ),
+            "instructions": instructions,
         }
 
     # Per-provider model catalogs. Hand-curated rather than introspected
@@ -5411,7 +5500,7 @@ def build_app(
     # models on user action).
     _LIVE_MODELS_TTL_S = 30.0
     # Cache value: (epoch_seconds, models, source, error_message). Source
-    # is "live" / "static_fallback"; error_message is the human-readable
+    # is "live" / "static_catalog" / "unavailable"; error_message is the human-readable
     # reason live failed (empty when source=="live"). Surfacing this on
     # /v1/providers/{id}/models lets the TUI render a banner instead of
     # silently lying with a stale catalog.
@@ -5435,11 +5524,10 @@ def build_app(
         if cached is not None and now - cached[0] < _LIVE_MODELS_TTL_S:
             return cached[1], cached[2], cached[3]
 
-        static = list(_PROVIDER_MODELS.get("argonne", []))
-
         def _fallback(reason: str) -> tuple[list[dict[str, str]], str, str]:
-            _live_models_cache[cache_key] = (now, static, "static_fallback", reason)
-            return static, "static_fallback", reason
+            empty: list[dict[str, str]] = []
+            _live_models_cache[cache_key] = (now, empty, "unavailable", reason)
+            return empty, "unavailable", reason
 
         # Accept CLIO's own override OR the env var alcf-agentics-
         # workflow uses (ALCF_INFERENCE_TOKEN / access_token).
@@ -5591,52 +5679,105 @@ def build_app(
                     f"or visit https://docs.alcf.anl.gov/services/inference-endpoints/ "
                     f"for current status."
                 )
-            _live_models_cache[cache_key] = (now, empty, "static_fallback", msg)
-            return empty, "static_fallback", msg
+            _live_models_cache[cache_key] = (now, empty, "unavailable", msg)
+            return empty, "unavailable", msg
 
         _live_models_cache[cache_key] = (now, models, "live", "")
         return models, "live", ""
 
     def _openai_compat_live_models(
         preset: "LMProviderPreset",
-    ) -> tuple[list[dict[str, str]], str, str]:
+        *,
+        api_base_override: str = "",
+    ) -> tuple[list[dict[str, Any]], str, str]:
         """Discover models for any OpenAI-compatible preset.
 
         Returns ``(models, source, error_message)`` so the TUI can
         render an actionable warning when live discovery fell back.
         """
-        cache_key = f"preset:{preset.id}"
+        base = (api_base_override or preset.api_base or "").rstrip("/")
+        cache_key = f"preset:{preset.id}:{base}"
         now = time.time()
         cached = _live_models_cache.get(cache_key)
         if cached is not None and now - cached[0] < _LIVE_MODELS_TTL_S:
             return cached[1], cached[2], cached[3]
 
-        static = list(_PROVIDER_MODELS.get(preset.provider, []))
+        static = list(_PROVIDER_MODELS.get(preset.id) or _PROVIDER_MODELS.get(preset.provider, []))
 
-        def _fallback(reason: str) -> tuple[list[dict[str, str]], str, str]:
-            _live_models_cache[cache_key] = (now, static, "static_fallback", reason)
-            return static, "static_fallback", reason
+        def _fallback(reason: str) -> tuple[list[dict[str, Any]], str, str]:
+            empty: list[dict[str, Any]] = []
+            _live_models_cache[cache_key] = (now, empty, "unavailable", reason)
+            return empty, "unavailable", reason
 
-        base = (preset.api_base or "").rstrip("/")
+        if not preset.supports_live_catalog:
+            _live_models_cache[cache_key] = (now, static, "static_catalog", "")
+            return static, "static_catalog", ""
         if not base:
             return _fallback("preset has no api_base — nothing to query")
         url = base + "/models"
 
+        if preset.provider == "lm_studio":
+            try:
+                from urllib.parse import urlsplit, urlunsplit  # noqa: PLC0415
+
+                import requests  # noqa: PLC0415
+
+                parts = urlsplit(base)
+                root = urlunsplit((parts.scheme, parts.netloc, "", "", ""))
+                native = requests.get(f"{root}/api/v1/models", timeout=4)
+                if native.status_code < 400:
+                    payload = native.json()
+                    raw_models = payload.get("models") if isinstance(payload, dict) else None
+                    if isinstance(raw_models, list):
+                        seen_native: set[str] = set()
+                        native_models: list[dict[str, Any]] = []
+                        for item in raw_models:
+                            if not isinstance(item, dict) or item.get("type") == "embedding":
+                                continue
+                            mid = (item.get("key") or item.get("id") or "").strip()
+                            if not mid or mid in seen_native:
+                                continue
+                            seen_native.add(mid)
+                            details = [f"live from {preset.label}"]
+                            params = (item.get("params_string") or "").strip()
+                            quant = item.get("quantization")
+                            if isinstance(quant, dict) and quant.get("name"):
+                                details.append(f"{quant['name']}")
+                            if params:
+                                details.append(params)
+                            native_models.append(
+                                {
+                                    "id": mid,
+                                    "name": (item.get("display_name") or mid).strip(),
+                                    "description": " · ".join(details),
+                                    "context_window": int(item.get("max_context_length") or 0),
+                                }
+                            )
+                        if native_models:
+                            _live_models_cache[cache_key] = (now, native_models, "live", "")
+                            return native_models, "live", ""
+            except Exception:
+                # Older LM Studio builds may not expose /api/v1/models;
+                # fall through to the OpenAI-compatible /v1/models path.
+                pass
+
         headers: dict[str, str] = {}
         if preset.provider == "anthropic":
-            key = os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("CLIO_LM_API_KEY") or ""
+            env_key = _preset_api_key_env(preset)
+            key = os.environ.get(env_key) or os.environ.get("CLIO_LM_API_KEY") or ""
             if not key:
-                return _fallback(
-                    "no API key — set ANTHROPIC_API_KEY (or CLIO_LM_API_KEY) in the backend's env."
-                )
+                return _fallback(f"missing {env_key}")
             headers["x-api-key"] = key
             headers["anthropic-version"] = "2023-06-01"
         else:
+            env_key = _preset_api_key_env(preset)
             key = (
-                os.environ.get("OPENAI_API_KEY")
+                os.environ.get(env_key)
                 or os.environ.get("CLIO_LM_API_KEY")
                 or {"lm_studio": "lm-studio", "ollama": "ollama"}.get(preset.provider, "")
             )
+            if preset.requires_api_key and not key:
+                return _fallback(f"missing {env_key}")
             if key:
                 headers["Authorization"] = f"Bearer {key}"
 
@@ -5662,16 +5803,45 @@ def build_app(
             return _fallback(f"{preset.label} response not JSON: {exc}")
 
         raw = payload.get("data") if isinstance(payload, dict) else payload
+        if preset.provider == "ollama" and not isinstance(raw, list):
+            try:
+                from urllib.parse import urlsplit, urlunsplit  # noqa: PLC0415
+
+                parts = urlsplit(base)
+                root = urlunsplit((parts.scheme, parts.netloc, "", "", ""))
+                tags = requests.get(f"{root}/api/tags", timeout=4)
+                if tags.status_code >= 400:
+                    return _fallback(
+                        f"{preset.label} is reachable, but /api/tags returned "
+                        f"HTTP {tags.status_code}: {(tags.text or '')[:200]}"
+                    )
+                tags_payload = tags.json()
+                raw_tags = tags_payload.get("models") if isinstance(tags_payload, dict) else None
+                if isinstance(raw_tags, list):
+                    raw = []
+                    for item in raw_tags:
+                        if not isinstance(item, dict):
+                            continue
+                        mid = (item.get("model") or item.get("name") or "").strip()
+                        if mid:
+                            raw.append({"id": mid})
+                    if not raw:
+                        _live_models_cache[cache_key] = (now, [], "live", "")
+                        return [], "live", ""
+            except Exception as exc:
+                return _fallback(f"{preset.label} /api/tags probe failed: {exc}")
         if not isinstance(raw, list):
             return _fallback(f"{preset.label} response missing data[] array")
 
         seen: set[str] = set()
-        models: list[dict[str, str]] = []
+        models: list[dict[str, Any]] = []
         for item in raw:
             if not isinstance(item, dict):
                 continue
             mid = (item.get("id") or item.get("name") or "").strip()
             if not mid or mid in seen:
+                continue
+            if "embedding" in mid.lower() or "embed" in mid.lower():
                 continue
             seen.add(mid)
             name = mid.split("/", 1)[-1] if "/" in mid else mid
@@ -5681,13 +5851,16 @@ def build_app(
                 desc += f" (owned_by {owner})"
             models.append({"id": mid, "name": name, "description": desc})
 
+        if not models and preset.provider == "ollama":
+            _live_models_cache[cache_key] = (now, [], "live", "")
+            return [], "live", ""
         if not models:
             return _fallback(f"{preset.label} returned an empty model list")
         _live_models_cache[cache_key] = (now, models, "live", "")
         return models, "live", ""
 
     @app.get("/v1/providers/{provider_id}/models")
-    async def list_provider_models(provider_id: str) -> dict[str, Any]:
+    async def list_provider_models(provider_id: str, api_base: str = "") -> dict[str, Any]:
         """Per-provider model catalog — live where possible.
 
         Resolution:
@@ -5707,10 +5880,10 @@ def build_app(
         Live fetches are cached for _LIVE_MODELS_TTL_S so spamming
         ←/→ in the picker doesn't hammer the upstream. Failures
         (no key, network down, 5xx) return the static catalog with
-        source="static_fallback" and an error message so the picker is
-        usable without hiding the live-discovery failure. Unknown
-        provider ids return a structured 404 instead of pretending to
-        be an empty static catalog.
+        source="unavailable" and an error message so the picker is
+        honest about why saving is disabled. Unknown provider ids
+        return a structured 404 instead of pretending to be an empty
+        static catalog.
         """
 
         # Match a preset id first.
@@ -5726,7 +5899,7 @@ def build_app(
                 if p.provider == "argonne":
                     cluster = _argonne_cluster_from_preset(p)
                     return _wrap(_argonne_live_models(cluster, p.api_base))
-                return _wrap(_openai_compat_live_models(p))
+                return _wrap(_openai_compat_live_models(p, api_base_override=api_base))
         # Bare provider kind — pick the first preset that uses this
         # kind so we have an api_base + label to drive discovery.
         if provider_id == "argonne":
@@ -5737,7 +5910,7 @@ def build_app(
             return _wrap(_argonne_live_models("sophia"))
         for p in _LM_PRESETS:
             if p.provider == provider_id:
-                return _wrap(_openai_compat_live_models(p))
+                return _wrap(_openai_compat_live_models(p, api_base_override=api_base))
         # Last-ditch static for known provider ids only.
         models = _PROVIDER_MODELS.get(provider_id)
         if models is None:
@@ -5752,7 +5925,7 @@ def build_app(
                     )
                 ).model_dump(exclude_none=True),
             )
-        return {"models": models, "source": "static_fallback"}
+        return {"models": models, "source": "static_catalog"}
 
     def _argonne_cluster_from_preset(preset: "LMProviderPreset") -> str:
         """Pull the cluster slug ("sophia"/"polaris") out of an
@@ -7043,15 +7216,19 @@ def build_app(
 
         if not _model_ref_is_empty(sess.model) and not _model_ref_matches_active(sess.model, app):
             active_model = _active_lm_model_ref(app)
-            raise HTTPException(
-                status_code=501,
-                detail=_unsupported_model_ref_error(
-                    session_id=sid,
-                    source="session",
-                    model_ref=sess.model,
-                    active_model=active_model,
-                ).model_dump(exclude_none=True),
-            )
+            if active_model.get("model_id"):
+                app.state.sessions.update(sid, model={})
+                sess = app.state.sessions.get(sid) or sess
+            else:
+                raise HTTPException(
+                    status_code=501,
+                    detail=_unsupported_model_ref_error(
+                        session_id=sid,
+                        source="session",
+                        model_ref=sess.model,
+                        active_model=active_model,
+                    ).model_dump(exclude_none=True),
+                )
 
         user_text = req.extract_text()
         if not user_text:
@@ -7919,6 +8096,118 @@ def build_app(
 
     _LM_PRESETS: list[LMProviderPreset] = _build_lm_presets()
 
+    def _preset_api_key_env(preset: LMProviderPreset) -> str:
+        if preset.api_key_env:
+            return preset.api_key_env
+        return {
+            "openai": "OPENAI_API_KEY",
+            "anthropic": "ANTHROPIC_API_KEY",
+            "openrouter": "OPENROUTER_API_KEY",
+        }.get(preset.id, "CLIO_LM_API_KEY")
+
+    def _which_cli(*names: str) -> str | None:
+        """Resolve a local CLI across POSIX names and Windows shims."""
+
+        for name in names:
+            found = shutil.which(name)
+            if found:
+                return found
+            if os.name == "nt" and not name.lower().endswith((".cmd", ".exe")):
+                for suffix in (".cmd", ".exe"):
+                    found = shutil.which(name + suffix)
+                    if found:
+                        return found
+        return None
+
+    def _preset_with_status(preset: LMProviderPreset) -> LMProviderPreset:
+        update: dict[str, Any] = {}
+        if preset.provider == "argonne":
+            env_token = (
+                os.environ.get("CLIO_ARGONNE_TOKEN", "").strip()
+                or os.environ.get("ALCF_INFERENCE_TOKEN", "").strip()
+                or os.environ.get("access_token", "").strip()
+            )
+            if env_token:
+                update["status"] = "ready"
+                update["status_message"] = "ALCF token present in environment"
+                update["is_authenticated"] = True
+                return preset.model_copy(update=update)
+            try:
+                from clio_agent.providers import argonne_auth  # noqa: PLC0415
+            except Exception as exc:
+                update["status"] = "unavailable"
+                update["status_message"] = f"argonne auth unavailable: {exc}"
+                update["is_authenticated"] = False
+                return preset.model_copy(update=update)
+            if importlib.util.find_spec("globus_sdk") is None:
+                update["status"] = "unavailable"
+                update["status_message"] = (
+                    "globus-sdk not installed; install clio-agent[argonne]"
+                )
+                update["is_authenticated"] = False
+                return preset.model_copy(update=update)
+            if not argonne_auth.tokens_exist():
+                update["status"] = "auth_required"
+                update["status_message"] = (
+                    "no Globus token stored; authenticate ALCF before connecting"
+                )
+                update["is_authenticated"] = False
+                return preset.model_copy(update=update)
+            if argonne_auth.check_auth_status():
+                update["status"] = "ready"
+                update["status_message"] = "Globus token ready; auto-refresh enabled"
+                update["is_authenticated"] = True
+                return preset.model_copy(update=update)
+            update["status"] = "auth_required"
+            update["status_message"] = (
+                "stored Globus token could not refresh; re-authenticate ALCF"
+            )
+            update["is_authenticated"] = False
+            return preset.model_copy(update=update)
+        if preset.requires_api_key:
+            env_key = _preset_api_key_env(preset)
+            if not (os.environ.get(env_key) or os.environ.get("CLIO_LM_API_KEY")):
+                update["status"] = "missing_key"
+                update["status_message"] = f"missing {env_key}"
+                update["is_authenticated"] = False
+                return preset.model_copy(update=update)
+            update["is_authenticated"] = True
+        if preset.provider == "codex":
+            if _which_cli("codex"):
+                update["status"] = "ready"
+                update["status_message"] = "codex CLI available"
+                update["is_authenticated"] = True
+            else:
+                update["status"] = "unavailable"
+                update["status_message"] = "codex CLI not found on PATH"
+                update["is_authenticated"] = False
+            return preset.model_copy(update=update)
+        if preset.provider == "claude_code":
+            if _which_cli("claude"):
+                update["status"] = "ready"
+                update["status_message"] = "claude CLI available"
+                update["is_authenticated"] = True
+            else:
+                update["status"] = "unavailable"
+                update["status_message"] = "claude CLI not found on PATH"
+                update["is_authenticated"] = False
+            return preset.model_copy(update=update)
+        if not preset.supports_live_catalog:
+            update["status"] = "ready"
+            update["status_message"] = "static catalog"
+            update["is_authenticated"] = True
+            return preset.model_copy(update=update)
+        update["status"] = "unknown"
+        update["status_message"] = ""
+        update.setdefault("is_authenticated", not preset.requires_api_key)
+        return preset.model_copy(update=update)
+
+    def _lm_presets_with_status() -> list[LMProviderPreset]:
+        return sorted(
+            (_preset_with_status(preset) for preset in _LM_PRESETS),
+            key=lambda p: p.label.lower(),
+        )
+
     @app.get("/v1/providers/lm", response_model=LMProviderInfo)
     async def get_lm_provider() -> LMProviderInfo:
         """Report the live LM config — what we'd report on /doctor as
@@ -7938,11 +8227,14 @@ def build_app(
             model=cfg.get("model", ""),
             temperature=(float(cfg["temperature"]) if cfg.get("temperature") is not None else 1.0),
             max_tokens=int(cfg["max_tokens"]) if cfg.get("max_tokens") is not None else 32000,
+            context_length=(
+                int(cfg["context_length"]) if cfg.get("context_length") is not None else 0
+            ),
             thinking_budget=(
                 int(cfg["thinking_budget"]) if cfg.get("thinking_budget") is not None else 0
             ),
             transport=cfg.get("transport"),
-            presets=_LM_PRESETS,
+            presets=_lm_presets_with_status(),
         )
 
     @app.put("/v1/providers/lm", response_model=LMProviderInfo)
@@ -7993,6 +8285,45 @@ def build_app(
                 os.environ["CLIO_CODEX_TRANSPORT"] = cfg.codex_transport
             else:
                 os.environ.pop("CLIO_CODEX_TRANSPORT", None)
+
+        def _apply_lm_studio_load_config() -> None:
+            """Apply LM Studio load-time options before wiring DSPy."""
+
+            if req.provider != "lm_studio" or req.context_length <= 0:
+                return
+
+            from urllib.parse import urlsplit, urlunsplit  # noqa: PLC0415
+
+            import requests  # noqa: PLC0415
+
+            parts = urlsplit(req.api_base.rstrip("/"))
+            root = urlunsplit((parts.scheme, parts.netloc, "", "", ""))
+            if not root:
+                raise RuntimeError("LM Studio api_base is empty")
+
+            headers = {"Content-Type": "application/json"}
+            token = (
+                os.environ.get("LM_STUDIO_API_TOKEN", "").strip()
+                or os.environ.get("LM_API_TOKEN", "").strip()
+            )
+            if token:
+                headers["Authorization"] = f"Bearer {token}"
+
+            response = requests.post(
+                f"{root}/api/v1/models/load",
+                headers=headers,
+                json={
+                    "model": req.model,
+                    "context_length": req.context_length,
+                    "echo_load_config": True,
+                },
+                timeout=180,
+            )
+            if response.status_code >= 400:
+                raise RuntimeError(
+                    "LM Studio model load failed "
+                    f"({response.status_code}): {(response.text or '')[:300]}"
+                )
 
         try:
             import dspy
@@ -8052,6 +8383,7 @@ def build_app(
                 thinking_budget=req.thinking_budget,
                 codex_transport=req.transport or "exec",
             )
+            _apply_lm_studio_load_config()
             # iowarp/clio-agent — DSPy 3.x forbids dspy.configure()
             # being re-called from a different async task than the
             # first one. PUT /v1/providers/lm comes from the FastAPI
@@ -8138,9 +8470,11 @@ def build_app(
             "model": req.model,
             "temperature": req.temperature,
             "max_tokens": req.max_tokens,
+            "context_length": req.context_length,
             "thinking_budget": req.thinking_budget,
             "transport": cfg.codex_transport if req.provider == "codex" else None,
         }
+        _clear_session_model_refs(app)
         # Publish so live SSE subscribers see the swap (TUI updates
         # its model chip without polling).
         app.state.bus.publish(
@@ -8153,6 +8487,7 @@ def build_app(
                     "api_base": req.api_base,
                     "temperature": req.temperature,
                     "max_tokens": req.max_tokens,
+                    "context_length": req.context_length,
                     "transport": cfg.codex_transport if req.provider == "codex" else None,
                 },
             )
@@ -8164,9 +8499,10 @@ def build_app(
             model=req.model,
             temperature=req.temperature,
             max_tokens=req.max_tokens,
+            context_length=req.context_length,
             thinking_budget=req.thinking_budget,
             transport=cfg.codex_transport if req.provider == "codex" else None,
-            presets=_LM_PRESETS,
+            presets=_lm_presets_with_status(),
         )
 
     @app.get("/v1/providers/{provider_id}")
