@@ -93,9 +93,7 @@ def test_provider_model_catalog_filters_embedding_models(tmp_path: Path, monkeyp
     assert "text-embedding-nomic-embed-text-v1.5" not in ids
 
 
-def test_provider_model_catalog_reads_lm_studio_native_context(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_provider_model_catalog_reads_lm_studio_native_context(tmp_path: Path, monkeypatch) -> None:
     """LM Studio's native catalog reports load/context metadata the OpenAI shim omits."""
 
     class _NativeResp:
@@ -143,9 +141,7 @@ def test_provider_model_catalog_reads_lm_studio_native_context(
     ]
 
 
-def test_provider_model_catalog_supports_ollama_native_tags(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_provider_model_catalog_supports_ollama_native_tags(tmp_path: Path, monkeypatch) -> None:
     """Ollama can be reachable even when its OpenAI shim returns data:null."""
 
     class _OpenAIResp:
@@ -443,9 +439,7 @@ def test_put_lm_provider_accepts_codex_sdk_transport(tmp_path: Path, monkeypatch
     assert os.environ["CLIO_CODEX_TRANSPORT"] == "sdk"
 
 
-def test_put_lm_provider_applies_lm_studio_context_length(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_put_lm_provider_applies_lm_studio_context_length(tmp_path: Path, monkeypatch) -> None:
     """LM Studio context length is a model-load setting, not a chat completion param."""
 
     captured: dict[str, Any] = {}
@@ -453,6 +447,9 @@ def test_put_lm_provider_applies_lm_studio_context_length(
     class _Resp:
         status_code = 200
         text = ""
+
+        def json(self) -> dict[str, Any]:
+            return {"models": []}
 
     class _StubAgent:
         def __init__(self, *args: Any, **kwargs: Any) -> None:
@@ -478,6 +475,7 @@ def test_put_lm_provider_applies_lm_studio_context_length(
         captured["timeout"] = kwargs.get("timeout")
         return _Resp()
 
+    monkeypatch.setattr("requests.get", lambda *args, **kwargs: _Resp())
     monkeypatch.setattr("requests.post", _post)
     monkeypatch.setattr("clio_agent.agent.ClioAgent", _StubAgent)
     monkeypatch.setattr("clio_agent.config.create_lm", lambda cfg: object())
@@ -506,6 +504,76 @@ def test_put_lm_provider_applies_lm_studio_context_length(
         },
         "timeout": 180,
     }
+    assert app.state.lm_config["context_length"] == 32768
+
+
+def test_put_lm_provider_reuses_loaded_lm_studio_model(tmp_path: Path, monkeypatch) -> None:
+    """Do not call LM Studio load when the requested model/context is already active."""
+
+    captured: dict[str, Any] = {"post_called": False}
+
+    class _GetResp:
+        status_code = 200
+        text = ""
+
+        def json(self) -> dict[str, Any]:
+            return {
+                "models": [
+                    {
+                        "key": "qwopus3.5-9b-v3",
+                        "loaded_instances": [
+                            {
+                                "id": "qwopus3.5-9b-v3",
+                                "config": {"context_length": 32768},
+                            },
+                        ],
+                    },
+                ],
+            }
+
+    class _StubAgent:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            self.arc = type(
+                "ARC",
+                (),
+                {
+                    "get_cache_stats": lambda self: {
+                        "hits": 0,
+                        "misses": 0,
+                        "hit_rate": 0.0,
+                        "capacity": 10,
+                    }
+                },
+            )()
+
+        def forward(self, *args: Any, **kwargs: Any) -> Any:
+            return type("Pred", (), {"answer": "ok", "selected_expert": ""})()
+
+    def _post(*args: Any, **kwargs: Any) -> None:
+        captured["post_called"] = True
+        raise AssertionError("LM Studio load endpoint should not be called")
+
+    monkeypatch.setattr("requests.get", lambda *args, **kwargs: _GetResp())
+    monkeypatch.setattr("requests.post", _post)
+    monkeypatch.setattr("clio_agent.agent.ClioAgent", _StubAgent)
+    monkeypatch.setattr("clio_agent.config.create_lm", lambda cfg: object())
+    monkeypatch.setattr("clio_agent.config.create_chat_adapter", lambda cfg: object())
+    monkeypatch.setattr("clio_agent.config.create_planner_lm", lambda cfg: object())
+
+    app = build_app(sessions_path=tmp_path / "s.json")
+    with TestClient(app) as c:
+        resp = c.put(
+            "/v1/providers/lm",
+            json={
+                "provider": "lm_studio",
+                "api_base": "http://127.0.0.1:1234/v1",
+                "model": "qwopus3.5-9b-v3",
+                "context_length": 32768,
+            },
+        )
+
+    assert resp.status_code == 200, resp.text
+    assert captured["post_called"] is False
     assert app.state.lm_config["context_length"] == 32768
 
 

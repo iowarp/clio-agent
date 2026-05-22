@@ -8141,9 +8141,7 @@ def build_app(
                 return preset.model_copy(update=update)
             if importlib.util.find_spec("globus_sdk") is None:
                 update["status"] = "unavailable"
-                update["status_message"] = (
-                    "globus-sdk not installed; install clio-agent[argonne]"
-                )
+                update["status_message"] = "globus-sdk not installed; install clio-agent[argonne]"
                 update["is_authenticated"] = False
                 return preset.model_copy(update=update)
             if not argonne_auth.tokens_exist():
@@ -8159,9 +8157,7 @@ def build_app(
                 update["is_authenticated"] = True
                 return preset.model_copy(update=update)
             update["status"] = "auth_required"
-            update["status_message"] = (
-                "stored Globus token could not refresh; re-authenticate ALCF"
-            )
+            update["status_message"] = "stored Globus token could not refresh; re-authenticate ALCF"
             update["is_authenticated"] = False
             return preset.model_copy(update=update)
         if preset.requires_api_key:
@@ -8308,6 +8304,49 @@ def build_app(
             )
             if token:
                 headers["Authorization"] = f"Bearer {token}"
+
+            def _already_loaded_with_requested_context() -> bool:
+                try:
+                    response = requests.get(
+                        f"{root}/api/v1/models",
+                        headers=headers,
+                        timeout=10,
+                    )
+                    if response.status_code >= 400:
+                        return False
+                    payload = response.json()
+                except Exception:
+                    return False
+
+                models = payload.get("models")
+                if not isinstance(models, list):
+                    return False
+                for item in models:
+                    if not isinstance(item, dict):
+                        continue
+                    key = str(item.get("key") or "")
+                    loaded = item.get("loaded_instances")
+                    if not isinstance(loaded, list):
+                        continue
+                    for instance in loaded:
+                        if not isinstance(instance, dict):
+                            continue
+                        instance_id = str(instance.get("id") or "")
+                        if req.model not in {key, instance_id}:
+                            continue
+                        config = instance.get("config")
+                        if not isinstance(config, dict):
+                            continue
+                        try:
+                            loaded_context = int(config.get("context_length") or 0)
+                        except (TypeError, ValueError):
+                            loaded_context = 0
+                        if loaded_context == req.context_length:
+                            return True
+                return False
+
+            if _already_loaded_with_requested_context():
+                return
 
             response = requests.post(
                 f"{root}/api/v1/models/load",
