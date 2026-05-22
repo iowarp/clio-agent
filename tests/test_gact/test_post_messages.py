@@ -175,8 +175,57 @@ def test_post_message_without_agent_returns_structured_503(
         body = resp.json()
         assert "error" in body
         inner = body["error"]
-        assert inner.get("error") == "config_error"
-        assert "ClioAgent not wired" in inner.get("message", "")
+        assert inner.get("error") == "agent_not_available"
+        assert inner["details"]["agent_status"] == "not_configured"
+        assert "No executable CLIO agent is configured" in inner.get("message", "")
+        assert c.get(f"/v1/sessions/{sid}/messages").json()["messages"] == []
+        assert c.get(f"/v1/sessions/{sid}").json()["status"] == "idle"
+
+
+def test_post_message_while_agent_starts_returns_structured_503(
+    tmp_path: Path,
+) -> None:
+    app = build_app(sessions_path=tmp_path / "s.json", agent=None)
+
+    with TestClient(app) as c:
+        app.state.want_agent = True
+        app.state.agent_construction_task = SimpleNamespace(done=lambda: False)
+        sid = c.post("/v1/sessions", json={"title": "x"}).json()["id"]
+        resp = c.post(f"/v1/sessions/{sid}/messages", json={"text": "hi"})
+
+        assert resp.status_code == 503
+        inner = resp.json()["error"]
+        assert inner["error"] == "agent_not_available"
+        assert inner["details"]["agent_status"] == "starting"
+        assert inner["details"]["recovery_actions"] == [
+            "wait_for_agent_startup",
+            "retry",
+            "check_health",
+        ]
+        assert c.get(f"/v1/sessions/{sid}/messages").json()["messages"] == []
+        assert c.get(f"/v1/sessions/{sid}").json()["status"] == "idle"
+
+
+def test_post_message_after_agent_start_failure_returns_structured_503(
+    tmp_path: Path,
+) -> None:
+    app = build_app(sessions_path=tmp_path / "s.json", agent=None)
+
+    with TestClient(app) as c:
+        app.state.want_agent = True
+        app.state.agent_construction_task = SimpleNamespace(done=lambda: True)
+        app.state.agent_init_error = "RuntimeError('bad provider')"
+        sid = c.post("/v1/sessions", json={"title": "x"}).json()["id"]
+        resp = c.post(f"/v1/sessions/{sid}/messages", json={"text": "hi"})
+
+        assert resp.status_code == 503
+        inner = resp.json()["error"]
+        assert inner["error"] == "agent_not_available"
+        assert inner["details"]["agent_status"] == "failed"
+        assert inner["details"]["agent_init_error"] == "RuntimeError('bad provider')"
+        assert "startup failed" in inner["message"]
+        assert c.get(f"/v1/sessions/{sid}/messages").json()["messages"] == []
+        assert c.get(f"/v1/sessions/{sid}").json()["status"] == "idle"
 
 
 def test_post_message_agent_exception_populates_error_info(
