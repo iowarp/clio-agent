@@ -211,6 +211,52 @@ def _gact_turn_timeout_s() -> float:
         return 300.0
 
 
+def _agent_not_available_error(app: "FastAPI", sid: str) -> "ErrorEnvelope":
+    """Return a typed error when no executable CLIO agent is ready for a turn."""
+
+    task = getattr(app.state, "agent_construction_task", None)
+    task_done = bool(getattr(task, "done", lambda: True)())
+    init_error = str(getattr(app.state, "agent_init_error", "") or "")
+    want_agent = bool(getattr(app.state, "want_agent", False))
+
+    if want_agent and not task_done:
+        status = "starting"
+        message = "CLIO is still starting its agent; no agent is ready to accept messages yet."
+        recoverable = True
+        recovery_actions = ["wait_for_agent_startup", "retry", "check_health"]
+    elif init_error:
+        status = "failed"
+        message = "CLIO agent startup failed; no agent is available to accept messages."
+        recoverable = True
+        recovery_actions = ["check_server_logs", "fix_lm_configuration", "restart_agent"]
+    else:
+        status = "not_configured"
+        message = (
+            "No executable CLIO agent is configured for this backend. Launch `clio-agent-gact` "
+            "with an LM provider configured before sending messages."
+        )
+        recoverable = False
+        recovery_actions = ["configure_lm_provider", "restart_agent"]
+
+    details: dict[str, Any] = {
+        "session_id": sid,
+        "agent_status": status,
+        "want_agent": want_agent,
+        "recovery_actions": recovery_actions,
+    }
+    if init_error:
+        details["agent_init_error"] = init_error
+
+    return ErrorEnvelope(
+        error=ErrorInfo(
+            error="agent_not_available",
+            message=message,
+            details=details,
+            recoverable=recoverable,
+        )
+    )
+
+
 def _cancelled_error_info(
     sid: str,
     *,
@@ -7250,18 +7296,7 @@ def build_app(
         if app.state.agent is None:
             raise HTTPException(
                 status_code=503,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="config_error",
-                        message=(
-                            "ClioAgent not wired into this build. Launch "
-                            "`clio-agent-gact` with CLIO_LM_PROVIDER set "
-                            "or pass `agent=...` to build_app()."
-                        ),
-                        details={"session_id": sid},
-                        recoverable=False,
-                    )
-                ).model_dump(exclude_none=True),
+                detail=_agent_not_available_error(app, sid).model_dump(exclude_none=True),
             )
 
         if (
