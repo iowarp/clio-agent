@@ -6826,13 +6826,9 @@ def build_app(
             # Fire tool observer manually so this call shows up in
             # tools_called + tool.call.* SSE events identically to an
             # agent-driven tool call. Same observer, no special path.
-            try:
-                from clio_agent.tools.execution import _GLOBAL_TOOL_OBSERVER
-            except Exception:
-                _GLOBAL_TOOL_OBSERVER = None
-            tool_observer = _GLOBAL_TOOL_OBSERVER or getattr(
-                app.state, "pending_tool_observer", None
-            )
+            tool_observer = getattr(app.state, "pending_tool_observer", None)
+            if tool_observer is None:
+                tool_observer = _make_tool_observer(app)
             if tool_observer is not None:
                 try:
                     tool_observer(observer_name, tool_args, "started", None)

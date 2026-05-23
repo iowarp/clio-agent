@@ -641,14 +641,19 @@ class ClioAgent(dspy.Module):
                 tool_name = self._coerce_text(action.get("tool")).strip()
                 selected = self._selected_expert_for_tool(tool_name)
                 self._raise_if_cancelled("tool_before")
-                result = self._execute_tool_action(
-                    tool_name,
-                    action.get("args"),
-                    trace,
-                    question=question,
-                    file_context=file_context,
-                    session_context=session_context,
-                )
+                try:
+                    result = self._execute_tool_action(
+                        tool_name,
+                        action.get("args"),
+                        trace,
+                        question=question,
+                        file_context=file_context,
+                        session_context=session_context,
+                    )
+                except TypeError as exc:
+                    if "unexpected keyword argument" not in str(exc):
+                        raise
+                    result = self._execute_tool_action(tool_name, action.get("args"), trace)
                 self._raise_if_cancelled("tool_after")
                 route = self._route_for_selected(
                     selected,

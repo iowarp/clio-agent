@@ -25,12 +25,16 @@ Example:
 
 import logging
 import time
+from pathlib import Path
 from typing import Any, Optional
 
 import dspy
 
 from clio_agent.experts.native_tools import NativeToolRunner
 from clio_agent.harness import (
+    FILE_PATH_RE,
+    QUOTED_FILE_PATH_RE,
+    WINDOWS_FILE_PATH_RE,
     ExpertRequest,
     ExpertResult,
     ToolObservation,
@@ -107,6 +111,8 @@ _PARALLEL_TRIGGERS = (
     "profile ",
 )
 
+_PARALLEL_FILE_SUFFIXES = {".h5", ".hdf5", ".parquet", ".csv", ".bp", ".bp4", ".bp5"}
+
 _MULTI_FILE_INTENT_TERMS = (
     "across",
     "all of",
@@ -124,6 +130,7 @@ _MULTI_FILE_INTENT_TERMS = (
     "these files",
     "triage",
     "together",
+    "validate",
 )
 
 _NDP_INTENT_TERMS = (
@@ -154,6 +161,38 @@ _NDP_SEARCH_TERMS = (
 )
 
 
+def _extract_raw_question_file_paths(question: str, suffixes: set[str]) -> list[str]:
+    """Return explicit file paths as written in the question.
+
+    ``extract_file_paths`` intentionally resolves relative paths for execution.
+    Parallel fan-out labels should instead preserve the user's prompt text so
+    generated worker names and tests do not depend on the host OS path rules.
+    """
+
+    candidates: list[tuple[int, int, int, str]] = []
+    for match in QUOTED_FILE_PATH_RE.finditer(question):
+        candidates.append((match.start(), match.end(), 0, match.group("path")))
+    for match in WINDOWS_FILE_PATH_RE.finditer(question):
+        candidates.append((match.start(), match.end(), 1, match.group("path")))
+    for match in FILE_PATH_RE.finditer(question):
+        candidates.append((match.start(), match.end(), 2, match.group("path")))
+
+    raw_paths: list[str] = []
+    seen: set[str] = set()
+    handled_spans: list[tuple[int, int]] = []
+    for start, end, _priority, raw_path in sorted(candidates):
+        if any(span_start <= start < span_end for span_start, span_end in handled_spans):
+            continue
+        handled_spans.append((start, end))
+        cleaned = raw_path.rstrip(".,;:)]}")
+        if Path(cleaned).suffix.lower() not in suffixes:
+            continue
+        if cleaned not in seen:
+            raw_paths.append(cleaned)
+            seen.add(cleaned)
+    return raw_paths
+
+
 def _detect_parallel_items(question: str) -> list[str]:
     """Pull comma/and-separated items out of a "validate X, Y, and Z"
     style question. Empty list when the question doesn't match a
@@ -164,16 +203,13 @@ def _detect_parallel_items(question: str) -> list[str]:
     """
 
     q = question.lower().strip()
-    paths = extract_file_paths(
-        question,
-        "",
-        {".h5", ".hdf5", ".parquet", ".csv", ".bp", ".bp4", ".bp5"},
-    )
+    raw_paths = _extract_raw_question_file_paths(question, _PARALLEL_FILE_SUFFIXES)
+    paths = extract_file_paths(question, "", _PARALLEL_FILE_SUFFIXES)
     if len(paths) >= 2 and (
         any(term in q for term in _MULTI_FILE_INTENT_TERMS)
         or len({path.suffix.lower() for path in paths}) >= 2
     ):
-        return [str(path) for path in paths]
+        return raw_paths if len(raw_paths) >= 2 else [str(path) for path in paths]
     if paths:
         return []
 
