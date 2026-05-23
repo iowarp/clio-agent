@@ -14,7 +14,7 @@ from typing import Any, Literal, Mapping
 
 from clio_agent.arc.schema import ToolCall
 
-RouteTarget = Literal["chat", "data", "analysis", "visualization", "none"]
+RouteTarget = str
 RouteSource = Literal["deterministic", "dspy", "guard"]
 ExpertSource = Literal["deterministic", "dspy", "fallback"]
 
@@ -33,11 +33,8 @@ WINDOWS_FILE_PATH_RE = re.compile(
     re.IGNORECASE,
 )
 
-ROUTE_TARGETS: tuple[RouteTarget, ...] = (
+SPECIAL_ROUTE_TARGETS: tuple[RouteTarget, ...] = (
     "chat",
-    "data",
-    "analysis",
-    "visualization",
     "none",
 )
 
@@ -53,19 +50,34 @@ class RouteDecision:
     capabilities: tuple[str, ...] = ()
 
     @classmethod
-    def from_dspy(cls, raw_target: Any) -> "RouteDecision":
-        """Normalize and validate a DSPy-selected route target."""
+    def from_dspy(
+        cls,
+        raw_target: Any,
+        *,
+        available_targets: Sequence[str] | None = None,
+    ) -> "RouteDecision":
+        """Normalize and validate a DSPy-selected route target.
+
+        Agent route targets are runtime registry entries, not a closed enum.
+        Callers with a live registry should pass ``available_targets`` so newly
+        installed experts or skills validate without code changes.
+        """
         target = str(raw_target or "").strip().lower()
-        if target in ROUTE_TARGETS:
+        valid_targets = {
+            str(item).strip().lower()
+            for item in (available_targets or SPECIAL_ROUTE_TARGETS)
+            if str(item).strip()
+        }
+        if target in valid_targets:
             return cls(
-                target=target,  # type: ignore[arg-type]
+                target=target,
                 source="dspy",
                 reason="DSPy planner selected a valid CLIO route.",
                 confidence=0.7,
             )
         raise ValueError(
             f"Planner produced invalid route target {target!r}. "
-            f"Expected one of: {', '.join(sorted(ROUTE_TARGETS))}."
+            f"Expected one of: {', '.join(sorted(valid_targets))}."
         )
 
 

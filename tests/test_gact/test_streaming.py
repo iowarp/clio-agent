@@ -256,6 +256,28 @@ async def test_provider_without_live_streaming_skips_streamify(
     assert fallback["live_streaming"] is False
 
 
+@pytest.mark.asyncio
+async def test_argonne_provider_skips_streamify(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    def fail_streamify(*args: Any, **kwargs: Any) -> Any:
+        del args, kwargs
+        raise AssertionError("streamify should not be called for Argonne providers")
+
+    streamify_module = importlib.import_module("dspy.streaming.streamify")
+    monkeypatch.setattr(streamify_module, "streamify", fail_streamify)
+    agent = _DspyAgent("sync answer")
+    agent._provider_config = SimpleNamespace(provider="argonne")
+    app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
+
+    result = await _try_streamed_forward(app, "hello", "sid", lambda text: None)
+
+    assert result is None
+    assert agent.calls == []
+    fallback = _pop_stream_fallback(app, "sid")
+    assert fallback["reason"] == "provider_streaming_unsupported"
+
+
 def test_build_stream_listeners_binds_known_predictors_explicitly() -> None:
     agent = _ExpertStreamingAgent()
 

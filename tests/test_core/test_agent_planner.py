@@ -269,17 +269,41 @@ class TestFirstSentence:
 
 
 class TestRouteForSelected:
-    def test_valid_target(self):
-        route = ClioAgent._route_for_selected("data", "why", 0.8)
+    def test_valid_target(self, agent):
+        route = agent._route_for_selected("data", "why", 0.8)
         assert route.target == "data" and route.confidence == 0.8
 
-    def test_invalid_target_surfaces_routing_error(self):
+    def test_utility_target_is_valid(self, agent):
+        route = agent._route_for_selected("utility", "shell tool", 0.8)
+        assert route.target == "utility"
+
+    def test_dynamic_registered_target_is_valid(self, agent):
+        agent.registry.register_agent(
+            "ndp",
+            agent,
+            AgentCapability(
+                keywords=["ndp"],
+                description="NDP specialist",
+                tools=[],
+                specialization="dataset",
+            ),
+        )
+
+        route = agent._route_for_selected("ndp", "registered dynamically", 0.8)
+
+        assert route.target == "ndp"
+
+    def test_invalid_target_surfaces_routing_error(self, agent):
         with pytest.raises(RoutingError, match="invalid route target"):
-            ClioAgent._route_for_selected("bogus", "why", 0.5)
+            agent._route_for_selected("bogus", "why", 0.5)
 
     def test_route_decision_from_dspy_rejects_invalid_target(self):
         with pytest.raises(ValueError, match="invalid route target"):
-            RouteDecision.from_dspy("bogus")
+            RouteDecision.from_dspy("bogus", available_targets=["chat", "data", "none"])
+
+    def test_route_decision_from_dspy_accepts_dynamic_target(self):
+        route = RouteDecision.from_dspy("ndp", available_targets=["chat", "ndp", "none"])
+        assert route.target == "ndp"
 
 
 class TestAgentMaxSteps:
@@ -337,15 +361,40 @@ class TestFormatObservations:
 class TestBuildCapabilitiesContext:
     def test_lists_experts_and_tools(self, agent):
         ctx = agent._build_capabilities_context()
-        assert "Experts:" in ctx and "Tools:" in ctx
+        assert "Experts:" in ctx and "Scoped tools:" in ctx
         # Experts registered in __init__ should appear.
         assert "data" in ctx and "analysis" in ctx
+        assert "Tool scope rules:" in ctx
+        assert "do not treat scientific data, analysis, visualization, and utility tools" in ctx
 
     def test_hides_internal_fs_tools_from_planner_context(self, agent):
         ctx = agent._build_capabilities_context()
         assert "fs_read_file(" not in ctx
         assert "fs_apply_edit_write(" not in ctx
         assert "fs_propose_edit(" in ctx
+
+    def test_tools_are_listed_under_owning_experts(self, agent):
+        ctx = agent._build_capabilities_context()
+        scoped = ctx.split("Scoped tools:", 1)[1].split("Chat utility tools:", 1)[0]
+        analysis_block = scoped.split("- analysis:", 1)[1].split("- data:", 1)[0]
+        data_block = scoped.split("- data:", 1)[1].split("- utility:", 1)[0]
+        utility_block = scoped.split("- utility:", 1)[1].split("- visualization:", 1)[0]
+        visualization_block = scoped.split("- visualization:", 1)[1]
+
+        assert "hdf5_analyze_file(" in data_block
+        assert "parquet_analyze_schema(" not in data_block
+        assert "parquet_analyze_schema(" in analysis_block
+        assert "hdf5_analyze_file(" not in analysis_block
+        assert "plot_summary(" in visualization_block
+        assert "shell_bash(" in utility_block
+        assert "fs_propose_edit(" in utility_block
+
+    def test_chat_utility_tools_are_explicitly_scoped(self, agent):
+        ctx = agent._build_capabilities_context()
+        chat_block = ctx.split("Chat utility tools:", 1)[1].split("Tool scope rules:", 1)[0]
+        assert "shell_bash(" in chat_block
+        assert "hdf5_analyze_file(" not in chat_block
+        assert "parquet_analyze_schema(" not in chat_block
 
     def test_multi_file_strategy_is_visible_to_planner(self, agent):
         ctx = agent._build_capabilities_context()
@@ -1458,6 +1507,35 @@ class TestPlannerNoBypass:
             == "No prior context"
         )
 
+    def test_chat_strips_available_tools_context(self, agent):
+        agent.chat_agent = MagicMock(return_value=MagicMock(answer="ok"))
+        session_context = (
+            "[Session Context]\n"
+            "user: what can you do?\n\n"
+            "[Available Tools]\n"
+            "hdf5_list_datasets: list HDF5 datasets\n"
+            "shell_bash: run a shell command\n\n"
+            "[Routing History]\n"
+            "previous query -> analysis"
+        )
+
+        assert agent._run_chat_agent("what tools do you have?", session_context) == "ok"
+
+        chat_context = agent.chat_agent.call_args.kwargs["session_context"]
+        assert "[Session Context]" in chat_context
+        assert "user: what can you do?" in chat_context
+        assert "[Routing History]" in chat_context
+        assert "previous query -> analysis" in chat_context
+        assert "[Available Tools]" not in chat_context
+        assert "hdf5_list_datasets" not in chat_context
+        assert "shell_bash" not in chat_context
+
+    def test_chat_context_is_never_empty_after_tool_section_strip(self):
+        assert (
+            ClioAgent._chat_session_context("[Available Tools]\nhdf5_list_datasets: list")
+            == "No prior context"
+        )
+
     def test_qwopus_planner_question_uses_no_think_control(self, agent):
         agent._provider_config.provider = "lm_studio"
         agent._provider_config.model = "qwopus3.5-9b-v3"
@@ -1494,8 +1572,9 @@ class TestPlannerNoBypass:
         capabilities = (
             "Experts:\n"
             "- analysis: Cross-file analysis.; tools: parquet_analyze_schema, csv_read_table\n"
-            "Tools:\n"
-            "- parquet_analyze_schema(filepath): Inspect the schema and metadata.\n"
+            "Scoped tools:\n"
+            "- analysis:\n"
+            "  - parquet_analyze_schema(filepath): Inspect the schema and metadata.\n"
             "Routing strategy: delegate natural multi-file review to expert:analysis."
         )
 

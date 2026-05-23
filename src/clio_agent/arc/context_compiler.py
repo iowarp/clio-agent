@@ -47,9 +47,9 @@ class ContextCompiler:
     # Proportional allocation of budget per section
     BUDGET_PROPORTIONS = {
         "conversation": 0.40,  # 40% for conversation history
-        "profiles": 0.30,     # 30% for dataset profiles
-        "procedural": 0.20,   # 20% for procedural memories
-        "routing": 0.10,      # 10% for routing history
+        "profiles": 0.30,  # 30% for dataset profiles
+        "procedural": 0.20,  # 20% for procedural memories
+        "routing": 0.10,  # 10% for routing history
     }
 
     # Rough token-to-word ratio (1 token ~ 0.75 words)
@@ -68,11 +68,17 @@ class ContextCompiler:
         """
         self.arc = arc_memory
         self.tier_budgets = tier_budgets or {
-            "tier1": 2000,   # Router: minimal context
-            "tier2": 4000,   # Experts: moderate context
+            "tier1": 2000,  # Router: minimal context
+            "tier2": 4000,  # Experts: moderate context
         }
 
-    def compile(self, query: str, session_id: str, tier: int = 2) -> str:
+    def compile(
+        self,
+        query: str,
+        session_id: str,
+        tier: int = 2,
+        tool_scope: str = "all",
+    ) -> str:
         """Compile context for a query within token budget.
 
         Steps:
@@ -85,6 +91,8 @@ class ContextCompiler:
             query: User's current query
             session_id: Session identifier
             tier: Agent tier (1 for router, 2 for expert). Determines budget.
+            tool_scope: Agent/tool visibility scope for injected tool summaries.
+                Use ``chat``, an expert id, ``planner``, ``all``, or ``none``.
 
         Returns:
             Compiled context string within token budget.
@@ -103,7 +111,7 @@ class ContextCompiler:
         compacted = self._compact(raw_context, budget_tokens)
 
         # Stage 3: Enrich
-        enriched = self._enrich(compacted, query)
+        enriched = self._enrich(compacted, query, tool_scope=tool_scope)
 
         # Stage 4: Assemble
         return self._assemble(enriched)
@@ -135,8 +143,7 @@ class ContextCompiler:
             if conv.messages:
                 recent_messages = conv.messages[-5:]
                 raw["conversation"] = [
-                    {"role": m.role, "content": m.content}
-                    for m in recent_messages
+                    {"role": m.role, "content": m.content} for m in recent_messages
                 ]
 
             # Last 3 routing decisions
@@ -184,9 +191,7 @@ class ContextCompiler:
 
         return raw
 
-    def _compact(
-        self, raw_context: Dict[str, Any], budget_tokens: int
-    ) -> Dict[str, str]:
+    def _compact(self, raw_context: Dict[str, Any], budget_tokens: int) -> Dict[str, str]:
         """Compact each section to fit within proportional budget.
 
         Each section gets a proportional share of the total budget:
@@ -256,18 +261,13 @@ class ContextCompiler:
                 schema = p.get("schema", {})
                 cols = schema.get("columns", [])
                 rows = schema.get("rows", "?")
-                lines.append(
-                    f"{filepath} ({fmt}): {len(cols)} columns, {rows} rows"
-                )
+                lines.append(f"{filepath} ({fmt}): {len(cols)} columns, {rows} rows")
                 stats = p.get("stats", {})
                 if stats:
                     stat_strs = []
                     for col, col_stats in list(stats.items())[:3]:
                         if isinstance(col_stats, dict):
-                            stat_parts = [
-                                f"{k}={v}"
-                                for k, v in list(col_stats.items())[:3]
-                            ]
+                            stat_parts = [f"{k}={v}" for k, v in list(col_stats.items())[:3]]
                             stat_strs.append(f"{col}: {', '.join(stat_parts)}")
                     if stat_strs:
                         lines.append("  Stats: " + "; ".join(stat_strs))
@@ -296,7 +296,10 @@ class ContextCompiler:
         return str(data)
 
     def _enrich(
-        self, compacted_context: Dict[str, str], query: str
+        self,
+        compacted_context: Dict[str, str],
+        query: str,
+        tool_scope: str = "all",
     ) -> Dict[str, str]:
         """Enrich compacted context with tool capabilities and query keywords.
 
@@ -307,6 +310,7 @@ class ContextCompiler:
         Args:
             compacted_context: Dict from _compact() with section strings
             query: User's current query
+            tool_scope: Agent/tool visibility scope for injected tool summaries.
 
         Returns:
             Enriched context dict with 'tools' and 'keywords' keys added.
@@ -318,9 +322,14 @@ class ContextCompiler:
             from clio_agent.tools.gateway import list_capabilities
 
             caps = list_capabilities()
-            tool_lines = [
-                f"{c['name']}: {c['description']}" for c in caps
-            ]
+            if tool_scope and tool_scope != "all":
+                if tool_scope == "none":
+                    caps = []
+                else:
+                    from clio_agent.tools.catalog import tool_visible_to
+
+                    caps = [c for c in caps if tool_visible_to(c["name"], tool_scope)]
+            tool_lines = [f"{c['name']}: {c['description']}" for c in caps]
             enriched["tools"] = "\n".join(tool_lines)
         except Exception:
             enriched["tools"] = ""
@@ -328,10 +337,25 @@ class ContextCompiler:
         # Extract query keywords
         words = query.lower().split()
         keywords = [
-            w for w in words
-            if len(w) >= 3 and w not in {
-                "the", "and", "for", "with", "from", "what", "how",
-                "can", "this", "that", "are", "was", "will", "has",
+            w
+            for w in words
+            if len(w) >= 3
+            and w
+            not in {
+                "the",
+                "and",
+                "for",
+                "with",
+                "from",
+                "what",
+                "how",
+                "can",
+                "this",
+                "that",
+                "are",
+                "was",
+                "will",
+                "has",
             }
         ]
         enriched["keywords"] = ", ".join(keywords) if keywords else ""

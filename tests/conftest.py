@@ -7,11 +7,9 @@ HDF5 and Parquet test data for MCP server testing.
 
 import os
 
-import h5py
-import numpy as np
-import pyarrow as pa
-import pyarrow.parquet as pq
 import pytest
+
+import clio_agent  # noqa: F401
 
 
 @pytest.fixture(autouse=True)
@@ -55,6 +53,9 @@ def sample_hdf5(tmp_path):
     Returns:
         str: Path to the temporary HDF5 file
     """
+    import h5py
+    import numpy as np
+
     filepath = tmp_path / "test_data.h5"
     rng = np.random.default_rng(42)  # Deterministic for reproducibility
 
@@ -104,21 +105,25 @@ def sample_parquet(tmp_path):
     Returns:
         str: Path to the temporary Parquet file
     """
+    import numpy as np
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
     rng = np.random.default_rng(42)  # Deterministic for reproducibility
 
     cities = ["NYC", "LA", "Chicago", "Houston", "Phoenix"]
     n_rows = 100
 
-    table = pa.table({
-        "id": pa.array(range(n_rows), type=pa.int64()),
-        "temperature": pa.array(
-            rng.uniform(15.0, 35.0, size=n_rows), type=pa.float64()
-        ),
-        "city": pa.array(
-            [cities[i % len(cities)] for i in rng.integers(0, len(cities), size=n_rows)],
-            type=pa.string(),
-        ),
-    })
+    table = pa.table(
+        {
+            "id": pa.array(range(n_rows), type=pa.int64()),
+            "temperature": pa.array(rng.uniform(15.0, 35.0, size=n_rows), type=pa.float64()),
+            "city": pa.array(
+                [cities[i % len(cities)] for i in rng.integers(0, len(cities), size=n_rows)],
+                type=pa.string(),
+            ),
+        }
+    )
 
     filepath = tmp_path / "test_data.parquet"
     pq.write_table(table, filepath)

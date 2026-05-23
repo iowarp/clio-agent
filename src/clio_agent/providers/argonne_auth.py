@@ -254,8 +254,9 @@ def authenticate(force: bool = False) -> None:
     """Run the OAuth flow explicitly. Wired to the CLI ``/argonne login``
     command (and equivalent TUI button). On a fresh machine this
     prints a URL the user must visit; on machines that already have
-    tokens it's a no-op unless ``force=True``."""
-    _get_authorizer(force=force)
+    tokens it validates or refreshes the gateway access token unless
+    ``force=True`` redrives the interactive Globus login first."""
+    get_access_token(force_refresh=force)
 
 
 # ---------------------------------------------------------------------------
@@ -286,7 +287,7 @@ def _main() -> None:  # pragma: no cover - thin CLI wrapper
 
     if args.action == "authenticate":
         authenticate(force=args.force)
-        print("Authentication complete.")
+        print("ALCF access token validated.")
     elif args.action == "get-access-token":
         if not tokens_exist():
             raise SystemExit("No tokens on disk; run 'authenticate' first.")

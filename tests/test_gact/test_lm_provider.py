@@ -5,6 +5,7 @@ without redeploying the GACT process.
 from __future__ import annotations
 
 import os
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -12,6 +13,17 @@ from typing import Any
 from fastapi.testclient import TestClient
 
 from clio_agent.gact.app import build_app
+
+
+def _wait_lm_provider_ready(c: TestClient, timeout_s: float = 5.0) -> dict[str, Any]:
+    deadline = time.monotonic() + timeout_s
+    body: dict[str, Any] = {}
+    while time.monotonic() < deadline:
+        body = c.get("/v1/providers/lm").json()
+        if body.get("state") != "configuring":
+            return body
+        time.sleep(0.05)
+    raise AssertionError(f"LM provider did not finish configuring: {body}")
 
 
 def test_get_lm_provider_unconfigured(tmp_path: Path) -> None:
@@ -46,8 +58,8 @@ def test_get_lm_provider_reports_argonne_auth_required(tmp_path: Path, monkeypat
     assert "no Globus token" in sophia["status_message"]
 
 
-def test_get_lm_provider_reports_argonne_auto_refresh_ready(tmp_path: Path, monkeypatch) -> None:
-    """Stored Globus tokens should surface as ready with auto-refresh semantics."""
+def test_get_lm_provider_reports_argonne_valid_token_ready(tmp_path: Path, monkeypatch) -> None:
+    """A refreshable cached Globus token should make ALCF selectable."""
 
     monkeypatch.delenv("CLIO_ARGONNE_TOKEN", raising=False)
     monkeypatch.delenv("ALCF_INFERENCE_TOKEN", raising=False)
@@ -62,11 +74,11 @@ def test_get_lm_provider_reports_argonne_auto_refresh_ready(tmp_path: Path, monk
     sophia = next(p for p in body["presets"] if p["id"] == "argonne_sophia")
     assert sophia["is_authenticated"] is True
     assert sophia["status"] == "ready"
-    assert "auto-refresh" in sophia["status_message"]
+    assert "validated" in sophia["status_message"]
 
 
 def test_get_lm_provider_reports_argonne_refresh_failure(tmp_path: Path, monkeypatch) -> None:
-    """A stored but unrefreshable Globus token must not look ready."""
+    """Stored but unrefreshable tokens should ask for auth instead of looking usable."""
 
     monkeypatch.delenv("CLIO_ARGONNE_TOKEN", raising=False)
     monkeypatch.delenv("ALCF_INFERENCE_TOKEN", raising=False)
@@ -81,7 +93,7 @@ def test_get_lm_provider_reports_argonne_refresh_failure(tmp_path: Path, monkeyp
     sophia = next(p for p in body["presets"] if p["id"] == "argonne_sophia")
     assert sophia["is_authenticated"] is False
     assert sophia["status"] == "auth_required"
-    assert "could not refresh" in sophia["status_message"]
+    assert "could not be refreshed" in sophia["status_message"]
 
 
 def test_auth_provider_returns_interactive_argonne_instructions(
@@ -106,7 +118,11 @@ def test_auth_provider_returns_interactive_argonne_instructions(
         return object()
 
     monkeypatch.setattr("clio_agent.gact.app.importlib.util.find_spec", _find_spec)
-    monkeypatch.setattr(argonne_auth, "check_auth_status", lambda: False)
+    monkeypatch.setattr(
+        argonne_auth,
+        "check_auth_status",
+        lambda: (_ for _ in ()).throw(AssertionError("auth button must not probe token status")),
+    )
     monkeypatch.setattr("clio_agent.gact.app.subprocess.Popen", _popen)
     if os.name != "nt":
         monkeypatch.setattr("clio_agent.gact.app.shutil.which", lambda name: None)
@@ -122,8 +138,12 @@ def test_auth_provider_returns_interactive_argonne_instructions(
     assert "interactive terminal" in body["instructions"] or "Opened" in body["instructions"]
     if os.name == "nt":
         assert popen_calls
-        assert popen_calls[0][1:4] == ["-m", "clio_agent.providers.argonne_auth", "authenticate"]
-        assert "--force" in popen_calls[0]
+        launched = popen_calls[0]
+        assert launched[0].lower().endswith(("powershell.exe", "pwsh.exe"))
+        assert "-NoExit" in launched
+        assert "clio_agent.providers.argonne_auth" in launched[-1]
+        assert "--force" in launched[-1]
+        assert "Read-Host" in launched[-1]
 
 
 def test_provider_model_catalog_filters_embedding_models(tmp_path: Path, monkeypatch) -> None:
@@ -300,6 +320,77 @@ def test_provider_model_catalog_keeps_static_cli_candidates(tmp_path: Path) -> N
     assert {row["id"] for row in claude["models"]} == {"sonnet", "opus", "haiku"}
 
 
+def test_argonne_model_catalog_uses_list_endpoints_and_jobs_for_status(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """ALCF model selection comes from list-endpoints; jobs only annotates liveness."""
+
+    monkeypatch.setenv("CLIO_ARGONNE_TOKEN", "token")
+
+    class _Resp:
+        status_code = 200
+        text = ""
+
+        def __init__(self, payload: dict[str, Any]) -> None:
+            self._payload = payload
+
+        def json(self) -> dict[str, Any]:
+            return self._payload
+
+    seen_urls: list[str] = []
+
+    def _get(url: str, *args: Any, **kwargs: Any) -> _Resp:
+        seen_urls.append(url)
+        if url.endswith("/resource_server/list-endpoints"):
+            return _Resp(
+                {
+                    "clusters": {
+                        "sophia": {
+                            "frameworks": {
+                                "vllm": {
+                                    "models": [
+                                        "meta-llama/Meta-Llama-3.1-8B-Instruct",
+                                        "not-currently-running/model",
+                                    ]
+                                }
+                            }
+                        }
+                    }
+                }
+            )
+        if url.endswith("/resource_server/sophia/jobs"):
+            return _Resp(
+                {
+                    "running": [
+                        {
+                            "Models": "meta-llama/Meta-Llama-3.1-8B-Instruct",
+                            "Nodes Reserved": "1",
+                            "Walltime": "01:02:03",
+                        }
+                    ]
+                }
+            )
+        raise AssertionError(f"unexpected URL: {url}")
+
+    monkeypatch.setattr("requests.get", _get)
+
+    app = build_app(sessions_path=tmp_path / "s.json")
+    with TestClient(app) as c:
+        body = c.get("/v1/providers/argonne_sophia/models").json()
+
+    assert seen_urls == [
+        "https://inference-api.alcf.anl.gov/resource_server/list-endpoints",
+        "https://inference-api.alcf.anl.gov/resource_server/sophia/jobs",
+    ]
+    assert body["source"] == "live"
+    assert [row["id"] for row in body["models"]] == [
+        "meta-llama/Meta-Llama-3.1-8B-Instruct",
+        "not-currently-running/model",
+    ]
+    assert body["models"][0]["description"].startswith("live on sophia")
+    assert body["models"][1]["description"] == "available on sophia/vllm"
+
+
 def test_health_lm_row_when_unconfigured(tmp_path: Path) -> None:
     app = build_app(sessions_path=tmp_path / "s.json")
     with TestClient(app) as c:
@@ -445,6 +536,144 @@ def test_get_lm_provider_when_configured_via_put(tmp_path: Path, monkeypatch) ->
         assert "openai/claude-haiku-4-5-20251001" in rows["lm"]["detail"]
 
 
+def test_put_argonne_uses_provider_default_max_tokens_when_omitted(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """TUI default save should not force the global 32k cap onto ALCF."""
+
+    captured: dict[str, Any] = {}
+
+    class _StubAgent:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            self.arc = type(
+                "ARC",
+                (),
+                {
+                    "get_cache_stats": lambda self: {
+                        "hits": 0,
+                        "misses": 0,
+                        "hit_rate": 0.0,
+                        "capacity": 10,
+                    }
+                },
+            )()
+
+        def forward(self, *args: Any, **kwargs: Any) -> Any:
+            return type("Pred", (), {"answer": "ok", "selected_expert": ""})()
+
+    def _stub_create_lm(cfg: Any) -> object:
+        captured["provider"] = cfg.provider
+        captured["api_base"] = cfg.api_base
+        captured["model"] = cfg.model
+        captured["api_key"] = cfg.api_key
+        captured["max_tokens"] = cfg.max_tokens
+        return type("FakeLM", (), {"history": []})()
+
+    monkeypatch.setattr("clio_agent.agent.ClioAgent", _StubAgent)
+    monkeypatch.setattr("clio_agent.config._resolve_argonne_api_key", lambda: "token")
+    monkeypatch.setattr("clio_agent.config.create_lm", _stub_create_lm)
+    monkeypatch.setattr("clio_agent.config.create_chat_adapter", lambda cfg: object())
+    monkeypatch.setattr("clio_agent.config.create_planner_lm", lambda cfg: object())
+
+    app = build_app(sessions_path=tmp_path / "s.json")
+    with TestClient(app) as c:
+        resp = c.put(
+            "/v1/providers/lm",
+            json={
+                "provider": "argonne",
+                "api_base": "https://inference-api.alcf.anl.gov/resource_server/metis/api/v1",
+                "model": "gpt-oss-120b",
+                "api_key": "",
+            },
+        )
+        body = _wait_lm_provider_ready(c)
+
+    assert resp.status_code == 200, resp.text
+    assert body["state"] == "ready"
+    assert captured == {
+        "provider": "argonne",
+        "api_base": "https://inference-api.alcf.anl.gov/resource_server/metis/api/v1",
+        "model": "gpt-oss-120b",
+        "api_key": "token",
+        "max_tokens": 4096,
+    }
+
+
+def test_put_argonne_ignores_placeholder_api_key(tmp_path: Path, monkeypatch) -> None:
+    """OAuth providers must not treat local no-auth placeholder keys as bearer tokens."""
+
+    captured: dict[str, Any] = {}
+
+    class _StubAgent:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            self.arc = type(
+                "ARC",
+                (),
+                {
+                    "get_cache_stats": lambda self: {
+                        "hits": 0,
+                        "misses": 0,
+                        "hit_rate": 0.0,
+                        "capacity": 10,
+                    }
+                },
+            )()
+
+        def forward(self, *args: Any, **kwargs: Any) -> Any:
+            return type("Pred", (), {"answer": "ok", "selected_expert": ""})()
+
+    def _stub_create_lm(cfg: Any) -> object:
+        captured["api_key"] = cfg.api_key
+        return type("FakeLM", (), {"history": []})()
+
+    monkeypatch.setattr("clio_agent.agent.ClioAgent", _StubAgent)
+    monkeypatch.setattr("clio_agent.config._resolve_argonne_api_key", lambda: "fresh-globus-token")
+    monkeypatch.setattr("clio_agent.config.create_lm", _stub_create_lm)
+    monkeypatch.setattr("clio_agent.config.create_chat_adapter", lambda cfg: object())
+    monkeypatch.setattr("clio_agent.config.create_planner_lm", lambda cfg: object())
+
+    app = build_app(sessions_path=tmp_path / "s.json")
+    with TestClient(app) as c:
+        resp = c.put(
+            "/v1/providers/lm",
+            json={
+                "provider": "argonne",
+                "api_base": "https://inference-api.alcf.anl.gov/resource_server/sophia/vllm/v1",
+                "model": "meta-llama/Meta-Llama-3.1-8B-Instruct",
+                "api_key": "x",
+            },
+        )
+        body = _wait_lm_provider_ready(c)
+
+    assert resp.status_code == 200, resp.text
+    assert body["state"] == "ready"
+    assert captured["api_key"] == "fresh-globus-token"
+
+
+def test_argonne_runtime_refresh_updates_live_lm_kwargs(monkeypatch) -> None:
+    """A long-lived ALCF agent should refresh bearer tokens before turns."""
+
+    from clio_agent.gact.app import _refresh_argonne_lm_token
+
+    monkeypatch.setattr("clio_agent.config._resolve_argonne_api_key", lambda: "runtime-token")
+    main_lm = SimpleNamespace(kwargs={"api_key": "old-token"})
+    planner_lm = SimpleNamespace(kwargs={"api_key": "old-token"})
+    router_lm = SimpleNamespace(kwargs={"api_key": "old-token"})
+    agent = SimpleNamespace(
+        _provider_config=SimpleNamespace(provider="argonne", api_key="old-token"),
+        _main_lm=main_lm,
+        _planner_lm=planner_lm,
+        _router_lm=router_lm,
+    )
+
+    _refresh_argonne_lm_token(agent)
+
+    assert agent._provider_config.api_key == "runtime-token"
+    assert main_lm.kwargs["api_key"] == "runtime-token"
+    assert planner_lm.kwargs["api_key"] == "runtime-token"
+    assert router_lm.kwargs["api_key"] == "runtime-token"
+
+
 def test_put_lm_provider_accepts_codex_sdk_transport(tmp_path: Path, monkeypatch) -> None:
     """The TUI can select and read back Codex SDK transport without an API key."""
     captured: dict[str, Any] = {}
@@ -505,12 +734,19 @@ def test_put_lm_provider_applies_lm_studio_context_length(tmp_path: Path, monkey
 
     captured: dict[str, Any] = {}
 
-    class _Resp:
+    class _GetResp:
         status_code = 200
         text = ""
 
         def json(self) -> dict[str, Any]:
             return {"models": []}
+
+    class _PostResp:
+        status_code = 200
+        text = ""
+
+        def json(self) -> dict[str, Any]:
+            return {"instance_id": "qwopus3.5-9b-v3", "status": "loaded"}
 
     class _StubAgent:
         def __init__(self, *args: Any, **kwargs: Any) -> None:
@@ -530,13 +766,13 @@ def test_put_lm_provider_applies_lm_studio_context_length(tmp_path: Path, monkey
         def forward(self, *args: Any, **kwargs: Any) -> Any:
             return type("Pred", (), {"answer": "ok", "selected_expert": ""})()
 
-    def _post(url: str, *args: Any, **kwargs: Any) -> _Resp:
+    def _post(url: str, *args: Any, **kwargs: Any) -> _PostResp:
         captured["url"] = url
         captured["json"] = kwargs.get("json")
         captured["timeout"] = kwargs.get("timeout")
-        return _Resp()
+        return _PostResp()
 
-    monkeypatch.setattr("requests.get", lambda *args, **kwargs: _Resp())
+    monkeypatch.setattr("requests.get", lambda *args, **kwargs: _GetResp())
     monkeypatch.setattr("requests.post", _post)
     monkeypatch.setattr("clio_agent.agent.ClioAgent", _StubAgent)
     monkeypatch.setattr("clio_agent.config.create_lm", lambda cfg: object())
@@ -566,6 +802,12 @@ def test_put_lm_provider_applies_lm_studio_context_length(tmp_path: Path, monkey
         "timeout": 180,
     }
     assert app.state.lm_config["context_length"] == 32768
+    owned = app.state.lm_studio_owned_instance
+    assert owned["root"] == "http://127.0.0.1:1234"
+    assert owned["instance_id"] == "qwopus3.5-9b-v3"
+    assert owned["model"] == "qwopus3.5-9b-v3"
+    assert owned["context_length"] == 32768
+    assert owned["created_at"]
 
 
 def test_put_lm_provider_reuses_loaded_lm_studio_model(tmp_path: Path, monkeypatch) -> None:
@@ -636,6 +878,39 @@ def test_put_lm_provider_reuses_loaded_lm_studio_model(tmp_path: Path, monkeypat
     assert resp.status_code == 200, resp.text
     assert captured["post_called"] is False
     assert app.state.lm_config["context_length"] == 32768
+    assert app.state.lm_studio_owned_instance is None
+
+
+def test_lifespan_unloads_clio_owned_lm_studio_instance(tmp_path: Path, monkeypatch) -> None:
+    """Shutdown cleanup must unload only the LM Studio instance CLIO owns."""
+
+    captured: dict[str, Any] = {}
+
+    class _Resp:
+        status_code = 200
+        text = ""
+
+    def _post(url: str, *args: Any, **kwargs: Any) -> _Resp:
+        captured["url"] = url
+        captured["json"] = kwargs.get("json")
+        captured["timeout"] = kwargs.get("timeout")
+        return _Resp()
+
+    monkeypatch.setattr("requests.post", _post)
+
+    app = build_app(sessions_path=tmp_path / "s.json")
+    with TestClient(app):
+        app.state.lm_studio_owned_instance = {
+            "root": "http://127.0.0.1:1234",
+            "instance_id": "clio-owned-qwopus",
+        }
+
+    assert captured == {
+        "url": "http://127.0.0.1:1234/api/v1/models/unload",
+        "json": {"instance_id": "clio-owned-qwopus"},
+        "timeout": 30,
+    }
+    assert app.state.lm_studio_owned_instance is None
 
 
 def test_put_lm_provider_invalid_returns_400(tmp_path: Path, monkeypatch) -> None:
