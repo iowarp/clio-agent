@@ -485,6 +485,8 @@ class Tool(BaseModel):
     title: str = ""
     description: str = ""
     permission_default: str = "ask"
+    owner: str = ""
+    tags: list[str] = Field(default_factory=list)
 
 
 class ListToolsResponse(BaseModel):
@@ -582,6 +584,10 @@ class LMProviderInfo(BaseModel):
     context_length: int = 0
     thinking_budget: int = 0
     transport: Optional[Literal["exec", "sdk"]] = None
+    state: Literal["idle", "configuring", "ready", "error"] = "idle"
+    status_message: str = ""
+    error: str = ""
+    operation_id: str = ""
     presets: list["LMProviderPreset"] = Field(default_factory=list)
 
 
@@ -600,7 +606,14 @@ class LMProviderPreset(BaseModel):
     auth_method: Literal["none", "api_key", "oauth"] = "api_key"
     is_authenticated: bool = False
     description: str = ""
-    status: Literal["ready", "missing_key", "auth_required", "unavailable", "unknown"] = "unknown"
+    status: Literal[
+        "ready",
+        "missing_key",
+        "auth_required",
+        "auth_check_required",
+        "unavailable",
+        "unknown",
+    ] = "unknown"
     status_message: str = ""
     supports_live_catalog: bool = True
 
@@ -623,7 +636,7 @@ class LMProviderRequest(BaseModel):
     model: str
     api_key: str = "x"
     temperature: float = 1.0
-    max_tokens: int = 32000
+    max_tokens: int = 0
     # Context window requested/expected for the model load. This is
     # not forwarded to DSPy/LiteLLM as a completion parameter; local
     # runtimes such as LM Studio must load the model with this context

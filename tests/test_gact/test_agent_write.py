@@ -21,19 +21,22 @@ def test_capability_advertised(client: TestClient) -> None:
 
 
 def test_post_agent_then_list(client: TestClient) -> None:
-    new = client.post("/v1/agents", json={
-        "id": "code_reviewer",
-        "title": "Code Reviewer",
-        "description": "Reviews diffs for style + correctness",
-        "system_prompt": "Review the diff and report correctness issues.",
-        "default_provider": "lm_studio",
-        "default_model": "qwopus3.5-9b-v3",
-        "parameters": {"temperature": 0.1, "max_tokens": 2048},
-        "tier": 2,
-        "specialization": "code_editing",
-        "keywords": ["review", "lint"],
-        "tools": ["fs_read_file"],
-    })
+    new = client.post(
+        "/v1/agents",
+        json={
+            "id": "code_reviewer",
+            "title": "Code Reviewer",
+            "description": "Reviews diffs for style + correctness",
+            "system_prompt": "Review the diff and report correctness issues.",
+            "default_provider": "lm_studio",
+            "default_model": "qwopus3.5-9b-v3",
+            "parameters": {"temperature": 0.1, "max_tokens": 2048},
+            "tier": 2,
+            "specialization": "code_editing",
+            "keywords": ["review", "lint"],
+            "tools": ["fs_read_file"],
+        },
+    )
     assert new.status_code == 201
     body = new.json()
     assert body["id"] == "code_reviewer"
@@ -55,16 +58,22 @@ def test_post_agent_then_list(client: TestClient) -> None:
 
 
 def test_put_agent_replaces_existing(client: TestClient) -> None:
-    client.post("/v1/agents", json={
-        "id": "code_reviewer",
-        "title": "Code Reviewer",
-    })
-    resp = client.put("/v1/agents/code_reviewer", json={
-        "id": "ignored-by-server",
-        "title": "Strict Code Reviewer",
-        "description": "now stricter",
-        "tier": 2,
-    })
+    client.post(
+        "/v1/agents",
+        json={
+            "id": "code_reviewer",
+            "title": "Code Reviewer",
+        },
+    )
+    resp = client.put(
+        "/v1/agents/code_reviewer",
+        json={
+            "id": "ignored-by-server",
+            "title": "Strict Code Reviewer",
+            "description": "now stricter",
+            "tier": 2,
+        },
+    )
     assert resp.status_code == 200
     body = resp.json()
     # URL id wins over body id (server enforces).
@@ -73,10 +82,13 @@ def test_put_agent_replaces_existing(client: TestClient) -> None:
 
 
 def test_post_agent_refuses_builtin_id(client: TestClient) -> None:
-    resp = client.post("/v1/agents", json={
-        "id": "data",
-        "title": "Steal the built-in id",
-    })
+    resp = client.post(
+        "/v1/agents",
+        json={
+            "id": "data",
+            "title": "Steal the built-in id",
+        },
+    )
     assert resp.status_code == 409
     body = resp.json()
     assert body["error"]["error"] == "permission_error"
@@ -89,10 +101,13 @@ def test_put_agent_refuses_builtin(client: TestClient) -> None:
 
 
 def test_delete_user_agent_works(client: TestClient) -> None:
-    client.post("/v1/agents", json={
-        "id": "to_drop",
-        "title": "Drop me",
-    })
+    client.post(
+        "/v1/agents",
+        json={
+            "id": "to_drop",
+            "title": "Drop me",
+        },
+    )
     resp = client.delete("/v1/agents/to_drop")
     assert resp.status_code == 204
     rows = client.get("/v1/agents").json()["agents"]
@@ -114,14 +129,17 @@ def test_persistence_round_trip(tmp_path: Path) -> None:
     the same path sees it."""
 
     c1 = TestClient(build_app(sessions_path=tmp_path / "s.json"))
-    c1.post("/v1/agents", json={
-        "id": "persisted",
-        "title": "x",
-        "system_prompt": "Persist this prompt.",
-        "default_provider": "openai",
-        "default_model": "gpt-4o-mini",
-        "parameters": {"temperature": 0},
-    })
+    c1.post(
+        "/v1/agents",
+        json={
+            "id": "persisted",
+            "title": "x",
+            "system_prompt": "Persist this prompt.",
+            "default_provider": "openai",
+            "default_model": "gpt-4o-mini",
+            "parameters": {"temperature": 0},
+        },
+    )
     c2 = TestClient(build_app(sessions_path=tmp_path / "s.json"))
     rows = c2.get("/v1/agents").json()["agents"]
     restored = next(a for a in rows if a["id"] == "persisted")
@@ -144,16 +162,18 @@ def test_skill_agents_surface_prompt_and_model(monkeypatch, tmp_path: Path) -> N
     skill_dir = tmp_path / ".claude" / "skills"
     skill_dir.mkdir(parents=True)
     (skill_dir / "semantic-agent.md").write_text(
-        "\n".join([
-            "---",
-            "name: semantic-agent",
-            "description: Uses a custom external prompt",
-            "provider: lm_studio",
-            "model: qwopus3.5-9b-v3",
-            "allowed-tools: fs_read_file, parquet_analyze_schema",
-            "---",
-            "Act as the semantic agent.",
-        ]),
+        "\n".join(
+            [
+                "---",
+                "name: semantic-agent",
+                "description: Uses a custom external prompt",
+                "provider: lm_studio",
+                "model: qwopus3.5-9b-v3",
+                "allowed-tools: fs_read_file, parquet_analyze_schema",
+                "---",
+                "Act as the semantic agent.",
+            ]
+        ),
         encoding="utf-8",
     )
     monkeypatch.chdir(tmp_path)
@@ -165,3 +185,72 @@ def test_skill_agents_surface_prompt_and_model(monkeypatch, tmp_path: Path) -> N
     assert agent.default_provider == "lm_studio"
     assert agent.default_model == "qwopus3.5-9b-v3"
     assert agent.tools == ["fs_read_file", "parquet_analyze_schema"]
+
+
+def test_directory_skill_layouts_surface_as_skill_agents(monkeypatch, tmp_path: Path) -> None:
+    codex_skill = tmp_path / ".codex" / "skills" / "tui-test"
+    codex_skill.mkdir(parents=True)
+    (codex_skill / "SKILL.md").write_text(
+        "\n".join(
+            [
+                "---",
+                "name: tui-test",
+                "description: Tests Bubbletea UI behavior",
+                "allowed-tools:",
+                "- fs_read_file",
+                "- shell_bash",
+                "keywords: tui,testing",
+                "---",
+                "Use deterministic TUI testing workflows.",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    nested_agent_skill = tmp_path / ".agents" / "skills" / "source-command" / "wtfp-help"
+    nested_agent_skill.mkdir(parents=True)
+    (nested_agent_skill / "SKILL.md").write_text(
+        "Help users with source-command workflows.",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+
+    rows = _load_skills_from_disk()
+    codex_agent = next(a for a in rows if a.id == "tui-test")
+    nested_agent = next(a for a in rows if a.id == "wtfp-help")
+
+    assert codex_agent.source == "skill"
+    assert codex_agent.description == "Tests Bubbletea UI behavior"
+    assert codex_agent.tools == ["fs_read_file", "shell_bash"]
+    assert codex_agent.keywords == ["tui", "testing"]
+    assert codex_agent.metadata["skill_layout"] == "skill_md"
+    assert codex_agent.metadata["skill_source"] == "codex"
+    assert codex_agent.metadata["system_prompt"] == "Use deterministic TUI testing workflows."
+    assert nested_agent.description == "Help users with source-command workflows."
+    assert nested_agent.metadata["skill_source"] == "agents"
+
+
+def test_project_skill_overrides_global_skill(monkeypatch, tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    project = tmp_path / "project"
+    global_skill = home / ".codex" / "skills" / "shared"
+    project_skill = project / ".codex" / "skills" / "shared"
+    global_skill.mkdir(parents=True)
+    project_skill.mkdir(parents=True)
+    (global_skill / "SKILL.md").write_text(
+        "---\nname: shared\n---\nGlobal instructions.",
+        encoding="utf-8",
+    )
+    (project_skill / "SKILL.md").write_text(
+        "---\nname: shared\n---\nProject instructions.",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(Path, "home", lambda: home)
+    monkeypatch.chdir(project)
+
+    rows = _load_skills_from_disk()
+    agent = next(a for a in rows if a.id == "shared")
+
+    assert agent.system_prompt == "Project instructions."
+    assert agent.metadata["skill_path"].endswith(
+        r".codex\skills\shared\SKILL.md"
+    ) or agent.metadata["skill_path"].endswith(".codex/skills/shared/SKILL.md")

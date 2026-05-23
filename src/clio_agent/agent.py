@@ -62,6 +62,7 @@ from clio_agent.errors import (
 )
 from clio_agent.experts import AnalysisExpert, DataExpert, VisualizationExpert
 from clio_agent.harness import (
+    SPECIAL_ROUTE_TARGETS,
     RouteDecision,
     RunTrace,
     compact_tool_result,
@@ -77,6 +78,7 @@ from clio_agent.signatures.main_agent_sig import (
     AgentAnswerSignature,
     ChatAgentSignature,
 )
+from clio_agent.tools.catalog import tool_owner, tool_tags, tool_visible_to
 from clio_agent.tools.execution import create_sync_tool_executor, notify_global_tool_observer
 from clio_agent.tools.file_policy import FileAccessPolicy, FilePolicyError, validate_write_path
 from clio_agent.tools.gateway import gateway
@@ -340,6 +342,21 @@ class ClioAgent(dspy.Module):
             ),
         )
 
+        self.registry.register_agent(
+            "utility",
+            self,
+            AgentCapability(
+                keywords=["shell", "bash", "terminal", "command", "time", "date", "environment"],
+                description=(
+                    "Local utility command expert. Exposes the permission-gated "
+                    "shell_bash tool for simple local diagnostics such as current time, "
+                    "plus workspace edit proposal tools."
+                ),
+                tools=["shell_bash", "fs_propose_edit"],
+                specialization="utility",
+            ),
+        )
+
         # Load active variants for each expert (if any)
         try:
             from clio_agent.optimizer.variants import VariantManager
@@ -414,7 +431,7 @@ class ClioAgent(dspy.Module):
         start_time = time.time()
 
         # Step 1: Retrieve context from ARC Memory
-        session_context = self._get_session_context(question, session_id)
+        session_context = self._get_session_context(question, session_id, tool_scope="chat")
         active_file = self._resolve_session_file_reference(question, session_id)
         file_context = self._get_file_context(session_id, active_file)
         routing_mode = self._effective_routing_mode()
@@ -624,14 +641,19 @@ class ClioAgent(dspy.Module):
                 tool_name = self._coerce_text(action.get("tool")).strip()
                 selected = self._selected_expert_for_tool(tool_name)
                 self._raise_if_cancelled("tool_before")
-                result = self._execute_tool_action(
-                    tool_name,
-                    action.get("args"),
-                    trace,
-                    question=question,
-                    file_context=file_context,
-                    session_context=session_context,
-                )
+                try:
+                    result = self._execute_tool_action(
+                        tool_name,
+                        action.get("args"),
+                        trace,
+                        question=question,
+                        file_context=file_context,
+                        session_context=session_context,
+                    )
+                except TypeError as exc:
+                    if "unexpected keyword argument" not in str(exc):
+                        raise
+                    result = self._execute_tool_action(tool_name, action.get("args"), trace)
                 self._raise_if_cancelled("tool_after")
                 route = self._route_for_selected(
                     selected,
@@ -954,8 +976,7 @@ class ClioAgent(dspy.Module):
             if caps is None:
                 continue
             intents = {
-                str(intent).lower()
-                for intent in caps.metadata.get("guard_coordinator_intents", [])
+                str(intent).lower() for intent in caps.metadata.get("guard_coordinator_intents", [])
             }
             if "multi_file_analysis" not in intents:
                 continue
@@ -1096,6 +1117,17 @@ class ClioAgent(dspy.Module):
         """
         return cls._strip_context_sections(session_context, {"Available Tools"})
 
+    @classmethod
+    def _chat_session_context(cls, session_context: str) -> str:
+        """Return ARC session context suitable for conversational answers.
+
+        Chat answers are plain LM synthesis, not a tool execution surface. Keep
+        prior conversation, data, analysis, and routing context, but remove the
+        global tool catalog so chat does not claim direct ownership of tools
+        that are actually routed through planner-selected experts.
+        """
+        return cls._strip_context_sections(session_context, {"Available Tools"})
+
     @staticmethod
     def _strip_context_sections(session_context: str, excluded: set[str]) -> str:
         """Remove named bracketed sections from compiled ARC context."""
@@ -1139,7 +1171,7 @@ class ClioAgent(dspy.Module):
             "/no_think\n"
             "Return exactly one minified JSON action. Prefer expert delegation "
             "over listing tool calls when the request is a natural multi-file "
-            "scientific triage. For expert actions use question:\"\".\n"
+            'scientific triage. For expert actions use question:"".\n'
             f"{question}"
         )
 
@@ -1152,11 +1184,11 @@ class ClioAgent(dspy.Module):
             line = raw_line.strip()
             if not line:
                 continue
-            if line == "Tools:":
+            if line in {"Scoped tools:", "Chat utility tools:"}:
                 in_tools = True
                 lines.append(line)
                 continue
-            if line == "Experts:":
+            if line in {"Experts:", "Tool scope rules:"}:
                 in_tools = False
                 lines.append(line)
                 continue
@@ -1166,6 +1198,9 @@ class ClioAgent(dspy.Module):
                 continue
             if line.startswith("Routing override:"):
                 in_tools = False
+                lines.append(line)
+                continue
+            if in_tools and line.startswith("- ") and line.endswith(":"):
                 lines.append(line)
                 continue
             if in_tools and line.startswith("- "):
@@ -1242,6 +1277,20 @@ class ClioAgent(dspy.Module):
                         f"Recommendations:\n{expert_result.recommendations}"
                     )
                     return "analysis", answer, expert_result, None
+
+                if expert_id == "utility":
+                    return (
+                        "utility",
+                        "",
+                        None,
+                        RoutingError(
+                            "Utility requests must call a concrete tool such as shell_bash.",
+                            details=self._recovery_details(
+                                expert=expert_id,
+                                next_action="Select action='tool' with tool='shell_bash'.",
+                            ),
+                        ).to_dict(),
+                    )
 
                 expert_result = self.visualization_expert(
                     question=expert_question,
@@ -1438,6 +1487,14 @@ class ClioAgent(dspy.Module):
             if recovered:
                 self._raise_if_cancelled("answer_synthesis_after")
                 return recovered
+            fallback = (
+                self._fallback_answer_from_observations(observations)
+                if self._can_fallback_after_synthesis_exception(exc)
+                else ""
+            )
+            if fallback:
+                self._raise_if_cancelled("answer_synthesis_after")
+                return fallback
             if self.verbose:
                 print(f"[Planner] Answer synthesis failed: {exc}")
             raise ProviderError(
@@ -1448,6 +1505,10 @@ class ClioAgent(dspy.Module):
                     observations=observations[-3:],
                 ),
             ) from exc
+        fallback = self._fallback_answer_from_observations(observations)
+        if fallback:
+            self._raise_if_cancelled("answer_synthesis_after")
+            return fallback
         raise ProviderError(
             "CLIO could not synthesize a final answer from the completed observations.",
             details=self._recovery_details(
@@ -1456,6 +1517,101 @@ class ClioAgent(dspy.Module):
                 observations=observations[-3:],
             ),
         )
+
+    @classmethod
+    def _fallback_answer_from_observations(cls, observations: list[dict[str, Any]]) -> str:
+        """Return a compact answer grounded only in successful observations."""
+        lines: list[str] = []
+        for observation in observations:
+            if observation.get("ok") is False:
+                continue
+            tool = cls._coerce_text(observation.get("tool")).strip()
+            result = observation.get("result")
+            if not tool or result in (None, ""):
+                continue
+            if isinstance(result, dict) and "error" in result:
+                continue
+
+            label = cls._tool_label_for_fallback(tool)
+            scalar_summary = cls._scalar_observation_summary(result)
+            if scalar_summary:
+                lines.append(f"{label} ({tool}) returned: {scalar_summary}.")
+            else:
+                lines.append(f"{label} ({tool}) returned a successful result.")
+
+            ndp_names = cls._ndp_dataset_names(result)
+            if ndp_names:
+                lines.append(f"National Data Platform datasets: {', '.join(ndp_names[:5])}.")
+
+            try:
+                lines.append(json.dumps(result, ensure_ascii=False, indent=2, default=str))
+            except TypeError:
+                lines.append(cls._coerce_text(result))
+
+        return "\n".join(line for line in lines if line).strip()
+
+    @staticmethod
+    def _can_fallback_after_synthesis_exception(exc: Exception) -> bool:
+        """Return whether completed observations may replace failed synthesis.
+
+        Provider/runtime failures should still surface as errors. This fallback
+        is only for adapter formatting failures where tools already completed
+        and the provider returned unusable structured output.
+        """
+        text = str(exc).lower()
+        return "expected to find output fields" in text or "failed to parse" in text
+
+    @staticmethod
+    def _tool_label_for_fallback(tool_name: str) -> str:
+        """Return a user-facing family label for an observed tool."""
+        if tool_name.startswith("ndp_"):
+            return "National Data Platform"
+        if tool_name.startswith("hdf5_"):
+            return "HDF5"
+        if tool_name.startswith("adios_"):
+            return "ADIOS/BP"
+        if tool_name.startswith("parquet_"):
+            return "Parquet"
+        if tool_name.startswith("csv_"):
+            return "CSV"
+        if tool_name.startswith("plot_"):
+            return "Visualization"
+        if tool_name.startswith("shell_"):
+            return "Utility"
+        if tool_name.startswith("fs_"):
+            return "Workspace"
+        return "Tool"
+
+    @classmethod
+    def _scalar_observation_summary(cls, value: Any) -> str:
+        """Return key=value text for top-level scalar observation fields."""
+        if not isinstance(value, dict):
+            return ""
+        scalars: list[str] = []
+        for key, item in value.items():
+            if isinstance(item, (str, int, float, bool)) or item is None:
+                scalars.append(f"{key}={item}")
+        return ", ".join(scalars[:8])
+
+    @classmethod
+    def _ndp_dataset_names(cls, value: Any) -> list[str]:
+        """Extract dataset names from common NDP result shapes."""
+        if not isinstance(value, dict):
+            return []
+        datasets = value.get("datasets")
+        if isinstance(datasets, dict):
+            items = datasets.get("items", [])
+        elif isinstance(datasets, list):
+            items = datasets
+        else:
+            items = []
+        names: list[str] = []
+        for item in items:
+            if isinstance(item, dict):
+                name = cls._coerce_text(item.get("name") or item.get("title")).strip()
+                if name:
+                    names.append(name)
+        return names
 
     def _answer_synthesis_question(self, question: str) -> str:
         """Return provider-profile-specific instructions for answer synthesis."""
@@ -1515,7 +1671,10 @@ class ClioAgent(dspy.Module):
         return raw not in {"0", "false", "no", "off", "disabled"}
 
     def _build_capabilities_context(self, routing_mode: str = "auto") -> str:
-        """Describe live experts and tools for the planner without query heuristics."""
+        """Describe live experts and scoped tools for the planner."""
+        available_tools = {
+            tool.name: tool for tool in sorted(self._available_dspy_tools(), key=lambda t: t.name)
+        }
         lines = ["Experts:"]
         for agent_id in self.registry.list_agents():
             caps = self.registry.get_capabilities(agent_id)
@@ -1526,14 +1685,41 @@ class ClioAgent(dspy.Module):
             metadata_text = f"; {metadata_notes}" if metadata_notes else ""
             lines.append(f"- {agent_id}: {caps.description}{metadata_text}; tools: {tools}")
 
-        lines.append("Tools:")
-        for tool in sorted(self._available_dspy_tools(), key=lambda t: t.name):
-            arg_names = ", ".join(sorted((getattr(tool, "args", {}) or {}).keys()))
-            desc = self._first_sentence(self._coerce_text(getattr(tool, "desc", "")))
-            if arg_names:
-                lines.append(f"- {tool.name}({arg_names}): {desc}")
-            else:
-                lines.append(f"- {tool.name}: {desc}")
+        lines.append("Scoped tools:")
+        for agent_id in self.registry.list_agents():
+            caps = self.registry.get_capabilities(agent_id)
+            if caps is None or not caps.tools:
+                continue
+            scoped_lines = [
+                self._planner_tool_line(tool_name, available_tools)
+                for tool_name in caps.tools
+                if tool_visible_to(tool_name, agent_id)
+            ]
+            scoped_lines = [line for line in scoped_lines if line]
+            if not scoped_lines:
+                continue
+            lines.append(f"- {agent_id}:")
+            lines.extend(f"  {line}" for line in scoped_lines)
+
+        chat_utility_lines = [
+            self._planner_tool_line(tool_name, available_tools)
+            for tool_name in sorted(available_tools)
+            if tool_visible_to(tool_name, "chat")
+        ]
+        chat_utility_lines = [line for line in chat_utility_lines if line]
+        if chat_utility_lines:
+            lines.append("Chat utility tools:")
+            lines.extend(chat_utility_lines)
+
+        lines.append("Tool scope rules:")
+        lines.append(
+            "- Tools are owned by the expert section they are listed under; do not treat "
+            "scientific data, analysis, visualization, and utility tools as one shared pool."
+        )
+        lines.append(
+            "- Direct tool actions are allowed only for listed tool names and are attributed "
+            "to the owning expert. Chat may only use tools listed under Chat utility tools."
+        )
         lines.append(
             "Routing strategy: for natural requests that compare, triage, review, "
             "or summarize multiple scientific files, delegate to expert:analysis. "
@@ -1553,14 +1739,25 @@ class ClioAgent(dspy.Module):
             )
         return "\n".join(lines)
 
+    def _planner_tool_line(self, tool_name: str, available_tools: Mapping[str, dspy.Tool]) -> str:
+        """Return one planner-facing tool signature line if the tool is callable."""
+        tool = available_tools.get(tool_name)
+        if tool is None:
+            return ""
+        arg_names = ", ".join(sorted((getattr(tool, "args", {}) or {}).keys()))
+        desc = self._first_sentence(self._coerce_text(getattr(tool, "desc", "")))
+        tags = ", ".join(sorted(tool_tags(tool_name)))
+        tag_text = f"; tags: {tags}" if tags else ""
+        if arg_names:
+            return f"- {tool.name}({arg_names}): {desc}{tag_text}"
+        return f"- {tool.name}: {desc}{tag_text}"
+
     @staticmethod
     def _planner_capability_metadata_notes(metadata: Mapping[str, Any]) -> str:
         """Return compact registry metadata notes for planner capability text."""
         notes: list[str] = []
         suffixes = [
-            str(suffix)
-            for suffix in metadata.get("file_suffixes", [])
-            if str(suffix).strip()
+            str(suffix) for suffix in metadata.get("file_suffixes", []) if str(suffix).strip()
         ]
         if suffixes:
             notes.append(f"direct files: {', '.join(suffixes)}")
@@ -1605,6 +1802,9 @@ class ClioAgent(dspy.Module):
 
     def _selected_expert_for_tool(self, tool_name: str) -> str:
         """Resolve a tool's owning expert from the registered capability table."""
+        owner = tool_owner(tool_name)
+        if owner and owner in self.registry.list_agents():
+            return owner
         for agent_id in self.registry.list_agents():
             caps = self.registry.get_capabilities(agent_id)
             if caps and tool_name in caps.tools:
@@ -1691,10 +1891,14 @@ class ClioAgent(dspy.Module):
                 compatible.append(agent_id)
         return compatible
 
-    @staticmethod
-    def _route_for_selected(selected: str, reason: str, confidence: float) -> RouteDecision:
+    def _route_for_selected(
+        self,
+        selected: str,
+        reason: str,
+        confidence: float,
+    ) -> RouteDecision:
         """Build the public route decision for a planner-selected handler."""
-        valid_targets = {"chat", "data", "analysis", "visualization", "none"}
+        valid_targets = self._valid_route_targets()
         if selected not in valid_targets:
             raise RoutingError(
                 f"Agent planner produced invalid route target {selected!r}.",
@@ -1709,6 +1913,16 @@ class ClioAgent(dspy.Module):
             reason=reason,
             confidence=confidence,
         )
+
+    def _valid_route_targets(self) -> set[str]:
+        """Return route targets from the live agent registry plus special routes."""
+        targets = {
+            str(agent_id).strip().lower()
+            for agent_id in self.registry.list_agents()
+            if str(agent_id).strip()
+        }
+        targets.update(SPECIAL_ROUTE_TARGETS)
+        return targets
 
     @staticmethod
     def _normalize_tool_args(raw_args: Any) -> dict[str, Any]:
@@ -1921,9 +2135,10 @@ class ClioAgent(dspy.Module):
                 if not stack or stack.pop() != char:
                     return None
 
-        if in_string and ClioAgent._unterminated_string_key(
-            text, string_start
-        ) not in {"question", "reason"}:
+        if in_string and ClioAgent._unterminated_string_key(text, string_start) not in {
+            "question",
+            "reason",
+        }:
             return None
         suffix = '"' if in_string else ""
         suffix += "".join(reversed(stack))
@@ -2251,14 +2466,15 @@ class ClioAgent(dspy.Module):
     def _run_chat_agent(self, question: str, session_context: str) -> str:
         """Generate a conversational reply through DSPy/LiteLLM."""
         self._raise_if_cancelled("chat_before")
+        chat_context = self._chat_session_context(session_context)
         try:
             with dspy.context(lm=self._main_lm, adapter=self._dspy_adapter):
-                result = self.chat_agent(question=question, session_context=session_context)
+                result = self.chat_agent(question=question, session_context=chat_context)
             answer = self._coerce_text(getattr(result, "answer", None)).strip()
             self._raise_if_cancelled("chat_after")
             if answer:
                 if self._question_requests_summary(question):
-                    summary = self._summarize_assistant_context(session_context)
+                    summary = self._summarize_assistant_context(chat_context)
                     if summary:
                         return summary
                 return answer
@@ -2268,7 +2484,7 @@ class ClioAgent(dspy.Module):
             if recovered:
                 self._raise_if_cancelled("chat_after")
                 if self._question_requests_summary(question):
-                    summary = self._summarize_assistant_context(session_context)
+                    summary = self._summarize_assistant_context(chat_context)
                     if summary:
                         return summary
                 return recovered
@@ -2436,7 +2652,13 @@ class ClioAgent(dspy.Module):
 
         return str(value)
 
-    def _get_session_context(self, question: str, session_id: str, tier: int = 2) -> str:
+    def _get_session_context(
+        self,
+        question: str,
+        session_id: str,
+        tier: int = 2,
+        tool_scope: str = "none",
+    ) -> str:
         """Retrieve compiled session context from ARC Memory.
 
         Uses ContextCompiler pipeline (filter -> compact -> enrich -> assemble)
@@ -2446,6 +2668,7 @@ class ClioAgent(dspy.Module):
             question: User's current question
             session_id: Session identifier
             tier: Agent tier for token budget (1=planner/2K, 2=expert/4K)
+            tool_scope: Agent/tool visibility scope for ARC tool summaries.
 
         Returns:
             Compiled context string or "No prior context"
@@ -2455,6 +2678,7 @@ class ClioAgent(dspy.Module):
                 query=question,
                 session_id=session_id,
                 tier=tier,
+                tool_scope=tool_scope,
             )
             if self.verbose:
                 print(f"[ClioAgent] Compiled context ({len(compiled)} chars, tier={tier})")

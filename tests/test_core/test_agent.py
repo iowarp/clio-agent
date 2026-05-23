@@ -62,13 +62,13 @@ class TestClioAgent:
         agent.shutdown()
 
     def test_expert_registry_all(self):
-        """Test that all 3 experts are registered."""
+        """Test that built-in experts are registered."""
         agent = ClioAgent()
         agents = agent.registry.list_agents()
         assert "data" in agents
         assert "analysis" in agents
         assert "visualization" in agents
-        assert len(agents) == 3
+        assert "utility" in agents
         agent.shutdown()
 
     def test_expert_capabilities(self):

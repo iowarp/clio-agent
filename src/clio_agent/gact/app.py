@@ -115,6 +115,73 @@ def _iso_from_epoch(ts: float) -> str:
     return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
 
 
+def _lm_studio_api_root(api_base: str) -> str:
+    """Return the LM Studio native REST root for an OpenAI-compatible base URL."""
+
+    from urllib.parse import urlsplit, urlunsplit
+
+    parts = urlsplit(api_base.rstrip("/"))
+    return urlunsplit((parts.scheme, parts.netloc, "", "", ""))
+
+
+def _lm_studio_headers() -> dict[str, str]:
+    """Build headers for LM Studio native REST calls."""
+
+    headers = {"Content-Type": "application/json"}
+    token = (
+        os.environ.get("LM_STUDIO_API_TOKEN", "").strip()
+        or os.environ.get("LM_API_TOKEN", "").strip()
+    )
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    return headers
+
+
+def _release_owned_lm_studio_instance(
+    app: "FastAPI",
+    *,
+    skip_instance_id: str = "",
+    raise_on_error: bool = True,
+) -> bool:
+    """Unload a CLIO-owned LM Studio instance, never a user-owned one.
+
+    CLIO records ownership only when it successfully calls LM Studio's
+    native load endpoint and receives an ``instance_id``. Existing
+    GUI/user-loaded instances are reused but never marked owned.
+    """
+
+    owned = getattr(app.state, "lm_studio_owned_instance", None)
+    if not isinstance(owned, dict):
+        return False
+
+    instance_id = str(owned.get("instance_id") or "").strip()
+    root = str(owned.get("root") or "").strip()
+    if not instance_id or not root or (skip_instance_id and instance_id == skip_instance_id):
+        return False
+
+    try:
+        import requests  # noqa: PLC0415
+
+        response = requests.post(
+            f"{root}/api/v1/models/unload",
+            headers=_lm_studio_headers(),
+            json={"instance_id": instance_id},
+            timeout=30,
+        )
+        if response.status_code >= 400:
+            raise RuntimeError(
+                "LM Studio model unload failed "
+                f"({response.status_code}): {(response.text or '')[:300]}"
+            )
+    except Exception:
+        if raise_on_error:
+            raise
+        return False
+
+    app.state.lm_studio_owned_instance = None
+    return True
+
+
 def _coerce_error_info(value: Any) -> Optional["ErrorInfo"]:
     """Normalize agent/provider error payloads into the GACT error model."""
 
@@ -255,6 +322,52 @@ def _agent_not_available_error(app: "FastAPI", sid: str) -> "ErrorEnvelope":
             recoverable=recoverable,
         )
     )
+
+
+def _append_session_message(app: "FastAPI", session_id: str, message: "Message") -> None:
+    """Append one chronological message to memory and disk."""
+
+    app.state.messages.setdefault(session_id, []).append(message)
+    store = getattr(app.state, "message_store", None)
+    if store is not None:
+        store.append(session_id, message)
+
+
+def _extend_session_messages(
+    app: "FastAPI",
+    session_id: str,
+    messages: list["Message"],
+) -> None:
+    """Append several chronological messages to memory and disk."""
+
+    if not messages:
+        return
+    app.state.messages.setdefault(session_id, []).extend(messages)
+    store = getattr(app.state, "message_store", None)
+    if store is not None:
+        store.extend(session_id, messages)
+
+
+def _replace_session_messages(
+    app: "FastAPI",
+    session_id: str,
+    messages: list["Message"],
+) -> None:
+    """Replace one session's message ledger in memory and disk."""
+
+    app.state.messages[session_id] = list(messages)
+    store = getattr(app.state, "message_store", None)
+    if store is not None:
+        store.replace_session(session_id, list(messages))
+
+
+def _delete_session_messages(app: "FastAPI", session_id: str) -> None:
+    """Remove one session's message ledger from memory and disk."""
+
+    app.state.messages.pop(session_id, None)
+    store = getattr(app.state, "message_store", None)
+    if store is not None:
+        store.delete_session(session_id)
 
 
 def _cancelled_error_info(
@@ -984,6 +1097,8 @@ async def _run_turn_in_background(
         active_agent_id = _session_agent_id(sess)
         from clio_agent.agent import cancellation_checker as _cancellation_checker  # noqa: PLC0415
 
+        _refresh_argonne_lm_token(app.state.agent)
+
         if active_agent_id not in _EXECUTABLE_SESSION_AGENT_IDS:
             dynamic_agent = _resolve_dynamic_agent(app, active_agent_id)
             if dynamic_agent is None:
@@ -1505,7 +1620,7 @@ async def _run_turn_in_background(
             stop_reason="end_turn",
             metadata={"tools_called": tools_called} if tools_called else {},
         )
-        app.state.messages.setdefault(subsess.id, []).extend([sub_user, sub_asst])
+        _extend_session_messages(app, subsess.id, [sub_user, sub_asst])
         app.state.sessions.update(subsess.id, message_count=2, status="idle")
         bus.publish(
             Event(
@@ -1644,7 +1759,7 @@ async def _run_turn_in_background(
 
     # Persist + settle.
     final_status = "cancelled" if cancelled_turn else ("error" if error_info else "idle")
-    app.state.messages.setdefault(sid, []).append(assistant_msg)
+    _append_session_message(app, sid, assistant_msg)
     app.state.sessions.update(
         sid,
         status=final_status,
@@ -2818,9 +2933,41 @@ def _agent_streaming_unsupported_reason(agent: Any) -> str:
 
     provider_config = getattr(agent, "_provider_config", None)
     provider = str(getattr(provider_config, "provider", "") or "")
-    if provider in {"claude_code", "codex"}:
+    if provider in {"argonne", "claude_code", "codex"}:
         return "provider_streaming_unsupported"
     return ""
+
+
+def _is_placeholder_api_key(value: str | None) -> bool:
+    """Return whether an API key is a local no-auth placeholder."""
+
+    return (value or "").strip() in {"", "x", "X", "EMPTY", "empty"}
+
+
+def _resolve_argonne_runtime_api_key() -> str:
+    """Return a fresh ALCF bearer token for runtime provider use."""
+
+    from clio_agent.config import _resolve_argonne_api_key  # noqa: PLC0415
+
+    token = _resolve_argonne_api_key()
+    if not token:
+        raise RuntimeError("ALCF Globus token is unavailable or could not be refreshed.")
+    return token
+
+
+def _refresh_argonne_lm_token(agent: Any) -> None:
+    """Refresh Argonne's short-lived token on live DSPy LM objects."""
+
+    cfg = getattr(agent, "_provider_config", None)
+    if getattr(cfg, "provider", "") != "argonne":
+        return
+    token = _resolve_argonne_runtime_api_key()
+    cfg.api_key = token
+    for attr in ("_main_lm", "_planner_lm", "_router_lm"):
+        lm = getattr(agent, attr, None)
+        kwargs = getattr(lm, "kwargs", None)
+        if isinstance(kwargs, dict):
+            kwargs["api_key"] = token
 
 
 def _stream_response_prefix(field_name: str, previous_field_name: str) -> str:
@@ -3411,6 +3558,7 @@ _EXPERT_SPECIALIZATION: dict[str, str] = {
     "data": "data_analysis",
     "analysis": "data_analysis",
     "visualization": "data_visualization",
+    "utility": "utility",
 }
 
 # CLIO-BBBBBBBBBB10: per-expert curated tool list. CLIO's Expert
@@ -3446,6 +3594,132 @@ _EXPERT_TOOLS: dict[str, list[str]] = {
         "plot_scatter",
         "plot_summary",
     ],
+    "utility": [
+        "shell_bash",
+        "fs_propose_edit",
+    ],
+}
+
+_EXPERT_CAPABILITIES: dict[str, dict[str, Any]] = {
+    "data": {
+        "name": "Data Expert",
+        "description": (
+            "Specializes in scientific data file optimization (HDF5, Parquet), "
+            "compression strategies, I/O performance, and format conversion"
+        ),
+        "keywords": [
+            "hdf5",
+            "adios",
+            "bp5",
+            "compression",
+            "chunking",
+            "data format",
+            "file optimization",
+            "i/o performance",
+            "parallel io",
+            "mpi-io",
+        ],
+        "metadata": {
+            "delegates_to": ["HDF5 tools", "ADIOS/BP tools"],
+        },
+    },
+    "analysis": {
+        "name": "Analysis Expert",
+        "description": (
+            "Specializes in statistical analysis, data profiling, and quality "
+            "assessment of tabular datasets (Parquet/CSV) and external dataset "
+            "discovery through NDP/clio-kit MCP. Computes column-level statistics, "
+            "identifies distributions, and flags data quality issues."
+        ),
+        "keywords": [
+            "parquet",
+            "csv",
+            "statistics",
+            "analysis",
+            "schema",
+            "distribution",
+            "data quality",
+            "columnar",
+            "profiling",
+            "null count",
+            "outliers",
+            "ndp",
+            "national data platform",
+            "dataset discovery",
+            "catalog",
+        ],
+        "metadata": {
+            "delegates_to": [
+                "NDP catalog tools",
+                "parallel nanoagents for independent file checks",
+            ],
+            "routes_to": ["ndp_catalog"],
+        },
+    },
+    "visualization": {
+        "name": "Visualization Expert",
+        "description": (
+            "Specializes in generating scientific data visualizations: "
+            "histograms, scatter plots, bar charts, and summary dashboards "
+            "from tabular datasets (Parquet, CSV). Saves charts to disk as PNG."
+        ),
+        "keywords": [
+            "visualization",
+            "plot",
+            "chart",
+            "histogram",
+            "scatter",
+            "distribution",
+            "bar chart",
+            "graph",
+        ],
+        "metadata": {
+            "delegates_to": ["matplotlib plotting tools"],
+        },
+    },
+    "utility": {
+        "name": "Utility Expert",
+        "description": (
+            "Exposes local permission-gated utility tools for simple shell "
+            "diagnostics such as current time or environment checks."
+        ),
+        "keywords": [
+            "shell",
+            "bash",
+            "terminal",
+            "command",
+            "time",
+            "date",
+            "environment",
+        ],
+        "metadata": {
+            "delegates_to": ["permission-gated shell tool", "workspace edit proposal tool"],
+        },
+    },
+}
+
+
+_BUILTIN_SYSTEM_PROMPTS: dict[str, str] = {
+    "main": (
+        "You are CLIO's agent planner. You control a tool-using scientific data "
+        "agent and route user requests to the correct specialist or tool path."
+    ),
+    "data": (
+        "You are the CLIO Data Expert, a specialized autonomous agent for "
+        "scientific data file formats, storage optimization, and I/O performance."
+    ),
+    "analysis": (
+        "You are the CLIO Analysis Expert, a specialized autonomous agent for "
+        "statistical analysis, data profiling, data quality, and dataset discovery."
+    ),
+    "visualization": (
+        "You are the CLIO Visualization Expert, a specialized autonomous agent for "
+        "generating scientific data visualizations from tool-grounded data."
+    ),
+    "utility": (
+        "You are the CLIO Utility Expert. Use permission-gated utility tools for "
+        "simple shell diagnostics and environment checks."
+    ),
 }
 
 
@@ -3469,22 +3743,6 @@ def _builtin_agents() -> list[AgentDef]:
     orchestrator dispatches rather than acting itself).
     """
 
-    from clio_agent.experts import get_expert_capabilities
-    from clio_agent.signatures.analysis_sig import AnalysisExpertSignature
-    from clio_agent.signatures.expert_sig import DataExpertSignature
-    from clio_agent.signatures.main_agent_sig import (
-        AgentActionSignature,
-        AgentAnswerSignature,
-        ChatAgentSignature,
-    )
-    from clio_agent.signatures.visualization_sig import VisualizationExpertSignature
-
-    prompts_by_agent = {
-        "data": _signature_prompt(DataExpertSignature),
-        "analysis": _signature_prompt(AnalysisExpertSignature),
-        "visualization": _signature_prompt(VisualizationExpertSignature),
-    }
-
     rows: list[AgentDef] = [
         AgentDef(
             id="main",
@@ -3494,21 +3752,17 @@ def _builtin_agents() -> list[AgentDef]:
                 "Tier-1 orchestrator. Routes user queries to tier-2 "
                 "specialists based on keyword heuristics + LM classifier."
             ),
-            system_prompt="\n\n".join(
-                part
-                for part in (
-                    _signature_prompt(AgentActionSignature),
-                    _signature_prompt(AgentAnswerSignature),
-                    _signature_prompt(ChatAgentSignature),
-                )
-                if part
-            ),
+            system_prompt=_BUILTIN_SYSTEM_PROMPTS["main"],
             tier=1,
             specialization="orchestrator",
+            metadata={
+                "routes_to": sorted(_EXPERT_CAPABILITIES),
+                "route_type": "tier_1_orchestrator",
+            },
         ),
     ]
 
-    for expert_id, caps in get_expert_capabilities().items():
+    for expert_id, caps in _EXPERT_CAPABILITIES.items():
         name = caps.get("name", expert_id.replace("_", " ").title())
         description = caps.get("description", "")
         keywords = list(caps.get("keywords", []))
@@ -3519,11 +3773,12 @@ def _builtin_agents() -> list[AgentDef]:
                 source="builtin",
                 title=name,
                 description=description,
-                system_prompt=prompts_by_agent.get(expert_id, ""),
+                system_prompt=_BUILTIN_SYSTEM_PROMPTS.get(expert_id, ""),
                 tools=tools,
                 tier=2,
                 specialization=_EXPERT_SPECIALIZATION.get(expert_id, expert_id),
                 keywords=keywords,
+                metadata=dict(caps.get("metadata", {})),
             )
         )
 
@@ -3531,52 +3786,35 @@ def _builtin_agents() -> list[AgentDef]:
 
 
 def _load_skills_from_disk() -> list[AgentDef]:
-    """Scan the Claude Code skills directories for SKILL.md files and
-    register each as an AgentDef row with source="skill".
+    """Discover local skill files and register each as ``source="skill"``.
 
-    Discovery follows Claude Code's semantics:
-    - User-global:   $HOME/.claude/skills/*.md
-    - Project-local: $CWD/.claude/skills/*.md
-    Project entries override user-global on duplicate id.
+    Supported layouts are intentionally bounded to known skill roots:
+    - Claude flat/project skills: ``.claude/skills/*.md``
+    - Directory skills: ``.claude/skills/**/SKILL.md``
+    - Codex skills: ``.codex/skills/**/SKILL.md``
+    - Agent skills: ``.agents/skills/**/SKILL.md``
 
-    Each SKILL.md may carry YAML frontmatter delimited by ``---``:
-
-        ---
-        name: my-skill
-        description: short summary
-        model: optional model hint
-        allowed-tools: comma,or,yaml-list
-        ---
-        <system prompt body>
-
-    Bodies without frontmatter are still loaded; the file stem becomes
-    the id and the first line becomes the description.
-
-    Errors are tolerated — a malformed file logs and is skipped so a
-    bad skill doesn't take down the whole catalog.
+    User-global roots are scanned first and project-local roots second so a
+    project skill with the same id overrides a global skill. The body after
+    frontmatter is used as the skill's system prompt.
     """
     import os
     from pathlib import Path
 
-    skill_dirs = [
-        Path.home() / ".claude" / "skills",
-        Path(os.getcwd()) / ".claude" / "skills",
-    ]
-
     rows: dict[str, AgentDef] = {}
-    for sdir in skill_dirs:
-        if not sdir.exists() or not sdir.is_dir():
+    for root, source in _skill_search_roots(Path.home(), Path(os.getcwd())):
+        if not root.exists() or not root.is_dir():
             continue
-        for md in sorted(sdir.glob("*.md")):
+        for md in _skill_markdown_files(root):
             try:
                 text = md.read_text(encoding="utf-8")
             except Exception:
                 continue
             meta, body = _parse_skill_frontmatter(text)
-            sid = (meta.get("name") or md.stem).strip()
+            sid = (meta.get("name") or _default_skill_id(md)).strip()
             if not sid:
                 continue
-            description = (meta.get("description") or "").strip()
+            description = str(meta.get("description") or "").strip()
             if not description and body:
                 # Fall back to the first non-blank line of the body.
                 for line in body.splitlines():
@@ -3585,16 +3823,16 @@ def _load_skills_from_disk() -> list[AgentDef]:
                         description = line[:240]
                         break
 
-            tools_field = meta.get("allowed-tools") or meta.get("allowed_tools")
-            tools: list[str] = []
-            if isinstance(tools_field, list):
-                tools = [str(t).strip() for t in tools_field if str(t).strip()]
-            elif isinstance(tools_field, str):
-                tools = [t.strip() for t in tools_field.split(",") if t.strip()]
+            tools = _skill_list_field(meta, "allowed-tools", "allowed_tools")
+            keywords = _skill_list_field(meta, "keywords", "tags")
+            if not keywords:
+                keywords = _fallback_skill_keywords(sid)
 
             metadata = {
                 "skill_path": str(md),
-                "skill_dir": str(sdir),
+                "skill_dir": str(md.parent if md.name.upper() == "SKILL.MD" else root),
+                "skill_layout": "skill_md" if md.name.upper() == "SKILL.MD" else "flat_md",
+                "skill_source": source,
             }
             if meta.get("model"):
                 metadata["model"] = str(meta["model"]).strip()
@@ -3606,7 +3844,7 @@ def _load_skills_from_disk() -> list[AgentDef]:
             rows[sid] = AgentDef(
                 id=sid,
                 source="skill",
-                title=sid,
+                title=str(meta.get("title") or sid).strip(),
                 description=description,
                 system_prompt=body,
                 default_provider=str(meta.get("provider", "") or "").strip(),
@@ -3614,10 +3852,60 @@ def _load_skills_from_disk() -> list[AgentDef]:
                 tools=tools,
                 tier=2,
                 specialization="skill",
-                keywords=[],
+                keywords=keywords,
                 metadata=metadata,
             )
     return list(rows.values())
+
+
+def _skill_search_roots(home: Path, cwd: Path) -> list[tuple[Path, str]]:
+    """Return skill roots in override order."""
+    return [
+        (home / ".claude" / "skills", "claude"),
+        (home / ".codex" / "skills", "codex"),
+        (home / ".agents" / "skills", "agents"),
+        (cwd / ".claude" / "skills", "claude"),
+        (cwd / ".codex" / "skills", "codex"),
+        (cwd / ".agents" / "skills", "agents"),
+    ]
+
+
+def _skill_markdown_files(root: Path) -> list[Path]:
+    """Return candidate skill markdown files under a known skill root."""
+    candidates: dict[str, Path] = {}
+    for pattern in ("*.md", "**/SKILL.md"):
+        for path in root.glob(pattern):
+            if path.is_file():
+                candidates[str(path.resolve(strict=False)).lower()] = path
+    return sorted(candidates.values(), key=lambda path: str(path).lower())
+
+
+def _default_skill_id(path: Path) -> str:
+    """Return a stable skill id when frontmatter does not specify one."""
+    if path.name.upper() == "SKILL.MD":
+        return path.parent.name
+    return path.stem
+
+
+def _skill_list_field(meta: dict[str, Any], *keys: str) -> list[str]:
+    """Coerce comma-separated or frontmatter-list fields into strings."""
+    value: Any = None
+    for key in keys:
+        if key in meta:
+            value = meta[key]
+            break
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    if isinstance(value, str):
+        return [item.strip() for item in value.split(",") if item.strip()]
+    return []
+
+
+def _fallback_skill_keywords(skill_id: str) -> list[str]:
+    """Return search keywords for minimal skill files without frontmatter tags."""
+    return [
+        part for part in skill_id.replace("-", " ").replace("_", " ").split() if part.strip()
+    ] or [skill_id]
 
 
 def _parse_skill_frontmatter(text: str) -> tuple[dict[str, Any], str]:
@@ -3626,7 +3914,7 @@ def _parse_skill_frontmatter(text: str) -> tuple[dict[str, Any], str]:
     Recognises the standard ``---``-delimited block at the head of the
     file. Falls back to ({}, text) when no frontmatter is present.
     Uses a tiny line-by-line parser instead of pulling PyYAML in as a
-    dep — frontmatter shapes we care about are flat key:value plus
+    dependency: frontmatter shapes we care about are flat key:value plus
     optional ``- item`` lists, well within hand-rolling distance.
     """
     lines = text.splitlines()
@@ -3682,13 +3970,36 @@ def _builtin_tools() -> list[Tool]:
                 source="builtin",
                 name=tool_name,
                 title=tool_name.replace("_", " ").title(),
+                owner=_tool_owner_for_catalog(tool_name),
+                tags=_tool_tags_for_catalog(tool_name),
             )
     return list(seen.values())
+
+
+def _tool_owner_for_catalog(tool_name: str) -> str:
+    """Return static owner metadata for a catalog tool row."""
+    try:
+        from clio_agent.tools.catalog import tool_owner
+
+        return tool_owner(tool_name)
+    except Exception:
+        return ""
+
+
+def _tool_tags_for_catalog(tool_name: str) -> list[str]:
+    """Return static tag metadata for a catalog tool row."""
+    try:
+        from clio_agent.tools.catalog import tool_tags
+
+        return sorted(tool_tags(tool_name))
+    except Exception:
+        return []
 
 
 from typing import Protocol
 
 from clio_agent.gact.events import Event, EventBus, heartbeat_payload
+from clio_agent.gact.messages import MessageStore
 from clio_agent.gact.sessions import SessionStore, _default_store_path
 from clio_agent.gact.types import (
     AgentDef,
@@ -3805,8 +4116,11 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     yield
 
-    for t in (task, agent_task):
+    lm_config_task = getattr(app.state, "lm_config_task", None)
+    for t in (task, agent_task, lm_config_task):
         if t is None:
+            continue
+        if getattr(t, "done", lambda: False)():
             continue
         t.cancel()
         try:
@@ -3814,17 +4128,26 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         except (asyncio.CancelledError, Exception):
             pass
     try:
-        from clio_agent.tools.execution import (  # noqa: PLC0415
-            set_global_cancellation_checker,
-            set_global_permission_gate,
-            set_global_tool_observer,
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(
+            None,
+            lambda: _release_owned_lm_studio_instance(app, raise_on_error=False),
         )
-
-        set_global_cancellation_checker(None)
-        set_global_permission_gate(None)
-        set_global_tool_observer(None)
-    except Exception:  # pragma: no cover - defensive shutdown cleanup
+    except Exception:
         pass
+    if getattr(app.state, "tool_hooks_installed", False):
+        try:
+            from clio_agent.tools.execution import (  # noqa: PLC0415
+                set_global_cancellation_checker,
+                set_global_permission_gate,
+                set_global_tool_observer,
+            )
+
+            set_global_cancellation_checker(None)
+            set_global_permission_gate(None)
+            set_global_tool_observer(None)
+        except Exception:  # pragma: no cover - defensive shutdown cleanup
+            pass
 
 
 async def _construct_agent_async(app: "FastAPI") -> None:
@@ -3893,6 +4216,7 @@ async def _construct_agent_async(app: "FastAPI") -> None:
             set_global_permission_gate(gate)
         if observer is not None:
             set_global_tool_observer(observer)
+        app.state.tool_hooks_installed = True
     except Exception:  # pragma: no cover - defensive
         pass
 
@@ -3926,7 +4250,7 @@ async def _scheduler_tick(app: "FastAPI") -> None:
                     ],
                     metadata={"scheduled": True, "schedule_id": sch.id},
                 )
-                app.state.messages.setdefault(sch.session_id, []).append(user_msg)
+                _append_session_message(app, sch.session_id, user_msg)
                 app.state.bus.publish(
                     Event(
                         type="message.created",
@@ -3996,19 +4320,18 @@ def build_app(
     # context (TestClient normally runs it, but older FastAPI + some
     # test-utility paths don't).
     app.state.started_at = time.time()
-    app.state.sessions = SessionStore(
-        path=sessions_path if sessions_path is not None else _default_store_path()
-    )
+    session_store_path = sessions_path if sessions_path is not None else _default_store_path()
+    app.state.sessions = SessionStore(path=session_store_path)
     app.state.agent = agent  # may be None; POST message checks before using
     app.state.arc = arc  # may be None; /v1/memory/stats returns zeros in that case
     # CLIO-BBBBBBBBBB13: per-session pub/sub. POST /messages
     # publishes; /v1/sessions/{sid}/events subscribers consume.
     app.state.bus = EventBus()
-    # CLIO-BBBBBBBBBB14: in-memory message log keyed by session_id.
-    # Populated by POST /messages, read by GET /messages. Not
-    # persisted across restarts — disk-backed persistence lives in
-    # the CLIO catch-up phase alongside ARC session replay.
-    app.state.messages = {}
+    # CLIO-BBBBBBBBBB14: message log keyed by session_id. Populated by
+    # POST /messages, read by GET /messages, and backed by per-session
+    # JSON ledgers so adapter deletion/redeploy preserves transcripts.
+    app.state.message_store = MessageStore(path=session_store_path.parent / "messages")
+    app.state.messages = app.state.message_store.load_all()
     # CLIO-BBBBBBBBBB20: cooperative cancellation flags. POST /cancel
     # adds a sid; the POST-message handler checks + clears after the
     # agent returns. Set (not dict) because the flag's presence IS
@@ -4083,9 +4406,11 @@ def build_app(
             set_global_cancellation_checker(_make_cancellation_checker(app))
             set_global_permission_gate(_make_permission_gate(app))
             set_global_tool_observer(_make_tool_observer(app))
+            app.state.tool_hooks_installed = True
         except Exception:  # pragma: no cover - defensive
             pass
     else:
+        app.state.tool_hooks_installed = False
         app.state.pending_cancellation_checker = _make_cancellation_checker(app)
         app.state.pending_permission_gate = _make_permission_gate(app)
         app.state.pending_tool_observer = _make_tool_observer(app)
@@ -4113,6 +4438,9 @@ def build_app(
     # us with. Distinct from boot-time env because PUT /providers/lm
     # rebuilds the agent + DSPy config in-place.
     app.state.lm_config = None
+    app.state.lm_config_status = {"state": "idle"}
+    app.state.lm_config_task = None
+    app.state.lm_studio_owned_instance = None
     # CLIO-BBBBBBBBBB-WS: workspaces store. Persisted alongside
     # sessions; seeds a default workspace if none exist so the TUI
     # always has something to render.
@@ -4232,7 +4560,30 @@ def build_app(
         # decision. ``configured`` mirrors what GET /v1/providers/lm
         # reports — agent present + last-known config from PUT.
         cfg = _effective_lm_config(app)
-        if app.state.agent is not None and cfg:
+        lm_config_status = getattr(app.state, "lm_config_status", {}) or {}
+        if lm_config_status.get("state") == "configuring":
+            rows.append(
+                Integration(
+                    name="lm",
+                    status="degraded",
+                    detail=(
+                        "configuring "
+                        f"{lm_config_status.get('provider', '?')}/"
+                        f"{lm_config_status.get('model', '?')}"
+                    ),
+                )
+            )
+        elif lm_config_status.get("state") == "error":
+            rows.append(
+                Integration(
+                    name="lm",
+                    status="unavailable",
+                    detail=str(
+                        lm_config_status.get("message") or "LM provider configuration failed"
+                    ),
+                )
+            )
+        elif app.state.agent is not None and cfg:
             detail = f"{cfg.get('provider', '?')}/{cfg.get('model', '?')}"
             lm_status: Literal["ready", "degraded", "unavailable"] = "ready"
             if cfg.get("provider") == "argonne":
@@ -4242,11 +4593,9 @@ def build_app(
                     if not argonne_auth.tokens_exist():
                         lm_status = "unavailable"
                         detail += " (ALCF Globus token missing)"
-                    elif not argonne_auth.check_auth_status():
-                        lm_status = "unavailable"
-                        detail += " (ALCF Globus token refresh failed)"
                     else:
-                        detail += " (ALCF Globus token ready)"
+                        lm_status = "degraded"
+                        detail += " (ALCF Globus token stored; validate before use)"
                 except Exception as exc:
                     lm_status = "unavailable"
                     detail += f" (ALCF auth check failed: {exc})"
@@ -4492,6 +4841,7 @@ def build_app(
                     )
                 ).model_dump(exclude_none=True),
             )
+        _delete_session_messages(app, sid)
         return Response(status_code=204)
 
     # ---- /v1/permissions (BBB23) --------------------------------------
@@ -5026,7 +5376,11 @@ def build_app(
         )
         # Deep-copy parts so the fork's message log doesn't alias the
         # source's. Pydantic's model_copy gives us a snapshot.
-        app.state.messages[new_sess.id] = [m.model_copy(deep=True) for m in src_msgs]
+        _replace_session_messages(
+            app,
+            new_sess.id,
+            [m.model_copy(deep=True) for m in src_msgs],
+        )
         app.state.sessions.update(new_sess.id, message_count=len(src_msgs))
         return JSONResponse(
             status_code=201,
@@ -5256,7 +5610,7 @@ def build_app(
         # Side effects + system message body per command.
         body_text: str
         if cmd_id == "/clear":
-            app.state.messages.pop(sid, None)
+            _delete_session_messages(app, sid)
             app.state.sessions.update(sid, message_count=0)
             app.state.bus.publish(
                 Event(
@@ -5345,7 +5699,7 @@ def build_app(
             stop_reason="end_turn",
             metadata={"synthetic": "command_result", "command": cmd_id},
         )
-        app.state.messages.setdefault(sid, []).append(sys_msg)
+        _append_session_message(app, sid, sys_msg)
         app.state.bus.publish(
             Event(
                 type="message.created",
@@ -5386,6 +5740,7 @@ def build_app(
                 authed = (
                     argonne_auth.tokens_exist()
                     and importlib.util.find_spec("globus_sdk") is not None
+                    and argonne_auth.check_auth_status()
                 )
             except Exception:
                 authed = False
@@ -5437,12 +5792,12 @@ def build_app(
     async def auth_provider(provider_id: str, request: Request) -> dict[str, Any]:
         """SPEC §6.12 — kick off provider-specific auth.
 
-        For argonne_*, this drives the Globus OAuth flow. The Globus
-        SDK prints a URL to the *backend's* stdout that the user must
-        visit; we report the status back to the TUI so it can render a
-        "check your terminal" banner. If tokens already exist and
-        validate, we return is_authenticated=true immediately and the
-        TUI can skip its banner.
+        For argonne_*, this launches the Globus OAuth flow in an
+        interactive terminal where the user can visit the URL and
+        paste the generated code. This endpoint must not validate or
+        refresh cached tokens inline: expired Globus sessions can
+        block waiting for terminal input, which would freeze the TUI
+        request instead of giving the user an actionable login path.
 
         Other providers (cloud / local) use api_key / no-auth and
         return 405 with a hint pointing to PUT /v1/providers/lm.
@@ -5477,23 +5832,6 @@ def build_app(
                 ).model_dump(exclude_none=True),
             )
 
-        # Argonne / ALCF: invoke the Globus authenticate flow. Run in a
-        # thread because the SDK's login_flow is blocking (prints a URL
-        # and waits for the user to paste a code).
-        try:
-            from clio_agent.providers import argonne_auth  # noqa: PLC0415
-        except Exception as exc:
-            raise HTTPException(
-                status_code=503,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="dependency_missing",
-                        message=f"argonne_auth import failed: {exc}",
-                        recoverable=False,
-                    )
-                ).model_dump(exclude_none=True),
-            ) from exc
-
         if importlib.util.find_spec("globus_sdk") is None:
             raise HTTPException(
                 status_code=503,
@@ -5517,14 +5855,6 @@ def build_app(
             pass
         force = bool(body.get("force", False))
 
-        # Fast path: tokens already valid → no terminal interaction needed.
-        if not force and argonne_auth.check_auth_status():
-            return {
-                "is_authenticated": True,
-                "provider_id": provider_id,
-                "instructions": "",
-            }
-
         command = [
             sys.executable,
             "-m",
@@ -5533,15 +5863,41 @@ def build_app(
         ]
         if force:
             command.append("--force")
+        manual_command = " ".join(command)
         try:
             if os.name == "nt":
+                powershell = (
+                    shutil.which("pwsh.exe") or shutil.which("powershell.exe") or "powershell.exe"
+                )
+                command_literal = " ".join(
+                    f"'{part.replace(chr(39), chr(39) + chr(39))}'" for part in command
+                )
+                ps_script = (
+                    "$Host.UI.RawUI.WindowTitle = 'CLIO ALCF Globus Login'; "
+                    "Write-Host 'CLIO ALCF Globus login'; "
+                    f"Write-Host 'Running: {manual_command.replace(chr(39), chr(39) + chr(39))}'; "
+                    "Write-Host ''; "
+                    f"& {command_literal}; "
+                    "$exitCode = $LASTEXITCODE; "
+                    "Write-Host ''; "
+                    "Write-Host ('Auth helper exited with code ' + $exitCode); "
+                    "Read-Host 'Press Enter to close this window'"
+                )
                 subprocess.Popen(  # noqa: S603
-                    command,
+                    [
+                        powershell,
+                        "-NoExit",
+                        "-ExecutionPolicy",
+                        "Bypass",
+                        "-Command",
+                        ps_script,
+                    ],
                     creationflags=subprocess.CREATE_NEW_CONSOLE,
                 )
                 instructions = (
-                    "Opened a new terminal for ALCF Globus login. Complete the "
-                    "authorization code flow there, then press Ctrl+R here to refresh provider status."
+                    "Opened a persistent PowerShell window for ALCF Globus login. Complete the "
+                    "authorization code flow there, then press Ctrl+R here to refresh provider status. "
+                    f"If no terminal appears, run: {manual_command}"
                 )
             else:
                 terminal = next(
@@ -5562,12 +5918,13 @@ def build_app(
                     subprocess.Popen(args)  # noqa: S603
                     instructions = (
                         "Opened a terminal for ALCF Globus login. Complete the "
-                        "authorization code flow there, then press Ctrl+R here to refresh provider status."
+                        "authorization code flow there, then press Ctrl+R here to refresh provider status. "
+                        f"If no terminal appears, run: {manual_command}"
                     )
                 else:
                     instructions = (
                         "Run this in an interactive terminal, then press Ctrl+R here: "
-                        + " ".join(command)
+                        + manual_command
                     )
         except Exception as exc:
             raise HTTPException(
@@ -5611,6 +5968,7 @@ def build_app(
     # rotates loaded models as PBS jobs come and go; LM Studio swaps
     # models on user action).
     _LIVE_MODELS_TTL_S = 30.0
+    _ARGONNE_JOBS_TIMEOUT_S = 12.0
     # Cache value: (epoch_seconds, models, source, error_message). Source
     # is "live" / "static_catalog" / "unavailable"; error_message is the human-readable
     # reason live failed (empty when source=="live"). Surfacing this on
@@ -5622,13 +5980,12 @@ def build_app(
         cluster: str,
         chat_base: str = "",
     ) -> tuple[list[dict[str, str]], str, str]:
-        """Hit the ALCF jobs endpoint and return ``(models, source,
-        error_message)`` for the catalog endpoint.
+        """Hit the ALCF endpoint catalog and return ``(models, source,
+        error_message)`` for the provider picker.
 
-        On any failure we still return the static fallback so the
-        picker isn't empty, BUT the error is surfaced verbatim
-        (with an actionable hint when known) so the TUI can warn
-        the user. Caller decides whether to render the warning.
+        ``/resource_server/list-endpoints`` is the documented model
+        catalog. ``/{cluster}/jobs`` is used only to annotate models
+        that are currently live or queued.
         """
         cache_key = f"argonne:{cluster}"
         now = time.time()
@@ -5673,13 +6030,95 @@ def build_app(
                 "store one in ~/.globus."
             )
 
+        framework = "api" if "/api/" in chat_base else "vllm"
+        try:
+            import requests  # noqa: PLC0415
+
+            catalog_response = requests.get(
+                "https://inference-api.alcf.anl.gov/resource_server/list-endpoints",
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=_ARGONNE_JOBS_TIMEOUT_S,
+            )
+        except Exception as exc:
+            return _fallback(f"ALCF gateway unreachable: {exc}. Check network / proxy.")
+
+        if catalog_response.status_code == 401:
+            return _fallback(
+                f"ALCF token rejected (401, source={token_source}). "
+                "Token likely expired - re-auth: `python -m "
+                "clio_agent.providers.argonne_auth authenticate -f` "
+                "and re-export ALCF_INFERENCE_TOKEN before redeploying."
+            )
+        if catalog_response.status_code >= 400:
+            return _fallback(
+                "ALCF endpoint catalog returned HTTP "
+                f"{catalog_response.status_code}: {(catalog_response.text or '')[:200]}"
+            )
+
+        try:
+            catalog_payload = catalog_response.json()
+        except Exception as exc:
+            return _fallback(f"ALCF endpoint catalog response not JSON: {exc}")
+
+        framework_payload = (
+            (catalog_payload.get("clusters") or {})
+            .get(cluster, {})
+            .get("frameworks", {})
+            .get(framework, {})
+        )
+        catalog_models = [
+            str(model).strip()
+            for model in framework_payload.get("models") or []
+            if str(model).strip()
+        ]
+        if not catalog_models:
+            return _fallback(f"ALCF endpoint catalog has no {cluster}/{framework} models")
+
+        running_details: dict[str, str] = {}
+        try:
+            jobs_response = requests.get(
+                f"https://inference-api.alcf.anl.gov/resource_server/{cluster}/jobs",
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=_ARGONNE_JOBS_TIMEOUT_S,
+            )
+            jobs_payload = jobs_response.json() if jobs_response.status_code < 400 else {}
+        except Exception:
+            jobs_payload = {}
+
+        for job in jobs_payload.get("running") or []:
+            for raw in (job.get("Models") or "").split(","):
+                mid = raw.strip()
+                if not mid or mid in running_details:
+                    continue
+                walltime = (job.get("Walltime") or "").strip()
+                nodes = (job.get("Nodes Reserved") or "").strip()
+                desc = f"live on {cluster}"
+                if nodes:
+                    desc += f" ({nodes} node{'s' if nodes != '1' else ''})"
+                if walltime:
+                    desc += f", walltime {walltime}"
+                running_details[mid] = desc
+
+        seen: set[str] = set()
+        models: list[dict[str, str]] = []
+        for mid in catalog_models:
+            if mid in seen:
+                continue
+            seen.add(mid)
+            name = mid.split("/", 1)[-1] if "/" in mid else mid
+            desc = running_details.get(mid, f"available on {cluster}/{framework}")
+            models.append({"id": mid, "name": name, "description": desc})
+
+        _live_models_cache[cache_key] = (now, models, "live", "")
+        return models, "live", ""
+
         try:
             import requests  # noqa: PLC0415
 
             r = requests.get(
                 f"https://inference-api.alcf.anl.gov/resource_server/{cluster}/jobs",
                 headers={"Authorization": f"Bearer {token}"},
-                timeout=4,
+                timeout=_ARGONNE_JOBS_TIMEOUT_S,
             )
         except Exception as exc:
             return _fallback(f"ALCF gateway unreachable: {exc}. Check network / proxy.")
@@ -6387,13 +6826,9 @@ def build_app(
             # Fire tool observer manually so this call shows up in
             # tools_called + tool.call.* SSE events identically to an
             # agent-driven tool call. Same observer, no special path.
-            try:
-                from clio_agent.tools.execution import _GLOBAL_TOOL_OBSERVER
-            except Exception:
-                _GLOBAL_TOOL_OBSERVER = None
-            tool_observer = _GLOBAL_TOOL_OBSERVER or getattr(
-                app.state, "pending_tool_observer", None
-            )
+            tool_observer = getattr(app.state, "pending_tool_observer", None)
+            if tool_observer is None:
+                tool_observer = _make_tool_observer(app)
             if tool_observer is not None:
                 try:
                     tool_observer(observer_name, tool_args, "started", None)
@@ -6577,7 +7012,7 @@ def build_app(
             stop_reason="end_turn",
             metadata={"synthetic": "compact_summary"},
         )
-        app.state.messages[sid] = [compact_message]
+        _replace_session_messages(app, sid, [compact_message])
 
         # Publish so any open SSE stream redraws.
         app.state.bus.publish(
@@ -7112,7 +7547,7 @@ def build_app(
                 msg_rows.append(msg)
             except Exception:
                 continue
-        app.state.messages[new_sess.id] = msg_rows
+        _replace_session_messages(app, new_sess.id, msg_rows)
         cost_total = sum(float(m.get("cost_usd", 0.0) or 0.0) for m in blob.get("messages", []))
         in_total = sum(
             int((m.get("tokens") or {}).get("input", 0) or 0) for m in blob.get("messages", [])
@@ -7293,6 +7728,28 @@ def build_app(
                     )
                 ).model_dump(exclude_none=True),
             )
+        lm_status = getattr(app.state, "lm_config_status", {}) or {}
+        if lm_status.get("state") == "configuring":
+            raise HTTPException(
+                status_code=503,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="provider_configuring",
+                        message=(
+                            "LM provider configuration is still in progress; retry after it "
+                            "finishes."
+                        ),
+                        details={
+                            "session_id": sid,
+                            "operation_id": lm_status.get("operation_id", ""),
+                            "provider": lm_status.get("provider", ""),
+                            "model": lm_status.get("model", ""),
+                            "recovery_actions": ["wait", "check_lm_provider_status", "retry"],
+                        },
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            )
         if app.state.agent is None:
             raise HTTPException(
                 status_code=503,
@@ -7364,7 +7821,7 @@ def build_app(
         # time the ack returns, GET /messages reflects it. Then mark
         # the session running, then schedule the turn in the
         # background and return.
-        app.state.messages.setdefault(sid, []).append(user_msg)
+        _append_session_message(app, sid, user_msg)
         app.state.sessions.update(sid, status="running")
         app.state.bus.publish(
             Event(
@@ -8254,11 +8711,13 @@ def build_app(
                 return preset.model_copy(update=update)
             if argonne_auth.check_auth_status():
                 update["status"] = "ready"
-                update["status_message"] = "Globus token ready; auto-refresh enabled"
+                update["status_message"] = "Globus token validated"
                 update["is_authenticated"] = True
                 return preset.model_copy(update=update)
             update["status"] = "auth_required"
-            update["status_message"] = "stored Globus token could not refresh; re-authenticate ALCF"
+            update["status_message"] = (
+                "stored Globus token could not be refreshed; authenticate ALCF"
+            )
             update["is_authenticated"] = False
             return preset.model_copy(update=update)
         if preset.requires_api_key:
@@ -8305,6 +8764,60 @@ def build_app(
             key=lambda p: p.label.lower(),
         )
 
+    def _lm_provider_status() -> dict[str, Any]:
+        status = getattr(app.state, "lm_config_status", None)
+        if not isinstance(status, dict):
+            return {"state": "idle"}
+        return status
+
+    def _lm_provider_info(*, presets: list[LMProviderPreset] | None = None) -> LMProviderInfo:
+        cfg = _effective_lm_config(app)
+        status = _lm_provider_status()
+        state = str(status.get("state") or "idle")
+        if state not in {"idle", "configuring", "ready", "error"}:
+            state = "idle"
+        pending = status if state == "configuring" else {}
+        return LMProviderInfo(
+            configured=app.state.agent is not None and state != "configuring",
+            provider=str(pending.get("provider") or cfg.get("provider", "")),
+            api_base=str(pending.get("api_base") or cfg.get("api_base", "")),
+            model=str(pending.get("model") or cfg.get("model", "")),
+            temperature=(
+                float(pending["temperature"])
+                if pending.get("temperature") is not None
+                else float(cfg["temperature"])
+                if cfg.get("temperature") is not None
+                else 1.0
+            ),
+            max_tokens=(
+                int(pending["max_tokens"])
+                if pending.get("max_tokens") is not None
+                else int(cfg["max_tokens"])
+                if cfg.get("max_tokens") is not None
+                else 32000
+            ),
+            context_length=(
+                int(pending["context_length"])
+                if pending.get("context_length") is not None
+                else int(cfg["context_length"])
+                if cfg.get("context_length") is not None
+                else 0
+            ),
+            thinking_budget=(
+                int(pending["thinking_budget"])
+                if pending.get("thinking_budget") is not None
+                else int(cfg["thinking_budget"])
+                if cfg.get("thinking_budget") is not None
+                else 0
+            ),
+            transport=pending.get("transport") or cfg.get("transport"),
+            state=state,  # type: ignore[arg-type]
+            status_message=str(status.get("message") or ""),
+            error=str(status.get("error") or ""),
+            operation_id=str(status.get("operation_id") or ""),
+            presets=presets if presets is not None else _lm_presets_with_status(),
+        )
+
     @app.get("/v1/providers/lm", response_model=LMProviderInfo)
     async def get_lm_provider() -> LMProviderInfo:
         """Report the live LM config — what we'd report on /doctor as
@@ -8316,26 +8829,9 @@ def build_app(
         modal on connect.
         """
 
-        cfg = _effective_lm_config(app)
-        return LMProviderInfo(
-            configured=app.state.agent is not None,
-            provider=cfg.get("provider", ""),
-            api_base=cfg.get("api_base", ""),
-            model=cfg.get("model", ""),
-            temperature=(float(cfg["temperature"]) if cfg.get("temperature") is not None else 1.0),
-            max_tokens=int(cfg["max_tokens"]) if cfg.get("max_tokens") is not None else 32000,
-            context_length=(
-                int(cfg["context_length"]) if cfg.get("context_length") is not None else 0
-            ),
-            thinking_budget=(
-                int(cfg["thinking_budget"]) if cfg.get("thinking_budget") is not None else 0
-            ),
-            transport=cfg.get("transport"),
-            presets=_lm_presets_with_status(),
-        )
+        return _lm_provider_info()
 
-    @app.put("/v1/providers/lm", response_model=LMProviderInfo)
-    async def put_lm_provider(req: LMProviderRequest) -> LMProviderInfo:
+    async def _apply_lm_provider(req: LMProviderRequest) -> LMProviderInfo:
         """Reconfigure the LM in-place. Rebuilds DSPy + the
         ClioAgent so subsequent POST /messages drive the new
         provider. The old agent's state (ARC, sessions, in-flight
@@ -8389,24 +8885,15 @@ def build_app(
             if req.provider != "lm_studio" or req.context_length <= 0:
                 return
 
-            from urllib.parse import urlsplit, urlunsplit  # noqa: PLC0415
-
             import requests  # noqa: PLC0415
 
-            parts = urlsplit(req.api_base.rstrip("/"))
-            root = urlunsplit((parts.scheme, parts.netloc, "", "", ""))
+            root = _lm_studio_api_root(req.api_base)
             if not root:
                 raise RuntimeError("LM Studio api_base is empty")
 
-            headers = {"Content-Type": "application/json"}
-            token = (
-                os.environ.get("LM_STUDIO_API_TOKEN", "").strip()
-                or os.environ.get("LM_API_TOKEN", "").strip()
-            )
-            if token:
-                headers["Authorization"] = f"Bearer {token}"
+            headers = _lm_studio_headers()
 
-            def _already_loaded_with_requested_context() -> bool:
+            def _already_loaded_with_requested_context() -> str:
                 try:
                     response = requests.get(
                         f"{root}/api/v1/models",
@@ -8414,14 +8901,14 @@ def build_app(
                         timeout=10,
                     )
                     if response.status_code >= 400:
-                        return False
+                        return ""
                     payload = response.json()
                 except Exception:
-                    return False
+                    return ""
 
                 models = payload.get("models")
                 if not isinstance(models, list):
-                    return False
+                    return ""
                 for item in models:
                     if not isinstance(item, dict):
                         continue
@@ -8443,12 +8930,19 @@ def build_app(
                         except (TypeError, ValueError):
                             loaded_context = 0
                         if loaded_context == req.context_length:
-                            return True
-                return False
+                            return instance_id
+                return ""
 
-            if _already_loaded_with_requested_context():
+            loaded_instance_id = _already_loaded_with_requested_context()
+            if loaded_instance_id:
+                _release_owned_lm_studio_instance(
+                    app,
+                    skip_instance_id=loaded_instance_id,
+                    raise_on_error=True,
+                )
                 return
 
+            _release_owned_lm_studio_instance(app, raise_on_error=True)
             response = requests.post(
                 f"{root}/api/v1/models/load",
                 headers=headers,
@@ -8464,6 +8958,19 @@ def build_app(
                     "LM Studio model load failed "
                     f"({response.status_code}): {(response.text or '')[:300]}"
                 )
+            try:
+                payload = response.json()
+            except Exception:
+                payload = {}
+            instance_id = str(payload.get("instance_id") or "").strip()
+            if instance_id:
+                app.state.lm_studio_owned_instance = {
+                    "root": root,
+                    "instance_id": instance_id,
+                    "model": req.model,
+                    "context_length": req.context_length,
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                }
 
         try:
             import dspy
@@ -8491,10 +8998,14 @@ def build_app(
             # for ClioAgent's reconstruction (load_config_from_env reads
             # CLIO_LM_API_KEY first, before LMProviderConfig defaults run).
             resolved_api_key = req.api_key
-            if req.provider == "argonne" and not resolved_api_key:
-                from clio_agent.config import _resolve_argonne_api_key  # noqa: PLC0415
-
-                resolved_api_key = _resolve_argonne_api_key()
+            if req.provider == "argonne" and _is_placeholder_api_key(resolved_api_key):
+                try:
+                    resolved_api_key = _resolve_argonne_runtime_api_key()
+                except Exception as exc:
+                    resolved_api_key = ""
+                    auth_exc = exc
+                else:
+                    auth_exc = None
                 if not resolved_api_key:
                     raise HTTPException(
                         status_code=401,
@@ -8511,7 +9022,7 @@ def build_app(
                                 recoverable=True,
                             )
                         ).model_dump(exclude_none=True),
-                    )
+                    ) from auth_exc
 
             cfg = LMProviderConfig(
                 provider=req.provider,  # type: ignore[arg-type]  # str validated at boundary
@@ -8523,7 +9034,10 @@ def build_app(
                 thinking_budget=req.thinking_budget,
                 codex_transport=req.transport or "exec",
             )
-            _apply_lm_studio_load_config()
+            await asyncio.get_running_loop().run_in_executor(
+                None,
+                _apply_lm_studio_load_config,
+            )
             # iowarp/clio-agent — DSPy 3.x forbids dspy.configure()
             # being re-called from a different async task than the
             # first one. PUT /v1/providers/lm comes from the FastAPI
@@ -8644,6 +9158,159 @@ def build_app(
             transport=cfg.codex_transport if req.provider == "codex" else None,
             presets=_lm_presets_with_status(),
         )
+
+    async def _run_lm_provider_apply(req: LMProviderRequest, operation_id: str) -> None:
+        try:
+            loop = asyncio.get_running_loop()
+            info = await loop.run_in_executor(
+                None,
+                lambda: asyncio.run(_apply_lm_provider(req)),
+            )
+        except HTTPException as exc:
+            detail = exc.detail
+            if isinstance(detail, dict):
+                err = detail.get("error")
+                if isinstance(err, dict):
+                    error_code = str(err.get("error") or "config_error")
+                    message = str(err.get("message") or exc)
+                else:
+                    error_code = "config_error"
+                    message = str(detail)
+            else:
+                error_code = "config_error"
+                message = str(detail or exc)
+            app.state.lm_config_status = {
+                "state": "error",
+                "operation_id": operation_id,
+                "provider": req.provider,
+                "api_base": req.api_base,
+                "model": req.model,
+                "error": error_code,
+                "message": message,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }
+            app.state.bus.publish(
+                Event(
+                    type="lm.provider.failed",
+                    session_id="",
+                    payload={
+                        "operation_id": operation_id,
+                        "provider": req.provider,
+                        "model": req.model,
+                        "error": error_code,
+                        "message": message,
+                    },
+                )
+            )
+        except Exception as exc:  # noqa: BLE001
+            app.state.lm_config_status = {
+                "state": "error",
+                "operation_id": operation_id,
+                "provider": req.provider,
+                "api_base": req.api_base,
+                "model": req.model,
+                "error": "config_error",
+                "message": f"failed to configure LM: {exc}",
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }
+            app.state.bus.publish(
+                Event(
+                    type="lm.provider.failed",
+                    session_id="",
+                    payload={
+                        "operation_id": operation_id,
+                        "provider": req.provider,
+                        "model": req.model,
+                        "error": "config_error",
+                        "message": f"failed to configure LM: {exc}",
+                    },
+                )
+            )
+        else:
+            app.state.lm_config_status = {
+                "state": "ready",
+                "operation_id": operation_id,
+                "provider": info.provider,
+                "api_base": info.api_base,
+                "model": info.model,
+                "temperature": info.temperature,
+                "max_tokens": info.max_tokens,
+                "context_length": info.context_length,
+                "thinking_budget": info.thinking_budget,
+                "transport": info.transport,
+                "message": "LM provider ready",
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }
+
+    @app.put("/v1/providers/lm", response_model=LMProviderInfo)
+    async def put_lm_provider(req: LMProviderRequest) -> LMProviderInfo:
+        """Start or perform an LM provider swap without freezing the backend."""
+
+        running_task = getattr(app.state, "lm_config_task", None)
+        if running_task is not None and not running_task.done():
+            status = _lm_provider_status()
+            raise HTTPException(
+                status_code=409,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="provider_configuring",
+                        message="LM provider configuration is already in progress.",
+                        details={
+                            "operation_id": status.get("operation_id", ""),
+                            "provider": status.get("provider", ""),
+                            "model": status.get("model", ""),
+                            "recovery_actions": ["wait", "check_lm_provider_status"],
+                        },
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+
+        # LM Studio model loads/context changes and ALCF Globus token
+        # refresh/provider wiring can block long enough to make the
+        # selector feel frozen. Run those swaps in the background so
+        # capability, health, agent catalog, and provider-selector
+        # requests stay responsive.
+        if req.provider in {"lm_studio", "argonne"}:
+            operation_id = f"lmcfg_{uuid.uuid4().hex[:12]}"
+            provider_label = "LM Studio" if req.provider == "lm_studio" else "ALCF"
+            app.state.lm_config_status = {
+                "state": "configuring",
+                "operation_id": operation_id,
+                "provider": req.provider,
+                "api_base": req.api_base,
+                "model": req.model,
+                "temperature": req.temperature,
+                "max_tokens": req.max_tokens,
+                "context_length": req.context_length,
+                "thinking_budget": req.thinking_budget,
+                "transport": req.transport,
+                "message": f"{provider_label} provider configuration is in progress.",
+                "started_at": datetime.now(timezone.utc).isoformat(),
+            }
+            task = asyncio.create_task(_run_lm_provider_apply(req, operation_id))
+            app.state.lm_config_task = task
+            return _lm_provider_info()
+
+        info = await asyncio.get_running_loop().run_in_executor(
+            None,
+            lambda: asyncio.run(_apply_lm_provider(req)),
+        )
+        app.state.lm_config_status = {
+            "state": "ready",
+            "operation_id": "",
+            "provider": info.provider,
+            "api_base": info.api_base,
+            "model": info.model,
+            "temperature": info.temperature,
+            "max_tokens": info.max_tokens,
+            "context_length": info.context_length,
+            "thinking_budget": info.thinking_budget,
+            "transport": info.transport,
+            "message": "LM provider ready",
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        return _lm_provider_info(presets=info.presets)
 
     @app.get("/v1/providers/{provider_id}")
     async def get_provider(provider_id: str) -> dict[str, Any]:
@@ -9003,6 +9670,7 @@ def build_app(
                 reason="user_requested_message_delete",
             )
             msgs.pop(i)
+            _replace_session_messages(app, sid, msgs)
             if sess is not None:
                 app.state.sessions.update(sid, message_count=len(msgs))
             app.state.bus.publish(

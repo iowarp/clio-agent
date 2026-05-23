@@ -91,6 +91,7 @@ async def test_gateway_preserves_stable_tool_names():
         "ndp_list_organizations",
         "ndp_search_datasets",
         "ndp_get_dataset_details",
+        "shell_bash",
     }
     async with Client(gateway) as client:
         tools = await client.list_tools()
@@ -101,7 +102,7 @@ async def test_gateway_preserves_stable_tool_names():
 
 @pytest.mark.asyncio
 async def test_gateway_tool_count():
-    """Test that gateway has exactly 5 HDF5 tools."""
+    """Test that gateway still exposes the expected HDF5 tool set."""
     async with Client(gateway) as client:
         tools = await client.list_tools()
         hdf5_tools = [t for t in tools if t.name.startswith("hdf5_")]
@@ -155,7 +156,7 @@ async def test_list_capabilities_inside_running_loop_has_no_unawaited_warning(re
     """Sync capability listing must not leak coroutine warnings in async callers."""
 
     caps = list_capabilities()
-    assert {c["server"] for c in caps} >= {"hdf5", "parquet", "adios", "ndp", "fs"}
+    assert {c["server"] for c in caps} >= {"hdf5", "parquet", "adios", "ndp", "fs", "shell"}
 
     gc.collect()
     leaked = [

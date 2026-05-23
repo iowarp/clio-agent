@@ -52,3 +52,19 @@ def test_token_paths_include_xdg_data_home(monkeypatch, tmp_path: Path) -> None:
     paths = argonne_auth.token_paths()
 
     assert str(xdg_data_home / "globus" / "app") in paths[1]
+
+
+def test_authenticate_validates_access_token(monkeypatch) -> None:
+    """The explicit auth command must prove token usability, not just build an authorizer."""
+
+    calls: list[bool] = []
+
+    def _get_access_token(force_refresh: bool = False) -> str:
+        calls.append(force_refresh)
+        return "token"
+
+    monkeypatch.setattr(argonne_auth, "get_access_token", _get_access_token)
+
+    argonne_auth.authenticate(force=True)
+
+    assert calls == [True]

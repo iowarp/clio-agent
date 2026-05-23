@@ -140,6 +140,41 @@ def test_post_message_bumps_message_count_by_two(client: TestClient) -> None:
     assert after_two["message_count"] == 4
 
 
+def test_messages_persist_across_backend_restart(tmp_path: Path) -> None:
+    from .conftest import complete_turn
+
+    sessions_path = tmp_path / "sessions.json"
+    first_agent = FakeClioAgent(answer="persisted reply")
+    with TestClient(build_app(sessions_path=sessions_path, agent=first_agent)) as client:
+        sid = _create_session(client, title="Persistent")
+        complete_turn(client, sid, "remember this")
+        before = client.get(f"/v1/sessions/{sid}/messages").json()["messages"]
+
+    with TestClient(build_app(sessions_path=sessions_path, agent=FakeClioAgent())) as client:
+        restored_session = client.get(f"/v1/sessions/{sid}").json()
+        after = client.get(f"/v1/sessions/{sid}/messages").json()["messages"]
+
+    assert restored_session["title"] == "Persistent"
+    assert restored_session["message_count"] == 2
+    assert [m["role"] for m in after] == ["assistant", "user"]
+    assert after == before
+
+
+def test_session_delete_removes_persisted_messages(tmp_path: Path) -> None:
+    from .conftest import complete_turn
+
+    sessions_path = tmp_path / "sessions.json"
+    with TestClient(build_app(sessions_path=sessions_path, agent=FakeClioAgent())) as client:
+        sid = _create_session(client)
+        complete_turn(client, sid, "delete me")
+        assert client.delete(f"/v1/sessions/{sid}").status_code == 204
+
+    with TestClient(build_app(sessions_path=sessions_path, agent=FakeClioAgent())) as client:
+        assert client.get(f"/v1/sessions/{sid}").status_code == 404
+
+    assert not (tmp_path / "messages" / f"{sid}.json").exists()
+
+
 def test_post_message_transitions_session_to_idle(client: TestClient) -> None:
     from .conftest import complete_turn
 
@@ -224,6 +259,31 @@ def test_post_message_after_agent_start_failure_returns_structured_503(
         assert inner["details"]["agent_status"] == "failed"
         assert inner["details"]["agent_init_error"] == "RuntimeError('bad provider')"
         assert "startup failed" in inner["message"]
+        assert c.get(f"/v1/sessions/{sid}/messages").json()["messages"] == []
+        assert c.get(f"/v1/sessions/{sid}").json()["status"] == "idle"
+
+
+def test_post_message_while_provider_configures_returns_structured_503(
+    tmp_path: Path,
+) -> None:
+    app = build_app(sessions_path=tmp_path / "s.json", agent=None)
+
+    with TestClient(app) as c:
+        app.state.lm_config_status = {
+            "state": "configuring",
+            "operation_id": "lmcfg_test",
+            "provider": "lm_studio",
+            "model": "qwopus3.5-9b-v3",
+        }
+        sid = c.post("/v1/sessions", json={"title": "x"}).json()["id"]
+        resp = c.post(f"/v1/sessions/{sid}/messages", json={"text": "hi"})
+
+        assert resp.status_code == 503
+        inner = resp.json()["error"]
+        assert inner["error"] == "provider_configuring"
+        assert inner["details"]["operation_id"] == "lmcfg_test"
+        assert inner["details"]["provider"] == "lm_studio"
+        assert inner["details"]["model"] == "qwopus3.5-9b-v3"
         assert c.get(f"/v1/sessions/{sid}/messages").json()["messages"] == []
         assert c.get(f"/v1/sessions/{sid}").json()["status"] == "idle"
 
