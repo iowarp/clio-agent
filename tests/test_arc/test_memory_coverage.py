@@ -357,12 +357,17 @@ class TestClearOperations:
         """clear_all should remove everything."""
         now = time.time()
         arc.store_invocation(_inv("t1"))
-        arc.store_conversation(Conversation(
-            session_id="s1", user_id="u1",
-            created_at=now, updated_at=now,
-            last_accessed=now, status="active",
-            messages=[Message(role="user", content="hi", timestamp=now)],
-        ))
+        arc.store_conversation(
+            Conversation(
+                session_id="s1",
+                user_id="u1",
+                created_at=now,
+                updated_at=now,
+                last_accessed=now,
+                status="active",
+                messages=[Message(role="user", content="hi", timestamp=now)],
+            )
+        )
         arc.store_context(Context(domain="d1", created_at=now, updated_at=now))
 
         arc.clear_all()

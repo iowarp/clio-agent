@@ -130,9 +130,7 @@ class TestLSMTree:
     def test_compaction(self, temp_dir):
         """Test SSTable compaction."""
         # Create LSM with low compaction threshold
-        lsm = LSMTree(
-            data_dir=temp_dir, memtable_size=5, compaction_threshold=3
-        )
+        lsm = LSMTree(data_dir=temp_dir, memtable_size=5, compaction_threshold=3)
 
         try:
             # Write enough data to create multiple SSTables

@@ -30,13 +30,12 @@ class _Agent:
 
 
 def _client(tmp_path: Path) -> TestClient:
-    return TestClient(
-        build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
-    )
+    return TestClient(build_app(sessions_path=tmp_path / "s.json", agent=_Agent()))
 
 
 def _turn(client: TestClient, sid: str, text: str) -> dict:
     from .conftest import complete_turn
+
     return complete_turn(client, sid, text)
 
 
@@ -80,9 +79,7 @@ def test_search_returns_ranked_snippets(tmp_path: Path) -> None:
     _turn(client, sid, "load /tmp/alpha.parquet")
     _turn(client, sid, "compare /tmp/alpha.parquet to /tmp/beta.parquet")
 
-    body = client.get(
-        f"/v1/sessions/{sid}/messages/search?q=alpha.parquet"
-    ).json()
+    body = client.get(f"/v1/sessions/{sid}/messages/search?q=alpha.parquet").json()
     matches = body["matches"]
     assert len(matches) >= 2
     for m in matches:

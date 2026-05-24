@@ -35,6 +35,7 @@ def instrumented_forward(arc_memory: Any, agent_id: str) -> Callable:
         ... def forward(self, question, file_context=""):
         ...     return dspy.Prediction(analysis="...", recommendations="...")
     """
+
     def decorator(forward_fn: Callable) -> Callable:
         @functools.wraps(forward_fn)
         def wrapper(*args, **kwargs):
@@ -86,6 +87,7 @@ def instrumented_forward(arc_memory: Any, agent_id: str) -> Callable:
                 arc_memory.store_invocation(invocation)
 
         return wrapper
+
     return decorator
 
 
@@ -147,7 +149,13 @@ def _extract_output(result: Any) -> Dict[str, Any]:
             pass
     else:
         # Fallback: try common expert output fields
-        for field in ("analysis", "recommendations", "visualization_description", "file_path", "answer"):
+        for field in (
+            "analysis",
+            "recommendations",
+            "visualization_description",
+            "file_path",
+            "answer",
+        ):
             val = getattr(result, field, None)
             if val is not None:
                 output_data[field] = _to_safe_text(val)[:500]

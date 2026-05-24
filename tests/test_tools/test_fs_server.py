@@ -84,18 +84,14 @@ def test_gateway_apply_edit_write_respects_late_global_permission_gate(
     seen: list[str] = []
 
     try:
-        set_global_permission_gate(
-            lambda name, _args: seen.append(name) or "allow"
-        )
+        set_global_permission_gate(lambda name, _args: seen.append(name) or "allow")
         executor.call_tool(
             "fs_apply_edit_write",
             {"filepath": str(target), "new_content": "allowed\n"},
         )
         assert target.read_text(encoding="utf-8") == "allowed\n"
 
-        set_global_permission_gate(
-            lambda name, _args: seen.append(name) or "deny"
-        )
+        set_global_permission_gate(lambda name, _args: seen.append(name) or "deny")
         with pytest.raises(PermissionError, match="denied"):
             executor.call_tool(
                 "fs_apply_edit_write",

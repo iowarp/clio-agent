@@ -58,9 +58,7 @@ class SACFormatExpert(dspy.Module):
         self._owns_executor = tool_executor is None
         self._tool_executor = tool_executor or create_sync_tool_executor(gateway)
         self._tools = [
-            tool
-            for tool in self._tool_executor.to_dspy_tools()
-            if tool.name.startswith("sac_")
+            tool for tool in self._tool_executor.to_dspy_tools() if tool.name.startswith("sac_")
         ]
 
     def forward(self, question: str, file_context: str = "") -> dspy.Prediction:
@@ -229,8 +227,7 @@ class SACFormatExpert(dspy.Module):
         if isinstance(result, dict) and result.get("error"):
             return ExpertResult(
                 analysis=(
-                    "Could not create SAC waveform plot: "
-                    f"{format_tool_error(result['error'])}"
+                    f"Could not create SAC waveform plot: {format_tool_error(result['error'])}"
                 ),
                 recommendations="Verify the staged file and SAC plotting tool contract.",
                 source="deterministic",

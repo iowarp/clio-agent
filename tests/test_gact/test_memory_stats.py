@@ -51,9 +51,7 @@ class FakeARC:
 @pytest.fixture()
 def client_with_arc(tmp_path: Path) -> TestClient:
     arc = FakeARC(hits=80, misses=20, conv_index_size=12, inv_index_size=42)
-    return TestClient(
-        build_app(sessions_path=tmp_path / "s.json", arc=arc)
-    )
+    return TestClient(build_app(sessions_path=tmp_path / "s.json", arc=arc))
 
 
 def test_memory_stats_reports_cache_counters(client_with_arc: TestClient) -> None:

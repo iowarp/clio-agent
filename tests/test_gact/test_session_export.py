@@ -23,9 +23,7 @@ class _Agent:
 
 
 def _client(tmp_path: Path) -> TestClient:
-    return TestClient(
-        build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
-    )
+    return TestClient(build_app(sessions_path=tmp_path / "s.json", agent=_Agent()))
 
 
 def test_export_unknown_session_404s(tmp_path: Path) -> None:
@@ -59,9 +57,7 @@ def test_export_then_import_round_trip(tmp_path: Path) -> None:
     assert len(rows) == 4
     # Original user prompts preserved.
     user_texts = {
-        p["text"] for m in rows
-        for p in m["parts"]
-        if m["role"] == "user" and p["type"] == "text"
+        p["text"] for m in rows for p in m["parts"] if m["role"] == "user" and p["type"] == "text"
     }
     assert {"first", "second"} == user_texts
 

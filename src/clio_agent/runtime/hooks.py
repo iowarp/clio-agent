@@ -62,9 +62,7 @@ class HookRegistry:
 
     def __init__(self, *, hooks_dir: Optional[Path] = None) -> None:
         self._dir = hooks_dir if hooks_dir is not None else _default_hooks_dir()
-        self._hooks: dict[str, list[Callable[..., Any]]] = {
-            event: [] for event in _KNOWN_EVENTS
-        }
+        self._hooks: dict[str, list[Callable[..., Any]]] = {event: [] for event in _KNOWN_EVENTS}
         self._lock = threading.Lock()
         self._load()
 
@@ -75,9 +73,7 @@ class HookRegistry:
             try:
                 module = self._import_path(path)
             except Exception as exc:
-                logger.warning(
-                    "[clio-hooks] failed to load %s: %r", path, exc
-                )
+                logger.warning("[clio-hooks] failed to load %s: %r", path, exc)
                 continue
             for event in _KNOWN_EVENTS:
                 fn = getattr(module, event, None)
@@ -98,9 +94,7 @@ class HookRegistry:
         spec.loader.exec_module(module)
         return module
 
-    def fire(
-        self, event: str, /, *args: Any, **kwargs: Any
-    ) -> list[Any]:
+    def fire(self, event: str, /, *args: Any, **kwargs: Any) -> list[Any]:
         """Invoke every registered hook for ``event`` in load order.
 
         Returns the list of return values for hooks that didn't
@@ -119,9 +113,7 @@ class HookRegistry:
                 results.append(fn(*args, **kwargs))
             except PermissionError:
                 if event.startswith("post_") or event == "on_error":
-                    logger.warning(
-                        "[clio-hooks] post-event hook raised; swallowing"
-                    )
+                    logger.warning("[clio-hooks] post-event hook raised; swallowing")
                     continue
                 raise
             except Exception as exc:  # noqa: BLE001

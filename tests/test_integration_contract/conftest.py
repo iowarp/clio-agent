@@ -105,9 +105,7 @@ def post_user(http: httpx.Client, sid: str, text: str) -> str:
     return ack.json()["message_id"]
 
 
-def turn(
-    http: httpx.Client, sid: str, text: str, *, timeout: float = 180.0
-) -> dict[str, Any]:
+def turn(http: httpx.Client, sid: str, text: str, *, timeout: float = 180.0) -> dict[str, Any]:
     """POST + wait for assistant + return the assistant dict."""
 
     user_id = post_user(http, sid, text)

@@ -32,9 +32,7 @@ class _FakeAgent:
 
 @pytest.fixture()
 def client(tmp_path: Path) -> TestClient:
-    return TestClient(
-        build_app(sessions_path=tmp_path / "sessions.json", agent=_FakeAgent())
-    )
+    return TestClient(build_app(sessions_path=tmp_path / "sessions.json", agent=_FakeAgent()))
 
 
 def test_metrics_empty_state(client: TestClient) -> None:

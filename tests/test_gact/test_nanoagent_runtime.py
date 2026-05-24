@@ -70,10 +70,9 @@ def test_spawn_many_empty_returns_empty() -> None:
 
 def test_render_input_uses_question_field_when_present() -> None:
     from clio_agent.runtime.nanoagent import _render_input
+
     assert _render_input({"question": "hello"}) == "hello"
-    assert (
-        _render_input({"file": "/tmp/x", "mode": "read"}).startswith("file=")
-    )
+    assert _render_input({"file": "/tmp/x", "mode": "read"}).startswith("file=")
 
 
 def test_analysis_expert_detects_parallel_items() -> None:
@@ -84,12 +83,10 @@ def test_analysis_expert_detects_parallel_items() -> None:
 
     # Multi-item triggers fan-out.
     assert _detect_parallel_items("validate /tmp/a.parquet and /tmp/b.parquet") == [
-        "/tmp/a.parquet", "/tmp/b.parquet",
+        "/tmp/a.parquet",
+        "/tmp/b.parquet",
     ]
-    assert (
-        len(_detect_parallel_items("check schema, statistics, and quality"))
-        == 3
-    )
+    assert len(_detect_parallel_items("check schema, statistics, and quality")) == 3
     # Single-item questions don't fan out.
     assert _detect_parallel_items("validate /tmp/a.parquet") == []
     # No trigger word -> no fan-out.

@@ -129,8 +129,7 @@ class TestRun:
     def test_run_rejects_small_trainset(self, runner):
         """run() rejects trainset with fewer than 5 examples."""
         small_trainset = [
-            dspy.Example(question="q", analysis="a").with_inputs("question")
-            for _ in range(4)
+            dspy.Example(question="q", analysis="a").with_inputs("question") for _ in range(4)
         ]
 
         with pytest.raises(ValueError, match="at least 5"):
@@ -165,8 +164,15 @@ class TestRun:
 
         # Verify result dict has all expected keys
         expected_keys = {
-            "optimized", "before_score", "after_score", "improvement_delta",
-            "p_value", "is_significant", "variant_record", "train_size", "val_size",
+            "optimized",
+            "before_score",
+            "after_score",
+            "improvement_delta",
+            "p_value",
+            "is_significant",
+            "variant_record",
+            "train_size",
+            "val_size",
         }
         assert set(result.keys()) == expected_keys
 
@@ -186,7 +192,9 @@ class TestRun:
 
     @patch("clio_agent.optimizer.runner.dspy.SIMBA")
     @patch("clio_agent.optimizer.runner.dspy.evaluate.Evaluate")
-    def test_run_saves_variant_with_correct_args(self, mock_evaluate_cls, mock_simba_cls, runner, tmp_path):
+    def test_run_saves_variant_with_correct_args(
+        self, mock_evaluate_cls, mock_simba_cls, runner, tmp_path
+    ):
         """run() calls variant_manager.save_variant with correct arguments."""
         mock_evaluator = MagicMock()
         mock_evaluator.side_effect = [50.0, 70.0]
@@ -214,4 +222,7 @@ class TestRun:
         # Evaluate was constructed with the custom metric_fn
         mock_evaluate_cls.assert_called()
         call_kwargs = mock_evaluate_cls.call_args
-        assert call_kwargs.kwargs.get("metric") == metric_fn or call_kwargs[1].get("metric") == metric_fn
+        assert (
+            call_kwargs.kwargs.get("metric") == metric_fn
+            or call_kwargs[1].get("metric") == metric_fn
+        )

@@ -6,6 +6,7 @@ from typing import Any, Dict, Optional
 
 try:
     from lru import LRU  # lru-dict package
+
     HAS_LRU_DICT = True
 except ImportError:
     HAS_LRU_DICT = False

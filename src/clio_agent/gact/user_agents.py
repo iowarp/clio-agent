@@ -67,20 +67,29 @@ class UserAgentStore:
             return
         for row in data.get("agents", []):
             try:
-                self._agents[row["id"]] = UserAgent(**{
-                    k: row[k]
-                    for k in (
-                        "id", "title", "description", "source",
-                        "system_prompt", "default_provider", "default_model",
-                        "tier", "specialization",
-                    )
-                    if k in row
-                } | {
-                    "parameters": dict(row.get("parameters", {})),
-                    "keywords": list(row.get("keywords", [])),
-                    "tools": list(row.get("tools", [])),
-                    "metadata": dict(row.get("metadata", {})),
-                })
+                self._agents[row["id"]] = UserAgent(
+                    **{
+                        k: row[k]
+                        for k in (
+                            "id",
+                            "title",
+                            "description",
+                            "source",
+                            "system_prompt",
+                            "default_provider",
+                            "default_model",
+                            "tier",
+                            "specialization",
+                        )
+                        if k in row
+                    }
+                    | {
+                        "parameters": dict(row.get("parameters", {})),
+                        "keywords": list(row.get("keywords", [])),
+                        "tools": list(row.get("tools", [])),
+                        "metadata": dict(row.get("metadata", {})),
+                    }
+                )
             except Exception:
                 continue
 

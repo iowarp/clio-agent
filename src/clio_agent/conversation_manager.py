@@ -39,6 +39,7 @@ class ConversationManagerSignature(dspy.Signature):
         - key_topics: Main topics discussed
         - context_for_response: Relevant context
     """
+
     history: dspy.History = dspy.InputField(desc="Conversation history")
     current_question: str = dspy.InputField(desc="Current question")
     summary: str = dspy.OutputField(desc="Summary of context")
@@ -63,7 +64,7 @@ class ConversationManager(dspy.Module):
         self.history_buffer.append({"role": role, "content": content})
         if len(self.history_buffer) > self.max_history_length:
             # Keep only recent messages
-            self.history_buffer = self.history_buffer[-self.max_history_length:]
+            self.history_buffer = self.history_buffer[-self.max_history_length :]
 
     def get_history(self) -> dspy.History:
         """Get current history as dspy.History."""

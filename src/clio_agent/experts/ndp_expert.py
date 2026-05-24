@@ -62,9 +62,7 @@ class NDPExpert(dspy.Module):
         self._owns_executor = tool_executor is None
         self._tool_executor = tool_executor or create_sync_tool_executor(gateway)
         self._tools = [
-            tool
-            for tool in self._tool_executor.to_dspy_tools()
-            if tool.name.startswith("ndp_")
+            tool for tool in self._tool_executor.to_dspy_tools() if tool.name.startswith("ndp_")
         ]
 
     def forward(self, question: str, file_context: str = "") -> dspy.Prediction:

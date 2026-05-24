@@ -27,9 +27,7 @@ class _Agent:
 
 
 def _client(tmp_path: Path, perms) -> TestClient:
-    return TestClient(
-        build_app(sessions_path=tmp_path / "s.json", agent=_Agent(perms))
-    )
+    return TestClient(build_app(sessions_path=tmp_path / "s.json", agent=_Agent(perms)))
 
 
 def _turn(client: TestClient, sid: str) -> dict:
@@ -40,16 +38,19 @@ def _turn(client: TestClient, sid: str) -> dict:
 
 
 def test_permission_requested_then_allowed(tmp_path: Path) -> None:
-    client = _client(tmp_path, perms=[
-        {
-            "tool_call": {
-                "call_id": "c1",
-                "tool_name": "shell.exec",
-                "input": {"cmd": "rm -rf /tmp/scratch"},
-            },
-            "summary": "destructive shell command",
-        }
-    ])
+    client = _client(
+        tmp_path,
+        perms=[
+            {
+                "tool_call": {
+                    "call_id": "c1",
+                    "tool_name": "shell.exec",
+                    "input": {"cmd": "rm -rf /tmp/scratch"},
+                },
+                "summary": "destructive shell command",
+            }
+        ],
+    )
     sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
     _turn(client, sid)
 

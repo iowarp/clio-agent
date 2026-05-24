@@ -26,9 +26,7 @@ def test_empty_task_list(client: TestClient, sid: str) -> None:
 
 
 def test_create_then_list(client: TestClient, sid: str) -> None:
-    new = client.post(
-        f"/v1/sessions/{sid}/tasks", json={"title": "validate schema"}
-    ).json()
+    new = client.post(f"/v1/sessions/{sid}/tasks", json={"title": "validate schema"}).json()
     assert new["title"] == "validate schema"
     assert new["status"] == "pending"
     assert new["id"].startswith("task_")
@@ -38,21 +36,15 @@ def test_create_then_list(client: TestClient, sid: str) -> None:
 
 
 def test_patch_status(client: TestClient, sid: str) -> None:
-    new = client.post(
-        f"/v1/sessions/{sid}/tasks", json={"title": "x"}
-    ).json()
-    patched = client.patch(
-        f"/v1/tasks/{new['id']}", json={"status": "completed"}
-    ).json()
+    new = client.post(f"/v1/sessions/{sid}/tasks", json={"title": "x"}).json()
+    patched = client.patch(f"/v1/tasks/{new['id']}", json={"status": "completed"}).json()
     assert patched["status"] == "completed"
     rows = client.get(f"/v1/sessions/{sid}/tasks").json()["tasks"]
     assert rows[0]["status"] == "completed"
 
 
 def test_delete(client: TestClient, sid: str) -> None:
-    new = client.post(
-        f"/v1/sessions/{sid}/tasks", json={"title": "x"}
-    ).json()
+    new = client.post(f"/v1/sessions/{sid}/tasks", json={"title": "x"}).json()
     assert client.delete(f"/v1/tasks/{new['id']}").status_code == 204
     rows = client.get(f"/v1/sessions/{sid}/tasks").json()["tasks"]
     assert rows == []

@@ -96,8 +96,7 @@ class SIMBARunner:
         """
         if len(trainset) < 5:
             raise ValueError(
-                f"Need at least 5 training examples for 20/80 split. "
-                f"Got {len(trainset)}."
+                f"Need at least 5 training examples for 20/80 split. Got {len(trainset)}."
             )
 
         if metric_fn is None:

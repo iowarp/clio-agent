@@ -59,6 +59,4 @@ def complete_turn(
                 break
         time.sleep(poll_interval)
 
-    raise TimeoutError(
-        f"turn for user message {user_id!r} did not settle within {timeout:g}s"
-    )
+    raise TimeoutError(f"turn for user message {user_id!r} did not settle within {timeout:g}s")

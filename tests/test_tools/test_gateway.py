@@ -160,7 +160,8 @@ async def test_list_capabilities_inside_running_loop_has_no_unawaited_warning(re
 
     gc.collect()
     leaked = [
-        warning for warning in recwarn
+        warning
+        for warning in recwarn
         if issubclass(warning.category, RuntimeWarning)
         and "was never awaited" in str(warning.message)
     ]
@@ -171,8 +172,6 @@ async def test_list_capabilities_inside_running_loop_has_no_unawaited_warning(re
 async def test_gateway_error_handling():
     """Test that errors propagate correctly through gateway."""
     async with Client(gateway) as client:
-        result = await client.call_tool(
-            "hdf5_analyze_file", {"filepath": "/nonexistent/file.h5"}
-        )
+        result = await client.call_tool("hdf5_analyze_file", {"filepath": "/nonexistent/file.h5"})
         data = _parse_result(result)
         assert "error" in data

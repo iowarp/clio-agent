@@ -65,11 +65,13 @@ def test_no_agent_no_arc_overall_is_unavailable(tmp_path: Path) -> None:
 
 
 def test_fake_agent_flagged_degraded(tmp_path: Path) -> None:
-    resp = _health_response(build_app(
-        sessions_path=tmp_path / "s.json",
-        agent=_RealishAgent(),
-        arc=_FakeARC(),
-    ))
+    resp = _health_response(
+        build_app(
+            sessions_path=tmp_path / "s.json",
+            agent=_RealishAgent(),
+            arc=_FakeARC(),
+        )
+    )
     assert resp.status_code == 200
     body = resp.json()
     rows = {r["name"]: r for r in body["integrations"]}
@@ -83,11 +85,13 @@ def test_fake_agent_flagged_degraded(tmp_path: Path) -> None:
 
 
 def test_broken_arc_reports_unavailable(tmp_path: Path) -> None:
-    resp = _health_response(build_app(
-        sessions_path=tmp_path / "s.json",
-        agent=_RealishAgent(),
-        arc=_BrokenARC(),
-    ))
+    resp = _health_response(
+        build_app(
+            sessions_path=tmp_path / "s.json",
+            agent=_RealishAgent(),
+            arc=_BrokenARC(),
+        )
+    )
     assert resp.status_code == 503
     body = resp.json()
     rows = {r["name"]: r for r in body["integrations"]}
@@ -96,11 +100,13 @@ def test_broken_arc_reports_unavailable(tmp_path: Path) -> None:
 
 
 def test_ready_health_returns_200(tmp_path: Path) -> None:
-    resp = _health_response(build_app(
-        sessions_path=tmp_path / "s.json",
-        agent=_ProductionLikeAgent(),
-        arc=_FakeARC(),
-    ))
+    resp = _health_response(
+        build_app(
+            sessions_path=tmp_path / "s.json",
+            agent=_ProductionLikeAgent(),
+            arc=_FakeARC(),
+        )
+    )
     assert resp.status_code == 200
     body = resp.json()
     assert body["overall_status"] == "ready"

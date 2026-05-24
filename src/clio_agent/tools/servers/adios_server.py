@@ -130,7 +130,9 @@ def _adios2_unavailable() -> dict[str, Any]:
     }
 
 
-def _inspect_variables_with_adios2(filepath: Path, variable_name: str | None = None) -> dict[str, Any]:
+def _inspect_variables_with_adios2(
+    filepath: Path, variable_name: str | None = None
+) -> dict[str, Any]:
     """Inspect BP variables through ADIOS2 when the optional dependency exists."""
     try:
         from adios2 import FileReader  # type: ignore[import-not-found]

@@ -324,7 +324,10 @@ class SessionStore:
             if edit_mode is not None and edit_mode in {"diff", "whole", "patch"}:
                 sess.edit_mode = edit_mode
             if routing_mode is not None and routing_mode in {
-                "auto", "chat", "experts", "reasoning_only",
+                "auto",
+                "chat",
+                "experts",
+                "reasoning_only",
             }:
                 sess.routing_mode = routing_mode
             if model is not None:

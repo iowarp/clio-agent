@@ -30,9 +30,7 @@ class _BrokenARC:
 
 @pytest.fixture()
 def client(tmp_path: Path) -> TestClient:
-    return TestClient(
-        build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
-    )
+    return TestClient(build_app(sessions_path=tmp_path / "s.json", agent=_Agent()))
 
 
 def test_commands_listed(client: TestClient) -> None:
@@ -55,9 +53,7 @@ def test_dispatch_clear_drops_messages(client: TestClient) -> None:
 
     sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
     complete_turn(client, sid, "first")
-    assert (
-        len(client.get(f"/v1/sessions/{sid}/messages").json()["messages"]) == 2
-    )
+    assert len(client.get(f"/v1/sessions/{sid}/messages").json()["messages"]) == 2
 
     resp = client.post(f"/v1/sessions/{sid}/commands/clear").json()
     assert resp["command"] == "/clear"
