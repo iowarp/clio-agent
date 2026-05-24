@@ -564,6 +564,19 @@ class ClioAgent(dspy.Module):
                 answer = ""
         except Exception as e:
             success = False
+            inferred_selected = self._selected_expert_from_trace(trace)
+            if selected == "chat" and inferred_selected != "chat":
+                selected = inferred_selected
+                route = RouteDecision(
+                    target=selected,
+                    source=route.source,
+                    reason=(
+                        f"{route.reason} Selected expert inferred from completed "
+                        "tool provenance after the turn failed."
+                    ).strip(),
+                    confidence=route.confidence,
+                    capabilities=route.capabilities,
+                )
             if isinstance(e, RoutingError):
                 error_info = self._with_recovery_actions(e.to_dict())
                 answer = ""
@@ -1745,8 +1758,22 @@ class ClioAgent(dspy.Module):
                 )
             }
 
+        owner = self._selected_expert_for_tool(tool_name)
         if tool_name in visualization_tools:
-            return self._execute_visualization_tool(tool_name, visualization_tools[tool_name], args)
+            result = self._execute_visualization_tool(
+                tool_name,
+                visualization_tools[tool_name],
+                args,
+            )
+            self._record_direct_tool_handoff(
+                trace,
+                expert_id=owner,
+                tool_name=tool_name,
+                args=args,
+                result=result,
+                duration_ms=self._last_tool_duration_ms(trace, tool_name),
+            )
+            return result
 
         start = time.time()
         try:
@@ -1764,7 +1791,48 @@ class ClioAgent(dspy.Module):
             duration_ms=duration_ms,
             ok=tool_result_ok(result),
         )
+        self._record_direct_tool_handoff(
+            trace,
+            expert_id=owner,
+            tool_name=tool_name,
+            args=args,
+            result=result,
+            duration_ms=duration_ms,
+        )
         return result
+
+    @staticmethod
+    def _last_tool_duration_ms(trace: RunTrace, tool_name: str) -> float:
+        """Return the latest recorded duration for a tool in an active trace."""
+        for observation in reversed(trace.tools):
+            if observation.tool == tool_name:
+                return observation.duration_ms
+        return 0.0
+
+    def _record_direct_tool_handoff(
+        self,
+        trace: RunTrace,
+        *,
+        expert_id: str,
+        tool_name: str,
+        args: Mapping[str, Any],
+        result: Any,
+        duration_ms: float,
+    ) -> None:
+        """Record the expert boundary for a planner-selected direct tool call."""
+        if not expert_id:
+            return
+        self._record_expert_handoff(
+            trace,
+            expert_id=expert_id,
+            dispatch_target=tool_name,
+            stage="direct_tool",
+            input_summary=f"{tool_name}({', '.join(sorted(str(key) for key in args))})",
+            result=result,
+            status="success" if tool_result_ok(result) else "failure",
+            duration_ms=duration_ms,
+            error=None if tool_result_ok(result) else self._coerce_text(result),
+        )
 
     def _tool_action_scope_error(
         self,
