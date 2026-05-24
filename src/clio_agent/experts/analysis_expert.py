@@ -429,19 +429,90 @@ class AnalysisExpert(dspy.Module):
 
     def run(self, request: ExpertRequest) -> ExpertResult:
         """Run the typed native expert boundary."""
-        parquet_paths = extract_file_paths(request.question, request.file_context, {".parquet"})
+        question_parquet_paths = extract_file_paths(request.question, "", {".parquet"})
+        question_csv_paths = extract_file_paths(request.question, "", {".csv"})
+        question_seismic_paths = extract_file_paths(request.question, "", SAC_SUFFIXES)
+        explicit_families = sum(
+            bool(paths)
+            for paths in (question_parquet_paths, question_csv_paths, question_seismic_paths)
+        )
+        if explicit_families == 0 and self._should_synthesize_multi_source_evidence(request):
+            return self._synthesize_without_tools(request, include_retained_evidence_anchors=True)
+
+        if question_parquet_paths:
+            return self._inspect_parquet_file(request, str(question_parquet_paths[0]))
+        if question_csv_paths:
+            return self._inspect_csv_file(str(question_csv_paths[0]))
+        if question_seismic_paths:
+            return self.sac_format_expert.compute_trace_statistics(str(question_seismic_paths[0]))
+
+        parquet_paths = extract_file_paths("", request.file_context, {".parquet"})
         if parquet_paths:
             return self._inspect_parquet_file(request, str(parquet_paths[0]))
 
-        csv_paths = extract_file_paths(request.question, request.file_context, {".csv"})
+        csv_paths = extract_file_paths("", request.file_context, {".csv"})
         if csv_paths:
             return self._inspect_csv_file(str(csv_paths[0]))
 
-        seismic_paths = extract_file_paths(request.question, request.file_context, SAC_SUFFIXES)
+        seismic_paths = extract_file_paths("", request.file_context, SAC_SUFFIXES)
         if seismic_paths:
             return self.sac_format_expert.compute_trace_statistics(str(seismic_paths[0]))
 
         return self._synthesize_without_tools(request)
+
+    @classmethod
+    def _should_synthesize_multi_source_evidence(cls, request: ExpertRequest) -> bool:
+        """Return whether the request is a broad synthesis over retained evidence.
+
+        The analysis expert should not narrow a readiness/review/compare question
+        to the first concrete path found in retained context. Format-specific
+        native tools are still used for direct inspection questions and explicit
+        validation fan-out handled before ``run()``.
+        """
+        combined = "\n".join([request.question, request.file_context]).lower()
+        if "[retained session context]" not in combined and "[compact summary]" not in combined:
+            return False
+
+        if not cls._asks_for_multi_source_synthesis(request.question):
+            return False
+
+        families = set()
+        suffix_groups: tuple[tuple[str, set[str]], ...] = (
+            ("hdf5", {".h5", ".hdf5"}),
+            ("parquet", {".parquet"}),
+            ("csv", {".csv"}),
+            ("adios", {".bp", ".bp4", ".bp5"}),
+            ("sac", SAC_SUFFIXES),
+        )
+        for family, suffixes in suffix_groups:
+            if extract_file_paths(request.question, request.file_context, suffixes):
+                families.add(family)
+        return len(families) >= 2
+
+    @staticmethod
+    def _asks_for_multi_source_synthesis(question: str) -> bool:
+        """Return whether a question asks for synthesis, review, or comparison."""
+        lowered = question.lower()
+        synthesis_terms = (
+            "all stages",
+            "all files",
+            "multi-source",
+            "multiple source",
+            "cross-file",
+            "hdf5",
+            "bp5",
+            "adios",
+            "csv",
+            "compare",
+            "line up",
+            "across",
+            "collaborator",
+            "review",
+            "strongest",
+            "cite the strongest evidence",
+            "what still needs checking",
+        )
+        return any(term in lowered for term in synthesis_terms)
 
     def _inspect_parquet_file(self, request: ExpertRequest, filepath: str) -> ExpertResult:
         """Inspect a concrete Parquet path through deterministic gateway tools."""
@@ -543,7 +614,10 @@ class AnalysisExpert(dspy.Module):
     @staticmethod
     def _select_stat_columns(question: str, columns: list[dict[str, Any]]) -> list[str]:
         q_lower = question.lower()
-        wants_stats = any(token in q_lower for token in ("stat", "profile", "quality", "null"))
+        wants_stats = any(
+            token in q_lower
+            for token in ("stat", "profile", "quality", "null", "anomaly", "triage", "outlier")
+        )
         named: list[str] = []
         for col in columns:
             name = str(col.get("name", ""))
@@ -556,6 +630,26 @@ class AnalysisExpert(dspy.Module):
         if named:
             return named
         if wants_stats:
+            selected: list[str] = []
+            if "anomaly" in q_lower:
+                selected.extend(
+                    str(col["name"])
+                    for col in columns
+                    if col.get("name") and "anomaly" in str(col["name"]).lower()
+                )
+            for col in columns:
+                name = str(col.get("name", ""))
+                dtype = str(col.get("type", "")).lower()
+                if not name or name in selected:
+                    continue
+                if name.lower().endswith("_id") or name.lower() in {"id", "run_id"}:
+                    continue
+                if any(token in dtype for token in ("int", "float", "double", "decimal")):
+                    selected.append(name)
+                if len(selected) >= 4:
+                    break
+            if selected:
+                return selected[:4]
             return [str(col["name"]) for col in columns[:4] if col.get("name")]
         return []
 
@@ -692,7 +786,12 @@ class AnalysisExpert(dspy.Module):
             metadata={"expert": "analysis", "format": "csv", "filepath": filepath},
         )
 
-    def _synthesize_without_tools(self, request: ExpertRequest) -> ExpertResult:
+    def _synthesize_without_tools(
+        self,
+        request: ExpertRequest,
+        *,
+        include_retained_evidence_anchors: bool = False,
+    ) -> ExpertResult:
         """Use DSPy for conceptual guidance when no file can be inspected."""
         synthesis = self.agent(
             question=request.question,
@@ -700,13 +799,55 @@ class AnalysisExpert(dspy.Module):
         )
         analysis = str(getattr(synthesis, "analysis", "")).strip()
         recommendations = str(getattr(synthesis, "recommendations", "")).strip()
-        if not analysis:
+        if not analysis or analysis.lower() in {"none", "null", "n/a"}:
             raise ValueError("AnalysisExpert synthesis returned an empty analysis.")
+        if include_retained_evidence_anchors:
+            anchors = self._retained_evidence_anchor_text(request.file_context)
+            if anchors:
+                analysis = f"{analysis.rstrip()}\n\n{anchors}"
         return ExpertResult(
             analysis=analysis,
             recommendations=recommendations,
             source="dspy",
             metadata={"expert": "analysis", "mode": "conceptual_synthesis"},
+        )
+
+    @staticmethod
+    def _retained_evidence_anchor_text(file_context: str, *, max_lines: int = 36) -> str:
+        """Return exact retained identifiers from compacted context.
+
+        This is intentionally a labeled evidence appendix, not a synthesized
+        answer. It prevents later provider synthesis from dropping exact paths,
+        variable names, and caveat markers that survived compaction.
+        """
+        marker = "[exact retained evidence index]"
+        marker_at = file_context.lower().find(marker)
+        if marker_at < 0:
+            return ""
+
+        section = file_context[marker_at:].splitlines()
+        kept: list[str] = []
+        current_heading = ""
+        allowed_headings = {"paths:", "identifiers:", "caveats/errors:"}
+        for raw_line in section[1:]:
+            line = raw_line.strip()
+            if not line:
+                continue
+            if line.lower() in allowed_headings:
+                current_heading = line
+                kept.append(line)
+                continue
+            if not current_heading or not line.startswith("- "):
+                continue
+            kept.append(line)
+            if len(kept) >= max_lines:
+                break
+
+        if not kept:
+            return ""
+        return (
+            "Retained evidence anchors (exact identifiers from compacted context):\n"
+            + "\n".join(kept)
         )
 
     @staticmethod

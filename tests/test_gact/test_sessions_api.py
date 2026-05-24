@@ -6,17 +6,227 @@ sessions_path so tests don't share state.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
 
+from clio_agent.arc.schema import Conversation as ARCConversation
 from clio_agent.gact.app import build_app
+from clio_agent.gact.types import Message, Part, Tokens
 
 
 @pytest.fixture()
 def client(tmp_path: Path) -> TestClient:
     return TestClient(build_app(sessions_path=tmp_path / "sessions.json"))
+
+
+def _seed_text_message(client: TestClient, sid: str, text: str) -> None:
+    now = datetime.now(timezone.utc).isoformat()
+    message = Message(
+        id="msg_seed",
+        session_id=sid,
+        role="user",
+        created_at=now,
+        updated_at=now,
+        parts=[Part(id="part_seed", type="text", text=text)],
+        tokens=Tokens(),
+        stop_reason="end_turn",
+    )
+    client.app.state.messages[sid] = [message]
+    client.app.state.message_store.replace_session(sid, [message])
+
+
+def _seed_text_messages(client: TestClient, sid: str, messages: list[tuple[str, str]]) -> None:
+    now = datetime.now(timezone.utc).isoformat()
+    seeded: list[Message] = []
+    for index, (role, text) in enumerate(messages):
+        seeded.append(
+            Message(
+                id=f"msg_seed_{index}",
+                session_id=sid,
+                role=role,
+                created_at=now,
+                updated_at=now,
+                parts=[Part(id=f"part_seed_{index}", type="text", text=text)],
+                tokens=Tokens(),
+                stop_reason="end_turn",
+            )
+        )
+    client.app.state.messages[sid] = seeded
+    client.app.state.message_store.replace_session(sid, seeded)
+
+
+class CompactArc:
+    """Minimal ARC fake for compact-memory tests."""
+
+    def __init__(self) -> None:
+        self.conversation: ARCConversation | None = None
+        self.stored: list[ARCConversation] = []
+
+    def get_conversation(self, session_id: str) -> ARCConversation | None:
+        if self.conversation and self.conversation.session_id == session_id:
+            return self.conversation
+        return None
+
+    def store_conversation(self, conversation: ARCConversation) -> None:
+        self.conversation = conversation
+        self.stored.append(conversation)
+
+
+class RetryCompactAgent:
+    """Fake compact agent that succeeds only when the endpoint uses retry wrapping."""
+
+    def __init__(self) -> None:
+        self.chat_calls = 0
+        self.retry_labels: list[str] = []
+        self.arc = CompactArc()
+
+    def _run_chat_agent(self, question: str, session_id: str) -> str:
+        self.chat_calls += 1
+        if self.chat_calls == 1:
+            raise RuntimeError("Tokens/minute limit exceeded")
+        assert "important experiment details" in question
+        assert "evidence-preserving compact memory" in question
+        assert "Do not invent dataset names" in question
+        assert session_id == ""
+        return "Recovered compact summary."
+
+    def _call_with_transient_provider_retries(
+        self,
+        label: str,
+        call: Callable[[], Any],
+    ) -> Any:
+        self.retry_labels.append(label)
+        try:
+            return call()
+        except RuntimeError as exc:
+            if "tokens/minute" not in str(exc).lower():
+                raise
+            return call()
+
+    def forward(self, question: str, session_id: str) -> Any:  # pragma: no cover
+        raise AssertionError("compact tests should not call forward()")
+
+
+class ExhaustedCompactAgent(RetryCompactAgent):
+    """Fake compact agent whose retry wrapper exhausts and re-raises."""
+
+    def _run_chat_agent(self, question: str, session_id: str) -> str:
+        self.chat_calls += 1
+        raise RuntimeError("Tokens/minute limit exceeded")
+
+
+class CapturingCompactAgent(RetryCompactAgent):
+    """Fake compact agent that records the prompt sent to the summarizer."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.prompts: list[str] = []
+
+    def _run_chat_agent(self, question: str, session_id: str) -> str:
+        self.chat_calls += 1
+        self.prompts.append(question)
+        assert session_id == ""
+        return "captured exact identifiers"
+
+    def _call_with_transient_provider_retries(
+        self,
+        label: str,
+        call: Callable[[], Any],
+    ) -> Any:
+        self.retry_labels.append(label)
+        return call()
+
+
+def test_compact_retries_transient_provider_errors(tmp_path: Path) -> None:
+    agent = RetryCompactAgent()
+    with TestClient(build_app(sessions_path=tmp_path / "sessions.json", agent=agent)) as c:
+        sid = c.post("/v1/sessions", json={"title": "compact me"}).json()["id"]
+        _seed_text_message(c, sid, "important experiment details and next steps")
+
+        resp = c.post(f"/v1/sessions/{sid}/compact", json={})
+
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["compacted"] is True
+        assert body["summary"] == "Recovered compact summary."
+        assert agent.retry_labels == ["compact_summary"]
+        assert agent.chat_calls == 2
+        assert agent.arc.conversation is not None
+        arc_messages = agent.arc.conversation.messages
+        assert len(arc_messages) == 1
+        assert arc_messages[0].metadata["source"] == "gact_compact"
+        assert "Recovered compact summary." in arc_messages[0].content
+        messages = c.get(f"/v1/sessions/{sid}/messages").json()["messages"]
+        assert len(messages) == 1
+        assert messages[0]["parts"][0]["metadata"]["synthetic"] == "compact_summary"
+        assert "Recovered compact summary." in messages[0]["parts"][0]["text"]
+
+
+def test_compact_surfaces_exhausted_transient_provider_errors(tmp_path: Path) -> None:
+    agent = ExhaustedCompactAgent()
+    with TestClient(build_app(sessions_path=tmp_path / "sessions.json", agent=agent)) as c:
+        sid = c.post("/v1/sessions", json={"title": "compact me"}).json()["id"]
+        _seed_text_message(c, sid, "important experiment details and next steps")
+
+        resp = c.post(f"/v1/sessions/{sid}/compact", json={})
+
+        assert resp.status_code == 502
+        body = resp.json()
+        assert body["error"]["error"] == "upstream_error"
+        assert body["error"]["recoverable"] is True
+        assert "compact summarisation failed" in body["error"]["message"]
+        assert "Tokens/minute limit exceeded" in body["error"]["message"]
+        assert agent.retry_labels == ["compact_summary"]
+
+
+def test_compact_prompt_preserves_late_scientific_identifiers(tmp_path: Path) -> None:
+    agent = CapturingCompactAgent()
+    with TestClient(build_app(sessions_path=tmp_path / "sessions.json", agent=agent)) as c:
+        sid = c.post("/v1/sessions", json={"title": "compact identifiers"}).json()["id"]
+        long_prefix = "background filler " * 180
+        _seed_text_messages(
+            c,
+            sid,
+            [
+                (
+                    "assistant",
+                    long_prefix
+                    + "HDF5 dataset /plasma/electron_temperature shape=(128, 64) units=keV.",
+                ),
+                (
+                    "assistant",
+                    long_prefix
+                    + "Parquet column anomaly_score mean=0.021 max=0.93 pressure_pa min=101325.",
+                ),
+                (
+                    "assistant",
+                    long_prefix
+                    + "CSV columns event_id,status,operator_note,timestamp_utc still need semantics.",
+                ),
+            ],
+        )
+
+        resp = c.post(f"/v1/sessions/{sid}/compact", json={})
+
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert "[exact retained evidence index]" in body["summary"]
+        assert "/plasma/electron_temperature" in body["summary"]
+        assert "anomaly_score" in body["summary"]
+        assert "operator_note" in body["summary"]
+        assert agent.retry_labels == ["compact_summary"]
+        assert len(agent.prompts) == 1
+        prompt = agent.prompts[0]
+        assert "evidence-preserving compact memory" in prompt
+        assert "Do not invent dataset names" in prompt
+        assert "/plasma/electron_temperature" in prompt
+        assert "anomaly_score" in prompt
+        assert "operator_note" in prompt
 
 
 def test_post_v1_sessions_returns_created_session(client: TestClient) -> None:
@@ -69,9 +279,7 @@ def test_get_v1_sessions_lists_newest_first(client: TestClient) -> None:
     assert resp.status_code == 200
     body = resp.json()
     ids = [s["id"] for s in body["sessions"]]
-    assert ids == [second["id"], first["id"]], (
-        f"expected newest-first; got {ids}"
-    )
+    assert ids == [second["id"], first["id"]], f"expected newest-first; got {ids}"
 
 
 def test_get_v1_sessions_filter_by_workspace(client: TestClient) -> None:
@@ -88,9 +296,7 @@ def test_get_v1_sessions_filter_by_workspace(client: TestClient) -> None:
     assert resp.status_code == 200
     ids = [s["id"] for s in resp.json()["sessions"]]
     assert len(ids) == 2
-    assert all(
-        s["workspace_id"] == ws_a for s in resp.json()["sessions"]
-    )
+    assert all(s["workspace_id"] == ws_a for s in resp.json()["sessions"])
 
 
 def test_get_v1_sessions_sid_returns_single(client: TestClient) -> None:

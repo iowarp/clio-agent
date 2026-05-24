@@ -63,6 +63,31 @@ class TestFilter:
         assert raw["conversation"][0]["role"] == "user"
         assert raw["conversation"][0]["content"] == "What is HDF5?"
 
+    def test_filter_preserves_message_metadata(self, tmp_path):
+        """Filter should keep message metadata needed by compaction-aware rendering."""
+        arc = ARCMemory(data_dir=str(tmp_path / "arc"))
+        session_id = "filter_metadata"
+
+        conv = Conversation(
+            session_id=session_id,
+            user_id="test",
+            created_at=time.time(),
+            messages=[
+                Message(
+                    role="assistant",
+                    content="[compact summary]\nHDF5, Parquet, CSV, and BP5 evidence.",
+                    timestamp=time.time(),
+                    metadata={"synthetic": "compact_summary"},
+                ),
+            ],
+        )
+        arc.store_conversation(conv)
+
+        compiler = ContextCompiler(arc)
+        raw = compiler._filter("next question", session_id)
+
+        assert raw["conversation"][0]["metadata"]["synthetic"] == "compact_summary"
+
     def test_filter_returns_dataset_profiles(self, tmp_path):
         """Filter should find dataset profiles for the session."""
         arc = ARCMemory(data_dir=str(tmp_path / "arc"))
@@ -212,6 +237,70 @@ class TestCompact:
         # Conversation should have more words than profiles (40% vs 30%)
         if conv_words > 0 and prof_words > 0:
             assert conv_words > prof_words
+
+    def test_compact_summary_messages_keep_retained_evidence(self, tmp_path):
+        """Compact summaries should not be clipped like ordinary chat turns."""
+        arc = ARCMemory(data_dir=str(tmp_path / "arc"))
+        compiler = ContextCompiler(arc)
+        retained = (
+            "[compact summary]\n"
+            "HDF5 partial compression and electron_temperature evidence. "
+            + ("filler " * 80)
+            + "Parquet anomaly_score statistics, CSV event schema, and BP5 ADIOS2 caveat."
+        )
+
+        text = compiler._section_to_text(
+            "conversation",
+            [
+                {
+                    "role": "assistant",
+                    "content": retained,
+                    "metadata": {"synthetic": "compact_summary"},
+                }
+            ],
+        )
+
+        assert "electron_temperature" in text
+        assert "anomaly_score" in text
+        assert "CSV event schema" in text
+        assert "BP5 ADIOS2 caveat" in text
+
+    def test_compact_summary_truncation_preserves_exact_evidence_index(self, tmp_path):
+        """Long compact summaries should keep the exact retained evidence tail."""
+        arc = ARCMemory(data_dir=str(tmp_path / "arc"))
+        compiler = ContextCompiler(arc)
+        retained = (
+            "[compact summary]\n"
+            "HDF5 head evidence with fusion_run.h5. "
+            + ("middle filler " * 400)
+            + "\n[exact retained evidence index]\n"
+            "Paths:\n"
+            "- D:\\data\\fusion_run.h5\n"
+            "- D:\\data\\facility_measurements.parquet\n"
+            "- D:\\data\\sensor_events.csv\n"
+            "- D:\\data\\gray_scott.bp5\n"
+            "Identifiers:\n"
+            "- /plasma/electron_temperature\n"
+            "- anomaly_score\n"
+            "- operator_note\n"
+        )
+
+        text = compiler._section_to_text(
+            "conversation",
+            [
+                {
+                    "role": "assistant",
+                    "content": retained,
+                    "metadata": {"synthetic": "compact_summary"},
+                }
+            ],
+        )
+
+        assert "fusion_run.h5" in text
+        assert "[exact retained evidence index]" in text
+        assert "/plasma/electron_temperature" in text
+        assert "anomaly_score" in text
+        assert "operator_note" in text
 
 
 class TestEnrich:

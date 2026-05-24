@@ -493,13 +493,15 @@ class DataExpert(dspy.Module):
             for token in ("hdf5_analyze_dataset", "analyze_dataset", "analyze dataset")
         ):
             return True
-        if re.search(r"\b[\w.-]+/[\w./-]+\b", question):
+        dataset_question = question
+        for path in extract_file_paths(question, "", {".h5", ".hdf5"}):
+            dataset_question = dataset_question.replace(str(path), " ")
+        if re.search(r"\b[\w.-]+/[\w./-]+\b", dataset_question):
             return any(
                 token in q_lower
                 for token in (
                     "chunk",
                     "compression",
-                    "dataset",
                     "deep dive",
                     "focus",
                     "inside",

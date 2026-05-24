@@ -532,6 +532,33 @@ class TestSessionFileResolution:
 
         assert resolved == parquet_path
 
+    def test_multi_format_followup_does_not_collapse_to_last_file(self, agent, tmp_path):
+        hdf5_path = tmp_path / "fusion_run.h5"
+        parquet_path = tmp_path / "facility.parquet"
+        csv_path = tmp_path / "events.csv"
+        bp_path = tmp_path / "gray scott" / "data.bp5"
+        hdf5_path.touch()
+        parquet_path.touch()
+        csv_path.write_text("event_id,status\n1,ok\n", encoding="utf-8")
+        bp_path.mkdir(parents=True)
+        conversation = MagicMock()
+        conversation.messages = [
+            MagicMock(content=f"HDF5 evidence: {hdf5_path}"),
+            MagicMock(content=f"Parquet evidence: {parquet_path}"),
+            MagicMock(content=f"CSV evidence: {csv_path}"),
+            MagicMock(content=f"BP5 evidence: {bp_path}"),
+        ]
+        agent.arc.get_conversation = MagicMock(return_value=conversation)
+
+        question = (
+            "Cite the strongest retained evidence from the HDF5, Parquet, CSV, and BP5 stages."
+        )
+
+        resolved = agent._resolve_session_file_reference(question, "session-1")
+
+        assert resolved is None
+        assert agent._question_with_file_context(question, str(bp_path)) == question
+
     def test_followup_ignores_degraded_missing_basename_when_full_path_exists(
         self,
         agent,
@@ -574,6 +601,57 @@ class TestSelectedExpertForTool:
 
 
 class TestRunAgentLoop:
+    def test_expert_dispatch_retries_transient_provider_error(self, agent, monkeypatch):
+        monkeypatch.setenv("CLIO_TRANSIENT_PROVIDER_RETRY_DELAYS", "0")
+        agent.analysis_expert = MagicMock(
+            side_effect=[
+                RuntimeError("litellm.RateLimitError: Tokens/minute limit exceeded"),
+                MagicMock(analysis="retained evidence summary", recommendations="retry passed"),
+            ]
+        )
+
+        selected, answer, expert_result, error_info = agent._dispatch_expert_action(
+            expert_id="analysis",
+            question="Use retained HDF5, Parquet, CSV, and BP5 evidence.",
+            file_context="",
+            trace=_trace(),
+        )
+
+        assert selected == "analysis"
+        assert "retained evidence summary" in answer
+        assert expert_result is not None
+        assert error_info is None
+        assert agent.analysis_expert.call_count == 2
+
+    def test_expert_dispatch_receives_retained_session_context(self, agent):
+        agent.analysis_expert = MagicMock(
+            return_value=MagicMock(analysis="summary", recommendations="review")
+        )
+        session_context = (
+            "[Session Context]\n"
+            "assistant: [compact summary] HDF5 partial compression; Parquet stats; "
+            "CSV conversion; BP5 ADIOS2 missing.\n\n"
+            "[Available Tools]\n"
+            "shell_bash: run a utility command\n"
+        )
+
+        selected, answer, _, error_info = agent._dispatch_expert_action(
+            expert_id="analysis",
+            question="Use retained HDF5, Parquet, CSV, and BP5 evidence.",
+            file_context="",
+            session_context=session_context,
+            trace=_trace(),
+        )
+
+        assert selected == "analysis"
+        assert "summary" in answer
+        assert error_info is None
+        expert_context = agent.analysis_expert.call_args.kwargs["file_context"]
+        assert "[Retained session context]" in expert_context
+        assert "HDF5 partial compression" in expert_context
+        assert "[Available Tools]" not in expert_context
+        assert "shell_bash" not in expert_context
+
     def test_tool_action_then_answer(self, agent):
         agent._plan_next_action = MagicMock(
             side_effect=[
@@ -618,6 +696,138 @@ class TestRunAgentLoop:
         assert result is expert_result
         assert error_info is None
         assert route.target == "ndp_catalog"
+        agent._dispatch_expert_action.assert_called_once()
+        agent._execute_tool_action.assert_not_called()
+
+    def test_parquet_schema_tool_promotes_to_analysis_for_statistical_triage(self, agent):
+        agent._plan_next_action = MagicMock(
+            return_value={
+                "action": "tool",
+                "tool": "parquet_analyze_schema",
+                "args": {"filepath": "measurements.parquet"},
+                "reason": "inspect parquet",
+            }
+        )
+        expert_result = object()
+        agent._dispatch_expert_action = MagicMock(
+            return_value=("analysis", "stats complete", expert_result, None)
+        )
+        agent._execute_tool_action = MagicMock(return_value={"value": "should not run"})
+
+        selected, answer, result, error_info, route = agent._run_agent_loop(
+            question=(
+                "Based on the Parquet file we just profiled, compute column statistics "
+                "for an anomaly triage view."
+            ),
+            session_context="",
+            file_context=r"Current file: D:\data\measurements.parquet",
+            trace=_trace(),
+        )
+
+        assert selected == "analysis"
+        assert answer == "stats complete"
+        assert result is expert_result
+        assert error_info is None
+        assert route.target == "analysis"
+        agent._dispatch_expert_action.assert_called_once()
+        agent._execute_tool_action.assert_not_called()
+
+    def test_direct_answer_promotes_retained_scientific_synthesis_to_analysis(self, agent):
+        agent._plan_next_action = MagicMock(
+            return_value={
+                "action": "answer",
+                "answer": "This looks ready.",
+                "reason": "direct synthesis",
+            }
+        )
+        expert_result = object()
+        agent._dispatch_expert_action = MagicMock(
+            return_value=("analysis", "retained synthesis", expert_result, None)
+        )
+
+        selected, answer, result, error_info, route = agent._run_agent_loop(
+            question=(
+                "After compaction, cite the strongest evidence from all stages for "
+                "collaborator review."
+            ),
+            session_context=(
+                "[Retained session context]\n"
+                "[compact summary] HDF5 fusion_run.h5, Parquet facility.parquet, "
+                "CSV sensor_events.csv, and BP5 gray_scott.bp5 evidence survived.\n"
+                "[exact retained evidence index]\n"
+                "Identifiers:\n- plasma/electron_temperature\n- anomaly_score\n"
+            ),
+            file_context="",
+            trace=_trace(),
+        )
+
+        assert selected == "analysis"
+        assert answer == "retained synthesis"
+        assert result is expert_result
+        assert error_info is None
+        assert route.target == "analysis"
+        agent._dispatch_expert_action.assert_called_once()
+
+    def test_analysis_expert_action_promotes_visual_artifact_request(self, agent, tmp_path):
+        csv_path = tmp_path / "sensor_events.csv"
+        csv_path.write_text("event_id,status\n1,ok\n", encoding="utf-8")
+        agent._plan_next_action = MagicMock(
+            return_value={
+                "action": "expert",
+                "expert": "analysis",
+                "question": "",
+                "reason": "needs csv data",
+            }
+        )
+        expert_result = object()
+        agent._dispatch_expert_action = MagicMock(
+            return_value=("visualization", "saved chart", expert_result, None)
+        )
+
+        selected, answer, result, error_info, route = agent._run_agent_loop(
+            question="Create a PNG bar chart of the status distribution.",
+            session_context="",
+            file_context=f"Current file: {csv_path}",
+            trace=_trace(),
+        )
+
+        assert selected == "visualization"
+        assert answer == "saved chart"
+        assert result is expert_result
+        assert error_info is None
+        assert route.target == "visualization"
+        agent._dispatch_expert_action.assert_called_once()
+        assert agent._dispatch_expert_action.call_args.kwargs["expert_id"] == "visualization"
+
+    def test_analysis_tool_action_promotes_visual_artifact_request(self, agent, tmp_path):
+        parquet_path = tmp_path / "measurements.parquet"
+        parquet_path.touch()
+        agent._plan_next_action = MagicMock(
+            return_value={
+                "action": "tool",
+                "tool": "parquet_compute_statistics",
+                "args": {"filepath": str(parquet_path), "column": "quality_flag"},
+                "reason": "inspect before chart",
+            }
+        )
+        expert_result = object()
+        agent._dispatch_expert_action = MagicMock(
+            return_value=("visualization", "saved dashboard", expert_result, None)
+        )
+        agent._execute_tool_action = MagicMock(return_value={"value": "should not run"})
+
+        selected, answer, result, error_info, route = agent._run_agent_loop(
+            question="Create a compact dashboard PNG for the Parquet file we just reviewed.",
+            session_context="",
+            file_context=f"Current file: {parquet_path}",
+            trace=_trace(),
+        )
+
+        assert selected == "visualization"
+        assert answer == "saved dashboard"
+        assert result is expert_result
+        assert error_info is None
+        assert route.target == "visualization"
         agent._dispatch_expert_action.assert_called_once()
         agent._execute_tool_action.assert_not_called()
 

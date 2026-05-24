@@ -15,7 +15,7 @@ from typing import Any, Literal, Mapping
 from clio_agent.arc.schema import ToolCall
 
 RouteTarget = str
-RouteSource = Literal["deterministic", "dspy", "guard"]
+RouteSource = Literal["deterministic", "dspy", "guard", "recovery"]
 ExpertSource = Literal["deterministic", "dspy", "fallback"]
 
 SCIENTIFIC_PATH_SUFFIX_PATTERN = r"(?:hdf5|h5|parquet|csv|bp5|bp4|bp|sac|tar|tgz|gz)"
@@ -30,6 +30,10 @@ QUOTED_FILE_PATH_RE = re.compile(
 )
 WINDOWS_FILE_PATH_RE = re.compile(
     rf"(?<![A-Za-z])(?P<path>[A-Za-z]:[^\r\n'\"`]*?\.{SCIENTIFIC_PATH_SUFFIX_PATTERN})",
+    re.IGNORECASE,
+)
+ROOTED_FILE_PATH_RE = re.compile(
+    rf"(?<![A-Za-z0-9_.-])(?P<path>(?:~|/|\.{{1,2}}/)[^\r\n'\"`]*?\.{SCIENTIFIC_PATH_SUFFIX_PATTERN})",
     re.IGNORECASE,
 )
 
@@ -274,10 +278,12 @@ def extract_file_paths(question: str, file_context: str, suffixes: set[str]) -> 
         candidates: list[tuple[int, int, int, str]] = []
         for match in QUOTED_FILE_PATH_RE.finditer(text):
             candidates.append((match.start(), match.end(), 0, match.group("path")))
-        for match in WINDOWS_FILE_PATH_RE.finditer(text):
+        for match in ROOTED_FILE_PATH_RE.finditer(text):
             candidates.append((match.start(), match.end(), 1, match.group("path")))
-        for match in FILE_PATH_RE.finditer(text):
+        for match in WINDOWS_FILE_PATH_RE.finditer(text):
             candidates.append((match.start(), match.end(), 2, match.group("path")))
+        for match in FILE_PATH_RE.finditer(text):
+            candidates.append((match.start(), match.end(), 3, match.group("path")))
 
         handled_spans: list[tuple[int, int]] = []
         for start, end, _priority, raw_path in sorted(candidates):

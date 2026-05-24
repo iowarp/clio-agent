@@ -173,6 +173,19 @@ class TestAnalysisExpert:
         finally:
             expert.close()
 
+    def test_none_conceptual_synthesis_surfaces_error(self):
+        """Literal None provider text is a failure, not a normal answer."""
+        expert = AnalysisExpert()
+        try:
+            expert.agent = Mock(
+                return_value=dspy.Prediction(analysis="None", recommendations="None")
+            )
+
+            with pytest.raises(ValueError, match="empty analysis"):
+                expert(question="How should I profile this tabular dataset?")
+        finally:
+            expert.close()
+
     def test_analysis_expert_forward_uses_native_parquet_tools(self, sample_parquet):
         """Explicit Parquet questions should run tools without LM calls."""
         expert = AnalysisExpert()
@@ -275,6 +288,156 @@ class TestAnalysisExpert:
             assert "Parallel validation completed" not in result.analysis
         finally:
             expert.close()
+
+    def test_retained_multi_source_synthesis_does_not_narrow_to_first_file(
+        self, sample_hdf5, sample_parquet, tmp_path
+    ):
+        """Compacted multi-source evidence should not become first-file tool inspection."""
+        csv_path = tmp_path / "sensor_events.csv"
+        csv_path.write_text("event_id,status,operator_note\n1,ok,checked\n", encoding="utf-8")
+        expert = AnalysisExpert()
+        try:
+            expert.agent = Mock(
+                return_value=dspy.Prediction(
+                    analysis=(
+                        "Retained evidence cites /plasma/electron_temperature, "
+                        "anomaly_score, event_id, and BP5 profiling caveats."
+                    ),
+                    recommendations="Reinspect CSV semantics and BP5 variables before review.",
+                )
+            )
+
+            result = expert(
+                question=(
+                    "After compaction, use the retained evidence to decide whether all stages "
+                    "are ready for collaborator review."
+                ),
+                file_context=(
+                    "[Retained session context]\n[compact summary]\n"
+                    f"HDF5: {sample_hdf5} includes /plasma/electron_temperature.\n"
+                    f"Parquet: {sample_parquet} includes anomaly_score.\n"
+                    f"CSV: {csv_path} includes event_id and operator_note.\n"
+                    "BP5: C:\\data\\run.bp5 profiling succeeded but variables need ADIOS2."
+                    "\n\n[exact retained evidence index]\n"
+                    "Paths:\n"
+                    f"- {sample_hdf5}\n"
+                    f"- {sample_parquet}\n"
+                    f"- {csv_path}\n"
+                    "- C:\\data\\run.bp5\n"
+                    "Identifiers:\n"
+                    "- /plasma/electron_temperature\n"
+                    "- anomaly_score\n"
+                    "- operator_note\n"
+                    "Caveats/errors:\n"
+                    "- BP5 variables need ADIOS2."
+                ),
+            )
+
+            assert result.synthesis_source == "dspy"
+            assert not result.tool_provenance
+            assert expert.agent.call_count == 1
+            assert "anomaly_score" in result.analysis
+            assert "BP5" in result.analysis
+            assert "Retained evidence anchors" in result.analysis
+            assert str(csv_path) in result.analysis
+        finally:
+            expert.close()
+
+    def test_single_parquet_triage_ignores_unrelated_retained_file_context(
+        self, sample_hdf5, sample_parquet
+    ):
+        """Old retained context should not turn a single-file follow-up into synthesis."""
+        expert = AnalysisExpert()
+        try:
+            expert.agent = Mock(
+                return_value=dspy.Prediction(
+                    analysis="should not synthesize",
+                    recommendations="should not synthesize",
+                )
+            )
+
+            result = expert(
+                question=(
+                    "Based on the Parquet file we just profiled, compute whatever schema "
+                    "or column statistics you need for a quick anomaly triage view."
+                ),
+                file_context=(
+                    "[Retained session context]\n"
+                    f"Earlier HDF5 note mentioned {sample_hdf5}.\n"
+                    f"Current session file: {sample_parquet}"
+                ),
+            )
+
+            assert result.synthesis_source == "deterministic"
+            assert result.metadata["format"] == "parquet"
+            assert not expert.agent.called
+            tools = [tool.tool for tool in result.tool_provenance]
+            assert tools[0] == "parquet_analyze_schema"
+            assert "parquet_compute_statistics" in tools
+        finally:
+            expert.close()
+
+    def test_explicit_csv_path_overrides_retained_multi_file_context(
+        self, sample_hdf5, sample_parquet, tmp_path
+    ):
+        """Retained multi-file context should not steal an explicit CSV request."""
+        csv_path = tmp_path / "sensor_events.csv"
+        csv_path.write_text(
+            "event_id,status,operator_note,timestamp_utc\n1,ok,checked,2026-05-24T00:00:00Z\n",
+            encoding="utf-8",
+        )
+        expert = AnalysisExpert()
+        try:
+            expert.agent = Mock(
+                return_value=dspy.Prediction(
+                    analysis="should not synthesize",
+                    recommendations="should not synthesize",
+                )
+            )
+            result = expert(
+                question=(
+                    f"This event stream came with the run: {csv_path}. "
+                    "What columns does it contain, and where are status and operator_note?"
+                ),
+                file_context=(
+                    "[Retained session context]\n"
+                    f"Earlier HDF5 note mentioned {sample_hdf5}.\n"
+                    f"Earlier Parquet note mentioned {sample_parquet}.\n"
+                    "Earlier BP5 note mentioned D:\\runs\\gray_scott.bp5."
+                ),
+            )
+
+            assert result.metadata["format"] == "csv"
+            assert not expert.agent.called
+            assert [tool.tool for tool in result.tool_provenance] == ["csv_read_table"]
+            assert "event_id" in result.analysis
+            assert "operator_note" in result.analysis
+        finally:
+            expert.close()
+
+    def test_anomaly_triage_selects_semantic_numeric_columns(self):
+        columns = [
+            {"name": "sample_id", "type": "int64"},
+            {"name": "run_id", "type": "string"},
+            {"name": "site", "type": "string"},
+            {"name": "temperature_k", "type": "double"},
+            {"name": "pressure_pa", "type": "double"},
+            {"name": "humidity_pct", "type": "double"},
+            {"name": "vibration_mm_s", "type": "double"},
+            {"name": "anomaly_score", "type": "double"},
+        ]
+
+        selected = AnalysisExpert._select_stat_columns(
+            "Compute a quick anomaly triage view.",
+            columns,
+        )
+
+        assert selected == [
+            "anomaly_score",
+            "temperature_k",
+            "pressure_pa",
+            "humidity_pct",
+        ]
 
     def test_analysis_expert_rejects_invalid_parquet_schema_shape(self):
         """Malformed Parquet schema payloads should not produce file facts."""

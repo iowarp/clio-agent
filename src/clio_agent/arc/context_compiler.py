@@ -143,7 +143,12 @@ class ContextCompiler:
             if conv.messages:
                 recent_messages = conv.messages[-5:]
                 raw["conversation"] = [
-                    {"role": m.role, "content": m.content} for m in recent_messages
+                    {
+                        "role": m.role,
+                        "content": m.content,
+                        "metadata": dict(getattr(m, "metadata", {}) or {}),
+                    }
+                    for m in recent_messages
                 ]
 
             # Last 3 routing decisions
@@ -247,9 +252,17 @@ class ContextCompiler:
             for msg in data:
                 role = msg.get("role", "unknown")
                 content = msg.get("content", "")
-                # Truncate long messages
-                if len(content) > 200:
-                    content = content[:200] + "..."
+                metadata = msg.get("metadata", {}) or {}
+                is_compact_summary = metadata.get("synthetic") == "compact_summary" or str(
+                    content
+                ).startswith("[compact summary]")
+                max_chars = 1600 if is_compact_summary else 200
+                if len(content) > max_chars:
+                    content = self._truncate_conversation_content(
+                        str(content),
+                        max_chars=max_chars,
+                        preserve_evidence_index=is_compact_summary,
+                    )
                 lines.append(f"{role}: {content}")
             return "\n".join(lines)
 
@@ -294,6 +307,30 @@ class ContextCompiler:
             return "\n".join(lines)
 
         return str(data)
+
+    @staticmethod
+    def _truncate_conversation_content(
+        content: str,
+        *,
+        max_chars: int,
+        preserve_evidence_index: bool = False,
+    ) -> str:
+        """Truncate conversation text while preserving compact evidence tails."""
+        marker = "[exact retained evidence index]"
+        marker_at = content.lower().find(marker.lower())
+        if (
+            not preserve_evidence_index
+            or marker_at < 0
+            or marker_at <= max_chars // 2
+            or len(content) <= max_chars
+        ):
+            return content[:max_chars] + "..."
+
+        tail_budget = min(max_chars // 2, len(content) - marker_at)
+        head_budget = max_chars - tail_budget
+        head = content[:head_budget].rstrip()
+        tail = content[marker_at : marker_at + tail_budget].lstrip()
+        return f"{head}\n...[truncated compact summary; exact evidence index retained]...\n{tail}"
 
     def _enrich(
         self,

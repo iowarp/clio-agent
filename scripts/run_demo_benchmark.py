@@ -42,9 +42,16 @@ class DemoCase:
     expected_handoff_agents: tuple[str, ...] = ()
     expected_terms: tuple[str, ...] = ()
     min_children: int = 0
+    min_tool_calls: int = 0
+    min_handoff_events: int = 0
     expects_error: bool = False
     complexity_tags: tuple[str, ...] = ()
     routing_mode: str = "auto"
+    setup_prompts: tuple[str, ...] = ()
+    compact_before_prompt: bool = False
+    provider_swap_preset_id: str = ""
+    provider_swap_model: str = ""
+    expected_actions: tuple[str, ...] = ()
 
 
 @dataclass
@@ -57,6 +64,8 @@ class DemoResult:
     message: dict[str, Any]
     provider: dict[str, Any]
     child_sessions: list[dict[str, Any]] = field(default_factory=list)
+    setup_messages: list[dict[str, Any]] = field(default_factory=list)
+    actions: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def selected_agent(self) -> str:
@@ -107,6 +116,11 @@ class DemoResult:
         return len(self.expert_handoffs)
 
     @property
+    def visible_event_count(self) -> int:
+        """Return visible evidence events useful for stress scoring."""
+        return len(self.tools) + len(self.expert_handoffs) + len(self.child_sessions)
+
+    @property
     def blocking_error(self) -> dict[str, Any] | None:
         """Return error_info that should fail or satisfy error-focused cases."""
         return _blocking_error(self.message)
@@ -139,6 +153,10 @@ class DemoResult:
         for expected_agent in self.case.expected_handoff_agents:
             if expected_agent not in self.handoff_agent_ids:
                 return False
+        if self.case.min_tool_calls and len(self.tools) < self.case.min_tool_calls:
+            return False
+        if self.case.min_handoff_events and self.handoff_event_count < self.case.min_handoff_events:
+            return False
         for prefix in self.case.expected_tool_prefixes:
             if not any(name.startswith(prefix) for name in self.tool_names):
                 return False
@@ -148,6 +166,12 @@ class DemoResult:
                 return False
         if len(self.child_sessions) < self.case.min_children:
             return False
+        for expected_action in self.case.expected_actions:
+            if not any(
+                action.get("type") == expected_action and action.get("ok") is True
+                for action in self.actions
+            ):
+                return False
         return True
 
     @property
@@ -168,6 +192,8 @@ class DemoResult:
             + len(self.expert_handoffs) * 4
             + len(self.child_sessions) * 6
             + len(self.artifacts) * 4
+            + len(self.setup_messages) * 4
+            + len(self.actions) * 5
             + len(self.case.complexity_tags) * 2
         )
 
@@ -290,6 +316,103 @@ def _provider(http: httpx.Client) -> dict[str, Any]:
         return {"error": str(exc)}
 
 
+def _compact_session(http: httpx.Client, session_id: str, timeout_s: float) -> dict[str, Any]:
+    """Run the GACT compaction endpoint and return an audit action row."""
+    started = time.monotonic()
+    try:
+        response = http.post(f"/v1/sessions/{session_id}/compact", json={}, timeout=timeout_s)
+        payload = response.json()
+        return {
+            "type": "compact",
+            "ok": response.status_code == 200 and payload.get("compacted") is True,
+            "status_code": response.status_code,
+            "elapsed_s": round(time.monotonic() - started, 3),
+            "result": payload,
+        }
+    except Exception as exc:
+        return {
+            "type": "compact",
+            "ok": False,
+            "elapsed_s": round(time.monotonic() - started, 3),
+            "error": repr(exc),
+        }
+
+
+def _swap_provider_for_case(http: httpx.Client, case: DemoCase, timeout_s: float) -> dict[str, Any]:
+    """Swap the live LM provider using a preset, then wait for readiness."""
+    started = time.monotonic()
+    provider_info = _provider(http)
+    preset = next(
+        (
+            row
+            for row in provider_info.get("presets", [])
+            if row.get("id") == case.provider_swap_preset_id
+        ),
+        None,
+    )
+    if not preset:
+        return {
+            "type": "provider_swap",
+            "ok": False,
+            "elapsed_s": round(time.monotonic() - started, 3),
+            "error": f"provider preset not found: {case.provider_swap_preset_id}",
+        }
+    model = case.provider_swap_model or preset.get("suggested_model", "")
+    payload = {
+        "provider": preset.get("provider", ""),
+        "api_base": preset.get("api_base", ""),
+        "model": model,
+        "api_key": "",
+        "temperature": 0.0,
+        "max_tokens": 4096,
+    }
+    try:
+        response = http.put("/v1/providers/lm", json=payload)
+        response.raise_for_status()
+        first = response.json()
+        deadline = time.monotonic() + timeout_s
+        current = first
+        while time.monotonic() < deadline:
+            current = _provider(http)
+            if current.get("state") == "ready":
+                return {
+                    "type": "provider_swap",
+                    "ok": True,
+                    "elapsed_s": round(time.monotonic() - started, 3),
+                    "preset_id": case.provider_swap_preset_id,
+                    "model": current.get("model") or model,
+                    "result": current,
+                }
+            if current.get("state") == "error":
+                return {
+                    "type": "provider_swap",
+                    "ok": False,
+                    "elapsed_s": round(time.monotonic() - started, 3),
+                    "preset_id": case.provider_swap_preset_id,
+                    "model": model,
+                    "result": current,
+                }
+            time.sleep(1.0)
+        return {
+            "type": "provider_swap",
+            "ok": False,
+            "elapsed_s": round(time.monotonic() - started, 3),
+            "preset_id": case.provider_swap_preset_id,
+            "model": model,
+            "error": "provider swap did not reach ready before timeout",
+            "result": current,
+        }
+    except Exception as exc:
+        return {
+            "type": "provider_swap",
+            "ok": False,
+            "elapsed_s": round(time.monotonic() - started, 3),
+            "preset_id": case.provider_swap_preset_id,
+            "model": model,
+            "error": repr(exc),
+        }
+
+
 def _case_row(result: DemoResult) -> dict[str, Any]:
     return {
         "case": result.case.case_id,
@@ -309,7 +432,11 @@ def _case_row(result: DemoResult) -> dict[str, Any]:
         "expert_handoffs": result.expert_handoffs,
         "handoff_agent_ids": result.handoff_agent_ids,
         "handoff_event_count": result.handoff_event_count,
+        "visible_event_count": result.visible_event_count,
         "child_sessions": result.child_sessions,
+        "setup_turn_count": len(result.setup_messages),
+        "setup_message_ids": [row.get("id") for row in result.setup_messages],
+        "actions": result.actions,
         "artifacts": result.artifacts,
         "error_info": result.message.get("error_info"),
         "partial_error": result.partial_error,
@@ -320,6 +447,58 @@ def _case_row(result: DemoResult) -> dict[str, Any]:
         "answer_excerpt": result.text[:1200],
         "complexity_tags": list(result.case.complexity_tags),
     }
+
+
+def _result_from_case_row(row: dict[str, Any]) -> DemoResult:
+    """Rehydrate a recorded JSONL evidence row for markdown report rendering."""
+    case = DemoCase(
+        case_id=str(row.get("case") or ""),
+        title=str(row.get("title") or row.get("case") or ""),
+        category=str(row.get("category") or ""),
+        session_group=str(row.get("session_group") or row.get("case") or "recorded"),
+        prompt=str(row.get("prompt") or ""),
+        expected=str(row.get("expected") or ""),
+        why=str(row.get("why") or ""),
+        routing_mode=str(row.get("routing_mode") or "auto"),
+        expects_error=str(row.get("outcome") or "") == "expected_error",
+        complexity_tags=tuple(str(tag) for tag in row.get("complexity_tags", []) or []),
+    )
+    routing = dict(row.get("routing_decision") or {})
+    if routing and routing.get("type") != "routing_decision":
+        routing["type"] = "routing_decision"
+    message = {
+        "parts": [
+            routing,
+            {"type": "text", "text": str(row.get("answer_excerpt") or "")},
+        ],
+        "metadata": {
+            "tools_called": row.get("tools_called") or [],
+            "expert_handoffs": row.get("expert_handoffs") or [],
+        },
+        "error_info": row.get("error_info"),
+        "stop_reason": row.get("stop_reason"),
+    }
+    setup_messages = [{"id": message_id} for message_id in row.get("setup_message_ids", []) or []]
+    return DemoResult(
+        case=case,
+        session_id=str(row.get("session_id") or ""),
+        elapsed_s=float(row.get("elapsed_s") or 0.0),
+        message=message,
+        provider=dict(row.get("provider") or {}),
+        child_sessions=list(row.get("child_sessions") or []),
+        setup_messages=setup_messages,
+        actions=list(row.get("actions") or []),
+    )
+
+
+def render_report_from_jsonl(output_jsonl: Path, report_path: Path) -> None:
+    """Render a markdown report from an existing benchmark JSONL evidence file."""
+    rows: list[dict[str, Any]] = []
+    for line in output_jsonl.read_text(encoding="utf-8").splitlines():
+        if line.strip():
+            rows.append(json.loads(line))
+    results = [_result_from_case_row(row) for row in rows]
+    report_path.write_text(_render_report(results, output_jsonl.resolve()), encoding="utf-8")
 
 
 def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
@@ -383,6 +562,49 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             why="Demonstrates session memory and current-file resolution instead of copy/paste paths.",
         ),
         DemoCase(
+            case_id="context_pressure_compaction_followup",
+            title="Context pressure plus explicit compaction",
+            category="memory-hardening",
+            session_group="context_pressure",
+            expected_actions=("compact",),
+            expected_terms=("electron_temperature", "anomaly_score"),
+            setup_prompts=(
+                (
+                    f"Build a detailed evidence note from {h5}: include every dataset name, "
+                    "shape, units, compression, and at least one risk or follow-up check."
+                ),
+                (
+                    f"Now add a detailed evidence note from {parquet}: include row-group facts, "
+                    "schema, and statistics for temperature_k, pressure_pa, humidity_pct, "
+                    "vibration_mm_s, and anomaly_score."
+                ),
+                (
+                    f"Now add a detailed evidence note from {csv_path}: include the event columns, "
+                    "status semantics, operator notes, and any timestamp caveats."
+                ),
+                (
+                    f'Now add a detailed evidence note from the BP5 run at "{adios}": include '
+                    "container/profiling information and dependency caveats."
+                ),
+            ),
+            compact_before_prompt=True,
+            timeout_s=900.0,
+            complexity_tags=("context-pressure", "compaction", "memory", "multi-turn"),
+            prompt=(
+                "After the compaction step, use the retained evidence to decide whether the "
+                "experiment looks ready for collaborator review. Cite the strongest evidence "
+                "from the HDF5, Parquet, CSV, and BP5 stages, and name what still needs checking."
+            ),
+            expected=(
+                "A long multi-turn session is compacted, then CLIO answers from retained evidence "
+                "instead of losing prior HDF5/Parquet/CSV/BP5 conclusions."
+            ),
+            why=(
+                "This stresses context retention and makes compaction a first-class benchmark "
+                "event rather than an untested UI command."
+            ),
+        ),
+        DemoCase(
             case_id="workflow_csv_event_schema",
             title="CSV event stream schema",
             category="analysis",
@@ -413,6 +635,38 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             ),
             expected="Visualization expert resolves prior Parquet context and creates a PNG artifact.",
             why="Shows multi-turn handoff from analysis to visualization with a real saved artifact.",
+        ),
+        DemoCase(
+            case_id="csv_status_visual_summary",
+            title="CSV status distribution chart",
+            category="visualization",
+            session_group="csv_visual",
+            expected_agent="visualization",
+            expected_tools=("plot_bar_chart",),
+            expected_terms=(".png", "status"),
+            setup_prompts=(
+                (
+                    f"Inspect the CSV event stream at {csv_path}. Record the columns and "
+                    "which field represents event status."
+                ),
+            ),
+            timeout_s=620.0,
+            complexity_tags=(
+                "csv",
+                "visualization",
+                "artifact",
+                "multi-turn",
+                "analysis-to-visualization",
+            ),
+            prompt=(
+                "Create a PNG bar chart of the event status distribution from the CSV stream "
+                "we just inspected. Tell me where it was saved and what field was plotted."
+            ),
+            expected="Visualization resolves the prior CSV context and plots the status field.",
+            why=(
+                "Exercises a CSV analysis-to-visualization handoff and verifies that charting "
+                "is not limited to Parquet dashboards."
+            ),
         ),
         DemoCase(
             case_id="hdf5_dataset_focus",
@@ -447,6 +701,36 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             ),
             expected="Analysis coordinates tool-backed child workers and aggregates their findings.",
             why="Best stress case for hierarchical routing and child-session evidence.",
+        ),
+        DemoCase(
+            case_id="cross_file_dirty_quality_gate_nanoagents",
+            title="Dirty cross-file quality gate",
+            category="multi-agent",
+            session_group="cross_file_dirty",
+            expected_agent="analysis",
+            expected_terms=("data_validator", "analysis_validator", "csv_validator"),
+            min_children=3,
+            min_tool_calls=6,
+            complexity_tags=(
+                "nanoagents",
+                "tier-3",
+                "dirty-data",
+                "quality-gate",
+                "multi-file",
+            ),
+            prompt=(
+                f"Before I share this run, build a quality gate across {h5}, {dirty}, "
+                f'{csv_path}, and "{adios}". I need to know what each file proves, where '
+                "the dirty tabular export is risky, and which checks block collaborator handoff."
+            ),
+            expected=(
+                "Analysis coordinates tool-backed child workers over HDF5, dirty Parquet, "
+                "CSV, and BP5 evidence."
+            ),
+            why=(
+                "Adds a harder cross-file case where one source is intentionally dirty and "
+                "the user asks for a review gate rather than a generic summary."
+            ),
         ),
         DemoCase(
             case_id="reasoning_cross_file_triage_nanoagents",
@@ -525,6 +809,41 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             ),
             expected="Analysis expert uses Parquet tools and grounds quality claims in columns/nulls.",
             why="Separates concrete data-quality findings from generic cleaning advice.",
+        ),
+        DemoCase(
+            case_id="dirty_quality_dashboard_multi_turn",
+            title="Dirty data dashboard after quality review",
+            category="visualization",
+            session_group="dirty_visual",
+            expected_agent="visualization",
+            expected_tools=("plot_summary",),
+            expected_terms=(".png", "dashboard"),
+            setup_prompts=(
+                (
+                    f"Review the suspicious Parquet export at {dirty}. Record the schema, "
+                    "quality_flag, temperature_k, pressure_pa, and any quality concerns."
+                ),
+            ),
+            timeout_s=620.0,
+            complexity_tags=(
+                "dirty-data",
+                "visualization",
+                "artifact",
+                "multi-turn",
+                "quality-review",
+            ),
+            prompt=(
+                "Create a compact dashboard PNG for the dirty Parquet export we just reviewed. "
+                "Use it to support the quality review, and tell me where the artifact was saved."
+            ),
+            expected=(
+                "Visualization resolves the reviewed dirty Parquet file from memory and creates "
+                "a real dashboard artifact."
+            ),
+            why=(
+                "Stresses multi-turn analysis-to-visualization over intentionally dirty data, "
+                "not only clean demo fixtures."
+            ),
         ),
         DemoCase(
             case_id="ndp_catalog_discovery",
@@ -618,6 +937,53 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             expected="CLIO returns structured error_info and no normal fake assistant answer.",
             why="Verifies errors are surfaced, not hidden behind canned or repeated text.",
         ),
+        DemoCase(
+            case_id="missing_csv_error",
+            title="Missing CSV error surfacing",
+            category="hardening",
+            session_group="errors",
+            expects_error=True,
+            complexity_tags=("error-surfacing", "csv", "no-fake-answer"),
+            prompt=(
+                f"Read this collaborator CSV and summarize the columns: "
+                f"{Path(csv_path).with_name('missing_sensor_events.csv')}. "
+                "If it is unavailable, surface the real error rather than guessing."
+            ),
+            expected="CLIO returns structured error_info for a missing CSV path with no fake answer.",
+            why="Adds a second deliberate surfaced-error benchmark outside the HDF5 path.",
+        ),
+        DemoCase(
+            case_id="provider_swap_memory_followup",
+            title="Provider swap preserves session context",
+            category="provider-hardening",
+            session_group="provider_swap",
+            expected_actions=("provider_swap",),
+            expected_tool_prefixes=("parquet_",),
+            expected_terms=("temperature", "pressure"),
+            provider_swap_preset_id="argonne_sophia",
+            provider_swap_model="meta-llama/Meta-Llama-3.1-8B-Instruct",
+            setup_prompts=(
+                (
+                    f"Profile {parquet} for a provider-swap test. Record the path, schema, "
+                    "and basic temperature_k and pressure_pa facts so a later model can continue."
+                ),
+            ),
+            timeout_s=900.0,
+            complexity_tags=("provider-swap", "memory", "alcf", "session-context"),
+            prompt=(
+                "The provider/model has changed. Continue from the facility Parquet table we just "
+                "profiled, compute any statistics you need for temperature and pressure, and tell "
+                "me whether the session context survived the swap."
+            ),
+            expected=(
+                "After a live ALCF provider/model swap, CLIO keeps the session coherent and uses "
+                "the remembered Parquet context with visible tool evidence."
+            ),
+            why=(
+                "Provider/model swaps have historically destabilized active sessions, so this "
+                "turn should catch stale model refs, lost context, and hidden `(no parts)` errors."
+            ),
+        ),
     ]
 
 
@@ -646,10 +1012,22 @@ def run_benchmark(
     report_path: Path,
     *,
     case_delay_s: float = 0.0,
+    require_stress_criteria: bool = False,
+    case_ids: tuple[str, ...] = (),
 ) -> int:
     """Run demo cases and write JSONL plus a markdown report."""
     manifest = create_benchmark_data(data_dir)
     cases = _make_cases(manifest)
+    if case_ids:
+        requested = set(case_ids)
+        cases = [case for case in cases if case.case_id in requested]
+        missing = sorted(requested - {case.case_id for case in cases})
+        if missing:
+            print(f"Unknown case id(s): {', '.join(missing)}", file=sys.stderr)
+            return 2
+        if not cases:
+            print("No cases selected.", file=sys.stderr)
+            return 2
     results: list[DemoResult] = []
     output_jsonl.parent.mkdir(parents=True, exist_ok=True)
     report_path.parent.mkdir(parents=True, exist_ok=True)
@@ -658,13 +1036,37 @@ def run_benchmark(
         health = http.get("/v1/health")
         health.raise_for_status()
         session_ids = _create_sessions(http, cases)
-        provider = _provider(http)
-
         with output_jsonl.open("w", encoding="utf-8") as log:
             for index, case in enumerate(cases, start=1):
                 session_id = session_ids[_session_key(case)]
                 before_children = {child["id"] for child in _children(http, session_id)}
                 print(f"[{index}/{len(cases)}] {case.case_id}: {case.title}", flush=True)
+                setup_messages: list[dict[str, Any]] = []
+                actions: list[dict[str, Any]] = []
+                for setup_index, setup_prompt in enumerate(case.setup_prompts, start=1):
+                    print(f"  setup turn {setup_index}/{len(case.setup_prompts)}", flush=True)
+                    setup_messages.append(
+                        _post_turn(http, session_id, setup_prompt, timeout_s=case.timeout_s)
+                    )
+                    if case_delay_s > 0:
+                        time.sleep(case_delay_s)
+                if case.compact_before_prompt:
+                    action = _compact_session(http, session_id, timeout_s=case.timeout_s)
+                    actions.append(action)
+                    print(
+                        f"  compact {'ok' if action.get('ok') else 'failed'} "
+                        f"elapsed={action.get('elapsed_s')}s",
+                        flush=True,
+                    )
+                if case.provider_swap_preset_id:
+                    action = _swap_provider_for_case(http, case, timeout_s=case.timeout_s)
+                    actions.append(action)
+                    print(
+                        f"  provider swap {'ok' if action.get('ok') else 'failed'} "
+                        f"model={action.get('model') or '-'} elapsed={action.get('elapsed_s')}s",
+                        flush=True,
+                    )
+                provider = _provider(http)
                 started = time.monotonic()
                 message = _post_turn(http, session_id, case.prompt, timeout_s=case.timeout_s)
                 elapsed_s = time.monotonic() - started
@@ -679,6 +1081,8 @@ def run_benchmark(
                     message=message,
                     provider=provider,
                     child_sessions=new_children,
+                    setup_messages=setup_messages,
+                    actions=actions,
                 )
                 results.append(result)
                 log.write(json.dumps(_case_row(result), ensure_ascii=False, default=str) + "\n")
@@ -694,7 +1098,89 @@ def run_benchmark(
                     time.sleep(case_delay_s)
 
     report_path.write_text(_render_report(results, output_jsonl), encoding="utf-8")
-    return 0 if all(result.passed for result in results) else 1
+    cases_passed = all(result.passed for result in results)
+    audit_passed = all(item["passed"] for item in _stress_audit(results))
+    if require_stress_criteria:
+        return 0 if cases_passed and audit_passed else 1
+    return 0 if cases_passed else 1
+
+
+def _stress_audit(results: list[DemoResult]) -> list[dict[str, Any]]:
+    """Evaluate the campaign against the documented stress benchmark standard."""
+    complex_demos = [result for result in results if result.complexity_score >= 25]
+    long_or_many = [
+        result
+        for result in results
+        if result.elapsed_s >= 120.0 or result.visible_event_count >= 10
+    ]
+    tier3_or_nano = [
+        result
+        for result in results
+        if result.child_sessions
+        or {"ndp_catalog", "sac_format"}.intersection(result.handoff_agent_ids)
+    ]
+    artifact_runs = [result for result in results if result.artifacts]
+    expected_errors = [result for result in results if result.outcome == "expected_error"]
+    compaction_runs = [
+        result
+        for result in results
+        if any(action.get("type") == "compact" and action.get("ok") for action in result.actions)
+    ]
+    provider_swaps = [
+        result
+        for result in results
+        if any(
+            action.get("type") == "provider_swap" and action.get("ok") for action in result.actions
+        )
+    ]
+    return [
+        {
+            "criterion": "at least ten complex collaborator-grade demos",
+            "observed": len(complex_demos),
+            "required": 10,
+            "passed": len(complex_demos) >= 10,
+        },
+        {
+            "criterion": "at least five long or high-event stress cases",
+            "observed": len(long_or_many),
+            "required": 5,
+            "passed": len(long_or_many) >= 5,
+            "details": [
+                f"{result.case.case_id} ({result.elapsed_s:.1f}s, {result.visible_event_count} events)"
+                for result in long_or_many
+            ],
+        },
+        {
+            "criterion": "at least three cases with tier-3 agents or nanoagents",
+            "observed": len(tier3_or_nano),
+            "required": 3,
+            "passed": len(tier3_or_nano) >= 3,
+        },
+        {
+            "criterion": "at least three visualization artifacts from analyzed data",
+            "observed": len(artifact_runs),
+            "required": 3,
+            "passed": len(artifact_runs) >= 3,
+        },
+        {
+            "criterion": "at least two deliberate surfaced-error cases",
+            "observed": len(expected_errors),
+            "required": 2,
+            "passed": len(expected_errors) >= 2,
+        },
+        {
+            "criterion": "at least one context-pressure or compaction case",
+            "observed": len(compaction_runs),
+            "required": 1,
+            "passed": len(compaction_runs) >= 1,
+        },
+        {
+            "criterion": "at least one provider/model-swap stress case",
+            "observed": len(provider_swaps),
+            "required": 1,
+            "passed": len(provider_swaps) >= 1,
+        },
+    ]
 
 
 def _render_report(results: list[DemoResult], output_jsonl: Path) -> str:
@@ -702,6 +1188,7 @@ def _render_report(results: list[DemoResult], output_jsonl: Path) -> str:
     expected_errors = sum(1 for result in results if result.outcome == "expected_error")
     partials = sum(1 for result in results if result.outcome == "partial")
     failures = sum(1 for result in results if result.outcome == "fail")
+    audit = _stress_audit(results)
     best = sorted(results, key=lambda result: result.complexity_score, reverse=True)[:10]
     lines = [
         "# CLIO ALCF Demo Benchmark Report",
@@ -715,11 +1202,44 @@ def _render_report(results: list[DemoResult], output_jsonl: Path) -> str:
             f"{failures} failures."
         ),
         "",
-        "## All Cases",
+        "Stress coverage: "
+        + (
+            "meets the documented benchmark standard."
+            if all(item["passed"] for item in audit)
+            else "does not yet meet the documented benchmark standard."
+        ),
         "",
-        "| Case | Category | Mode | Source | Outcome | Agent | Handoffs | Tools | Children | Elapsed |",
-        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+        "## Stress Coverage Audit",
+        "",
+        "| Criterion | Observed | Required | Status |",
+        "| --- | ---: | ---: | --- |",
     ]
+    for item in audit:
+        lines.append(
+            "| "
+            + " | ".join(
+                [
+                    item["criterion"],
+                    str(item["observed"]),
+                    str(item["required"]),
+                    "pass" if item["passed"] else "gap",
+                ]
+            )
+            + " |"
+        )
+    audit_details = [detail for item in audit for detail in item.get("details", [])]
+    if audit_details:
+        lines.extend(["", "High-event or long-running cases:", ""])
+        lines.extend(f"- {detail}" for detail in audit_details)
+    lines.extend(
+        [
+            "",
+            "## All Cases",
+            "",
+            "| Case | Category | Mode | Source | Outcome | Agent | Handoffs | Tools | Children | Elapsed |",
+            "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+        ]
+    )
     for result in results:
         route_source = (_routing_decision(result.message).get("metadata") or {}).get(
             "route_source", "-"
@@ -748,6 +1268,10 @@ def _render_report(results: list[DemoResult], output_jsonl: Path) -> str:
         tool_text = ", ".join(result.tool_names) or "none"
         handoff_text = _handoff_summary(result) or "none"
         artifact_text = ", ".join(result.artifacts) or "none"
+        action_text = ", ".join(
+            f"{action.get('type')}={'ok' if action.get('ok') else 'failed'}"
+            for action in result.actions
+        )
         child_text = ", ".join(
             child.get("title", child.get("id", "")) for child in result.child_sessions
         )
@@ -760,8 +1284,13 @@ def _render_report(results: list[DemoResult], output_jsonl: Path) -> str:
                 f"Routing mode: `{result.case.routing_mode}`",
                 f"Status: {result.outcome}",
                 f"Selected agent: `{result.selected_agent or '-'}`",
+                f"Provider/model: {_provider_model_summary(result.provider)}",
+                f"Provider settings: {_provider_settings_summary(result.provider)}",
+                f"Route graph: {_route_graph_summary(result)}",
                 f"Expert handoffs: {handoff_text}",
                 f"Tools: {tool_text}",
+                f"Setup turns: {len(result.setup_messages)}",
+                f"Actions: {action_text or 'none'}",
                 f"Child sessions: {child_text or 'none'}",
                 f"Artifacts: {artifact_text}",
                 f"Elapsed: {result.elapsed_s:.1f}s",
@@ -784,6 +1313,32 @@ def _render_report(results: list[DemoResult], output_jsonl: Path) -> str:
                 "",
             ]
         )
+
+    lines.extend(
+        [
+            "## Failures Fixed During This Campaign",
+            "",
+            "- GACT compaction originally bypassed transient-provider retry and only updated the GACT transcript; compaction now retries provider throttles, updates ARC memory, and fails with structured errors if memory storage fails.",
+            "- Compact summaries could lose exact scientific identifiers at the ARC truncation boundary; compact memory now preserves a labeled exact evidence index for paths, variables, columns, artifacts, and caveats.",
+            "- Retained multi-file context could make analysis narrow to the first file or let CSV follow-ups be stolen by broad synthesis; explicit file paths now take precedence and retained multi-source synthesis is limited to true synthesis questions.",
+            "- Visualization-intent follow-ups could route to analysis or a data tool even when the user asked for a chart/dashboard; file-grounded visual artifact requests are promoted to the visualization expert.",
+            "- Direct planner-selected NDP and Parquet/statistical tool actions could flatten expert ownership; NDP catalog work is promoted to the nested `ndp_catalog` expert, and statistical Parquet triage is promoted to `analysis`.",
+            "- Provider throttles during expert dispatch, handoffs, and compaction could surface as brittle partial recoveries; expert paths now use bounded transient-provider retry and still surface structured errors if exhausted.",
+            "",
+        ]
+    )
+
+    lines.extend(
+        [
+            "## Remaining Caveats",
+            "",
+            "- This report is evidence for the recorded ALCF run, not a guarantee that ALCF availability, model latency, or token freshness will be identical later.",
+            "- Several high-event cases are intentionally fast because child/nanoagent workers use deterministic local tools after routing; elapsed time alone should not be treated as benchmark depth.",
+            "- Two cases are deliberate surfaced-error checks. They are counted as successful hardening cases only because they returned structured errors without normal-looking fake assistant text.",
+            "- The benchmark now covers the hierarchy and handoff classes listed here, but future providers, file formats, and per-expert model assignments still need their own evidence runs.",
+            "",
+        ]
+    )
 
     partial_results = [result for result in results if result.outcome == "partial"]
     if partial_results:
@@ -826,6 +1381,43 @@ def _handoff_summary(result: DemoResult) -> str:
     return ", ".join(parts)
 
 
+def _provider_model_summary(provider: dict[str, Any]) -> str:
+    """Return compact provider/model evidence for the report."""
+    provider_id = str(provider.get("provider") or "-")
+    model = str(provider.get("model") or "-")
+    api_base = str(provider.get("api_base") or "-")
+    return f"`{provider_id}` / `{model}` via `{api_base}`"
+
+
+def _provider_settings_summary(provider: dict[str, Any]) -> str:
+    """Return compact generation settings evidence for the report."""
+    return (
+        f"temperature={provider.get('temperature', '-')}, "
+        f"max_tokens={provider.get('max_tokens', '-')}, "
+        f"context_length={provider.get('context_length', '-')}, "
+        f"thinking_budget={provider.get('thinking_budget', '-')}"
+    )
+
+
+def _route_graph_summary(result: DemoResult) -> str:
+    """Return a compact route graph from selected agent, handoffs, and children."""
+    nodes: list[str] = []
+    if result.selected_agent:
+        nodes.append(result.selected_agent)
+    for agent_id in result.handoff_agent_ids:
+        if not nodes or nodes[-1] != agent_id:
+            nodes.append(agent_id)
+    child_names = [
+        str(child.get("title") or child.get("name") or child.get("id") or "")
+        for child in result.child_sessions
+    ]
+    child_names = [name for name in child_names if name]
+    graph = " -> ".join(nodes) if nodes else "-"
+    if child_names:
+        graph += " -> [" + ", ".join(child_names) + "]"
+    return graph
+
+
 def main() -> None:
     """CLI entry point."""
     parser = argparse.ArgumentParser(description=__doc__)
@@ -853,12 +1445,32 @@ def main() -> None:
         help="Output markdown report path.",
     )
     parser.add_argument(
+        "--render-existing-jsonl",
+        type=Path,
+        default=None,
+        help="Render a report from an existing benchmark JSONL file without running cases.",
+    )
+    parser.add_argument(
         "--case-delay-s",
         type=float,
         default=0.0,
         help="Optional cooldown between cases for rate-limited real providers.",
     )
+    parser.add_argument(
+        "--case",
+        action="append",
+        default=[],
+        help="Run only the named case id. May be supplied multiple times.",
+    )
+    parser.add_argument(
+        "--require-stress-criteria",
+        action="store_true",
+        help="Exit non-zero unless the documented stress coverage audit passes.",
+    )
     args = parser.parse_args()
+    if args.render_existing_jsonl is not None:
+        render_report_from_jsonl(args.render_existing_jsonl.resolve(), args.report.resolve())
+        raise SystemExit(0)
     raise SystemExit(
         run_benchmark(
             args.base_url.rstrip("/"),
@@ -866,6 +1478,8 @@ def main() -> None:
             args.output_jsonl.resolve(),
             args.report.resolve(),
             case_delay_s=max(0.0, args.case_delay_s),
+            require_stress_criteria=args.require_stress_criteria,
+            case_ids=tuple(args.case),
         )
     )
 

@@ -116,6 +116,83 @@ def _iso_from_epoch(ts: float) -> str:
     return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
 
 
+def _compact_exact_evidence_index(transcript: str) -> str:
+    """Build a deterministic evidence index to append to LM compact summaries."""
+    paths: list[str] = []
+    identifiers: list[str] = []
+    caveats: list[str] = []
+
+    def add_unique(target: list[str], value: str, *, limit: int) -> None:
+        cleaned = " ".join(value.strip("`'\" \t\r\n,.;:()[]{}").split())
+        cleaned = cleaned.rstrip("/")
+        if not cleaned or cleaned in target:
+            return
+        if len(cleaned) > 180:
+            cleaned = cleaned[:177] + "..."
+        if len(target) < limit:
+            target.append(cleaned)
+
+    quoted = re.findall(r"`([^`]+)`", transcript)
+    for item in quoted:
+        if re.search(r"\.(?:h5|hdf5|parquet|csv|bp5|bp4|bp|sac|png|json|tar)\b", item, re.I):
+            add_unique(paths, item, limit=40)
+        elif re.search(r"[/_]", item) or re.fullmatch(r"[A-Za-z][A-Za-z0-9_.-]{2,}", item):
+            add_unique(identifiers, item, limit=80)
+
+    path_pattern = re.compile(
+        r"(?:[A-Za-z]:\\[^\r\n`\"<>|]*?\.(?:h5|hdf5|parquet|csv|bp5|bp4|bp|sac|png|json|tar))"
+        r"|(?:/[^\s`\"<>|]*?\.(?:h5|hdf5|parquet|csv|bp5|bp4|bp|sac|png|json|tar))",
+        re.I,
+    )
+    for match in path_pattern.finditer(transcript):
+        add_unique(paths, match.group(0), limit=40)
+
+    identifier_pattern = re.compile(
+        r"(?<![A-Za-z0-9])/?[A-Za-z][A-Za-z0-9]*(?:[_/.-][A-Za-z0-9]+)+\b",
+    )
+    for match in identifier_pattern.finditer(transcript):
+        value = match.group(0)
+        if len(value) < 4:
+            continue
+        if value.lower().startswith(("http", "https")):
+            continue
+        add_unique(identifiers, value, limit=80)
+
+    caveat_terms = (
+        "error",
+        "failed",
+        "missing",
+        "unavailable",
+        "not installed",
+        "caveat",
+        "unresolved",
+        "follow-up",
+        "follow up",
+        "needs checking",
+        "action needed",
+    )
+    for raw_line in transcript.splitlines():
+        line = " ".join(raw_line.split())
+        if not line:
+            continue
+        lowered = line.lower()
+        if any(term in lowered for term in caveat_terms):
+            add_unique(caveats, line, limit=16)
+
+    sections: list[str] = []
+    if paths:
+        sections.append("Paths:\n" + "\n".join(f"- {path}" for path in paths))
+    if identifiers:
+        sections.append(
+            "Identifiers:\n" + "\n".join(f"- {identifier}" for identifier in identifiers)
+        )
+    if caveats:
+        sections.append("Caveats/errors:\n" + "\n".join(f"- {caveat}" for caveat in caveats))
+    if not sections:
+        return ""
+    return "[exact retained evidence index]\n" + "\n\n".join(sections)
+
+
 def _lm_studio_api_root(api_base: str) -> str:
     """Return the LM Studio native REST root for an OpenAI-compatible base URL."""
 
@@ -2986,7 +3063,7 @@ def _refresh_argonne_lm_token(agent: Any) -> None:
     """Refresh Argonne's short-lived token on live DSPy LM objects."""
 
     cfg = getattr(agent, "_provider_config", None)
-    if getattr(cfg, "provider", "") != "argonne":
+    if cfg is None or getattr(cfg, "provider", "") != "argonne":
         return
     token = _resolve_argonne_runtime_api_key()
     cfg.api_key = token
@@ -5978,7 +6055,7 @@ def build_app(
                         "-Command",
                         ps_script,
                     ],
-                    creationflags=subprocess.CREATE_NEW_CONSOLE,
+                    creationflags=getattr(subprocess, "CREATE_NEW_CONSOLE", 0),
                 )
                 instructions = (
                     "Opened a persistent PowerShell window for ALCF Globus login. Complete the "
@@ -6224,14 +6301,14 @@ def build_app(
         except Exception as exc:
             return _fallback(f"ALCF response not JSON: {exc}")
 
-        seen: set[str] = set()
-        models: list[dict[str, str]] = []
+        jobs_seen: set[str] = set()
+        jobs_models: list[dict[str, str]] = []
         for job in payload.get("running") or []:
             for raw in (job.get("Models") or "").split(","):
                 mid = raw.strip()
-                if not mid or mid in seen:
+                if not mid or mid in jobs_seen:
                     continue
-                seen.add(mid)
+                jobs_seen.add(mid)
                 name = mid.split("/", 1)[-1] if "/" in mid else mid
                 walltime = (job.get("Walltime") or "").strip()
                 nodes = (job.get("Nodes Reserved") or "").strip()
@@ -6240,9 +6317,9 @@ def build_app(
                     desc += f" ({nodes} node{'s' if nodes != '1' else ''})"
                 if walltime:
                     desc += f", walltime {walltime}"
-                models.append({"id": mid, "name": name, "description": desc})
+                jobs_models.append({"id": mid, "name": name, "description": desc})
 
-        if not models:
+        if not jobs_models:
             # /jobs returned 0 running — could be "cluster idle (PBS
             # jobs cycle)" OR "cluster in maintenance". The maintenance
             # signal lives behind /chat/completions, not /jobs:
@@ -6319,8 +6396,8 @@ def build_app(
             _live_models_cache[cache_key] = (now, empty, "unavailable", msg)
             return empty, "unavailable", msg
 
-        _live_models_cache[cache_key] = (now, models, "live", "")
-        return models, "live", ""
+        _live_models_cache[cache_key] = (now, jobs_models, "live", "")
+        return jobs_models, "live", ""
 
     def _openai_compat_live_models(
         preset: "LMProviderPreset",
@@ -6991,8 +7068,9 @@ def build_app(
                 "reason": "session has no messages to compact",
             }
 
-        # Build a transcript blob. Cap each message at 800 chars so a
-        # huge tool-result payload doesn't dominate the prompt.
+        # Build a transcript blob. Keep enough per-part evidence for scientific
+        # identifiers and metrics to survive compaction, while still bounding
+        # pathological tool output.
         # ledger entries are Pydantic Message models (see types.py); use
         # attribute access + model_dump() defensively for dict-shaped
         # entries the older code paths still produce.
@@ -7003,13 +7081,35 @@ def build_app(
                 return o.get(name, default)
             return default
 
+        per_part_limit = 6000
+        transcript_limit = 60000
         chunks: list[str] = []
+        transcript_chars = 0
         for m in ledger[-50:]:  # last 50 messages should be enough context
             role = (_attr(m, "role", "user") or "user").upper()
             for p in _attr(m, "parts", []) or []:
-                txt = (_attr(p, "text", "") or "")[:800]
-                if txt.strip():
-                    chunks.append(f"{role}: {txt}")
+                txt = _attr(p, "text", "") or ""
+                if len(txt) > per_part_limit:
+                    head_limit = per_part_limit // 2
+                    tail_limit = per_part_limit - head_limit
+                    txt = (
+                        txt[:head_limit]
+                        + "\n[...part truncated for compaction...]\n"
+                        + txt[-tail_limit:]
+                    )
+                txt = txt.strip()
+                if not txt:
+                    continue
+                chunk = f"{role}: {txt}"
+                remaining = transcript_limit - transcript_chars
+                if remaining <= 0:
+                    break
+                if len(chunk) > remaining:
+                    chunk = chunk[:remaining] + "\n[...transcript truncated for compaction...]"
+                chunks.append(chunk)
+                transcript_chars += len(chunk)
+            if transcript_chars >= transcript_limit:
+                break
         transcript = "\n".join(chunks)
         if not transcript.strip():
             return {
@@ -7039,20 +7139,45 @@ def build_app(
         focus = (body.get("focus") or "").strip()
 
         prompt = (
-            "Summarise the following CLIO conversation transcript into a "
-            "single paragraph (max 6 sentences). Capture the user's goal, "
-            "any open questions, decisions made, and next steps. Drop "
-            "minutiae and tool-call mechanics."
+            "Create an evidence-preserving compact memory for the following CLIO "
+            "conversation transcript. This memory will replace the archived transcript, "
+            "so preserve concrete scientific evidence, not just a high-level story.\n\n"
+            "Rules:\n"
+            "- Keep exact file paths, dataset names, column names, variable names, "
+            "units, dimensions, counts, statistics, artifact paths, and error messages "
+            "when they appear in the transcript.\n"
+            "- Preserve which findings came from which source, grouped by file/provider "
+            "or workflow stage.\n"
+            "- Preserve unresolved gaps, failed inspections, missing dependencies, and "
+            "next checks.\n"
+            "- If evidence is missing or a source was not inspected, say that explicitly. "
+            "Do not fill gaps with plausible details.\n"
+            "- Do not invent dataset names, columns, statistics, compression settings, "
+            "or readiness conclusions that are not supported by the transcript.\n"
+            "- Prefer concise structured bullets over prose. Keep the summary compact, "
+            "but do not omit identifiers needed for a later expert to continue the work."
         )
         if focus:
             prompt += f"\n\nFocus the summary on: {focus}"
         prompt += f"\n\n--- transcript ---\n{transcript}\n--- end ---"
 
+        def _summarize_with_provider_retries() -> str:
+            def summarize() -> str:
+                return agent._run_chat_agent(prompt, "")
+
+            retry_call = getattr(agent, "_call_with_transient_provider_retries", None)
+            if callable(retry_call):
+                return retry_call("compact_summary", summarize)
+            return summarize()
+
         try:
             summary = await asyncio.get_running_loop().run_in_executor(
                 None,
-                lambda: agent._run_chat_agent(prompt, ""),
+                _summarize_with_provider_retries,
             )
+            evidence_index = _compact_exact_evidence_index(transcript)
+            if evidence_index:
+                summary = (summary or "").rstrip() + "\n\n" + evidence_index
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(
                 status_code=502,
@@ -7077,6 +7202,64 @@ def build_app(
                 "messages": list(ledger),
             }
         )
+
+        arc = getattr(agent, "arc", None)
+        if arc is not None:
+            try:
+                from clio_agent.arc.schema import (  # noqa: PLC0415
+                    Conversation as ARCConversation,
+                )
+                from clio_agent.arc.schema import Message as ARCMessage  # noqa: PLC0415
+
+                now_ts = time.time()
+                arc_summary = ARCMessage(
+                    role="assistant",
+                    content="[compact summary]\n" + (summary or "").strip(),
+                    timestamp=now_ts,
+                    metadata={
+                        "source": "gact_compact",
+                        "synthetic": "compact_summary",
+                        "archived_count": len(ledger),
+                    },
+                )
+                conv = arc.get_conversation(sid)
+                if conv is None:
+                    conv = ARCConversation(
+                        session_id=sid,
+                        user_id="default_user",
+                        created_at=now_ts,
+                        updated_at=now_ts,
+                        last_accessed=now_ts,
+                        status="active",
+                        messages=[arc_summary],
+                        routing_decisions=[],
+                        metadata={
+                            "clio_agent_version": "0.2.0",
+                            "arc_enabled": True,
+                            "compacted_by": "gact",
+                        },
+                        storage_tier="warm",
+                    )
+                else:
+                    conv.messages = [arc_summary]
+                    conv.updated_at = now_ts
+                    conv.last_accessed = now_ts
+                    conv.metadata["compacted_by"] = "gact"
+                    conv.metadata["compacted_at"] = now_ts
+                    conv.metadata["archived_message_count"] = len(ledger)
+                arc.store_conversation(conv)
+            except Exception as exc:  # noqa: BLE001
+                raise HTTPException(
+                    status_code=500,
+                    detail=ErrorEnvelope(
+                        error=ErrorInfo(
+                            error="memory_update_failed",
+                            message=f"compact summary could not be stored in ARC memory: {exc!r}",
+                            recoverable=True,
+                        )
+                    ).model_dump(exclude_none=True),
+                ) from exc
+
         from clio_agent.gact.types import Message, Part, Tokens  # noqa: PLC0415
 
         compact_message = Message(
@@ -8783,11 +8966,6 @@ def build_app(
                 update["status_message"] = f"argonne auth unavailable: {exc}"
                 update["is_authenticated"] = False
                 return preset.model_copy(update=update)
-            if importlib.util.find_spec("globus_sdk") is None:
-                update["status"] = "unavailable"
-                update["status_message"] = "globus-sdk not installed; install clio-agent[argonne]"
-                update["is_authenticated"] = False
-                return preset.model_copy(update=update)
             if not argonne_auth.tokens_exist():
                 update["status"] = "auth_required"
                 update["status_message"] = (
@@ -9085,6 +9263,7 @@ def build_app(
             # CLIO_LM_API_KEY first, before LMProviderConfig defaults run).
             resolved_api_key = req.api_key
             if req.provider == "argonne" and _is_placeholder_api_key(resolved_api_key):
+                auth_exc: Exception | None
                 try:
                     resolved_api_key = _resolve_argonne_runtime_api_key()
                 except Exception as exc:

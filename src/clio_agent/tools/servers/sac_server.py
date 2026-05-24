@@ -63,7 +63,12 @@ def _clean_positive_int(value: int | str | None, *, default: int, max_value: int
     if value in (None, ""):
         return default
     try:
-        parsed = int(value)
+        if isinstance(value, int) and not isinstance(value, bool):
+            parsed = value
+        elif isinstance(value, str):
+            parsed = int(value)
+        else:
+            return default
     except (TypeError, ValueError):
         return default
     return max(1, min(parsed, max_value))
