@@ -24,6 +24,7 @@ Example:
 """
 
 import logging
+import re
 from typing import Any, Optional
 
 import dspy
@@ -474,10 +475,28 @@ class DataExpert(dspy.Module):
     @staticmethod
     def _wants_dataset_analysis(question: str) -> bool:
         q_lower = question.lower()
-        return any(
+        if any(
             token in q_lower
             for token in ("hdf5_analyze_dataset", "analyze_dataset", "analyze dataset")
-        )
+        ):
+            return True
+        if re.search(r"\b[\w.-]+/[\w./-]+\b", question):
+            return any(
+                token in q_lower
+                for token in (
+                    "chunk",
+                    "compression",
+                    "dataset",
+                    "deep dive",
+                    "focus",
+                    "inside",
+                    "read pattern",
+                    "stats",
+                    "statistics",
+                    "zoom",
+                )
+            )
+        return False
 
     @staticmethod
     def _match_dataset_path(question: str, dataset_rows: list[dict[str, Any]]) -> str | None:

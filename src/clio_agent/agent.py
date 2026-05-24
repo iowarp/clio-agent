@@ -640,6 +640,23 @@ class ClioAgent(dspy.Module):
             if kind == "tool":
                 tool_name = self._coerce_text(action.get("tool")).strip()
                 selected = self._selected_expert_for_tool(tool_name)
+                scope_error = self._tool_action_scope_error(
+                    tool_name,
+                    selected=selected,
+                    question=question,
+                    file_context=file_context,
+                    session_context=session_context,
+                )
+                if scope_error is not None:
+                    observations.append(
+                        {
+                            "step": step + 1,
+                            "type": "planner_error",
+                            "ok": False,
+                            "result": scope_error,
+                        }
+                    )
+                    continue
                 self._raise_if_cancelled("tool_before")
                 try:
                     result = self._execute_tool_action(
@@ -704,6 +721,7 @@ class ClioAgent(dspy.Module):
                 compatibility_error = self._expert_file_compatibility_error(
                     expert_id,
                     file_context,
+                    question=expert_question,
                 )
                 if compatibility_error is not None:
                     observations.append(
@@ -1373,6 +1391,84 @@ class ClioAgent(dspy.Module):
         )
         return result
 
+    def _tool_action_scope_error(
+        self,
+        tool_name: str,
+        *,
+        selected: str,
+        question: str,
+        file_context: str,
+        session_context: str,
+    ) -> dict[str, Any] | None:
+        """Return a planner validation error for an out-of-scope tool action."""
+
+        if tool_name != "shell_bash":
+            return None
+        if self._question_allows_shell_tool(question, file_context):
+            return None
+
+        paths = extract_file_paths(
+            question,
+            "\n".join(part for part in (file_context, session_context) if part),
+            SCIENTIFIC_FILE_SUFFIXES,
+        )
+        if not paths:
+            return None
+
+        native_tools = [
+            name
+            for name in sorted(self._known_tool_names())
+            if tool_visible_to(name, selected) and name != tool_name
+        ]
+        return {
+            "message": (
+                "Planner selected shell_bash for a scientific file request, but shell_bash "
+                "is scoped to utility diagnostics and must not be used as a data-inspection "
+                "shortcut."
+            ),
+            "tool": tool_name,
+            "selected_expert": selected,
+            "detected_files": [str(path) for path in paths],
+            "next_action": (
+                "Use the native scientific tools for the selected expert, or route to "
+                "the appropriate data/analysis/visualization expert."
+            ),
+            "available_scoped_tools": native_tools,
+        }
+
+    @staticmethod
+    def _question_allows_shell_tool(
+        question: str,
+        file_context: str = "",
+        session_context: str = "",
+    ) -> bool:
+        """Return whether the user explicitly asked for local shell diagnostics."""
+
+        del session_context
+        text = " ".join((question, file_context)).lower()
+        for path in extract_file_paths(question, file_context, SCIENTIFIC_FILE_SUFFIXES):
+            text = text.replace(str(path).lower(), " ")
+        phrase_terms = (
+            "bash",
+            "shell",
+            "terminal",
+            "command line",
+            "run command",
+            "execute command",
+            "cwd",
+            "working directory",
+            "current directory",
+            "environment variable",
+            "env var",
+            "current time",
+            "what time",
+            "what day",
+        )
+        word_terms = ("date", "today", "whoami", "hostname")
+        return any(term in text for term in phrase_terms) or any(
+            re.search(rf"\b{re.escape(term)}\b", text) for term in word_terms
+        )
+
     @classmethod
     def _file_diffs_from_trace(
         cls,
@@ -1838,9 +1934,15 @@ class ClioAgent(dspy.Module):
         self,
         expert_id: str,
         file_context: str,
+        *,
+        question: str = "",
     ) -> dict[str, Any] | None:
         """Reject expert delegation that cannot inspect the current file context."""
-        paths = extract_file_paths(file_context, "", SCIENTIFIC_FILE_SUFFIXES)
+        paths = extract_file_paths(
+            "\n".join(part for part in (question, file_context) if part),
+            "",
+            SCIENTIFIC_FILE_SUFFIXES,
+        )
         if not paths:
             return None
 
@@ -1861,6 +1963,17 @@ class ClioAgent(dspy.Module):
 
         unsupported = [str(path) for path in paths if path.suffix.lower() not in supported]
         if not unsupported:
+            return None
+        coordinated = {
+            str(suffix).lower()
+            for suffix in caps.metadata.get("coordinated_file_suffixes", [])
+            if str(suffix).strip()
+        }
+        if (
+            coordinated
+            and {path.suffix.lower() for path in paths}.issubset(coordinated)
+            and self._question_requests_multi_file_analysis(question, paths)
+        ):
             return None
 
         compatible = self._compatible_experts_for_paths(paths)

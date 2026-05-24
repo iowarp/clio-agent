@@ -15,6 +15,11 @@ The baseline path is local-first: LM Studio serving Qwopus through the
 OpenAI-compatible API. ALCF is optional and useful for provider comparison after
 the local path is stable.
 
+For the current ALCF/gpt-oss demo matrix, see
+`docs/ALCF_DEMO_BENCHMARK_REPORT.md`. That report is generated from real GACT
+turns and includes the best 10 collaborator-ready prompts plus observed tools,
+child sessions, artifacts, route sources, and failures when they occur.
+
 ## 1. Install And Prepare
 
 From the repository root:
@@ -100,6 +105,45 @@ Invoke-RestMethod http://127.0.0.1:17910/v1/health
 Then use the GACT TUI against `http://127.0.0.1:17910`, or post prompts through
 the API. The TUI is better for demos because collaborators can see tool
 metadata, streaming, child sessions, and artifacts.
+
+## 3a. Optional ALCF/gpt-oss Demo Runner
+
+When a valid ALCF Globus token is available, the larger hosted models are useful
+for a stronger semantic demo pass. Start a GACT backend with Sophia/gpt-oss:
+
+```powershell
+$repo = (Resolve-Path '.').Path
+$data = (Resolve-Path 'tmp/clio-benchmark-data').Path
+
+$env:CLIO_LM_PROVIDER = 'argonne'
+$env:CLIO_LM_API_BASE = 'https://inference-api.alcf.anl.gov/resource_server/sophia/vllm/v1'
+$env:CLIO_LM_MODEL = 'openai/gpt-oss-120b'
+$env:CLIO_LM_MAX_TOKENS = '8192'
+$env:CLIO_LM_PLANNER_MAX_TOKENS = '4096'
+$env:CLIO_LM_TEMPERATURE = '0'
+$env:CLIO_LM_PLANNER_TEMPERATURE = '0'
+$env:CLIO_GACT_TURN_TIMEOUT_S = '900'
+$env:CLIO_ALLOWED_ROOTS = "$repo;$data"
+$env:CLIO_DATA_DIR = "$repo/tmp/clio-alcf-demo-state"
+
+uv run clio-agent-gact --host 127.0.0.1 --port 17960
+```
+
+In another terminal, run the demo benchmark:
+
+```powershell
+uv run python scripts/run_demo_benchmark.py `
+  --base-url http://127.0.0.1:17960 `
+  --data-dir tmp/clio-benchmark-data `
+  --output-jsonl tmp/clio-demo-benchmark-alcf-gptoss120b.jsonl `
+  --report docs/ALCF_DEMO_BENCHMARK_REPORT.md
+```
+
+The runner covers 14 natural prompts: HDF5 overview, Parquet profiling, memory
+follow-up, CSV schema, visualization artifact generation, HDF5 dataset deep
+dive, guard and no-guard cross-file nano-agent triage, guard and no-guard
+ADIOS/BP5 inspection, dirty Parquet quality review, NDP catalog discovery,
+targeted scatter plotting, and missing-file error surfacing.
 
 ## 4. Demo Prompt Book
 
