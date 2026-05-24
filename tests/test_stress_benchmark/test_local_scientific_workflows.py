@@ -100,6 +100,12 @@ def _tool_names(message: dict[str, Any]) -> list[str]:
     return [_tool_name(row) for row in _tools(message)]
 
 
+def _expert_handoffs(message: dict[str, Any]) -> list[dict[str, Any]]:
+    metadata = message.get("metadata") or {}
+    rows = metadata.get("expert_handoffs") or []
+    return rows if isinstance(rows, list) else []
+
+
 def _normalize_scientific_text(text: str) -> str:
     for original, normalized in {
         "⁻⁰": "^-0",
@@ -274,6 +280,7 @@ def _record_case(
         "selected_agent": _routing_agent(message),
         "routing_decision": _routing_decision(message),
         "tools_called": _tools(message),
+        "expert_handoffs": _expert_handoffs(message),
         "artifacts": _artifact_paths(message),
         "nanoagents_spawned": child_sessions or [],
         "error_info": message.get("error_info"),
@@ -290,12 +297,14 @@ def _record_case(
 def _assert_tool_answer(
     message: dict[str, Any],
     *,
-    expected_agent: str,
+    expected_agent: str | tuple[str, ...],
     expected_tool_prefix: str,
     expected_terms: tuple[str, ...],
 ) -> None:
     assert _blocking_error(message) is None, message.get("error_info")
-    assert expected_agent in _routing_agent(message), _routing_agent(message)
+    expected_agents = (expected_agent,) if isinstance(expected_agent, str) else expected_agent
+    routing_agent = _routing_agent(message)
+    assert any(agent in routing_agent for agent in expected_agents), routing_agent
     names = _tool_names(message)
     assert any(name.startswith(expected_tool_prefix) for name in names), names
     text = _normalize_scientific_text(_text(message)).lower()
@@ -595,10 +604,12 @@ def test_local_ndp_catalog_discovery_is_visible_to_core_expert_path(
     )
     _assert_tool_answer(
         answer,
-        expected_agent="data",
+        expected_agent=("data", "ndp_catalog"),
         expected_tool_prefix="ndp_",
         expected_terms=("National Data Platform", "noaa", "dataset"),
     )
+    handoff_agents = {str(row.get("agent_id")) for row in _expert_handoffs(answer)}
+    assert "ndp_catalog" in handoff_agents, _expert_handoffs(answer)
     assert any(name in _tool_names(answer) for name in ("ndp_search_datasets",)), _tool_names(
         answer
     )

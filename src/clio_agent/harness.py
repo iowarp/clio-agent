@@ -103,6 +103,40 @@ class ToolObservation:
 
 
 @dataclass(frozen=True)
+class ExpertHandoff:
+    """A concrete expert or child-expert invocation observed during one CLIO run."""
+
+    agent_id: str
+    parent_id: str | None
+    dispatch_target: str
+    stage: str
+    status: Literal["success", "failure"]
+    input_summary: str
+    output_summary: str = ""
+    duration_ms: float = 0.0
+    error: str | None = None
+    metadata: Mapping[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return a JSON-safe benchmark/API representation."""
+        row: dict[str, Any] = {
+            "agent_id": self.agent_id,
+            "dispatch_target": self.dispatch_target,
+            "stage": self.stage,
+            "status": self.status,
+            "input_summary": self.input_summary,
+            "output_summary": self.output_summary,
+            "duration_ms": self.duration_ms,
+            "metadata": _json_safe(self.metadata),
+        }
+        if self.parent_id:
+            row["parent_id"] = self.parent_id
+        if self.error:
+            row["error"] = self.error
+        return row
+
+
+@dataclass(frozen=True)
 class ExpertRequest:
     """Typed expert input contract used by native CLIO expert modules."""
 
@@ -145,6 +179,7 @@ class RunTrace:
     trace_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     started_at: float = field(default_factory=time.time)
     tools: list[ToolObservation] = field(default_factory=list)
+    expert_handoffs: list[ExpertHandoff] = field(default_factory=list)
 
     def record_tool(
         self,
@@ -163,6 +198,36 @@ class RunTrace:
                 result=result,
                 duration_ms=duration_ms,
                 ok=ok,
+            )
+        )
+
+    def record_expert_handoff(
+        self,
+        *,
+        agent_id: str,
+        parent_id: str | None,
+        dispatch_target: str,
+        stage: str,
+        status: Literal["success", "failure"],
+        input_summary: str,
+        output_summary: str = "",
+        duration_ms: float = 0.0,
+        error: str | None = None,
+        metadata: Mapping[str, Any] | None = None,
+    ) -> None:
+        """Append an expert handoff observation to this run."""
+        self.expert_handoffs.append(
+            ExpertHandoff(
+                agent_id=agent_id,
+                parent_id=parent_id,
+                dispatch_target=dispatch_target,
+                stage=stage,
+                status=status,
+                input_summary=input_summary,
+                output_summary=output_summary,
+                duration_ms=duration_ms,
+                error=error,
+                metadata=dict(metadata or {}),
             )
         )
 

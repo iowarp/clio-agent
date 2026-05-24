@@ -927,6 +927,7 @@ async def _run_turn_in_background(
     route_reason = ""
     execution_path = ""
     tools_called: list[dict[str, Any]] = []
+    expert_handoffs: list[dict[str, Any]] = []
     proposed_diffs: list[Any] = []
     nanoagents: list[Any] = []
     thinking_text = ""
@@ -1197,6 +1198,9 @@ async def _run_turn_in_background(
         # branches not yet migrated).
         execution_path = getattr(pred, "execution_path", "") or ""
         tools_called = _extract_tools_called(pred)
+        raw_handoffs = getattr(pred, "expert_handoffs", None) or []
+        if isinstance(raw_handoffs, list):
+            expert_handoffs = [dict(row) for row in raw_handoffs if isinstance(row, dict)]
         # Drain the per-session observer ledger so direct-tool short-
         # circuits (HDF5/Parquet/fs experts that bypass ReAct) still
         # report tools_called on the assistant message metadata.
@@ -1529,6 +1533,8 @@ async def _run_turn_in_background(
                 part.metadata["stream_fallback"] = stream_fallback
     if tools_called:
         assistant_metadata["tools_called"] = tools_called
+    if expert_handoffs:
+        assistant_metadata["expert_handoffs"] = expert_handoffs
     # iowarp/clio-agent#6: when streaming actually emitted chunks,
     # reuse its message_id + part_id so the deltas + final
     # message line up. Otherwise mint a fresh id (existing path).

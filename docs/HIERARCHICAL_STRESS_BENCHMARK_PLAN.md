@@ -94,17 +94,21 @@ Current implementation evidence:
   `sac_compute_trace_statistics`, and `sac_plot_traces`.
 - The format tool surface is deliberately SAC-specific. It is exposed as a
   `sac` FastMCP server with `sac_*` tools, not as a generic seismic namespace.
+- CLIO now emits `expert_handoffs` metadata on GACT assistant messages and the
+  stress audit log. This is required evidence for staged workflows whose final
+  public route is `visualization` but whose work actually traversed `data`,
+  `ndp_catalog`, `analysis`, `sac_format`, and `visualization`.
 - Caveat: the completed staged waveform demo is SAC archive based. The original
   Salton Sea three-component MiniSEED path remains a future target because the
   discovered OSDF resource is large and requires a bounded Pelican/object
   selection path.
-- Architecture caveat: this implementation proves data-owned NDP discovery, but
-  NDP semantics still live inside the top-level DataExpert. The intended CLIO
-  hierarchy is `data -> ndp_catalog` or `data -> ndp_access`, where the nested
-  NDP expert owns NDP-specific prompt context, tools, dataset/resource ranking,
-  and eventually its own tuned model. Future benchmarks should include
-  EarthScope-oriented prompts and verify that NDP work is delegated to that
-  nested expert rather than handled directly by DataExpert.
+- Architecture caveat: `ndp_catalog` and `sac_format` are now executable nested
+  experts under `data` and `analysis`, respectively, but they still run in the
+  same process and usually share the same provider/model. The intended long-term
+  CLIO hierarchy keeps their prompt/context/tool surfaces separate and eventually
+  lets each nested expert use its own tuned model. Future benchmarks should
+  include EarthScope-oriented prompts and verify that NDP work is delegated to
+  `ndp_catalog` rather than handled directly by DataExpert.
 
 ### 2. Mixed Scientific Run Audit
 
@@ -233,7 +237,8 @@ Every benchmark run should save:
 - Prompt and scenario ID.
 - Provider/model/context settings.
 - Route decision and route source.
-- Expert handoff graph.
+- Expert handoff graph from `metadata.expert_handoffs`; final selected route is
+  not sufficient evidence for hierarchy.
 - Per-expert context summary.
 - Tool calls with arguments, results, errors, and duration.
 - Child/nanoagent sessions and their status.

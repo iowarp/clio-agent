@@ -29,7 +29,7 @@ import uuid
 from collections.abc import Mapping
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterator, List
+from typing import Any, Callable, Dict, Iterator, List, Literal
 
 import dspy
 
@@ -556,7 +556,7 @@ class ClioAgent(dspy.Module):
             )
             trace.route = route
             success = True
-            if selected in ("data", "analysis", "visualization") and error_info is None:
+            if selected not in SPECIAL_ROUTE_TARGETS and error_info is None:
                 error_info = self._tool_error_info_from_trace(selected, trace)
             if error_info and not error_info.get("details", {}).get("partial", False):
                 success = False
@@ -587,7 +587,7 @@ class ClioAgent(dspy.Module):
         # Step 4b: Store tier-2 expert invocation for optimizer training data
         expert_duration_ms = (time.time() - start_time) * 1000
         nanoagents_spawned = self._extract_nanoagents_spawned(expert_result)
-        if selected in ("data", "analysis", "visualization"):
+        if selected not in SPECIAL_ROUTE_TARGETS:
             self._store_expert_invocation(
                 question=self._question_with_session_file(question, active_file),
                 file_context=file_context,
@@ -621,6 +621,7 @@ class ClioAgent(dspy.Module):
             answer=answer,
             selected_expert=selected,
             tools_called=[tool.to_arc_tool_call() for tool in trace.tools],
+            expert_handoffs=[handoff.to_dict() for handoff in trace.expert_handoffs],
             file_diffs=self._file_diffs_from_trace(
                 trace,
                 edit_mode=session_edit_mode,
@@ -1411,8 +1412,18 @@ class ClioAgent(dspy.Module):
         try:
             with dspy.context(lm=self._main_lm, adapter=self._dspy_adapter):
                 if dispatch_id == "data":
+                    started = time.time()
                     expert_result = self.data_expert(
                         question=expert_question, file_context=file_context
+                    )
+                    self._record_expert_handoff(
+                        trace,
+                        expert_id=expert_id,
+                        dispatch_target=dispatch_id,
+                        stage="planner_dispatch",
+                        input_summary=expert_question,
+                        result=expert_result,
+                        duration_ms=(time.time() - started) * 1000,
                     )
                     self._merge_expert_provenance(trace, expert_result)
                     answer = (
@@ -1431,9 +1442,19 @@ class ClioAgent(dspy.Module):
                     return expert_id, answer, expert_result, None
 
                 if dispatch_id == "analysis":
+                    started = time.time()
                     expert_result = self.analysis_expert(
                         question=expert_question,
                         file_context=file_context,
+                    )
+                    self._record_expert_handoff(
+                        trace,
+                        expert_id=expert_id,
+                        dispatch_target=dispatch_id,
+                        stage="planner_dispatch",
+                        input_summary=expert_question,
+                        result=expert_result,
+                        duration_ms=(time.time() - started) * 1000,
                     )
                     self._merge_expert_provenance(trace, expert_result)
                     answer = (
@@ -1443,9 +1464,19 @@ class ClioAgent(dspy.Module):
                     return expert_id, answer, expert_result, None
 
                 if dispatch_id == "ndp_catalog":
+                    started = time.time()
                     expert_result = self.ndp_catalog_expert(
                         question=expert_question,
                         file_context=file_context,
+                    )
+                    self._record_expert_handoff(
+                        trace,
+                        expert_id=expert_id,
+                        dispatch_target=dispatch_id,
+                        stage="planner_dispatch",
+                        input_summary=expert_question,
+                        result=expert_result,
+                        duration_ms=(time.time() - started) * 1000,
                     )
                     self._merge_expert_provenance(trace, expert_result)
                     answer = (
@@ -1464,9 +1495,19 @@ class ClioAgent(dspy.Module):
                     return expert_id, answer, expert_result, None
 
                 if dispatch_id == "sac_format":
+                    started = time.time()
                     expert_result = self.sac_format_expert(
                         question=expert_question,
                         file_context=file_context,
+                    )
+                    self._record_expert_handoff(
+                        trace,
+                        expert_id=expert_id,
+                        dispatch_target=dispatch_id,
+                        stage="planner_dispatch",
+                        input_summary=expert_question,
+                        result=expert_result,
+                        duration_ms=(time.time() - started) * 1000,
                     )
                     self._merge_expert_provenance(trace, expert_result)
                     answer = (
@@ -1489,9 +1530,19 @@ class ClioAgent(dspy.Module):
                         ).to_dict(),
                     )
 
+                started = time.time()
                 expert_result = self.visualization_expert(
                     question=expert_question,
                     file_context=file_context,
+                )
+                self._record_expert_handoff(
+                    trace,
+                    expert_id=expert_id,
+                    dispatch_target=dispatch_id,
+                    stage="planner_dispatch",
+                    input_summary=expert_question,
+                    result=expert_result,
+                    duration_ms=(time.time() - started) * 1000,
                 )
                 self._merge_expert_provenance(trace, expert_result)
             description = self._coerce_text(
@@ -1508,6 +1559,15 @@ class ClioAgent(dspy.Module):
         except CancellationError:
             raise
         except Exception as exc:
+            self._record_expert_handoff(
+                trace,
+                expert_id=expert_id,
+                dispatch_target=dispatch_id,
+                stage="planner_dispatch",
+                input_summary=expert_question,
+                status="failure",
+                error=str(exc),
+            )
             error = ExpertError(
                 f"The {expert_id} expert encountered an issue processing your request.",
                 details=self._recovery_details(
@@ -1568,9 +1628,19 @@ class ClioAgent(dspy.Module):
                 f"Analyze the staged waveform/data file {staged_path}. "
                 "Compute grounded statistics and do not invent unsupported format details."
             )
+            started = time.time()
             analysis_result = self.analysis_expert(
                 question=analysis_question,
                 file_context=downstream_context,
+            )
+            self._record_expert_handoff(
+                trace,
+                expert_id="analysis",
+                dispatch_target="analysis",
+                stage="data_handoff_analysis",
+                input_summary=analysis_question,
+                result=analysis_result,
+                duration_ms=(time.time() - started) * 1000,
             )
             self._merge_expert_provenance(trace, analysis_result)
             analysis_text = self._coerce_text(getattr(analysis_result, "analysis", "")).strip()
@@ -1590,9 +1660,19 @@ class ClioAgent(dspy.Module):
                 f"Plot representative traces or numeric series from {staged_path}. "
                 "Return the output artifact path and surface any plotting failure."
             )
+            started = time.time()
             visualization_result = self.visualization_expert(
                 question=visualization_question,
                 file_context=downstream_context,
+            )
+            self._record_expert_handoff(
+                trace,
+                expert_id="visualization",
+                dispatch_target="visualization",
+                stage="data_handoff_visualization",
+                input_summary=visualization_question,
+                result=visualization_result,
+                duration_ms=(time.time() - started) * 1000,
             )
             self._merge_expert_provenance(trace, visualization_result)
             description = self._coerce_text(
@@ -2878,6 +2958,100 @@ class ClioAgent(dspy.Module):
         for observation in provenance:
             if hasattr(observation, "to_arc_tool_call"):
                 trace.tools.append(observation)
+
+    def _record_expert_handoff(
+        self,
+        trace: RunTrace,
+        *,
+        expert_id: str,
+        dispatch_target: str,
+        stage: str,
+        input_summary: str,
+        result: Any | None = None,
+        status: Literal["success", "failure"] = "success",
+        duration_ms: float = 0.0,
+        error: str | None = None,
+    ) -> None:
+        """Record an expert-stage handoff without relying on final route labels."""
+        metadata = self._expert_result_metadata(result)
+        output_summary = self._expert_result_summary(result)
+        parent_id = self._registered_parent_id(expert_id)
+        trace.record_expert_handoff(
+            agent_id=expert_id,
+            parent_id=parent_id,
+            dispatch_target=dispatch_target,
+            stage=stage,
+            status=status,
+            input_summary=self._compact_handoff_text(input_summary),
+            output_summary=output_summary,
+            duration_ms=duration_ms,
+            error=error,
+            metadata=metadata,
+        )
+
+        reported_expert = self._coerce_text(metadata.get("expert")).strip().lower()
+        if not reported_expert or reported_expert == expert_id:
+            return
+        if reported_expert in {row.agent_id for row in trace.expert_handoffs}:
+            return
+        reported_parent = self._coerce_text(metadata.get("parent_expert")).strip().lower()
+        trace.record_expert_handoff(
+            agent_id=reported_expert,
+            parent_id=reported_parent or expert_id,
+            dispatch_target=reported_expert,
+            stage=f"{stage}_child",
+            status=status,
+            input_summary=self._compact_handoff_text(input_summary),
+            output_summary=output_summary,
+            duration_ms=duration_ms,
+            error=error,
+            metadata={
+                **metadata,
+                "observed_through": expert_id,
+            },
+        )
+
+    def _registered_parent_id(self, expert_id: str) -> str | None:
+        """Return a registered parent ID for an expert, if one exists."""
+        caps = self.registry.get_capabilities(expert_id)
+        if caps is None:
+            return None
+        return caps.parent_id
+
+    @staticmethod
+    def _expert_result_metadata(result: Any | None) -> dict[str, Any]:
+        """Return JSON-like metadata from a native expert result."""
+        metadata = getattr(result, "metadata", None)
+        if isinstance(metadata, Mapping):
+            return dict(metadata)
+        return {}
+
+    @classmethod
+    def _expert_result_summary(cls, result: Any | None) -> str:
+        """Return a compact human-readable expert output summary."""
+        if result is None:
+            return ""
+        candidates = (
+            getattr(result, "analysis", ""),
+            getattr(result, "visualization_description", ""),
+            getattr(result, "answer", ""),
+        )
+        for candidate in candidates:
+            text = cls._coerce_text(candidate).strip()
+            if text:
+                return cls._compact_handoff_text(text)
+        file_path = cls._coerce_text(getattr(result, "file_path", "")).strip()
+        if file_path:
+            return cls._compact_handoff_text(f"Artifact: {file_path}")
+        return ""
+
+    @staticmethod
+    def _compact_handoff_text(text: str, *, limit: int = 500) -> str:
+        """Compact one handoff field for durable metadata."""
+        normalized = " ".join(str(text).split())
+        if len(normalized) <= limit:
+            return normalized
+        return normalized[: limit - 15].rstrip() + "...[truncated]"
 
     def _run_chat_agent(self, question: str, session_context: str) -> str:
         """Generate a conversational reply through DSPy/LiteLLM."""
