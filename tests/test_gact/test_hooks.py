@@ -42,11 +42,14 @@ def _hook_dir(tmp_path: Path, **events: str) -> Path:
 def test_pre_tool_hook_can_block(tmp_path: Path) -> None:
     """A pre_tool hook that raises PermissionError vetoes the call."""
 
-    d = _hook_dir(tmp_path, pre_tool="""
+    d = _hook_dir(
+        tmp_path,
+        pre_tool="""
 def pre_tool(name, args):
     if name.startswith("hdf5_"):
         raise PermissionError("no hdf5 today")
-""")
+""",
+    )
     reg = HookRegistry(hooks_dir=d)
     with pytest.raises(PermissionError, match="no hdf5"):
         reg.fire("pre_tool", "hdf5_list_datasets", {"path": "/tmp/x"})
@@ -58,10 +61,13 @@ def test_post_tool_hook_swallows_exceptions(tmp_path: Path) -> None:
     """post_* hooks must NEVER crash a turn; exceptions are
     swallowed + logged."""
 
-    d = _hook_dir(tmp_path, post_tool="""
+    d = _hook_dir(
+        tmp_path,
+        post_tool="""
 def post_tool(name, args, result=None, error=None):
     raise RuntimeError("boom")
-""")
+""",
+    )
     reg = HookRegistry(hooks_dir=d)
     # Should not raise.
     reg.fire("post_tool", "fs_read_file", {"x": 1}, result="ok")
@@ -72,16 +78,17 @@ def test_pre_message_hook_blocks_via_app(tmp_path: Path) -> None:
     end-to-end through GACT — the assistant message comes back
     with error_info.error == permission_error."""
 
-    d = _hook_dir(tmp_path, pre_message="""
+    d = _hook_dir(
+        tmp_path,
+        pre_message="""
 def pre_message(session_id, text):
     if "secret" in text.lower():
         raise PermissionError("blocked by policy")
-""")
+""",
+    )
     install_global_registry(HookRegistry(hooks_dir=d))
     try:
-        app = build_app(
-            sessions_path=tmp_path / "s.json", agent=_Agent()
-        )
+        app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
         with TestClient(app) as c:
             sid = c.post("/v1/sessions", json={"title": "t"}).json()["id"]
             ack = c.post(
@@ -91,6 +98,7 @@ def pre_message(session_id, text):
             assert ack.status_code == 200
             # Wait for the background turn to settle into error.
             import time as _t
+
             for _ in range(30):
                 sess = c.get(f"/v1/sessions/{sid}").json()
                 if sess["status"] == "error":
@@ -106,15 +114,16 @@ def test_post_message_hook_runs_after_settle(tmp_path: Path) -> None:
     (write a marker file here)."""
 
     marker = tmp_path / "post_message_fired.txt"
-    d = _hook_dir(tmp_path, post_message=f"""
+    d = _hook_dir(
+        tmp_path,
+        post_message=f"""
 def post_message(session_id, assistant):
     open({str(marker)!r}, "w").write(assistant['id'])
-""")
+""",
+    )
     install_global_registry(HookRegistry(hooks_dir=d))
     try:
-        app = build_app(
-            sessions_path=tmp_path / "s.json", agent=_Agent()
-        )
+        app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
         with TestClient(app) as c:
             from .conftest import complete_turn
 

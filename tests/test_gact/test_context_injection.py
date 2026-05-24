@@ -23,10 +23,15 @@ class _RecordingAgent:
 
     def forward(self, question: str, session_id: str = "default"):
         self.calls.append((question, session_id))
-        return type("Pred", (), {
-            "answer": "ok", "selected_expert": "",
-            "routing_rationale": "",
-        })()
+        return type(
+            "Pred",
+            (),
+            {
+                "answer": "ok",
+                "selected_expert": "",
+                "routing_rationale": "",
+            },
+        )()
 
 
 @pytest.fixture()
@@ -37,9 +42,7 @@ def setup(tmp_path: Path):
     app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
     # Update ws_default's root_path so its files pass the
     # workspace check inside _enrich_with_context_files.
-    app.state.workspaces.update(
-        "ws_default", root_path=str(tmp_path)
-    )
+    app.state.workspaces.update("ws_default", root_path=str(tmp_path))
     return app, TestClient(app), agent, tmp_path
 
 
@@ -134,10 +137,7 @@ def test_read_file_deleted_after_attach_surfaces_error(setup) -> None:
         "retry",
         "exit",
     ]
-    completed = [
-        ev for ev in app.state.bus._history.get(sid, [])
-        if ev.type == "message.completed"
-    ]
+    completed = [ev for ev in app.state.bus._history.get(sid, []) if ev.type == "message.completed"]
     assert completed, "turn did not publish message.completed"
     payload = completed[-1].payload
     assert payload["message_id"] == assistant["id"]
@@ -145,9 +145,7 @@ def test_read_file_deleted_after_attach_surfaces_error(setup) -> None:
     assert payload["error_info"]["error"] == "context_file_error"
 
 
-def test_path_outside_workspace_root_is_inlined_for_reads(
-    setup, tmp_path: Path
-) -> None:
+def test_path_outside_workspace_root_is_inlined_for_reads(setup, tmp_path: Path) -> None:
     """iowarp/clio-agent#5 (revised): the workspace-root check used to
     silently skip context_files outside the root, but the user
     explicitly attaches via the API — they know what they're doing.

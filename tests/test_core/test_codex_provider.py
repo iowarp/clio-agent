@@ -55,9 +55,7 @@ def _reset_registration():
 
 class TestMessagesToCodexPrompt:
     def test_single_user_message(self):
-        prompt = _messages_to_codex_prompt(
-            [{"role": "user", "content": "hello"}]
-        )
+        prompt = _messages_to_codex_prompt([{"role": "user", "content": "hello"}])
         assert "JSON Lines" in prompt
         assert json.loads(prompt.splitlines()[-1]) == {
             "role": "user",
@@ -112,9 +110,7 @@ class TestMessagesToCodexPrompt:
         }
 
     def test_unknown_role_is_downgraded_to_user(self):
-        prompt = _messages_to_codex_prompt(
-            [{"role": "root", "content": "hello"}]
-        )
+        prompt = _messages_to_codex_prompt([{"role": "root", "content": "hello"}])
         row = json.loads(prompt.splitlines()[-1])
         assert row == {"role": "user", "content": "hello"}
 
@@ -218,6 +214,7 @@ class TestResolveBinary:
             from clio_agent.providers.codex_litellm import (
                 _resolve_codex_binary,
             )
+
             _resolve_codex_binary()
 
 
@@ -417,8 +414,6 @@ class TestEnsureRegistered:
         import litellm
 
         ensure_registered()
-        codex_entries = [
-            e for e in litellm.custom_provider_map if e.get("provider") == "codex"
-        ]
+        codex_entries = [e for e in litellm.custom_provider_map if e.get("provider") == "codex"]
         assert len(codex_entries) == 1
         assert isinstance(codex_entries[0]["custom_handler"], CodexLLM)

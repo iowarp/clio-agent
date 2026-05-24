@@ -1,6 +1,5 @@
 """Tests for file access policy validation."""
 
-
 from clio_agent.tools import file_policy
 from clio_agent.tools.file_policy import FileAccessPolicy, FilePolicyError
 

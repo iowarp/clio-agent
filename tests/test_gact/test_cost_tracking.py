@@ -39,13 +39,12 @@ class _Agent:
 
 
 def _client(tmp_path: Path, pred) -> TestClient:
-    return TestClient(
-        build_app(sessions_path=tmp_path / "s.json", agent=_Agent(pred))
-    )
+    return TestClient(build_app(sessions_path=tmp_path / "s.json", agent=_Agent(pred)))
 
 
 def _turn(client: TestClient, sid: str) -> dict:
     from .conftest import complete_turn
+
     return complete_turn(client, sid, "hello")
 
 

@@ -47,6 +47,7 @@ from clio_agent.experts.visualization_expert import VisualizationExpert
 # EXPERT REGISTRY
 # ============================================================================
 
+
 def get_all_experts() -> Dict[str, dspy.Module]:
     """Get all available expert instances.
 

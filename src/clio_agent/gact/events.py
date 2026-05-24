@@ -91,9 +91,7 @@ class EventBus:
     instances which serialize their own operations.
     """
 
-    def __init__(
-        self, *, queue_capacity: int = 256, history_per_session: int = 256
-    ) -> None:
+    def __init__(self, *, queue_capacity: int = 256, history_per_session: int = 256) -> None:
         self._capacity = queue_capacity
         self._history_cap = history_per_session
         # session_id -> list of subscriber queues
@@ -126,9 +124,7 @@ class EventBus:
             except asyncio.QueueFull:
                 pass
 
-    async def subscribe(
-        self, session_id: str, *, last_event_id: int = 0
-    ) -> AsyncIterator[Event]:
+    async def subscribe(self, session_id: str, *, last_event_id: int = 0) -> AsyncIterator[Event]:
         """Yield events for ``session_id`` until the consumer drops.
 
         ``last_event_id`` is the highest event id the client already

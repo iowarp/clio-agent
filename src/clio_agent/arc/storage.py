@@ -66,8 +66,8 @@ class IOWarpCTEBackend:
 
         # Tier migration policy (days)
         self.tier_policy = tier_policy or {
-            "hot_to_warm": 1,      # 1 day in hot tier before eviction
-            "warm_to_cold": 7,     # 1 week in warm tier
+            "hot_to_warm": 1,  # 1 day in hot tier before eviction
+            "warm_to_cold": 7,  # 1 week in warm tier
             "cold_to_archive": 30,  # 1 month in cold tier
         }
 
@@ -476,9 +476,7 @@ class IOWarpCTEBackend:
 
             # Parse timestamp
             try:
-                last_accessed = datetime.fromisoformat(
-                    last_accessed_str.replace("Z", "+00:00")
-                )
+                last_accessed = datetime.fromisoformat(last_accessed_str.replace("Z", "+00:00"))
             except Exception:
                 continue
 

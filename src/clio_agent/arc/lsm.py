@@ -230,9 +230,7 @@ class LSMTree:
                 if end_ts < sstable.min_key or start_ts > sstable.max_key:
                     continue
 
-                sstable_results = self._range_scan_sstable(
-                    sstable, start_ts, end_ts
-                )
+                sstable_results = self._range_scan_sstable(sstable, start_ts, end_ts)
                 for ts, metric in sstable_results.items():
                     # MemTable has priority (newer data)
                     if ts not in results:

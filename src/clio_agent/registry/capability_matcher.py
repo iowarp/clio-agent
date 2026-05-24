@@ -37,13 +37,64 @@ class CapabilityMatcher:
         """Initialize matcher with default stopwords."""
         # Common English stopwords to filter from queries
         self._stopwords = {
-            'the', 'a', 'an', 'in', 'on', 'at', 'to', 'for', 'of', 'with',
-            'is', 'are', 'was', 'were', 'be', 'been', 'being', 'have', 'has',
-            'had', 'do', 'does', 'did', 'will', 'would', 'should', 'could',
-            'can', 'may', 'might', 'must', 'shall', 'i', 'you', 'he', 'she',
-            'it', 'we', 'they', 'them', 'this', 'that', 'these', 'those',
-            'my', 'your', 'his', 'her', 'its', 'our', 'their', 'what', 'which',
-            'who', 'when', 'where', 'why', 'how'
+            "the",
+            "a",
+            "an",
+            "in",
+            "on",
+            "at",
+            "to",
+            "for",
+            "of",
+            "with",
+            "is",
+            "are",
+            "was",
+            "were",
+            "be",
+            "been",
+            "being",
+            "have",
+            "has",
+            "had",
+            "do",
+            "does",
+            "did",
+            "will",
+            "would",
+            "should",
+            "could",
+            "can",
+            "may",
+            "might",
+            "must",
+            "shall",
+            "i",
+            "you",
+            "he",
+            "she",
+            "it",
+            "we",
+            "they",
+            "them",
+            "this",
+            "that",
+            "these",
+            "those",
+            "my",
+            "your",
+            "his",
+            "her",
+            "its",
+            "our",
+            "their",
+            "what",
+            "which",
+            "who",
+            "when",
+            "where",
+            "why",
+            "how",
         }
 
     def extract_keywords(self, query: str) -> List[str]:
@@ -70,18 +121,14 @@ class CapabilityMatcher:
             ['best', 'compression', 'adios']
         """
         # Lowercase and split on non-alphanumeric (keep numbers for hdf5, etc.)
-        words = re.findall(r'\w+', query.lower())
+        words = re.findall(r"\w+", query.lower())
 
         # Filter stopwords and empty strings
         keywords = [w for w in words if w and w not in self._stopwords]
 
         return keywords
 
-    def match_query(
-        self,
-        query: str,
-        capabilities: Dict[str, Any]
-    ) -> List[Tuple[str, float]]:
+    def match_query(self, query: str, capabilities: Dict[str, Any]) -> List[Tuple[str, float]]:
         """Match query to agent capabilities and return ranked list.
 
         Matching algorithm:
@@ -125,7 +172,7 @@ class CapabilityMatcher:
                 "No agent matching performed. "
                 "Consider rewording the query with more specific terms.",
                 UserWarning,
-                stacklevel=2
+                stacklevel=2,
             )
             return []
 
@@ -133,7 +180,7 @@ class CapabilityMatcher:
         scores = []
         for agent_id, capability in capabilities.items():
             # Get agent's keywords (handle missing keywords gracefully)
-            agent_keywords = capability.get('keywords', [])
+            agent_keywords = capability.get("keywords", [])
             if not agent_keywords:
                 continue
 
@@ -149,11 +196,7 @@ class CapabilityMatcher:
 
         return scores
 
-    def _calculate_score(
-        self,
-        query_keywords: List[str],
-        agent_keywords: List[str]
-    ) -> float:
+    def _calculate_score(self, query_keywords: List[str], agent_keywords: List[str]) -> float:
         """Calculate match score between query and agent keywords.
 
         Score formula:
@@ -183,7 +226,7 @@ class CapabilityMatcher:
         # Example: "parallel io" becomes ["parallel", "io"]
         expanded_keywords = []
         for kw in agent_keywords:
-            expanded_keywords.extend(re.findall(r'\w+', kw.lower()))
+            expanded_keywords.extend(re.findall(r"\w+", kw.lower()))
 
         # Convert to set for O(1) lookup
         agent_kw_set = set(expanded_keywords)

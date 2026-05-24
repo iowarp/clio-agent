@@ -23,7 +23,9 @@ def _parse_result(result: object) -> dict:
 
 
 @pytest.mark.asyncio
-async def test_shell_bash_runs_simple_command(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_shell_bash_runs_simple_command(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """The shell tool should execute a bounded command and return output."""
 
     monkeypatch.setenv("CLIO_ALLOWED_ROOTS", str(tmp_path))

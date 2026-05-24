@@ -52,9 +52,7 @@ def test_format_sse_emits_canonical_wire_shape() -> None:
     assert "data: " in raw
     assert raw.endswith("\n\n")
     # The data line is valid JSON matching the envelope.
-    data_line = next(
-        ln for ln in raw.splitlines() if ln.startswith("data: ")
-    )
+    data_line = next(ln for ln in raw.splitlines() if ln.startswith("data: "))
     payload = json.loads(data_line.removeprefix("data: "))
     assert payload["type"] == "message.completed"
     assert payload["payload"] == {"a": 1}
@@ -146,9 +144,7 @@ class _FakeAgent:
 
 @pytest.fixture()
 def client(tmp_path: Path) -> TestClient:
-    return TestClient(
-        build_app(sessions_path=tmp_path / "s.json", agent=_FakeAgent())
-    )
+    return TestClient(build_app(sessions_path=tmp_path / "s.json", agent=_FakeAgent()))
 
 
 def test_sse_endpoint_404s_for_unknown_session(client: TestClient) -> None:

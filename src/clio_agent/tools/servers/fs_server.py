@@ -92,19 +92,17 @@ def propose_edit(filepath: str, new_content: str) -> dict[str, Any]:
         p = Path(safe_read)
         old = p.read_text(encoding="utf-8", errors="replace")
     new = new_content if isinstance(new_content, str) else str(new_content)
-    diff_lines = list(difflib.unified_diff(
-        old.splitlines(keepends=True),
-        new.splitlines(keepends=True),
-        fromfile=f"a/{p.name}",
-        tofile=f"b/{p.name}",
-        lineterm="",
-    ))
-    added = sum(
-        1 for ln in diff_lines if ln.startswith("+") and not ln.startswith("+++")
+    diff_lines = list(
+        difflib.unified_diff(
+            old.splitlines(keepends=True),
+            new.splitlines(keepends=True),
+            fromfile=f"a/{p.name}",
+            tofile=f"b/{p.name}",
+            lineterm="",
+        )
     )
-    removed = sum(
-        1 for ln in diff_lines if ln.startswith("-") and not ln.startswith("---")
-    )
+    added = sum(1 for ln in diff_lines if ln.startswith("+") and not ln.startswith("+++"))
+    removed = sum(1 for ln in diff_lines if ln.startswith("-") and not ln.startswith("---"))
     return {
         "path": str(p),
         "unified_diff": "\n".join(diff_lines),
