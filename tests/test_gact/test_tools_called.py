@@ -149,3 +149,9 @@ def test_expert_handoffs_propagate_to_message_metadata(tmp_path: Path) -> None:
     assistant = complete_turn(client, sid, "find seismic data")
 
     assert assistant["metadata"]["expert_handoffs"] == handoffs
+    handoff_parts = [part for part in assistant["parts"] if part["type"] == "expert_handoff"]
+    assert len(handoff_parts) == 2
+    assert handoff_parts[0]["metadata"]["agent_id"] == "data"
+    assert handoff_parts[0]["text"].startswith("data | success")
+    assert handoff_parts[1]["metadata"]["parent_id"] == "data"
+    assert "data -> ndp_catalog" in handoff_parts[1]["text"]
