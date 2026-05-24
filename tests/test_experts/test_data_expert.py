@@ -126,13 +126,16 @@ class TestDataExpert:
             expert.close()
 
     def test_expert_tool_names(self):
-        """Test expert has the expected HDF5 tools."""
+        """Test expert has the expected data/discovery tools."""
         expert = DataExpert()
         try:
             tool_names = [t.name for t in expert._tools]
             assert "hdf5_analyze_file" in tool_names
             assert "hdf5_list_datasets" in tool_names
             assert "adios_inspect_file" in tool_names
+            assert "ndp_list_organizations" in tool_names
+            assert "ndp_search_datasets" in tool_names
+            assert "ndp_get_dataset_details" in tool_names
         finally:
             expert.close()
 
@@ -355,6 +358,144 @@ class TestDataExpert:
         error = result.tool_provenance[0].result["error"]
         assert error["type"] == "tool_contract"
         assert error["code"] == "invalid_result_shape"
+        expert.close()
+
+    def test_data_expert_uses_ndp_tools_for_catalog_discovery(self):
+        """Natural NDP catalog requests should use data-owned discovery tools."""
+
+        class FakeExecutor:
+            closed = False
+
+            def to_dspy_tools(self):
+                def fake_tool(**kwargs):
+                    return "{}"
+
+                return [
+                    dspy.Tool(
+                        func=fake_tool,
+                        name="ndp_list_organizations",
+                        desc="List NDP organizations.",
+                        args={},
+                    ),
+                    dspy.Tool(
+                        func=fake_tool,
+                        name="ndp_search_datasets",
+                        desc="Search NDP datasets.",
+                        args={},
+                    ),
+                ]
+
+            def call_tool(self, name, args):
+                if name == "ndp_list_organizations":
+                    assert args == {"name_filter": "noaa", "server": "global"}
+                    return (
+                        '{"organizations":["noaa-global-systems-laboratory"],'
+                        '"count":1,"server":"global"}'
+                    )
+                assert name == "ndp_search_datasets"
+                assert args == {
+                    "server": "global",
+                    "limit": 5,
+                    "search_terms": ["climate"],
+                }
+                return (
+                    '{"datasets":[{"id":"ds1","name":"climate-run",'
+                    '"title":"Climate Run","owner_org":"noaa-global-systems-laboratory",'
+                    '"resources":[{"format":"CSV"}]}],"count":1,"server":"global"}'
+                )
+
+            def close(self):
+                self.closed = True
+
+        expert = DataExpert(tool_executor=FakeExecutor())
+
+        result = expert(
+            question=(
+                "Use the National Data Platform catalog to find NOAA climate datasets "
+                "that could be useful for this analysis."
+            )
+        )
+
+        assert result.synthesis_source == "deterministic"
+        assert result.metadata["expert"] == "data"
+        assert result.metadata["tier3_agent"] == "ndp_catalog"
+        assert "National Data Platform" in result.analysis
+        assert "noaa-global-systems-laboratory" in result.analysis
+        assert "Climate Run" in result.analysis
+        assert [row.tool for row in result.tool_provenance] == [
+            "ndp_list_organizations",
+            "ndp_search_datasets",
+        ]
+        expert.close()
+
+    def test_data_expert_searches_ndp_terms_independently(self):
+        """Catalog discovery should fan out terms instead of over-constraining search."""
+
+        class FakeExecutor:
+            closed = False
+
+            def to_dspy_tools(self):
+                def fake_tool(**kwargs):
+                    return "{}"
+
+                return [
+                    dspy.Tool(
+                        func=fake_tool,
+                        name="ndp_search_datasets",
+                        desc="Search NDP datasets.",
+                        args={},
+                    )
+                ]
+
+            def call_tool(self, name, args):
+                if name == "ndp_list_organizations":
+                    assert args == {"name_filter": "seism", "server": "global"}
+                    return '{"organizations":[],"count":0,"server":"global"}'
+                assert name == "ndp_search_datasets"
+                terms = args.get("search_terms")
+                assert terms in (["seismic"], ["seismological"])
+                if terms == ["seismic"]:
+                    return (
+                        '{"datasets":[{"id":"salton","name":"salton-sea-seismic-data",'
+                        '"title":"Salton Sea Seismic Data","owner_org":"ucr",'
+                        '"notes":"Seismic waveform data in MiniSEED format.",'
+                        '"resource_names":["Salton Sea Seismic Waveforms"],'
+                        '"resource_formats":["MiniSEED"],'
+                        '"resources":[{"format":"MiniSEED"}]}],"count":1,"server":"global"}'
+                    )
+                return (
+                    '{"datasets":[{"id":"ridgecrest","name":"ridgecrest-lidar",'
+                    '"title":"Ridgecrest Earthquake Lidar","owner_org":"opentopography",'
+                    '"resources":[{"format":"TIFF"}]}],"count":1,"server":"global"}'
+                )
+
+            def close(self):
+                self.closed = True
+
+        expert = DataExpert(tool_executor=FakeExecutor())
+
+        result = expert(
+            question=(
+                "Find seismic data from a seismological organization on NDP and "
+                "inspect usable resources."
+            )
+        )
+
+        assert result.synthesis_source == "deterministic"
+        assert "Salton Sea Seismic Data" in result.analysis
+        assert "MiniSEED" in result.analysis
+        assert "three-axis plotting remain blocked" in result.analysis
+        assert "download/stage the MiniSEED waveform" in result.recommendations
+        assert "Ridgecrest Earthquake Lidar" in result.analysis
+        search_calls = [
+            row.params["search_terms"]
+            for row in result.tool_provenance
+            if row.tool == "ndp_search_datasets"
+        ]
+        assert search_calls == [
+            ["seismic"],
+            ["seismological"],
+        ]
         expert.close()
 
 

@@ -33,7 +33,7 @@ end-to-end, not just isolated provider or tool smoke tests.
 | Evidence per scenario | `CLIO_STRESS_AUDIT_LOG` JSONL rows include prompt, provider, dataset, selected expert, routing decision, elapsed runtime, child sessions, tool calls, artifacts, errors, stream metadata, answer excerpt, and caveats. | Verified |
 | Human demo guide | `docs/STRESS_BENCHMARK.md` includes setup, LM Studio/Qwopus configuration, and named collaborator demo prompts with expected behavior and rationale. | Verified |
 | ALCF secondary smoke | `scripts/list_alcf_models.py --json` listed active Sophia/Metis models; a CLIO CLI query through `CLIO_LM_PROVIDER=argonne` returned `ALCF_CLIO_OK` with no `error_info`. | Smoke verified |
-| clio-kit/NDP core path | `ndp_core_expert_catalog_discovery` used Qwopus/GACT, selected `analysis`, and called `ndp_search_datasets`/`ndp_list_organizations` through the CLIO gateway. | Verified with caveat |
+| clio-kit/NDP core path | Earlier Qwopus/GACT evidence selected `analysis`; the 2026-05-23 ALCF follow-up corrected ownership so natural NDP discovery selects `data` and calls `ndp_list_organizations`/`ndp_search_datasets` through the CLIO gateway. | Verified after ownership fix |
 | clio-kit/NDP direct external MCP | `clio_kit_ndp_external_mcp` installed `clio-kit mcp-server ndp` through GACT and called `list_organizations` directly. | Verified |
 | Verified-vs-gap distinction | This report and the demo guide separate local Qwopus evidence from optional ALCF/Claude expansion lanes and from clean-vs-recovered planner routes. | Verified |
 
@@ -78,7 +78,7 @@ $env:CLIO_STRESS_AUDIT_LOG=(Join-Path (Resolve-Path 'tmp').Path 'clio-stress-aud
 .\.venv\Scripts\python.exe -m pytest tests\test_stress_benchmark\test_local_scientific_workflows.py::test_local_ndp_catalog_discovery_is_visible_to_core_expert_path -m "integration and benchmark" -vv -s
 ```
 
-Observed:
+Observed in the older local run:
 
 ```text
 1 passed in 140.09s (0:02:20)
@@ -87,10 +87,49 @@ tools=ndp_search_datasets, ndp_list_organizations, ndp_search_datasets
 stream_source=live
 ```
 
-The NDP run is not counted as a clean planner route. Qwopus made successful NDP
-tool calls and CLIO answered from those observations, but a later planner step
-returned malformed JSON. The audit row carries a partial
-`post_observation_planning` `routing_error` so the recovery is visible.
+That run is now treated as historical failure evidence. NDP catalog discovery
+is a data-stage capability, so selecting `analysis` for NDP was the wrong
+ownership boundary even though the tool calls worked.
+
+ALCF hierarchical ownership follow-up:
+
+```powershell
+uv run python scripts/run_demo_benchmark.py `
+  --base-url http://127.0.0.1:18163 `
+  --data-dir tmp/clio-benchmark-data `
+  --output-jsonl tmp/clio-demo-benchmark-hierarchical-ndp-data-v3.jsonl `
+  --report docs/ALCF_DEMO_BENCHMARK_REPORT.md
+```
+
+Observed:
+
+```text
+14/14 cases passed
+ndp_catalog_discovery selected_agent=data
+tools=ndp_list_organizations, ndp_search_datasets
+elapsed=8.5s
+```
+
+Focused seismic probe:
+
+```text
+Prompt: Find seismic data from a seismological organization on NDP. Pick a
+usable dataset, inspect the data, analyze the signal across three axes, and
+produce a plot with the three-axis trace.
+
+selected_agent=data
+route_source=dspy
+tools=ndp_list_organizations, ndp_search_datasets(seismic),
+      ndp_search_datasets(seismological)
+error_info=null
+```
+
+The seismic probe found candidate catalog rows, including Salton Sea Seismic
+Data, and then correctly stopped as a data-stage discovery result: analysis and
+three-axis plotting were reported as blocked until a downloadable waveform
+resource is staged. This is not a completed seismic plot benchmark yet; it is
+evidence that NDP discovery now sits under the data hierarchy and that the
+remaining gap is resource staging plus analysis/visualization handoff.
 
 clio-kit NDP direct external MCP follow-up:
 
@@ -210,7 +249,7 @@ surfacing a false routing failure.
 | `missing_hdf5_error_surface` | `data` | `hdf5_list_datasets` | 0 | `tool_error` | `batch` |
 | `cancellation_surface` | `chat` | none | 0 | `cancelled` | `batch` |
 | `streaming_provenance` | `chat` | none | 0 | none | `live`, `delta_count=257` |
-| `ndp_core_expert_catalog_discovery` | `analysis` | `ndp_search_datasets`, `ndp_list_organizations`, `ndp_search_datasets` | 0 | partial `routing_error` after successful tools | `live` |
+| `ndp_core_expert_catalog_discovery` | `data` | `ndp_list_organizations`, `ndp_search_datasets` | 0 | none in ALCF follow-up | `batch`/GACT metadata |
 | `clio_kit_ndp_external_mcp` | direct external MCP | `clio-kit-ndp.list_organizations` | 0 | none | `batch` |
 
 Earlier local runs exposed two issues now fixed by this branch: single-file
@@ -232,7 +271,7 @@ uses the fixed behavior.
 | Error hardening | `missing_hdf5_error_surface` | Assistant text is empty; `error_info.error == "tool_error"`. |
 | Cancellation | `cancellation_surface` | Assistant text is empty; `error_info.error == "cancelled"`. |
 | Streaming truth | `streaming_provenance` | `message.part.delta` events observed; completed metadata reports `stream_source="live"`. |
-| NDP core path | `ndp_core_expert_catalog_discovery` | Natural catalog prompt; selected `analysis`; called `ndp_` tools through the CLIO gateway; answer excerpt includes NOAA-related dataset/resource-format evidence. |
+| NDP core path | `ndp_core_expert_catalog_discovery` | Natural catalog prompt; selected `data`; called `ndp_` tools through the CLIO gateway; answer excerpt includes NOAA-related dataset/resource-format evidence. |
 | NDP direct external MCP | `clio_kit_ndp_external_mcp` | GACT installed `clio-kit-ndp` over stdio and called `list_organizations` against the global NDP catalog. |
 
 ## Fixes Landed During Benchmarking
@@ -308,11 +347,12 @@ These are not claimed as verified by the current benchmark:
   and completes, but this is not counted as clean planner routing. The production
   registry guard remains useful, and the no-guard path remains a focused planner
   hardening target.
-- clio-kit/NDP is now verified through CLIO's core gateway-visible `ndp_` tools
-  and through GACT's direct external MCP install/call lane. What remains
-  unverified is a dedicated tier-2 NDP expert, hierarchical NDP subagents, and a
-  clean no-recovery Qwopus planner route for the natural NDP prompt. Follow-up:
-  #284.
+- clio-kit/NDP is now verified through CLIO's data-owned core gateway-visible
+  `ndp_` tools and through GACT's direct external MCP install/call lane. What
+  remains unverified is a full NDP resource staging path, a dedicated tier-3 NDP
+  agent surface beyond tool metadata, and the complete
+  discovery -> staged data -> analysis -> visualization seismic workflow.
+  Follow-up: #284.
 - Cancellation is verified as structured best-effort surfacing. The benchmark
   does not prove hard upstream provider/tool abort. Follow-up: #283.
 

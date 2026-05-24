@@ -257,7 +257,10 @@ class ClioAgent(dspy.Module):
             self.data_expert,
             AgentCapability(
                 keywords=["hdf5", "adios", "bp5", "compression", "chunking", "data", "io"],
-                description="Data I/O optimization expert with HDF5 and ADIOS/BP tools",
+                description=(
+                    "Data I/O optimization and discovery expert with HDF5, ADIOS/BP, "
+                    "and NDP catalog tools"
+                ),
                 tools=[
                     "hdf5_list_datasets",
                     "hdf5_analyze_dataset",
@@ -267,6 +270,9 @@ class ClioAgent(dspy.Module):
                     "adios_inspect_file",
                     "adios_inspect_variables",
                     "adios_inspect_profiling",
+                    "ndp_list_organizations",
+                    "ndp_search_datasets",
+                    "ndp_get_dataset_details",
                 ],
                 specialization="data_io",
                 metadata={
@@ -288,25 +294,17 @@ class ClioAgent(dspy.Module):
                     "analysis",
                     "data quality",
                     "csv",
-                    "ndp",
-                    "national data platform",
-                    "dataset discovery",
-                    "catalog",
                 ],
                 description=(
                     "Statistical analysis, data profiling, data quality triage, and "
                     "cross-file scientific review expert. Coordinates HDF5, Parquet, "
-                    "and CSV worker checks for multi-file questions, and discovers "
-                    "external NDP catalog datasets through clio-kit MCP."
+                    "and CSV worker checks for multi-file questions."
                 ),
                 tools=[
                     "parquet_analyze_schema",
                     "parquet_query_data",
                     "parquet_compute_statistics",
                     "csv_read_table",
-                    "ndp_list_organizations",
-                    "ndp_search_datasets",
-                    "ndp_get_dataset_details",
                 ],
                 specialization="data_analysis",
                 metadata={
@@ -657,6 +655,29 @@ class ClioAgent(dspy.Module):
                         }
                     )
                     continue
+                if self._should_promote_tool_action_to_expert(
+                    tool_name,
+                    selected=selected,
+                    observations=observations,
+                ):
+                    self._raise_if_cancelled("expert_before")
+                    selected, answer, expert_result, error_info = self._dispatch_expert_action(
+                        expert_id=selected,
+                        question=question,
+                        file_context=file_context,
+                        trace=trace,
+                    )
+                    self._raise_if_cancelled("expert_after")
+                    route = self._route_for_selected(
+                        selected,
+                        reason
+                        or (
+                            f"Planner selected {tool_name}, promoted to the owning "
+                            f"{selected} expert for scoped tool execution."
+                        ),
+                        confidence=0.75,
+                    )
+                    return selected, answer, expert_result, error_info, route
                 self._raise_if_cancelled("tool_before")
                 try:
                     result = self._execute_tool_action(
@@ -942,6 +963,25 @@ class ClioAgent(dspy.Module):
             observation.get("type") != "planner_error" and observation.get("ok") is True
             for observation in observations
         )
+
+    @staticmethod
+    def _should_promote_tool_action_to_expert(
+        tool_name: str,
+        *,
+        selected: str,
+        observations: list[dict[str, Any]],
+    ) -> bool:
+        """Return whether a planner tool action should become expert delegation.
+
+        NDP catalog tools are a data-stage capability. Letting the tier-1
+        planner directly iterate over them makes the orchestrator behave like a
+        tool-using expert and loses the intended data -> analysis ->
+        visualization handoff boundary.
+        """
+
+        if selected != "data" or not tool_name.startswith("ndp_"):
+            return False
+        return not ClioAgent._has_successful_execution_observation(observations)
 
     @staticmethod
     def _question_requests_multi_file_analysis(question: str, paths: list[Path]) -> bool:

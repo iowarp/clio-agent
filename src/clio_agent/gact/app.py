@@ -3578,15 +3578,15 @@ _EXPERT_TOOLS: dict[str, list[str]] = {
         "adios_inspect_file",
         "adios_inspect_variables",
         "adios_inspect_profiling",
+        "ndp_list_organizations",
+        "ndp_search_datasets",
+        "ndp_get_dataset_details",
     ],
     "analysis": [
         "parquet_analyze_schema",
         "parquet_query_data",
         "parquet_compute_statistics",
         "csv_read_table",
-        "ndp_list_organizations",
-        "ndp_search_datasets",
-        "ndp_get_dataset_details",
     ],
     "visualization": [
         "plot_histogram",
@@ -3604,13 +3604,18 @@ _EXPERT_CAPABILITIES: dict[str, dict[str, Any]] = {
     "data": {
         "name": "Data Expert",
         "description": (
-            "Specializes in scientific data file optimization (HDF5, Parquet), "
-            "compression strategies, I/O performance, and format conversion"
+            "Specializes in scientific data files and discovery: HDF5, ADIOS/BP, "
+            "compression strategies, I/O performance, format conversion, and "
+            "external dataset discovery through NDP/clio-kit MCP"
         ),
         "keywords": [
             "hdf5",
             "adios",
             "bp5",
+            "ndp",
+            "national data platform",
+            "dataset discovery",
+            "catalog",
             "compression",
             "chunking",
             "data format",
@@ -3620,16 +3625,16 @@ _EXPERT_CAPABILITIES: dict[str, dict[str, Any]] = {
             "mpi-io",
         ],
         "metadata": {
-            "delegates_to": ["HDF5 tools", "ADIOS/BP tools"],
+            "delegates_to": ["HDF5 tools", "ADIOS/BP tools", "NDP catalog tools"],
+            "routes_to": ["ndp_catalog"],
         },
     },
     "analysis": {
         "name": "Analysis Expert",
         "description": (
             "Specializes in statistical analysis, data profiling, and quality "
-            "assessment of tabular datasets (Parquet/CSV) and external dataset "
-            "discovery through NDP/clio-kit MCP. Computes column-level statistics, "
-            "identifies distributions, and flags data quality issues."
+            "assessment of tabular datasets (Parquet/CSV). Computes column-level "
+            "statistics, identifies distributions, and flags data quality issues."
         ),
         "keywords": [
             "parquet",
@@ -3643,17 +3648,9 @@ _EXPERT_CAPABILITIES: dict[str, dict[str, Any]] = {
             "profiling",
             "null count",
             "outliers",
-            "ndp",
-            "national data platform",
-            "dataset discovery",
-            "catalog",
         ],
         "metadata": {
-            "delegates_to": [
-                "NDP catalog tools",
-                "parallel nanoagents for independent file checks",
-            ],
-            "routes_to": ["ndp_catalog"],
+            "delegates_to": ["parallel nanoagents for independent file checks"],
         },
     },
     "visualization": {
@@ -3706,11 +3703,12 @@ _BUILTIN_SYSTEM_PROMPTS: dict[str, str] = {
     ),
     "data": (
         "You are the CLIO Data Expert, a specialized autonomous agent for "
-        "scientific data file formats, storage optimization, and I/O performance."
+        "scientific data file formats, storage optimization, I/O performance, "
+        "and external dataset discovery."
     ),
     "analysis": (
         "You are the CLIO Analysis Expert, a specialized autonomous agent for "
-        "statistical analysis, data profiling, data quality, and dataset discovery."
+        "statistical analysis, data profiling, and data quality."
     ),
     "visualization": (
         "You are the CLIO Visualization Expert, a specialized autonomous agent for "

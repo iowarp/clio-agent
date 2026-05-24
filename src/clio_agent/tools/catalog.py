@@ -72,11 +72,11 @@ TOOL_CATALOG: dict[str, ToolCatalogEntry] = {
     ),
     "csv_read_table": _entry("csv_read_table", "analysis", {"tabular", "csv", "schema"}),
     "ndp_list_organizations": _entry(
-        "ndp_list_organizations", "analysis", {"catalog", "ndp", "discovery"}
+        "ndp_list_organizations", "data", {"catalog", "ndp", "discovery"}
     ),
-    "ndp_search_datasets": _entry("ndp_search_datasets", "analysis", {"catalog", "ndp", "search"}),
+    "ndp_search_datasets": _entry("ndp_search_datasets", "data", {"catalog", "ndp", "search"}),
     "ndp_get_dataset_details": _entry(
-        "ndp_get_dataset_details", "analysis", {"catalog", "ndp", "metadata"}
+        "ndp_get_dataset_details", "data", {"catalog", "ndp", "metadata"}
     ),
     "plot_histogram": _entry(
         "plot_histogram", "visualization", {"visualization", "plot", "histogram"}
