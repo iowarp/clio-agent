@@ -273,6 +273,7 @@ class ClioAgent(dspy.Module):
                     "ndp_list_organizations",
                     "ndp_search_datasets",
                     "ndp_get_dataset_details",
+                    "ndp_stage_resource",
                 ],
                 specialization="data_io",
                 metadata={

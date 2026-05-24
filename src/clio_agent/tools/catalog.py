@@ -78,6 +78,9 @@ TOOL_CATALOG: dict[str, ToolCatalogEntry] = {
     "ndp_get_dataset_details": _entry(
         "ndp_get_dataset_details", "data", {"catalog", "ndp", "metadata"}
     ),
+    "ndp_stage_resource": _entry(
+        "ndp_stage_resource", "data", {"catalog", "ndp", "download", "staging"}
+    ),
     "plot_histogram": _entry(
         "plot_histogram", "visualization", {"visualization", "plot", "histogram"}
     ),

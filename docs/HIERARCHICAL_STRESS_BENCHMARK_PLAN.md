@@ -71,6 +71,17 @@ Pass criteria:
 - Visualization receives analysis output and produces an artifact.
 - The transcript shows the handoff chain and tool evidence.
 
+Current implementation evidence:
+
+- NDP discovery is owned by `data`, not `analysis`.
+- Data-stage discovery now calls `ndp_get_dataset_details` before staging.
+- `ndp_stage_resource` can stage bounded HTTP(S) resources under CLIO file
+  policy and surfaces unsupported transports explicitly.
+- The live Salton Sea seismic candidate currently exposes an `osdf://` resource.
+  CLIO reports `unsupported_resource_transport` and keeps analysis/plotting
+  blocked until Pelican/OSDF staging is implemented or the file is staged
+  manually. This is correct failure surfacing, not a completed plot benchmark.
+
 ### 2. Mixed Scientific Run Audit
 
 Prompt shape:

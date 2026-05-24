@@ -333,6 +333,10 @@ data expert or a nested catalog specialist should find candidate resources,
 then analysis should consume staged data later. A good answer should mention the
 National Data Platform, NOAA-related catalog evidence, dataset titles, and
 useful downstream formats such as CSV, GEOJSON, ESRI REST, HTML, or KML.
+For prompts that ask CLIO to inspect or analyze an NDP resource, the data stage
+should attempt `ndp_get_dataset_details` and `ndp_stage_resource`; if the
+resource uses an unsupported transport such as OSDF/Pelican, that blocker should
+surface as a structured error rather than a made-up analysis result.
 
 Why this is interesting:
 

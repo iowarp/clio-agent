@@ -605,6 +605,9 @@ class DataExpert(dspy.Module):
             contextual = self._ndp_contextual_analysis(request.question, dataset_rows)
             if contextual:
                 analysis_lines.append(contextual)
+            staging_note = self._ndp_staging_attempt(request.question, dataset_rows, runner)
+            if staging_note:
+                analysis_lines.append(staging_note)
 
         recommendations = self._ndp_recommendations(
             request.question,
@@ -777,6 +780,85 @@ class DataExpert(dspy.Module):
         )
 
     @staticmethod
+    def _ndp_staging_attempt(
+        question: str,
+        rows: list[dict[str, Any]],
+        runner: NativeToolRunner,
+    ) -> str:
+        """Attempt data-stage resource staging when the prompt asks beyond discovery."""
+        q_lower = question.lower()
+        if not any(
+            term in q_lower
+            for term in (
+                "analyze",
+                "download",
+                "inspect the data",
+                "open the data",
+                "plot",
+                "stage",
+                "three-axis",
+                "three axes",
+            )
+        ):
+            return ""
+
+        candidate = DataExpert._select_seismic_dataset(rows) or (rows[0] if rows else None)
+        if candidate is None:
+            return (
+                "Staging note: no dataset candidate was available, so CLIO did not "
+                "attempt resource staging."
+            )
+
+        identifier = str(candidate.get("id") or candidate.get("name") or "").strip()
+        if not identifier:
+            return (
+                "Staging note: the selected dataset did not expose an id or name, so "
+                "CLIO could not request detailed resource metadata."
+            )
+
+        identifier_type = "id" if candidate.get("id") else "name"
+        details = runner.call(
+            "ndp_get_dataset_details",
+            {
+                "dataset_identifier": identifier,
+                "identifier_type": identifier_type,
+                "server": "global",
+            },
+        )
+        if isinstance(details, dict) and details.get("error"):
+            return (
+                "Staging note: dataset detail lookup failed before download: "
+                f"{format_tool_error(details['error'])}"
+            )
+
+        staged = runner.call(
+            "ndp_stage_resource",
+            {
+                "dataset_identifier": identifier,
+                "identifier_type": identifier_type,
+                "resource_index": 0,
+                "server": "global",
+            },
+        )
+        if isinstance(staged, dict) and staged.get("staged"):
+            return (
+                "Staging note: CLIO staged the selected NDP resource at "
+                f"{staged.get('path')}. Analysis and visualization can now use that "
+                "local file if the format is supported."
+            )
+        if isinstance(staged, dict) and staged.get("error"):
+            code = staged["error"].get("code") if isinstance(staged["error"], dict) else None
+            code_text = f" [{code}]" if code else ""
+            return (
+                "Staging note: CLIO attempted to stage the selected NDP resource, but "
+                f"staging failed visibly{code_text}: {format_tool_error(staged['error'])}"
+            )
+        return (
+            "Staging note: CLIO attempted resource staging but received an unexpected "
+            "result shape, so downstream analysis remains blocked."
+        )
+
+    @staticmethod
     def _ndp_recommendations(question: str, rows: list[Any]) -> str:
         """Return next actions for the data-stage NDP discovery result."""
         q_lower = question.lower()
@@ -784,7 +866,8 @@ class DataExpert(dspy.Module):
             return (
                 "Treat this as a data discovery result, not completed analysis. Next: use "
                 "ndp_get_dataset_details or the NDP resource page to obtain the resource URL, "
-                "download/stage the MiniSEED waveform, inspect channels/stations with a "
+                "download/stage the MiniSEED waveform with ndp_stage_resource or a "
+                "Pelican client, inspect channels/stations with a "
                 "seismic reader such as ObsPy, then pass the staged three-component traces "
                 "to analysis and visualization."
             )

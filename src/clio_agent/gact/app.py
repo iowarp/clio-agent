@@ -3581,6 +3581,7 @@ _EXPERT_TOOLS: dict[str, list[str]] = {
         "ndp_list_organizations",
         "ndp_search_datasets",
         "ndp_get_dataset_details",
+        "ndp_stage_resource",
     ],
     "analysis": [
         "parquet_analyze_schema",
@@ -3625,7 +3626,11 @@ _EXPERT_CAPABILITIES: dict[str, dict[str, Any]] = {
             "mpi-io",
         ],
         "metadata": {
-            "delegates_to": ["HDF5 tools", "ADIOS/BP tools", "NDP catalog tools"],
+            "delegates_to": [
+                "HDF5 tools",
+                "ADIOS/BP tools",
+                "NDP catalog/staging tools",
+            ],
             "routes_to": ["ndp_catalog"],
         },
     },

@@ -136,6 +136,7 @@ class TestDataExpert:
             assert "ndp_list_organizations" in tool_names
             assert "ndp_search_datasets" in tool_names
             assert "ndp_get_dataset_details" in tool_names
+            assert "ndp_stage_resource" in tool_names
         finally:
             expert.close()
 
@@ -495,6 +496,90 @@ class TestDataExpert:
         assert search_calls == [
             ["seismic"],
             ["seismological"],
+        ]
+        expert.close()
+
+    def test_data_expert_surfaces_ndp_staging_blocker(self):
+        """Natural analyze/plot requests should try staging and expose blocker errors."""
+
+        class FakeExecutor:
+            closed = False
+
+            def to_dspy_tools(self):
+                def fake_tool(**kwargs):
+                    return "{}"
+
+                return [
+                    dspy.Tool(
+                        func=fake_tool,
+                        name="ndp_search_datasets",
+                        desc="Search NDP datasets.",
+                        args={},
+                    ),
+                    dspy.Tool(
+                        func=fake_tool,
+                        name="ndp_get_dataset_details",
+                        desc="Get NDP details.",
+                        args={},
+                    ),
+                    dspy.Tool(
+                        func=fake_tool,
+                        name="ndp_stage_resource",
+                        desc="Stage NDP resources.",
+                        args={},
+                    ),
+                ]
+
+            def call_tool(self, name, args):
+                if name == "ndp_list_organizations":
+                    return '{"organizations":[],"count":0,"server":"global"}'
+                if name == "ndp_search_datasets":
+                    return (
+                        '{"datasets":[{"id":"salton","name":"salton-sea-seismic-data",'
+                        '"title":"Salton Sea Seismic Data","owner_org":"ucr",'
+                        '"notes":"Seismic waveform data in MiniSEED format.",'
+                        '"resource_names":["Salton Sea Seismic Waveforms"]}],'
+                        '"count":1,"server":"global"}'
+                    )
+                if name == "ndp_get_dataset_details":
+                    assert args["dataset_identifier"] == "salton"
+                    return (
+                        '{"id":"salton","name":"salton-sea-seismic-data",'
+                        '"title":"Salton Sea Seismic Data","resource_count":1,'
+                        '"resource_urls":["osdf:///ndp/public/ucr_seis/Data_Salton"]}'
+                    )
+                assert name == "ndp_stage_resource"
+                assert args["dataset_identifier"] == "salton"
+                return (
+                    '{"error":{"type":"tool_error",'
+                    '"code":"unsupported_resource_transport",'
+                    '"message":"OSDF transport is not staged directly.",'
+                    '"next_action":"Use Pelican to stage this resource.",'
+                    '"details":{"transport":"osdf"}}}'
+                )
+
+            def close(self):
+                self.closed = True
+
+        expert = DataExpert(tool_executor=FakeExecutor())
+
+        result = expert(
+            question=(
+                "Find seismic data from a seismological organization on NDP. Pick a "
+                "usable dataset, inspect the data, analyze the signal across three axes, "
+                "and produce a plot."
+            )
+        )
+
+        assert result.synthesis_source == "deterministic"
+        assert "Staging note" in result.analysis
+        assert "unsupported_resource_transport" in result.analysis
+        assert [row.tool for row in result.tool_provenance] == [
+            "ndp_list_organizations",
+            "ndp_search_datasets",
+            "ndp_search_datasets",
+            "ndp_get_dataset_details",
+            "ndp_stage_resource",
         ]
         expert.close()
 
