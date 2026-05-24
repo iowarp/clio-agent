@@ -8,7 +8,7 @@ All without a live LM.
 """
 
 import json
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
 
 import pytest
 
@@ -410,6 +410,37 @@ class TestBuildCapabilitiesContext:
         assert ".bp5" in analysis_line
         assert "coordination intents: multi_file_analysis" in analysis_line
 
+    def test_analysis_coordinator_accepts_mixed_file_bundle(self, agent, tmp_path):
+        hdf5_path = tmp_path / "run.h5"
+        parquet_path = tmp_path / "measurements.parquet"
+        csv_path = tmp_path / "events.csv"
+        for path in (hdf5_path, parquet_path, csv_path):
+            path.touch()
+
+        error = agent._expert_file_compatibility_error(
+            "analysis",
+            str(hdf5_path),
+            question=(
+                f"Compare these related files together: {hdf5_path}, "
+                f"{parquet_path}, and {csv_path}."
+            ),
+        )
+
+        assert error is None
+
+    def test_analysis_still_rejects_single_hdf5_direct_route(self, agent, tmp_path):
+        hdf5_path = tmp_path / "run.h5"
+        hdf5_path.touch()
+
+        error = agent._expert_file_compatibility_error(
+            "analysis",
+            str(hdf5_path),
+            question=f"Inspect {hdf5_path}.",
+        )
+
+        assert error is not None
+        assert error["expert"] == "analysis"
+
 
 class TestSessionFileResolution:
     def test_quoted_bp5_path_with_spaces_is_extracted(self, agent, tmp_path):
@@ -533,6 +564,89 @@ class TestRunAgentLoop:
         assert answer == "all done"
         assert expert_result is None
         agent._execute_tool_action.assert_called_once()
+
+    def test_shell_tool_is_rejected_for_scientific_file_inspection(self, agent, tmp_path):
+        csv_path = tmp_path / "events.csv"
+        csv_path.write_text("event_id,status\n1,ok\n", encoding="utf-8")
+        agent._plan_next_action = MagicMock(
+            side_effect=[
+                {
+                    "action": "tool",
+                    "tool": "shell_bash",
+                    "args": {"command": f'head -n 1 "{csv_path}"'},
+                    "reason": "peek at csv",
+                },
+                {
+                    "action": "tool",
+                    "tool": "csv_read_table",
+                    "args": {"filepath": str(csv_path)},
+                    "reason": "inspect csv natively",
+                },
+                {"action": "answer", "answer": "CSV inspected.", "reason": "done"},
+            ]
+        )
+        agent._execute_tool_action = MagicMock(return_value={"rows": 1, "columns": 2})
+
+        selected, answer, expert_result, error_info, route = agent._run_agent_loop(
+            question=f"Check the CSV schema for {csv_path}",
+            session_context="",
+            file_context="",
+            trace=_trace(),
+        )
+
+        assert selected == "analysis"
+        assert answer == "CSV inspected."
+        assert expert_result is None
+        assert error_info is None
+        assert route.target == "analysis"
+        agent._execute_tool_action.assert_called_once_with(
+            "csv_read_table",
+            {"filepath": str(csv_path)},
+            ANY,
+            question=f"Check the CSV schema for {csv_path}",
+            file_context="",
+            session_context="",
+        )
+
+    def test_shell_tool_still_runs_for_utility_diagnostics(self, agent):
+        agent._plan_next_action = MagicMock(
+            side_effect=[
+                {
+                    "action": "tool",
+                    "tool": "shell_bash",
+                    "args": {"command": "date"},
+                    "reason": "get time",
+                },
+                {"action": "answer", "answer": "It is today.", "reason": "done"},
+            ]
+        )
+        agent._execute_tool_action = MagicMock(return_value={"stdout": "today"})
+
+        selected, answer, *_ = agent._run_agent_loop(
+            question="What is the current time?",
+            session_context="",
+            file_context="",
+            trace=_trace(),
+        )
+
+        assert selected == "utility"
+        assert answer == "It is today."
+        agent._execute_tool_action.assert_called_once()
+
+    def test_shell_scope_validation_ignores_compiled_tool_context(self, agent, tmp_path):
+        csv_path = tmp_path / "events.csv"
+        csv_path.write_text("event_id,status\n1,ok\n", encoding="utf-8")
+
+        error = agent._tool_action_scope_error(
+            "shell_bash",
+            selected="utility",
+            question=f"What columns are in {csv_path}?",
+            file_context="",
+            session_context="[Available Tools]\nshell_bash: run date or shell commands",
+        )
+
+        assert error is not None
+        assert error["tool"] == "shell_bash"
 
     def test_tool_observation_then_planner_failure_synthesizes_partial_answer(self, agent):
         agent._plan_next_action = MagicMock(

@@ -292,6 +292,26 @@ class TestDataExpert:
         finally:
             expert.close()
 
+    def test_natural_dataset_focus_uses_dataset_tool(self, sample_hdf5):
+        """Natural named-dataset questions should not require tool-shaped wording."""
+        expert = DataExpert()
+        try:
+            result = expert(
+                question=(
+                    f"Focus on simulation/temperature inside {sample_hdf5}. "
+                    "What shape, chunks, compression, and statistics matter for reads over time?"
+                )
+            )
+
+            assert result.synthesis_source == "deterministic"
+            assert "Analyzed HDF5 dataset simulation/temperature" in result.analysis
+            assert [tool.tool for tool in result.tool_provenance] == [
+                "hdf5_list_datasets",
+                "hdf5_analyze_dataset",
+            ]
+        finally:
+            expert.close()
+
     def test_expert_rejects_invalid_hdf5_tool_shape(self):
         """Malformed HDF5 tool payloads should not produce file facts."""
 
