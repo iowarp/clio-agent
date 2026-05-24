@@ -1386,6 +1386,32 @@ class TestRunAgentLoop:
         assert "temperature_k" in answer
         assert "null_count=18" in answer
 
+    def test_answer_synthesis_retries_transient_provider_error(self, agent, monkeypatch):
+        monkeypatch.setenv("CLIO_TRANSIENT_PROVIDER_RETRY_DELAYS", "0")
+        agent.answer_synthesizer = MagicMock(
+            side_effect=[
+                RuntimeError("litellm.RateLimitError: Tokens/minute limit exceeded"),
+                MagicMock(answer="Recovered answer."),
+            ]
+        )
+
+        answer = agent._synthesize_agent_answer(
+            question="Review data quality",
+            session_context="",
+            observations=[
+                {
+                    "step": 1,
+                    "type": "tool",
+                    "tool": "parquet_analyze_schema",
+                    "ok": True,
+                    "result": {"num_rows": 3000},
+                }
+            ],
+        )
+
+        assert answer == "Recovered answer."
+        assert agent.answer_synthesizer.call_count == 2
+
     def test_observation_fallback_labels_ndp_tools(self):
         answer = ClioAgent._fallback_answer_from_observations(
             [
@@ -1822,6 +1848,26 @@ class TestPlannerNoBypass:
         retry_capabilities = agent.action_planner.call_args.kwargs["capabilities"]
         assert "- parquet_analyze_schema(filepath)" in retry_capabilities
         assert "Inspect the schema and metadata" not in retry_capabilities
+
+    def test_planner_retries_transient_provider_error_before_compacting(self, agent, monkeypatch):
+        monkeypatch.setenv("CLIO_TRANSIENT_PROVIDER_RETRY_DELAYS", "0")
+        agent.action_planner = MagicMock(
+            side_effect=[
+                RuntimeError("litellm.RateLimitError: Tokens/minute limit exceeded"),
+                MagicMock(action_json='{"action":"answer","answer":"ok"}'),
+            ]
+        )
+
+        action = agent._plan_next_action(
+            question="hi",
+            session_context="",
+            file_context="",
+            capabilities="analysis: parquet",
+            observations=[],
+        )
+
+        assert action == {"action": "answer", "answer": "ok"}
+        assert agent.action_planner.call_count == 2
 
     def test_planner_accepts_raw_json_from_chat_adapter_error(self, agent):
         agent.action_planner = MagicMock(

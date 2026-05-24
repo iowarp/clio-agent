@@ -1211,12 +1211,15 @@ class ClioAgent(dspy.Module):
         observations_text = self._format_observations_for_prompt(observations)
         planner_context = self._planner_session_context(session_context)
         try:
-            result = self._call_action_planner(
-                question=self._planner_question(question),
-                session_context=planner_context,
-                file_context=file_context,
-                capabilities=capabilities,
-                observations=observations_text,
+            result = self._call_with_transient_provider_retries(
+                "action_planner",
+                lambda: self._call_action_planner(
+                    question=self._planner_question(question),
+                    session_context=planner_context,
+                    file_context=file_context,
+                    capabilities=capabilities,
+                    observations=observations_text,
+                ),
             )
             return self._parse_action_json(getattr(result, "action_json", ""))
         except Exception as planner_error:
@@ -1226,12 +1229,15 @@ class ClioAgent(dspy.Module):
             retry_capabilities = self._compact_planner_capabilities(capabilities)
             if retry_capabilities != capabilities:
                 try:
-                    result = self._call_action_planner(
-                        question=self._planner_retry_question(question),
-                        session_context=planner_context,
-                        file_context=file_context,
-                        capabilities=retry_capabilities,
-                        observations=observations_text,
+                    result = self._call_with_transient_provider_retries(
+                        "action_planner_compact",
+                        lambda: self._call_action_planner(
+                            question=self._planner_retry_question(question),
+                            session_context=planner_context,
+                            file_context=file_context,
+                            capabilities=retry_capabilities,
+                            observations=observations_text,
+                        ),
                     )
                     return self._parse_action_json(getattr(result, "action_json", ""))
                 except Exception as retry_error:
@@ -2010,10 +2016,13 @@ class ClioAgent(dspy.Module):
         answer_question = self._answer_synthesis_question(question)
         try:
             with dspy.context(lm=self._main_lm, adapter=self._dspy_adapter):
-                result = self.answer_synthesizer(
-                    question=answer_question,
-                    session_context=session_context,
-                    observations=observations_text,
+                result = self._call_with_transient_provider_retries(
+                    "answer_synthesizer",
+                    lambda: self.answer_synthesizer(
+                        question=answer_question,
+                        session_context=session_context,
+                        observations=observations_text,
+                    ),
                 )
             answer = self._coerce_text(getattr(result, "answer", "")).strip()
             self._raise_if_cancelled("answer_synthesis_after")
@@ -2099,6 +2108,67 @@ class ClioAgent(dspy.Module):
         """
         text = str(exc).lower()
         return "expected to find output fields" in text or "failed to parse" in text
+
+    def _call_with_transient_provider_retries(
+        self,
+        label: str,
+        call: Callable[[], Any],
+    ) -> Any:
+        """Call a provider-backed function with bounded transient-error backoff."""
+        delays = self._transient_provider_retry_delays()
+        attempt = 0
+        while True:
+            try:
+                return call()
+            except CancellationError:
+                raise
+            except Exception as exc:
+                if not self._is_transient_provider_error(exc) or attempt >= len(delays):
+                    raise
+                delay_s = delays[attempt]
+                attempt += 1
+                if self.verbose:
+                    print(
+                        f"[Provider] {label} transient failure; "
+                        f"retry {attempt}/{len(delays)} after {delay_s:g}s: {exc}"
+                    )
+                if delay_s > 0:
+                    time.sleep(delay_s)
+
+    @staticmethod
+    def _is_transient_provider_error(exc: Exception) -> bool:
+        """Return whether an exception looks like a retryable provider throttle/outage."""
+        text = str(exc).lower()
+        return any(
+            marker in text
+            for marker in (
+                "ratelimit",
+                "rate limit",
+                "tokens/minute",
+                "429",
+                "too many requests",
+                "temporarily unavailable",
+                "service unavailable",
+            )
+        )
+
+    @staticmethod
+    def _transient_provider_retry_delays() -> tuple[float, ...]:
+        """Return configured transient provider retry delays in seconds."""
+        raw = os.environ.get("CLIO_TRANSIENT_PROVIDER_RETRY_DELAYS", "5,15").strip()
+        if raw.lower() in {"", "false", "off", "none", "disabled"}:
+            return ()
+        delays: list[float] = []
+        for item in raw.split(","):
+            item = item.strip()
+            if not item:
+                continue
+            try:
+                delay = float(item)
+            except ValueError:
+                continue
+            delays.append(max(0.0, min(delay, 60.0)))
+        return tuple(delays)
 
     @staticmethod
     def _tool_label_for_fallback(tool_name: str) -> str:
