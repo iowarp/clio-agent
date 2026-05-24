@@ -12,6 +12,7 @@ import dspy
 import pytest
 
 from clio_agent.experts.data_expert import DataExpert, MCPToolBridge
+from clio_agent.experts.ndp_expert import NDPExpert
 from clio_agent.tools.execution import SyncMCPToolExecutor
 from clio_agent.tools.gateway import gateway
 
@@ -126,17 +127,21 @@ class TestDataExpert:
             expert.close()
 
     def test_expert_tool_names(self):
-        """Test expert has the expected data/discovery tools."""
+        """Test top-level data expert owns only data-manager tools."""
         expert = DataExpert()
         try:
             tool_names = [t.name for t in expert._tools]
             assert "hdf5_analyze_file" in tool_names
             assert "hdf5_list_datasets" in tool_names
             assert "adios_inspect_file" in tool_names
-            assert "ndp_list_organizations" in tool_names
-            assert "ndp_search_datasets" in tool_names
-            assert "ndp_get_dataset_details" in tool_names
-            assert "ndp_stage_resource" in tool_names
+            assert "ndp_list_organizations" not in tool_names
+            assert "sac_inspect_archive" not in tool_names
+
+            child_tool_names = [t.name for t in expert.ndp_expert._tools]
+            assert "ndp_list_organizations" in child_tool_names
+            assert "ndp_search_datasets" in child_tool_names
+            assert "ndp_get_dataset_details" in child_tool_names
+            assert "ndp_stage_resource" in child_tool_names
         finally:
             expert.close()
 
@@ -418,8 +423,8 @@ class TestDataExpert:
         )
 
         assert result.synthesis_source == "deterministic"
-        assert result.metadata["expert"] == "data"
-        assert result.metadata["tier3_agent"] == "ndp_catalog"
+        assert result.metadata["expert"] == "ndp_catalog"
+        assert result.metadata["parent_expert"] == "data"
         assert "National Data Platform" in result.analysis
         assert "noaa-global-systems-laboratory" in result.analysis
         assert "Climate Run" in result.analysis
@@ -428,6 +433,40 @@ class TestDataExpert:
             "ndp_search_datasets",
         ]
         expert.close()
+
+    def test_ndp_expert_owns_ndp_tools_directly(self):
+        """The nested NDP expert should be executable without DataExpert internals."""
+
+        class FakeExecutor:
+            closed = False
+
+            def to_dspy_tools(self):
+                def fake_tool(**kwargs):
+                    return "{}"
+
+                return [
+                    dspy.Tool(
+                        func=fake_tool,
+                        name="ndp_list_organizations",
+                        desc="List NDP organizations.",
+                        args={},
+                    )
+                ]
+
+            def call_tool(self, name, args):
+                assert name == "ndp_list_organizations"
+                assert args == {"name_filter": "seism", "server": "global"}
+                return '{"organizations":["earthscope"],"count":1,"server":"global"}'
+
+            def close(self):
+                self.closed = True
+
+        expert = NDPExpert(tool_executor=FakeExecutor())
+        result = expert(question="List NDP organizations for seismic data.")
+
+        assert result.metadata["expert"] == "ndp_catalog"
+        assert "earthscope" in result.analysis
+        assert [row.tool for row in result.tool_provenance] == ["ndp_list_organizations"]
 
     def test_data_expert_searches_ndp_terms_independently(self):
         """Catalog discovery should fan out terms instead of over-constraining search."""

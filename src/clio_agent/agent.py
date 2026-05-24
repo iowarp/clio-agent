@@ -61,6 +61,8 @@ from clio_agent.errors import (
     ToolError,
 )
 from clio_agent.experts import AnalysisExpert, DataExpert, VisualizationExpert
+from clio_agent.experts.ndp_expert import NDPExpert
+from clio_agent.experts.sac_format_expert import SACFormatExpert
 from clio_agent.harness import (
     SPECIAL_ROUTE_TARGETS,
     RouteDecision,
@@ -259,6 +261,8 @@ class ClioAgent(dspy.Module):
             arc_memory=self.arc,
             tool_executor=self.tool_executor,
         )
+        self.ndp_catalog_expert = NDPExpert(tool_executor=self.tool_executor)
+        self.sac_format_expert = SACFormatExpert(tool_executor=self.tool_executor)
 
         # VisualizationExpert: ReAct with matplotlib chart tools
         self.visualization_expert = VisualizationExpert(arc_memory=self.arc)
@@ -304,7 +308,7 @@ class ClioAgent(dspy.Module):
 
         self.registry.register_agent(
             "ndp_catalog",
-            self.data_expert,
+            self.ndp_catalog_expert,
             AgentCapability(
                 keywords=[
                     "ndp",
@@ -330,7 +334,6 @@ class ClioAgent(dspy.Module):
                 parent_id="data",
                 source="builtin_nested",
                 metadata={
-                    "dispatch_to": "data",
                     "provider": "ndp",
                     "future_model_boundary": True,
                 },
@@ -383,7 +386,7 @@ class ClioAgent(dspy.Module):
 
         self.registry.register_agent(
             "sac_format",
-            self.analysis_expert,
+            self.sac_format_expert,
             AgentCapability(
                 keywords=["sac", "waveform", "trace", "seismology", "seismic"],
                 description=(
@@ -399,7 +402,6 @@ class ClioAgent(dspy.Module):
                 parent_id="analysis",
                 source="builtin_nested",
                 metadata={
-                    "dispatch_to": "analysis",
                     "file_suffixes": [".sac", ".tar", ".tgz", ".gz"],
                     "format": "sac",
                     "future_model_boundary": True,
@@ -1430,6 +1432,39 @@ class ClioAgent(dspy.Module):
 
                 if dispatch_id == "analysis":
                     expert_result = self.analysis_expert(
+                        question=expert_question,
+                        file_context=file_context,
+                    )
+                    self._merge_expert_provenance(trace, expert_result)
+                    answer = (
+                        f"{expert_result.analysis}\n\n"
+                        f"Recommendations:\n{expert_result.recommendations}"
+                    )
+                    return expert_id, answer, expert_result, None
+
+                if dispatch_id == "ndp_catalog":
+                    expert_result = self.ndp_catalog_expert(
+                        question=expert_question,
+                        file_context=file_context,
+                    )
+                    self._merge_expert_provenance(trace, expert_result)
+                    answer = (
+                        f"{expert_result.analysis}\n\n"
+                        f"Recommendations:\n{expert_result.recommendations}"
+                    )
+                    handoff = self._continue_data_handoffs(
+                        question=question,
+                        file_context=file_context,
+                        data_result=expert_result,
+                        data_answer=answer,
+                        trace=trace,
+                    )
+                    if handoff is not None:
+                        return handoff
+                    return expert_id, answer, expert_result, None
+
+                if dispatch_id == "sac_format":
+                    expert_result = self.sac_format_expert(
                         question=expert_question,
                         file_context=file_context,
                     )
