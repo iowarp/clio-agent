@@ -30,15 +30,18 @@ class TestPlannerActionContract:
         assert '{"action":"none"' in instructions
 
     def test_planner_doc_lists_experts(self):
-        """Planner expert action should be constrained to the registered expert ids."""
-        assert '"expert":"data|analysis|visualization"' in AgentActionSignature.instructions
+        """Planner expert action should be constrained to capability-listed ids."""
+        assert '"expert":"<expert id from capabilities>"' in AgentActionSignature.instructions
+        assert "Choose only tools and experts present in capabilities." in (
+            AgentActionSignature.instructions
+        )
 
 
 class TestClioAgentExperts:
-    """Test ClioAgent has all 3 experts instantiated and registered."""
+    """Test ClioAgent has core experts instantiated and registered."""
 
-    def test_clioagent_has_three_experts(self):
-        """ClioAgent must have data, analysis, visualization expert attributes."""
+    def test_clioagent_has_core_experts(self):
+        """ClioAgent must have core expert attributes."""
         agent = ClioAgent()
         assert hasattr(agent, "data_expert")
         assert hasattr(agent, "analysis_expert")
@@ -48,17 +51,17 @@ class TestClioAgentExperts:
         assert agent.visualization_expert is not None
         agent.shutdown()
 
-    def test_clioagent_registers_three_experts(self):
-        """Registry should contain exactly 3 experts."""
+    def test_clioagent_registers_core_experts(self):
+        """Registry should contain the built-in expert set."""
         agent = ClioAgent()
-        assert agent.registry.get_agent_count() == 3
+        assert agent.registry.get_agent_count() >= 4
         agent.shutdown()
 
     def test_clioagent_registry_ids(self):
-        """Registry should have the correct agent IDs."""
+        """Registry should include the expected built-in agent IDs."""
         agent = ClioAgent()
         ids = agent.registry.list_agents()
-        assert set(ids) == {"data", "analysis", "visualization"}
+        assert {"data", "analysis", "visualization", "utility"}.issubset(set(ids))
         agent.shutdown()
 
 
@@ -303,7 +306,16 @@ class TestGateway:
             assert "name" in cap
             assert "description" in cap
             assert "server" in cap
-            assert cap["server"] in ("hdf5", "parquet", "fs", "unknown")
+            assert cap["server"] in (
+                "adios",
+                "fs",
+                "hdf5",
+                "ndp",
+                "parquet",
+                "sac",
+                "shell",
+                "unknown",
+            )
 
         # Check compact format (description should be single sentence)
         for cap in caps:

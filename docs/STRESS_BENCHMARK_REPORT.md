@@ -125,12 +125,12 @@ tools=ndp_list_organizations, ndp_search_datasets(seismic),
 error_info=null
 ```
 
-The seismic probe found candidate catalog rows, including Salton Sea Seismic
-Data, and then correctly stopped as a data-stage discovery result: analysis and
-three-axis plotting were reported as blocked until a downloadable waveform
-resource is staged. This is not a completed seismic plot benchmark yet; it is
-evidence that NDP discovery now sits under the data hierarchy and that the
-remaining gap is resource staging plus analysis/visualization handoff.
+This first seismic probe found candidate catalog rows, including Salton Sea
+Seismic Data, and correctly stopped as a data-stage discovery result: analysis
+and three-axis plotting were reported as blocked until a downloadable waveform
+resource was staged. That historical result is still useful failure evidence:
+NDP discovery sat under the data hierarchy, but the completed staged waveform
+handoff had not been implemented yet.
 
 Follow-up live probe after adding staging support:
 
@@ -150,6 +150,57 @@ can call a local Pelican CLI for OSDF resources when the resource is within the
 configured size cap. The Salton Sea resource is advertised as about 1.4 GB, so
 CLIO surfaces a structured `resource_too_large` error and does not pretend that
 waveform data was opened.
+
+Follow-up live ALCF/GACT probe after adding seismic archive tools and automatic
+data -> analysis -> visualization handoff:
+
+```text
+provider=argonne
+model=openai/gpt-oss-120b
+backend=http://127.0.0.1:53493
+session=sess_753295a65410
+selected_agent=visualization
+route_source=dspy
+tools=ndp_list_organizations,
+      ndp_search_datasets(seismic),
+      ndp_search_datasets(seismological),
+      ndp_search_datasets(waveform),
+      ndp_get_dataset_details,
+      ndp_stage_resource,
+      sac_inspect_archive,
+      sac_compute_trace_statistics,
+      sac_plot_traces
+staged_path=D:\Libraries\Documents\projects\gact-tui\tmp\clio-ndp-staging\Pachhai_etal_2023_ScP_data.tar
+sac_trace_count=11260
+statistics_sampled_traces=6
+plotted_traces=3
+artifact=D:\Libraries\Documents\projects\gact-tui\.clio-agent-artifacts\charts\seismic_traces_Pachhai_etal_2023_ScP_data.png
+error_info=null
+```
+
+This run is the first completed NDP waveform collaborator demo: natural NDP
+discovery stayed under the data stage, the staged SAC archive became analysis
+input without the user spelling out the next route, and visualization consumed
+the same staged waveform reference to create a PNG artifact. The answer was
+structured as `Data stage`, `Analysis stage`, and `Visualization stage`, with
+tool provenance preserved in GACT metadata.
+
+The live run was captured before the format tools were renamed from the interim
+`seismic_*` names. The current branch exposes the same format-specific behavior
+as `sac_inspect_archive`, `sac_compute_trace_statistics`, and `sac_plot_traces`
+under a `sac` FastMCP server so the tool surface is scoped to SAC, not generic
+seismic data.
+
+Caveat: this run staged a HIVE SAC archive rather than the original Salton Sea
+three-component MiniSEED resource. It verifies the hierarchical staged waveform
+workflow, but not yet the large OSDF/Pelican MiniSEED path.
+
+Architecture caveat: this branch still implements NDP as a data-owned tool and
+ranking surface inside DataExpert. The target architecture is a nested
+`ndp_catalog` or `ndp_access` expert under `data`, with its own NDP-specific
+prompt context, tool surface, resource-ranking semantics, and future
+model/finetune boundary. The benchmark suite should add EarthScope-focused NDP
+prompts to drive that nested expert work.
 
 clio-kit NDP direct external MCP follow-up:
 
@@ -270,6 +321,7 @@ surfacing a false routing failure.
 | `cancellation_surface` | `chat` | none | 0 | `cancelled` | `batch` |
 | `streaming_provenance` | `chat` | none | 0 | none | `live`, `delta_count=257` |
 | `ndp_core_expert_catalog_discovery` | `data` | `ndp_list_organizations`, `ndp_search_datasets`, `ndp_get_dataset_details`, `ndp_stage_resource` in the focused seismic probe | 0 | `resource_too_large` for the 1.4 GB Salton Sea OSDF resource in focused seismic probe | `batch`/GACT metadata |
+| `ndp_seismic_waveform_handoff` | `visualization` | NDP discovery/details/staging, `sac_inspect_archive`, `sac_compute_trace_statistics`, `sac_plot_traces` | 1 PNG path | none | GACT metadata |
 | `clio_kit_ndp_external_mcp` | direct external MCP | `clio-kit-ndp.list_organizations` | 0 | none | `batch` |
 
 Earlier local runs exposed two issues now fixed by this branch: single-file
@@ -292,6 +344,7 @@ uses the fixed behavior.
 | Cancellation | `cancellation_surface` | Assistant text is empty; `error_info.error == "cancelled"`. |
 | Streaming truth | `streaming_provenance` | `message.part.delta` events observed; completed metadata reports `stream_source="live"`. |
 | NDP core path | `ndp_core_expert_catalog_discovery` | Natural catalog prompt; selected `data`; called `ndp_` tools through the CLIO gateway; answer excerpt includes NOAA-related dataset/resource-format evidence. Focused seismic probe reached details/staging and surfaced the oversized OSDF resource as a blocker. |
+| NDP staged waveform handoff | `ndp_seismic_waveform_handoff` | Natural prompt selected `visualization` after data-owned NDP discovery; staged a SAC archive, inspected 11260 traces, computed trace statistics, and wrote a PNG waveform plot. |
 | NDP direct external MCP | `clio_kit_ndp_external_mcp` | GACT installed `clio-kit-ndp` over stdio and called `list_organizations` against the global NDP catalog. |
 
 ## Fixes Landed During Benchmarking
@@ -323,6 +376,8 @@ final run:
 - `fix(tools): normalize malformed NDP planner args and compact catalog payloads`
 - `feat(tools): stage NDP resources with explicit transport errors`
 - `fix(agent): harden Qwopus answer synthesis with no-think instructions`
+- `feat(tools): inspect and plot staged seismic SAC archives`
+- `feat(agent): continue staged NDP data into analysis and visualization`
 
 ## Verified Behavior
 
@@ -340,6 +395,9 @@ The local Qwopus baseline now verifies that CLIO can:
 - label streaming provenance truthfully as live or batch;
 - label route provenance truthfully as planner, guard, or recovery;
 - use clio-kit/NDP through both core gateway tools and direct external MCP calls;
+- stage an NDP waveform archive, inspect SAC members, compute representative
+  trace statistics, and generate a waveform plot artifact through a cross-expert
+  data -> analysis -> visualization handoff;
 - write machine-readable evidence for each benchmark case.
 
 ## Remaining Gaps And Expansion Lanes
@@ -369,11 +427,13 @@ These are not claimed as verified by the current benchmark:
   registry guard remains useful, and the no-guard path remains a focused planner
   hardening target.
 - clio-kit/NDP is now verified through CLIO's data-owned core gateway-visible
-  `ndp_` tools and through GACT's direct external MCP install/call lane. What
-  remains unverified is a full NDP resource staging path, a dedicated tier-3 NDP
-  agent surface beyond tool metadata, and the complete
-  discovery -> staged data -> analysis -> visualization seismic workflow.
-  Follow-up: #284.
+  `ndp_` tools, through GACT's direct external MCP install/call lane, and
+  through one completed staged SAC waveform
+  discovery -> staged data -> analysis -> visualization workflow. What remains
+  unverified is a dedicated tier-3 NDP expert surface beyond tool metadata, a
+  generalized handoff contract beyond staged filesystem paths, EarthScope-driven
+  NDP prompts, and the original large OSDF/Pelican three-component MiniSEED
+  workflow. Follow-up: #284.
 - Cancellation is verified as structured best-effort surfacing. The benchmark
   does not prove hard upstream provider/tool abort. Follow-up: #283.
 

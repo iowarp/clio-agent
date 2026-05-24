@@ -83,7 +83,19 @@ from clio_agent.tools.execution import create_sync_tool_executor, notify_global_
 from clio_agent.tools.file_policy import FileAccessPolicy, FilePolicyError, validate_write_path
 from clio_agent.tools.gateway import gateway
 
-SCIENTIFIC_FILE_SUFFIXES = {".h5", ".hdf5", ".parquet", ".csv", ".bp", ".bp4", ".bp5"}
+SCIENTIFIC_FILE_SUFFIXES = {
+    ".h5",
+    ".hdf5",
+    ".parquet",
+    ".csv",
+    ".bp",
+    ".bp4",
+    ".bp5",
+    ".sac",
+    ".tar",
+    ".tgz",
+    ".gz",
+}
 PLANNER_HIDDEN_TOOL_NAMES = {"fs_read_file", "fs_apply_edit_write"}
 MULTI_FILE_ANALYSIS_TERMS = (
     "across",
@@ -256,10 +268,22 @@ class ClioAgent(dspy.Module):
             "data",
             self.data_expert,
             AgentCapability(
-                keywords=["hdf5", "adios", "bp5", "compression", "chunking", "data", "io"],
+                keywords=[
+                    "hdf5",
+                    "adios",
+                    "bp5",
+                    "compression",
+                    "chunking",
+                    "data",
+                    "io",
+                    "ndp",
+                    "catalog",
+                    "seismic",
+                    "sac",
+                ],
                 description=(
                     "Data I/O optimization and discovery expert with HDF5, ADIOS/BP, "
-                    "and NDP catalog tools"
+                    "NDP catalog tools, and SAC archive inspection"
                 ),
                 tools=[
                     "hdf5_list_datasets",
@@ -274,10 +298,11 @@ class ClioAgent(dspy.Module):
                     "ndp_search_datasets",
                     "ndp_get_dataset_details",
                     "ndp_stage_resource",
+                    "sac_inspect_archive",
                 ],
                 specialization="data_io",
                 metadata={
-                    "file_suffixes": [".h5", ".hdf5", ".bp", ".bp4", ".bp5"],
+                    "file_suffixes": [".h5", ".hdf5", ".bp", ".bp4", ".bp5", ".sac", ".tar"],
                     "guard_direct_suffixes": [".bp", ".bp4", ".bp5"],
                 },
             ),
@@ -295,21 +320,24 @@ class ClioAgent(dspy.Module):
                     "analysis",
                     "data quality",
                     "csv",
+                    "waveform",
+                    "sac",
                 ],
                 description=(
                     "Statistical analysis, data profiling, data quality triage, and "
                     "cross-file scientific review expert. Coordinates HDF5, Parquet, "
-                    "and CSV worker checks for multi-file questions."
+                    "CSV, and staged SAC waveform checks for multi-file questions."
                 ),
                 tools=[
                     "parquet_analyze_schema",
                     "parquet_query_data",
                     "parquet_compute_statistics",
                     "csv_read_table",
+                    "sac_compute_trace_statistics",
                 ],
                 specialization="data_analysis",
                 metadata={
-                    "file_suffixes": [".parquet", ".csv"],
+                    "file_suffixes": [".parquet", ".csv", ".sac", ".tar"],
                     "guard_coordinator_intents": ["multi_file_analysis"],
                     "coordinated_file_suffixes": [
                         ".h5",
@@ -319,6 +347,8 @@ class ClioAgent(dspy.Module):
                         ".bp5",
                         ".parquet",
                         ".csv",
+                        ".sac",
+                        ".tar",
                     ],
                 },
             ),
@@ -328,16 +358,26 @@ class ClioAgent(dspy.Module):
             "visualization",
             self.visualization_expert,
             AgentCapability(
-                keywords=["plot", "chart", "histogram", "scatter", "visualization", "graph"],
-                description="Scientific data visualization expert with matplotlib tools",
+                keywords=[
+                    "plot",
+                    "chart",
+                    "histogram",
+                    "scatter",
+                    "visualization",
+                    "graph",
+                    "waveform",
+                    "sac",
+                ],
+                description="Scientific data visualization expert with matplotlib and waveform tools",
                 tools=[
                     "plot_histogram",
                     "plot_bar_chart",
                     "plot_scatter",
                     "plot_summary",
+                    "sac_plot_traces",
                 ],
                 specialization="data_visualization",
-                metadata={"file_suffixes": [".parquet", ".csv"]},
+                metadata={"file_suffixes": [".parquet", ".csv", ".sac", ".tar"]},
             ),
         )
 
@@ -1323,6 +1363,15 @@ class ClioAgent(dspy.Module):
                         f"{expert_result.analysis}\n\n"
                         f"Recommendations:\n{expert_result.recommendations}"
                     )
+                    handoff = self._continue_data_handoffs(
+                        question=question,
+                        file_context=file_context,
+                        data_result=expert_result,
+                        data_answer=answer,
+                        trace=trace,
+                    )
+                    if handoff is not None:
+                        return handoff
                     return "data", answer, expert_result, None
 
                 if expert_id == "analysis":
@@ -1378,6 +1427,113 @@ class ClioAgent(dspy.Module):
                 ),
             ).to_dict()
             return expert_id, "", None, error
+
+    def _continue_data_handoffs(
+        self,
+        *,
+        question: str,
+        file_context: str,
+        data_result: Any,
+        data_answer: str,
+        trace: RunTrace,
+    ) -> tuple[str, str, Any, dict[str, Any] | None] | None:
+        """Continue data-stage results into analysis/visualization when requested."""
+        staged_path = self._staged_path_from_expert_result(data_result)
+        if not staged_path:
+            return None
+        q_lower = question.lower()
+        wants_analysis = any(
+            term in q_lower
+            for term in (
+                "analyze",
+                "analysis",
+                "statistics",
+                "signal",
+                "trace",
+                "quality",
+            )
+        )
+        wants_visualization = any(
+            term in q_lower for term in ("plot", "chart", "visual", "graph", "figure")
+        )
+        if not wants_analysis and not wants_visualization:
+            return None
+
+        answer_sections = ["Data stage:\n" + data_answer]
+        selected = "data"
+        downstream_result: Any = data_result
+        error_info: dict[str, Any] | None = None
+        downstream_context = "\n".join(part for part in (file_context, staged_path) if part)
+
+        if wants_analysis:
+            analysis_question = (
+                f"Analyze the staged waveform/data file {staged_path}. "
+                "Compute grounded statistics and do not invent unsupported format details."
+            )
+            analysis_result = self.analysis_expert(
+                question=analysis_question,
+                file_context=downstream_context,
+            )
+            self._merge_expert_provenance(trace, analysis_result)
+            analysis_text = self._coerce_text(getattr(analysis_result, "analysis", "")).strip()
+            recommendations = self._coerce_text(
+                getattr(analysis_result, "recommendations", "")
+            ).strip()
+            answer_sections.append(
+                "Analysis stage:\n"
+                + analysis_text
+                + (f"\n\nRecommendations:\n{recommendations}" if recommendations else "")
+            )
+            selected = "analysis"
+            downstream_result = analysis_result
+
+        if wants_visualization:
+            visualization_question = (
+                f"Plot representative traces or numeric series from {staged_path}. "
+                "Return the output artifact path and surface any plotting failure."
+            )
+            visualization_result = self.visualization_expert(
+                question=visualization_question,
+                file_context=downstream_context,
+            )
+            self._merge_expert_provenance(trace, visualization_result)
+            description = self._coerce_text(
+                getattr(visualization_result, "visualization_description", "")
+            ).strip()
+            file_path = self._coerce_text(getattr(visualization_result, "file_path", "")).strip()
+            answer_sections.append(
+                "Visualization stage:\n"
+                + (description or "Visualization produced no description.")
+                + (f"\n\nFile: {file_path}" if file_path else "")
+            )
+            selected = "visualization"
+            downstream_result = visualization_result
+            error_info = getattr(visualization_result, "error_info", None)
+
+        return selected, "\n\n".join(answer_sections).strip(), downstream_result, error_info
+
+    @staticmethod
+    def _staged_path_from_expert_result(expert_result: Any) -> str:
+        """Return the last successful staged file path from an expert result."""
+        for observation in reversed(list(getattr(expert_result, "tool_provenance", []) or [])):
+            result = getattr(observation, "result", None)
+            if (
+                getattr(observation, "tool", "") == "ndp_stage_resource"
+                and isinstance(result, dict)
+                and result.get("staged")
+                and result.get("path")
+            ):
+                return str(result["path"])
+        for observation in reversed(list(getattr(expert_result, "tools", []) or [])):
+            result = getattr(observation, "result", None)
+            if (
+                getattr(observation, "tool", "") == "ndp_stage_resource"
+                and isinstance(result, dict)
+                and result.get("staged")
+                and result.get("path")
+            ):
+                return str(result["path"])
+        return ""
 
     def _execute_tool_action(
         self,

@@ -84,6 +84,27 @@ Current implementation evidence:
   the default staging cap and keeps analysis/plotting blocked until a smaller
   concrete object is selected or the dataset is intentionally staged manually.
   This is correct failure surfacing, not a completed plot benchmark.
+- A follow-up ALCF/GACT run found a bounded HIVE SAC waveform archive from NDP,
+  staged `Pachhai_etal_2023_ScP_data.tar`, inspected 11260 SAC traces, computed
+  representative trace statistics, and produced a PNG plot with three traces.
+  The live route selected `visualization` after data-owned NDP discovery and
+  automatic data -> analysis -> visualization handoff. Tool evidence included
+  `ndp_list_organizations`, three `ndp_search_datasets` calls,
+  `ndp_get_dataset_details`, `ndp_stage_resource`, `sac_inspect_archive`,
+  `sac_compute_trace_statistics`, and `sac_plot_traces`.
+- The format tool surface is deliberately SAC-specific. It is exposed as a
+  `sac` FastMCP server with `sac_*` tools, not as a generic seismic namespace.
+- Caveat: the completed staged waveform demo is SAC archive based. The original
+  Salton Sea three-component MiniSEED path remains a future target because the
+  discovered OSDF resource is large and requires a bounded Pelican/object
+  selection path.
+- Architecture caveat: this implementation proves data-owned NDP discovery, but
+  NDP semantics still live inside the top-level DataExpert. The intended CLIO
+  hierarchy is `data -> ndp_catalog` or `data -> ndp_access`, where the nested
+  NDP expert owns NDP-specific prompt context, tools, dataset/resource ranking,
+  and eventually its own tuned model. Future benchmarks should include
+  EarthScope-oriented prompts and verify that NDP work is delegated to that
+  nested expert rather than handled directly by DataExpert.
 
 ### 2. Mixed Scientific Run Audit
 

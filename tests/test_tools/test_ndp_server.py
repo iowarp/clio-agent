@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from importlib import import_module
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -48,9 +49,7 @@ async def test_ndp_server_lists_organizations_through_clio_kit(monkeypatch: pyte
             {"name_filter": "noaa", "server": "global"},
         )
 
-    assert calls == [
-        ("list_organizations", {"name_filter": "noaa", "server": "global"})
-    ]
+    assert calls == [("list_organizations", {"name_filter": "noaa", "server": "global"})]
     data = _parse_result(result)
     assert data["organizations"] == ["noaa-global-systems-laboratory"]
     assert data["_meta"]["status"] == "success"
@@ -84,6 +83,7 @@ async def test_ndp_search_omits_null_arguments(monkeypatch: pytest.MonkeyPatch):
 @pytest.mark.asyncio
 async def test_gateway_exposes_ndp_tools(monkeypatch: pytest.MonkeyPatch):
     """NDP tools should be visible through CLIO's normal gateway surface."""
+
     async def fake_call(tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
         return {"organizations": [], "count": 0, "server": "global", "tool": tool_name}
 
@@ -98,9 +98,7 @@ async def test_gateway_exposes_ndp_tools(monkeypatch: pytest.MonkeyPatch):
         "ndp_search_datasets",
         "ndp_get_dataset_details",
         "ndp_stage_resource",
-    } <= {
-        tool.name for tool in tools
-    }
+    } <= {tool.name for tool in tools}
     assert _parse_result(result)["server"] == "global"
 
 
@@ -230,6 +228,63 @@ async def test_ndp_stage_resource_blocks_oversized_osdf(monkeypatch: pytest.Monk
     assert data["error"]["details"]["size_bytes"] > 1024
 
 
+@pytest.mark.asyncio
+async def test_ndp_stage_resource_creates_explicit_output_dir(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    """Explicit output directories should be created before write validation."""
+
+    async def fake_details(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        return {
+            "id": "ds-http",
+            "name": "http-dataset",
+            "title": "HTTP Dataset",
+            "resources": [
+                {
+                    "name": "sample.txt",
+                    "url": "https://example.test/sample.txt",
+                    "size": 11,
+                }
+            ],
+        }
+
+    class FakeResponse:
+        headers = {"content-length": "11"}
+
+        def __enter__(self) -> "FakeResponse":
+            return self
+
+        def __exit__(self, *args: Any) -> None:
+            return None
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def iter_content(self, chunk_size: int):
+            del chunk_size
+            yield b"hello world"
+
+    monkeypatch.setattr(ndp_module, "_dataset_details", fake_details)
+    monkeypatch.setattr(ndp_module.requests, "get", lambda *args, **kwargs: FakeResponse())
+    output_dir = tmp_path / "new-stage-dir"
+
+    async with Client(ndp_server) as client:
+        result = await client.call_tool(
+            "stage_resource",
+            {
+                "dataset_identifier": "ds-http",
+                "server": "global",
+                "output_dir": str(output_dir),
+            },
+        )
+
+    data = _parse_result(result)
+    assert data["staged"] is True
+    assert output_dir.exists()
+    assert (output_dir / "sample.txt").read_bytes() == b"hello world"
+
+
 def test_list_capabilities_reports_ndp_server():
     """Context capability summaries should identify the NDP server owner."""
     caps = gateway_module.list_capabilities()
@@ -237,3 +292,7 @@ def test_list_capabilities_reports_ndp_server():
     ndp_caps = [cap for cap in caps if cap["name"].startswith("ndp_")]
     assert ndp_caps
     assert {cap["server"] for cap in ndp_caps} == {"ndp"}
+
+    sac_caps = [cap for cap in caps if cap["name"].startswith("sac_")]
+    assert sac_caps
+    assert {cap["server"] for cap in sac_caps} == {"sac"}

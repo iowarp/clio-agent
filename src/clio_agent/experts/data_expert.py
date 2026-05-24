@@ -111,6 +111,14 @@ NDP_DATASET_FIELDS: dict[str, type | tuple[type, ...]] = {
     "server": str,
 }
 
+SEISMIC_ARCHIVE_FIELDS: dict[str, type | tuple[type, ...]] = {
+    "filepath": str,
+    "sac_trace_count": int,
+    "sample_members": list,
+    "phases": list,
+    "stations": list,
+}
+
 _NDP_INTENT_TERMS = (
     "catalog",
     "ckan",
@@ -182,6 +190,7 @@ class DataExpert(dspy.Module):
             tool
             for tool in self._tool_executor.to_dspy_tools()
             if tool.name.startswith(("hdf5_", "adios_", "ndp_"))
+            or tool.name == "sac_inspect_archive"
         ]
 
         logger.info(
@@ -213,15 +222,75 @@ class DataExpert(dspy.Module):
             request.file_context,
             {".bp", ".bp4", ".bp5"},
         )
+        seismic_paths = extract_file_paths(
+            request.question,
+            request.file_context,
+            {".sac", ".tar", ".tgz", ".gz"},
+        )
         if adios_paths:
             return self._inspect_adios_file(request, str(adios_paths[0]))
         if self._wants_ndp_discovery(request.question):
             return self._inspect_ndp_request(request)
+        if seismic_paths:
+            return self._inspect_seismic_archive(str(seismic_paths[0]))
         if not hdf5_paths:
             return self._synthesize_without_tools(request)
         if self._wants_dataset_analysis(request.question):
             return self._inspect_hdf5_dataset_request(request, str(hdf5_paths[0]))
         return self._inspect_hdf5_file(request, str(hdf5_paths[0]))
+
+    def _inspect_seismic_archive(self, filepath: str) -> ExpertResult:
+        """Inspect SAC member structure in a staged seismic file or archive."""
+        runner = NativeToolRunner(self._tool_executor)
+        result = runner.call(
+            "sac_inspect_archive",
+            {"filepath": filepath, "max_members": 12},
+        )
+        archive_valid = validate_tool_result(
+            "sac_inspect_archive",
+            result,
+            SEISMIC_ARCHIVE_FIELDS,
+        )
+        if not archive_valid.ok:
+            assert archive_valid.error is not None
+            runner.mark_validation_error("sac_inspect_archive", archive_valid.error)
+            return ExpertResult(
+                analysis=(
+                    f"Could not inspect seismic archive {filepath}: "
+                    f"{format_tool_error(archive_valid.error)}"
+                ),
+                recommendations="Verify the staged file is a SAC file or TAR archive.",
+                source="deterministic",
+                tools=runner.observations,
+                metadata={"expert": "data", "format": "seismic", "filepath": filepath},
+            )
+
+        archive_data = archive_valid.data or {}
+        samples = [str(member) for member in archive_data.get("sample_members", [])[:8]]
+        phases = ", ".join(str(phase) for phase in archive_data.get("phases", [])[:8])
+        stations = ", ".join(str(station) for station in archive_data.get("stations", [])[:8])
+        analysis = (
+            f"Inspected staged seismic waveform file {archive_data['filepath']}. "
+            f"It contains {archive_data['sac_trace_count']} SAC traces."
+        )
+        if phases:
+            analysis += f"\nPhases/groups: {phases}."
+        if stations:
+            analysis += f"\nSample stations: {stations}."
+        if samples:
+            analysis += "\nSample members:\n- " + "\n- ".join(samples)
+        recommendations = (
+            "Route quantitative waveform questions to analysis with "
+            "sac_compute_trace_statistics, then route plotting requests to "
+            "visualization with sac_plot_traces."
+        )
+        return ExpertResult(
+            analysis=analysis,
+            recommendations=recommendations,
+            source="deterministic",
+            tools=runner.observations,
+            metadata={"expert": "data", "format": "seismic", "filepath": filepath},
+        )
 
     def _inspect_hdf5_dataset_request(self, request: ExpertRequest, filepath: str) -> ExpertResult:
         """Run hdf5_analyze_dataset when a concrete dataset is named."""
@@ -536,17 +605,14 @@ class DataExpert(dspy.Module):
             )
             if not organizations_valid.ok:
                 assert organizations_valid.error is not None
-                runner.mark_validation_error(
-                    "ndp_list_organizations", organizations_valid.error
-                )
+                runner.mark_validation_error("ndp_list_organizations", organizations_valid.error)
                 return self._ndp_failure_result(
                     "list organizations", organizations_valid.error, runner
                 )
             organizations = organizations_valid.data or {}
 
         should_search = any(
-            term in q_lower
-            for term in ("dataset", "discover", "find", "search", "data product")
+            term in q_lower for term in ("dataset", "discover", "find", "search", "data product")
         )
         datasets: dict[str, Any] | None = None
         if should_search:
@@ -575,9 +641,7 @@ class DataExpert(dspy.Module):
             )
             if not organizations_valid.ok:
                 assert organizations_valid.error is not None
-                runner.mark_validation_error(
-                    "ndp_list_organizations", organizations_valid.error
-                )
+                runner.mark_validation_error("ndp_list_organizations", organizations_valid.error)
                 return self._ndp_failure_result(
                     "list organizations", organizations_valid.error, runner
                 )
@@ -594,10 +658,7 @@ class DataExpert(dspy.Module):
             dataset_rows = [
                 row for row in datasets.get("datasets", [])[:5] if isinstance(row, dict)
             ]
-            dataset_lines = [
-                self._ndp_dataset_summary_line(row)
-                for row in dataset_rows
-            ]
+            dataset_lines = [self._ndp_dataset_summary_line(row) for row in dataset_rows]
             analysis_lines.append(
                 f"Datasets matched: {datasets.get('count', 0)}"
                 + (("\n- " + "\n- ".join(dataset_lines)) if dataset_lines else "")
@@ -675,6 +736,7 @@ class DataExpert(dspy.Module):
         if valid_calls == 0 and first_error is not None:
             return {"error": first_error}
 
+        rows = sorted(rows, key=DataExpert._ndp_dataset_priority, reverse=True)
         return {"datasets": rows[:5], "count": len(rows), "server": "global"}
 
     @staticmethod
@@ -720,7 +782,10 @@ class DataExpert(dspy.Module):
     def _ndp_search_terms(question: str) -> list[str]:
         """Extract conservative search terms for NDP dataset discovery."""
         q_lower = question.lower()
-        return [term for term in _NDP_SEARCH_TERMS if term in q_lower]
+        terms = [term for term in _NDP_SEARCH_TERMS if term in q_lower]
+        if any(term in q_lower for term in ("seismic", "seismological", "three axes")):
+            terms.append("waveform")
+        return list(dict.fromkeys(terms))
 
     @staticmethod
     def _ndp_resource_format(question: str) -> str | None:
@@ -769,11 +834,16 @@ class DataExpert(dspy.Module):
         title = str(candidate.get("title") or candidate.get("name") or candidate.get("id"))
         notes = str(candidate.get("notes") or "")
         resource_names = ", ".join(str(name) for name in candidate.get("resource_names", [])[:3])
-        format_hint = "MiniSEED" if "miniseed" in (notes + resource_names).lower() else "waveform"
+        text = (notes + resource_names).lower()
+        if "miniseed" in text:
+            format_hint = "MiniSEED waveform data"
+        elif "sac" in text:
+            format_hint = "SAC waveform data"
+        else:
+            format_hint = "seismic waveform data"
         return (
             "Seismic workflow note: the best discovery-stage candidate is "
-            f"{title!r}. Its catalog text/resource names indicate {format_hint} waveform "
-            "data"
+            f"{title!r}. Its catalog text/resource names indicate {format_hint}"
             + (f" ({resource_names})." if resource_names else ".")
             + " CLIO has not downloaded or opened that resource yet, so analysis and "
             "three-axis plotting remain blocked on staging the waveform file."
@@ -802,7 +872,11 @@ class DataExpert(dspy.Module):
         ):
             return ""
 
-        candidate = DataExpert._select_seismic_dataset(rows) or (rows[0] if rows else None)
+        candidate = (
+            DataExpert._select_stageable_seismic_dataset(rows)
+            or DataExpert._select_seismic_dataset(rows)
+            or (rows[0] if rows else None)
+        )
         if candidate is None:
             return (
                 "Staging note: no dataset candidate was available, so CLIO did not "
@@ -841,10 +915,27 @@ class DataExpert(dspy.Module):
             },
         )
         if isinstance(staged, dict) and staged.get("staged"):
+            staged_path = str(staged.get("path") or "")
+            inspection_note = ""
+            if staged_path.lower().endswith((".sac", ".tar", ".tgz", ".gz")):
+                inspected = runner.call(
+                    "sac_inspect_archive",
+                    {"filepath": staged_path, "max_members": 8},
+                )
+                if isinstance(inspected, dict) and not inspected.get("error"):
+                    inspection_note = (
+                        f" Data-stage inspection found {inspected.get('sac_trace_count')} "
+                        "SAC traces in the staged file."
+                    )
+                elif isinstance(inspected, dict) and inspected.get("error"):
+                    inspection_note = (
+                        " Data-stage seismic inspection failed visibly: "
+                        f"{format_tool_error(inspected['error'])}"
+                    )
             return (
                 "Staging note: CLIO staged the selected NDP resource at "
-                f"{staged.get('path')}. Analysis and visualization can now use that "
-                "local file if the format is supported."
+                f"{staged_path}. Analysis and visualization can now use that "
+                f"local file if the format is supported.{inspection_note}"
             )
         if isinstance(staged, dict) and staged.get("error"):
             code = staged["error"].get("code") if isinstance(staged["error"], dict) else None
@@ -864,12 +955,10 @@ class DataExpert(dspy.Module):
         q_lower = question.lower()
         if any(term in q_lower for term in ("seismic", "seismological", "three axes")):
             return (
-                "Treat this as a data discovery result, not completed analysis. Next: use "
-                "ndp_get_dataset_details or the NDP resource page to obtain the resource URL, "
-                "download/stage the MiniSEED waveform with ndp_stage_resource or a "
-                "Pelican client, inspect channels/stations with a "
-                "seismic reader such as ObsPy, then pass the staged three-component traces "
-                "to analysis and visualization."
+                "Treat this as the data-discovery and staging stage. If staging succeeded, "
+                "pass the staged SAC/MiniSEED/waveform file to analysis and visualization. "
+                "If staging is blocked, surface the transport or size error and select a "
+                "smaller concrete resource rather than inventing waveform analysis."
             )
         return (
             "Treat these as discovery results owned by the data stage. Use "
@@ -894,6 +983,55 @@ class DataExpert(dspy.Module):
             if "miniseed" in haystack or ("seismic" in haystack and "waveform" in haystack):
                 return row
         return None
+
+    @staticmethod
+    def _select_stageable_seismic_dataset(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
+        """Prefer seismic rows with direct HTTP resources for staged analysis."""
+        for row in rows:
+            haystack = " ".join(
+                str(value)
+                for value in (
+                    row.get("title"),
+                    row.get("name"),
+                    row.get("notes"),
+                    " ".join(str(name) for name in row.get("resource_names", [])),
+                )
+                if value
+            ).lower()
+            if not any(term in haystack for term in ("waveform", "sac", "miniseed")):
+                continue
+            urls = [str(url).lower() for url in row.get("resource_urls", []) if url]
+            if any(url.startswith(("http://", "https://")) for url in urls):
+                return row
+        return None
+
+    @staticmethod
+    def _ndp_dataset_priority(row: dict[str, Any]) -> int:
+        """Score NDP rows so analysis-ready waveform data survives truncation."""
+        haystack = " ".join(
+            str(value)
+            for value in (
+                row.get("title"),
+                row.get("name"),
+                row.get("notes"),
+                " ".join(str(name) for name in row.get("resource_names", [])),
+                " ".join(str(fmt) for fmt in row.get("resource_formats", [])),
+            )
+            if value
+        ).lower()
+        urls = [str(url).lower() for url in row.get("resource_urls", []) if url]
+        score = 0
+        if any(term in haystack for term in ("waveform", "sac", "miniseed")):
+            score += 20
+        if any(url.startswith(("http://", "https://")) for url in urls):
+            score += 8
+        if any(url.startswith("osdf://") for url in urls):
+            score += 4
+        if "seismic" in haystack or "seismological" in haystack:
+            score += 2
+        if "lidar" in haystack or "point cloud" in haystack:
+            score -= 8
+        return score
 
     @staticmethod
     def _wants_dataset_analysis(question: str) -> bool:
@@ -1010,7 +1148,8 @@ class DataExpert(dspy.Module):
             "description": (
                 "Specializes in scientific data files and discovery: HDF5, ADIOS/BP, "
                 "compression strategies, I/O performance, format conversion, and "
-                "external dataset discovery through NDP/clio-kit MCP"
+                "external dataset discovery through NDP/clio-kit MCP, plus staged "
+                "SAC waveform archive inspection"
             ),
             "keywords": [
                 "hdf5",
@@ -1020,6 +1159,8 @@ class DataExpert(dspy.Module):
                 "national data platform",
                 "dataset discovery",
                 "catalog",
+                "seismic",
+                "sac",
                 "compression",
                 "chunking",
                 "data format",

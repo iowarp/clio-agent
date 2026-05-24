@@ -3582,18 +3582,21 @@ _EXPERT_TOOLS: dict[str, list[str]] = {
         "ndp_search_datasets",
         "ndp_get_dataset_details",
         "ndp_stage_resource",
+        "sac_inspect_archive",
     ],
     "analysis": [
         "parquet_analyze_schema",
         "parquet_query_data",
         "parquet_compute_statistics",
         "csv_read_table",
+        "sac_compute_trace_statistics",
     ],
     "visualization": [
         "plot_histogram",
         "plot_bar_chart",
         "plot_scatter",
         "plot_summary",
+        "sac_plot_traces",
     ],
     "utility": [
         "shell_bash",
@@ -3607,7 +3610,8 @@ _EXPERT_CAPABILITIES: dict[str, dict[str, Any]] = {
         "description": (
             "Specializes in scientific data files and discovery: HDF5, ADIOS/BP, "
             "compression strategies, I/O performance, format conversion, and "
-            "external dataset discovery through NDP/clio-kit MCP"
+            "external dataset discovery through NDP/clio-kit MCP, and staged "
+            "SAC waveform archive inspection"
         ),
         "keywords": [
             "hdf5",
@@ -3617,6 +3621,8 @@ _EXPERT_CAPABILITIES: dict[str, dict[str, Any]] = {
             "national data platform",
             "dataset discovery",
             "catalog",
+            "seismic",
+            "sac",
             "compression",
             "chunking",
             "data format",
@@ -3630,6 +3636,7 @@ _EXPERT_CAPABILITIES: dict[str, dict[str, Any]] = {
                 "HDF5 tools",
                 "ADIOS/BP tools",
                 "NDP catalog/staging tools",
+                "SAC archive inspection tools",
             ],
             "routes_to": ["ndp_catalog"],
         },
@@ -3638,8 +3645,9 @@ _EXPERT_CAPABILITIES: dict[str, dict[str, Any]] = {
         "name": "Analysis Expert",
         "description": (
             "Specializes in statistical analysis, data profiling, and quality "
-            "assessment of tabular datasets (Parquet/CSV). Computes column-level "
-            "statistics, identifies distributions, and flags data quality issues."
+            "assessment of tabular datasets (Parquet/CSV) and staged SAC waveform "
+            "archives. Computes column-level statistics, samples waveform traces, "
+            "identifies distributions, and flags data quality issues."
         ),
         "keywords": [
             "parquet",
@@ -3653,6 +3661,8 @@ _EXPERT_CAPABILITIES: dict[str, dict[str, Any]] = {
             "profiling",
             "null count",
             "outliers",
+            "waveform",
+            "sac",
         ],
         "metadata": {
             "delegates_to": ["parallel nanoagents for independent file checks"],
@@ -3663,7 +3673,8 @@ _EXPERT_CAPABILITIES: dict[str, dict[str, Any]] = {
         "description": (
             "Specializes in generating scientific data visualizations: "
             "histograms, scatter plots, bar charts, and summary dashboards "
-            "from tabular datasets (Parquet, CSV). Saves charts to disk as PNG."
+            "from tabular datasets (Parquet, CSV), plus SAC waveform trace plots. "
+            "Saves charts to disk as PNG."
         ),
         "keywords": [
             "visualization",
@@ -3674,6 +3685,8 @@ _EXPERT_CAPABILITIES: dict[str, dict[str, Any]] = {
             "distribution",
             "bar chart",
             "graph",
+            "waveform",
+            "sac",
         ],
         "metadata": {
             "delegates_to": ["matplotlib plotting tools"],

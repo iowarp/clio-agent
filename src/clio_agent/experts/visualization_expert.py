@@ -33,7 +33,13 @@ import dspy
 import pyarrow.csv as pcsv
 import pyarrow.parquet as pq
 
-from clio_agent.harness import ToolObservation, normalize_tool_result, tool_result_ok
+from clio_agent.harness import (
+    ToolObservation,
+    extract_file_paths,
+    format_tool_error,
+    normalize_tool_result,
+    tool_result_ok,
+)
 from clio_agent.signatures.visualization_sig import VisualizationExpertSignature
 from clio_agent.tools.execution import notify_global_tool_observer
 from clio_agent.tools.file_policy import (
@@ -553,6 +559,10 @@ class VisualizationExpert(dspy.Module):
         Returns:
             dspy.Prediction with visualization_description and file_path fields
         """
+        seismic_paths = extract_file_paths(question, file_context, {".sac", ".tar", ".tgz", ".gz"})
+        if seismic_paths:
+            return self._plot_seismic_file(str(seismic_paths[0]))
+
         self._set_tool_observations([])
         result = self.agent(question=question, file_context=file_context)
         try:
@@ -562,6 +572,46 @@ class VisualizationExpert(dspy.Module):
         finally:
             self._set_tool_observations([])
         return result
+
+    def _plot_seismic_file(self, filepath: str) -> dspy.Prediction:
+        """Plot a staged SAC waveform file or archive without planner guesswork."""
+        from clio_agent.tools.servers.sac_server import plot_traces
+
+        start = time.time()
+        params = {"filepath": filepath, "max_traces": 3}
+        notify_global_tool_observer("sac_plot_traces", params, "started", None)
+        raw_result = plot_traces(**params)
+        result = normalize_tool_result(raw_result, tool="sac_plot_traces")
+        completion_error = None if tool_result_ok(result) else repr(result["error"])
+        notify_global_tool_observer("sac_plot_traces", params, "completed", completion_error)
+        observation = ToolObservation(
+            tool="sac_plot_traces",
+            params=params,
+            result=result,
+            duration_ms=(time.time() - start) * 1000,
+            ok=tool_result_ok(result),
+        )
+        if result.get("error"):
+            description = (
+                f"Could not create seismic waveform plot: {format_tool_error(result['error'])}"
+            )
+            file_path = ""
+            error_info = result["error"]
+        else:
+            file_path = str(result.get("output_path") or "")
+            description = (
+                f"Plotted {result.get('traces_plotted')} SAC waveform traces from {filepath}."
+            )
+            error_info = None
+        prediction = dspy.Prediction(
+            visualization_description=description,
+            file_path=file_path,
+            synthesis_source="deterministic",
+            tool_provenance=[observation],
+        )
+        if error_info is not None:
+            prediction.error_info = error_info  # type: ignore[attr-defined]
+        return prediction
 
     def _observed_tool(self, name: str, func: Callable[..., Any]) -> Callable[..., Any]:
         """Wrap a local chart helper with CLIO tool provenance hooks."""
@@ -645,7 +695,8 @@ class VisualizationExpert(dspy.Module):
             "description": (
                 "Specializes in generating scientific data visualizations: "
                 "histograms, scatter plots, bar charts, and summary dashboards "
-                "from tabular datasets (Parquet, CSV). Saves charts to disk as PNG."
+                "from tabular datasets (Parquet, CSV), plus SAC waveform trace plots. "
+                "Saves charts to disk as PNG."
             ),
             "keywords": [
                 "visualization",
@@ -656,6 +707,8 @@ class VisualizationExpert(dspy.Module):
                 "distribution",
                 "bar chart",
                 "graph",
+                "waveform",
+                "sac",
             ],
             "priority": 3,
         }

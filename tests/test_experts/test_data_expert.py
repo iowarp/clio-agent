@@ -454,7 +454,7 @@ class TestDataExpert:
                     return '{"organizations":[],"count":0,"server":"global"}'
                 assert name == "ndp_search_datasets"
                 terms = args.get("search_terms")
-                assert terms in (["seismic"], ["seismological"])
+                assert terms in (["seismic"], ["seismological"], ["waveform"])
                 if terms == ["seismic"]:
                     return (
                         '{"datasets":[{"id":"salton","name":"salton-sea-seismic-data",'
@@ -463,6 +463,12 @@ class TestDataExpert:
                         '"resource_names":["Salton Sea Seismic Waveforms"],'
                         '"resource_formats":["MiniSEED"],'
                         '"resources":[{"format":"MiniSEED"}]}],"count":1,"server":"global"}'
+                    )
+                if terms == ["seismological"]:
+                    return (
+                        '{"datasets":[{"id":"ridgecrest","name":"ridgecrest-lidar",'
+                        '"title":"Ridgecrest Earthquake Lidar","owner_org":"opentopography",'
+                        '"resources":[{"format":"TIFF"}]}],"count":1,"server":"global"}'
                     )
                 return (
                     '{"datasets":[{"id":"ridgecrest","name":"ridgecrest-lidar",'
@@ -486,7 +492,7 @@ class TestDataExpert:
         assert "Salton Sea Seismic Data" in result.analysis
         assert "MiniSEED" in result.analysis
         assert "three-axis plotting remain blocked" in result.analysis
-        assert "download/stage the MiniSEED waveform" in result.recommendations
+        assert "staged SAC/MiniSEED/waveform file" in result.recommendations
         assert "Ridgecrest Earthquake Lidar" in result.analysis
         search_calls = [
             row.params["search_terms"]
@@ -496,6 +502,7 @@ class TestDataExpert:
         assert search_calls == [
             ["seismic"],
             ["seismological"],
+            ["waveform"],
         ]
         expert.close()
 
@@ -576,6 +583,7 @@ class TestDataExpert:
         assert "unsupported_resource_transport" in result.analysis
         assert [row.tool for row in result.tool_provenance] == [
             "ndp_list_organizations",
+            "ndp_search_datasets",
             "ndp_search_datasets",
             "ndp_search_datasets",
             "ndp_get_dataset_details",

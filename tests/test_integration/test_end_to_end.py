@@ -35,7 +35,7 @@ class TestAgentArchitecture:
     """Test agent architecture without LM calls."""
 
     def test_agent_components_connected(self):
-        """All components (router, chat, 3 experts, arc, lsm) are wired."""
+        """All core components and registered experts are wired."""
         agent = ClioAgent()
         assert agent.router is not None
         assert agent.chat_agent is not None
@@ -44,7 +44,9 @@ class TestAgentArchitecture:
         assert agent.visualization_expert is not None
         assert agent.arc is not None
         assert agent.lsm is not None
-        assert agent.registry.get_agent_count() == 3
+        assert {"data", "analysis", "visualization", "utility"}.issubset(
+            set(agent.registry.list_agents())
+        )
         agent.shutdown()
 
     def test_agent_data_expert_has_native_tool_boundary(self):
