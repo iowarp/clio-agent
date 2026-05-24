@@ -29,6 +29,7 @@ import importlib.util
 import inspect
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -2123,6 +2124,22 @@ def _is_destructive(tool_name: str) -> bool:
     return any(needle in n for needle in _DESTRUCTIVE_TOOL_SUBSTRINGS)
 
 
+def _is_safe_shell_diagnostic(tool_name: str, args: Mapping[str, Any]) -> bool:
+    """Return whether a shell_bash call is a read-only local diagnostic."""
+
+    if tool_name != "shell_bash":
+        return False
+    command = str(args.get("command") or "").strip().lower()
+    command = re.sub(r"\s+", " ", command)
+    return command in {
+        "date",
+        "get-date",
+        "pwd",
+        "whoami",
+        "hostname",
+    }
+
+
 def _permission_path_from_args(args: Mapping[str, Any]) -> str:
     for key in ("filepath", "path", "output_path", "target_path"):
         value = args.get(key)
@@ -2465,6 +2482,10 @@ def _make_permission_gate(app: "FastAPI"):
             return "deny"
         if policy_action in {"allow", "allow_session", "allow_workspace"}:
             return "allow"
+        if _is_safe_shell_diagnostic(name, args):
+            return "allow"
+        if not sid:
+            return "deny"
         pid = f"perm_{uuid.uuid4().hex[:12]}"
         evt = threading.Event()
         row = {

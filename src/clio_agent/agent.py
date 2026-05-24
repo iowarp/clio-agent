@@ -661,7 +661,7 @@ class ClioAgent(dspy.Module):
         """Run the planner/executor loop for one user request."""
         self._raise_if_cancelled("agent_loop_start")
         if routing_mode == "chat":
-            answer = self._run_chat_agent(question, session_context)
+            answer = self._run_chat_agent(question, session_context, trace=trace)
             route = self._route_for_selected(
                 "chat",
                 "Session routing_mode='chat' forced the conversational path.",
@@ -839,7 +839,7 @@ class ClioAgent(dspy.Module):
                                 planner_action=action,
                             ),
                         )
-                    answer = self._run_chat_agent(question, session_context)
+                    answer = self._run_chat_agent(question, session_context, trace=trace)
                     route = self._route_for_selected(
                         "chat",
                         "Planner expert action ignored because no concrete file/data context exists.",
@@ -3191,13 +3191,27 @@ class ClioAgent(dspy.Module):
             return normalized
         return normalized[: limit - 15].rstrip() + "...[truncated]"
 
-    def _run_chat_agent(self, question: str, session_context: str) -> str:
+    def _run_chat_agent(
+        self,
+        question: str,
+        session_context: str,
+        *,
+        trace: RunTrace | None = None,
+    ) -> str:
         """Generate a conversational reply through DSPy/LiteLLM."""
         self._raise_if_cancelled("chat_before")
         chat_context = self._chat_session_context(session_context)
         try:
             with dspy.context(lm=self._main_lm, adapter=self._dspy_adapter):
-                result = self.chat_agent(question=question, session_context=chat_context)
+                if self._chat_should_use_utility_tools(question, session_context):
+                    tool_agent = self._build_chat_tool_agent(
+                        trace=trace,
+                        question=question,
+                        session_context=session_context,
+                    )
+                    result = tool_agent(question=question, session_context=chat_context)
+                else:
+                    result = self.chat_agent(question=question, session_context=chat_context)
             answer = self._coerce_text(getattr(result, "answer", None)).strip()
             self._raise_if_cancelled("chat_after")
             if answer:
@@ -3219,6 +3233,67 @@ class ClioAgent(dspy.Module):
             if self.verbose:
                 print(f"[ClioAgent] ChatAgent failed: {chat_error}")
             raise
+
+    def _chat_should_use_utility_tools(self, question: str, session_context: str) -> bool:
+        """Return whether chat should receive its scoped utility ReAct surface."""
+        return bool(
+            self._question_allows_shell_tool(question, session_context=session_context)
+            and self._chat_visible_tool_names()
+        )
+
+    def _chat_visible_tool_names(self) -> list[str]:
+        """Return tools explicitly visible to the chat utility surface."""
+        return [name for name in sorted(self._known_tool_names()) if tool_visible_to(name, "chat")]
+
+    def _build_chat_tool_agent(
+        self,
+        *,
+        trace: RunTrace | None,
+        question: str,
+        session_context: str,
+    ) -> Any:
+        """Build a per-turn ReAct agent with only chat-visible utility tools."""
+        available_tools = {tool.name: tool for tool in self._available_dspy_tools()}
+        tools: list[dspy.Tool] = []
+        for tool_name in self._chat_visible_tool_names():
+            source_tool = available_tools.get(tool_name)
+            if source_tool is None:
+                continue
+            tools.append(self._chat_scoped_tool(source_tool, trace, question, session_context))
+        if not tools:
+            raise RoutingError(
+                "Chat utility tool surface is empty.",
+                details=self._recovery_details(scope="chat", visible_tools=[]),
+            )
+        return dspy.ReAct(ChatAgentSignature, tools=tools, max_iters=3)
+
+    def _chat_scoped_tool(
+        self,
+        source_tool: dspy.Tool,
+        trace: RunTrace | None,
+        question: str,
+        session_context: str,
+    ) -> dspy.Tool:
+        """Wrap one chat-visible tool so it uses CLIO's normal tool path."""
+        tool_name = source_tool.name
+
+        def run(**kwargs: Any) -> Any:
+            active_trace = trace or RunTrace(route=self._route_for_selected("chat", "chat", 1.0))
+            return self._execute_tool_action(
+                tool_name,
+                kwargs,
+                active_trace,
+                question=question,
+                file_context="",
+                session_context=session_context,
+            )
+
+        return dspy.Tool(
+            func=run,
+            name=tool_name,
+            desc=getattr(source_tool, "desc", "") or "",
+            args=getattr(source_tool, "args", {}) or {},
+        )
 
     @staticmethod
     def _default_artifact_root(filepath: Path) -> Path:

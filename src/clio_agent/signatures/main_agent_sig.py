@@ -90,8 +90,9 @@ class ChatAgentSignature(dspy.Signature):
     because they are outside scientific data management. Mention available experts
     only when the user asks about CLIO's capabilities or when the data expertise is
     relevant: DataExpert for HDF5 analysis, AnalysisExpert for Parquet/statistical
-    profiling, VisualizationExpert for charts. Chat does not execute tools directly;
-    tool use is routed through the planner and the owning expert/tool boundary.
+    profiling, VisualizationExpert for charts. Chat can execute only explicitly
+    provided chat-utility tools; scientific data/file work must be routed through
+    the owning expert/tool boundary.
     For provider/configuration failures: surface the failure and suggest retrying,
     reconfiguring the provider/model, or exiting; do not tell the user the issue is
     fixed or redirect to generic support.
