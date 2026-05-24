@@ -103,6 +103,54 @@ class TestForwardDispatch:
         assert "HDF5 analysis result" in result.answer
         assert "gzip compression" in result.answer
 
+    def test_dispatch_ndp_catalog_child_expert(self, agent):
+        """NDP routes should execute the nested catalog expert, not DataExpert internals."""
+        self._set_planner(
+            agent,
+            {
+                "action": "expert",
+                "expert": "ndp_catalog",
+                "question": "Find EarthScope waveform datasets in NDP",
+            },
+        )
+        expert_result = dspy.Prediction(
+            analysis="NDP catalog results",
+            recommendations="stage a bounded resource",
+        )
+        agent.ndp_catalog_expert = MagicMock(return_value=expert_result)
+        agent.data_expert = MagicMock()
+
+        result = agent.forward(question="Find EarthScope waveform datasets", session_id="ndp")
+
+        assert result.selected_expert == "ndp_catalog"
+        assert "NDP catalog results" in result.answer
+        agent.ndp_catalog_expert.assert_called_once()
+        agent.data_expert.assert_not_called()
+
+    def test_dispatch_sac_format_child_expert(self, agent):
+        """SAC routes should execute the nested format expert."""
+        self._set_planner(
+            agent,
+            {
+                "action": "expert",
+                "expert": "sac_format",
+                "question": "Analyze staged SAC traces",
+            },
+        )
+        expert_result = dspy.Prediction(
+            analysis="SAC trace statistics",
+            recommendations="plot representative traces",
+        )
+        agent.sac_format_expert = MagicMock(return_value=expert_result)
+        agent.analysis_expert = MagicMock()
+
+        result = agent.forward(question="Analyze staged SAC traces", session_id="sac")
+
+        assert result.selected_expert == "sac_format"
+        assert "SAC trace statistics" in result.answer
+        agent.sac_format_expert.assert_called_once()
+        agent.analysis_expert.assert_not_called()
+
     def test_data_handoff_continues_to_analysis_and_visualization(self, agent, tmp_path):
         """Staged data should continue to downstream experts when the prompt asks."""
         staged = tmp_path / "waveforms.tar"

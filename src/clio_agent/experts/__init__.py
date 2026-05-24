@@ -39,6 +39,8 @@ import dspy
 
 from clio_agent.experts.analysis_expert import AnalysisExpert
 from clio_agent.experts.data_expert import DataExpert
+from clio_agent.experts.ndp_expert import NDPExpert
+from clio_agent.experts.sac_format_expert import SACFormatExpert
 from clio_agent.experts.visualization_expert import VisualizationExpert
 
 # ============================================================================
@@ -59,7 +61,9 @@ def get_all_experts() -> Dict[str, dspy.Module]:
     """
     return {
         "data": DataExpert(),
+        "ndp_catalog": NDPExpert(),
         "analysis": AnalysisExpert(),
+        "sac_format": SACFormatExpert(),
         "visualization": VisualizationExpert(),
     }
 
@@ -78,14 +82,18 @@ def get_expert_capabilities() -> Dict[str, Dict[str, Any]]:
     """
     return {
         "data": DataExpert.get_capabilities(),
+        "ndp_catalog": NDPExpert.get_capabilities(),
         "analysis": AnalysisExpert.get_capabilities(),
+        "sac_format": SACFormatExpert.get_capabilities(),
         "visualization": VisualizationExpert.get_capabilities(),
     }
 
 
 __all__ = [
     "DataExpert",
+    "NDPExpert",
     "AnalysisExpert",
+    "SACFormatExpert",
     "VisualizationExpert",
     "get_all_experts",
     "get_expert_capabilities",

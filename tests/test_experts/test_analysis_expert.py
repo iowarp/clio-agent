@@ -12,6 +12,7 @@ import dspy
 import pytest
 
 from clio_agent.experts.analysis_expert import AnalysisExpert, _detect_parallel_items
+from clio_agent.experts.sac_format_expert import SACFormatExpert
 from clio_agent.tools.execution import SyncMCPToolExecutor
 
 
@@ -45,17 +46,17 @@ class TestAnalysisExpert:
         expert = AnalysisExpert()
         try:
             for tool in expert._tools:
-                assert tool.name.startswith("parquet_") or tool.name.startswith("sac_"), (
+                assert tool.name.startswith("parquet_"), (
                     f"Tool {tool.name} does not have an analysis-owned prefix"
                 )
         finally:
             expert.close()
 
     def test_analysis_expert_tool_count(self):
-        """Test expert has Parquet and SAC waveform gateway tools."""
+        """Test top-level analysis owns Parquet gateway tools."""
         expert = AnalysisExpert()
         try:
-            assert len(expert._tools) == 4
+            assert len(expert._tools) == 3
         finally:
             expert.close()
 
@@ -67,10 +68,24 @@ class TestAnalysisExpert:
             assert "parquet_analyze_schema" in tool_names
             assert "parquet_query_data" in tool_names
             assert "parquet_compute_statistics" in tool_names
-            assert "sac_compute_trace_statistics" in tool_names
+            assert "sac_compute_trace_statistics" not in tool_names
             assert "ndp_list_organizations" not in tool_names
             assert "ndp_search_datasets" not in tool_names
             assert "ndp_get_dataset_details" not in tool_names
+
+            child_tool_names = [t.name for t in expert.sac_format_expert._tools]
+            assert "sac_compute_trace_statistics" in child_tool_names
+        finally:
+            expert.close()
+
+    def test_sac_format_expert_owns_sac_tools(self):
+        """SAC-specific tools should live on the nested format expert."""
+        expert = SACFormatExpert()
+        try:
+            tool_names = [t.name for t in expert._tools]
+            assert "sac_inspect_archive" in tool_names
+            assert "sac_compute_trace_statistics" in tool_names
+            assert "sac_plot_traces" in tool_names
         finally:
             expert.close()
 
