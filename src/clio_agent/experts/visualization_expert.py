@@ -580,7 +580,7 @@ class VisualizationExpert(dspy.Module):
         start = time.time()
         params = {"filepath": filepath, "max_traces": 3}
         notify_global_tool_observer("sac_plot_traces", params, "started", None)
-        raw_result = plot_traces(**params)
+        raw_result = plot_traces(filepath=filepath, max_traces=3)
         result = normalize_tool_result(raw_result, tool="sac_plot_traces")
         completion_error = None if tool_result_ok(result) else repr(result["error"])
         notify_global_tool_observer("sac_plot_traces", params, "completed", completion_error)

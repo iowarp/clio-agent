@@ -733,6 +733,7 @@ def test_put_lm_provider_applies_lm_studio_context_length(tmp_path: Path, monkey
     """LM Studio context length is a model-load setting, not a chat completion param."""
 
     captured: dict[str, Any] = {}
+    posts: list[dict[str, Any]] = []
 
     class _GetResp:
         status_code = 200
@@ -767,9 +768,13 @@ def test_put_lm_provider_applies_lm_studio_context_length(tmp_path: Path, monkey
             return type("Pred", (), {"answer": "ok", "selected_expert": ""})()
 
     def _post(url: str, *args: Any, **kwargs: Any) -> _PostResp:
-        captured["url"] = url
-        captured["json"] = kwargs.get("json")
-        captured["timeout"] = kwargs.get("timeout")
+        call = {
+            "url": url,
+            "json": kwargs.get("json"),
+            "timeout": kwargs.get("timeout"),
+        }
+        captured.update(call)
+        posts.append(call)
         return _PostResp()
 
     monkeypatch.setattr("requests.get", lambda *args, **kwargs: _GetResp())
@@ -790,24 +795,25 @@ def test_put_lm_provider_applies_lm_studio_context_length(tmp_path: Path, monkey
                 "context_length": 32768,
             },
         )
-
-    assert resp.status_code == 200, resp.text
-    assert captured == {
-        "url": "http://127.0.0.1:1234/api/v1/models/load",
-        "json": {
-            "model": "qwopus3.5-9b-v3",
-            "context_length": 32768,
-            "echo_load_config": True,
-        },
-        "timeout": 180,
-    }
-    assert app.state.lm_config["context_length"] == 32768
-    owned = app.state.lm_studio_owned_instance
-    assert owned["root"] == "http://127.0.0.1:1234"
-    assert owned["instance_id"] == "qwopus3.5-9b-v3"
-    assert owned["model"] == "qwopus3.5-9b-v3"
-    assert owned["context_length"] == 32768
-    assert owned["created_at"]
+        assert resp.status_code == 200, resp.text
+        body = _wait_lm_provider_ready(c)
+        assert body["state"] == "ready"
+        assert posts[0] == {
+            "url": "http://127.0.0.1:1234/api/v1/models/load",
+            "json": {
+                "model": "qwopus3.5-9b-v3",
+                "context_length": 32768,
+                "echo_load_config": True,
+            },
+            "timeout": 180,
+        }
+        assert app.state.lm_config["context_length"] == 32768
+        owned = app.state.lm_studio_owned_instance
+        assert owned["root"] == "http://127.0.0.1:1234"
+        assert owned["instance_id"] == "qwopus3.5-9b-v3"
+        assert owned["model"] == "qwopus3.5-9b-v3"
+        assert owned["context_length"] == 32768
+        assert owned["created_at"]
 
 
 def test_put_lm_provider_reuses_loaded_lm_studio_model(tmp_path: Path, monkeypatch) -> None:

@@ -231,8 +231,13 @@ def _select_resource(
                 return resource
         return None
     try:
-        index = int(resource_index) if resource_index not in (None, "") else 0
-    except (TypeError, ValueError):
+        if isinstance(resource_index, int) and not isinstance(resource_index, bool):
+            index = resource_index
+        elif isinstance(resource_index, str) and resource_index.strip():
+            index = int(resource_index)
+        else:
+            index = 0
+    except ValueError:
         index = 0
     if index < 0 or index >= len(resources):
         return None
