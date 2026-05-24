@@ -327,20 +327,24 @@ I need live catalog evidence for external collaborators. Find NOAA climate-relat
 
 What you should see:
 
-CLIO should route through the core `analysis` path and call gateway-visible
-`ndp_` tools backed by clio-kit. A good answer should mention the National Data
-Platform, NOAA-related catalog evidence, dataset titles such as NOAA flash-flood
-or hurricane-flooding entries when present, and useful downstream formats such
-as CSV, GEOJSON, ESRI REST, HTML, or KML.
+CLIO should route through the core `data` path and call gateway-visible `ndp_`
+tools backed by clio-kit. NDP discovery is a data-stage responsibility: the
+data expert or a nested catalog specialist should find candidate resources,
+then analysis should consume staged data later. A good answer should mention the
+National Data Platform, NOAA-related catalog evidence, dataset titles, and
+useful downstream formats such as CSV, GEOJSON, ESRI REST, HTML, or KML.
+For prompts that ask CLIO to inspect or analyze an NDP resource, the data stage
+should attempt `ndp_get_dataset_details` and `ndp_stage_resource`; if the
+resource uses an unsupported transport such as OSDF/Pelican, that blocker should
+surface as a structured error rather than a made-up analysis result.
 
 Why this is interesting:
 
 This is the path collaborators normally care about: the user asks a natural
 catalog question, and CLIO reaches clio-kit/NDP through its own planner/tool
-surface. The benchmark also records a current local-model caveat: Qwopus may
-emit a malformed follow-up planner action after successful NDP tool calls. CLIO
-answers from the accumulated observations and marks that as a partial
-post-observation routing error instead of hiding it.
+surface without sending catalog discovery to the analysis expert. Older
+benchmark runs recorded NDP under analysis; that is now treated as an ownership
+bug, not the desired architecture.
 
 ### Direct External MCP: CLIO Kit NDP Discovery
 

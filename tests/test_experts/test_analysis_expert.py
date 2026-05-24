@@ -45,31 +45,31 @@ class TestAnalysisExpert:
         expert = AnalysisExpert()
         try:
             for tool in expert._tools:
-                assert tool.name.startswith(("parquet_", "ndp_")), (
+                assert tool.name.startswith("parquet_"), (
                     f"Tool {tool.name} does not have an analysis-owned prefix"
                 )
         finally:
             expert.close()
 
     def test_analysis_expert_tool_count(self):
-        """Test expert has Parquet and NDP gateway tools."""
+        """Test expert has Parquet gateway tools."""
         expert = AnalysisExpert()
         try:
-            assert len(expert._tools) == 6
+            assert len(expert._tools) == 3
         finally:
             expert.close()
 
     def test_analysis_expert_tool_names(self):
-        """Test expert has the expected Parquet and NDP tools."""
+        """Test expert has the expected Parquet tools."""
         expert = AnalysisExpert()
         try:
             tool_names = [t.name for t in expert._tools]
             assert "parquet_analyze_schema" in tool_names
             assert "parquet_query_data" in tool_names
             assert "parquet_compute_statistics" in tool_names
-            assert "ndp_list_organizations" in tool_names
-            assert "ndp_search_datasets" in tool_names
-            assert "ndp_get_dataset_details" in tool_names
+            assert "ndp_list_organizations" not in tool_names
+            assert "ndp_search_datasets" not in tool_names
+            assert "ndp_get_dataset_details" not in tool_names
         finally:
             expert.close()
 
@@ -94,8 +94,8 @@ class TestAnalysisExpert:
         assert "distribution" in keywords
         assert "data quality" in keywords
         assert "columnar" in keywords
-        assert "ndp" in keywords
-        assert "dataset discovery" in keywords
+        assert "ndp" not in keywords
+        assert "dataset discovery" not in keywords
 
     def test_analysis_expert_capabilities_description(self):
         """Test expert capabilities have meaningful description."""
@@ -353,72 +353,6 @@ class TestAnalysisExpert:
         assert result.tool_provenance[-1].ok is False
         error = result.tool_provenance[-1].result["error"]
         assert error["type"] == "tool_contract"
-        expert.close()
-
-    def test_analysis_expert_uses_ndp_tools_for_catalog_discovery(self):
-        """Natural NDP catalog requests should use clio-kit-backed gateway tools."""
-
-        class FakeExecutor:
-            closed = False
-
-            def to_dspy_tools(self):
-                def fake_tool(**kwargs):
-                    return "{}"
-
-                return [
-                    dspy.Tool(
-                        func=fake_tool,
-                        name="ndp_list_organizations",
-                        desc="List NDP organizations.",
-                        args={},
-                    ),
-                    dspy.Tool(
-                        func=fake_tool,
-                        name="ndp_search_datasets",
-                        desc="Search NDP datasets.",
-                        args={},
-                    ),
-                ]
-
-            def call_tool(self, name, args):
-                if name == "ndp_list_organizations":
-                    assert args == {"name_filter": "noaa", "server": "global"}
-                    return (
-                        '{"organizations":["noaa-global-systems-laboratory"],'
-                        '"count":1,"server":"global"}'
-                    )
-                assert name == "ndp_search_datasets"
-                assert args == {
-                    "server": "global",
-                    "limit": 5,
-                    "search_terms": ["climate"],
-                }
-                return (
-                    '{"datasets":[{"id":"ds1","name":"climate-run",'
-                    '"title":"Climate Run","owner_org":"noaa-global-systems-laboratory",'
-                    '"resources":[{"format":"CSV"}]}],"count":1,"server":"global"}'
-                )
-
-            def close(self):
-                self.closed = True
-
-        expert = AnalysisExpert(tool_executor=FakeExecutor())
-
-        result = expert(
-            question=(
-                "Use the National Data Platform catalog to find NOAA climate datasets "
-                "that could be useful for this analysis."
-            )
-        )
-
-        assert result.synthesis_source == "deterministic"
-        assert "National Data Platform" in result.analysis
-        assert "noaa-global-systems-laboratory" in result.analysis
-        assert "Climate Run" in result.analysis
-        assert [row.tool for row in result.tool_provenance] == [
-            "ndp_list_organizations",
-            "ndp_search_datasets",
-        ]
         expert.close()
 
     def test_analysis_expert_uses_sync_tool_executor_boundary(self):

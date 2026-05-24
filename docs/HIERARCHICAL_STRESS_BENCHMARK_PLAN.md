@@ -71,6 +71,20 @@ Pass criteria:
 - Visualization receives analysis output and produces an artifact.
 - The transcript shows the handoff chain and tool evidence.
 
+Current implementation evidence:
+
+- NDP discovery is owned by `data`, not `analysis`.
+- Data-stage discovery now calls `ndp_get_dataset_details` before staging.
+- `ndp_stage_resource` can stage bounded HTTP(S) resources under CLIO file
+  policy. For OSDF/Pelican resources it checks advertised size before invoking
+  Pelican, uses the local `pelican` CLI when available, and surfaces concrete
+  `resource_too_large`, `pelican_unavailable`, or `pelican_stage_failed` errors.
+- The live Salton Sea seismic candidate currently exposes an `osdf://` resource.
+  It is advertised as about 1.4 GB, so CLIO reports `resource_too_large` with
+  the default staging cap and keeps analysis/plotting blocked until a smaller
+  concrete object is selected or the dataset is intentionally staged manually.
+  This is correct failure surfacing, not a completed plot benchmark.
+
 ### 2. Mixed Scientific Run Audit
 
 Prompt shape:

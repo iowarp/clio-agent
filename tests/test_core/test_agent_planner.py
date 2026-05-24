@@ -382,9 +382,11 @@ class TestBuildCapabilitiesContext:
         visualization_block = scoped.split("- visualization:", 1)[1]
 
         assert "hdf5_analyze_file(" in data_block
+        assert "ndp_search_datasets(" in data_block
         assert "parquet_analyze_schema(" not in data_block
         assert "parquet_analyze_schema(" in analysis_block
         assert "hdf5_analyze_file(" not in analysis_block
+        assert "ndp_search_datasets(" not in analysis_block
         assert "plot_summary(" in visualization_block
         assert "shell_bash(" in utility_block
         assert "fs_propose_edit(" in utility_block
@@ -564,6 +566,36 @@ class TestRunAgentLoop:
         assert answer == "all done"
         assert expert_result is None
         agent._execute_tool_action.assert_called_once()
+
+    def test_ndp_tool_action_is_promoted_to_data_expert(self, agent):
+        agent._plan_next_action = MagicMock(
+            return_value={
+                "action": "tool",
+                "tool": "ndp_search_datasets",
+                "args": {"search_terms": ["seismic"]},
+                "reason": "search catalog",
+            }
+        )
+        expert_result = object()
+        agent._dispatch_expert_action = MagicMock(
+            return_value=("data", "NDP results\n\nstage data", expert_result, None)
+        )
+        agent._execute_tool_action = MagicMock(return_value={"value": "should not run"})
+
+        selected, answer, result, error_info, route = agent._run_agent_loop(
+            question="Find seismic datasets in NDP.",
+            session_context="",
+            file_context="",
+            trace=_trace(),
+        )
+
+        assert selected == "data"
+        assert answer == "NDP results\n\nstage data"
+        assert result is expert_result
+        assert error_info is None
+        assert route.target == "data"
+        agent._dispatch_expert_action.assert_called_once()
+        agent._execute_tool_action.assert_not_called()
 
     def test_shell_tool_is_rejected_for_scientific_file_inspection(self, agent, tmp_path):
         csv_path = tmp_path / "events.csv"

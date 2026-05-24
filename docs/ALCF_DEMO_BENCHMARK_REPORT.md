@@ -1,7 +1,7 @@
 # CLIO ALCF Demo Benchmark Report
 
-Generated: 2026-05-23 19:54:42 Central Daylight Time
-Evidence JSONL: `D:\Libraries\Documents\projects\clio-agent\tmp\clio-demo-benchmark-alcf-gptoss120b-v3.jsonl`
+Generated: 2026-05-23 21:30:35 Central Daylight Time
+Evidence JSONL: `D:\Libraries\Documents\projects\clio-agent\tmp\clio-demo-benchmark-hierarchical-ndp-data-v3.jsonl`
 
 Result: 14/14 cases passed.
 
@@ -9,20 +9,20 @@ Result: 14/14 cases passed.
 
 | Case | Category | Mode | Source | Pass | Agent | Tools | Children | Elapsed |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| workflow_hdf5_overview | tooling | auto | dspy | yes | data | hdf5_analyze_file, hdf5_list_datasets | 0 | 14.6s |
-| workflow_parquet_profile | analysis | auto | dspy | yes | analysis | parquet_analyze_schema, parquet_compute_statistics, parquet_compute_statistics, parquet_compute_statistics, parquet_compute_statistics | 0 | 16.6s |
-| workflow_memory_followup | memory | auto | dspy | yes | analysis | parquet_analyze_schema, parquet_compute_statistics, parquet_compute_statistics, parquet_compute_statistics, parquet_compute_statistics, parquet_compute_statistics | 0 | 22.7s |
-| workflow_csv_event_schema | analysis | auto | dspy | yes | analysis | csv_read_table | 0 | 9.1s |
-| workflow_visual_dashboard | visualization | auto | dspy | yes | visualization | plot_summary | 0 | 10.1s |
-| hdf5_dataset_focus | tooling | auto | dspy | yes | data | hdf5_analyze_dataset | 0 | 4.0s |
+| workflow_hdf5_overview | tooling | auto | dspy | yes | data | hdf5_analyze_file, hdf5_list_datasets | 0 | 17.6s |
+| workflow_parquet_profile | analysis | auto | dspy | yes | analysis | parquet_analyze_schema, parquet_compute_statistics, parquet_compute_statistics, parquet_compute_statistics, parquet_compute_statistics | 0 | 20.1s |
+| workflow_memory_followup | memory | auto | dspy | yes | analysis | parquet_analyze_schema, parquet_compute_statistics, parquet_compute_statistics, parquet_compute_statistics, parquet_compute_statistics, parquet_compute_statistics | 0 | 22.2s |
+| workflow_csv_event_schema | analysis | auto | dspy | yes | analysis | csv_read_table | 0 | 10.1s |
+| workflow_visual_dashboard | visualization | auto | dspy | yes | visualization | plot_summary | 0 | 8.1s |
+| hdf5_dataset_focus | tooling | auto | dspy | yes | data | hdf5_analyze_dataset | 0 | 7.1s |
 | cross_file_triage_nanoagents | multi-agent | auto | guard | yes | analysis | hdf5_analyze_file, hdf5_list_datasets, adios_inspect_file, parquet_analyze_schema, parquet_compute_statistics, csv_read_table | 4 | 0.5s |
 | reasoning_cross_file_triage_nanoagents | planner-hardening | reasoning_only | dspy | yes | analysis | hdf5_analyze_file, hdf5_list_datasets, adios_inspect_file, parquet_analyze_schema, parquet_compute_statistics, csv_read_table | 4 | 2.5s |
 | adios_bp5_container | tooling | auto | guard | yes | data | adios_inspect_file | 0 | 0.5s |
 | reasoning_adios_bp5_container | planner-hardening | reasoning_only | dspy | yes | data | adios_inspect_file | 0 | 6.5s |
 | dirty_parquet_quality | analysis | auto | dspy | yes | analysis | parquet_analyze_schema, parquet_compute_statistics, parquet_compute_statistics, parquet_compute_statistics, parquet_compute_statistics | 0 | 2.5s |
-| ndp_catalog_discovery | external-catalog | auto | dspy | yes | analysis | ndp_search_datasets, ndp_search_datasets, ndp_search_datasets, ndp_search_datasets, ndp_search_datasets, ndp_search_datasets | 0 | 39.8s |
-| visual_scatter_artifact | visualization | auto | dspy | yes | visualization | plot_scatter | 0 | 5.5s |
-| missing_hdf5_error | hardening | auto | dspy | yes | data | hdf5_list_datasets | 0 | 5.0s |
+| ndp_catalog_discovery | external-catalog | auto | dspy | yes | data | ndp_list_organizations, ndp_search_datasets | 0 | 8.5s |
+| visual_scatter_artifact | visualization | auto | dspy | yes | visualization | plot_scatter | 0 | 6.1s |
+| missing_hdf5_error | hardening | auto | dspy | yes | data | hdf5_list_datasets | 0 | 4.5s |
 
 ## Best 10 Demo Prompts
 
@@ -120,7 +120,7 @@ Selected agent: `analysis`
 Tools: parquet_analyze_schema, parquet_compute_statistics, parquet_compute_statistics, parquet_compute_statistics, parquet_compute_statistics, parquet_compute_statistics
 Child sessions: none
 Artifacts: none
-Elapsed: 22.7s
+Elapsed: 22.2s
 
 Prompt:
 
@@ -135,51 +135,24 @@ Why this is interesting: Demonstrates session memory and current-file resolution
 Observed excerpt:
 
 ```text
-**Facility Measurements – Quick Anomaly‑Triaging View**
+**Parquet file:** `D:\Libraries\Documents\projects\clio-agent\tmp\clio-benchmark-data\facility_measurements.parquet`
 
-| Aspect | Details |
-|--------|---------|
-| **File** | `D:\Libraries\Documents\projects\clio-agent\tmp\clio-benchmark-data\facility_measurements.parquet` |
-| **Rows / Row‑Groups** | 3 000 rows, 8 row groups |
+| Property | Value |
+|----------|-------|
+| **Rows** | 3 000 |
+| **Row groups** | 8 |
 | **File size** | 154 818 bytes |
 | **Created by** | parquet‑cpp‑arrow v22.0.0 |
-| **Key‑value metadata** | `scenario = clio-stress-benchmark`  <br> `source = deterministic` |
-| **Schema** | <ul><li>`sample_id` – **int64** (nullable)</li><li>`run_id` – **string** (nullable)</li><li>`site` – **string** (nullable)</li><li>`temperature_k` – **double** (nullable)</li><li>`pressure_pa` – **double** (nullable)</li><li>`humidity_pct` – **double** (nullable)</li><li>`vibration_mm_s` – **double** (nullable)</li><li>`anomaly_score` – **double** (nullable)</li></ul> |
+| **Key‑value metadata** | `scenario = clio-stress-benchmark`<br>`source = deterministic` |
+| **Columns (10 total, 4 shown below)** | `sample_id (int64, nullable)`<br>`run_id (string, nullable)`<br>`site (string, nullable)`<br>`temperature_k (double, nullable)`<br>`pressure_pa (double, nullable)`<br>`humidity_pct (double, nullable)`<br>`vibration_mm_s (double, nullable)`<br>`anomaly_score (double, nullable)`<br>… (2 more columns not listed) |
 
-### Column‑wise Statistics (all 3 000 values non‑null)
+### Column‑level statistics (useful for anomaly triage)
 
-| Column | M
+| Column | Min | Max | Mean | Std‑dev | Median | Nulls | Unique values |
+|--------|-----|-----|------|-------
 ```
 
-### 4. Follow-up visualization artifact
-
-Case: `workflow_visual_dashboard`
-Category: visualization
-Routing mode: `auto`
-Status: pass
-Selected agent: `visualization`
-Tools: plot_summary
-Child sessions: none
-Artifacts: D:\Libraries\Documents\projects\clio-agent\tmp\clio-benchmark-data\facility_measurements_dashboard.png, D:\\Libraries\\Documents\\projects\\clio-agent\\tmp\\clio-benchmark-data\\facility_measurements_dashboard.png
-Elapsed: 10.1s
-
-Prompt:
-
-```text
-Create a compact PNG dashboard from the Parquet file we just profiled. Tell me where it was saved and what the chart is summarizing.
-```
-
-What to see: Visualization expert resolves prior Parquet context and creates a PNG artifact.
-
-Why this is interesting: Shows multi-turn handoff from analysis to visualization with a real saved artifact.
-
-Observed excerpt:
-
-```text
-The dashboard was saved to D:\\Libraries\\Documents\\projects\\clio-agent\\tmp\\clio-benchmark-data\\facility_measurements_dashboard.png and provides a compact 2×2 summary of the facility_measurements data, showing histograms of the sensor columns (temperature, pressure, humidity, vibration, anomaly_score) and a scatter plot to aid quick anomaly triage.
-```
-
-### 5. Targeted scatter plot
+### 4. Targeted scatter plot
 
 Case: `visual_scatter_artifact`
 Category: visualization
@@ -189,7 +162,7 @@ Selected agent: `visualization`
 Tools: plot_scatter
 Child sessions: none
 Artifacts: D:\Libraries\Documents\projects\clio-agent\tmp\clio-benchmark-data\facility_measurements_scatter.png, D:\\Libraries\\Documents\\projects\\clio-agent\\tmp\\clio-benchmark-data\\facility_measurements_scatter.png
-Elapsed: 5.5s
+Elapsed: 6.1s
 
 Prompt:
 
@@ -204,10 +177,10 @@ Why this is interesting: Checks whether a specific visualization intent maps to 
 Observed excerpt:
 
 ```text
-The scatter plot saved at D:\\Libraries\\Documents\\projects\\clio-agent\\tmp\\clio-benchmark-data\\facility_measurements_scatter.png visualizes vibration_mm_s versus anomaly_score, showing whether higher vibration amplitudes are associated with higher anomaly scores.
+The scatter plot (saved at D:\\Libraries\\Documents\\projects\\clio-agent\\tmp\\clio-benchmark-data\\facility_measurements_scatter.png) visualizes the relationship between vibration_mm_s (x‑axis) and anomaly_score (y‑axis), showing whether higher vibration values tend to correspond to higher anomaly scores.
 ```
 
-### 6. Parquet facility profile
+### 5. Parquet facility profile
 
 Case: `workflow_parquet_profile`
 Category: analysis
@@ -217,7 +190,7 @@ Selected agent: `analysis`
 Tools: parquet_analyze_schema, parquet_compute_statistics, parquet_compute_statistics, parquet_compute_statistics, parquet_compute_statistics
 Child sessions: none
 Artifacts: none
-Elapsed: 16.6s
+Elapsed: 20.1s
 
 Prompt:
 
@@ -232,10 +205,10 @@ Why this is interesting: Checks statistical tool calls and model feedback from m
 Observed excerpt:
 
 ```text
-The Parquet file has 10 columns (including sample_id int64, run_id string, site string, temperature_k double, pressure_pa double, humidity_pct double, vibration_mm_s double, anomaly_score double), 3000 rows, 8 row groups; temperature_k ranges 267‑321 K (mean ≈ 294 K), pressure_pa 98 k‑104 k Pa (mean ≈ 101 k Pa), humidity_pct 4‑96 % (mean ≈ 45 %), and anomaly_score 0.056‑6.35 (mean ≈ 1.6), all with zero nulls and appear physically plausible.
+The file has 10 columns (including temperature_k, pressure_pa, humidity_pct, anomaly_score), 3000 rows, 8 row groups, and the columns show plausible ranges: temperature 267–321 K, pressure 98 kPa–104 kPa, humidity 4–96 %, anomaly_score 0.06–6.35 (mean 1.6), indicating sane data.
 ```
 
-### 7. Dirty Parquet quality review
+### 6. Dirty Parquet quality review
 
 Case: `dirty_parquet_quality`
 Category: analysis
@@ -277,40 +250,7 @@ pressure_pa: min=98435.39430602924, max=103998.62554169081, mean=101230.95767279
 Recommendatio
 ```
 
-### 8. NDP catalog discovery
-
-Case: `ndp_catalog_discovery`
-Category: external-catalog
-Routing mode: `auto`
-Status: pass
-Selected agent: `analysis`
-Tools: ndp_search_datasets, ndp_search_datasets, ndp_search_datasets, ndp_search_datasets, ndp_search_datasets, ndp_search_datasets
-Child sessions: none
-Artifacts: none
-Elapsed: 39.8s
-
-Prompt:
-
-```text
-Find a few NOAA or climate-related datasets in the National Data Platform catalog that might complement this facility data. Summarize what you found and what I should verify before download.
-```
-
-What to see: Analysis expert calls NDP tools through the CLIO gateway.
-
-Why this is interesting: Exercises external catalog tools and tool-result feedback beyond local files.
-
-Observed excerpt:
-
-```text
-All six attempts to search the National Data Platform (NDP) for NOAA or climate‑related datasets returned empty results – the `ndp_search_datasets` tool reported a `count` of 0 and no items were listed. This means that, with the queries used, the NDP did not surface any matching datasets.
-
-**What to verify before trying again**
-1. **Search terms** – Make sure you are using keywords that appear in the dataset titles, descriptions, or tags (e.g., "NOAA", "climate", "temperature", "precipitation", "GFS", "NCEI").
-2. **Filters** – Check whether any filters (such as `category`, `spatial_coverage`, `temporal_coverage`, or `license`) were unintentionally set to restrictive values that exclude results.
-3. **Scope** – Confirm you are querying the correct NDP server (global vs. regional) and that the datasets you need are actually cataloged in the NDP (some NOAA data may be hosted on separate por
-```
-
-### 9. HDF5 fusion file overview
+### 7. HDF5 fusion file overview
 
 Case: `workflow_hdf5_overview`
 Category: tooling
@@ -320,7 +260,7 @@ Selected agent: `data`
 Tools: hdf5_analyze_file, hdf5_list_datasets
 Child sessions: none
 Artifacts: none
-Elapsed: 14.6s
+Elapsed: 17.6s
 
 Prompt:
 
@@ -335,7 +275,77 @@ Why this is interesting: Proves real HDF5 path handling, tool argument generatio
 Observed excerpt:
 
 ```text
-The HDF5 file contains seven datasets—axes/diagnostic_channel (12 int32), axes/radius_norm (64 float64), axes/time_hours (96 float64), diagnostics/heat_flux (96×12 float32, units MW/m²), plasma/density (96×64 float64, units m⁻³), plasma/electron_temperature (96×64 float32, units eV), quality/flags (96×12 int8)—with five datasets compressed (overall compression ratio 1.12) and two uncompressed.
+The HDF5 file holds seven datasets—axes/diagnostic_channel (12 int32), axes/radius_norm (64 float64), axes/time_hours (96 float64), diagnostics/heat_flux (96×12 float32, units MW/m²), plasma/density (96×64 float64, units m⁻³), plasma/electron_temperature (96×64 float32, units eV), and quality/flags (96×12 int8)—with five of them compressed, giving a total stored size of 72 331 bytes versus 80 816 bytes raw (overall compression ratio ≈1.12).
+```
+
+### 8. Follow-up visualization artifact
+
+Case: `workflow_visual_dashboard`
+Category: visualization
+Routing mode: `auto`
+Status: pass
+Selected agent: `visualization`
+Tools: plot_summary
+Child sessions: none
+Artifacts: D:\Libraries\Documents\projects\clio-agent\tmp\clio-benchmark-data\facility_measurements_dashboard.png
+Elapsed: 8.1s
+
+Prompt:
+
+```text
+Create a compact PNG dashboard from the Parquet file we just profiled. Tell me where it was saved and what the chart is summarizing.
+```
+
+What to see: Visualization expert resolves prior Parquet context and creates a PNG artifact.
+
+Why this is interesting: Shows multi-turn handoff from analysis to visualization with a real saved artifact.
+
+Observed excerpt:
+
+```text
+The dashboard was saved to D:\Libraries\Documents\projects\clio-agent\tmp\clio-benchmark-data\facility_measurements_dashboard.png and provides a compact 2×2 summary of the facility_measurements Parquet file, visualizing the key columns (temperature, pressure, humidity, and anomaly_score) with histograms and overview plots of their distributions and relationships.
+```
+
+### 9. NDP catalog discovery
+
+Case: `ndp_catalog_discovery`
+Category: external-catalog
+Routing mode: `auto`
+Status: pass
+Selected agent: `data`
+Tools: ndp_list_organizations, ndp_search_datasets
+Child sessions: none
+Artifacts: none
+Elapsed: 8.5s
+
+Prompt:
+
+```text
+Find a few NOAA or climate-related datasets in the National Data Platform catalog that might complement this facility data. Summarize what you found and what I should verify before download.
+```
+
+What to see: Data expert delegates discovery to NDP tools through the CLIO gateway.
+
+Why this is interesting: Exercises external catalog discovery as a data-stage capability, before analysis consumes staged data.
+
+Observed excerpt:
+
+```text
+Queried the National Data Platform catalog through clio-kit MCP.
+
+Organizations matched: 3
+- noaa-global-systems-laboratory
+- noaa-national-centers-for-environmental-information-ncei
+- noaa-demo
+
+Datasets matched: 4
+- Full Climate Connectivity Network (california-landscape-metrics; HTML, SHP, WFS, WMS; resources: [WMS] Full Climate Connectivity Network)
+- Environment Canada Climate Data (ndp-admin-ingest; GEOJSON, CSV; resources: Environment Canada Climate Data)
+- Climate Refugia - Baseline (Historical) 1981 - 2010 (california-landscape-metrics; GEOTIFF, HTML, WCS, WMS; resources: [WMS] Climate Refugia - Baseline (Historical) 1981 - 2010)
+- Change in Average Climatic Water Deficit (california-landscape-metrics; GEOTIFF, HTML, WCS, WMS; resources: [WMS] Change in Average Climatic Water Deficit)
+
+Recommendations:
+Treat these as discovery results owned by the data stage. Use ndp_get_datase
 ```
 
 ### 10. No-guard ADIOS/BP5 route
@@ -363,5 +373,5 @@ Why this is interesting: Checks that BP5 routing is not only a hardcoded suffix 
 Observed excerpt:
 
 ```text
-The BP5 container is a directory with five members (data.0, md.0, md.idx, mmd.0, profiling.json), includes profiling metadata, and you need to install the ADIOS2 Python bindings to access variable‑level metadata.
+The BP5 container is a directory containing five files (data.0, md.0, md.idx, mmd.0, profiling.json) totaling about 84 MB, it includes profiling metadata (profiling.json), and you need to install the ADIOS2 Python bindings/runtime to read variable‑level metadata.
 ```

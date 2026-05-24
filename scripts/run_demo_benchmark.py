@@ -102,7 +102,7 @@ class DemoResult:
         for prefix in self.case.expected_tool_prefixes:
             if not any(name.startswith(prefix) for name in self.tool_names):
                 return False
-        lowered = self.text.lower()
+        lowered = "\n".join([self.text, *self.artifacts]).lower()
         for term in self.case.expected_terms:
             if term.lower() not in lowered:
                 return False
@@ -465,7 +465,7 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             title="NDP catalog discovery",
             category="external-catalog",
             session_group="ndp",
-            expected_agent="analysis",
+            expected_agent="data",
             expected_tool_prefixes=("ndp_",),
             expected_terms=("dataset",),
             timeout_s=620.0,
@@ -475,8 +475,11 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
                 "catalog that might complement this facility data. Summarize what you found "
                 "and what I should verify before download."
             ),
-            expected="Analysis expert calls NDP tools through the CLIO gateway.",
-            why="Exercises external catalog tools and tool-result feedback beyond local files.",
+            expected="Data expert delegates discovery to NDP tools through the CLIO gateway.",
+            why=(
+                "Exercises external catalog discovery as a data-stage capability, before "
+                "analysis consumes staged data."
+            ),
         ),
         DemoCase(
             case_id="visual_scatter_artifact",

@@ -4,13 +4,34 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
+import subprocess
 from pathlib import Path
 from typing import Any
 
+import requests
 from fastmcp import Client, FastMCP
 from fastmcp.client.transports import StdioTransport
 
+from clio_agent.tools.file_policy import FilePolicyError, validate_write_path
+
 ndp_server = FastMCP("ndp")
+
+_GLOBAL_CKAN_API = "https://nationaldataplatform.org/catalog/api/3/action"
+_MAX_STAGE_BYTES = 50 * 1024 * 1024
+_SIZE_UNITS = {
+    "b": 1,
+    "byte": 1,
+    "bytes": 1,
+    "kb": 1024,
+    "kib": 1024,
+    "mb": 1024 * 1024,
+    "mib": 1024 * 1024,
+    "gb": 1024 * 1024 * 1024,
+    "gib": 1024 * 1024 * 1024,
+    "tb": 1024 * 1024 * 1024 * 1024,
+    "tib": 1024 * 1024 * 1024 * 1024,
+}
 
 
 def _clio_kit_transport(server_name: str = "ndp") -> StdioTransport:
@@ -109,10 +130,21 @@ def _clean_limit(value: int | str | None) -> int | None:
     return max(1, min(parsed, 20))
 
 
-def _compact_resource_formats(resources: Any) -> tuple[list[str], int, list[str]]:
-    """Return compact resource format/name summaries for an NDP dataset row."""
+def _clean_max_bytes(value: int | str | None) -> int:
+    """Normalize optional byte limit for resource staging."""
+    if value is None or value == "":
+        return _MAX_STAGE_BYTES
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return _MAX_STAGE_BYTES
+    return max(1, parsed)
+
+
+def _compact_resource_formats(resources: Any) -> tuple[list[str], int, list[str], list[str]]:
+    """Return compact resource format/name/url summaries for an NDP dataset row."""
     if not isinstance(resources, list):
-        return [], 0, []
+        return [], 0, [], []
     formats = sorted(
         {
             str(resource.get("format")).upper()
@@ -125,18 +157,25 @@ def _compact_resource_formats(resources: Any) -> tuple[list[str], int, list[str]
         for resource in resources
         if isinstance(resource, dict) and (resource.get("name") or resource.get("url"))
     ]
-    return formats[:5], len(resources), names[:1]
+    urls = [
+        str(resource.get("url") or "").strip()
+        for resource in resources
+        if isinstance(resource, dict) and resource.get("url")
+    ]
+    return formats[:5], len(resources), names[:1], urls[:3]
 
 
 def _compact_dataset(row: Any) -> Any:
     """Keep catalog rows useful for LLM synthesis without flooding context."""
     if not isinstance(row, dict):
         return row
-    formats, resource_count, resource_names = _compact_resource_formats(row.get("resources"))
+    formats, resource_count, resource_names, resource_urls = _compact_resource_formats(
+        row.get("resources")
+    )
     notes = str(row.get("notes") or "").strip()
     if len(notes) > 120:
         notes = notes[:117] + "..."
-    return {
+    compacted = {
         "id": row.get("id"),
         "name": row.get("name"),
         "title": row.get("title"),
@@ -145,6 +184,266 @@ def _compact_dataset(row: Any) -> Any:
         "resource_count": resource_count,
         "resource_formats": formats,
         "resource_names": resource_names,
+    }
+    if resource_urls:
+        compacted["resource_urls"] = resource_urls
+    return compacted
+
+
+def _global_ckan_package_show(dataset_identifier: str) -> dict[str, Any]:
+    """Fetch one dataset directly from the public NDP CKAN API."""
+    response = requests.get(
+        f"{_GLOBAL_CKAN_API}/package_show",
+        params={"id": dataset_identifier},
+        timeout=20,
+    )
+    response.raise_for_status()
+    decoded = response.json()
+    if not decoded.get("success") or not isinstance(decoded.get("result"), dict):
+        raise ValueError(f"CKAN package_show returned unsuccessful response: {decoded!r}")
+    return decoded["result"]
+
+
+def _resource_matches(resource: dict[str, Any], resource_name: str | None) -> bool:
+    """Return whether a resource row matches an optional name/id/url selector."""
+    if not resource_name:
+        return True
+    needle = resource_name.strip().lower()
+    haystack = " ".join(
+        str(resource.get(key) or "")
+        for key in ("id", "name", "url", "description", "format")
+    ).lower()
+    return needle in haystack
+
+
+def _select_resource(
+    dataset: dict[str, Any],
+    *,
+    resource_name: str | None,
+    resource_index: int | str | None,
+) -> dict[str, Any] | None:
+    """Choose one resource from a CKAN dataset row."""
+    resources = dataset.get("resources")
+    if not isinstance(resources, list):
+        return None
+    if resource_name:
+        for resource in resources:
+            if isinstance(resource, dict) and _resource_matches(resource, resource_name):
+                return resource
+        return None
+    try:
+        index = int(resource_index) if resource_index not in (None, "") else 0
+    except (TypeError, ValueError):
+        index = 0
+    if index < 0 or index >= len(resources):
+        return None
+    resource = resources[index]
+    return resource if isinstance(resource, dict) else None
+
+
+def _safe_filename(value: str, *, default: str) -> str:
+    """Return a conservative filesystem name for staged catalog resources."""
+    cleaned = "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in value.strip())
+    cleaned = cleaned.strip("._-")
+    return cleaned[:120] or default
+
+
+def _parse_resource_size_bytes(value: Any) -> int | None:
+    """Parse common CKAN resource size strings such as ``1.4 GB``."""
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value if value >= 0 else None
+    if not isinstance(value, str) or not value.strip():
+        return None
+    parts = value.strip().replace(",", "").split()
+    if not parts:
+        return None
+    try:
+        number = float(parts[0])
+    except ValueError:
+        return None
+    unit = parts[1].lower() if len(parts) > 1 else "bytes"
+    multiplier = _SIZE_UNITS.get(unit)
+    if multiplier is None:
+        return None
+    return int(number * multiplier)
+
+
+def _stage_error(
+    *,
+    code: str,
+    message: str,
+    next_action: str,
+    details: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Return a structured staging failure."""
+    return _tool_error(code=code, message=message, next_action=next_action, details=details)
+
+
+def _stage_http_resource(
+    *,
+    url: str,
+    output_path: Path,
+    max_bytes: int,
+) -> dict[str, Any]:
+    """Download a small HTTP resource under CLIO file policy."""
+    try:
+        with requests.get(url, stream=True, timeout=(10, 60)) as response:
+            response.raise_for_status()
+            content_length = response.headers.get("content-length")
+            if content_length:
+                try:
+                    size = int(content_length)
+                except ValueError:
+                    size = 0
+                if size > max_bytes:
+                    return _stage_error(
+                        code="resource_too_large",
+                        message=(
+                            f"NDP resource is {size} bytes, which exceeds the "
+                            f"staging limit of {max_bytes} bytes."
+                        ),
+                        next_action=(
+                            "Increase max_bytes for an intentional large download, or "
+                            "stage the resource manually with a domain-specific tool."
+                        ),
+                        details={"url": url, "size_bytes": size, "max_bytes": max_bytes},
+                    )
+            total = 0
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            with output_path.open("wb") as handle:
+                for chunk in response.iter_content(chunk_size=1024 * 1024):
+                    if not chunk:
+                        continue
+                    total += len(chunk)
+                    if total > max_bytes:
+                        handle.close()
+                        output_path.unlink(missing_ok=True)
+                        return _stage_error(
+                            code="resource_too_large",
+                            message=(
+                                f"NDP resource exceeded staging limit of {max_bytes} "
+                                "bytes while downloading."
+                            ),
+                            next_action=(
+                                "Increase max_bytes for an intentional large download, "
+                                "or stage the resource manually with a streaming tool."
+                            ),
+                            details={"url": url, "bytes_read": total, "max_bytes": max_bytes},
+                        )
+                    handle.write(chunk)
+    except requests.RequestException as exc:
+        return _stage_error(
+            code="resource_download_failed",
+            message=f"Could not download NDP resource: {exc}",
+            next_action="Retry later or inspect the resource URL manually.",
+            details={"url": url},
+        )
+
+    return {
+        "staged": True,
+        "path": str(output_path),
+        "size_bytes": output_path.stat().st_size,
+        "url": url,
+    }
+
+
+def _stage_pelican_resource(
+    *,
+    url: str,
+    output_path: Path,
+    max_bytes: int,
+    resource_size_bytes: int | None,
+) -> dict[str, Any]:
+    """Stage an OSDF/Pelican resource with the local Pelican CLI when available."""
+    if resource_size_bytes is not None and resource_size_bytes > max_bytes:
+        return _stage_error(
+            code="resource_too_large",
+            message=(
+                f"NDP resource is advertised as {resource_size_bytes} bytes, which "
+                f"exceeds the staging limit of {max_bytes} bytes."
+            ),
+            next_action=(
+                "Increase max_bytes intentionally, select a smaller concrete object, "
+                "or stage the resource manually with Pelican."
+            ),
+            details={"url": url, "size_bytes": resource_size_bytes, "max_bytes": max_bytes},
+        )
+
+    pelican = shutil.which("pelican")
+    if pelican is None:
+        return _stage_error(
+            code="pelican_unavailable",
+            message=(
+                "The selected NDP resource uses OSDF/Pelican transport, but the "
+                "`pelican` CLI was not found on PATH."
+            ),
+            next_action=(
+                "Install the Pelican client, verify `pelican --version`, then retry "
+                "ndp_stage_resource."
+            ),
+            details={"url": url, "transport": "osdf"},
+        )
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    command = [pelican, "object", "get", url, str(output_path)]
+    try:
+        completed = subprocess.run(
+            command,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=900,
+        )
+    except subprocess.TimeoutExpired:
+        return _stage_error(
+            code="pelican_timeout",
+            message="Pelican staging timed out before the resource was downloaded.",
+            next_action="Retry with a smaller concrete object or stage the resource manually.",
+            details={"url": url, "timeout_s": 900},
+        )
+
+    if completed.returncode != 0:
+        return _stage_error(
+            code="pelican_stage_failed",
+            message="Pelican failed to stage the selected NDP resource.",
+            next_action=(
+                "Inspect Pelican stderr/stdout, select a concrete object if the URL is "
+                "a namespace, or stage manually."
+            ),
+            details={
+                "url": url,
+                "exit_code": completed.returncode,
+                "stdout": completed.stdout[-2000:],
+                "stderr": completed.stderr[-2000:],
+            },
+        )
+
+    if not output_path.exists():
+        return _stage_error(
+            code="pelican_output_missing",
+            message="Pelican exited successfully but the expected staged file was not found.",
+            next_action="Inspect the output directory and Pelican logs.",
+            details={"url": url, "output_path": str(output_path)},
+        )
+
+    size = output_path.stat().st_size if output_path.is_file() else 0
+    if size > max_bytes:
+        return _stage_error(
+            code="resource_too_large",
+            message=(
+                f"Staged file is {size} bytes, which exceeds the staging limit of "
+                f"{max_bytes} bytes."
+            ),
+            next_action="Delete the staged file or raise max_bytes for intentional large staging.",
+            details={"url": url, "path": str(output_path), "size_bytes": size},
+        )
+
+    return {
+        "staged": True,
+        "path": str(output_path),
+        "size_bytes": size,
+        "url": url,
+        "transport": "osdf",
     }
 
 
@@ -201,6 +500,66 @@ async def _call_clio_kit_ndp_tool(tool_name: str, args: dict[str, Any]) -> dict[
             details={"tool": tool_name},
         )
     return _compact_ndp_result(tool_name, decoded)
+
+
+async def _dataset_details(
+    dataset_identifier: str,
+    *,
+    identifier_type: str,
+    server: str,
+    compact: bool,
+) -> dict[str, Any]:
+    """Return dataset details, falling back to public CKAN when clio-kit is brittle."""
+    if server == "global" and identifier_type in {"id", "name"}:
+        try:
+            direct = _global_ckan_package_show(dataset_identifier)
+        except Exception:
+            pass
+        else:
+            if compact:
+                compacted = _compact_dataset(direct)
+                compacted["_meta"] = {
+                    "tool": "get_dataset_details",
+                    "status": "success",
+                    "source": "ckan_package_show",
+                }
+                return compacted
+            return direct
+
+    args = {
+        "dataset_identifier": dataset_identifier,
+        "identifier_type": identifier_type,
+        "server": server,
+    }
+    clio_kit_result = await _call_clio_kit_ndp_tool("get_dataset_details", args)
+    if not clio_kit_result.get("error") and any(
+        clio_kit_result.get(key) for key in ("id", "name", "title", "resources", "resource_urls")
+    ):
+        return clio_kit_result if compact else clio_kit_result
+
+    if server != "global" or identifier_type not in {"id", "name"}:
+        return clio_kit_result
+
+    try:
+        direct = _global_ckan_package_show(dataset_identifier)
+    except Exception as exc:
+        if clio_kit_result.get("error"):
+            return clio_kit_result
+        return _tool_error(
+            code="ndp_dataset_details_unavailable",
+            message=f"Could not retrieve NDP dataset details: {exc}",
+            next_action="Retry later or use a dataset identifier from NDP search results.",
+            details={"dataset_identifier": dataset_identifier, "identifier_type": identifier_type},
+        )
+    if compact:
+        compacted = _compact_dataset(direct)
+        compacted["_meta"] = {
+            "tool": "get_dataset_details",
+            "status": "success",
+            "source": "ckan_package_show",
+        }
+        return compacted
+    return direct
 
 
 @ndp_server.tool()
@@ -265,9 +624,115 @@ async def get_dataset_details(
     server: str = "global",
 ) -> dict[str, Any]:
     """Retrieve detailed metadata for a specific NDP dataset by ID or name."""
-    args = {
-        "dataset_identifier": dataset_identifier,
-        "identifier_type": identifier_type,
-        "server": server,
-    }
-    return await _call_clio_kit_ndp_tool("get_dataset_details", args)
+    return await _dataset_details(
+        dataset_identifier,
+        identifier_type=identifier_type,
+        server=server,
+        compact=True,
+    )
+
+
+@ndp_server.tool()
+async def stage_resource(
+    dataset_identifier: str,
+    identifier_type: str = "id",
+    resource_name: str | None = None,
+    resource_index: int | str | None = 0,
+    output_dir: str | None = None,
+    max_bytes: int | str | None = None,
+    server: str = "global",
+) -> dict[str, Any]:
+    """Stage a downloadable NDP resource under CLIO's file policy.
+
+    HTTP(S) resources are downloaded directly with a size cap. OSDF/Pelican
+    resources are reported as unsupported unless a future Pelican-backed staging
+    tool is added; CLIO must not pretend those bytes were staged.
+    """
+
+    dataset = await _dataset_details(
+        dataset_identifier,
+        identifier_type=identifier_type,
+        server=server,
+        compact=False,
+    )
+    if dataset.get("error"):
+        return dataset
+
+    resource = _select_resource(
+        dataset,
+        resource_name=resource_name,
+        resource_index=resource_index,
+    )
+    if resource is None:
+        return _stage_error(
+            code="resource_not_found",
+            message="No matching resource was found in the NDP dataset details.",
+            next_action="Use a resource name or index from ndp_get_dataset_details.",
+            details={
+                "dataset_identifier": dataset_identifier,
+                "resource_name": resource_name,
+                "resource_index": resource_index,
+            },
+        )
+
+    url = str(resource.get("url") or "").strip()
+    if not url:
+        return _stage_error(
+            code="resource_url_missing",
+            message="The selected NDP resource does not include a URL.",
+            next_action="Choose a different resource or inspect the dataset in the NDP catalog.",
+            details={"dataset_identifier": dataset_identifier, "resource": resource},
+        )
+
+    is_osdf = url.lower().startswith("osdf://")
+    if not is_osdf and not url.lower().startswith(("http://", "https://")):
+        return _stage_error(
+            code="unsupported_resource_transport",
+            message=f"Unsupported NDP resource URL scheme: {url}",
+            next_action="Use an HTTP(S) resource or add a staging tool for this transport.",
+            details={"dataset_identifier": dataset_identifier, "url": url},
+        )
+
+    try:
+        max_stage_bytes = _clean_max_bytes(max_bytes)
+        destination_dir = Path(output_dir or Path.cwd() / "tmp" / "clio-ndp-staging")
+        if output_dir is None:
+            destination_dir.mkdir(parents=True, exist_ok=True)
+        filename_source = (
+            str(resource.get("name") or "")
+            or Path(url.split("?", 1)[0]).name
+            or str(dataset.get("name") or dataset_identifier)
+        )
+        filename = _safe_filename(filename_source, default="ndp-resource")
+        output_path = validate_write_path(str(destination_dir / filename), field="output_path")
+    except FilePolicyError as exc:
+        return exc.to_result()
+
+    resource_size_bytes = _parse_resource_size_bytes(
+        resource.get("size") or resource.get("resSize")
+    )
+    if is_osdf:
+        result = _stage_pelican_resource(
+            url=url,
+            output_path=output_path,
+            max_bytes=max_stage_bytes,
+            resource_size_bytes=resource_size_bytes,
+        )
+    else:
+        result = _stage_http_resource(
+            url=url,
+            output_path=output_path,
+            max_bytes=max_stage_bytes,
+        )
+    if result.get("error"):
+        return result
+    result.update(
+        {
+            "dataset_id": dataset.get("id"),
+            "dataset_name": dataset.get("name"),
+            "dataset_title": dataset.get("title"),
+            "resource_name": resource.get("name"),
+            "_meta": {"tool": "stage_resource", "status": "success"},
+        }
+    )
+    return result
