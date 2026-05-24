@@ -269,3 +269,32 @@ class TestAgentRegistry:
             )
             reg.register_agent(name, object(), cap)
         assert reg.list_agents() == ["alice", "bob", "charlie"]
+
+    def test_lists_root_and_child_agents(self):
+        """Registry should expose hierarchy without hardcoded agent IDs."""
+        reg = AgentRegistry()
+        reg.register_agent(
+            "data",
+            object(),
+            AgentCapability(
+                keywords=["data"],
+                description="Root data manager",
+                tools=[],
+                specialization="data_io",
+            ),
+        )
+        reg.register_agent(
+            "ndp_catalog",
+            object(),
+            AgentCapability(
+                keywords=["ndp"],
+                description="Nested NDP catalog expert",
+                tools=["ndp_search_datasets"],
+                specialization="data_catalog",
+                parent_id="data",
+                source="builtin_nested",
+            ),
+        )
+
+        assert reg.list_root_agents() == ["data"]
+        assert reg.list_child_agents("data") == ["ndp_catalog"]

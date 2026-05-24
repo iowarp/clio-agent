@@ -3556,7 +3556,9 @@ def _extract_tools_called(pred: Any) -> list[dict[str, Any]]:
 # colour-codes.
 _EXPERT_SPECIALIZATION: dict[str, str] = {
     "data": "data_analysis",
+    "ndp_catalog": "knowledge_retrieval",
     "analysis": "data_analysis",
+    "sac_format": "data_analysis",
     "visualization": "data_visualization",
     "utility": "utility",
 }
@@ -3578,25 +3580,29 @@ _EXPERT_TOOLS: dict[str, list[str]] = {
         "adios_inspect_file",
         "adios_inspect_variables",
         "adios_inspect_profiling",
+    ],
+    "ndp_catalog": [
         "ndp_list_organizations",
         "ndp_search_datasets",
         "ndp_get_dataset_details",
         "ndp_stage_resource",
+    ],
+    "sac_format": [
         "sac_inspect_archive",
+        "sac_compute_trace_statistics",
+        "sac_plot_traces",
     ],
     "analysis": [
         "parquet_analyze_schema",
         "parquet_query_data",
         "parquet_compute_statistics",
         "csv_read_table",
-        "sac_compute_trace_statistics",
     ],
     "visualization": [
         "plot_histogram",
         "plot_bar_chart",
         "plot_scatter",
         "plot_summary",
-        "sac_plot_traces",
     ],
     "utility": [
         "shell_bash",
@@ -3610,19 +3616,14 @@ _EXPERT_CAPABILITIES: dict[str, dict[str, Any]] = {
         "description": (
             "Specializes in scientific data files and discovery: HDF5, ADIOS/BP, "
             "compression strategies, I/O performance, format conversion, and "
-            "external dataset discovery through NDP/clio-kit MCP, and staged "
-            "SAC waveform archive inspection"
+            "delegation to nested catalog and format experts."
         ),
         "keywords": [
             "hdf5",
             "adios",
             "bp5",
-            "ndp",
-            "national data platform",
             "dataset discovery",
             "catalog",
-            "seismic",
-            "sac",
             "compression",
             "chunking",
             "data format",
@@ -3635,19 +3636,40 @@ _EXPERT_CAPABILITIES: dict[str, dict[str, Any]] = {
             "delegates_to": [
                 "HDF5 tools",
                 "ADIOS/BP tools",
-                "NDP catalog/staging tools",
-                "SAC archive inspection tools",
+                "NDP catalog expert",
+                "SAC format expert",
             ],
             "routes_to": ["ndp_catalog"],
         },
+    },
+    "ndp_catalog": {
+        "name": "NDP Catalog Expert",
+        "description": (
+            "Nested data expert for National Data Platform and EarthScope-style "
+            "dataset discovery, metadata inspection, resource ranking, and bounded staging."
+        ),
+        "keywords": [
+            "ndp",
+            "national data platform",
+            "earthscope",
+            "dataset discovery",
+            "catalog",
+            "resource",
+            "staging",
+        ],
+        "metadata": {
+            "parent": "data",
+            "route_type": "tier_3_catalog_expert",
+            "future_model_boundary": True,
+        },
+        "tier": 3,
     },
     "analysis": {
         "name": "Analysis Expert",
         "description": (
             "Specializes in statistical analysis, data profiling, and quality "
-            "assessment of tabular datasets (Parquet/CSV) and staged SAC waveform "
-            "archives. Computes column-level statistics, samples waveform traces, "
-            "identifies distributions, and flags data quality issues."
+            "assessment of tabular datasets (Parquet/CSV). Coordinates nested format "
+            "experts for waveform and domain-specific files."
         ),
         "keywords": [
             "parquet",
@@ -3661,19 +3683,34 @@ _EXPERT_CAPABILITIES: dict[str, dict[str, Any]] = {
             "profiling",
             "null count",
             "outliers",
-            "waveform",
-            "sac",
         ],
         "metadata": {
-            "delegates_to": ["parallel nanoagents for independent file checks"],
+            "delegates_to": [
+                "parallel nanoagents for independent file checks",
+                "SAC format expert",
+            ],
         },
+    },
+    "sac_format": {
+        "name": "SAC Format Expert",
+        "description": (
+            "Nested format expert for SAC waveform archives. Inspects SAC members, "
+            "computes trace statistics, and provides plot-ready waveform outputs."
+        ),
+        "keywords": ["sac", "waveform", "trace", "seismology", "seismic"],
+        "metadata": {
+            "parent": "analysis",
+            "route_type": "tier_3_format_expert",
+            "future_model_boundary": True,
+        },
+        "tier": 3,
     },
     "visualization": {
         "name": "Visualization Expert",
         "description": (
             "Specializes in generating scientific data visualizations: "
             "histograms, scatter plots, bar charts, and summary dashboards "
-            "from tabular datasets (Parquet, CSV), plus SAC waveform trace plots. "
+            "from tabular datasets (Parquet, CSV), plus delegated waveform trace plots. "
             "Saves charts to disk as PNG."
         ),
         "keywords": [
@@ -3685,8 +3722,6 @@ _EXPERT_CAPABILITIES: dict[str, dict[str, Any]] = {
             "distribution",
             "bar chart",
             "graph",
-            "waveform",
-            "sac",
         ],
         "metadata": {
             "delegates_to": ["matplotlib plotting tools"],
@@ -3724,9 +3759,17 @@ _BUILTIN_SYSTEM_PROMPTS: dict[str, str] = {
         "scientific data file formats, storage optimization, I/O performance, "
         "and external dataset discovery."
     ),
+    "ndp_catalog": (
+        "You are the CLIO NDP Catalog Expert, a nested data agent for National "
+        "Data Platform and EarthScope-style dataset discovery and bounded staging."
+    ),
     "analysis": (
         "You are the CLIO Analysis Expert, a specialized autonomous agent for "
         "statistical analysis, data profiling, and data quality."
+    ),
+    "sac_format": (
+        "You are the CLIO SAC Format Expert, a nested format agent for SAC "
+        "waveform archive inspection, trace statistics, and plot-ready outputs."
     ),
     "visualization": (
         "You are the CLIO Visualization Expert, a specialized autonomous agent for "
@@ -3791,7 +3834,7 @@ def _builtin_agents() -> list[AgentDef]:
                 description=description,
                 system_prompt=_BUILTIN_SYSTEM_PROMPTS.get(expert_id, ""),
                 tools=tools,
-                tier=2,
+                tier=int(caps.get("tier", 2)),
                 specialization=_EXPERT_SPECIALIZATION.get(expert_id, expert_id),
                 keywords=keywords,
                 metadata=dict(caps.get("metadata", {})),
@@ -3976,7 +4019,7 @@ def _builtin_tools() -> list[Tool]:
 
     seen: dict[str, Tool] = {}
     for agent in _builtin_agents():
-        if agent.tier != 2:
+        if agent.tier not in {2, 3}:
             continue
         for tool_name in agent.tools:
             if tool_name in seen:

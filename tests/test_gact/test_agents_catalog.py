@@ -1,4 +1,4 @@
-﻿"""CLIO-BBBBBBBBBB10: tests for /v1/agents + /v1/catalog/tools.
+"""CLIO-BBBBBBBBBB10: tests for /v1/agents + /v1/catalog/tools.
 
 Exercises the CLIO to GACT translator that exposes the built-in tier-2
 specialists as AgentDef rows with specialization + keywords populated,
@@ -33,6 +33,7 @@ def test_list_agents_returns_hierarchy(client: TestClient) -> None:
     tiers = [a["tier"] for a in agents]
     assert 1 in tiers, "expected a tier-1 orchestrator row"
     assert tiers.count(2) >= 4, f"expected >=4 tier-2 specialists; got tiers={tiers}"
+    assert tiers.count(3) >= 2, f"expected nested tier-3 specialists; got tiers={tiers}"
 
 
 def test_list_agents_does_not_import_scientific_tool_servers(client: TestClient) -> None:
@@ -63,6 +64,19 @@ def test_list_agents_tier_one_only(client: TestClient) -> None:
     assert {r["tier"] for r in rows} == {1}
     ids = [r["id"] for r in rows]
     assert "main" in ids, f"tier-1 should include 'main' orchestrator; got {ids}"
+
+
+def test_list_agents_tier_three_nested_science_experts(client: TestClient) -> None:
+    resp = client.get("/v1/agents?tier=3")
+    assert resp.status_code == 200
+    rows = resp.json()["agents"]
+    by_id = {row["id"]: row for row in rows}
+
+    assert {"ndp_catalog", "sac_format"} <= set(by_id)
+    assert by_id["ndp_catalog"]["metadata"]["parent"] == "data"
+    assert "ndp_search_datasets" in by_id["ndp_catalog"]["tools"]
+    assert by_id["sac_format"]["metadata"]["parent"] == "analysis"
+    assert "sac_compute_trace_statistics" in by_id["sac_format"]["tools"]
 
 
 def test_list_agents_includes_known_experts(client: TestClient) -> None:

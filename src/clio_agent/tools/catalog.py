@@ -72,27 +72,46 @@ TOOL_CATALOG: dict[str, ToolCatalogEntry] = {
     ),
     "csv_read_table": _entry("csv_read_table", "analysis", {"tabular", "csv", "schema"}),
     "ndp_list_organizations": _entry(
-        "ndp_list_organizations", "data", {"catalog", "ndp", "discovery"}
+        "ndp_list_organizations",
+        "ndp_catalog",
+        {"catalog", "ndp", "discovery"},
+        visible_to={"data"},
     ),
-    "ndp_search_datasets": _entry("ndp_search_datasets", "data", {"catalog", "ndp", "search"}),
+    "ndp_search_datasets": _entry(
+        "ndp_search_datasets",
+        "ndp_catalog",
+        {"catalog", "ndp", "search"},
+        visible_to={"data"},
+    ),
     "ndp_get_dataset_details": _entry(
-        "ndp_get_dataset_details", "data", {"catalog", "ndp", "metadata"}
+        "ndp_get_dataset_details",
+        "ndp_catalog",
+        {"catalog", "ndp", "metadata"},
+        visible_to={"data"},
     ),
     "ndp_stage_resource": _entry(
-        "ndp_stage_resource", "data", {"catalog", "ndp", "download", "staging"}
+        "ndp_stage_resource",
+        "ndp_catalog",
+        {"catalog", "ndp", "download", "staging"},
+        visible_to={"data"},
     ),
     "sac_inspect_archive": _entry(
-        "sac_inspect_archive", "data", {"scientific-data", "seismic", "sac", "inspect"}
+        "sac_inspect_archive",
+        "sac_format",
+        {"scientific-data", "seismic", "sac", "inspect"},
+        visible_to={"data"},
     ),
     "sac_compute_trace_statistics": _entry(
         "sac_compute_trace_statistics",
-        "analysis",
+        "sac_format",
         {"seismic", "sac", "statistics", "waveform"},
+        visible_to={"analysis"},
     ),
     "sac_plot_traces": _entry(
         "sac_plot_traces",
-        "visualization",
+        "sac_format",
         {"seismic", "sac", "waveform", "visualization", "plot"},
+        visible_to={"visualization"},
     ),
     "plot_histogram": _entry(
         "plot_histogram", "visualization", {"visualization", "plot", "histogram"}

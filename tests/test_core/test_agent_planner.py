@@ -8,6 +8,7 @@ All without a live LM.
 """
 
 import json
+import re
 from unittest.mock import ANY, MagicMock, patch
 
 import pytest
@@ -376,20 +377,43 @@ class TestBuildCapabilitiesContext:
     def test_tools_are_listed_under_owning_experts(self, agent):
         ctx = agent._build_capabilities_context()
         scoped = ctx.split("Scoped tools:", 1)[1].split("Chat utility tools:", 1)[0]
-        analysis_block = scoped.split("- analysis:", 1)[1].split("- data:", 1)[0]
-        data_block = scoped.split("- data:", 1)[1].split("- utility:", 1)[0]
-        utility_block = scoped.split("- utility:", 1)[1].split("- visualization:", 1)[0]
-        visualization_block = scoped.split("- visualization:", 1)[1]
+
+        def block(agent_id: str) -> str:
+            marker = f"- {agent_id}:"
+            assert marker in scoped
+            after = scoped.split(marker, 1)[1]
+            next_header = re.search(r"\n- [a-z_]+:", after)
+            return after[: next_header.start()] if next_header else after
+
+        analysis_block = block("analysis")
+        data_block = block("data")
+        ndp_block = block("ndp_catalog")
+        sac_block = block("sac_format")
+        utility_block = block("utility")
+        visualization_block = block("visualization")
 
         assert "hdf5_analyze_file(" in data_block
-        assert "ndp_search_datasets(" in data_block
+        assert "ndp_search_datasets(" not in data_block
         assert "parquet_analyze_schema(" not in data_block
         assert "parquet_analyze_schema(" in analysis_block
         assert "hdf5_analyze_file(" not in analysis_block
         assert "ndp_search_datasets(" not in analysis_block
+        assert "ndp_search_datasets(" in ndp_block
+        assert "sac_compute_trace_statistics(" in sac_block
+        assert "sac_plot_traces(" in sac_block
         assert "plot_summary(" in visualization_block
         assert "shell_bash(" in utility_block
         assert "fs_propose_edit(" in utility_block
+
+    def test_nested_experts_are_visible_to_planner(self, agent):
+        ctx = agent._build_capabilities_context()
+        ndp_line = next(line for line in ctx.splitlines() if line.startswith("- ndp_catalog:"))
+        sac_line = next(line for line in ctx.splitlines() if line.startswith("- sac_format:"))
+
+        assert "child of data" in ndp_line
+        assert "National Data Platform" in ndp_line
+        assert "child of analysis" in sac_line
+        assert "SAC waveform" in sac_line
 
     def test_chat_utility_tools_are_explicitly_scoped(self, agent):
         ctx = agent._build_capabilities_context()
@@ -567,7 +591,7 @@ class TestRunAgentLoop:
         assert expert_result is None
         agent._execute_tool_action.assert_called_once()
 
-    def test_ndp_tool_action_is_promoted_to_data_expert(self, agent):
+    def test_ndp_tool_action_is_promoted_to_nested_catalog_expert(self, agent):
         agent._plan_next_action = MagicMock(
             return_value={
                 "action": "tool",
@@ -578,7 +602,7 @@ class TestRunAgentLoop:
         )
         expert_result = object()
         agent._dispatch_expert_action = MagicMock(
-            return_value=("data", "NDP results\n\nstage data", expert_result, None)
+            return_value=("ndp_catalog", "NDP results\n\nstage data", expert_result, None)
         )
         agent._execute_tool_action = MagicMock(return_value={"value": "should not run"})
 
@@ -589,11 +613,11 @@ class TestRunAgentLoop:
             trace=_trace(),
         )
 
-        assert selected == "data"
+        assert selected == "ndp_catalog"
         assert answer == "NDP results\n\nstage data"
         assert result is expert_result
         assert error_info is None
-        assert route.target == "data"
+        assert route.target == "ndp_catalog"
         agent._dispatch_expert_action.assert_called_once()
         agent._execute_tool_action.assert_not_called()
 
