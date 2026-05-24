@@ -36,12 +36,20 @@ def test_non_destructive_tool_fast_allows(tmp_path: Path) -> None:
     assert gate("hdf5_list_datasets", {}) == "allow"
 
 
-def test_builtin_shell_tool_uses_destructive_permission_gate(tmp_path: Path) -> None:
+def test_builtin_shell_tool_allows_safe_diagnostic_command(tmp_path: Path) -> None:
     app = build_app(sessions_path=tmp_path / "s.json")
     app.state.permission_default = "deny"
     gate = _make_permission_gate(app)
 
-    assert gate("shell_bash", {"command": "date"}) == "deny"
+    assert gate("shell_bash", {"command": "date"}) == "allow"
+
+
+def test_builtin_shell_tool_still_gates_non_diagnostic_command(tmp_path: Path) -> None:
+    app = build_app(sessions_path=tmp_path / "s.json")
+    app.state.permission_default = "deny"
+    gate = _make_permission_gate(app)
+
+    assert gate("shell_bash", {"command": "cat pyproject.toml"}) == "deny"
 
 
 def test_destructive_tool_blocks_until_resolved(tmp_path: Path) -> None:

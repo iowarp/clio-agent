@@ -1943,6 +1943,59 @@ class TestPlannerNoBypass:
 
 
 class TestChatAgentNoBypass:
+    def test_chat_utility_question_uses_scoped_react_surface(self, agent):
+        tool_agent = MagicMock(return_value=MagicMock(answer="It is today."))
+        agent._build_chat_tool_agent = MagicMock(return_value=tool_agent)
+        agent.chat_agent = MagicMock(return_value=MagicMock(answer="plain chat"))
+        trace = _trace()
+
+        answer = agent._run_chat_agent("What is the current time?", "", trace=trace)
+
+        assert answer == "It is today."
+        agent._build_chat_tool_agent.assert_called_once_with(
+            trace=trace,
+            question="What is the current time?",
+            session_context="",
+        )
+        tool_agent.assert_called_once()
+        agent.chat_agent.assert_not_called()
+
+    def test_non_utility_chat_still_uses_plain_chat_agent(self, agent):
+        agent.chat_agent = MagicMock(return_value=MagicMock(answer="plain chat"))
+        agent._build_chat_tool_agent = MagicMock()
+
+        answer = agent._run_chat_agent("Explain what CLIO can do.", "", trace=_trace())
+
+        assert answer == "plain chat"
+        agent.chat_agent.assert_called_once()
+        agent._build_chat_tool_agent.assert_not_called()
+
+    def test_chat_scoped_tool_records_through_normal_tool_action_path(self, agent):
+        trace = _trace()
+        source_tool = MagicMock()
+        source_tool.name = "shell_bash"
+        source_tool.desc = "Run a shell command."
+        source_tool.args = {"command": {"type": "string"}}
+        agent._execute_tool_action = MagicMock(return_value={"stdout": "today"})
+
+        tool = agent._chat_scoped_tool(
+            source_tool,
+            trace,
+            "What time is it?",
+            "",
+        )
+        result = tool.func(command="date")
+
+        assert result == {"stdout": "today"}
+        agent._execute_tool_action.assert_called_once_with(
+            "shell_bash",
+            {"command": "date"},
+            trace,
+            question="What time is it?",
+            file_context="",
+            session_context="",
+        )
+
     def test_chat_adapter_parse_failure_recovers_visible_model_answer(self, agent):
         agent.chat_agent = MagicMock(
             side_effect=ValueError(
