@@ -14,7 +14,7 @@ from unittest.mock import ANY, MagicMock, patch
 import pytest
 
 from clio_agent.agent import ClioAgent, cancellation_checker
-from clio_agent.errors import CancellationError, RoutingError
+from clio_agent.errors import CancellationError, ProviderError, RoutingError
 from clio_agent.harness import RouteDecision, RunTrace
 from clio_agent.registry.registry import AgentCapability
 from clio_agent.tools.execution import set_global_tool_observer
@@ -688,6 +688,67 @@ class TestRunAgentLoop:
         assert selected == "utility"
         assert answer == "It is today."
         agent._execute_tool_action.assert_called_once()
+
+    def test_direct_tool_action_records_owner_handoff(self, agent):
+        trace = _trace()
+        agent._known_tool_names = MagicMock(return_value={"parquet_analyze_schema"})
+        agent.tool_executor.call_tool = MagicMock(
+            return_value={"filepath": "data.parquet", "num_rows": 3, "ok": True}
+        )
+
+        result = agent._execute_tool_action(
+            "parquet_analyze_schema",
+            {"filepath": "data.parquet"},
+            trace,
+        )
+
+        assert result["num_rows"] == 3
+        assert trace.tools[0].tool == "parquet_analyze_schema"
+        assert len(trace.expert_handoffs) == 1
+        handoff = trace.expert_handoffs[0]
+        assert handoff.agent_id == "analysis"
+        assert handoff.dispatch_target == "parquet_analyze_schema"
+        assert handoff.stage == "direct_tool"
+        assert handoff.status == "success"
+
+    def test_provider_error_after_tool_keeps_inferred_expert(self, agent):
+        agent._plan_next_action = MagicMock(
+            side_effect=[
+                {
+                    "action": "tool",
+                    "tool": "parquet_analyze_schema",
+                    "args": {"filepath": "data.parquet"},
+                    "reason": "inspect parquet",
+                },
+                {"action": "answer", "answer": "", "reason": "answer from observations"},
+            ]
+        )
+
+        def execute(tool_name, raw_args, trace, **_kwargs):
+            trace.record_tool(
+                tool=tool_name,
+                params=raw_args,
+                result={"filepath": "data.parquet", "num_rows": 3, "ok": True},
+                duration_ms=1.0,
+                ok=True,
+            )
+            return {"filepath": "data.parquet", "num_rows": 3, "ok": True}
+
+        agent._execute_tool_action = MagicMock(side_effect=execute)
+        agent._synthesize_agent_answer = MagicMock(
+            side_effect=ProviderError(
+                "CLIO could not synthesize a final answer from the completed observations.",
+                details={"stage": "answer_synthesis", "original_error": "rate limit"},
+            )
+        )
+
+        result = agent.forward("Summarize data.parquet", session_id="provider-error-inference")
+
+        assert result.selected_expert == "analysis"
+        assert result.answer == ""
+        assert result.error_info is not None
+        assert result.error_info["error"] == "provider_error"
+        assert "inferred from completed tool provenance" in result.route_reason
 
     def test_shell_scope_validation_ignores_compiled_tool_context(self, agent, tmp_path):
         csv_path = tmp_path / "events.csv"

@@ -36,9 +36,10 @@ class DemoCase:
     expected: str
     session_group: str
     timeout_s: float = 480.0
-    expected_agent: str = ""
+    expected_agent: str | tuple[str, ...] = ""
     expected_tool_prefixes: tuple[str, ...] = ()
     expected_tools: tuple[str, ...] = ()
+    expected_handoff_agents: tuple[str, ...] = ()
     expected_terms: tuple[str, ...] = ()
     min_children: int = 0
     expects_error: bool = False
@@ -83,21 +84,60 @@ class DemoResult:
         return _artifact_paths(self.message)
 
     @property
+    def expert_handoffs(self) -> list[dict[str, Any]]:
+        """Return expert handoff provenance metadata."""
+        return _expert_handoffs(self.message)
+
+    @property
+    def handoff_agent_ids(self) -> list[str]:
+        """Return unique expert IDs observed in handoff provenance."""
+        seen: set[str] = set()
+        ids: list[str] = []
+        for row in self.expert_handoffs:
+            agent_id = str(row.get("agent_id") or "")
+            if not agent_id or agent_id in seen:
+                continue
+            seen.add(agent_id)
+            ids.append(agent_id)
+        return ids
+
+    @property
+    def handoff_event_count(self) -> int:
+        """Return the number of recorded expert handoff events."""
+        return len(self.expert_handoffs)
+
+    @property
     def blocking_error(self) -> dict[str, Any] | None:
-        """Return blocking error_info, allowing documented partial recovery."""
+        """Return error_info that should fail or satisfy error-focused cases."""
         return _blocking_error(self.message)
+
+    @property
+    def partial_error(self) -> dict[str, Any] | None:
+        """Return surfaced partial-recovery metadata, if this turn had any."""
+        return _partial_error(self.message)
 
     @property
     def passed(self) -> bool:
         """Return whether this case satisfied its declared expectations."""
         if self.case.expects_error:
             return self.blocking_error is not None and not self.text.strip()
+        if self.partial_error is not None:
+            return False
         if self.blocking_error is not None:
             return False
-        if self.case.expected_agent and self.selected_agent != self.case.expected_agent:
-            return False
+        if self.case.expected_agent:
+            expected_agents = (
+                (self.case.expected_agent,)
+                if isinstance(self.case.expected_agent, str)
+                else self.case.expected_agent
+            )
+            if self.selected_agent not in expected_agents:
+                return False
         for expected_tool in self.case.expected_tools:
             if expected_tool not in self.tool_names:
+                return False
+        for expected_agent in self.case.expected_handoff_agents:
+            if expected_agent not in self.handoff_agent_ids:
                 return False
         for prefix in self.case.expected_tool_prefixes:
             if not any(name.startswith(prefix) for name in self.tool_names):
@@ -111,11 +151,21 @@ class DemoResult:
         return True
 
     @property
+    def outcome(self) -> str:
+        """Return a human-readable outcome category."""
+        if self.case.expects_error:
+            return "expected_error" if self.passed else "fail"
+        if self.partial_error is not None:
+            return "partial"
+        return "pass" if self.passed else "fail"
+
+    @property
     def complexity_score(self) -> int:
         """Score cases for the best-demo report."""
         return (
             len(set(self.tool_names)) * 3
             + len(self.tools)
+            + len(self.expert_handoffs) * 4
             + len(self.child_sessions) * 6
             + len(self.artifacts) * 4
             + len(self.case.complexity_tags) * 2
@@ -145,6 +195,11 @@ def _tools(message: dict[str, Any]) -> list[dict[str, Any]]:
     return rows if isinstance(rows, list) else []
 
 
+def _expert_handoffs(message: dict[str, Any]) -> list[dict[str, Any]]:
+    rows = (message.get("metadata") or {}).get("expert_handoffs") or []
+    return rows if isinstance(rows, list) else []
+
+
 def _tool_name(row: dict[str, Any]) -> str:
     return str(row.get("name") or row.get("tool") or "")
 
@@ -153,17 +208,23 @@ def _blocking_error(message: dict[str, Any]) -> dict[str, Any] | None:
     error_info = message.get("error_info")
     if not isinstance(error_info, dict):
         return None
+    if _partial_error(message) is not None:
+        return None
+    return error_info
+
+
+def _partial_error(message: dict[str, Any]) -> dict[str, Any] | None:
+    error_info = message.get("error_info")
+    if not isinstance(error_info, dict):
+        return None
     details = error_info.get("details")
-    if (
-        isinstance(details, dict)
-        and details.get("partial") is True
-        and details.get("stage")
-        in {
-            "post_observation_planning",
-            "parallel_validation_recovery",
-            "step_limit_after_observations",
-        }
-    ):
+    if not isinstance(details, dict) or details.get("partial") is not True:
+        return None
+    if details.get("stage") not in {
+        "post_observation_planning",
+        "parallel_validation_recovery",
+        "step_limit_after_observations",
+    }:
         return None
     return error_info
 
@@ -240,13 +301,18 @@ def _case_row(result: DemoResult) -> dict[str, Any]:
         "session_id": result.session_id,
         "elapsed_s": round(result.elapsed_s, 3),
         "passed": result.passed,
+        "outcome": result.outcome,
         "selected_agent": result.selected_agent,
         "routing_decision": _routing_decision(result.message),
         "tools_called": result.tools,
         "tool_names": result.tool_names,
+        "expert_handoffs": result.expert_handoffs,
+        "handoff_agent_ids": result.handoff_agent_ids,
+        "handoff_event_count": result.handoff_event_count,
         "child_sessions": result.child_sessions,
         "artifacts": result.artifacts,
         "error_info": result.message.get("error_info"),
+        "partial_error": result.partial_error,
         "stop_reason": result.message.get("stop_reason"),
         "provider": result.provider,
         "routing_mode": result.case.routing_mode,
@@ -465,8 +531,9 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             title="NDP catalog discovery",
             category="external-catalog",
             session_group="ndp",
-            expected_agent="data",
+            expected_agent=("data", "ndp_catalog"),
             expected_tool_prefixes=("ndp_",),
+            expected_handoff_agents=("ndp_catalog",),
             expected_terms=("dataset",),
             timeout_s=620.0,
             complexity_tags=("ndp", "clio-kit", "external-mcp"),
@@ -479,6 +546,42 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             why=(
                 "Exercises external catalog discovery as a data-stage capability, before "
                 "analysis consumes staged data."
+            ),
+        ),
+        DemoCase(
+            case_id="ndp_seismic_waveform_to_plot",
+            title="NDP seismic waveform discovery to plot",
+            category="hierarchical-science",
+            session_group="ndp_seismic",
+            expected_agent=("visualization", "analysis", "data", "ndp_catalog"),
+            expected_tool_prefixes=("ndp_", "sac_"),
+            expected_handoff_agents=("ndp_catalog", "sac_format"),
+            expected_terms=("SAC", ".png"),
+            timeout_s=900.0,
+            complexity_tags=(
+                "ndp",
+                "earthscience",
+                "tier-3",
+                "sac",
+                "data-analysis-visualization",
+                "artifact",
+            ),
+            prompt=(
+                "Find a bounded seismic waveform dataset from a seismological or "
+                "Earth-science organization in the National Data Platform. Choose a usable "
+                "resource, stage it if it is small enough, inspect the waveform content, "
+                "compute representative trace statistics, and produce a plot artifact. If a "
+                "candidate is too large or unavailable, surface that as the result instead "
+                "of inventing a plot."
+            ),
+            expected=(
+                "CLIO delegates NDP discovery to ndp_catalog, stages a bounded waveform "
+                "resource, analyzes SAC traces through sac_format, and creates a PNG plot."
+            ),
+            why=(
+                "This is the core hierarchical science demo: provider discovery, data "
+                "access, format-specific analysis, and visualization without the user naming "
+                "internal agents."
             ),
         ),
         DemoCase(
@@ -536,7 +639,14 @@ def _create_sessions(http: httpx.Client, cases: list[DemoCase]) -> dict[str, str
     return session_ids
 
 
-def run_benchmark(base_url: str, data_dir: Path, output_jsonl: Path, report_path: Path) -> int:
+def run_benchmark(
+    base_url: str,
+    data_dir: Path,
+    output_jsonl: Path,
+    report_path: Path,
+    *,
+    case_delay_s: float = 0.0,
+) -> int:
     """Run demo cases and write JSONL plus a markdown report."""
     manifest = create_benchmark_data(data_dir)
     cases = _make_cases(manifest)
@@ -573,20 +683,25 @@ def run_benchmark(base_url: str, data_dir: Path, output_jsonl: Path, report_path
                 results.append(result)
                 log.write(json.dumps(_case_row(result), ensure_ascii=False, default=str) + "\n")
                 log.flush()
-                status = "PASS" if result.passed else "FAIL"
+                status = result.outcome.upper()
                 print(
                     f"  {status} agent={result.selected_agent or '-'} "
                     f"tools={','.join(result.tool_names) or '-'} "
                     f"children={len(result.child_sessions)} elapsed={elapsed_s:.1f}s",
                     flush=True,
                 )
+                if case_delay_s > 0 and index < len(cases):
+                    time.sleep(case_delay_s)
 
     report_path.write_text(_render_report(results, output_jsonl), encoding="utf-8")
     return 0 if all(result.passed for result in results) else 1
 
 
 def _render_report(results: list[DemoResult], output_jsonl: Path) -> str:
-    passed = sum(1 for result in results if result.passed)
+    clean_passes = sum(1 for result in results if result.outcome == "pass")
+    expected_errors = sum(1 for result in results if result.outcome == "expected_error")
+    partials = sum(1 for result in results if result.outcome == "partial")
+    failures = sum(1 for result in results if result.outcome == "fail")
     best = sorted(results, key=lambda result: result.complexity_score, reverse=True)[:10]
     lines = [
         "# CLIO ALCF Demo Benchmark Report",
@@ -594,12 +709,16 @@ def _render_report(results: list[DemoResult], output_jsonl: Path) -> str:
         f"Generated: {time.strftime('%Y-%m-%d %H:%M:%S %Z')}",
         f"Evidence JSONL: `{output_jsonl}`",
         "",
-        f"Result: {passed}/{len(results)} cases passed.",
+        (
+            f"Result: {clean_passes}/{len(results)} clean passes, "
+            f"{expected_errors} expected surfaced errors, {partials} partial recoveries, "
+            f"{failures} failures."
+        ),
         "",
         "## All Cases",
         "",
-        "| Case | Category | Mode | Source | Pass | Agent | Tools | Children | Elapsed |",
-        "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+        "| Case | Category | Mode | Source | Outcome | Agent | Handoffs | Tools | Children | Elapsed |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for result in results:
         route_source = (_routing_decision(result.message).get("metadata") or {}).get(
@@ -613,8 +732,9 @@ def _render_report(results: list[DemoResult], output_jsonl: Path) -> str:
                     result.case.category,
                     result.case.routing_mode,
                     str(route_source),
-                    "yes" if result.passed else "no",
+                    result.outcome,
                     result.selected_agent or "-",
+                    _handoff_summary(result) or "-",
                     ", ".join(result.tool_names) or "-",
                     str(len(result.child_sessions)),
                     f"{result.elapsed_s:.1f}s",
@@ -626,6 +746,7 @@ def _render_report(results: list[DemoResult], output_jsonl: Path) -> str:
     lines.extend(["", "## Best 10 Demo Prompts", ""])
     for rank, result in enumerate(best, start=1):
         tool_text = ", ".join(result.tool_names) or "none"
+        handoff_text = _handoff_summary(result) or "none"
         artifact_text = ", ".join(result.artifacts) or "none"
         child_text = ", ".join(
             child.get("title", child.get("id", "")) for child in result.child_sessions
@@ -637,8 +758,9 @@ def _render_report(results: list[DemoResult], output_jsonl: Path) -> str:
                 f"Case: `{result.case.case_id}`",
                 f"Category: {result.case.category}",
                 f"Routing mode: `{result.case.routing_mode}`",
-                f"Status: {'pass' if result.passed else 'fail'}",
+                f"Status: {result.outcome}",
                 f"Selected agent: `{result.selected_agent or '-'}`",
+                f"Expert handoffs: {handoff_text}",
                 f"Tools: {tool_text}",
                 f"Child sessions: {child_text or 'none'}",
                 f"Artifacts: {artifact_text}",
@@ -663,10 +785,22 @@ def _render_report(results: list[DemoResult], output_jsonl: Path) -> str:
             ]
         )
 
-    failures = [result for result in results if not result.passed]
-    if failures:
+    partial_results = [result for result in results if result.outcome == "partial"]
+    if partial_results:
+        lines.extend(["## Partial Recovery Caveats", ""])
+        for result in partial_results:
+            details = (result.partial_error or {}).get("details") or {}
+            lines.extend(
+                [
+                    f"- `{result.case.case_id}`: {result.partial_error.get('message') if result.partial_error else 'partial recovery'}",
+                    f"  stage={details.get('stage')}, tools={', '.join(result.tool_names) or '-'}",
+                ]
+            )
+
+    failed_results = [result for result in results if result.outcome == "fail"]
+    if failed_results:
         lines.extend(["## Failures To Investigate", ""])
-        for result in failures:
+        for result in failed_results:
             lines.extend(
                 [
                     f"- `{result.case.case_id}`: expected {result.case.expected}",
@@ -676,6 +810,20 @@ def _render_report(results: list[DemoResult], output_jsonl: Path) -> str:
                 ]
             )
     return "\n".join(lines).strip() + "\n"
+
+
+def _handoff_summary(result: DemoResult) -> str:
+    """Return compact handoff display text with repeated event counts."""
+    counts: dict[str, int] = {}
+    for row in result.expert_handoffs:
+        agent_id = str(row.get("agent_id") or "")
+        if not agent_id:
+            continue
+        counts[agent_id] = counts.get(agent_id, 0) + 1
+    parts = [
+        agent_id if count == 1 else f"{agent_id} x{count}" for agent_id, count in counts.items()
+    ]
+    return ", ".join(parts)
 
 
 def main() -> None:
@@ -704,6 +852,12 @@ def main() -> None:
         default=Path("docs/ALCF_DEMO_BENCHMARK_REPORT.md"),
         help="Output markdown report path.",
     )
+    parser.add_argument(
+        "--case-delay-s",
+        type=float,
+        default=0.0,
+        help="Optional cooldown between cases for rate-limited real providers.",
+    )
     args = parser.parse_args()
     raise SystemExit(
         run_benchmark(
@@ -711,6 +865,7 @@ def main() -> None:
             args.data_dir.resolve(),
             args.output_jsonl.resolve(),
             args.report.resolve(),
+            case_delay_s=max(0.0, args.case_delay_s),
         )
     )
 
