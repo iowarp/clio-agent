@@ -276,14 +276,12 @@ class ClioAgent(dspy.Module):
                     "chunking",
                     "data",
                     "io",
-                    "ndp",
                     "catalog",
-                    "seismic",
-                    "sac",
                 ],
                 description=(
-                    "Data I/O optimization and discovery expert with HDF5, ADIOS/BP, "
-                    "NDP catalog tools, and SAC archive inspection"
+                    "Data I/O optimization and discovery manager with HDF5 and ADIOS/BP "
+                    "tools. Delegates external catalogs and format-specific waveform work "
+                    "to nested data experts."
                 ),
                 tools=[
                     "hdf5_list_datasets",
@@ -294,16 +292,47 @@ class ClioAgent(dspy.Module):
                     "adios_inspect_file",
                     "adios_inspect_variables",
                     "adios_inspect_profiling",
+                ],
+                specialization="data_io",
+                metadata={
+                    "file_suffixes": [".h5", ".hdf5", ".bp", ".bp4", ".bp5"],
+                    "guard_direct_suffixes": [".bp", ".bp4", ".bp5"],
+                    "delegates_to": ["ndp_catalog", "sac_format"],
+                },
+            ),
+        )
+
+        self.registry.register_agent(
+            "ndp_catalog",
+            self.data_expert,
+            AgentCapability(
+                keywords=[
+                    "ndp",
+                    "national data platform",
+                    "earthscope",
+                    "catalog",
+                    "dataset discovery",
+                    "resource",
+                    "staging",
+                ],
+                description=(
+                    "Nested data expert for National Data Platform and EarthScope-style "
+                    "dataset discovery, metadata inspection, resource ranking, and "
+                    "bounded staging."
+                ),
+                tools=[
                     "ndp_list_organizations",
                     "ndp_search_datasets",
                     "ndp_get_dataset_details",
                     "ndp_stage_resource",
-                    "sac_inspect_archive",
                 ],
-                specialization="data_io",
+                specialization="data_catalog",
+                parent_id="data",
+                source="builtin_nested",
                 metadata={
-                    "file_suffixes": [".h5", ".hdf5", ".bp", ".bp4", ".bp5", ".sac", ".tar"],
-                    "guard_direct_suffixes": [".bp", ".bp4", ".bp5"],
+                    "dispatch_to": "data",
+                    "provider": "ndp",
+                    "future_model_boundary": True,
                 },
             ),
         )
@@ -320,24 +349,21 @@ class ClioAgent(dspy.Module):
                     "analysis",
                     "data quality",
                     "csv",
-                    "waveform",
-                    "sac",
                 ],
                 description=(
                     "Statistical analysis, data profiling, data quality triage, and "
                     "cross-file scientific review expert. Coordinates HDF5, Parquet, "
-                    "CSV, and staged SAC waveform checks for multi-file questions."
+                    "CSV, and nested format experts for multi-file questions."
                 ),
                 tools=[
                     "parquet_analyze_schema",
                     "parquet_query_data",
                     "parquet_compute_statistics",
                     "csv_read_table",
-                    "sac_compute_trace_statistics",
                 ],
                 specialization="data_analysis",
                 metadata={
-                    "file_suffixes": [".parquet", ".csv", ".sac", ".tar"],
+                    "file_suffixes": [".parquet", ".csv"],
                     "guard_coordinator_intents": ["multi_file_analysis"],
                     "coordinated_file_suffixes": [
                         ".h5",
@@ -350,6 +376,33 @@ class ClioAgent(dspy.Module):
                         ".sac",
                         ".tar",
                     ],
+                    "delegates_to": ["sac_format"],
+                },
+            ),
+        )
+
+        self.registry.register_agent(
+            "sac_format",
+            self.analysis_expert,
+            AgentCapability(
+                keywords=["sac", "waveform", "trace", "seismology", "seismic"],
+                description=(
+                    "Nested format expert for SAC waveform archives. Inspects SAC members, "
+                    "computes trace statistics, and can provide plot-ready trace outputs."
+                ),
+                tools=[
+                    "sac_inspect_archive",
+                    "sac_compute_trace_statistics",
+                    "sac_plot_traces",
+                ],
+                specialization="data_format",
+                parent_id="analysis",
+                source="builtin_nested",
+                metadata={
+                    "dispatch_to": "analysis",
+                    "file_suffixes": [".sac", ".tar", ".tgz", ".gz"],
+                    "format": "sac",
+                    "future_model_boundary": True,
                 },
             ),
         )
@@ -365,8 +418,6 @@ class ClioAgent(dspy.Module):
                     "scatter",
                     "visualization",
                     "graph",
-                    "waveform",
-                    "sac",
                 ],
                 description="Scientific data visualization expert with matplotlib and waveform tools",
                 tools=[
@@ -374,7 +425,6 @@ class ClioAgent(dspy.Module):
                     "plot_bar_chart",
                     "plot_scatter",
                     "plot_summary",
-                    "sac_plot_traces",
                 ],
                 specialization="data_visualization",
                 metadata={"file_suffixes": [".parquet", ".csv", ".sac", ".tar"]},
@@ -1005,8 +1055,8 @@ class ClioAgent(dspy.Module):
             for observation in observations
         )
 
-    @staticmethod
     def _should_promote_tool_action_to_expert(
+        self,
         tool_name: str,
         *,
         selected: str,
@@ -1014,12 +1064,15 @@ class ClioAgent(dspy.Module):
     ) -> bool:
         """Return whether a planner tool action should become expert delegation.
 
-        NDP catalog tools are a data-stage capability. Letting the tier-1
-        planner directly iterate over them makes the orchestrator behave like a
-        tool-using expert and loses the intended data -> analysis ->
-        visualization handoff boundary.
+        Nested expert tools should execute through the owning child expert on
+        the first planner step. Letting the tier-1 planner iterate directly
+        over provider/format tools makes the orchestrator behave like a flat
+        tool-using expert and loses handoff boundaries.
         """
 
+        caps = self.registry.get_capabilities(selected)
+        if caps is not None and caps.parent_id and not observations:
+            return True
         if selected != "data" or not tool_name.startswith("ndp_"):
             return False
         return not ClioAgent._has_successful_execution_observation(observations)
@@ -1352,9 +1405,10 @@ class ClioAgent(dspy.Module):
             return "none", "", None, error
 
         expert_question = self._question_with_file_context(question, file_context)
+        dispatch_id = self._dispatch_target_for_expert(expert_id)
         try:
             with dspy.context(lm=self._main_lm, adapter=self._dspy_adapter):
-                if expert_id == "data":
+                if dispatch_id == "data":
                     expert_result = self.data_expert(
                         question=expert_question, file_context=file_context
                     )
@@ -1372,9 +1426,9 @@ class ClioAgent(dspy.Module):
                     )
                     if handoff is not None:
                         return handoff
-                    return "data", answer, expert_result, None
+                    return expert_id, answer, expert_result, None
 
-                if expert_id == "analysis":
+                if dispatch_id == "analysis":
                     expert_result = self.analysis_expert(
                         question=expert_question,
                         file_context=file_context,
@@ -1384,11 +1438,11 @@ class ClioAgent(dspy.Module):
                         f"{expert_result.analysis}\n\n"
                         f"Recommendations:\n{expert_result.recommendations}"
                     )
-                    return "analysis", answer, expert_result, None
+                    return expert_id, answer, expert_result, None
 
-                if expert_id == "utility":
+                if dispatch_id == "utility":
                     return (
-                        "utility",
+                        expert_id,
                         "",
                         None,
                         RoutingError(
@@ -1411,7 +1465,7 @@ class ClioAgent(dspy.Module):
             file_path = self._coerce_text(getattr(expert_result, "file_path", "")).strip()
             answer = f"Visualization: {description}\n\nFile: {file_path}".strip()
             return (
-                "visualization",
+                expert_id,
                 answer,
                 expert_result,
                 getattr(expert_result, "error_info", None),
@@ -1423,10 +1477,19 @@ class ClioAgent(dspy.Module):
                 f"The {expert_id} expert encountered an issue processing your request.",
                 details=self._recovery_details(
                     expert=expert_id,
+                    dispatch_target=dispatch_id,
                     original_error=str(exc),
                 ),
             ).to_dict()
             return expert_id, "", None, error
+
+    def _dispatch_target_for_expert(self, expert_id: str) -> str:
+        """Return the executable expert target for a registered expert id."""
+        caps = self.registry.get_capabilities(expert_id)
+        if caps is None:
+            return expert_id
+        target = self._coerce_text(caps.metadata.get("dispatch_to")).strip().lower()
+        return target or expert_id
 
     def _continue_data_handoffs(
         self,
@@ -1973,10 +2036,13 @@ class ClioAgent(dspy.Module):
             caps = self.registry.get_capabilities(agent_id)
             if caps is None:
                 continue
+            hierarchy = f"child of {caps.parent_id}; " if caps.parent_id else ""
             tools = ", ".join(caps.tools) if caps.tools else "no direct tools"
             metadata_notes = self._planner_capability_metadata_notes(caps.metadata)
             metadata_text = f"; {metadata_notes}" if metadata_notes else ""
-            lines.append(f"- {agent_id}: {caps.description}{metadata_text}; tools: {tools}")
+            lines.append(
+                f"- {agent_id}: {hierarchy}{caps.description}{metadata_text}; tools: {tools}"
+            )
 
         lines.append("Scoped tools:")
         for agent_id in self.registry.list_agents():
@@ -2068,6 +2134,11 @@ class ClioAgent(dspy.Module):
         ]
         if intents:
             notes.append(f"coordination intents: {', '.join(intents)}")
+        delegates = [
+            str(agent_id) for agent_id in metadata.get("delegates_to", []) if str(agent_id).strip()
+        ]
+        if delegates:
+            notes.append(f"delegates to: {', '.join(delegates)}")
         return "; ".join(notes)
 
     def _available_dspy_tools(self) -> list[dspy.Tool]:

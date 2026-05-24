@@ -38,6 +38,9 @@ class AgentCapability:
         tools: List of tool names this agent can use
         specialization: Domain specialization (e.g., "data_io", "scheduling")
         priority: Routing priority (1=highest, 10=lowest). Default: 5
+        parent_id: Optional parent agent ID when this is a nested expert
+        source: Capability source such as builtin, user, skill, or builtin_nested
+        planner_visible: Whether planner-facing catalogs should expose this agent
         metadata: Additional agent-specific metadata
     """
 
@@ -46,6 +49,9 @@ class AgentCapability:
     tools: List[str]
     specialization: str
     priority: int = 5
+    parent_id: Optional[str] = None
+    source: str = "builtin"
+    planner_visible: bool = True
     metadata: Dict[str, Any] = field(default_factory=dict)
 
 
@@ -188,6 +194,26 @@ class AgentRegistry:
         """
         with self._lock:
             return sorted(self._agents.keys())
+
+    def list_child_agents(self, parent_id: str) -> List[str]:
+        """List registered child agent IDs for a parent agent."""
+
+        with self._lock:
+            return sorted(
+                agent_id
+                for agent_id, caps in self._capabilities.items()
+                if caps.parent_id == parent_id
+            )
+
+    def list_root_agents(self, *, planner_visible_only: bool = False) -> List[str]:
+        """List registered agents without a parent."""
+
+        with self._lock:
+            return sorted(
+                agent_id
+                for agent_id, caps in self._capabilities.items()
+                if caps.parent_id is None and (caps.planner_visible or not planner_visible_only)
+            )
 
     def get_capabilities(self, agent_id: str) -> Optional[AgentCapability]:
         """Get agent capabilities.
