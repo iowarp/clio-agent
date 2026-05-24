@@ -18,7 +18,7 @@ RouteTarget = str
 RouteSource = Literal["deterministic", "dspy", "guard"]
 ExpertSource = Literal["deterministic", "dspy", "fallback"]
 
-SCIENTIFIC_PATH_SUFFIX_PATTERN = r"(?:hdf5|h5|parquet|csv|bp5|bp4|bp)"
+SCIENTIFIC_PATH_SUFFIX_PATTERN = r"(?:hdf5|h5|parquet|csv|bp5|bp4|bp|sac|tar|tgz|gz)"
 
 FILE_PATH_RE = re.compile(
     rf"(?P<path>(?:~|/|\.{{1,2}}/)?[^\s'\"`]+?\.{SCIENTIFIC_PATH_SUFFIX_PATTERN})",

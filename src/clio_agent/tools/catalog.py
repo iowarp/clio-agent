@@ -81,6 +81,19 @@ TOOL_CATALOG: dict[str, ToolCatalogEntry] = {
     "ndp_stage_resource": _entry(
         "ndp_stage_resource", "data", {"catalog", "ndp", "download", "staging"}
     ),
+    "sac_inspect_archive": _entry(
+        "sac_inspect_archive", "data", {"scientific-data", "seismic", "sac", "inspect"}
+    ),
+    "sac_compute_trace_statistics": _entry(
+        "sac_compute_trace_statistics",
+        "analysis",
+        {"seismic", "sac", "statistics", "waveform"},
+    ),
+    "sac_plot_traces": _entry(
+        "sac_plot_traces",
+        "visualization",
+        {"seismic", "sac", "waveform", "visualization", "plot"},
+    ),
     "plot_histogram": _entry(
         "plot_histogram", "visualization", {"visualization", "plot", "histogram"}
     ),

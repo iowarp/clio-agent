@@ -11,6 +11,7 @@ import dspy
 import pytest
 
 from clio_agent.agent import ClioAgent, cancellation_checker, routing_mode_override
+from clio_agent.harness import ToolObservation
 
 
 @pytest.fixture
@@ -101,6 +102,78 @@ class TestForwardDispatch:
         assert result.selected_expert == "data"
         assert "HDF5 analysis result" in result.answer
         assert "gzip compression" in result.answer
+
+    def test_data_handoff_continues_to_analysis_and_visualization(self, agent, tmp_path):
+        """Staged data should continue to downstream experts when the prompt asks."""
+        staged = tmp_path / "waveforms.tar"
+        staged.write_bytes(b"placeholder")
+        self._set_planner(
+            agent,
+            {
+                "action": "expert",
+                "expert": "data",
+                "question": "find seismic data, analyze it, and plot traces",
+            },
+        )
+        data_result = dspy.Prediction(
+            analysis="staged waveform archive",
+            recommendations="pass downstream",
+            tool_provenance=[
+                ToolObservation(
+                    tool="ndp_stage_resource",
+                    params={},
+                    result={"staged": True, "path": str(staged)},
+                    duration_ms=1.0,
+                    ok=True,
+                )
+            ],
+        )
+        analysis_result = dspy.Prediction(
+            analysis="computed SAC statistics",
+            recommendations="plot representative traces",
+            tool_provenance=[
+                ToolObservation(
+                    tool="sac_compute_trace_statistics",
+                    params={"filepath": str(staged)},
+                    result={"ok": True},
+                    duration_ms=1.0,
+                    ok=True,
+                )
+            ],
+        )
+        visualization_result = dspy.Prediction(
+            visualization_description="Plotted 3 SAC traces",
+            file_path=str(tmp_path / "plot.png"),
+            tool_provenance=[
+                ToolObservation(
+                    tool="sac_plot_traces",
+                    params={"filepath": str(staged)},
+                    result={"ok": True},
+                    duration_ms=1.0,
+                    ok=True,
+                )
+            ],
+        )
+        agent.data_expert = MagicMock(return_value=data_result)
+        agent.analysis_expert = MagicMock(return_value=analysis_result)
+        agent.visualization_expert = MagicMock(return_value=visualization_result)
+
+        result = agent.forward(
+            question="Find seismic data, analyze representative traces, and produce a plot.",
+            session_id="handoff-session",
+        )
+
+        assert result.selected_expert == "visualization"
+        assert "Data stage:" in result.answer
+        assert "Analysis stage:" in result.answer
+        assert "Visualization stage:" in result.answer
+        assert [tool.tool for tool in result.tools_called] == [
+            "ndp_stage_resource",
+            "sac_compute_trace_statistics",
+            "sac_plot_traces",
+        ]
+        agent.analysis_expert.assert_called_once()
+        agent.visualization_expert.assert_called_once()
 
     def test_dispatch_analysis_expert(self, agent):
         """Test routing to analysis expert."""

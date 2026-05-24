@@ -45,17 +45,17 @@ class TestAnalysisExpert:
         expert = AnalysisExpert()
         try:
             for tool in expert._tools:
-                assert tool.name.startswith("parquet_"), (
+                assert tool.name.startswith("parquet_") or tool.name.startswith("sac_"), (
                     f"Tool {tool.name} does not have an analysis-owned prefix"
                 )
         finally:
             expert.close()
 
     def test_analysis_expert_tool_count(self):
-        """Test expert has Parquet gateway tools."""
+        """Test expert has Parquet and SAC waveform gateway tools."""
         expert = AnalysisExpert()
         try:
-            assert len(expert._tools) == 3
+            assert len(expert._tools) == 4
         finally:
             expert.close()
 
@@ -67,6 +67,7 @@ class TestAnalysisExpert:
             assert "parquet_analyze_schema" in tool_names
             assert "parquet_query_data" in tool_names
             assert "parquet_compute_statistics" in tool_names
+            assert "sac_compute_trace_statistics" in tool_names
             assert "ndp_list_organizations" not in tool_names
             assert "ndp_search_datasets" not in tool_names
             assert "ndp_get_dataset_details" not in tool_names

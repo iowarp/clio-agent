@@ -210,8 +210,7 @@ def _resource_matches(resource: dict[str, Any], resource_name: str | None) -> bo
         return True
     needle = resource_name.strip().lower()
     haystack = " ".join(
-        str(resource.get(key) or "")
-        for key in ("id", "name", "url", "description", "format")
+        str(resource.get(key) or "") for key in ("id", "name", "url", "description", "format")
     ).lower()
     return needle in haystack
 
@@ -477,9 +476,7 @@ async def _call_clio_kit_ndp_tool(tool_name: str, args: dict[str, Any]) -> dict[
         return _tool_error(
             code="clio_kit_ndp_unavailable",
             message=f"Could not call clio-kit NDP MCP tool {tool_name!r}: {exc}",
-            next_action=(
-                "Install clio-kit or set CLIO_KIT_PATH to a local checkout, then retry."
-            ),
+            next_action=("Install clio-kit or set CLIO_KIT_PATH to a local checkout, then retry."),
             details={"tool": tool_name, "args": args},
         )
 
@@ -696,8 +693,7 @@ async def stage_resource(
     try:
         max_stage_bytes = _clean_max_bytes(max_bytes)
         destination_dir = Path(output_dir or Path.cwd() / "tmp" / "clio-ndp-staging")
-        if output_dir is None:
-            destination_dir.mkdir(parents=True, exist_ok=True)
+        destination_dir.mkdir(parents=True, exist_ok=True)
         filename_source = (
             str(resource.get("name") or "")
             or Path(url.split("?", 1)[0]).name

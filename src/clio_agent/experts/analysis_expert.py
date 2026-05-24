@@ -90,6 +90,22 @@ CSV_COLUMN_FIELDS: dict[str, type | tuple[type, ...]] = {
     "null_count": int,
 }
 
+SEISMIC_STATS_FIELDS: dict[str, type | tuple[type, ...]] = {
+    "filepath": str,
+    "sac_trace_count": int,
+    "traces_analyzed": int,
+    "traces": list,
+}
+
+SEISMIC_TRACE_FIELDS: dict[str, type | tuple[type, ...]] = {
+    "member": str,
+    "station": str,
+    "phase": str,
+    "npts": int,
+    "delta_s": (int, float),
+    "peak_abs": (int, float),
+}
+
 
 _PARALLEL_TRIGGERS = (
     "validate ",
@@ -99,7 +115,19 @@ _PARALLEL_TRIGGERS = (
     "profile ",
 )
 
-_PARALLEL_FILE_SUFFIXES = {".h5", ".hdf5", ".parquet", ".csv", ".bp", ".bp4", ".bp5"}
+_PARALLEL_FILE_SUFFIXES = {
+    ".h5",
+    ".hdf5",
+    ".parquet",
+    ".csv",
+    ".bp",
+    ".bp4",
+    ".bp5",
+    ".sac",
+    ".tar",
+    ".tgz",
+    ".gz",
+}
 
 _MULTI_FILE_INTENT_TERMS = (
     "across",
@@ -120,6 +148,7 @@ _MULTI_FILE_INTENT_TERMS = (
     "together",
     "validate",
 )
+
 
 def _extract_raw_question_file_paths(question: str, suffixes: set[str]) -> list[str]:
     """Return explicit file paths as written in the question.
@@ -229,7 +258,11 @@ class AnalysisExpert(dspy.Module):
         all_tools = self._tool_executor.to_dspy_tools()
 
         # Filter to analysis-owned gateway tools.
-        self._tools = [t for t in all_tools if t.name.startswith("parquet_")]
+        self._tools = [
+            t
+            for t in all_tools
+            if t.name.startswith("parquet_") or t.name == "sac_compute_trace_statistics"
+        ]
 
         logger.info(
             "AnalysisExpert initialized with %d tools: %s",
@@ -381,6 +414,13 @@ class AnalysisExpert(dspy.Module):
             result = self._inspect_csv_file(str(csv_path))
             spawns.append(self._tool_backed_spawn("csv_validator", sub_question, result))
 
+        for seismic_path in extract_file_paths(
+            question, file_context, {".sac", ".tar", ".tgz", ".gz"}
+        ):
+            sub_question = f"Validate seismic waveform statistics for {seismic_path}"
+            result = self._inspect_seismic_file(str(seismic_path))
+            spawns.append(self._tool_backed_spawn("seismic_validator", sub_question, result))
+
         return spawns
 
     @staticmethod
@@ -417,6 +457,12 @@ class AnalysisExpert(dspy.Module):
         csv_paths = extract_file_paths(request.question, request.file_context, {".csv"})
         if csv_paths:
             return self._inspect_csv_file(str(csv_paths[0]))
+
+        seismic_paths = extract_file_paths(
+            request.question, request.file_context, {".sac", ".tar", ".tgz", ".gz"}
+        )
+        if seismic_paths:
+            return self._inspect_seismic_file(str(seismic_paths[0]))
 
         return self._synthesize_without_tools(request)
 
@@ -647,6 +693,87 @@ class AnalysisExpert(dspy.Module):
             metadata={"expert": "analysis", "format": "csv", "filepath": filepath},
         )
 
+    def _inspect_seismic_file(self, filepath: str) -> ExpertResult:
+        """Compute waveform statistics for a staged SAC file or archive."""
+        runner = NativeToolRunner(self._tool_executor)
+        result = runner.call(
+            "sac_compute_trace_statistics",
+            {"filepath": filepath, "max_traces": 6},
+        )
+        stats_valid = validate_tool_result(
+            "sac_compute_trace_statistics",
+            result,
+            SEISMIC_STATS_FIELDS,
+        )
+        if not stats_valid.ok:
+            assert stats_valid.error is not None
+            runner.mark_validation_error("sac_compute_trace_statistics", stats_valid.error)
+            return ExpertResult(
+                analysis=(
+                    f"Could not analyze seismic waveform file {filepath}: "
+                    f"{format_tool_error(stats_valid.error)}"
+                ),
+                recommendations=(
+                    "Verify the staged file is a SAC file or TAR archive containing SAC traces."
+                ),
+                source="deterministic",
+                tools=runner.observations,
+                metadata={"expert": "analysis", "format": "seismic", "filepath": filepath},
+            )
+
+        stats_data = stats_valid.data or {}
+        traces_valid = validate_tool_items(
+            "sac_compute_trace_statistics",
+            stats_data,
+            "traces",
+            SEISMIC_TRACE_FIELDS,
+        )
+        if not traces_valid.ok:
+            assert traces_valid.error is not None
+            runner.mark_validation_error("sac_compute_trace_statistics", traces_valid.error)
+            return ExpertResult(
+                analysis=(
+                    f"Could not validate seismic trace statistics for {filepath}: "
+                    f"{format_tool_error(traces_valid.error)}"
+                ),
+                recommendations="Inspect the seismic tool contract before using this result.",
+                source="deterministic",
+                tools=runner.observations,
+                metadata={"expert": "analysis", "format": "seismic", "filepath": filepath},
+            )
+
+        trace_lines = []
+        for trace in stats_data.get("traces", [])[:6]:
+            trace_lines.append(
+                "- {station} {phase}: npts={npts}, delta_s={delta_s:.4g}, "
+                "peak_abs={peak_abs:.4g}, member={member}".format(
+                    station=trace.get("station", "unknown"),
+                    phase=trace.get("phase", "unknown"),
+                    npts=trace.get("npts", 0),
+                    delta_s=float(trace.get("delta_s") or 0.0),
+                    peak_abs=float(trace.get("peak_abs") or 0.0),
+                    member=trace.get("member", ""),
+                )
+            )
+
+        analysis = (
+            f"Computed SAC waveform statistics for {filepath}. "
+            f"The file exposes {stats_data['sac_trace_count']} SAC traces; "
+            f"{stats_data['traces_analyzed']} traces were sampled for statistics.\n"
+            + "\n".join(trace_lines)
+        )
+        recommendations = (
+            "Use these trace-level statistics to choose representative stations/phases for "
+            "visualization. For full scientific seismology, add a dedicated ObsPy-backed reader."
+        )
+        return ExpertResult(
+            analysis=analysis,
+            recommendations=recommendations,
+            source="deterministic",
+            tools=runner.observations,
+            metadata={"expert": "analysis", "format": "seismic", "filepath": filepath},
+        )
+
     @staticmethod
     def _csv_validation_failure(
         filepath: str,
@@ -712,8 +839,9 @@ class AnalysisExpert(dspy.Module):
             "name": "Analysis Expert",
             "description": (
                 "Specializes in statistical analysis, data profiling, and quality "
-                "assessment of tabular datasets (Parquet/CSV). Computes column-level "
-                "statistics, identifies distributions, and flags data quality issues."
+                "assessment of tabular datasets (Parquet/CSV) and staged SAC waveform "
+                "archives. Computes column-level statistics, samples waveform traces, "
+                "identifies distributions, and flags data quality issues."
             ),
             "keywords": [
                 "parquet",
@@ -727,6 +855,8 @@ class AnalysisExpert(dspy.Module):
                 "profiling",
                 "null count",
                 "outliers",
+                "waveform",
+                "sac",
             ],
             "priority": 2,
         }
