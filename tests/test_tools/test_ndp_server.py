@@ -170,16 +170,64 @@ async def test_ndp_stage_resource_surfaces_osdf_transport(monkeypatch: pytest.Mo
         }
 
     monkeypatch.setattr(ndp_module, "_dataset_details", fake_details)
+    monkeypatch.setattr(ndp_module.shutil, "which", lambda name: None)
+    output_dir = ndp_module.Path.cwd() / "tmp" / "test-ndp-stage"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("CLIO_ALLOWED_ROOTS", str(output_dir.parent))
 
     async with Client(ndp_server) as client:
         result = await client.call_tool(
             "stage_resource",
-            {"dataset_identifier": "ds1", "server": "global"},
+            {
+                "dataset_identifier": "ds1",
+                "server": "global",
+                "output_dir": str(output_dir),
+            },
         )
 
     data = _parse_result(result)
-    assert data["error"]["code"] == "unsupported_resource_transport"
+    assert data["error"]["code"] == "pelican_unavailable"
     assert data["error"]["details"]["transport"] == "osdf"
+
+
+@pytest.mark.asyncio
+async def test_ndp_stage_resource_blocks_oversized_osdf(monkeypatch: pytest.MonkeyPatch):
+    """Advertised resource sizes should prevent accidental huge OSDF staging."""
+
+    async def fake_details(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        return {
+            "id": "ds1",
+            "name": "salton-sea-seismic-data",
+            "title": "Salton Sea Seismic Data",
+            "resources": [
+                {
+                    "name": "Salton Sea Seismic Waveforms",
+                    "url": "osdf:///ndp/public/ucr_seis/Data_Salton",
+                    "resSize": "1.4 GB",
+                }
+            ],
+        }
+
+    monkeypatch.setattr(ndp_module, "_dataset_details", fake_details)
+    monkeypatch.setattr(ndp_module.shutil, "which", lambda name: "pelican")
+    output_dir = ndp_module.Path.cwd() / "tmp" / "test-ndp-stage-large"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("CLIO_ALLOWED_ROOTS", str(output_dir.parent))
+
+    async with Client(ndp_server) as client:
+        result = await client.call_tool(
+            "stage_resource",
+            {
+                "dataset_identifier": "ds1",
+                "server": "global",
+                "max_bytes": 1024,
+                "output_dir": str(output_dir),
+            },
+        )
+
+    data = _parse_result(result)
+    assert data["error"]["code"] == "resource_too_large"
+    assert data["error"]["details"]["size_bytes"] > 1024
 
 
 def test_list_capabilities_reports_ndp_server():

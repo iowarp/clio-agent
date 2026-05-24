@@ -135,19 +135,21 @@ remaining gap is resource staging plus analysis/visualization handoff.
 Follow-up live probe after adding staging support:
 
 ```text
-elapsed_s=10.09
+elapsed_s=13.22
 tools=ndp_list_organizations, ndp_search_datasets, ndp_search_datasets,
       ndp_get_dataset_details, ndp_stage_resource
-staging_error=unsupported_resource_transport
+staging_error=resource_too_large
 resource_url=osdf:///ndp/public/ucr_seis/Data_Salton
+advertised_size_bytes=1503238553
 ```
 
 `ndp_get_dataset_details` now uses NDP's public CKAN package endpoint for global
 id/name lookups, avoiding the slow brittle clio-kit detail path for this case.
-`ndp_stage_resource` can stage bounded HTTP(S) resources under file policy. The
-Salton Sea resource uses OSDF/Pelican transport, so CLIO surfaces a structured
-`unsupported_resource_transport` error and does not pretend that waveform data
-was opened.
+`ndp_stage_resource` can stage bounded HTTP(S) resources under file policy and
+can call a local Pelican CLI for OSDF resources when the resource is within the
+configured size cap. The Salton Sea resource is advertised as about 1.4 GB, so
+CLIO surfaces a structured `resource_too_large` error and does not pretend that
+waveform data was opened.
 
 clio-kit NDP direct external MCP follow-up:
 
@@ -267,7 +269,7 @@ surfacing a false routing failure.
 | `missing_hdf5_error_surface` | `data` | `hdf5_list_datasets` | 0 | `tool_error` | `batch` |
 | `cancellation_surface` | `chat` | none | 0 | `cancelled` | `batch` |
 | `streaming_provenance` | `chat` | none | 0 | none | `live`, `delta_count=257` |
-| `ndp_core_expert_catalog_discovery` | `data` | `ndp_list_organizations`, `ndp_search_datasets`, `ndp_get_dataset_details`, `ndp_stage_resource` in the focused seismic probe | 0 | `unsupported_resource_transport` for OSDF staging in focused seismic probe | `batch`/GACT metadata |
+| `ndp_core_expert_catalog_discovery` | `data` | `ndp_list_organizations`, `ndp_search_datasets`, `ndp_get_dataset_details`, `ndp_stage_resource` in the focused seismic probe | 0 | `resource_too_large` for the 1.4 GB Salton Sea OSDF resource in focused seismic probe | `batch`/GACT metadata |
 | `clio_kit_ndp_external_mcp` | direct external MCP | `clio-kit-ndp.list_organizations` | 0 | none | `batch` |
 
 Earlier local runs exposed two issues now fixed by this branch: single-file
@@ -289,7 +291,7 @@ uses the fixed behavior.
 | Error hardening | `missing_hdf5_error_surface` | Assistant text is empty; `error_info.error == "tool_error"`. |
 | Cancellation | `cancellation_surface` | Assistant text is empty; `error_info.error == "cancelled"`. |
 | Streaming truth | `streaming_provenance` | `message.part.delta` events observed; completed metadata reports `stream_source="live"`. |
-| NDP core path | `ndp_core_expert_catalog_discovery` | Natural catalog prompt; selected `data`; called `ndp_` tools through the CLIO gateway; answer excerpt includes NOAA-related dataset/resource-format evidence. Focused seismic probe reached details/staging and surfaced OSDF transport as a blocker. |
+| NDP core path | `ndp_core_expert_catalog_discovery` | Natural catalog prompt; selected `data`; called `ndp_` tools through the CLIO gateway; answer excerpt includes NOAA-related dataset/resource-format evidence. Focused seismic probe reached details/staging and surfaced the oversized OSDF resource as a blocker. |
 | NDP direct external MCP | `clio_kit_ndp_external_mcp` | GACT installed `clio-kit-ndp` over stdio and called `list_organizations` against the global NDP catalog. |
 
 ## Fixes Landed During Benchmarking

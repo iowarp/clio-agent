@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +19,19 @@ ndp_server = FastMCP("ndp")
 
 _GLOBAL_CKAN_API = "https://nationaldataplatform.org/catalog/api/3/action"
 _MAX_STAGE_BYTES = 50 * 1024 * 1024
+_SIZE_UNITS = {
+    "b": 1,
+    "byte": 1,
+    "bytes": 1,
+    "kb": 1024,
+    "kib": 1024,
+    "mb": 1024 * 1024,
+    "mib": 1024 * 1024,
+    "gb": 1024 * 1024 * 1024,
+    "gib": 1024 * 1024 * 1024,
+    "tb": 1024 * 1024 * 1024 * 1024,
+    "tib": 1024 * 1024 * 1024 * 1024,
+}
 
 
 def _clio_kit_transport(server_name: str = "ndp") -> StdioTransport:
@@ -233,6 +248,26 @@ def _safe_filename(value: str, *, default: str) -> str:
     return cleaned[:120] or default
 
 
+def _parse_resource_size_bytes(value: Any) -> int | None:
+    """Parse common CKAN resource size strings such as ``1.4 GB``."""
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value if value >= 0 else None
+    if not isinstance(value, str) or not value.strip():
+        return None
+    parts = value.strip().replace(",", "").split()
+    if not parts:
+        return None
+    try:
+        number = float(parts[0])
+    except ValueError:
+        return None
+    unit = parts[1].lower() if len(parts) > 1 else "bytes"
+    multiplier = _SIZE_UNITS.get(unit)
+    if multiplier is None:
+        return None
+    return int(number * multiplier)
+
+
 def _stage_error(
     *,
     code: str,
@@ -309,6 +344,106 @@ def _stage_http_resource(
         "path": str(output_path),
         "size_bytes": output_path.stat().st_size,
         "url": url,
+    }
+
+
+def _stage_pelican_resource(
+    *,
+    url: str,
+    output_path: Path,
+    max_bytes: int,
+    resource_size_bytes: int | None,
+) -> dict[str, Any]:
+    """Stage an OSDF/Pelican resource with the local Pelican CLI when available."""
+    if resource_size_bytes is not None and resource_size_bytes > max_bytes:
+        return _stage_error(
+            code="resource_too_large",
+            message=(
+                f"NDP resource is advertised as {resource_size_bytes} bytes, which "
+                f"exceeds the staging limit of {max_bytes} bytes."
+            ),
+            next_action=(
+                "Increase max_bytes intentionally, select a smaller concrete object, "
+                "or stage the resource manually with Pelican."
+            ),
+            details={"url": url, "size_bytes": resource_size_bytes, "max_bytes": max_bytes},
+        )
+
+    pelican = shutil.which("pelican")
+    if pelican is None:
+        return _stage_error(
+            code="pelican_unavailable",
+            message=(
+                "The selected NDP resource uses OSDF/Pelican transport, but the "
+                "`pelican` CLI was not found on PATH."
+            ),
+            next_action=(
+                "Install the Pelican client, verify `pelican --version`, then retry "
+                "ndp_stage_resource."
+            ),
+            details={"url": url, "transport": "osdf"},
+        )
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    command = [pelican, "object", "get", url, str(output_path)]
+    try:
+        completed = subprocess.run(
+            command,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=900,
+        )
+    except subprocess.TimeoutExpired:
+        return _stage_error(
+            code="pelican_timeout",
+            message="Pelican staging timed out before the resource was downloaded.",
+            next_action="Retry with a smaller concrete object or stage the resource manually.",
+            details={"url": url, "timeout_s": 900},
+        )
+
+    if completed.returncode != 0:
+        return _stage_error(
+            code="pelican_stage_failed",
+            message="Pelican failed to stage the selected NDP resource.",
+            next_action=(
+                "Inspect Pelican stderr/stdout, select a concrete object if the URL is "
+                "a namespace, or stage manually."
+            ),
+            details={
+                "url": url,
+                "exit_code": completed.returncode,
+                "stdout": completed.stdout[-2000:],
+                "stderr": completed.stderr[-2000:],
+            },
+        )
+
+    if not output_path.exists():
+        return _stage_error(
+            code="pelican_output_missing",
+            message="Pelican exited successfully but the expected staged file was not found.",
+            next_action="Inspect the output directory and Pelican logs.",
+            details={"url": url, "output_path": str(output_path)},
+        )
+
+    size = output_path.stat().st_size if output_path.is_file() else 0
+    if size > max_bytes:
+        return _stage_error(
+            code="resource_too_large",
+            message=(
+                f"Staged file is {size} bytes, which exceeds the staging limit of "
+                f"{max_bytes} bytes."
+            ),
+            next_action="Delete the staged file or raise max_bytes for intentional large staging.",
+            details={"url": url, "path": str(output_path), "size_bytes": size},
+        )
+
+    return {
+        "staged": True,
+        "path": str(output_path),
+        "size_bytes": size,
+        "url": url,
+        "transport": "osdf",
     }
 
 
@@ -549,26 +684,8 @@ async def stage_resource(
             details={"dataset_identifier": dataset_identifier, "resource": resource},
         )
 
-    if url.lower().startswith("osdf://"):
-        return _stage_error(
-            code="unsupported_resource_transport",
-            message=(
-                "The selected NDP resource uses OSDF/Pelican transport, which CLIO "
-                "does not yet stage directly."
-            ),
-            next_action=(
-                "Install/configure a Pelican client and stage the OSDF path manually, "
-                "or add a Pelican-backed CLIO staging tool."
-            ),
-            details={
-                "dataset_identifier": dataset_identifier,
-                "resource_name": resource.get("name"),
-                "url": url,
-                "transport": "osdf",
-            },
-        )
-
-    if not url.lower().startswith(("http://", "https://")):
+    is_osdf = url.lower().startswith("osdf://")
+    if not is_osdf and not url.lower().startswith(("http://", "https://")):
         return _stage_error(
             code="unsupported_resource_transport",
             message=f"Unsupported NDP resource URL scheme: {url}",
@@ -579,6 +696,8 @@ async def stage_resource(
     try:
         max_stage_bytes = _clean_max_bytes(max_bytes)
         destination_dir = Path(output_dir or Path.cwd() / "tmp" / "clio-ndp-staging")
+        if output_dir is None:
+            destination_dir.mkdir(parents=True, exist_ok=True)
         filename_source = (
             str(resource.get("name") or "")
             or Path(url.split("?", 1)[0]).name
@@ -589,11 +708,22 @@ async def stage_resource(
     except FilePolicyError as exc:
         return exc.to_result()
 
-    result = _stage_http_resource(
-        url=url,
-        output_path=output_path,
-        max_bytes=max_stage_bytes,
+    resource_size_bytes = _parse_resource_size_bytes(
+        resource.get("size") or resource.get("resSize")
     )
+    if is_osdf:
+        result = _stage_pelican_resource(
+            url=url,
+            output_path=output_path,
+            max_bytes=max_stage_bytes,
+            resource_size_bytes=resource_size_bytes,
+        )
+    else:
+        result = _stage_http_resource(
+            url=url,
+            output_path=output_path,
+            max_bytes=max_stage_bytes,
+        )
     if result.get("error"):
         return result
     result.update(
