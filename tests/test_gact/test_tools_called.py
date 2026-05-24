@@ -30,6 +30,7 @@ class _PredWithTools:
     selected_expert: str = "data_expert"
     routing_rationale: str = "keyword match"
     tools_called: object = None
+    expert_handoffs: object = None
 
 
 class _Agent:
@@ -113,3 +114,38 @@ def test_tools_called_propagates_to_message_and_completion(tmp_path: Path) -> No
     assert rows[2]["ok"] is True
     assert rows[2]["duration_ms"] == 8.0
     assert rows[2]["telemetry_source"] == "agent_trace"
+
+
+def test_expert_handoffs_propagate_to_message_metadata(tmp_path: Path) -> None:
+    from .conftest import complete_turn
+
+    handoffs = [
+        {
+            "agent_id": "data",
+            "dispatch_target": "data",
+            "stage": "planner_dispatch",
+            "status": "success",
+            "input_summary": "find data",
+            "output_summary": "staged waveform archive",
+            "duration_ms": 12.0,
+            "metadata": {"expert": "ndp_catalog"},
+        },
+        {
+            "agent_id": "ndp_catalog",
+            "parent_id": "data",
+            "dispatch_target": "ndp_catalog",
+            "stage": "planner_dispatch_child",
+            "status": "success",
+            "input_summary": "find data",
+            "output_summary": "staged waveform archive",
+            "duration_ms": 12.0,
+            "metadata": {"observed_through": "data"},
+        },
+    ]
+    pred = _PredWithTools(expert_handoffs=handoffs)
+    client = _client(tmp_path, pred)
+
+    sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
+    assistant = complete_turn(client, sid, "find seismic data")
+
+    assert assistant["metadata"]["expert_handoffs"] == handoffs

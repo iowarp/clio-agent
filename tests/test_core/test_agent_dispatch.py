@@ -116,6 +116,7 @@ class TestForwardDispatch:
         expert_result = dspy.Prediction(
             analysis="NDP catalog results",
             recommendations="stage a bounded resource",
+            metadata={"expert": "ndp_catalog", "parent_expert": "data"},
         )
         agent.ndp_catalog_expert = MagicMock(return_value=expert_result)
         agent.data_expert = MagicMock()
@@ -124,8 +125,44 @@ class TestForwardDispatch:
 
         assert result.selected_expert == "ndp_catalog"
         assert "NDP catalog results" in result.answer
+        assert result.expert_handoffs[0]["agent_id"] == "ndp_catalog"
+        assert result.expert_handoffs[0]["parent_id"] == "data"
         agent.ndp_catalog_expert.assert_called_once()
         agent.data_expert.assert_not_called()
+
+    def test_nested_expert_tool_errors_surface(self, agent):
+        """Nested expert routes must not bypass normal tool-error surfacing."""
+        self._set_planner(
+            agent,
+            {
+                "action": "expert",
+                "expert": "ndp_catalog",
+                "question": "Find unavailable NDP data",
+            },
+        )
+        expert_result = dspy.Prediction(
+            analysis="Could not query NDP",
+            recommendations="retry later",
+            metadata={"expert": "ndp_catalog", "parent_expert": "data"},
+            tool_provenance=[
+                ToolObservation(
+                    tool="ndp_search_datasets",
+                    params={"search_terms": ["earthscope"]},
+                    result={"error": {"message": "catalog unavailable"}},
+                    duration_ms=1.0,
+                    ok=False,
+                )
+            ],
+        )
+        agent.ndp_catalog_expert = MagicMock(return_value=expert_result)
+
+        result = agent.forward(question="Find unavailable NDP data", session_id="ndp-error")
+
+        assert result.selected_expert == "ndp_catalog"
+        assert result.answer == ""
+        assert result.error_info is not None
+        assert result.error_info["error"] == "tool_error"
+        assert result.error_info["details"]["tool"] == "ndp_search_datasets"
 
     def test_dispatch_sac_format_child_expert(self, agent):
         """SAC routes should execute the nested format expert."""
@@ -140,6 +177,7 @@ class TestForwardDispatch:
         expert_result = dspy.Prediction(
             analysis="SAC trace statistics",
             recommendations="plot representative traces",
+            metadata={"expert": "sac_format", "parent_expert": "analysis"},
         )
         agent.sac_format_expert = MagicMock(return_value=expert_result)
         agent.analysis_expert = MagicMock()
@@ -148,6 +186,8 @@ class TestForwardDispatch:
 
         assert result.selected_expert == "sac_format"
         assert "SAC trace statistics" in result.answer
+        assert result.expert_handoffs[0]["agent_id"] == "sac_format"
+        assert result.expert_handoffs[0]["parent_id"] == "analysis"
         agent.sac_format_expert.assert_called_once()
         agent.analysis_expert.assert_not_called()
 
@@ -166,6 +206,7 @@ class TestForwardDispatch:
         data_result = dspy.Prediction(
             analysis="staged waveform archive",
             recommendations="pass downstream",
+            metadata={"expert": "ndp_catalog", "parent_expert": "data"},
             tool_provenance=[
                 ToolObservation(
                     tool="ndp_stage_resource",
@@ -179,6 +220,7 @@ class TestForwardDispatch:
         analysis_result = dspy.Prediction(
             analysis="computed SAC statistics",
             recommendations="plot representative traces",
+            metadata={"expert": "sac_format", "parent_expert": "analysis"},
             tool_provenance=[
                 ToolObservation(
                     tool="sac_compute_trace_statistics",
@@ -220,6 +262,15 @@ class TestForwardDispatch:
             "sac_compute_trace_statistics",
             "sac_plot_traces",
         ]
+        assert [handoff["agent_id"] for handoff in result.expert_handoffs] == [
+            "data",
+            "ndp_catalog",
+            "analysis",
+            "sac_format",
+            "visualization",
+        ]
+        assert result.expert_handoffs[1]["parent_id"] == "data"
+        assert result.expert_handoffs[3]["parent_id"] == "analysis"
         agent.analysis_expert.assert_called_once()
         agent.visualization_expert.assert_called_once()
 
