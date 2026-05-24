@@ -77,10 +77,18 @@ def test_memory_stats_session_block_populated_when_session_id_set(
     client_with_arc: TestClient,
 ) -> None:
     sid = client_with_arc.post("/v1/sessions", json={"title": "x"}).json()["id"]
+    client_with_arc.app.state.sessions.update(
+        sid,
+        message_count=3,
+        add_tokens_input=120,
+        add_tokens_output=80,
+    )
     body = client_with_arc.get(f"/v1/memory/stats?session_id={sid}").json()
     assert body["session"] is not None
     s = body["session"]
     assert s["session_id"] == sid
+    assert s["messages_retained"] == 3
+    assert s["tokens_retained"] == 200
     assert s["tokens_budget"] == 4000
 
 

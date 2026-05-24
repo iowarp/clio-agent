@@ -104,23 +104,7 @@ def list_capabilities() -> list[dict[str, str]]:
         # Extract first sentence of description
         desc = t.description or ""
         first_sentence = desc.split(".")[0].strip() + "." if desc else ""
-        # Determine server from prefix
-        if t.name.startswith("hdf5_"):
-            server = "hdf5"
-        elif t.name.startswith("parquet_"):
-            server = "parquet"
-        elif t.name.startswith("adios_"):
-            server = "adios"
-        elif t.name.startswith("ndp_"):
-            server = "ndp"
-        elif t.name.startswith("sac_"):
-            server = "sac"
-        elif t.name.startswith("fs_"):
-            server = "fs"
-        elif t.name.startswith("shell_"):
-            server = "shell"
-        else:
-            server = "unknown"
+        server = _infer_tool_server(t.name)
         capabilities.append(
             {
                 "name": t.name,
@@ -129,6 +113,26 @@ def list_capabilities() -> list[dict[str, str]]:
             }
         )
     return capabilities
+
+
+def _infer_tool_server(tool_name: str) -> str:
+    """Infer the bundled gateway server from CLIO's tool-name prefix."""
+
+    if tool_name.startswith("hdf5_"):
+        return "hdf5"
+    if tool_name.startswith("parquet_"):
+        return "parquet"
+    if tool_name.startswith("adios_"):
+        return "adios"
+    if tool_name.startswith("ndp_"):
+        return "ndp"
+    if tool_name.startswith("sac_"):
+        return "sac"
+    if tool_name.startswith("fs_"):
+        return "fs"
+    if tool_name.startswith("shell_"):
+        return "shell"
+    return "unknown"
 
 
 async def list_gateway_tools() -> list[dict[str, Any]]:
@@ -153,6 +157,7 @@ async def list_gateway_tools() -> list[dict[str, Any]]:
                 "name": t.name,
                 "description": t.description,
                 "input_schema": t.inputSchema,
+                "server": _infer_tool_server(t.name),
             }
             for t in mcp_tools
         ]
