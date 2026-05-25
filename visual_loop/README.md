@@ -56,6 +56,19 @@ That JSONL is a local run artifact, so a fresh clone should reproduce sessions
 by running the harness against a live GACT backend rather than relying on the
 artifact being present.
 
+Important distinction:
+
+- `--output-jsonl` and `--report` save benchmark evidence files for audit and
+  report rendering.
+- They do not, by themselves, create TUI-visible sessions.
+- TUI-visible sessions are created when the harness calls the live backend API:
+  `POST /v1/sessions`, `POST /v1/sessions/{id}/messages`, and follow-up polling.
+- To inspect those sessions in the TUI, keep the same backend process alive and
+  run `gact connect <agent-name>` after the benchmark.
+- If the backend is stopped, whether transcripts survive depends on the backend's
+  session/message persistence configuration. The JSONL/report are not a drop-in
+  replacement for live GACT sessions.
+
 ### Backend Setup
 
 From this repo:
@@ -90,6 +103,18 @@ uv run python scripts/run_demo_benchmark.py `
 This creates many sessions and child/nanoagent sessions. It is intentionally
 useful for testing sidebar scale, collapsed children, handoff rows, tool-result
 rendering, details, scrolling, and memory/context presentation.
+
+After it finishes, verify both layers:
+
+```powershell
+# Evidence artifacts exist.
+Test-Path tmp/visual-loop-benchmark.jsonl
+Test-Path tmp/visual-loop-benchmark-report.md
+
+# Live backend sessions and generated child sessions exist.
+Invoke-RestMethod http://127.0.0.1:<PORT>/v1/sessions |
+  ConvertTo-Json -Depth 8
+```
 
 ### Focused Runs For TUI Debugging
 
