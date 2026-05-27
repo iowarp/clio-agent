@@ -110,29 +110,55 @@ class Provider:
 
 # -- shared catalogs --------------------------------------------------
 
-#: Argonne ALCF Llama family. Sophia / Metis / local_vllm all run vLLM
-#: behind the gateway and serve roughly this set; the live ``/jobs``
-#: endpoint reports the actual subset loaded right now.
+#: Argonne ALCF hosted model families. Sophia / Metis / local_vllm run
+#: behind dynamic gateway jobs; the live ``/jobs`` endpoint reports the
+#: actual subset loaded right now. Keep this static catalog as a
+#: fallback/example list, not as a claim of current availability.
 _ARGONNE_MODELS: tuple[ModelEntry, ...] = (
     ModelEntry(
+        "openai/gpt-oss-120b",
+        "GPT-OSS 120B (Sophia)",
+        "Preferred modern Sophia baseline when loaded; verify with live discovery.",
+    ),
+    ModelEntry(
+        "openai/gpt-oss-20b",
+        "GPT-OSS 20B (Sophia)",
+        "Lower-latency GPT-OSS option when loaded on Sophia.",
+    ),
+    ModelEntry(
+        "gpt-oss-120b",
+        "GPT-OSS 120B (Metis)",
+        "Preferred modern Metis baseline when loaded.",
+    ),
+    ModelEntry(
+        "meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8",
+        "Llama 4 Maverick",
+        "Modern Llama 4 fallback; availability depends on running ALCF jobs.",
+    ),
+    ModelEntry(
+        "meta-llama/Llama-4-Scout-17B-16E-Instruct",
+        "Llama 4 Scout",
+        "Modern Llama 4 fallback; useful when GPT-OSS is unavailable.",
+    ),
+    ModelEntry(
         "meta-llama/Meta-Llama-3.1-8B-Instruct",
-        "Llama 3.1 8B Instruct (Sophia/Polaris)",
-        "Default ALCF demo model. Fastest of the lot.",
+        "Llama 3.1 8B Instruct (legacy)",
+        "Legacy compatibility entry; prefer GPT-OSS or Llama 4 when available.",
     ),
     ModelEntry(
         "meta-llama/Meta-Llama-3.1-70B-Instruct",
-        "Llama 3.1 70B Instruct",
-        "Heavier reasoning; jobs may need to warm up.",
+        "Llama 3.1 70B Instruct (legacy)",
+        "Legacy compatibility entry; not recommended as the default baseline.",
     ),
     ModelEntry(
         "meta-llama/Meta-Llama-3.1-405B-Instruct",
-        "Llama 3.1 405B Instruct",
-        "Frontier-class. Often offline; check active models first.",
+        "Llama 3.1 405B Instruct (legacy)",
+        "Legacy compatibility entry; often offline, check active models first.",
     ),
     ModelEntry(
         "mistralai/Mistral-7B-Instruct-v0.3",
         "Mistral 7B Instruct v0.3",
-        "Lightweight alternative to Llama.",
+        "Lightweight legacy fallback; check active models first.",
     ),
 )
 
@@ -373,7 +399,7 @@ PROVIDERS: tuple[Provider, ...] = (
         ),
         provider_kind="argonne",
         api_base="https://inference-api.alcf.anl.gov/resource_server/sophia/vllm/v1",
-        suggested_model="meta-llama/Meta-Llama-3.1-8B-Instruct",
+        suggested_model="openai/gpt-oss-120b",
         requires_api_key=False,
         auth_method="oauth",
         max_tokens_default=4096,

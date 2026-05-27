@@ -6358,6 +6358,7 @@ def build_app(
                 else (f"https://inference-api.alcf.anl.gov/resource_server/{cluster}/vllm/v1")
             )
             try:
+                probe_model = "gpt-oss-120b" if cluster == "metis" else "openai/gpt-oss-120b"
                 probe = requests.post(
                     f"{probe_base}/chat/completions",
                     headers={
@@ -6365,7 +6366,7 @@ def build_app(
                         "Content-Type": "application/json",
                     },
                     json={
-                        "model": "meta-llama/Meta-Llama-3.1-8B-Instruct",
+                        "model": probe_model,
                         "messages": [{"role": "user", "content": "ping"}],
                         "max_tokens": 1,
                         "temperature": 0,

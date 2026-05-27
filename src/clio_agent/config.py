@@ -86,12 +86,11 @@ def _dspy():
 #                         -120b` IS the gateway's model id; stripping
 #                         turns it into `gpt-oss-120b`, which the
 #                         gateway maps to a non-existent backend).
-#   max_tokens (override): 4 096 for Sophia's default Llama 3.1-8B
-#                         (32 768-token context window — the shared
-#                         32 000 default would leave ~768 tokens for the
-#                         router/expert prompts, which the gateway 400s
-#                         on. Users can override with CLIO_LM_MAX_TOKENS
-#                         for larger-context models.)
+#   max_tokens (override): 4 096 for ALCF gateway defaults. Live ALCF
+#                         model context windows vary by running job, and
+#                         some gateway paths reject the shared 32 000
+#                         default. Users can override with
+#                         CLIO_LM_MAX_TOKENS for larger-context models.
 from clio_agent.providers.registry import (
     as_cloud_api_key_env as _registry_cloud_api_key_env,
 )
@@ -251,9 +250,9 @@ class LMProviderConfig:
             else:
                 self.api_key = defaults["api_key"]
         # max_tokens=0 is the sentinel "pick a sensible default for
-        # this provider" — argonne's Sophia gateway 400s on the
-        # global default of 32000 because Llama 3.1-8B has only a
-        # 32 768-token context window.
+        # this provider" — Argonne/ALCF model availability and context
+        # windows vary by running gateway job, and some paths reject
+        # the global 32000 default.
         if self.max_tokens == 0:
             self.max_tokens = int(defaults.get("max_tokens", 32000))
         self._apply_model_profile_defaults()
