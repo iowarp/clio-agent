@@ -12,7 +12,7 @@ CLIO's `LMProviderConfig` (`config.py:75-115`) ships with four built-in provider
 | `ollama` | `http://127.0.0.1:11434/v1` | `granite3.1-dense:8b` | literal `"ollama"` |
 | `openai` | `https://api.openai.com/v1` | `gpt-4o-mini` | `OPENAI_API_KEY` env |
 | `anthropic` | `https://api.anthropic.com/v1` | `claude-sonnet-4-20250514` | `ANTHROPIC_API_KEY` env |
-| `argonne` | `https://inference-api.alcf.anl.gov/resource_server/sophia/vllm/v1` | `meta-llama/Meta-Llama-3.1-8B-Instruct` | Globus Auth (lazy) or `CLIO_ARGONNE_TOKEN` env |
+| `argonne` | `https://inference-api.alcf.anl.gov/resource_server/sophia/vllm/v1` | `openai/gpt-oss-120b` | Globus Auth (lazy) or `CLIO_ARGONNE_TOKEN` env |
 
 (`config.py:40-72`)
 
@@ -30,12 +30,21 @@ pip install 'clio-agent[argonne]'
 # 2. Run the OAuth flow once per machine:
 python -m clio_agent.providers.argonne_auth authenticate
 
-# 3. Point CLIO at Sophia (default) — or Polaris:
+# 3. Discover the currently loaded model ids:
+python scripts/list_alcf_models.py
+
+# 4. Point CLIO at Sophia with a currently loaded modern model:
 export CLIO_LM_PROVIDER=argonne
 export CLIO_LM_API_BASE=https://inference-api.alcf.anl.gov/resource_server/sophia/vllm/v1
-export CLIO_LM_MODEL=meta-llama/Meta-Llama-3.1-8B-Instruct
+export CLIO_LM_MODEL=openai/gpt-oss-120b
 clio-agent
 ```
+
+ALCF model availability is dynamic because hosted models are tied to running
+gateway jobs. Prefer currently loaded modern models such as
+`openai/gpt-oss-120b`, `openai/gpt-oss-20b`, `gpt-oss-120b` on Metis, or Llama
+4 variants. Treat older Llama 3.1 ids as compatibility examples, not as the
+recommended stress-test baseline.
 
 The TUI's Settings → Model picker also exposes "ALCF Sophia (Globus
 Auth)", "ALCF Metis (Globus Auth)", and "vLLM (localhost)" presets.
