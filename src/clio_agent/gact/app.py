@@ -118,6 +118,34 @@ def _iso_from_epoch(ts: float) -> str:
     return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
 
 
+def _expert_handoff_summary(handoff: Mapping[str, Any]) -> str:
+    """Return a compact user-facing summary for an expert handoff part."""
+
+    agent = str(handoff.get("agent_id") or handoff.get("expert") or "expert")
+    parent = str(handoff.get("parent_id") or handoff.get("parent") or "").strip()
+    status = str(handoff.get("status") or "observed")
+    stage = str(handoff.get("stage") or handoff.get("dispatch_target") or "").strip()
+    output = str(handoff.get("output_summary") or handoff.get("summary") or "").strip()
+    route = f"{parent} -> {agent}" if parent else agent
+    bits = [route, status]
+    if stage:
+        bits.append(stage)
+    if output:
+        bits.append(output)
+    return " | ".join(bits)
+
+
+def _format_subagent_input(spawn_input: Any) -> str:
+    """Format a materialized nanoagent input without a raw Python-dict look."""
+
+    if isinstance(spawn_input, str):
+        return spawn_input
+    try:
+        return "Subagent input:\n" + json.dumps(spawn_input, indent=2, sort_keys=True)
+    except (TypeError, ValueError):
+        return f"Subagent input:\n{spawn_input}"
+
+
 def _compact_exact_evidence_index(transcript: str) -> str:
     """Build a deterministic evidence index to append to LM compact summaries."""
     paths: list[str] = []
@@ -1538,6 +1566,15 @@ async def _run_turn_in_background(
                 execution_path=execution_path,
             )
         )
+    for handoff in expert_handoffs:
+        assistant_parts.append(
+            Part(
+                id=_new_part_id(),
+                type="expert_handoff",
+                metadata=handoff,
+                text=_expert_handoff_summary(handoff),
+            )
+        )
     if thinking_text:
         # iowarp/clio-agent#17: surface DSPy reasoning as a
         # thinking Part so the TUI can collapse + render it
@@ -1680,6 +1717,15 @@ async def _run_turn_in_background(
             workspace_id=sess.workspace_id,
             title=f"{agent_id} subagent",
             parent_session_id=sid,
+            agent={"id": str(agent_id), "mode": "subagent"},
+            metadata={
+                "session_type": "nanoagent",
+                "agent_id": str(agent_id),
+                "parent_session_id": sid,
+                "spawned_by_message_id": assistant_msg.id,
+                "spawned_by_agent": selected_agent,
+                "tool_count": len(tools_called) if isinstance(tools_called, list) else 0,
+            },
         )
         sub_now = time.time()
         sub_user = Message(
@@ -1692,9 +1738,14 @@ async def _run_turn_in_background(
                 Part(
                     id=_new_part_id(),
                     type="text",
-                    text=str(spawn_input),
+                    text=_format_subagent_input(spawn_input),
                 )
             ],
+            metadata={
+                "subagent_input": spawn_input,
+                "parent_session_id": sid,
+                "spawned_by_message_id": assistant_msg.id,
+            },
         )
         sub_asst = Message(
             id=_new_message_id("asst"),

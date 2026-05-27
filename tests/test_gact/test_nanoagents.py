@@ -55,10 +55,18 @@ def test_nanoagent_spawns_child_session(tmp_path: Path) -> None:
     assert len(children) == 1
     child = children[0]
     assert child["title"] == "code_reviewer subagent"
+    assert child["agent"]["id"] == "code_reviewer"
+    assert child["agent"]["mode"] == "subagent"
+    assert child["metadata"]["session_type"] == "nanoagent"
+    assert child["metadata"]["parent_session_id"] == sid
+    assert child["metadata"]["tool_count"] == 1
 
     # Child has its own user + assistant messages.
     msgs = client.get(f"/v1/sessions/{child['id']}/messages").json()["messages"]
     assert len(msgs) == 2
+    user = [m for m in msgs if m["role"] == "user"][0]
+    assert "Subagent input:" in user["parts"][0]["text"]
+    assert '"files": [' in user["parts"][0]["text"]
     assistant = [m for m in msgs if m["role"] == "assistant"][0]
     assert any("looks good" in p.get("text", "") for p in assistant["parts"])
     assert assistant["metadata"]["tools_called"][0]["name"] == "fs_read_file"
