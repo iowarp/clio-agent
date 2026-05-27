@@ -111,6 +111,10 @@ def _new_part_id() -> str:
     return f"part_{uuid.uuid4().hex[:12]}"
 
 
+def _new_memory_event_id() -> str:
+    return f"mem_{uuid.uuid4().hex[:12]}"
+
+
 def _iso_from_epoch(ts: float) -> str:
     """ISO-8601 UTC with microsecond precision to match the session
     registry's created_at format."""
@@ -4563,6 +4567,7 @@ def build_app(
         ],
         write_root=prompt_write_root,
     )
+    app.state.memory_events = {}
     # CLIO-BBBBBBBBBB13: per-session pub/sub. POST /messages
     # publishes; /v1/sessions/{sid}/events subscribers consume.
     app.state.bus = EventBus()
@@ -7464,15 +7469,19 @@ def build_app(
         # future /resume can recover full history). The TUI doesn't see
         # archived messages — only the compact summary + anything that
         # comes after it.
+        event_id = _new_memory_event_id()
+        compacted_at = datetime.now(timezone.utc).isoformat()
         archive = app.state.__dict__.setdefault("session_archives", {})
         archive.setdefault(sid, []).append(
             {
                 "compacted_at": time.time(),
+                "memory_event_id": event_id,
                 "messages": list(ledger),
             }
         )
 
         arc = getattr(agent, "arc", None)
+        arc_status = "not_configured"
         if arc is not None:
             try:
                 from clio_agent.arc.schema import (  # noqa: PLC0415
@@ -7488,6 +7497,7 @@ def build_app(
                     metadata={
                         "source": "gact_compact",
                         "synthetic": "compact_summary",
+                        "memory_event_id": event_id,
                         "archived_count": len(ledger),
                     },
                 )
@@ -7517,6 +7527,7 @@ def build_app(
                     conv.metadata["compacted_at"] = now_ts
                     conv.metadata["archived_message_count"] = len(ledger)
                 arc.store_conversation(conv)
+                arc_status = "stored"
             except Exception as exc:  # noqa: BLE001
                 raise HTTPException(
                     status_code=500,
@@ -7541,16 +7552,44 @@ def build_app(
                 Part(
                     id=f"part_compact_{uuid.uuid4().hex[:10]}",
                     type="text",
-                    metadata={"synthetic": "compact_summary"},
+                    metadata={
+                        "synthetic": "compact_summary",
+                        "memory_event_id": event_id,
+                    },
                     text="[compact summary]\n" + (summary or "").strip(),
                 )
             ],
             tokens=Tokens(input=0, output=0, cache_read=0, cache_write=0),
             cost_usd=0.0,
             stop_reason="end_turn",
-            metadata={"synthetic": "compact_summary"},
+            metadata={
+                "synthetic": "compact_summary",
+                "memory_event_id": event_id,
+            },
         )
         _replace_session_messages(app, sid, [compact_message])
+        memory_event = {
+            "id": event_id,
+            "version": 1,
+            "type": "compact_summary",
+            "session_id": sid,
+            "created_at": compacted_at,
+            "updated_at": compacted_at,
+            "summary_message_id": compact_message.id,
+            "archived_count": len(ledger),
+            "summary_chars": len((summary or "")),
+            "transcript_chars": len(transcript),
+            "transcript_limit": transcript_limit,
+            "per_part_limit": per_part_limit,
+            "focus": focus,
+            "arc_status": arc_status,
+            "metadata": {
+                "source": "gact_compact",
+                "synthetic": "compact_summary",
+                "evidence_index": "[exact retained evidence index]" in (summary or ""),
+            },
+        }
+        app.state.memory_events.setdefault(sid, []).append(memory_event)
 
         # Publish so any open SSE stream redraws.
         app.state.bus.publish(
@@ -7558,17 +7597,73 @@ def build_app(
                 type="session.compacted",
                 session_id=sid,
                 payload={
+                    "event_id": event_id,
                     "archived_count": len(ledger),
                     "summary_chars": len((summary or "")),
+                    "summary_message_id": compact_message.id,
+                    "version": 1,
                 },
             )
         )
         return {
             "session_id": sid,
             "compacted": True,
+            "event_id": event_id,
             "archived_count": len(ledger),
             "summary": summary,
         }
+
+    @app.get("/v1/sessions/{sid}/memory/events")
+    async def list_session_memory_events(sid: str, limit: int = 50) -> dict[str, Any]:
+        sess = app.state.sessions.get(sid)
+        if sess is None:
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="not_found",
+                        message=f"session not found: {sid}",
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        if limit <= 0:
+            limit = 50
+        limit = min(limit, 200)
+        events = list(app.state.memory_events.get(sid, []))
+        return {"events": events[-limit:]}
+
+    @app.get("/v1/sessions/{sid}/memory/events/{event_id}")
+    async def get_session_memory_event(sid: str, event_id: str) -> dict[str, Any]:
+        sess = app.state.sessions.get(sid)
+        if sess is None:
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="not_found",
+                        message=f"session not found: {sid}",
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        event = next(
+            (row for row in app.state.memory_events.get(sid, []) if row.get("id") == event_id),
+            None,
+        )
+        if event is None:
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="not_found",
+                        message=f"memory event not found: {event_id}",
+                        details={"session_id": sid, "event_id": event_id},
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        return {"event": event}
 
     @app.delete("/v1/mcp/servers/{sid}", status_code=204)
     async def uninstall_mcp_server(sid: str) -> None:
