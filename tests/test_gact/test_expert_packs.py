@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
@@ -192,3 +193,81 @@ def test_capabilities_advertise_expert_packs(isolated_env: Path, tmp_path: Path)
 
     assert caps["x_clio_expert_packs"] is True
 
+
+def test_expert_pack_agent_can_be_selected_and_executed(
+    isolated_env: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from .conftest import complete_turn
+
+    calls: list[tuple[str, str, str]] = []
+    module = object()
+
+    def fake_module(base_agent: Any, agent_def: Any) -> object:
+        del base_agent
+        assert agent_def.id == "csv_quality"
+        assert agent_def.source == "expert_pack"
+        assert agent_def.parent_id == "analysis"
+        assert agent_def.prompt_profile == "light"
+        return module
+
+    async def fake_stream_unavailable(
+        app: Any,
+        enriched_text: str,
+        sid: str,
+        emit_chunk: Any,
+        **kwargs: Any,
+    ) -> None:
+        del enriched_text, emit_chunk
+        assert kwargs["agent_override"] is module
+        from clio_agent.gact.app import _record_stream_fallback
+
+        _record_stream_fallback(app, sid, "dynamic_prompt_stream_unavailable")
+        return None
+
+    def fake_prompt_agent(base_agent: Any, agent_def: Any, question: str, session_id: str) -> Any:
+        del base_agent
+        calls.append((agent_def.id, question, session_id))
+        return type(
+            "Pred",
+            (),
+            {
+                "answer": "CSV_QUALITY_OK",
+                "selected_expert": agent_def.id,
+                "routing_rationale": "session selected expert-pack agent",
+            },
+        )()
+
+    monkeypatch.setattr("clio_agent.gact.app._build_prompt_user_agent_module", fake_module)
+    monkeypatch.setattr("clio_agent.gact.app._try_streamed_forward", fake_stream_unavailable)
+    monkeypatch.setattr("clio_agent.gact.app._run_prompt_user_agent", fake_prompt_agent)
+
+    root = isolated_env / ".clio" / "experts"
+    root.mkdir(parents=True)
+    root.joinpath("csv_quality.md").write_text(
+        """---
+id: csv_quality
+title: CSV Quality Expert
+parent_id: analysis
+tier: 3
+profile: light
+---
+Check CSV schemas and quality.
+""",
+        encoding="utf-8",
+    )
+
+    app = build_app(sessions_path=tmp_path / "sessions.json", agent=object())
+    with TestClient(app) as client:
+        sid = client.post(
+            "/v1/sessions",
+            json={"title": "expert run", "agent": {"id": "csv_quality"}},
+        ).json()["id"]
+        assistant = complete_turn(client, sid, "inspect data.csv")
+
+    assert calls == [("csv_quality", "inspect data.csv", sid)]
+    assert assistant["stop_reason"] == "end_turn"
+    assert assistant["parts"][0]["selected_agent"] == "csv_quality"
+    assert assistant["parts"][1]["text"] == "CSV_QUALITY_OK"
+    assert assistant["metadata"]["stream_fallback"]["reason"] == "dynamic_prompt_stream_unavailable"

@@ -540,7 +540,7 @@ def _session_agent_id(sess: Any) -> str:
 
 
 def _resolve_dynamic_agent(app: "FastAPI", agent_id: str) -> "AgentDef | None":
-    """Return a registered user/skill agent definition by id."""
+    """Return a registered user/skill/expert-pack agent definition by id."""
     if not agent_id:
         return None
     row = app.state.user_agents.get(agent_id)
@@ -549,6 +549,10 @@ def _resolve_dynamic_agent(app: "FastAPI", agent_id: str) -> "AgentDef | None":
     for skill in _load_skills_from_disk():
         if skill.id == agent_id:
             return skill
+    expert_rows = validate_expert_hierarchy(_builtin_agents() + load_expert_packs())
+    for expert in expert_rows:
+        if expert.id == agent_id and expert.source == "expert_pack" and expert.enabled:
+            return expert
     return None
 
 
