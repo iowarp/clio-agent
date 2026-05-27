@@ -36,6 +36,8 @@ def test_undo_removes_last_messages_and_audits_destructive_action(tmp_path: Path
         assert resp.status_code == 200
         body = resp.json()
         assert body["deleted_message_ids"] == ["msg_2", "msg_3"]
+        assert body["deleted_messages"] == ["msg_2", "msg_3"]
+        assert body["reverted_message_ids"] == ["msg_2", "msg_3"]
         assert body["message_count"] == 1
         assert [m.id for m in app.state.messages[sid]] == ["msg_1"]
         sess = app.state.sessions.get(sid)
@@ -67,6 +69,21 @@ def test_rewind_removes_messages_after_target_by_default(tmp_path: Path) -> None
         assert [m.id for m in app.state.messages[sid]] == ["msg_1", "msg_2"]
         permission = next(iter(app.state.permissions.values()))
         assert permission["tool_call"]["tool_name"] == "gact.session.rewind"
+
+
+def test_rewind_accepts_gact_to_message_id_alias(tmp_path: Path) -> None:
+    app = build_app(sessions_path=tmp_path / "s.json")
+    with TestClient(app) as client:
+        sid = client.post("/v1/sessions", json={"title": "rewind"}).json()["id"]
+        _seed_messages(client, sid, ["msg_1", "msg_2", "msg_3"])
+
+        resp = client.post(f"/v1/sessions/{sid}/rewind", json={"to_message_id": "msg_1"})
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["deleted_message_ids"] == ["msg_2", "msg_3"]
+        assert body["deleted_messages"] == ["msg_2", "msg_3"]
+        assert [m.id for m in app.state.messages[sid]] == ["msg_1"]
 
 
 def test_rewind_can_include_target_message(tmp_path: Path) -> None:

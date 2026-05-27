@@ -120,8 +120,8 @@ Outcome choices:
 
 | Area | GACT/TUI truth | CLIO truth | Needed planning decision |
 |---|---|---|---|
-| `undo` | GACT contract, emulator, and CLI define `POST /v1/sessions/{sid}/undo`. | CLIO route not found. | Implement in CLIO or explicitly mark unsupported until memory semantics are decided. Tracked in #328. |
-| `rewind` | GACT contract, emulator, and CLI define `POST /v1/sessions/{sid}/rewind`. | CLIO route not found. | Implement in CLIO or explicitly mark unsupported until memory semantics are decided. Tracked in #328. |
+| `undo` | GACT contract, emulator, and CLI define `POST /v1/sessions/{sid}/undo`. | Implemented by #328 as a permission-audited visible-transcript rollback. | Keep memory scope explicit as `gact_visible_transcript_only` until #331 defines durable ARC tombstones or deletion semantics. |
+| `rewind` | GACT contract, emulator, and CLI define `POST /v1/sessions/{sid}/rewind`. | Implemented by #328 as a permission-audited visible-transcript rollback, accepting `message_id`, `target_message_id`, or `to_message_id`. | Keep memory scope explicit as `gact_visible_transcript_only` until #331 defines durable ARC tombstones or deletion semantics. |
 
 Permissions are not currently a layer-2 item. The backend exists; the remaining
 question is how much of it should be surfaced in the TUI.
@@ -138,8 +138,8 @@ question is how much of it should be surfaced in the TUI.
 | `/agents` vs `/agents-list` | Help advertises `/agents`; TUI dispatch handles `/agent` and `/agents`; local palette injects `/agents-list`. | Naming drift across help, handler, and palette. | Pick one canonical command, keep aliases only if deliberately supported, and test all advertised aliases. |
 | `/theme-next`, `/theme-prev` | TUI dispatch code handles them and help advertises them, but the CLIO local palette list does not inject them. | Help/handler/palette drift. | Add to palette or remove from help. |
 | `gact voice` / voice key help | CLIO advertises `voice=false`; generic GACT/TUI still has voice scaffolding. | Reserved future capability shown too much like a runnable feature. | Keep framework, but mark disabled/not-supported-yet and fail fast capability-aware. |
-| `gact undo` | CLI calls `/v1/sessions/{sid}/undo`; CLIO lacks the route. | Missing backend capability shown by CLI/docs. | Implement via #328 or make CLI/docs capability-aware for CLIO. |
-| `gact rewind` | CLI calls `/v1/sessions/{sid}/rewind`; CLIO lacks the route. | Missing backend capability shown by CLI/docs. | Implement via #328 or make CLI/docs capability-aware for CLIO. |
+| `gact undo` | CLI calls `/v1/sessions/{sid}/undo`; #328 adds the CLIO route. | Backend parity implemented; TUI/CLI live verification remains useful. | Verify against live CLI after #328 lands. |
+| `gact rewind` | CLI calls `/v1/sessions/{sid}/rewind`; #328 adds the CLIO route. | Backend parity implemented; TUI/CLI live verification remains useful. | Verify against live CLI after #328 lands. |
 | Stale docs/help commands such as `/scenarios` | Older docs may mention commands not present in CLIO or the current TUI palette. | Stale surfaced contract. | Remove, mark emulator-only, or route to the correct current surface. |
 
 ## Audit Methodology Required Before Implementation
@@ -304,16 +304,20 @@ is a full TUI permission-policy editor.
 
 ## Undo And Rewind Semantics
 
-This should become its own backend implementation issue or a blocking subtask.
+#328 implements the backend route layer. The remaining durable-memory question
+belongs to #331.
 
 gact-tui and the emulator define:
 
 - `POST /v1/sessions/{id}/undo` with `{count?: int}` returning
-  `{reverted_messages: string[]}`.
+  reverted/deleted message ids.
 - `POST /v1/sessions/{id}/rewind` with `{to_message_id, include_target?}`
-  returning `{deleted_messages: string[]}`.
+  returning deleted message ids.
 
-CLIO GACT does not appear to implement these routes.
+CLIO GACT implements these routes in #328. Responses include
+`deleted_message_ids` plus compatibility aliases `deleted_messages` and
+`reverted_message_ids`. Rewind accepts `message_id`, `target_message_id`, and
+`to_message_id`.
 
 Desired semantics:
 
@@ -328,12 +332,13 @@ Desired semantics:
   conversation copy, the operation must either update ARC consistently or mark
   the operation as GACT-transcript-only.
 
-Open design point:
+Open memory design point for #331:
 
 - Should rewind/undo delete from ARC memory, append tombstones, or only alter
   the GACT-visible transcript?
 
-That memory question should link to the memory refinement issue.
+Until that lands, rollback metadata and responses explicitly report
+`memory_scope=gact_visible_transcript_only`.
 
 ## Voice Semantics
 
@@ -422,11 +427,17 @@ support:
 
 ### Child Issue: CLIO Undo/Rewind Endpoints
 
-Create a child issue if we want to keep the main issue focused:
+Covered by #328:
 
 - Implement `/v1/sessions/{sid}/undo`.
 - Implement `/v1/sessions/{sid}/rewind`.
-- Define ARC/memory consistency semantics.
+
+Tracked by #331:
+
+- Define durable ARC/memory tombstone or deletion semantics.
+
+Still useful after merge:
+
 - Add TUI/CLI live CLIO tests.
 
 ### Possible Child Issue: TUI Permission Policy Editor

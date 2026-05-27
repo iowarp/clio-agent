@@ -5261,6 +5261,8 @@ def build_app(
             "session_id": sid,
             "operation": operation,
             "deleted_message_ids": deleted_ids,
+            "deleted_messages": deleted_ids,
+            "reverted_message_ids": deleted_ids,
             "message_count": len(kept_messages),
             "memory_scope": "gact_visible_transcript_only",
             "session": session_payload,
@@ -5349,7 +5351,10 @@ def build_app(
                 ).model_dump(exclude_none=True),
             )
         target_message_id = str(
-            body.get("message_id") or body.get("target_message_id") or ""
+            body.get("message_id")
+            or body.get("target_message_id")
+            or body.get("to_message_id")
+            or ""
         ).strip()
         if not target_message_id:
             raise HTTPException(
