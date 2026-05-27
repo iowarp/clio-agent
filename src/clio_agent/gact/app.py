@@ -8546,11 +8546,17 @@ def build_app(
     # ---- /v1/agents catalog (BBB10) + dynamic registry (#19) ---------
 
     def _agent_rows() -> list[AgentDef]:
-        return (
+        rows = (
             _builtin_agents()
             + [AgentDef(**row.to_wire()) for row in app.state.user_agents.list()]
             + _load_skills_from_disk()
         )
+        return [
+            _apply_prompt_registry_to_agent(app, row)
+            if _agent_prompt_request(row)[0]
+            else row
+            for row in rows
+        ]
 
     @app.get("/v1/agents", response_model=ListAgentsResponse)
     async def list_agents(tier: Optional[int] = None) -> ListAgentsResponse:

@@ -150,12 +150,21 @@ def test_user_agent_runtime_uses_resolved_prompt_profile(
             },
         )
         assert created.status_code == 201, created.text
+        catalog_agent = c.get("/v1/agents/reviewer").json()
+        listed_agents = {
+            row["id"]: row for row in c.get("/v1/agents").json()["agents"]
+        }
         sid = c.post(
             "/v1/sessions",
             json={"title": "prompt-backed agent", "agent": {"id": "reviewer"}},
         ).json()["id"]
         assistant = complete_turn(c, sid, "review this")
 
+    assert catalog_agent["system_prompt"] == "Use the external reviewer prompt."
+    assert catalog_agent["default_provider"] == "openai"
+    assert catalog_agent["default_model"] == "gpt-5-mini"
+    assert catalog_agent["metadata"]["prompt_resolution"]["status"] == "resolved"
+    assert listed_agents["reviewer"]["metadata"]["prompt_resolution"]["id"] == "clio.reviewer"
     assert seen["question"] == "review this"
     assert seen["system_prompt"] == "Use the external reviewer prompt."
     assert seen["provider"] == "openai"
