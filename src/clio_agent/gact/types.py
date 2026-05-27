@@ -578,6 +578,7 @@ class AnswerUserQuestionRequest(BaseModel):
 
 class RetryTurnRequest(BaseModel):
     notes: str = ""
+    execute: bool = False
     model: Optional[ModelRef] = None
     provider_id: str = ""
     model_id: str = ""

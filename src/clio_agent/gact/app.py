@@ -1047,6 +1047,9 @@ async def _run_turn_in_background(
     proposed_diffs: list[Any] = []
     nanoagents: list[Any] = []
     thinking_text = ""
+    retry_attempt_id = ""
+    if isinstance(user_msg.metadata, dict):
+        retry_attempt_id = str(user_msg.metadata.get("retry_attempt_id") or "")
     turn_tokens: dict[str, int] = {
         "input": 0,
         "output": 0,
@@ -1054,6 +1057,41 @@ async def _run_turn_in_background(
         "cache_write": 0,
     }
     turn_cost = 0.0
+
+    def _update_retry_attempt(
+        status: str,
+        *,
+        metadata_patch: Optional[dict[str, Any]] = None,
+    ) -> None:
+        if not retry_attempt_id:
+            return
+        attempt = app.state.turn_attempts.get(retry_attempt_id)
+        if attempt is None:
+            return
+        metadata = dict(attempt.metadata)
+        if metadata_patch:
+            metadata.update(metadata_patch)
+        updated = attempt.model_copy(
+            update={
+                "status": status,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+                "metadata": metadata,
+            }
+        )
+        app.state.turn_attempts[retry_attempt_id] = updated
+        app.state.bus.publish(
+            Event(
+                type=f"turn.retry_{status}",
+                session_id=sid,
+                payload=updated.model_dump(exclude_none=True),
+            )
+        )
+
+    if retry_attempt_id:
+        _update_retry_attempt(
+            "running",
+            metadata_patch={"executed_user_message_id": user_msg.id},
+        )
 
     # iowarp/clio-agent#5: prepend any attached context files to the
     # user's text so the agent's forward() sees them as primed input.
@@ -1090,6 +1128,13 @@ async def _run_turn_in_background(
                 )
             )
             app.state.sessions.update(sid, status="error")
+            _update_retry_attempt(
+                "failed",
+                metadata_patch={
+                    "execution_error": "permission_error",
+                    "executed_user_message_id": user_msg.id,
+                },
+            )
             bus.publish(
                 Event(
                     type="session.status_changed",
@@ -1904,7 +1949,16 @@ async def _run_turn_in_background(
 
     # Persist + settle.
     final_status = "cancelled" if cancelled_turn else ("error" if error_info else "idle")
+    retry_status = "cancelled" if cancelled_turn else ("failed" if error_info else "completed")
     _append_session_message(app, sid, assistant_msg)
+    _update_retry_attempt(
+        retry_status,
+        metadata_patch={
+            "executed_user_message_id": user_msg.id,
+            "assistant_message_id": assistant_msg.id,
+            "stop_reason": completed_payload["stop_reason"],
+        },
+    )
     app.state.sessions.update(
         sid,
         status=final_status,
@@ -8253,6 +8307,80 @@ def build_app(
             ]
         return list(req.options)
 
+    def _start_background_user_turn(
+        sid: str,
+        sess: Session,
+        user_text: str,
+        *,
+        metadata: Optional[dict[str, Any]] = None,
+        prev_status: str = "idle",
+    ) -> Message:
+        now = time.time()
+        user_msg = Message(
+            id=_new_message_id("user"),
+            session_id=sid,
+            role="user",
+            created_at=_iso_from_epoch(now),
+            updated_at=_iso_from_epoch(now),
+            parts=[Part(id=_new_part_id(), type="text", text=user_text)],
+            metadata=metadata or {},
+        )
+
+        _append_session_message(app, sid, user_msg)
+        app.state.sessions.update(sid, status="running")
+        app.state.bus.publish(
+            Event(
+                type="session.status_changed",
+                session_id=sid,
+                payload={
+                    "session_id": sid,
+                    "status": "running",
+                    "prev_status": prev_status,
+                },
+            )
+        )
+        app.state.bus.publish(
+            Event(
+                type="message.created",
+                session_id=sid,
+                payload=user_msg.model_dump(exclude_none=True),
+            )
+        )
+
+        task = asyncio.create_task(_run_turn_in_background(app, sid, user_text, user_msg))
+        app.state.in_flight_turns[sid] = task
+
+        def _drop_task(_t, _sid=sid) -> None:
+            cur = app.state.in_flight_turns.get(_sid)
+            if cur is _t:
+                app.state.in_flight_turns.pop(_sid, None)
+
+        task.add_done_callback(_drop_task)
+        return user_msg
+
+    def _message_text(message: Message) -> str:
+        return "\n".join(
+            part.text for part in message.parts if part.type == "text" and part.text
+        ).strip()
+
+    def _retry_source_user_message(messages: list[Message], source: Message) -> Message | None:
+        if source.role == "user":
+            return source
+        try:
+            source_index = next(idx for idx, msg in enumerate(messages) if msg.id == source.id)
+        except StopIteration:
+            return None
+        for msg in reversed(messages[:source_index]):
+            if msg.role == "user":
+                return msg
+        return None
+
+    def _retry_user_text(original_text: str, notes: str) -> str:
+        notes = notes.strip()
+        if not notes:
+            return original_text
+        return f"{original_text}\n\n[Retry notes]\n{notes}"
+
     @app.get("/v1/sessions/{sid}/questions")
     async def list_user_questions(sid: str, status: str = "") -> dict[str, Any]:
         if app.state.sessions.get(sid) is None:
@@ -8429,9 +8557,11 @@ def build_app(
         status_code=202,
     )
     async def retry_turn(sid: str, message_id: str, req: RetryTurnRequest) -> TurnAttempt:
-        if app.state.sessions.get(sid) is None:
+        sess = app.state.sessions.get(sid)
+        if sess is None:
             raise _session_not_found(sid)
-        source = next((m for m in app.state.messages.get(sid, []) if m.id == message_id), None)
+        messages = app.state.messages.get(sid, [])
+        source = next((m for m in messages if m.id == message_id), None)
         if source is None:
             raise HTTPException(
                 status_code=404,
@@ -8464,12 +8594,55 @@ def build_app(
                 "cache, increase time to first token, increase latency/cost, and produce "
                 "different tool or reasoning behavior."
             )
+        execution_blocked_reason = ""
+        retry_user_msg: Message | None = None
+        source_user = _retry_source_user_message(messages, source)
+        if req.execute:
+            if app.state.agent is None:
+                raise HTTPException(
+                    status_code=503,
+                    detail=_agent_not_available_error(app, sid).model_dump(exclude_none=True),
+                )
+            lm_status = getattr(app.state, "lm_config_status", {}) or {}
+            if lm_status.get("state") == "configuring":
+                raise HTTPException(
+                    status_code=503,
+                    detail=ErrorEnvelope(
+                        error=ErrorInfo(
+                            error="provider_configuring",
+                            message=(
+                                "LM provider configuration is still in progress; retry after "
+                                "it finishes."
+                            ),
+                            details={
+                                "session_id": sid,
+                                "operation_id": lm_status.get("operation_id", ""),
+                                "provider": lm_status.get("provider", ""),
+                                "model": lm_status.get("model", ""),
+                                "recovery_actions": [
+                                    "wait",
+                                    "check_lm_provider_status",
+                                    "retry",
+                                ],
+                            },
+                            recoverable=True,
+                        )
+                    ).model_dump(exclude_none=True),
+                )
+            if source_user is None or not _message_text(source_user):
+                execution_blocked_reason = "source_user_message_not_found"
+            elif model_changed:
+                execution_blocked_reason = "model_override_not_executable"
         now_iso = datetime.now(timezone.utc).isoformat()
         attempt = TurnAttempt(
             id=_new_attempt_id(),
             session_id=sid,
             source_message_id=message_id,
-            status="recorded",
+            status=(
+                "queued"
+                if req.execute and not execution_blocked_reason
+                else ("failed" if req.execute else "recorded")
+            ),
             created_at=now_iso,
             updated_at=now_iso,
             notes=req.notes,
@@ -8478,11 +8651,37 @@ def build_app(
             metadata={
                 **req.metadata,
                 "source_message_role": source.role,
+                "source_user_message_id": source_user.id if source_user is not None else "",
                 "active_model": active_model,
-                "retry_protocol": "recorded_for_replay",
+                "retry_protocol": "queued_for_execution" if req.execute else "recorded_for_replay",
+                "execution_blocked_reason": execution_blocked_reason,
             },
         )
         app.state.turn_attempts[attempt.id] = attempt
+        if req.execute and not execution_blocked_reason and source_user is not None:
+            retry_text = _retry_user_text(_message_text(source_user), req.notes)
+            retry_user_msg = _start_background_user_turn(
+                sid,
+                sess,
+                retry_text,
+                metadata={
+                    "retry_attempt_id": attempt.id,
+                    "retry_source_message_id": message_id,
+                    "retry_source_user_message_id": source_user.id,
+                    "retry_notes": req.notes,
+                    **req.metadata,
+                },
+                prev_status=sess.status,
+            )
+            attempt = attempt.model_copy(
+                update={
+                    "metadata": {
+                        **attempt.metadata,
+                        "queued_user_message_id": retry_user_msg.id,
+                    }
+                }
+            )
+            app.state.turn_attempts[attempt.id] = attempt
         app.state.bus.publish(
             Event(
                 type="turn.retry_requested",
@@ -8677,56 +8876,17 @@ def build_app(
                 ).model_dump(exclude_none=True),
             )
 
-        now = time.time()
-        user_msg = Message(
-            id=_new_message_id("user"),
-            session_id=sid,
-            role="user",
-            created_at=_iso_from_epoch(now),
-            updated_at=_iso_from_epoch(now),
-            parts=[Part(id=_new_part_id(), type="text", text=user_text)],
-            metadata=req.metadata,
-        )
-
         # Persist + publish the user message synchronously so by the
         # time the ack returns, GET /messages reflects it. Then mark
         # the session running, then schedule the turn in the
         # background and return.
-        _append_session_message(app, sid, user_msg)
-        app.state.sessions.update(sid, status="running")
-        app.state.bus.publish(
-            Event(
-                type="session.status_changed",
-                session_id=sid,
-                payload={"session_id": sid, "status": "running", "prev_status": "idle"},
-            )
+        user_msg = _start_background_user_turn(
+            sid,
+            sess,
+            user_text,
+            metadata=req.metadata,
+            prev_status="idle",
         )
-        app.state.bus.publish(
-            Event(
-                type="message.created",
-                session_id=sid,
-                payload=user_msg.model_dump(exclude_none=True),
-            )
-        )
-
-        # iowarp/clio-agent#3: switched from BackgroundTasks (which
-        # doesn't expose the task back) to asyncio.create_task so
-        # /v1/sessions/{sid}/cancel can track the in-flight turn.
-        # The cancel handler gives cooperative checks a short grace
-        # window, then calls .cancel() if the task is still running.
-        # We schedule the task on the
-        # running loop AFTER queueing background_tasks (which
-        # FastAPI now runs nothing in, but kept as a hook in case
-        # we want a post-response side-effect later).
-        task = asyncio.create_task(_run_turn_in_background(app, sid, user_text, user_msg))
-        app.state.in_flight_turns[sid] = task
-
-        def _drop_task(_t, _sid=sid) -> None:
-            cur = app.state.in_flight_turns.get(_sid)
-            if cur is _t:
-                app.state.in_flight_turns.pop(_sid, None)
-
-        task.add_done_callback(_drop_task)
         # background_tasks parameter is unused but kept on the
         # signature so existing callers (and FastAPI's docs) don't
         # change shape.
