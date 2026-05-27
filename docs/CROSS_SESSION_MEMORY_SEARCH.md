@@ -57,6 +57,24 @@ using a different `metadata.source` value.
 - Unknown `session_id` returns `404`.
 - Empty or punctuation-only queries return `422`.
 - Callers should show provenance before using a hit as model context.
-- Future orchestrator tools should treat cross-session hits as retrieved
-  evidence, not as invisible prompt memory.
+- Orchestrator/TUI callers may inject hits into a turn only through explicit
+  message metadata:
 
+```json
+{
+  "memory_search": {
+    "enabled": true,
+    "query": "pressure dataset",
+    "include_cross_session": true,
+    "workspace_id": "ws_science",
+    "limit": 5,
+    "reason": "answer user request about recent work"
+  }
+}
+```
+
+When this metadata is present, CLIO prepends an `Explicit Memory Search Results`
+section to the agent input, emits a `memory.search.completed` event, and records
+the same provenance under assistant `metadata.memory_search`. This makes
+cross-session recall available to the model while keeping it visible and
+auditable.

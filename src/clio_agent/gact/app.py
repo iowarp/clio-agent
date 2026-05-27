@@ -508,6 +508,129 @@ def _memory_search_excerpt(text: str, terms: list[str], *, max_chars: int = 480)
     return prefix + text[start:end].strip() + suffix
 
 
+def _memory_search_response(
+    app: "FastAPI",
+    *,
+    query: str,
+    session_id: str = "",
+    workspace_id: str = "",
+    include_cross_session: bool = False,
+    limit: int = 20,
+    exclude_message_id: str = "",
+) -> "MemorySearchResponse":
+    """Search retained GACT transcript memory with explicit scope controls."""
+
+    terms = _memory_search_terms(query)
+    if not terms:
+        raise HTTPException(
+            status_code=422,
+            detail=ErrorEnvelope(
+                error=ErrorInfo(
+                    error="invalid_request",
+                    message="memory search query must contain at least one word",
+                    details={"query": query},
+                    recoverable=True,
+                )
+            ).model_dump(exclude_none=True),
+        )
+    if not include_cross_session and not session_id:
+        raise HTTPException(
+            status_code=422,
+            detail=ErrorEnvelope(
+                error=ErrorInfo(
+                    error="invalid_request",
+                    message="session_id is required unless include_cross_session=true",
+                    details={
+                        "include_cross_session": include_cross_session,
+                        "recovery_actions": [
+                            "provide_session_id",
+                            "set_include_cross_session",
+                        ],
+                    },
+                    recoverable=True,
+                )
+            ).model_dump(exclude_none=True),
+        )
+
+    limit = max(1, min(int(limit or 20), 100))
+    sessions = app.state.sessions.list(workspace_id=workspace_id or None)
+    if session_id:
+        sess = app.state.sessions.get(session_id)
+        if sess is None:
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="not_found",
+                        message=f"session not found: {session_id}",
+                        details={"session_id": session_id},
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        if include_cross_session:
+            session_ids = [s.id for s in sessions]
+            if session_id not in session_ids:
+                session_ids.append(session_id)
+        else:
+            session_ids = [session_id]
+    else:
+        session_ids = [s.id for s in sessions]
+
+    sessions_by_id = {s.id: s for s in app.state.sessions.list()}
+    hits: list[MemorySearchHit] = []
+    for sid in session_ids:
+        sess = sessions_by_id.get(sid)
+        if sess is None:
+            continue
+        for message in app.state.messages.get(sid, []):
+            if exclude_message_id and message.id == exclude_message_id:
+                continue
+            for part in message.parts:
+                if part.type not in {"text", "thinking", "error"}:
+                    continue
+                text = part.text.strip()
+                if not text:
+                    continue
+                lowered = text.lower()
+                matched = [term for term in terms if term in lowered]
+                if not matched:
+                    continue
+                score = len(set(matched)) / len(set(terms))
+                hits.append(
+                    MemorySearchHit(
+                        session_id=sid,
+                        session_title=sess.title,
+                        workspace_id=sess.workspace_id,
+                        message_id=message.id,
+                        part_id=part.id,
+                        role=message.role,
+                        created_at=message.created_at,
+                        updated_at=message.updated_at,
+                        text=_memory_search_excerpt(text, matched),
+                        score=round(score, 4),
+                        match_terms=sorted(set(matched)),
+                        metadata={
+                            "cross_session": sid != session_id,
+                            "source": "gact_transcript",
+                        },
+                    )
+                )
+
+    hits.sort(key=lambda hit: (hit.score, hit.created_at), reverse=True)
+    return MemorySearchResponse(
+        query=query,
+        include_cross_session=include_cross_session,
+        searched_sessions=session_ids,
+        hits=hits[:limit],
+        metadata={
+            "scope": "cross_session" if include_cross_session else "session",
+            "workspace_id": workspace_id,
+            "limit": limit,
+        },
+    )
+
+
 def _cancelled_error_info(
     sid: str,
     *,
@@ -1082,8 +1205,15 @@ async def _run_turn_in_background(
     # Plain text concat — keeps the agent.py interface untouched and
     # works regardless of which expert handles the turn.
     context_file_error: ErrorInfo | None = None
+    memory_search_metadata: dict[str, Any] = {}
     try:
         enriched_text = _enrich_with_context_files(app, sid, user_text)
+        enriched_text, memory_search_metadata = _enrich_with_requested_memory_search(
+            app,
+            sid,
+            enriched_text,
+            user_msg,
+        )
     except _ContextFileAccessError as exc:
         enriched_text = user_text
         context_file_error = exc.error_info
@@ -1682,6 +1812,8 @@ async def _run_turn_in_background(
         assistant_metadata["tools_called"] = tools_called
     if expert_handoffs:
         assistant_metadata["expert_handoffs"] = expert_handoffs
+    if memory_search_metadata:
+        assistant_metadata["memory_search"] = memory_search_metadata
     # iowarp/clio-agent#6: when streaming actually emitted chunks,
     # reuse its message_id + part_id so the deltas + final
     # message line up. Otherwise mint a fresh id (existing path).
@@ -3562,6 +3694,112 @@ def _enrich_with_context_files(app: "FastAPI", sid: str, user_text: str) -> str:
         + "\n\n## User question\n\n"
         + user_text
     )
+
+
+def _memory_search_request_from_message(message: "Message", user_text: str) -> dict[str, Any] | None:
+    raw = message.metadata.get("memory_search") if isinstance(message.metadata, Mapping) else None
+    if raw is None and isinstance(message.metadata, Mapping):
+        if not message.metadata.get("include_cross_session_memory"):
+            return None
+        raw = {
+            "enabled": True,
+            "query": message.metadata.get("memory_search_query") or user_text,
+            "include_cross_session": True,
+            "reason": message.metadata.get("memory_search_reason") or "",
+        }
+    if not isinstance(raw, Mapping):
+        return None
+    if raw.get("enabled") is False:
+        return None
+    return dict(raw)
+
+
+def _enrich_with_requested_memory_search(
+    app: "FastAPI",
+    sid: str,
+    user_text: str,
+    user_msg: "Message",
+) -> tuple[str, dict[str, Any]]:
+    """Prepend explicitly requested memory-search hits to one turn.
+
+    This is intentionally opt-in through user message metadata. It gives the
+    orchestrator/TUI a tool-like way to make cross-session recall visible to the
+    model without weakening the default per-session context boundary.
+    """
+
+    req = _memory_search_request_from_message(user_msg, user_text)
+    if req is None:
+        return user_text, {}
+
+    query = str(req.get("query") or user_text).strip()
+    include_cross_session = bool(req.get("include_cross_session", False))
+    workspace_id = str(req.get("workspace_id") or "").strip()
+    reason = str(req.get("reason") or "").strip()
+    try:
+        limit = int(req.get("limit", 5) or 5)
+    except (TypeError, ValueError):
+        limit = 5
+    response = _memory_search_response(
+        app,
+        query=query,
+        session_id=sid,
+        workspace_id=workspace_id,
+        include_cross_session=include_cross_session,
+        limit=limit,
+        exclude_message_id=user_msg.id,
+    )
+    metadata = {
+        "query": response.query,
+        "include_cross_session": response.include_cross_session,
+        "searched_sessions": response.searched_sessions,
+        "hit_count": len(response.hits),
+        "reason": reason,
+        "scope": response.metadata.get("scope", ""),
+        "hits": [
+            {
+                "session_id": hit.session_id,
+                "session_title": hit.session_title,
+                "message_id": hit.message_id,
+                "part_id": hit.part_id,
+                "role": hit.role,
+                "match_terms": hit.match_terms,
+                "score": hit.score,
+                "cross_session": bool(hit.metadata.get("cross_session", False)),
+            }
+            for hit in response.hits
+        ],
+    }
+    app.state.bus.publish(
+        Event(
+            type="memory.search.completed",
+            session_id=sid,
+            payload=metadata,
+        )
+    )
+    if not response.hits:
+        return user_text, metadata
+
+    blocks = []
+    for idx, hit in enumerate(response.hits, start=1):
+        cross = "cross-session" if hit.metadata.get("cross_session") else "current-session"
+        title = hit.session_title or hit.session_id
+        blocks.append(
+            f"### Memory hit {idx}: {title} ({cross})\n"
+            f"- session_id: {hit.session_id}\n"
+            f"- message_id: {hit.message_id}\n"
+            f"- role: {hit.role}\n"
+            f"- matched_terms: {', '.join(hit.match_terms)}\n"
+            f"```\n{hit.text}\n```"
+        )
+    return (
+        "## Explicit Memory Search Results\n\n"
+        + f"Query: {response.query}\n"
+        + f"Reason: {reason or 'not provided'}\n"
+        + f"Scope: {metadata['scope']}\n\n"
+        + "\n\n".join(blocks)
+        + "\n\n## User question\n\n"
+        + user_text
+    ), metadata
 
 
 _CTX_MAX_BYTES = 32 * 1024  # 32 KB cap per attached file
@@ -8804,114 +9042,13 @@ def build_app(
         days" without silently leaking unrelated sessions into every turn.
         """
 
-        terms = _memory_search_terms(query)
-        if not terms:
-            raise HTTPException(
-                status_code=422,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="invalid_request",
-                        message="memory search query must contain at least one word",
-                        details={"query": query},
-                        recoverable=True,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-        if not include_cross_session and not session_id:
-            raise HTTPException(
-                status_code=422,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="invalid_request",
-                        message=(
-                            "session_id is required unless include_cross_session=true"
-                        ),
-                        details={
-                            "include_cross_session": include_cross_session,
-                            "recovery_actions": [
-                                "provide_session_id",
-                                "set_include_cross_session",
-                            ],
-                        },
-                        recoverable=True,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-
-        limit = max(1, min(int(limit or 20), 100))
-        sessions = app.state.sessions.list(workspace_id=workspace_id or None)
-        if session_id:
-            sess = app.state.sessions.get(session_id)
-            if sess is None:
-                raise HTTPException(
-                    status_code=404,
-                    detail=ErrorEnvelope(
-                        error=ErrorInfo(
-                            error="not_found",
-                            message=f"session not found: {session_id}",
-                            details={"session_id": session_id},
-                            recoverable=False,
-                        )
-                    ).model_dump(exclude_none=True),
-                )
-            if include_cross_session:
-                session_ids = [s.id for s in sessions]
-                if session_id not in session_ids:
-                    session_ids.append(session_id)
-            else:
-                session_ids = [session_id]
-        else:
-            session_ids = [s.id for s in sessions]
-
-        sessions_by_id = {s.id: s for s in app.state.sessions.list()}
-        hits: list[MemorySearchHit] = []
-        for sid in session_ids:
-            sess = sessions_by_id.get(sid)
-            if sess is None:
-                continue
-            for message in app.state.messages.get(sid, []):
-                for part in message.parts:
-                    if part.type not in {"text", "thinking", "error"}:
-                        continue
-                    text = part.text.strip()
-                    if not text:
-                        continue
-                    lowered = text.lower()
-                    matched = [term for term in terms if term in lowered]
-                    if not matched:
-                        continue
-                    score = len(set(matched)) / len(set(terms))
-                    hits.append(
-                        MemorySearchHit(
-                            session_id=sid,
-                            session_title=sess.title,
-                            workspace_id=sess.workspace_id,
-                            message_id=message.id,
-                            part_id=part.id,
-                            role=message.role,
-                            created_at=message.created_at,
-                            updated_at=message.updated_at,
-                            text=_memory_search_excerpt(text, matched),
-                            score=round(score, 4),
-                            match_terms=sorted(set(matched)),
-                            metadata={
-                                "cross_session": sid != session_id,
-                                "source": "gact_transcript",
-                            },
-                        )
-                    )
-
-        hits.sort(key=lambda hit: (hit.score, hit.created_at), reverse=True)
-        return MemorySearchResponse(
+        return _memory_search_response(
+            app,
             query=query,
+            session_id=session_id,
+            workspace_id=workspace_id,
             include_cross_session=include_cross_session,
-            searched_sessions=session_ids,
-            hits=hits[:limit],
-            metadata={
-                "scope": "cross_session" if include_cross_session else "session",
-                "workspace_id": workspace_id,
-                "limit": limit,
-            },
+            limit=limit,
         )
 
     # ---- /v1/sessions/{sid}/events SSE (BBB13) -----------------------
