@@ -55,6 +55,25 @@ def test_fork_copies_messages_and_sets_parent(tmp_path: Path) -> None:
     assert len(rows) == 4  # 2 turns × (user + assistant)
 
 
+def test_fork_copies_context_files(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    src = client.post("/v1/sessions", json={"title": "src"}).json()["id"]
+    target = tmp_path / "notes.md"
+    target.write_text("important context\n")
+    client.post(
+        f"/v1/sessions/{src}/context/files",
+        json={"path": str(target), "mode": "read"},
+    )
+
+    new = client.post(f"/v1/sessions/{src}/fork", json={}).json()
+
+    original = client.get(f"/v1/sessions/{src}/context/files").json()["files"]
+    forked = client.get(f"/v1/sessions/{new['id']}/context/files").json()["files"]
+    assert forked == original
+    forked[0]["mode"] = "edit"
+    assert client.app.state.context_files[src][str(target)]["mode"] == "read"
+
+
 def test_fork_truncates_at_message_id(tmp_path: Path) -> None:
     client = _client(tmp_path)
     src = client.post("/v1/sessions", json={"title": "src"}).json()["id"]

@@ -5555,6 +5555,11 @@ def build_app(
             new_sess.id,
             [m.model_copy(deep=True) for m in src_msgs],
         )
+        source_context_files = app.state.context_files.get(sid, {})
+        if source_context_files:
+            app.state.context_files[new_sess.id] = {
+                key: dict(row) for key, row in source_context_files.items()
+            }
         app.state.sessions.update(new_sess.id, message_count=len(src_msgs))
         return JSONResponse(
             status_code=201,
@@ -7800,6 +7805,9 @@ def build_app(
             "session": Session(**sess.to_wire()).model_dump(exclude_none=True),
             "workspace": (Workspace(**ws.to_wire()).model_dump(exclude_none=True) if ws else None),
             "messages": [m.model_dump(exclude_none=True) for m in msgs],
+            "context_files": [
+                dict(row) for row in app.state.context_files.get(sid, {}).values()
+            ],
         }
 
     @app.post("/v1/sessions/import", response_model=Session)
@@ -7828,6 +7836,16 @@ def build_app(
             except Exception:
                 continue
         _replace_session_messages(app, new_sess.id, msg_rows)
+        context_files: dict[str, dict[str, Any]] = {}
+        for row in blob.get("context_files", []):
+            if not isinstance(row, Mapping):
+                continue
+            path = str(row.get("path") or "").strip()
+            if not path:
+                continue
+            context_files[path] = dict(row)
+        if context_files:
+            app.state.context_files[new_sess.id] = context_files
         cost_total = sum(float(m.get("cost_usd", 0.0) or 0.0) for m in blob.get("messages", []))
         in_total = sum(
             int((m.get("tokens") or {}).get("input", 0) or 0) for m in blob.get("messages", [])
