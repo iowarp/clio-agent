@@ -38,9 +38,15 @@ def test_commands_listed(client: TestClient) -> None:
     ids = {c["id"] for c in body["commands"]}
     assert "/clear" in ids
     assert "/cache-stats" in ids
+    clear = next(c for c in body["commands"] if c["id"] == "/clear")
+    assert clear["status"] == "available"
+    assert clear["enabled"] is True
+    assert clear["error"] == ""
     optimize = next(c for c in body["commands"] if c["id"] == "/optimize")
     assert optimize["status"] == "unavailable"
+    assert optimize["enabled"] is False
     assert optimize["error"] == "not_implemented"
+    assert optimize["disabled_reason"]
 
 
 def test_commands_capability_advertised(client: TestClient) -> None:
@@ -68,6 +74,37 @@ def test_dispatch_clear_drops_messages(client: TestClient) -> None:
     # message_count tracks real turns; synthetic confirmations don't count.
     sess = client.get(f"/v1/sessions/{sid}").json()
     assert sess["message_count"] == 0
+    permission = next(iter(client.app.state.permissions.values()))
+    assert permission["tool_call"]["tool_name"] == "gact.session.clear"
+    assert permission["reason"] == "user_requested_session_clear"
+
+
+def test_dispatch_clear_obeys_permission_policy(client: TestClient) -> None:
+    from .conftest import complete_turn
+
+    sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
+    complete_turn(client, sid, "first")
+    client.put(
+        "/v1/policies",
+        json={
+            "policies": [
+                {
+                    "scope": "session",
+                    "scope_id": sid,
+                    "tool_name_pattern": "gact.session.clear",
+                    "action": "deny",
+                }
+            ]
+        },
+    )
+
+    resp = client.post(f"/v1/sessions/{sid}/commands/clear")
+
+    assert resp.status_code == 403
+    assert len(client.get(f"/v1/sessions/{sid}/messages").json()["messages"]) == 2
+    permission = next(iter(client.app.state.permissions.values()))
+    assert permission["status"] == "auto_denied"
+    assert permission["tool_call"]["tool_name"] == "gact.session.clear"
 
 
 def test_dispatch_cache_stats_returns_arc_numbers(client: TestClient) -> None:
@@ -122,6 +159,8 @@ def test_dispatch_optimize_returns_structured_not_implemented(
     body = resp.json()
     assert body["error"]["error"] == "not_implemented"
     assert body["error"]["details"]["command"] == "/optimize"
+    assert body["error"]["details"]["status"] == "unavailable"
+    assert body["error"]["details"]["disabled_reason"]
     assert body["error"]["details"]["recovery_actions"] == [
         "retry_after_optimizer_support_lands",
         "exit",
@@ -135,7 +174,7 @@ def test_dispatch_unknown_command_404s(client: TestClient) -> None:
     resp = client.post(f"/v1/sessions/{sid}/commands/nonsense")
     assert resp.status_code == 404
     body = resp.json()
-    assert body["error"]["error"] == "internal_error"
+    assert body["error"]["error"] == "not_found"
 
 
 def test_dispatch_unknown_session_404s(client: TestClient) -> None:
