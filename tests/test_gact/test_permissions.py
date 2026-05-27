@@ -73,6 +73,31 @@ def test_permission_requested_then_allowed(tmp_path: Path) -> None:
     assert body["permissions"][0]["status"] == "resolved"
 
 
+def test_permission_status_all_returns_audit_rows(tmp_path: Path) -> None:
+    client = _client(
+        tmp_path,
+        perms=[
+            {
+                "tool_call": {"tool_name": "shell.exec", "input": {"cmd": "rm -rf x"}},
+                "summary": "destructive shell command",
+            }
+        ],
+    )
+    sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
+    _turn(client, sid)
+    pid = client.get("/v1/permissions?status=pending").json()["permissions"][0]["id"]
+    assert client.post(f"/v1/permissions/{pid}", json={"action": "deny"}).status_code == 204
+
+    pending = client.get("/v1/permissions?status=pending").json()
+    audit = client.get("/v1/permissions?status=all").json()
+
+    assert pending["permissions"] == []
+    assert len(audit["permissions"]) == 1
+    assert audit["permissions"][0]["id"] == pid
+    assert audit["permissions"][0]["status"] == "resolved"
+    assert audit["permissions"][0]["action"] == "deny"
+
+
 def test_permission_unknown_id_404s(tmp_path: Path) -> None:
     client = _client(tmp_path, perms=[])
     resp = client.post("/v1/permissions/perm_nope", json={"action": "deny"})
