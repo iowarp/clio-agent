@@ -111,6 +111,10 @@ def _new_part_id() -> str:
     return f"part_{uuid.uuid4().hex[:12]}"
 
 
+def _new_context_frame_id() -> str:
+    return f"ctx_{uuid.uuid4().hex[:12]}"
+
+
 def _iso_from_epoch(ts: float) -> str:
     """ISO-8601 UTC with microsecond precision to match the session
     registry's created_at format."""
@@ -1057,6 +1061,15 @@ async def _run_turn_in_background(
     except _ContextFileAccessError as exc:
         enriched_text = user_text
         context_file_error = exc.error_info
+    context_frame = _record_context_frame(
+        app,
+        sid,
+        sess,
+        user_msg,
+        user_text=user_text,
+        enriched_text=enriched_text,
+        context_error=context_file_error,
+    )
     # iowarp/clio-agent#20: pre_message hook can transform the
     # input or veto the turn. PermissionError → cancelled-style
     # error_info; the caller sees the hook's reason.
@@ -1682,6 +1695,14 @@ async def _run_turn_in_background(
         error_info=error_info,
         metadata=assistant_metadata,
     )
+    _finalize_context_frame(
+        app,
+        sid,
+        context_frame["id"],
+        assistant_msg.id,
+        "cancelled" if cancelled_turn else ("error" if error_info else "completed"),
+        error_info=error_info,
+    )
 
     # Index file_diff parts so /diffs/apply + /diffs/reject find them.
     bucket = app.state.pending_diffs.setdefault(sid, [])
@@ -1953,6 +1974,155 @@ def _current_lm_model_id() -> str:
         return ""
     lm = getattr(dspy.settings, "lm", None) if hasattr(dspy, "settings") else None
     return getattr(lm, "model", "") if lm else ""
+
+
+def _estimate_context_tokens(text: str) -> int:
+    return max(1, len(text) // 4) if text else 0
+
+
+def _message_text_for_frame(message: "Message") -> str:
+    chunks: list[str] = []
+    for part in getattr(message, "parts", []) or []:
+        text = getattr(part, "text", "") or ""
+        if text:
+            chunks.append(text)
+        for attr in ("path", "unified_diff", "new_content"):
+            value = getattr(part, attr, "") or ""
+            if value:
+                chunks.append(str(value))
+    return "\n".join(chunks)
+
+
+def _record_context_frame(
+    app: "FastAPI",
+    sid: str,
+    sess: Any,
+    user_msg: "Message",
+    *,
+    user_text: str,
+    enriched_text: str,
+    context_error: Optional[ErrorInfo],
+) -> dict[str, Any]:
+    now = datetime.now(timezone.utc).isoformat()
+    visible_messages = list(app.state.messages.get(sid, []))
+    items: list[dict[str, Any]] = []
+    token_total = 0
+    for msg in visible_messages:
+        msg_text = _message_text_for_frame(msg)
+        tokens = (
+            int(getattr(msg.tokens, "input", 0) or 0)
+            + int(getattr(msg.tokens, "output", 0) or 0)
+            + int(getattr(msg.tokens, "cache_read", 0) or 0)
+            + int(getattr(msg.tokens, "cache_write", 0) or 0)
+        )
+        if tokens <= 0:
+            tokens = _estimate_context_tokens(msg_text)
+        token_total += tokens
+        items.append(
+            {
+                "kind": "message",
+                "source_id": msg.id,
+                "role": msg.role,
+                "included": True,
+                "reason": "visible_transcript",
+                "tokens_estimated": tokens,
+                "metadata": {
+                    "synthetic": (msg.metadata or {}).get("synthetic", ""),
+                    "part_count": len(msg.parts),
+                },
+            }
+        )
+
+    for row in (app.state.context_files.get(sid, {}) or {}).values():
+        path = str(row.get("resolved_path") or row.get("path") or "")
+        display_path = str(row.get("display_path") or row.get("path") or path)
+        try:
+            raw_size = int(row.get("size") or 0)
+        except (TypeError, ValueError):
+            raw_size = 0
+        tokens = max(0, min(max(raw_size, 0), _CTX_MAX_BYTES) // 4)
+        token_total += tokens
+        items.append(
+            {
+                "kind": "context_file",
+                "source_id": display_path,
+                "path": path,
+                "display_path": display_path,
+                "included": context_error is None,
+                "reason": "attached_context_file" if context_error is None else "context_error",
+                "tokens_estimated": tokens,
+                "metadata": {
+                    "mode": row.get("mode", ""),
+                    "source": row.get("source", ""),
+                    "workspace_id": row.get("workspace_id", ""),
+                    "language": row.get("language", ""),
+                },
+            }
+        )
+
+    enriched_delta = max(0, len(enriched_text) - len(user_text))
+    agent_ref = getattr(sess, "agent", {}) or {}
+    frame = {
+        "id": _new_context_frame_id(),
+        "session_id": sid,
+        "turn_id": user_msg.id,
+        "user_message_id": user_msg.id,
+        "assistant_message_id": "",
+        "created_at": now,
+        "updated_at": now,
+        "status": "context_error" if context_error is not None else "assembled",
+        "model": _active_lm_model_ref(app),
+        "agent": {
+            "id": _session_agent_id(sess),
+            "mode": agent_ref.get("mode", "") if isinstance(agent_ref, dict) else "",
+            "routing_mode": getattr(sess, "routing_mode", "auto"),
+            "session_mode": getattr(sess, "mode", "chat"),
+            "edit_mode": getattr(sess, "edit_mode", "diff"),
+        },
+        "prompt": {
+            "profile": (getattr(sess, "metadata", {}) or {}).get("prompt_profile", ""),
+            "source": "runtime_default",
+        },
+        "items": items,
+        "tokens_estimated": token_total,
+        "metadata": {
+            "retained_context_source": "visible_gact_transcript",
+            "token_estimate": "message_tokens_or_chars_div_4",
+            "context_file_injected_chars": enriched_delta,
+            "context_error": context_error.model_dump(exclude_none=True)
+            if context_error is not None
+            else {},
+        },
+    }
+    app.state.context_frames.setdefault(sid, []).append(frame)
+    app.state.bus.publish(Event(type="context.frame.created", session_id=sid, payload=frame))
+    return frame
+
+
+def _finalize_context_frame(
+    app: "FastAPI",
+    sid: str,
+    frame_id: str,
+    assistant_message_id: str,
+    status: str,
+    *,
+    error_info: Optional[ErrorInfo],
+) -> None:
+    frames = app.state.context_frames.get(sid, [])
+    for frame in frames:
+        if frame.get("id") != frame_id:
+            continue
+        frame["assistant_message_id"] = assistant_message_id
+        frame["status"] = status
+        frame["updated_at"] = datetime.now(timezone.utc).isoformat()
+        if error_info is not None:
+            frame.setdefault("metadata", {})["turn_error"] = error_info.model_dump(
+                exclude_none=True
+            )
+        app.state.bus.publish(
+            Event(type="context.frame.completed", session_id=sid, payload=frame)
+        )
+        break
 
 
 def _all_known_lms(app: "FastAPI") -> list[Any]:
@@ -4581,6 +4751,10 @@ def build_app(
     # session_id, each value is an ordered dict of
     # path -> ContextFile dict.
     app.state.context_files = {}
+    # iowarp/clio-agent#331: per-turn context truth frames. These
+    # capture what visible transcript/context attachments were
+    # retained for a turn, plus model/agent/prompt provenance.
+    app.state.context_frames = {}
     # CLIO-BBBBBBBBBB21: per-session pending diffs. Keyed by
     # session_id -> list of {path, unified_diff, status,
     # part_id, message_id}. Status is "pending" until apply/reject
@@ -4940,6 +5114,7 @@ def build_app(
                 x_clio_stream_fallback_reasons=_stream_fallback_reason_capabilities(),
                 x_clio_direct_delete_permissions=True,
                 x_clio_prompt_registry=True,
+                x_clio_context_frames=True,
             ),
             transports=TransportFlags(events_sse=True, events_websocket=False),
             auth=AuthInfo(schemes=["trust_socket"], current="trust_socket"),
@@ -5552,6 +5727,55 @@ def build_app(
             "workspace_id": workspace_id,
             "source": source,
         }
+
+    @app.get("/v1/sessions/{sid}/context/frames")
+    async def list_context_frames(sid: str, limit: int = 50) -> dict[str, Any]:
+        """List per-turn context truth frames for a session."""
+
+        if app.state.sessions.get(sid) is None:
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="internal_error",
+                        message=f"session not found: {sid}",
+                        details={"session_id": sid},
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        limit = max(1, min(int(limit or 50), 200))
+        rows = list(app.state.context_frames.get(sid, []))
+        return {"frames": rows[-limit:]}
+
+    @app.get("/v1/sessions/{sid}/context/frames/{frame_id}")
+    async def get_context_frame(sid: str, frame_id: str) -> dict[str, Any]:
+        if app.state.sessions.get(sid) is None:
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="internal_error",
+                        message=f"session not found: {sid}",
+                        details={"session_id": sid},
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        for row in app.state.context_frames.get(sid, []):
+            if row.get("id") == frame_id:
+                return {"frame": row}
+        raise HTTPException(
+            status_code=404,
+            detail=ErrorEnvelope(
+                error=ErrorInfo(
+                    error="not_found",
+                    message=f"context frame not found: {frame_id}",
+                    details={"session_id": sid, "frame_id": frame_id},
+                    recoverable=False,
+                )
+            ).model_dump(exclude_none=True),
+        )
 
     @app.get("/v1/sessions/{sid}/context/files")
     async def list_context_files(sid: str) -> dict[str, Any]:
