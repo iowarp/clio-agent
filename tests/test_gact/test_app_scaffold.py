@@ -71,6 +71,10 @@ def test_capabilities_advertises_v0_2(client: TestClient) -> None:
     assert fallback_reasons["stream_completed_without_chunks"]["live_streaming"] is False
     assert fallback_reasons["stream_setup_failed"]["recovery_actions"]
     assert caps["x_clio_direct_delete_permissions"] is True
+    gaps = caps["x_clio_capability_gaps"]
+    assert gaps["voice"]["advertised"] is False
+    assert gaps["voice"]["client_behavior"] == "render_disabled"
+    assert gaps["lsp"]["status"] == "unsupported"
     # Landed capabilities.
     for flag in (
         "sessions",
@@ -87,6 +91,29 @@ def test_capabilities_advertises_v0_2(client: TestClient) -> None:
         "tool_telemetry",
     ):
         assert caps[flag] is True, f"{flag} implemented — must advertise True"
+
+
+def test_capability_gaps_endpoint_returns_disabled_future_capabilities(
+    client: TestClient,
+) -> None:
+    resp = client.get("/v1/capability-gaps")
+    assert resp.status_code == 200
+    body = resp.json()
+    gaps = body["capability_gaps"]
+
+    assert set(gaps) >= {"voice", "lsp"}
+    voice = gaps["voice"]
+    assert voice["status"] == "unsupported"
+    assert voice["advertised"] is False
+    assert voice["client_behavior"] == "render_disabled"
+    assert "/v1/sessions/{sid}/voice/transcribe" in voice["related_endpoints"]
+
+    lsp = gaps["lsp"]
+    assert lsp["status"] == "unsupported"
+    assert lsp["recovery_actions"] == [
+        "use_files_and_diffs",
+        "hide_or_disable_lsp_controls",
+    ]
 
 
 def test_stubbed_routes_return_501_with_v0_2_envelope() -> None:
