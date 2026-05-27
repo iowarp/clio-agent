@@ -5692,24 +5692,33 @@ def build_app(
 
     # ---- /v1/commands + dispatch (#14) --------------------------------
 
-    _BACKEND_COMMANDS: list[dict[str, str]] = [
+    _BACKEND_COMMANDS: list[dict[str, Any]] = [
         {
             "id": "/clear",
             "title": "Clear session messages",
             "description": "Drop the in-memory log for the active session (does NOT touch ARC).",
             "source": "builtin",
+            "status": "available",
+            "enabled": True,
+            "error": "",
         },
         {
             "id": "/cache-stats",
             "title": "ARC cache stats",
             "description": "Append the current ARC cache hit/miss counters as a system message.",
             "source": "builtin",
+            "status": "available",
+            "enabled": True,
+            "error": "",
         },
         {
             "id": "/dump-trace",
             "title": "Dump last reasoning trace",
             "description": "Append the last assistant turn's DSPy reasoning (when available).",
             "source": "builtin",
+            "status": "available",
+            "enabled": True,
+            "error": "",
         },
         {
             "id": "/optimize",
@@ -5717,7 +5726,9 @@ def build_app(
             "description": "Unavailable until optimizer command execution is wired.",
             "source": "builtin",
             "status": "unavailable",
+            "enabled": False,
             "error": "not_implemented",
+            "disabled_reason": "optimizer command execution is not wired yet",
         },
     ]
 
@@ -5748,29 +5759,35 @@ def build_app(
 
         # Accept "clear" or "/clear"; the TUI sends both shapes.
         cmd_id = cmd if cmd.startswith("/") else "/" + cmd
-        known = {c["id"] for c in _BACKEND_COMMANDS}
-        if cmd_id not in known:
+        commands_by_id = {c["id"]: c for c in _BACKEND_COMMANDS}
+        command_meta = commands_by_id.get(cmd_id)
+        if command_meta is None:
             raise HTTPException(
                 status_code=404,
                 detail=ErrorEnvelope(
                     error=ErrorInfo(
-                        error="internal_error",
+                        error="not_found",
                         message=f"unknown command: {cmd_id}",
-                        details={"known": sorted(known)},
+                        details={"known": sorted(commands_by_id)},
                         recoverable=True,
                     )
                 ).model_dump(exclude_none=True),
             )
 
-        if cmd_id == "/optimize":
+        if command_meta.get("status") != "available" or command_meta.get("enabled") is False:
             raise HTTPException(
                 status_code=501,
                 detail=ErrorEnvelope(
                     error=ErrorInfo(
-                        error="not_implemented",
-                        message=("Backend command /optimize is not implemented yet."),
+                        error=str(command_meta.get("error") or "unavailable"),
+                        message=(
+                            f"Backend command {cmd_id} is unavailable: "
+                            f"{command_meta.get('disabled_reason') or command_meta.get('error')}"
+                        ),
                         details={
                             "command": cmd_id,
+                            "status": command_meta.get("status"),
+                            "disabled_reason": command_meta.get("disabled_reason", ""),
                             "recovery_actions": [
                                 "retry_after_optimizer_support_lands",
                                 "exit",
@@ -5784,6 +5801,15 @@ def build_app(
         # Side effects + system message body per command.
         body_text: str
         if cmd_id == "/clear":
+            _guard_direct_destructive_action(
+                app,
+                session_id=sid,
+                workspace_id=sess.workspace_id,
+                tool_name="gact.session.clear",
+                args={"session_id": sid, "command": cmd_id},
+                summary=f"clear session messages for {sid}",
+                reason="user_requested_session_clear",
+            )
             _delete_session_messages(app, sid)
             app.state.sessions.update(sid, message_count=0)
             app.state.bus.publish(
