@@ -38,6 +38,7 @@ import time
 import uuid
 from collections.abc import Mapping
 from contextlib import asynccontextmanager, contextmanager, nullcontext
+from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -48,6 +49,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from clio_agent.prompts import PromptRegistry, PromptSource
 from clio_agent.tools.file_policy import validate_write_path
 from clio_agent.tools.fs_write import write_text_with_policy
 
@@ -4502,6 +4504,14 @@ def build_app(
     app.state.sessions = SessionStore(path=session_store_path)
     app.state.agent = agent  # may be None; POST message checks before using
     app.state.arc = arc  # may be None; /v1/memory/stats returns zeros in that case
+    prompt_write_root = session_store_path.parent / "prompts"
+    app.state.prompt_registry = PromptRegistry(
+        sources=[
+            PromptSource("global", prompt_write_root),
+            PromptSource("workspace", Path.cwd() / ".clio" / "prompts"),
+        ],
+        write_root=prompt_write_root,
+    )
     # CLIO-BBBBBBBBBB13: per-session pub/sub. POST /messages
     # publishes; /v1/sessions/{sid}/events subscribers consume.
     app.state.bus = EventBus()
@@ -4878,6 +4888,7 @@ def build_app(
                 x_clio_synthetic_posthoc_streaming=False,
                 x_clio_stream_fallback_reasons=_stream_fallback_reason_capabilities(),
                 x_clio_direct_delete_permissions=True,
+                x_clio_prompt_registry=True,
             ),
             transports=TransportFlags(events_sse=True, events_websocket=False),
             auth=AuthInfo(schemes=["trust_socket"], current="trust_socket"),
@@ -4888,6 +4899,83 @@ def build_app(
     # returns the structured error envelope from above. Matches the
     # shape v0.2 clients expect, while honestly reporting that the
     # backend doesn't yet implement the endpoint.
+
+    # ---- /v1/prompts (CLIO prompt registry) ------------------------------
+
+    @app.get("/v1/prompts")
+    async def list_prompts() -> dict[str, Any]:
+        """List built-in and external prompt definitions.
+
+        This is a CLIO vendor surface rather than a core GACT v0.2 route. The
+        TUI can use it later to browse prompts, profiles, validation state, and
+        provenance without knowing where prompt files live on disk.
+        """
+
+        rows = app.state.prompt_registry.list()
+        return {"prompts": [asdict(row) for row in rows]}
+
+    @app.get("/v1/prompts/{prompt_id:path}")
+    async def get_prompt(prompt_id: str, profile: str = "") -> dict[str, Any]:
+        resolved = app.state.prompt_registry.resolve(prompt_id, profile=profile)
+        if resolved is None:
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="not_found",
+                        message=f"prompt not found: {prompt_id}",
+                        details={"prompt_id": prompt_id},
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        return {"prompt": asdict(resolved)}
+
+    @app.put("/v1/prompts/{prompt_id:path}")
+    async def save_prompt(prompt_id: str, request: Request) -> dict[str, Any]:
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        if not isinstance(body, dict):
+            body = {}
+        text = str(body.get("text") or "")
+        if not text.strip():
+            raise HTTPException(
+                status_code=422,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="bad_request",
+                        message="missing required field: text",
+                        details={"prompt_id": prompt_id, "field": "text"},
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        try:
+            row = app.state.prompt_registry.save(
+                prompt_id,
+                text=text,
+                profile=str(body.get("profile") or "default"),
+                title=str(body.get("title") or ""),
+                description=str(body.get("description") or ""),
+                provider=str(body.get("provider") or ""),
+                model=str(body.get("model") or ""),
+                metadata=body.get("metadata") if isinstance(body.get("metadata"), dict) else None,
+            )
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=422,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="bad_request",
+                        message=str(exc),
+                        details={"prompt_id": prompt_id},
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            ) from exc
+        return {"prompt": asdict(row)}
 
     # ---- /v1/sessions CRUD -----------------------------------------
     # CLIO-BBBBBBBBBB8 — four real handlers against app.state.sessions
