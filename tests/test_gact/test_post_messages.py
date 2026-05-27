@@ -513,6 +513,8 @@ def test_post_message_prompt_user_agent_executes_registered_agent(
                 "id": "reviewer",
                 "title": "Reviewer",
                 "system_prompt": "Reply exactly USER_AGENT_OK.",
+                "default_provider": "openai",
+                "default_model": "gpt-4.1",
             },
         )
         assert created.status_code == 201
@@ -537,6 +539,25 @@ def test_post_message_prompt_user_agent_executes_registered_agent(
     assert assistant["metadata"]["stream_fallback"]["reason"] == (
         "dynamic_prompt_stream_unavailable"
     )
+    assert assistant["metadata"]["agent_runtime"] == {
+        "kind": "dynamic_agent",
+        "agent_id": "reviewer",
+        "source": "user",
+        "title": "Reviewer",
+        "execution_mode": "prompt_agent",
+        "tools": [],
+        "prompt": {
+            "source": "agent_definition",
+            "has_system_prompt": True,
+        },
+        "model": {
+            "provider_id": "openai",
+            "model_id": "gpt-4.1",
+            "provider_source": "agent_default",
+            "model_source": "agent_default",
+            "fallback_to_global": False,
+        },
+    }
     assert sess["status"] == "idle"
 
 
@@ -684,6 +705,25 @@ def test_post_message_tool_user_agent_executes_registered_agent(
     assert assistant["metadata"]["stream_fallback"]["reason"] == ("dynamic_tool_stream_unavailable")
     assert assistant["metadata"]["tools_called"][0]["name"] == "fs_read_file"
     assert assistant["metadata"]["tools_called"][0]["args"] == {"path": "README.md"}
+    assert assistant["metadata"]["agent_runtime"] == {
+        "kind": "dynamic_agent",
+        "agent_id": "tool_reviewer",
+        "source": "user",
+        "title": "Tool Reviewer",
+        "execution_mode": "tool_agent",
+        "tools": ["fs_read_file"],
+        "prompt": {
+            "source": "agent_definition",
+            "has_system_prompt": True,
+        },
+        "model": {
+            "provider_id": "",
+            "model_id": "",
+            "provider_source": "global_active",
+            "model_source": "global_active",
+            "fallback_to_global": True,
+        },
+    }
     assert sess["status"] == "idle"
 
 
