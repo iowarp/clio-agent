@@ -545,11 +545,83 @@ def _resolve_dynamic_agent(app: "FastAPI", agent_id: str) -> "AgentDef | None":
         return None
     row = app.state.user_agents.get(agent_id)
     if row is not None:
-        return AgentDef(**row.to_wire())
+        return _apply_prompt_registry_to_agent(app, AgentDef(**row.to_wire()))
     for skill in _load_skills_from_disk():
         if skill.id == agent_id:
-            return skill
+            return _apply_prompt_registry_to_agent(app, skill)
     return None
+
+
+def _agent_prompt_request(agent_def: "AgentDef") -> tuple[str, str]:
+    """Return prompt id/profile requested by an agent definition."""
+
+    metadata = agent_def.metadata if isinstance(agent_def.metadata, Mapping) else {}
+    params = agent_def.parameters if isinstance(agent_def.parameters, Mapping) else {}
+    prompt_id = str(
+        metadata.get("prompt_id")
+        or metadata.get("prompt")
+        or params.get("prompt_id")
+        or params.get("prompt")
+        or ""
+    ).strip()
+    prompt_profile = str(
+        metadata.get("prompt_profile")
+        or metadata.get("profile")
+        or params.get("prompt_profile")
+        or params.get("profile")
+        or ""
+    ).strip()
+    return prompt_id, prompt_profile
+
+
+def _prompt_resolution_metadata(resolved: Any, *, requested_profile: str = "") -> dict[str, Any]:
+    return {
+        k: v
+        for k, v in {
+            "id": getattr(resolved, "id", ""),
+            "profile": getattr(resolved, "profile", ""),
+            "requested_profile": requested_profile,
+            "scope": getattr(resolved, "scope", ""),
+            "source_path": getattr(resolved, "source_path", ""),
+            "provider": getattr(resolved, "provider", ""),
+            "model": getattr(resolved, "model", ""),
+            "checksum": getattr(resolved, "checksum", ""),
+            "fallback_profile": getattr(resolved, "fallback_profile", ""),
+            "validation_errors": list(getattr(resolved, "validation_errors", []) or []),
+        }.items()
+        if v not in ("", [], None)
+    }
+
+
+def _apply_prompt_registry_to_agent(app: "FastAPI", agent_def: "AgentDef") -> "AgentDef":
+    """Resolve an agent's prompt registry reference into runtime prompt text."""
+
+    prompt_id, prompt_profile = _agent_prompt_request(agent_def)
+    if not prompt_id:
+        return agent_def
+    registry = getattr(app.state, "prompt_registry", None)
+    if registry is None:
+        return agent_def
+    resolved = registry.resolve(prompt_id, profile=prompt_profile)
+    metadata = dict(agent_def.metadata)
+    if resolved is None:
+        metadata["prompt_resolution"] = {
+            "id": prompt_id,
+            "requested_profile": prompt_profile,
+            "status": "missing",
+        }
+        return agent_def.model_copy(update={"metadata": metadata})
+    resolution = _prompt_resolution_metadata(resolved, requested_profile=prompt_profile)
+    resolution["status"] = "resolved" if resolved.text.strip() else "invalid"
+    metadata["prompt_resolution"] = resolution
+    updates: dict[str, Any] = {"metadata": metadata}
+    if resolved.text.strip():
+        updates["system_prompt"] = resolved.text
+    if resolved.provider:
+        updates["default_provider"] = resolved.provider
+    if resolved.model:
+        updates["default_model"] = resolved.model
+    return agent_def.model_copy(update=updates)
 
 
 def _user_agent_param(agent_def: "AgentDef", name: str) -> Any:
@@ -1036,6 +1108,7 @@ async def _run_turn_in_background(
     execution_path = ""
     tools_called: list[dict[str, Any]] = []
     expert_handoffs: list[dict[str, Any]] = []
+    prompt_resolution: dict[str, Any] = {}
     proposed_diffs: list[Any] = []
     nanoagents: list[Any] = []
     thinking_text = ""
@@ -1212,6 +1285,7 @@ async def _run_turn_in_background(
             dynamic_agent = _resolve_dynamic_agent(app, active_agent_id)
             if dynamic_agent is None:
                 raise _UnsupportedSessionAgent(active_agent_id)
+            prompt_resolution = dict(dynamic_agent.metadata.get("prompt_resolution") or {})
             runner = _run_tool_user_agent if dynamic_agent.tools else _run_prompt_user_agent
             module = (
                 _build_tool_user_agent_module(app.state.agent, dynamic_agent)
@@ -1652,6 +1726,8 @@ async def _run_turn_in_background(
         assistant_metadata["tools_called"] = tools_called
     if expert_handoffs:
         assistant_metadata["expert_handoffs"] = expert_handoffs
+    if prompt_resolution:
+        assistant_metadata["prompt_resolution"] = prompt_resolution
     # iowarp/clio-agent#6: when streaming actually emitted chunks,
     # reuse its message_id + part_id so the deltas + final
     # message line up. Otherwise mint a fresh id (existing path).

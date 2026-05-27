@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
@@ -71,3 +72,99 @@ def test_put_prompt_rejects_invalid_profile(client: TestClient) -> None:
     assert resp.status_code == 422
     assert resp.json()["error"]["error"] == "bad_request"
 
+
+def test_user_agent_runtime_uses_resolved_prompt_profile(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from .conftest import complete_turn
+
+    seen: dict[str, Any] = {}
+
+    async def fake_stream_unavailable(
+        app: Any,
+        enriched_text: str,
+        sid: str,
+        emit_chunk: Any,
+        **kwargs: Any,
+    ) -> None:
+        del enriched_text, emit_chunk, kwargs
+        from clio_agent.gact.app import _record_stream_fallback
+
+        _record_stream_fallback(app, sid, "dynamic_prompt_stream_unavailable")
+        return None
+
+    def fake_prompt_agent(
+        base_agent: Any,
+        agent_def: Any,
+        question: str,
+        session_id: str,
+    ) -> Any:
+        del base_agent
+        seen.update(
+            {
+                "system_prompt": agent_def.system_prompt,
+                "provider": agent_def.default_provider,
+                "model": agent_def.default_model,
+                "metadata": agent_def.metadata,
+                "question": question,
+                "session_id": session_id,
+            }
+        )
+        return type(
+            "Pred",
+            (),
+            {
+                "answer": "PROMPT_PROFILE_OK",
+                "selected_expert": agent_def.id,
+                "routing_rationale": "selected registered prompt-backed agent",
+            },
+        )()
+
+    monkeypatch.setattr("clio_agent.gact.app._try_streamed_forward", fake_stream_unavailable)
+    monkeypatch.setattr("clio_agent.gact.app._run_prompt_user_agent", fake_prompt_agent)
+
+    app = build_app(sessions_path=tmp_path / "sessions.json", agent=object())
+    with TestClient(app) as c:
+        saved = c.put(
+            "/v1/prompts/clio.reviewer",
+            json={
+                "profile": "light",
+                "title": "Reviewer light",
+                "text": "Use the external reviewer prompt.",
+                "provider": "openai",
+                "model": "gpt-5-mini",
+            },
+        )
+        assert saved.status_code == 200, saved.text
+        created = c.post(
+            "/v1/agents",
+            json={
+                "id": "reviewer",
+                "title": "Reviewer",
+                "system_prompt": "This inline prompt should be overridden.",
+                "metadata": {
+                    "prompt_id": "clio.reviewer",
+                    "prompt_profile": "light",
+                },
+            },
+        )
+        assert created.status_code == 201, created.text
+        sid = c.post(
+            "/v1/sessions",
+            json={"title": "prompt-backed agent", "agent": {"id": "reviewer"}},
+        ).json()["id"]
+        assistant = complete_turn(c, sid, "review this")
+
+    assert seen["question"] == "review this"
+    assert seen["system_prompt"] == "Use the external reviewer prompt."
+    assert seen["provider"] == "openai"
+    assert seen["model"] == "gpt-5-mini"
+    resolution = seen["metadata"]["prompt_resolution"]
+    assert resolution["id"] == "clio.reviewer"
+    assert resolution["profile"] == "light"
+    assert resolution["scope"] == "global"
+    assert resolution["status"] == "resolved"
+    assert assistant["metadata"]["prompt_resolution"]["id"] == "clio.reviewer"
+    assert assistant["metadata"]["prompt_resolution"]["profile"] == "light"
+    assert assistant["parts"][1]["text"] == "PROMPT_PROFILE_OK"
