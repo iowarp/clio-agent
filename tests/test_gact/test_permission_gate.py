@@ -511,6 +511,62 @@ def test_put_policies_normalizes_valid_policy_and_preserves_unknown_fields(
     assert app.state.permission_policies == resp.json()["policies"]
 
 
+def test_permission_policies_persist_across_app_rebuild(tmp_path: Path) -> None:
+    app = build_app(sessions_path=tmp_path / "s.json")
+    with TestClient(app) as c:
+        resp = c.put(
+            "/v1/policies",
+            json={
+                "policies": [
+                    {
+                        "scope": "workspace",
+                        "scope_id": "ws_default",
+                        "tool_name_pattern": "shell.*",
+                        "path_pattern": "/tmp/*",
+                        "action": "ask",
+                    }
+                ]
+            },
+        )
+    assert resp.status_code == 200
+
+    rebuilt = build_app(sessions_path=tmp_path / "s.json")
+    with TestClient(rebuilt) as c:
+        body = c.get("/v1/policies").json()
+
+    assert body["policies"] == resp.json()["policies"]
+    assert rebuilt.state.permission_policies == resp.json()["policies"]
+
+
+def test_invalid_policy_update_does_not_overwrite_persisted_policies(tmp_path: Path) -> None:
+    app = build_app(sessions_path=tmp_path / "s.json")
+    with TestClient(app) as c:
+        original = c.put(
+            "/v1/policies",
+            json={
+                "policies": [
+                    {
+                        "scope": "session",
+                        "scope_id": "sess_existing",
+                        "tool_name_pattern": "shell.*",
+                        "action": "deny",
+                    }
+                ]
+            },
+        ).json()["policies"]
+        resp = c.put(
+            "/v1/policies",
+            json={"policies": [{"scope": "project", "action": "alow"}]},
+        )
+    assert resp.status_code == 422
+
+    rebuilt = build_app(sessions_path=tmp_path / "s.json")
+    with TestClient(rebuilt) as c:
+        body = c.get("/v1/policies").json()
+
+    assert body["policies"] == original
+
+
 def test_external_mcp_call_policy_deny_blocks_before_tool_execution(tmp_path: Path) -> None:
     app = build_app(sessions_path=tmp_path / "s.json")
     app.state.external_mcp_servers = {

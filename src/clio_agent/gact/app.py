@@ -2407,6 +2407,38 @@ def _validate_permission_policies(
     return clean, errors
 
 
+def _load_permission_policies(path: Path | None) -> list[dict[str, Any]]:
+    """Load persisted permission policies, ignoring invalid rows."""
+
+    if path is None or not path.exists():
+        return []
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    raw = data.get("policies", []) if isinstance(data, Mapping) else []
+    if not isinstance(raw, list):
+        return []
+    clean, _errors = _validate_permission_policies(raw)
+    return clean
+
+
+def _flush_permission_policies(app: "FastAPI") -> None:
+    """Persist the current permission policy list, if configured."""
+
+    path = getattr(app.state, "permission_policies_path", None)
+    if path is None:
+        return
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(
+        json.dumps({"policies": app.state.permission_policies}, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    tmp.replace(path)
+
+
 def _record_resolved_permission(
     app: "FastAPI",
     *,
@@ -4648,8 +4680,9 @@ def build_app(
     # SPEC §6.11.b permission policies — list, not dict. Backends
     # consult this on every tool call to decide allow/deny/ask before
     # falling back to the per-tool permission_default. PUT replaces
-    # the whole list; in-memory.
-    app.state.permission_policies = []
+    # the whole list.
+    app.state.permission_policies_path = session_store_path.parent / "permission_policies.json"
+    app.state.permission_policies = _load_permission_policies(app.state.permission_policies_path)
     # iowarp/clio-agent#18: per-session task list (todo-style).
     # Keyed by session_id -> {task_id -> task dict}. In-memory.
     app.state.session_tasks = {}
@@ -10281,7 +10314,7 @@ def build_app(
     #
     # Declarative allow/deny/ask rules consulted before the per-tool
     # permission_default. PUT replaces the whole list (matches the
-    # gact-tui client's PutPolicies shape). In-memory; no persistence.
+    # gact-tui client's PutPolicies shape) and persists it locally.
 
     @app.get("/v1/policies")
     async def list_policies() -> dict[str, Any]:
@@ -10325,6 +10358,7 @@ def build_app(
                 ).model_dump(exclude_none=True),
             )
         app.state.permission_policies = clean
+        _flush_permission_policies(app)
         return {"policies": clean}
 
     # ---- DELETE /v1/messages/{id} ------------------------------------
