@@ -117,3 +117,34 @@ def test_catalog_tools_flattens_expert_tools(client: TestClient) -> None:
         "ndp_get_dataset_details",
         "shell_bash",
     } <= set(names)
+
+
+def test_catalog_tools_exposes_owner_tags_and_visibility(client: TestClient) -> None:
+    resp = client.get("/v1/catalog/tools")
+    assert resp.status_code == 200
+    by_name = {tool["name"]: tool for tool in resp.json()["tools"]}
+
+    shell = by_name["shell_bash"]
+    assert shell["owner"] == "utility"
+    assert "chat" in shell["visible_to"]
+    assert "utility" in shell["visible_to"]
+    assert "shell" in shell["tags"]
+
+
+def test_unified_tools_endpoint_exposes_inspector_metadata(client: TestClient) -> None:
+    resp = client.get("/v1/tools")
+    assert resp.status_code == 200
+    by_name = {tool["name"]: tool for tool in resp.json()["tools"]}
+
+    shell = by_name["shell_bash"]
+    assert shell["owner"] == "utility"
+    assert "chat" in shell["visible_to"]
+    assert "diagnostic" in shell["tags"]
+    assert shell["permission_default"] == "ask"
+
+    detail = client.get("/v1/tools/shell_bash")
+    assert detail.status_code == 200
+    body = detail.json()
+    assert body["owner"] == "utility"
+    assert "chat" in body["visible_to"]
+    assert body["input_schema"]

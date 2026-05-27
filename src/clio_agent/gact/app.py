@@ -4135,6 +4135,7 @@ def _builtin_tools() -> list[Tool]:
                 title=tool_name.replace("_", " ").title(),
                 owner=_tool_owner_for_catalog(tool_name),
                 tags=_tool_tags_for_catalog(tool_name),
+                visible_to=_tool_visible_to_for_catalog(tool_name),
             )
     return list(seen.values())
 
@@ -4155,6 +4156,16 @@ def _tool_tags_for_catalog(tool_name: str) -> list[str]:
         from clio_agent.tools.catalog import tool_tags
 
         return sorted(tool_tags(tool_name))
+    except Exception:
+        return []
+
+
+def _tool_visible_to_for_catalog(tool_name: str) -> list[str]:
+    """Return static visibility metadata for a catalog tool row."""
+    try:
+        from clio_agent.tools.catalog import tool_visible_scopes
+
+        return tool_visible_scopes(tool_name)
     except Exception:
         return []
 
@@ -8394,15 +8405,10 @@ def build_app(
         if session_id:
             sess_rec = app.state.sessions.get(session_id)
             if sess_rec is not None:
-                # CLIO tracks tokens per invocation, not per
-                # session; for the TUI's purposes message_count is
-                # a reasonable proxy until BBB19 moves sessions into
-                # ARC and per-turn tokens become available on the
-                # Session record.
                 session_block = SessionMemoryStats(
                     session_id=session_id,
                     messages_retained=sess_rec.message_count,
-                    tokens_retained=0,
+                    tokens_retained=sess_rec.tokens_input + sess_rec.tokens_output,
                     tokens_budget=4000,
                     profiles_attached=0,
                 )
@@ -9624,18 +9630,24 @@ def build_app(
         rows: list[dict[str, Any]] = []
         # Bundled in-process tools.
         try:
-            from clio_agent.tools.gateway import list_capabilities  # noqa: PLC0415
+            from clio_agent.tools.gateway import list_gateway_tools  # noqa: PLC0415
 
-            for tool in list_capabilities():
+            for tool in await list_gateway_tools():
                 srv = tool.get("server", "")
+                tool_name = tool.get("name", "")
                 rows.append(
                     {
-                        "id": tool.get("name", ""),
-                        "name": tool.get("name", ""),
+                        "id": tool_name,
+                        "name": tool_name,
                         "description": tool.get("description") or "",
                         "server_id": f"mcp_{srv}" if srv else "",
                         "source": "mcp",
                         "input_schema": tool.get("input_schema") or {},
+                        "output_schema": tool.get("output_schema") or {},
+                        "permission_default": "ask",
+                        "owner": _tool_owner_for_catalog(tool_name),
+                        "tags": _tool_tags_for_catalog(tool_name),
+                        "visible_to": _tool_visible_to_for_catalog(tool_name),
                     }
                 )
         except Exception as exc:  # noqa: BLE001
@@ -9676,16 +9688,24 @@ def build_app(
                     async with Client(transport) as client:
                         tools = await client.list_tools()
                     for t in tools:
+                        tool_name = t.name
                         rows.append(
                             {
-                                "id": t.name,
-                                "name": t.name,
+                                "id": tool_name,
+                                "name": tool_name,
                                 "description": getattr(t, "description", "") or "",
                                 "server_id": sid,
                                 "source": "mcp",
                                 "input_schema": getattr(t, "inputSchema", None)
                                 or getattr(t, "input_schema", None)
                                 or {},
+                                "output_schema": getattr(t, "outputSchema", None)
+                                or getattr(t, "output_schema", None)
+                                or {},
+                                "permission_default": "ask",
+                                "owner": _tool_owner_for_catalog(tool_name),
+                                "tags": _tool_tags_for_catalog(tool_name),
+                                "visible_to": _tool_visible_to_for_catalog(tool_name),
                             }
                         )
                 except Exception as exc:  # noqa: BLE001
@@ -9710,9 +9730,9 @@ def build_app(
 
         # Bundled in-process tools first — cheap.
         try:
-            from clio_agent.tools.gateway import list_capabilities  # noqa: PLC0415
+            from clio_agent.tools.gateway import list_gateway_tools  # noqa: PLC0415
 
-            for tool in list_capabilities():
+            for tool in await list_gateway_tools():
                 if tool.get("name") == tool_id:
                     srv = tool.get("server", "")
                     return {
@@ -9722,6 +9742,11 @@ def build_app(
                         "server_id": f"mcp_{srv}" if srv else "",
                         "source": "mcp",
                         "input_schema": tool.get("input_schema") or {},
+                        "output_schema": tool.get("output_schema") or {},
+                        "permission_default": "ask",
+                        "owner": _tool_owner_for_catalog(tool_id),
+                        "tags": _tool_tags_for_catalog(tool_id),
+                        "visible_to": _tool_visible_to_for_catalog(tool_id),
                     }
         except Exception:
             pass
@@ -9764,6 +9789,13 @@ def build_app(
                                 "input_schema": getattr(tt, "inputSchema", None)
                                 or getattr(tt, "input_schema", None)
                                 or {},
+                                "output_schema": getattr(tt, "outputSchema", None)
+                                or getattr(tt, "output_schema", None)
+                                or {},
+                                "permission_default": "ask",
+                                "owner": _tool_owner_for_catalog(tool_id),
+                                "tags": _tool_tags_for_catalog(tool_id),
+                                "visible_to": _tool_visible_to_for_catalog(tool_id),
                             }
                 except Exception:
                     continue

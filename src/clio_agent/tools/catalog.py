@@ -166,6 +166,13 @@ def tool_visible_to(tool_name: str, scope: str) -> bool:
     return bool(entry and scope in entry.visible_to)
 
 
+def tool_visible_scopes(tool_name: str) -> list[str]:
+    """Return sorted agent/planner scopes allowed to see a tool."""
+
+    entry = get_tool_entry(tool_name)
+    return sorted(entry.visible_to) if entry else []
+
+
 def tool_names_for_owner(owner: str, *, planner_visible_only: bool = True) -> list[str]:
     """Return catalog tool names owned by an expert id."""
 

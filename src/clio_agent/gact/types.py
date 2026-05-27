@@ -487,6 +487,7 @@ class Tool(BaseModel):
     permission_default: str = "ask"
     owner: str = ""
     tags: list[str] = Field(default_factory=list)
+    visible_to: list[str] = Field(default_factory=list)
 
 
 class ListToolsResponse(BaseModel):
