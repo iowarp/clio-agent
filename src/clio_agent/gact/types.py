@@ -183,6 +183,24 @@ class SessionMemoryStats(BaseModel):
     compaction_recommended: bool = False
 
 
+class SessionContextPolicy(BaseModel):
+    """Effective context and memory policy for one session.
+
+    This is intentionally separate from ``Session.metadata`` so clients can
+    discover CLIO's current memory compartment semantics without reverse
+    engineering ad-hoc metadata keys.
+    """
+
+    session_id: str
+    memory_scope: Literal["session"] = "session"
+    writable_scope: Literal["session"] = "session"
+    cross_session_read_available: bool = False
+    cross_session_read_endpoint: Optional[str] = None
+    requires_user_consent: bool = True
+    notes: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
 class GlobalMemoryStats(BaseModel):
     """ARC-wide totals — SPEC §6.19."""
 
