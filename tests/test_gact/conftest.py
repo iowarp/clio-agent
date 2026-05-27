@@ -20,6 +20,7 @@ def complete_turn(
     sid: str,
     text: str,
     *,
+    json_override: dict[str, Any] | None = None,
     timeout: float = 10.0,
     poll_interval: float = 0.05,
 ) -> dict[str, Any]:
@@ -38,10 +39,10 @@ def complete_turn(
     and see what came back".
     """
 
-    ack = client.post(
-        f"/v1/sessions/{sid}/messages",
-        json={"parts": [{"type": "text", "text": text}]},
-    )
+    body = {"parts": [{"type": "text", "text": text}]}
+    if json_override:
+        body.update(json_override)
+    ack = client.post(f"/v1/sessions/{sid}/messages", json=body)
     assert ack.status_code == 200, ack.text
     body = ack.json()
     user_id = body["message_id"]

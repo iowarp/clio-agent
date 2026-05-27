@@ -974,6 +974,7 @@ async def _run_turn_in_background(
     sid: str,
     user_text: str,
     user_msg: "Message",
+    turn_agent_id: str = "",
 ) -> None:
     """Drive an agent turn off the request thread.
 
@@ -1173,7 +1174,8 @@ async def _run_turn_in_background(
                 )
             )
 
-        active_agent_id = _session_agent_id(sess)
+        session_agent_id = _session_agent_id(sess)
+        active_agent_id = turn_agent_id or session_agent_id
         from clio_agent.agent import cancellation_checker as _cancellation_checker  # noqa: PLC0415
 
         _refresh_argonne_lm_token(app.state.agent)
@@ -1586,6 +1588,13 @@ async def _run_turn_in_background(
             ledger.pop(sid, None)
 
     assistant_metadata: dict[str, Any] = {}
+    if turn_agent_id:
+        assistant_metadata["agent_override"] = {
+            "requested_agent_id": turn_agent_id,
+            "session_agent_id": _session_agent_id(sess),
+            "effective_agent_id": selected_agent or turn_agent_id,
+            "scope": "turn",
+        }
     should_report_stream_provenance = bool(answer_text) or error_info is not None
     text_stream_source = (
         ("live" if streamed_assistant_part_id is not None else "batch")
@@ -8069,6 +8078,7 @@ def build_app(
                 )
 
         user_text = req.extract_text()
+        turn_agent_id = req.extract_agent_id().strip()
         if not user_text:
             raise HTTPException(
                 status_code=422,
@@ -8087,6 +8097,13 @@ def build_app(
             )
 
         now = time.time()
+        user_metadata = dict(req.metadata)
+        if turn_agent_id:
+            user_metadata["agent_override"] = {
+                "requested_agent_id": turn_agent_id,
+                "session_agent_id": _session_agent_id(sess),
+                "scope": "turn",
+            }
         user_msg = Message(
             id=_new_message_id("user"),
             session_id=sid,
@@ -8094,7 +8111,7 @@ def build_app(
             created_at=_iso_from_epoch(now),
             updated_at=_iso_from_epoch(now),
             parts=[Part(id=_new_part_id(), type="text", text=user_text)],
-            metadata=req.metadata,
+            metadata=user_metadata,
         )
 
         # Persist + publish the user message synchronously so by the
@@ -8127,7 +8144,9 @@ def build_app(
         # running loop AFTER queueing background_tasks (which
         # FastAPI now runs nothing in, but kept as a hook in case
         # we want a post-response side-effect later).
-        task = asyncio.create_task(_run_turn_in_background(app, sid, user_text, user_msg))
+        task = asyncio.create_task(
+            _run_turn_in_background(app, sid, user_text, user_msg, turn_agent_id)
+        )
         app.state.in_flight_turns[sid] = task
 
         def _drop_task(_t, _sid=sid) -> None:

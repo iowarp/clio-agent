@@ -426,6 +426,8 @@ class PostMessageRequest(BaseModel):
     parts: list[Part] = Field(default_factory=list)
     text: Optional[str] = None
     model: Optional[ModelRef] = None
+    agent: Optional[AgentRef] = None
+    agent_id: Optional[str] = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
     def extract_text(self) -> str:
@@ -440,6 +442,13 @@ class PostMessageRequest(BaseModel):
             if p.type == "text" and p.text:
                 return p.text
         return self.text or ""
+
+    def extract_agent_id(self) -> str:
+        """Return a per-turn agent override, if the caller supplied one."""
+
+        if self.agent is not None and self.agent.id:
+            return self.agent.id
+        return self.agent_id or ""
 
 
 class AgentDef(BaseModel):
