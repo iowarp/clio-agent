@@ -259,6 +259,7 @@ class MemorySearchResponse(BaseModel):
     include_cross_session: bool = False
     searched_sessions: list[str] = Field(default_factory=list)
     hits: list[MemorySearchHit] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class ContextFrameItem(BaseModel):
