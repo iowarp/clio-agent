@@ -9,7 +9,7 @@ auto-resolve paths work.
 | Endpoint | Verb | Purpose |
 |---|---|---|
 | `/v1/permissions` | GET | List pending + recent permission rows |
-| `/v1/permissions/{pid}` | POST | Resolve one (`{"action": "allow"}` or `"deny"` or `"always_allow"`) |
+| `/v1/permissions/{pid}` | POST | Resolve one (`{"action": "allow"}`, `"deny"`, `"allow_session"`, or `"allow_workspace"`) |
 | `/v1/policies` | GET/PUT | List or replace declarative allow/deny/ask policy rules |
 
 Each row carries `id`, `session_id`, `tool_call.{tool_name, input}`,
@@ -59,6 +59,14 @@ Three resolution paths:
   - `w` — always-allow-this-session (whitelists the tool)
 - **Handler**: `handlePermissionKey` at `app.go:1918`. Pops the
   oldest pending permission, POSTs the resolution.
+
+This is the current wired behavior. The broader TUI surfacing plan for durable
+policy rules, audit visibility, and discoverability is tracked separately in
+`PERMISSION_SURFACING_DESIGN.md`. The important distinction is:
+
+- CLIO already has the backend permission system.
+- The remaining work is making that system understandable and manageable from
+  GACT/TUI without implying permissions are missing.
 
 ## Verifying it's wired
 
