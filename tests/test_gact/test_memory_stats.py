@@ -19,6 +19,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from clio_agent.gact.app import build_app
+from clio_agent.gact.types import Message, Part, Tokens
 
 
 class FakeARC:
@@ -83,13 +84,75 @@ def test_memory_stats_session_block_populated_when_session_id_set(
         add_tokens_input=120,
         add_tokens_output=80,
     )
+    client_with_arc.app.state.messages[sid] = [
+        Message(
+            id="msg_1",
+            session_id=sid,
+            role="user",
+            created_at="2026-05-27T00:00:00+00:00",
+            updated_at="2026-05-27T00:00:00+00:00",
+            parts=[Part(id="part_1", type="text", text="hello")],
+            tokens=Tokens(input=12),
+        ),
+        Message(
+            id="msg_2",
+            session_id=sid,
+            role="assistant",
+            created_at="2026-05-27T00:00:01+00:00",
+            updated_at="2026-05-27T00:00:01+00:00",
+            parts=[Part(id="part_2", type="text", text="answer")],
+            tokens=Tokens(output=18),
+        ),
+    ]
     body = client_with_arc.get(f"/v1/memory/stats?session_id={sid}").json()
     assert body["session"] is not None
     s = body["session"]
     assert s["session_id"] == sid
-    assert s["messages_retained"] == 3
-    assert s["tokens_retained"] == 200
+    assert s["messages_retained"] == 2
+    assert s["tokens_retained"] == 30
     assert s["tokens_budget"] == 4000
+    assert s["token_pressure"] == pytest.approx(30 / 4000)
+    assert s["threshold_state"] == "normal"
+    assert s["compaction_recommended"] is False
+    assert body["metadata"]["session"]["recorded_lifetime_tokens"] == 200
+
+
+def test_memory_stats_reports_retained_context_files_and_compaction_pressure(
+    client_with_arc: TestClient,
+) -> None:
+    sid = client_with_arc.post("/v1/sessions", json={"title": "x"}).json()["id"]
+    client_with_arc.app.state.messages[sid] = [
+        Message(
+            id="msg_compact",
+            session_id=sid,
+            role="assistant",
+            created_at="2026-05-27T00:00:00+00:00",
+            updated_at="2026-05-27T00:00:00+00:00",
+            parts=[
+                Part(
+                    id="part_compact",
+                    type="text",
+                    text="[compact summary]\n" + ("x" * 12000),
+                    metadata={"synthetic": "compact_summary"},
+                )
+            ],
+            metadata={"synthetic": "compact_summary"},
+        )
+    ]
+    client_with_arc.app.state.context_files[sid] = {
+        "large.txt": {"path": "large.txt", "mode": "read", "size": 8192}
+    }
+
+    body = client_with_arc.get(f"/v1/memory/stats?session_id={sid}").json()
+
+    s = body["session"]
+    assert s["messages_retained"] == 1
+    assert s["context_files_attached"] == 1
+    assert s["compact_summaries"] == 1
+    assert s["tokens_retained"] >= 5000
+    assert s["threshold_state"] == "critical"
+    assert s["compaction_recommended"] is True
+    assert body["metadata"]["retained_context_source"] == "visible_gact_transcript"
 
 
 def test_memory_stats_unknown_session_returns_empty_block_not_404(

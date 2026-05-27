@@ -8369,6 +8369,49 @@ def build_app(
     async def list_tools() -> ListToolsResponse:
         return ListToolsResponse(tools=_builtin_tools())
 
+    def _estimate_message_context_tokens(message: Message) -> int:
+        explicit = (
+            int(getattr(message.tokens, "input", 0) or 0)
+            + int(getattr(message.tokens, "output", 0) or 0)
+            + int(getattr(message.tokens, "cache_read", 0) or 0)
+            + int(getattr(message.tokens, "cache_write", 0) or 0)
+        )
+        if explicit > 0:
+            return explicit
+        chars = 0
+        for part in message.parts:
+            chars += len(part.text or "")
+            chars += len(str(getattr(part, "thinking", "") or ""))
+            chars += len(part.path or "")
+            chars += len(part.unified_diff or "")
+            chars += len(part.new_content or "")
+        return max(1, chars // 4) if chars else 0
+
+    def _estimate_context_file_tokens(row: Mapping[str, Any]) -> int:
+        size = row.get("size")
+        try:
+            raw_size = int(size or 0)
+        except (TypeError, ValueError):
+            raw_size = 0
+        # Context-file injection caps inlined bodies at _CTX_MAX_BYTES.
+        retained_bytes = min(max(raw_size, 0), _CTX_MAX_BYTES)
+        return retained_bytes // 4
+
+    def _context_pressure_state(
+        tokens_retained: int,
+        tokens_budget: int,
+    ) -> tuple[float, Literal["empty", "normal", "warning", "critical"], bool]:
+        if tokens_budget <= 0:
+            return 0.0, "empty" if tokens_retained == 0 else "normal", False
+        pressure = min(1.0, tokens_retained / tokens_budget)
+        if tokens_retained <= 0:
+            return 0.0, "empty", False
+        if pressure >= 0.9:
+            return pressure, "critical", True
+        if pressure >= 0.75:
+            return pressure, "warning", True
+        return pressure, "normal", False
+
     # ---- /v1/memory/stats (BBB11) ------------------------------------
     # Returns cache counters + per-session context retention + global
     # ARC totals. When ARC isn't wired (tests, smoke-boot scenarios)
@@ -8402,16 +8445,46 @@ def build_app(
             global_stats = GlobalMemoryStats()
 
         session_block: Optional[SessionMemoryStats] = None
+        metadata: dict[str, Any] = {
+            "retained_context_source": "visible_gact_transcript",
+            "token_estimate": "message_tokens_or_chars_div_4",
+        }
         if session_id:
             sess_rec = app.state.sessions.get(session_id)
             if sess_rec is not None:
+                messages = list(app.state.messages.get(session_id, []))
+                context_files = list((app.state.context_files.get(session_id, {}) or {}).values())
+                transcript_tokens = sum(_estimate_message_context_tokens(m) for m in messages)
+                context_file_tokens = sum(_estimate_context_file_tokens(row) for row in context_files)
+                tokens_retained = transcript_tokens + context_file_tokens
+                tokens_budget = 4000
+                pressure, threshold_state, compact_recommended = _context_pressure_state(
+                    tokens_retained,
+                    tokens_budget,
+                )
+                compact_summaries = sum(
+                    1
+                    for m in messages
+                    if m.metadata.get("synthetic") == "compact_summary"
+                    or any(p.metadata.get("synthetic") == "compact_summary" for p in m.parts)
+                )
                 session_block = SessionMemoryStats(
                     session_id=session_id,
-                    messages_retained=sess_rec.message_count,
-                    tokens_retained=sess_rec.tokens_input + sess_rec.tokens_output,
-                    tokens_budget=4000,
+                    messages_retained=len(messages),
+                    tokens_retained=tokens_retained,
+                    tokens_budget=tokens_budget,
                     profiles_attached=0,
+                    context_files_attached=len(context_files),
+                    compact_summaries=compact_summaries,
+                    token_pressure=pressure,
+                    threshold_state=threshold_state,
+                    compaction_recommended=compact_recommended,
                 )
+                metadata["session"] = {
+                    "transcript_tokens": transcript_tokens,
+                    "context_file_tokens": context_file_tokens,
+                    "recorded_lifetime_tokens": sess_rec.tokens_input + sess_rec.tokens_output,
+                }
             else:
                 # Unknown session: return an empty block rather than
                 # a 404. The TUI's footer chip handles zero stats
@@ -8423,6 +8496,7 @@ def build_app(
             cache=cache,
             session=session_block,
             global_=global_stats,  # type: ignore[call-arg]  # Pydantic alias "global"
+            metadata=metadata,
         )
 
     # ---- /v1/sessions/{sid}/events SSE (BBB13) -----------------------
