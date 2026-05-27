@@ -212,6 +212,37 @@ class MemoryStats(BaseModel):
     model_config = {"populate_by_name": True}
 
 
+class MemorySearchHit(BaseModel):
+    """One transcript-memory match.
+
+    This is intentionally provenance-heavy so a future orchestrator or TUI can
+    show where cross-session memory came from before using it as context.
+    """
+
+    session_id: str
+    session_title: str = ""
+    workspace_id: str = ""
+    message_id: str
+    part_id: str = ""
+    role: Literal["user", "assistant", "system", "tool"]
+    created_at: str
+    updated_at: str = ""
+    text: str
+    score: float = 0.0
+    match_terms: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class MemorySearchResponse(BaseModel):
+    """GET /v1/memory/search response."""
+
+    query: str
+    include_cross_session: bool = False
+    searched_sessions: list[str] = Field(default_factory=list)
+    hits: list[MemorySearchHit] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
 # ---------------------------------------------------------------------------
 # §4 — data model (populated incrementally)
 # ---------------------------------------------------------------------------

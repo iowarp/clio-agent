@@ -191,3 +191,154 @@ def test_memory_stats_without_arc_returns_zeros(tmp_path: Path) -> None:
         assert body["cache"]["misses"] == 0
         assert body["cache"]["hit_rate"] == 0.0
         assert body["global"]["conversations_total"] == 0
+
+
+def _add_text_message(
+    client: TestClient,
+    session_id: str,
+    *,
+    message_id: str,
+    role: str = "user",
+    text: str,
+    created_at: str,
+) -> None:
+    client.app.state.messages.setdefault(session_id, []).append(
+        Message(
+            id=message_id,
+            session_id=session_id,
+            role=role,
+            created_at=created_at,
+            updated_at=created_at,
+            parts=[Part(id=f"{message_id}_part", type="text", text=text)],
+        )
+    )
+    client.app.state.sessions.update(
+        session_id,
+        message_count=len(client.app.state.messages[session_id]),
+    )
+
+
+def test_memory_search_defaults_to_session_scope(client_with_arc: TestClient) -> None:
+    sid_a = client_with_arc.post(
+        "/v1/sessions",
+        json={"title": "NDP Monday"},
+    ).json()["id"]
+    sid_b = client_with_arc.post(
+        "/v1/sessions",
+        json={"title": "Unrelated Tuesday"},
+    ).json()["id"]
+    _add_text_message(
+        client_with_arc,
+        sid_a,
+        message_id="msg_a",
+        text="We inspected the NDP catalog for climate pressure datasets.",
+        created_at="2026-05-25T12:00:00+00:00",
+    )
+    _add_text_message(
+        client_with_arc,
+        sid_b,
+        message_id="msg_b",
+        text="The visualization dashboard discussed climate pressure plots.",
+        created_at="2026-05-26T12:00:00+00:00",
+    )
+
+    resp = client_with_arc.get(
+        "/v1/memory/search",
+        params={"query": "climate pressure", "session_id": sid_a},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["include_cross_session"] is False
+    assert body["searched_sessions"] == [sid_a]
+    assert [hit["session_id"] for hit in body["hits"]] == [sid_a]
+    assert body["hits"][0]["metadata"]["cross_session"] is False
+
+
+def test_memory_search_requires_explicit_cross_session_opt_in(
+    client_with_arc: TestClient,
+) -> None:
+    resp = client_with_arc.get("/v1/memory/search", params={"query": "climate"})
+    assert resp.status_code == 422
+    body = resp.json()
+    assert body["error"]["error"] == "invalid_request"
+    assert "set_include_cross_session" in body["error"]["details"]["recovery_actions"]
+
+
+def test_memory_search_cross_session_returns_provenance(
+    client_with_arc: TestClient,
+) -> None:
+    ws_science = client_with_arc.post(
+        "/v1/workspaces",
+        json={"name": "Science", "root_path": ""},
+    ).json()["id"]
+    ws_other = client_with_arc.post(
+        "/v1/workspaces",
+        json={"name": "Other", "root_path": ""},
+    ).json()["id"]
+    sid_a = client_with_arc.post(
+        "/v1/sessions",
+        json={"title": "Monday NDP work", "workspace_id": ws_science},
+    ).json()["id"]
+    sid_b = client_with_arc.post(
+        "/v1/sessions",
+        json={"title": "Tuesday follow-up", "workspace_id": ws_science},
+    ).json()["id"]
+    sid_other = client_with_arc.post(
+        "/v1/sessions",
+        json={"title": "Other workspace", "workspace_id": ws_other},
+    ).json()["id"]
+    _add_text_message(
+        client_with_arc,
+        sid_a,
+        message_id="msg_monday",
+        role="assistant",
+        text="NDP catalog result: dataset alpha has pressure and temperature.",
+        created_at="2026-05-25T12:00:00+00:00",
+    )
+    _add_text_message(
+        client_with_arc,
+        sid_b,
+        message_id="msg_tuesday",
+        role="assistant",
+        text="Follow-up confirmed pressure anomalies in dataset beta.",
+        created_at="2026-05-26T12:00:00+00:00",
+    )
+    _add_text_message(
+        client_with_arc,
+        sid_other,
+        message_id="msg_other",
+        role="assistant",
+        text="Pressure appears here too but this is a different workspace.",
+        created_at="2026-05-27T12:00:00+00:00",
+    )
+
+    resp = client_with_arc.get(
+        "/v1/memory/search",
+        params={
+            "query": "pressure dataset",
+            "session_id": sid_b,
+            "workspace_id": ws_science,
+            "include_cross_session": "true",
+            "limit": 10,
+        },
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["metadata"]["scope"] == "cross_session"
+    assert set(body["searched_sessions"]) == {sid_a, sid_b}
+    assert {hit["session_id"] for hit in body["hits"]} == {sid_a, sid_b}
+    by_session = {hit["session_id"]: hit for hit in body["hits"]}
+    assert by_session[sid_a]["session_title"] == "Monday NDP work"
+    assert by_session[sid_a]["workspace_id"] == ws_science
+    assert by_session[sid_a]["metadata"]["source"] == "gact_transcript"
+    assert by_session[sid_a]["metadata"]["cross_session"] is True
+    assert by_session[sid_b]["metadata"]["cross_session"] is False
+
+
+def test_memory_search_unknown_session_404s(client_with_arc: TestClient) -> None:
+    resp = client_with_arc.get(
+        "/v1/memory/search",
+        params={"query": "pressure", "session_id": "sess_missing"},
+    )
+    assert resp.status_code == 404
+    assert resp.json()["error"]["error"] == "not_found"
