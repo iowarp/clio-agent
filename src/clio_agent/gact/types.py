@@ -175,6 +175,11 @@ class SessionMemoryStats(BaseModel):
     tokens_retained: int = 0
     tokens_budget: Optional[int] = None  # null = unbounded
     profiles_attached: int = 0
+    context_files_attached: int = 0
+    compact_summaries: int = 0
+    token_pressure: float = 0.0
+    threshold_state: Literal["empty", "normal", "warning", "critical"] = "empty"
+    compaction_recommended: bool = False
 
 
 class GlobalMemoryStats(BaseModel):
