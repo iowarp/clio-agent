@@ -389,6 +389,9 @@ Recommended:
 - Add optional command status fields to the contract/client.
 - TUI displays unavailable commands as disabled rows with the reason.
 - Pressing Enter on a disabled command should not POST.
+- CLIO also exposes `/optimize` as `optimizer_command` in
+  `/v1/capability-gaps` and `x_clio_capability_gaps`, so Doctor/help surfaces
+  can discover the deferred command without treating it as runnable.
 
 ## Capability Gating Rules
 

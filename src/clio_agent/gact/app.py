@@ -2992,6 +2992,22 @@ _CAPABILITY_GAP_DEFINITIONS: dict[str, dict[str, Any]] = {
         "recovery_actions": ["use_files_and_diffs", "hide_or_disable_lsp_controls"],
         "related_endpoints": ["/v1/lsp/*"],
     },
+    "optimizer_command": {
+        "status": "unavailable",
+        "advertised": True,
+        "category": "deferred_command",
+        "description": (
+            "The /optimize slash command is kept visible as future CLIO "
+            "direction, but optimizer command execution is not wired yet."
+        ),
+        "client_behavior": "render_disabled",
+        "recovery_actions": [
+            "render_optimize_disabled",
+            "retry_after_optimizer_support_lands",
+        ],
+        "related_commands": ["/optimize"],
+        "related_endpoints": ["/v1/sessions/{sid}/commands/optimize"],
+    },
 }
 
 

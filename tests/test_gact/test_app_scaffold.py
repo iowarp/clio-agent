@@ -75,6 +75,8 @@ def test_capabilities_advertises_v0_2(client: TestClient) -> None:
     assert gaps["voice"]["advertised"] is False
     assert gaps["voice"]["client_behavior"] == "render_disabled"
     assert gaps["lsp"]["status"] == "unsupported"
+    assert gaps["optimizer_command"]["status"] == "unavailable"
+    assert gaps["optimizer_command"]["related_commands"] == ["/optimize"]
     # Landed capabilities.
     for flag in (
         "sessions",
@@ -101,7 +103,7 @@ def test_capability_gaps_endpoint_returns_disabled_future_capabilities(
     body = resp.json()
     gaps = body["capability_gaps"]
 
-    assert set(gaps) >= {"voice", "lsp"}
+    assert set(gaps) >= {"voice", "lsp", "optimizer_command"}
     voice = gaps["voice"]
     assert voice["status"] == "unsupported"
     assert voice["advertised"] is False
@@ -113,6 +115,17 @@ def test_capability_gaps_endpoint_returns_disabled_future_capabilities(
     assert lsp["recovery_actions"] == [
         "use_files_and_diffs",
         "hide_or_disable_lsp_controls",
+    ]
+
+    optimize = gaps["optimizer_command"]
+    assert optimize["status"] == "unavailable"
+    assert optimize["advertised"] is True
+    assert optimize["category"] == "deferred_command"
+    assert optimize["client_behavior"] == "render_disabled"
+    assert optimize["related_commands"] == ["/optimize"]
+    assert optimize["recovery_actions"] == [
+        "render_optimize_disabled",
+        "retry_after_optimizer_support_lands",
     ]
 
 
