@@ -199,7 +199,9 @@ class DemoResult:
 
 
 def _message_text(message: dict[str, Any]) -> str:
-    return "\n".join(str(part.get("text", "")) for part in message.get("parts", []))
+    return "\n".join(
+        str(part.get("text", "")) for part in message.get("parts", []) if part.get("type") == "text"
+    )
 
 
 def _routing_agent(message: dict[str, Any]) -> str:
@@ -421,6 +423,7 @@ def _case_row(result: DemoResult) -> dict[str, Any]:
         "prompt": result.case.prompt,
         "expected": result.case.expected,
         "why": result.case.why,
+        "expects_error": result.case.expects_error,
         "session_id": result.session_id,
         "elapsed_s": round(result.elapsed_s, 3),
         "passed": result.passed,
@@ -460,7 +463,8 @@ def _result_from_case_row(row: dict[str, Any]) -> DemoResult:
         expected=str(row.get("expected") or ""),
         why=str(row.get("why") or ""),
         routing_mode=str(row.get("routing_mode") or "auto"),
-        expects_error=str(row.get("outcome") or "") == "expected_error",
+        expects_error=bool(row.get("expects_error"))
+        or str(row.get("outcome") or "") == "expected_error",
         complexity_tags=tuple(str(tag) for tag in row.get("complexity_tags", []) or []),
     )
     routing = dict(row.get("routing_decision") or {})
