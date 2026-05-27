@@ -3973,6 +3973,7 @@ def _builtin_agents() -> list[AgentDef]:
                 "specialists based on keyword heuristics + LM classifier."
             ),
             system_prompt=_BUILTIN_SYSTEM_PROMPTS["main"],
+            parent_id="",
             tier=1,
             specialization="orchestrator",
             metadata={
@@ -3993,6 +3994,9 @@ def _builtin_agents() -> list[AgentDef]:
                 source="builtin",
                 title=name,
                 description=description,
+                parent_id=str(
+                    caps.get("parent_id") or caps.get("metadata", {}).get("parent") or "main"
+                ),
                 system_prompt=_BUILTIN_SYSTEM_PROMPTS.get(expert_id, ""),
                 tools=tools,
                 tier=int(caps.get("tier", 2)),
@@ -4230,6 +4234,7 @@ def _tool_visible_to_for_catalog(tool_name: str) -> list[str]:
 from typing import Protocol
 
 from clio_agent.gact.events import Event, EventBus, heartbeat_payload
+from clio_agent.gact.expert_packs import load_expert_packs, validate_expert_hierarchy
 from clio_agent.gact.messages import MessageStore
 from clio_agent.gact.sessions import SessionStore, _default_store_path
 from clio_agent.gact.types import (
@@ -4940,6 +4945,7 @@ def build_app(
                 x_clio_stream_fallback_reasons=_stream_fallback_reason_capabilities(),
                 x_clio_direct_delete_permissions=True,
                 x_clio_prompt_registry=True,
+                x_clio_expert_packs=True,
             ),
             transports=TransportFlags(events_sse=True, events_websocket=False),
             auth=AuthInfo(schemes=["trust_socket"], current="trust_socket"),
@@ -8470,11 +8476,13 @@ def build_app(
     # ---- /v1/agents catalog (BBB10) + dynamic registry (#19) ---------
 
     def _agent_rows() -> list[AgentDef]:
-        return (
+        rows = (
             _builtin_agents()
             + [AgentDef(**row.to_wire()) for row in app.state.user_agents.list()]
             + _load_skills_from_disk()
+            + load_expert_packs()
         )
+        return validate_expert_hierarchy(rows)
 
     @app.get("/v1/agents", response_model=ListAgentsResponse)
     async def list_agents(tier: Optional[int] = None) -> ListAgentsResponse:

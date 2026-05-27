@@ -95,6 +95,7 @@ class CapabilityFlags(BaseModel):
     x_clio_stream_fallback_reasons: dict[str, dict[str, Any]] = Field(default_factory=dict)
     x_clio_direct_delete_permissions: bool = False
     x_clio_prompt_registry: bool = False
+    x_clio_expert_packs: bool = False
 
 
 class TransportFlags(BaseModel):
@@ -457,15 +458,20 @@ class AgentDef(BaseModel):
     """
 
     id: str
-    source: Literal["builtin", "user", "recipe", "skill"] = "builtin"
+    source: Literal["builtin", "user", "recipe", "skill", "expert_pack"] = "builtin"
     title: str
     description: str = ""
+    parent_id: str = ""
     system_prompt: str = ""
+    prompt_id: str = ""
+    prompt_profile: str = ""
     default_provider: str = ""
     default_model: str = ""
     parameters: dict[str, Any] = Field(default_factory=dict)
     tools: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
+    enabled: bool = True
+    validation_errors: list[str] = Field(default_factory=list)
 
     # v0.2 — multi-tier routing
     tier: int = 0  # 0 = untagged, 1 = orchestrator, 2 = specialist, 3 = nanoagent
