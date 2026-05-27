@@ -1105,11 +1105,13 @@ async def _run_turn_in_background(
     # Plain text concat — keeps the agent.py interface untouched and
     # works regardless of which expert handles the turn.
     context_file_error: ErrorInfo | None = None
+    context_file_provenance = _context_file_turn_provenance(app, sid, status="prepared")
     try:
         enriched_text = _enrich_with_context_files(app, sid, user_text)
     except _ContextFileAccessError as exc:
         enriched_text = user_text
         context_file_error = exc.error_info
+        context_file_provenance = _context_file_turn_provenance(app, sid, status="error")
     # iowarp/clio-agent#20: pre_message hook can transform the
     # input or veto the turn. PermissionError → cancelled-style
     # error_info; the caller sees the hook's reason.
@@ -1705,6 +1707,8 @@ async def _run_turn_in_background(
         assistant_metadata["tools_called"] = tools_called
     if expert_handoffs:
         assistant_metadata["expert_handoffs"] = expert_handoffs
+    if context_file_provenance["files"]:
+        assistant_metadata["context_files"] = context_file_provenance
     # iowarp/clio-agent#6: when streaming actually emitted chunks,
     # reuse its message_id + part_id so the deltas + final
     # message line up. Otherwise mint a fresh id (existing path).
@@ -3585,6 +3589,37 @@ def _enrich_with_context_files(app: "FastAPI", sid: str, user_text: str) -> str:
         + "\n\n## User question\n\n"
         + user_text
     )
+
+
+def _context_file_turn_provenance(app: "FastAPI", sid: str, *, status: str) -> dict[str, Any]:
+    """Return non-secret provenance for context files attached to this turn."""
+
+    rows = list((app.state.context_files.get(sid, {}) or {}).values())
+    files: list[dict[str, Any]] = []
+    for row in rows:
+        path = str(row.get("path") or "")
+        if not path:
+            continue
+        mode = str(row.get("mode") or "read")
+        file_row: dict[str, Any] = {
+            "path": path,
+            "mode": mode,
+            "status": status,
+            "inline_policy": "metadata_only" if mode == "edit" else "inline_or_inspect",
+        }
+        for key in ("source", "workspace_id", "display_path", "resolved_path", "added_at"):
+            value = row.get(key)
+            if value:
+                file_row[key] = value
+        if row.get("size") is not None:
+            file_row["size"] = row.get("size")
+        files.append(file_row)
+    return {
+        "status": status,
+        "count": len(files),
+        "max_inline_bytes": _CTX_MAX_BYTES,
+        "files": files,
+    }
 
 
 _CTX_MAX_BYTES = 32 * 1024  # 32 KB cap per attached file
