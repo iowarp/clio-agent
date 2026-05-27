@@ -478,6 +478,59 @@ def _delete_session_messages(app: "FastAPI", session_id: str) -> None:
         store.delete_session(session_id)
 
 
+def _load_context_files(path: Path | None) -> dict[str, dict[str, dict[str, Any]]]:
+    """Load persisted context-file attachments keyed by session id."""
+
+    if path is None or not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    sessions = data.get("sessions", {}) if isinstance(data, Mapping) else {}
+    if not isinstance(sessions, Mapping):
+        return {}
+    loaded: dict[str, dict[str, dict[str, Any]]] = {}
+    for sid, rows in sessions.items():
+        if not isinstance(rows, Mapping):
+            continue
+        bucket: dict[str, dict[str, Any]] = {}
+        for path_key, row in rows.items():
+            if not isinstance(row, Mapping):
+                continue
+            path_value = str(row.get("path") or path_key or "").strip()
+            if not path_value:
+                continue
+            bucket[path_value] = dict(row) | {"path": path_value}
+        if bucket:
+            loaded[str(sid)] = bucket
+    return loaded
+
+
+def _flush_context_files(app: "FastAPI") -> None:
+    """Persist the current context-file ledger, if persistence is configured."""
+
+    path = getattr(app.state, "context_files_path", None)
+    if path is None:
+        return
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(
+        json.dumps({"sessions": app.state.context_files}, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    tmp.replace(path)
+
+
+def _delete_session_context_files(app: "FastAPI", session_id: str) -> None:
+    """Remove one session's context-file ledger from memory and disk."""
+
+    if session_id in app.state.context_files:
+        app.state.context_files.pop(session_id, None)
+        _flush_context_files(app)
+
+
 def _cancelled_error_info(
     sid: str,
     *,
@@ -4580,7 +4633,8 @@ def build_app(
     # CLIO-BBBBBBBBBB22: per-session context files. Keyed by
     # session_id, each value is an ordered dict of
     # path -> ContextFile dict.
-    app.state.context_files = {}
+    app.state.context_files_path = session_store_path.parent / "context_files.json"
+    app.state.context_files = _load_context_files(app.state.context_files_path)
     # CLIO-BBBBBBBBBB21: per-session pending diffs. Keyed by
     # session_id -> list of {path, unified_diff, status,
     # part_id, message_id}. Status is "pending" until apply/reject
@@ -5159,6 +5213,7 @@ def build_app(
                 ).model_dump(exclude_none=True),
             )
         _delete_session_messages(app, sid)
+        _delete_session_context_files(app, sid)
         return Response(status_code=204)
 
     # ---- /v1/permissions (BBB23) --------------------------------------
@@ -5655,6 +5710,7 @@ def build_app(
         }
         bucket = app.state.context_files.setdefault(sid, {})
         bucket[row["path"]] = row
+        _flush_context_files(app)
         app.state.bus.publish(
             Event(
                 type="context.file.added",
@@ -5717,6 +5773,7 @@ def build_app(
             )
         removed = bucket.pop(matched_key, None) if matched_key else None
         if removed is not None:
+            _flush_context_files(app)
             app.state.bus.publish(
                 Event(
                     type="context.file.removed",

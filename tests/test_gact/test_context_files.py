@@ -120,6 +120,49 @@ def test_remove_context_file_accepts_display_and_mention_paths(tmp_path: Path) -
     assert client.get(f"/v1/sessions/{sid}/context/files").json() == {"files": []}
 
 
+def test_context_files_persist_across_app_rebuild(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    sid = _sid(client)
+    target = tmp_path / "persisted.md"
+    target.write_text("persistent context\n")
+    client.post(
+        f"/v1/sessions/{sid}/context/files",
+        json={
+            "path": str(target),
+            "mode": "read",
+            "language": "markdown",
+            "size": target.stat().st_size,
+        },
+    )
+
+    rebuilt = _client(tmp_path)
+    body = rebuilt.get(f"/v1/sessions/{sid}/context/files").json()
+    file_row = body["files"][0]
+
+    assert file_row["path"] == str(target)
+    assert file_row["mode"] == "read"
+    assert file_row["added_at"]
+    assert file_row["last_modified"] == ""
+    assert file_row["size"] == target.stat().st_size
+    assert file_row["language"] == "markdown"
+
+
+def test_context_files_removed_from_persistence_on_session_delete(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    sid = _sid(client)
+    target = tmp_path / "attached.txt"
+    target.write_text("attached\n")
+    client.post(
+        f"/v1/sessions/{sid}/context/files",
+        json={"path": str(target), "mode": "read"},
+    )
+
+    assert client.delete(f"/v1/sessions/{sid}").status_code == 204
+    rebuilt = _client(tmp_path)
+
+    assert sid not in rebuilt.app.state.context_files
+
+
 def test_add_missing_path_is_422(tmp_path: Path) -> None:
     client = _client(tmp_path)
     sid = _sid(client)
