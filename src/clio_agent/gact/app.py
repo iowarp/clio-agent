@@ -9152,7 +9152,7 @@ def build_app(
         }
 
     @app.get("/v1/workspaces/{wid}/files/read")
-    async def read_workspace_file(wid: str, path: str) -> JSONResponse:
+    async def read_workspace_file(wid: str, path: str) -> Response:
         """SPEC §6.9 — read one file's content.
 
         Serves the raw bytes (text/plain) so the TUI's preview panel
@@ -9245,7 +9245,7 @@ def build_app(
                     )
                 ).model_dump(exclude_none=True),
             ) from exc
-        return JSONResponse(
+        return Response(
             content=data.decode("utf-8", errors="replace"),
             media_type="text/plain; charset=utf-8",
         )
