@@ -4056,6 +4056,18 @@ def _load_skills_from_disk() -> list[AgentDef]:
             }
             if meta.get("model"):
                 metadata["model"] = str(meta["model"]).strip()
+            for key in (
+                "command",
+                "slash_command",
+                "slash-command",
+                "commands",
+                "slash_commands",
+                "slash-commands",
+                "prompt_template",
+                "prompt-template",
+            ):
+                if key in meta:
+                    metadata[key] = meta[key]
             if body:
                 # Stash the system-prompt body so future /v1/agents/{id}
                 # can return the full prompt without re-reading the file.
@@ -5963,14 +5975,91 @@ def build_app(
         },
     ]
 
+    def _normalize_command_id(raw: Any) -> str:
+        value = str(raw or "").strip()
+        if not value:
+            return ""
+        return value if value.startswith("/") else f"/{value}"
+
+    def _command_defs_from_agent(agent_def: AgentDef) -> list[dict[str, Any]]:
+        metadata = agent_def.metadata if isinstance(agent_def.metadata, Mapping) else {}
+        raw_defs: list[Any] = []
+        for key in ("commands", "slash_commands", "slash-commands"):
+            value = metadata.get(key)
+            if isinstance(value, list):
+                raw_defs.extend(value)
+            elif value:
+                raw_defs.append(value)
+        for key in ("command", "slash_command", "slash-command"):
+            value = metadata.get(key)
+            if value:
+                raw_defs.append(value)
+
+        rows: list[dict[str, Any]] = []
+        for raw in raw_defs:
+            if isinstance(raw, str):
+                command_id = _normalize_command_id(raw)
+                row: dict[str, Any] = {}
+            elif isinstance(raw, Mapping):
+                command_id = _normalize_command_id(
+                    raw.get("id") or raw.get("name") or raw.get("command")
+                )
+                row = dict(raw)
+            else:
+                continue
+            if not command_id:
+                continue
+            status = str(row.get("status") or "available")
+            enabled = bool(row.get("enabled", status == "available"))
+            rows.append(
+                {
+                    "id": command_id,
+                    "title": str(row.get("title") or agent_def.title or command_id),
+                    "description": str(row.get("description") or agent_def.description or ""),
+                    "source": "user",
+                    "status": status,
+                    "enabled": enabled,
+                    "error": str(row.get("error") or ""),
+                    "disabled_reason": str(row.get("disabled_reason") or ""),
+                    "agent_id": agent_def.id,
+                    "agent_source": agent_def.source,
+                    "invocation": str(row.get("invocation") or "agent"),
+                    "agent_invocable": bool(row.get("agent_invocable", False)),
+                    "prompt_template": str(
+                        row.get("prompt_template")
+                        or row.get("prompt-template")
+                        or row.get("prompt")
+                        or metadata.get("prompt_template")
+                        or metadata.get("prompt-template")
+                        or ""
+                    ),
+                }
+            )
+        return rows
+
+    def _user_command_rows() -> list[dict[str, Any]]:
+        rows: dict[str, dict[str, Any]] = {}
+        agents = [AgentDef(**row.to_wire()) for row in app.state.user_agents.list()]
+        agents.extend(_load_skills_from_disk())
+        for agent_def in agents:
+            for command in _command_defs_from_agent(agent_def):
+                rows.setdefault(command["id"], command)
+        return sorted(rows.values(), key=lambda row: row["id"])
+
+    def _all_command_rows() -> list[dict[str, Any]]:
+        rows = {command["id"]: dict(command) for command in _BACKEND_COMMANDS}
+        for command in _user_command_rows():
+            rows.setdefault(command["id"], command)
+        return list(rows.values())
+
     @app.get("/v1/commands")
     async def list_commands() -> dict[str, Any]:
         """SPEC §6.13 — backend-provided slash commands."""
 
-        return {"commands": _BACKEND_COMMANDS}
+        return {"commands": _all_command_rows()}
 
     @app.post("/v1/sessions/{sid}/commands/{cmd}")
-    async def dispatch_command(sid: str, cmd: str) -> dict[str, Any]:
+    async def dispatch_command(sid: str, cmd: str, request: Request) -> dict[str, Any]:
         """Dispatch a backend command for a session. Returns a
         system-style result the TUI can render inline as a message.
         """
@@ -5990,7 +6079,7 @@ def build_app(
 
         # Accept "clear" or "/clear"; the TUI sends both shapes.
         cmd_id = cmd if cmd.startswith("/") else "/" + cmd
-        commands_by_id = {c["id"]: c for c in _BACKEND_COMMANDS}
+        commands_by_id = {c["id"]: c for c in _all_command_rows()}
         command_meta = commands_by_id.get(cmd_id)
         if command_meta is None:
             raise HTTPException(
@@ -6028,6 +6117,109 @@ def build_app(
                     )
                 ).model_dump(exclude_none=True),
             )
+
+        try:
+            request_body = await request.json()
+        except Exception:
+            request_body = {}
+        if not isinstance(request_body, dict):
+            request_body = {}
+
+        if command_meta.get("source") == "user":
+            agent_id = str(command_meta.get("agent_id") or "")
+            agent_def = _resolve_dynamic_agent(app, agent_id)
+            if agent_def is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail=ErrorEnvelope(
+                        error=ErrorInfo(
+                            error="not_found",
+                            message=f"command agent not found: {agent_id}",
+                            details={"command": cmd_id, "agent_id": agent_id},
+                            recoverable=True,
+                        )
+                    ).model_dump(exclude_none=True),
+                )
+            args = request_body.get("args")
+            if args is None:
+                args = request_body.get("arguments")
+            user_input = str(
+                request_body.get("input")
+                or request_body.get("text")
+                or request_body.get("prompt")
+                or ""
+            ).strip()
+            if not user_input and args not in (None, ""):
+                if isinstance(args, str):
+                    user_input = args
+                else:
+                    user_input = json.dumps(args, sort_keys=True, default=str)
+            prompt_template = str(command_meta.get("prompt_template") or "")
+            if prompt_template:
+                question = (
+                    prompt_template.replace("{{input}}", user_input)
+                    .replace("{{args}}", user_input)
+                    .replace("{{command}}", cmd_id)
+                    .replace("{{agent_id}}", agent_id)
+                )
+            else:
+                question = user_input or str(command_meta.get("description") or cmd_id)
+            if agent_def.tools:
+                pred = _run_tool_user_agent(app.state.agent, agent_def, question, sid)
+            else:
+                pred = _run_prompt_user_agent(app.state.agent, agent_def, question, sid)
+            agent_body_text = str(getattr(pred, "answer", "") or "").strip()
+            if not agent_body_text:
+                agent_body_text = f"user command {cmd_id} completed with no answer"
+
+            from clio_agent.gact.types import Message, Part, Tokens  # noqa: PLC0415
+
+            sys_msg = Message(
+                id=f"msg_cmd_{uuid.uuid4().hex[:10]}",
+                session_id=sid,
+                role="assistant",
+                created_at=datetime.now(timezone.utc).isoformat(),
+                updated_at=datetime.now(timezone.utc).isoformat(),
+                parts=[
+                    Part(
+                        id=f"part_cmd_{uuid.uuid4().hex[:10]}",
+                        type="text",
+                        metadata={
+                            "synthetic": "command_result",
+                            "command": cmd_id,
+                            "agent_id": agent_id,
+                        },
+                        text=agent_body_text,
+                    )
+                ],
+                tokens=Tokens(input=0, output=0, cache_read=0, cache_write=0),
+                cost_usd=0.0,
+                stop_reason="end_turn",
+                metadata={
+                    "synthetic": "command_result",
+                    "command": cmd_id,
+                    "agent_id": agent_id,
+                    "route_source": "user_command",
+                },
+            )
+            _append_session_message(app, sid, sys_msg)
+            app.state.sessions.update(sid, message_count=len(app.state.messages.get(sid, [])))
+            app.state.bus.publish(
+                Event(
+                    type="message.created",
+                    session_id=sid,
+                    payload=sys_msg.model_dump(exclude_none=True),
+                )
+            )
+            return {
+                "command": cmd_id,
+                "session_id": sid,
+                "result": {
+                    "type": "agent_message",
+                    "text": agent_body_text,
+                    "agent_id": agent_id,
+                },
+            }
 
         # Side effects + system message body per command.
         body_text: str

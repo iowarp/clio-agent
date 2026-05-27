@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
@@ -115,6 +116,123 @@ def test_dispatch_cache_stats_returns_arc_numbers(client: TestClient) -> None:
     text = resp["result"]["text"]
     assert "hits=" in text
     assert "misses=" in text
+
+
+def test_user_agent_command_listed_and_dispatches_to_agent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, str, str]] = []
+
+    def fake_prompt_agent(base_agent: Any, agent_def: Any, question: str, session_id: str) -> Any:
+        calls.append((agent_def.id, question, session_id))
+        return _Pred(answer="REVIEW_OK", selected_expert=agent_def.id)
+
+    def fail_tool_agent(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("prompt-only user command should not use tool runner")
+
+    monkeypatch.setattr("clio_agent.gact.app._run_prompt_user_agent", fake_prompt_agent)
+    monkeypatch.setattr("clio_agent.gact.app._run_tool_user_agent", fail_tool_agent)
+    c = TestClient(build_app(sessions_path=tmp_path / "s.json", agent=_Agent()))
+    c.post(
+        "/v1/agents",
+        json={
+            "id": "reviewer",
+            "title": "Reviewer",
+            "description": "Review code changes",
+            "system_prompt": "Review carefully.",
+            "metadata": {
+                "commands": [
+                    {
+                        "id": "/review",
+                        "description": "Review the supplied change",
+                        "prompt_template": "Review this: {{input}}",
+                    }
+                ]
+            },
+        },
+    )
+    sid = c.post("/v1/sessions", json={"title": "t"}).json()["id"]
+
+    listed = c.get("/v1/commands").json()["commands"]
+    review = next(command for command in listed if command["id"] == "/review")
+    assert review["source"] == "user"
+    assert review["agent_id"] == "reviewer"
+    assert review["status"] == "available"
+
+    resp = c.post(f"/v1/sessions/{sid}/commands/review", json={"input": "diff --git"}).json()
+
+    assert resp["result"]["type"] == "agent_message"
+    assert resp["result"]["text"] == "REVIEW_OK"
+    assert calls == [("reviewer", "Review this: diff --git", sid)]
+    msgs = c.get(f"/v1/sessions/{sid}/messages").json()["messages"]
+    assert msgs[0]["metadata"]["command"] == "/review"
+    assert msgs[0]["metadata"]["agent_id"] == "reviewer"
+
+
+def test_skill_frontmatter_command_is_listed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    skill_dir = tmp_path / ".codex" / "skills" / "explain"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "\n".join(
+            [
+                "---",
+                "name: explain-skill",
+                "description: Explain a selected topic",
+                "command: /explain",
+                "prompt-template: Explain {{input}}",
+                "---",
+                "Use concise explanations.",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+    c = TestClient(build_app(sessions_path=tmp_path / "s.json", agent=_Agent()))
+
+    commands = c.get("/v1/commands").json()["commands"]
+
+    command = next(row for row in commands if row["id"] == "/explain")
+    assert command["agent_id"] == "explain-skill"
+    assert command["agent_source"] == "skill"
+    assert command["prompt_template"] == "Explain {{input}}"
+
+
+def test_disabled_user_agent_command_is_visible_but_not_runnable(tmp_path: Path) -> None:
+    c = TestClient(build_app(sessions_path=tmp_path / "s.json", agent=_Agent()))
+    c.post(
+        "/v1/agents",
+        json={
+            "id": "future_agent",
+            "title": "Future Agent",
+            "metadata": {
+                "commands": [
+                    {
+                        "id": "/future",
+                        "status": "unavailable",
+                        "enabled": False,
+                        "error": "not_implemented",
+                        "disabled_reason": "not ready yet",
+                    }
+                ]
+            },
+        },
+    )
+    sid = c.post("/v1/sessions", json={"title": "t"}).json()["id"]
+
+    listed = c.get("/v1/commands").json()["commands"]
+    command = next(row for row in listed if row["id"] == "/future")
+    assert command["enabled"] is False
+
+    resp = c.post(f"/v1/sessions/{sid}/commands/future")
+
+    assert resp.status_code == 501
+    body = resp.json()
+    assert body["error"]["error"] == "not_implemented"
+    assert body["error"]["details"]["disabled_reason"] == "not ready yet"
 
 
 def test_dispatch_cache_stats_arc_failure_returns_structured_error(
