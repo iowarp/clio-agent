@@ -582,6 +582,40 @@ def _keyword_routed_user_agent(app: "FastAPI", text: str) -> "AgentDef | None":
     return matches[0][2]
 
 
+def _dynamic_agent_runtime_provenance(
+    app: "FastAPI",
+    agent_def: "AgentDef",
+    *,
+    execution_mode: str,
+) -> dict[str, Any]:
+    """Return non-secret provenance for the dynamic agent used this turn."""
+
+    active_model = _active_lm_model_ref(app)
+    provider_id = agent_def.default_provider or active_model.get("provider_id", "")
+    model_id = agent_def.default_model or active_model.get("model_id", "")
+    return {
+        "kind": "dynamic_agent",
+        "agent_id": agent_def.id,
+        "source": agent_def.source,
+        "title": agent_def.title,
+        "execution_mode": execution_mode,
+        "tools": list(agent_def.tools),
+        "prompt": {
+            "source": "agent_definition",
+            "has_system_prompt": bool(agent_def.system_prompt.strip()),
+        },
+        "model": {
+            "provider_id": provider_id,
+            "model_id": model_id,
+            "provider_source": (
+                "agent_default" if agent_def.default_provider else "global_active"
+            ),
+            "model_source": "agent_default" if agent_def.default_model else "global_active",
+            "fallback_to_global": not (agent_def.default_provider and agent_def.default_model),
+        },
+    }
+
+
 def _user_agent_param(agent_def: "AgentDef", name: str) -> Any:
     """Return one user-agent generation parameter, if present."""
     params = agent_def.parameters if isinstance(agent_def.parameters, Mapping) else {}
@@ -1065,6 +1099,7 @@ async def _run_turn_in_background(
     route_source = ""
     route_reason = ""
     auto_routed_agent: "AgentDef | None" = None
+    agent_runtime: dict[str, Any] = {}
     execution_path = ""
     tools_called: list[dict[str, Any]] = []
     expert_handoffs: list[dict[str, Any]] = []
@@ -1256,6 +1291,12 @@ async def _run_turn_in_background(
             if dynamic_agent is None:
                 raise _UnsupportedSessionAgent(active_agent_id)
             runner = _run_tool_user_agent if dynamic_agent.tools else _run_prompt_user_agent
+            execution_mode = "tool_agent" if dynamic_agent.tools else "prompt_agent"
+            agent_runtime = _dynamic_agent_runtime_provenance(
+                app,
+                dynamic_agent,
+                execution_mode=execution_mode,
+            )
             module = (
                 _build_tool_user_agent_module(app.state.agent, dynamic_agent)
                 if dynamic_agent.tools
@@ -1708,6 +1749,8 @@ async def _run_turn_in_background(
         assistant_metadata["tools_called"] = tools_called
     if expert_handoffs:
         assistant_metadata["expert_handoffs"] = expert_handoffs
+    if agent_runtime:
+        assistant_metadata["agent_runtime"] = agent_runtime
     # iowarp/clio-agent#6: when streaming actually emitted chunks,
     # reuse its message_id + part_id so the deltas + final
     # message line up. Otherwise mint a fresh id (existing path).
