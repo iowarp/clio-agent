@@ -95,6 +95,8 @@ class CapabilityFlags(BaseModel):
     x_clio_stream_fallback_reasons: dict[str, dict[str, Any]] = Field(default_factory=dict)
     x_clio_direct_delete_permissions: bool = False
     x_clio_prompt_registry: bool = False
+    x_clio_user_questions: bool = False
+    x_clio_retry_attempts: bool = False
 
 
 class TransportFlags(BaseModel):
@@ -273,7 +275,14 @@ class Session(BaseModel):
     id: str
     workspace_id: str
     title: str
-    status: Literal["idle", "running", "waiting_permission", "error", "cancelled"] = "idle"
+    status: Literal[
+        "idle",
+        "running",
+        "waiting_permission",
+        "waiting_user",
+        "error",
+        "cancelled",
+    ] = "idle"
     created_at: str
     updated_at: str
     message_count: int = 0
@@ -518,6 +527,76 @@ class PostMessageResponse(BaseModel):
 
     message_id: str
     accepted_at: str
+
+
+# ---------------------------------------------------------------------------
+# CLIO ask-user and retry protocol (#333)
+# ---------------------------------------------------------------------------
+
+
+class UserQuestionOption(BaseModel):
+    label: str
+    value: str = ""
+    description: str = ""
+
+
+class UserQuestion(BaseModel):
+    id: str
+    session_id: str
+    prompt: str
+    status: Literal["pending", "answered", "cancelled", "expired"] = "pending"
+    kind: Literal["freeform", "choice", "confirmation"] = "freeform"
+    options: list[UserQuestionOption] = Field(default_factory=list)
+    created_at: str
+    updated_at: str
+    expires_at: str = ""
+    source: str = "orchestrator"
+    turn_id: str = ""
+    attempt_id: str = ""
+    answer: str = ""
+    selected_options: list[str] = Field(default_factory=list)
+    answer_metadata: dict[str, Any] = Field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class CreateUserQuestionRequest(BaseModel):
+    prompt: str
+    kind: Literal["freeform", "choice", "confirmation"] = "freeform"
+    options: list[UserQuestionOption] = Field(default_factory=list)
+    source: str = "orchestrator"
+    turn_id: str = ""
+    attempt_id: str = ""
+    expires_at: str = ""
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class AnswerUserQuestionRequest(BaseModel):
+    answer: str = ""
+    selected_options: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class RetryTurnRequest(BaseModel):
+    notes: str = ""
+    model: Optional[ModelRef] = None
+    provider_id: str = ""
+    model_id: str = ""
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class TurnAttempt(BaseModel):
+    id: str
+    session_id: str
+    source_message_id: str
+    status: Literal["recorded", "queued", "running", "completed", "failed", "cancelled"] = (
+        "recorded"
+    )
+    created_at: str
+    updated_at: str
+    notes: str = ""
+    model: ModelRef = Field(default_factory=ModelRef)
+    warning: str = ""
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
