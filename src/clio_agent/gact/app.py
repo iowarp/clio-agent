@@ -3377,9 +3377,13 @@ def _enrich_with_context_files(app: "FastAPI", sid: str, user_text: str) -> str:
 
     blocks: list[str] = []
     for row in files:
-        path_str = row.get("path") or ""
+        path_str = row.get("resolved_path") or row.get("path") or ""
+        display_path = row.get("display_path") or row.get("path") or path_str
         if not path_str:
             continue
+        for marker in {f"@{display_path}", f"@{row.get('path') or ''}", f"@{Path(display_path).name}"}:
+            if marker != "@":
+                user_text = user_text.replace(marker, display_path)
         mode = row.get("mode") or "read"
         try:
             p = Path(path_str).resolve()
@@ -3398,7 +3402,7 @@ def _enrich_with_context_files(app: "FastAPI", sid: str, user_text: str) -> str:
         # in _apply_edit_to_disk, plus mode=plan/architect) still
         # protect against unintended writes.
         if mode == "edit" and not p.exists():
-            blocks.append(f"### Context file: {path_str} (mode=edit, target does not exist yet)")
+            blocks.append(f"### Context file: {display_path} (mode=edit, target does not exist yet)")
             continue
         if not p.exists():
             raise _context_file_access_error(
@@ -3424,7 +3428,7 @@ def _enrich_with_context_files(app: "FastAPI", sid: str, user_text: str) -> str:
                 message=f"Could not stat attached context file: {path_str}",
                 original_error=exc,
             ) from exc
-        header = f"### Context file: {path_str} (mode={mode}, {size} bytes)"
+        header = f"### Context file: {display_path} (mode={mode}, {size} bytes)"
         if mode == "edit":
             blocks.append(header)
             continue
@@ -5316,6 +5320,100 @@ def build_app(
 
     # ---- /v1/sessions/{sid}/context/files (BBB22) ---------------------
 
+    def _resolve_context_attachment_path(
+        *,
+        sess: Any,
+        raw_path: str,
+        requested_workspace_id: str = "",
+    ) -> dict[str, Any]:
+        source = "mention" if raw_path.startswith("@") else "api"
+        attachment_path = raw_path[1:].strip() if raw_path.startswith("@") else raw_path
+        if not attachment_path:
+            raise HTTPException(
+                status_code=422,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="internal_error",
+                        message="missing required field: path",
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        workspace_id = requested_workspace_id or getattr(sess, "workspace_id", "") or "ws_default"
+        path_obj = Path(attachment_path).expanduser()
+        if path_obj.is_absolute():
+            try:
+                resolved = path_obj.resolve(strict=False)
+            except (OSError, ValueError) as exc:
+                raise HTTPException(
+                    status_code=422,
+                    detail=ErrorEnvelope(
+                        error=ErrorInfo(
+                            error="bad_request",
+                            message=f"invalid context file path: {raw_path}",
+                            details={"field": "path", "original_error": type(exc).__name__},
+                            recoverable=True,
+                        )
+                    ).model_dump(exclude_none=True),
+                ) from exc
+            return {
+                "path": str(resolved),
+                "display_path": attachment_path,
+                "resolved_path": str(resolved),
+                "workspace_id": workspace_id,
+                "source": source,
+            }
+
+        ws = app.state.workspaces.get(workspace_id)
+        if ws is None:
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="not_found",
+                        message=f"workspace not found: {workspace_id}",
+                        details={"workspace_id": workspace_id},
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        try:
+            root = Path(ws.root_path or os.getcwd()).expanduser().resolve()
+            resolved = (root / attachment_path).resolve(strict=False)
+            resolved.relative_to(root)
+        except ValueError:
+            raise HTTPException(
+                status_code=403,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="path_outside_workspace",
+                        message=f"context path escapes workspace: {raw_path}",
+                        details={"path": raw_path, "workspace_id": workspace_id},
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
+            ) from None
+        except (OSError, RuntimeError) as exc:
+            raise HTTPException(
+                status_code=422,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="bad_request",
+                        message=f"invalid context file path: {raw_path}",
+                        details={"field": "path", "original_error": type(exc).__name__},
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            ) from exc
+        display_path = attachment_path.replace("\\", "/")
+        return {
+            "path": display_path,
+            "display_path": display_path,
+            "resolved_path": str(resolved),
+            "workspace_id": workspace_id,
+            "source": source,
+        }
+
     @app.get("/v1/sessions/{sid}/context/files")
     async def list_context_files(sid: str) -> dict[str, Any]:
         if app.state.sessions.get(sid) is None:
@@ -5341,7 +5439,8 @@ def build_app(
         without racing an explicit delete.
         """
 
-        if app.state.sessions.get(sid) is None:
+        sess = app.state.sessions.get(sid)
+        if sess is None:
             raise HTTPException(
                 status_code=404,
                 detail=ErrorEnvelope(
@@ -5361,17 +5460,11 @@ def build_app(
         if not isinstance(body, dict):
             body = {}
         path = (body.get("path") or "").strip()
-        if not path:
-            raise HTTPException(
-                status_code=422,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="internal_error",
-                        message="missing required field: path",
-                        recoverable=True,
-                    )
-                ).model_dump(exclude_none=True),
-            )
+        resolved_info = _resolve_context_attachment_path(
+            sess=sess,
+            raw_path=path,
+            requested_workspace_id=str(body.get("workspace_id") or ""),
+        )
         mode = body.get("mode") or "read"
         if mode not in {"edit", "read", "pin"}:
             raise HTTPException(
@@ -5387,20 +5480,7 @@ def build_app(
                     )
                 ).model_dump(exclude_none=True),
             )
-        try:
-            resolved = Path(path).expanduser().resolve(strict=False)
-        except (OSError, ValueError) as exc:
-            raise HTTPException(
-                status_code=422,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="bad_request",
-                        message=f"invalid context file path: {path}",
-                        details={"field": "path", "original_error": type(exc).__name__},
-                        recoverable=True,
-                    )
-                ).model_dump(exclude_none=True),
-            ) from exc
+        resolved = Path(resolved_info["resolved_path"])
         if mode in {"read", "pin"}:
             if not resolved.exists():
                 raise HTTPException(
@@ -5427,7 +5507,7 @@ def build_app(
                     ).model_dump(exclude_none=True),
                 )
         row = {
-            "path": path,
+            **resolved_info,
             "mode": mode,
             "added_at": datetime.now(timezone.utc).isoformat(),
             "last_modified": body.get("last_modified") or "",
@@ -5435,7 +5515,7 @@ def build_app(
             "language": body.get("language") or "",
         }
         bucket = app.state.context_files.setdefault(sid, {})
-        bucket[path] = row
+        bucket[row["path"]] = row
         app.state.bus.publish(
             Event(
                 type="context.file.added",
@@ -5472,9 +5552,21 @@ def build_app(
             body = {}
         if not isinstance(body, dict):
             body = {}
-        path = (body.get("path") or "").strip()
+        raw_path = (body.get("path") or "").strip()
+        path = raw_path[1:].strip() if raw_path.startswith("@") else raw_path
         bucket = app.state.context_files.get(sid, {})
-        if path and path in bucket:
+        matched_key = ""
+        if path:
+            for key, row in bucket.items():
+                if path in {
+                    key,
+                    str(row.get("path") or ""),
+                    str(row.get("display_path") or ""),
+                    str(row.get("resolved_path") or ""),
+                }:
+                    matched_key = key
+                    break
+        if matched_key:
             _guard_direct_destructive_action(
                 app,
                 session_id=sid,
@@ -5484,7 +5576,7 @@ def build_app(
                 summary=f"detach context file {path} from session {sid}",
                 reason="user_requested_context_file_delete",
             )
-        removed = bucket.pop(path, None) if path else None
+        removed = bucket.pop(matched_key, None) if matched_key else None
         if removed is not None:
             app.state.bus.publish(
                 Event(
