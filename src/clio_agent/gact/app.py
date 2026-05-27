@@ -5716,9 +5716,23 @@ def build_app(
                     status_code=404,
                     detail=ErrorEnvelope(
                         error=ErrorInfo(
-                            error="not_found",
+                            error="context_file_error",
                             message=f"context file not found: {path}",
-                            details={"path": path},
+                            details={
+                                "path": path,
+                                "resolved_path": str(resolved),
+                                "display_path": resolved_info.get("display_path") or path,
+                                "workspace_id": resolved_info.get("workspace_id") or "",
+                                "source": resolved_info.get("source") or "",
+                                "mode": mode,
+                                "operation": "exists",
+                                "recovery_actions": [
+                                    "choose_existing_file",
+                                    "remove_context_file",
+                                    "retry",
+                                    "exit",
+                                ],
+                            },
                             recoverable=True,
                         )
                     ).model_dump(exclude_none=True),
@@ -5728,9 +5742,23 @@ def build_app(
                     status_code=422,
                     detail=ErrorEnvelope(
                         error=ErrorInfo(
-                            error="bad_request",
+                            error="context_file_error",
                             message=f"context path is not a file: {path}",
-                            details={"path": path},
+                            details={
+                                "path": path,
+                                "resolved_path": str(resolved),
+                                "display_path": resolved_info.get("display_path") or path,
+                                "workspace_id": resolved_info.get("workspace_id") or "",
+                                "source": resolved_info.get("source") or "",
+                                "mode": mode,
+                                "operation": "is_file",
+                                "recovery_actions": [
+                                    "choose_existing_file",
+                                    "remove_context_file",
+                                    "retry",
+                                    "exit",
+                                ],
+                            },
                             recoverable=True,
                         )
                     ).model_dump(exclude_none=True),

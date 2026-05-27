@@ -64,6 +64,10 @@ The picker/composer/send path should be explicit:
   provided workspace root and reject path traversal.
 - Add optional structured metadata to context file rows indicating source:
   `source=mention`, `workspace_id`, `display_path`, `resolved_path`.
+- Return structured `context_file_error` details for attach-time failures such
+  as missing files or directories selected as `read`/`pin` context. The details
+  include the original path, resolved path, workspace id, mode, failed operation,
+  and recovery actions for the TUI.
 - Add tests for picker row -> context attachment -> message send.
 - Add tests that raw `@path` does not reach tools as a literal path when it was
   intended as an attachment.
