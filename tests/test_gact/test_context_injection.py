@@ -75,6 +75,29 @@ def test_read_mode_inlines_file_content(setup) -> None:
     assert "summarise" in seen
 
 
+def test_workspace_relative_mention_inlines_file_and_strips_at_marker(setup) -> None:
+    from .conftest import complete_turn
+
+    app, c, agent, tmp_path = setup
+    sid = c.post("/v1/sessions", json={"title": "t"}).json()["id"]
+    fpath = tmp_path / "docs" / "notes.md"
+    fpath.parent.mkdir()
+    fpath.write_text("picker-selected context\n")
+    c.post(
+        f"/v1/sessions/{sid}/context/files",
+        json={"path": "@docs/notes.md", "mode": "read"},
+    )
+
+    complete_turn(c, sid, "summarise @docs/notes.md")
+
+    seen, _ = agent.calls[-1]
+    assert "Attached files" in seen
+    assert "### Context file: docs/notes.md" in seen
+    assert "picker-selected context" in seen
+    assert "@docs/notes.md" not in seen
+    assert "summarise docs/notes.md" in seen
+
+
 def test_edit_mode_includes_only_header(setup) -> None:
     from .conftest import complete_turn
 
