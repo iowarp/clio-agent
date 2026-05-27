@@ -271,3 +271,106 @@ Check CSV schemas and quality.
     assert assistant["parts"][0]["selected_agent"] == "csv_quality"
     assert assistant["parts"][1]["text"] == "CSV_QUALITY_OK"
     assert assistant["metadata"]["stream_fallback"]["reason"] == "dynamic_prompt_stream_unavailable"
+
+
+def test_expert_pack_agent_executes_delegated_child_expert(
+    isolated_env: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from .conftest import complete_turn
+
+    calls: list[tuple[str, str, str]] = []
+
+    async def fake_stream_unavailable(
+        app: Any,
+        enriched_text: str,
+        sid: str,
+        emit_chunk: Any,
+        **kwargs: Any,
+    ) -> None:
+        del enriched_text, emit_chunk, kwargs
+        from clio_agent.gact.app import _record_stream_fallback
+
+        _record_stream_fallback(app, sid, "dynamic_prompt_stream_unavailable")
+        return None
+
+    def fake_prompt_agent(base_agent: Any, agent_def: Any, question: str, session_id: str) -> Any:
+        del base_agent
+        calls.append((agent_def.id, question, session_id))
+        if agent_def.id == "root_review":
+            return type(
+                "Pred",
+                (),
+                {
+                    "answer": "ROOT_OK",
+                    "selected_expert": agent_def.id,
+                    "routing_rationale": "session selected expert-pack agent",
+                    "expert_handoffs": [
+                        {
+                            "delegate_to": "schema_review",
+                            "question": "Inspect the CSV schema",
+                            "status": "requested",
+                        }
+                    ],
+                },
+            )()
+        return type(
+            "Pred",
+            (),
+            {
+                "answer": "SCHEMA_OK",
+                "selected_expert": agent_def.id,
+                "routing_rationale": "delegated child expert",
+            },
+        )()
+
+    monkeypatch.setattr("clio_agent.gact.app._try_streamed_forward", fake_stream_unavailable)
+    monkeypatch.setattr("clio_agent.gact.app._run_prompt_user_agent", fake_prompt_agent)
+
+    root = isolated_env / ".clio" / "experts"
+    root.mkdir(parents=True)
+    root.joinpath("root_review.md").write_text(
+        """---
+id: root_review
+title: Root Review Expert
+parent_id: analysis
+tier: 2
+---
+Coordinate data quality review.
+""",
+        encoding="utf-8",
+    )
+    root.joinpath("schema_review.md").write_text(
+        """---
+id: schema_review
+title: Schema Review Expert
+parent_id: root_review
+tier: 3
+---
+Inspect schemas.
+""",
+        encoding="utf-8",
+    )
+
+    app = build_app(sessions_path=tmp_path / "sessions.json", agent=object())
+    with TestClient(app) as client:
+        sid = client.post(
+            "/v1/sessions",
+            json={"title": "delegated expert run", "agent": {"id": "root_review"}},
+        ).json()["id"]
+        assistant = complete_turn(client, sid, "inspect data.csv")
+
+    assert calls == [
+        ("root_review", "inspect data.csv", sid),
+        ("schema_review", "Inspect the CSV schema", sid),
+    ]
+    handoff = assistant["metadata"]["expert_handoffs"][0]
+    assert handoff["agent_id"] == "schema_review"
+    assert handoff["parent_id"] == "root_review"
+    assert handoff["status"] == "completed"
+    assert handoff["execution_mode"] == "prompt_agent"
+    assert handoff["output_summary"] == "SCHEMA_OK"
+    assert assistant["parts"][1]["type"] == "expert_handoff"
+    assert assistant["parts"][1]["metadata"]["status"] == "completed"
+    assert assistant["parts"][2]["text"] == "ROOT_OK"

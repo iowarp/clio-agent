@@ -616,6 +616,33 @@ def _dynamic_agent_runtime_provenance(
     }
 
 
+def _delegated_expert_agent_id(row: Mapping[str, Any]) -> str:
+    """Return the requested delegated expert id from a handoff row."""
+
+    for key in ("delegate_to", "agent_id", "target_agent_id", "expert"):
+        value = str(row.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _delegated_expert_prompt(row: Mapping[str, Any], fallback: str) -> str:
+    for key in ("question", "input", "prompt", "request"):
+        value = str(row.get(key) or "").strip()
+        if value:
+            return value
+    return fallback
+
+
+def _should_execute_delegated_handoff(row: Mapping[str, Any]) -> bool:
+    if row.get("execute") is False:
+        return False
+    if row.get("execute") is True or row.get("delegate_to") or row.get("target_agent_id"):
+        return True
+    status = str(row.get("status") or "").strip().lower()
+    return status in {"requested", "pending", "delegate", "delegated"}
+
+
 def _user_agent_param(agent_def: "AgentDef", name: str) -> Any:
     """Return one user-agent generation parameter, if present."""
     params = agent_def.parameters if isinstance(agent_def.parameters, Mapping) else {}
@@ -1100,6 +1127,7 @@ async def _run_turn_in_background(
     route_reason = ""
     auto_routed_agent: "AgentDef | None" = None
     agent_runtime: dict[str, Any] = {}
+    dynamic_agent_used: "AgentDef | None" = None
     execution_path = ""
     tools_called: list[dict[str, Any]] = []
     expert_handoffs: list[dict[str, Any]] = []
@@ -1256,6 +1284,154 @@ async def _run_turn_in_background(
             turn_cancel_event.set()
             raise _TurnTimedOut(turn_timeout_s) from exc
 
+    async def _run_dynamic_agent_sync(agent_def: "AgentDef", prompt: str) -> Any:
+        runner = _run_tool_user_agent if agent_def.tools else _run_prompt_user_agent
+        loop = asyncio.get_running_loop()
+        turn_context = contextvars.copy_context()
+        return await _await_turn_work(
+            loop.run_in_executor(
+                None,
+                lambda: turn_context.run(
+                    _run_dynamic_agent_compat,
+                    runner,
+                    app.state.agent,
+                    agent_def,
+                    prompt,
+                    sid,
+                    cancel_requested,
+                ),
+            ),
+        )
+
+    async def _execute_delegated_experts(
+        parent_agent: "AgentDef",
+        rows: list[dict[str, Any]],
+        *,
+        source_text: str,
+        depth: int = 0,
+        seen: Optional[set[str]] = None,
+    ) -> list[dict[str, Any]]:
+        if seen is None:
+            seen = {parent_agent.id}
+        if depth >= 3:
+            return [
+                {
+                    **row,
+                    "status": "skipped",
+                    "skip_reason": "max_delegate_depth_reached",
+                    "parent_id": parent_agent.id,
+                    "depth": depth,
+                }
+                for row in rows
+                if _should_execute_delegated_handoff(row)
+            ]
+
+        executed: list[dict[str, Any]] = []
+        for row in rows:
+            if not _should_execute_delegated_handoff(row):
+                executed.append(row)
+                continue
+            target_id = _delegated_expert_agent_id(row)
+            if not target_id:
+                executed.append(
+                    {
+                        **row,
+                        "status": "skipped",
+                        "skip_reason": "missing_delegate_target",
+                        "parent_id": parent_agent.id,
+                        "depth": depth,
+                    }
+                )
+                continue
+            target = _resolve_dynamic_agent(app, target_id)
+            if target is None or target.source != "expert_pack" or not target.enabled:
+                executed.append(
+                    {
+                        **row,
+                        "agent_id": target_id,
+                        "status": "failed",
+                        "error": "delegate_not_available",
+                        "parent_id": parent_agent.id,
+                        "depth": depth,
+                    }
+                )
+                continue
+            if target.parent_id != parent_agent.id:
+                executed.append(
+                    {
+                        **row,
+                        "agent_id": target_id,
+                        "status": "failed",
+                        "error": "delegate_parent_mismatch",
+                        "parent_id": parent_agent.id,
+                        "target_parent_id": target.parent_id,
+                        "depth": depth,
+                    }
+                )
+                continue
+            if target.id in seen:
+                executed.append(
+                    {
+                        **row,
+                        "agent_id": target_id,
+                        "status": "failed",
+                        "error": "delegate_cycle_detected",
+                        "parent_id": parent_agent.id,
+                        "depth": depth,
+                    }
+                )
+                continue
+
+            prompt = _delegated_expert_prompt(row, source_text)
+            execution_mode = "tool_agent" if target.tools else "prompt_agent"
+            try:
+                pred_child = await _run_dynamic_agent_sync(target, prompt)
+                output = str(getattr(pred_child, "answer", "") or "").strip()
+                child_rows: list[dict[str, Any]] = []
+                raw_child_rows = getattr(pred_child, "expert_handoffs", None) or []
+                if isinstance(raw_child_rows, list):
+                    child_rows = [
+                        dict(child)
+                        for child in raw_child_rows
+                        if isinstance(child, dict)
+                    ]
+                nested = await _execute_delegated_experts(
+                    target,
+                    child_rows,
+                    source_text=prompt,
+                    depth=depth + 1,
+                    seen={*seen, target.id},
+                )
+                executed.append(
+                    {
+                        **row,
+                        "agent_id": target.id,
+                        "parent_id": parent_agent.id,
+                        "status": "completed",
+                        "depth": depth,
+                        "execution_mode": execution_mode,
+                        "input": prompt,
+                        "output_summary": output[:500],
+                        "children": nested,
+                    }
+                )
+            except (_TurnCancelled, _TurnTimedOut):
+                raise
+            except Exception as exc:  # noqa: BLE001
+                executed.append(
+                    {
+                        **row,
+                        "agent_id": target.id,
+                        "parent_id": parent_agent.id,
+                        "status": "failed",
+                        "depth": depth,
+                        "execution_mode": execution_mode,
+                        "error": type(exc).__name__,
+                        "message": str(exc),
+                    }
+                )
+        return executed
+
     try:
         if context_file_error is not None:
             raise _ContextFileAccessError(context_file_error)
@@ -1290,6 +1466,7 @@ async def _run_turn_in_background(
             dynamic_agent = _resolve_dynamic_agent(app, active_agent_id)
             if dynamic_agent is None:
                 raise _UnsupportedSessionAgent(active_agent_id)
+            dynamic_agent_used = dynamic_agent
             runner = _run_tool_user_agent if dynamic_agent.tools else _run_prompt_user_agent
             execution_mode = "tool_agent" if dynamic_agent.tools else "prompt_agent"
             agent_runtime = _dynamic_agent_runtime_provenance(
@@ -1399,6 +1576,16 @@ async def _run_turn_in_background(
         raw_handoffs = getattr(pred, "expert_handoffs", None) or []
         if isinstance(raw_handoffs, list):
             expert_handoffs = [dict(row) for row in raw_handoffs if isinstance(row, dict)]
+        if (
+            dynamic_agent_used is not None
+            and dynamic_agent_used.source == "expert_pack"
+            and expert_handoffs
+        ):
+            expert_handoffs = await _execute_delegated_experts(
+                dynamic_agent_used,
+                expert_handoffs,
+                source_text=enriched_text,
+            )
         # Drain the per-session observer ledger so direct-tool short-
         # circuits (HDF5/Parquet/fs experts that bypass ReAct) still
         # report tools_called on the assistant message metadata.
