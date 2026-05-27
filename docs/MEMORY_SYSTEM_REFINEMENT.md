@@ -284,6 +284,84 @@ Recommended storage operations:
 
 Do not block this issue on a new semantic/vector store.
 
+## Session Scope And Cross-Session Recall
+
+Per-session memory is the default boundary. A normal turn should assemble
+context from the active session, attached files, active workspace, relevant ARC
+profiles, and integration context allowed by the current expert/tool scope.
+
+That default does not cover requests such as:
+
+- "Based on the work from the last few days, draft the next plan."
+- "Use what we learned across the previous benchmark sessions."
+- "Summarize the unresolved issues from my recent CLIO work."
+
+CLIO should support these requests through explicit cross-session recall, not
+silent global memory leakage.
+
+### Cross-Session Memory Tool
+
+Add an internal tool-like capability available to the root orchestrator and to
+other explicitly trusted agents:
+
+```text
+memory_search_sessions(query, scope, since, limit, include_archived=false)
+memory_read_session_summary(session_id)
+memory_read_context_frame(frame_id)
+```
+
+The first implementation can search recent session ledgers, compact summaries,
+and context-frame metadata before adding a semantic/vector index. The contract
+that matters first is that cross-session access is deliberate, observable, and
+governed.
+
+Suggested request fields:
+
+- `query`: natural-language recall request.
+- `scope`: `current_workspace`, `user`, `all_allowed`, or explicit session ids.
+- `since`: optional time window such as `3d`, timestamp, or session count.
+- `limit`: maximum sessions, frames, or summaries to return.
+- `include_archived`: whether archived sessions may be searched.
+- `reason`: why the orchestrator needs cross-session context.
+
+Suggested response fields:
+
+- matched session ids and titles,
+- matched compact summaries,
+- relevant frame ids,
+- included item ids,
+- token estimate,
+- redaction/truncation state,
+- permission or policy decision if one was required.
+
+### Governance
+
+Cross-session memory should be opt-in at the prompt/tool level and visible in
+the transcript/TUI. It should not happen merely because the model asks broadly.
+
+Policy recommendations:
+
+- Root orchestrator may request cross-session recall.
+- Child experts do not get it by default.
+- User-defined experts must declare cross-session memory access explicitly.
+- Workspace/user scope controls which sessions are searchable.
+- Deleted, rewound, or tombstoned content remains excluded.
+- Permission/audit rows should record broad cross-session recall when the query
+  could expose sensitive workspace history.
+
+### TUI Semantics
+
+When cross-session recall is used, the TUI should show:
+
+- that cross-session memory was searched,
+- which sessions or summaries were used,
+- whether the result was truncated,
+- which policy allowed the access,
+- an option to inspect or exclude specific recalled sessions in the future.
+
+This keeps "based on the last few days" semantics powerful without erasing the
+normal per-session compartment boundary.
+
 ## Context Pressure Policy
 
 Default policy:
@@ -457,6 +535,17 @@ Command invocations should write command provenance:
 - selected agent/expert,
 - allowed tools.
 
+### Cross-Session Memory Recall
+
+Cross-session memory tool calls should write provenance:
+
+- query and scope,
+- matched sessions,
+- matched summaries/frames,
+- policy/permission decision,
+- included and excluded/tombstoned items,
+- token budget impact.
+
 ### Undo/Rewind
 
 Undo/rewind should not physically delete ARC memory in v1. They should write
@@ -510,6 +599,7 @@ context should not be included in frames.
 3. Add user-command provenance once command definitions exist.
 4. Add permission/audit references for destructive memory-affecting actions.
 5. Add NDP source metadata when NDP is enabled.
+6. Add cross-session recall provenance once the memory search tool exists.
 
 ### Phase 5: TUI Inspector Upgrade
 
@@ -528,6 +618,7 @@ context should not be included in frames.
 - Manual `/compact` reports pressure and writes durable compaction lineage.
 - Deleted/rewound transcript content cannot re-enter context through ARC.
 - Prompt, expert, and command provenance have defined fields in context frames.
+- Cross-session memory recall is explicit, scoped, auditable, and visible.
 - Existing memory stats, context compiler, compact-session, and TUI memory
   inspector tests remain green.
 
@@ -573,6 +664,9 @@ Regression tests:
 - Should automatic compaction be added after this issue, or should it remain a
   separate feature once summaries and tombstones are trusted?
 - What should the default context window be when a provider cannot report one?
+- Should cross-session memory recall require explicit user confirmation by
+  default, or should same-workspace recall be allowed automatically with visible
+  audit evidence?
 
 ## Defaults Chosen
 
@@ -582,3 +676,5 @@ Regression tests:
 - GACT visible transcript remains authoritative.
 - ARC storage is extended, not replaced.
 - Context frames are the unit of memory truth.
+- Per-session memory is the default boundary; cross-session recall is an
+  explicit orchestrator capability.

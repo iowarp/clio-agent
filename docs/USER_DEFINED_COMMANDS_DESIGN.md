@@ -181,6 +181,8 @@ Recommended metadata fields:
 | `agent-invocable` | Agent may invoke if global setting allows. | `true`. |
 | `context` | `inline` or `fork`. | `inline`. |
 | `agent` | Target agent/expert id. | This skill's own agent id. |
+| `agents` | Agents/experts that may see or invoke this command. | Empty = user palette only unless targeted. |
+| `skill-pack` | Optional package/group id for attaching commands to agents. | Empty. |
 | `prompt-profile` | Prompt profile to request. | Session/default profile. |
 | `allowed-tools` | Tool allowlist for tool-backed execution. | Empty/prompt-only. |
 | `model` | Preferred model id. | Agent/session default. |
@@ -191,6 +193,33 @@ Recommended metadata fields:
 Claude-compatible field spellings such as `allowed_tools`, `allowed-tools`,
 `disable-model-invocation`, and `user-invocable` should be accepted where they
 map cleanly to CLIO semantics.
+
+## Per-Agent Skills And Commands
+
+Commands and skills should not only be global palette entries. They should also
+be attachable to agents/experts.
+
+An agent definition may declare:
+
+- explicit command ids,
+- explicit skill ids,
+- skill-pack ids,
+- capability/tag selectors.
+
+The command registry should expose the effective command/skill surface per
+agent, after applying scope precedence, validation, disabled states, and policy.
+
+This gives CLIO a clean way to say:
+
+- the code-review agent can invoke review/refactor commands;
+- the NDP expert can invoke NDP dataset review recipes;
+- the visualization expert can invoke plotting recipes;
+- the root orchestrator can see broad delegation handles but not every
+  low-level tool recipe unless explicitly configured.
+
+Agent-scoped commands should still respect global user settings for
+agent-invocable commands. Manual user invocation can remain available even when
+agent auto-use is disabled.
 
 ## Argument Handling
 

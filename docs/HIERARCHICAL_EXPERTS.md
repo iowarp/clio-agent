@@ -157,6 +157,10 @@ explicitly asks for them.
 - `keywords`: routing and search hints.
 - `tools`: explicit tool allowlist.
 - `mcp_servers`: optional MCP/server connections this expert may use.
+- `skills`: explicit skill ids or skill-pack references available to this
+  expert.
+- `commands`: explicit slash/action command ids this expert may invoke or expose
+  when targeted.
 - `model`: expert-preferred provider/model policy.
 - `prompt_profile`: selected default profile key.
 - `prompt_profiles`: named prompt/model profiles.
@@ -354,11 +358,20 @@ An expert may only use:
 
 - Tools listed in its `tools`.
 - Tools exposed by declared `mcp_servers`, after server capability resolution.
+- Skills listed in its `skills` or inherited through an explicit skill pack.
+- Commands listed in its `commands` when command auto-use is enabled.
 - Internal safe tools CLIO grants automatically, such as `delegate_to_expert`
   for allowed children.
 
 Children do not automatically inherit parent tools. If inheritance is needed
 later, it should be an explicit policy field, not the default.
+
+The same rule should apply to skills and commands. An agent should not inherit a
+global command/skill surface just because it exists in the workspace. Per-agent
+skills make the hierarchy more predictable: the NDP expert can know NDP review
+recipes, the code expert can know review/refactor recipes, and the root
+orchestrator can decide when to delegate instead of exposing every recipe to
+every model call.
 
 Tool visibility should be included in the planner context for each expert. The
 planner should not see one global scientific tool pool; it should see scoped
@@ -457,6 +470,8 @@ should separately define:
   "default_model": "ndp-catalog-finetune",
   "parameters": {},
   "tools": ["ndp_search_datasets"],
+  "skills": ["ndp_dataset_review"],
+  "commands": ["ndp-check"],
   "tier": 3,
   "specialization": "ndp_catalog",
   "keywords": ["ndp", "dataset"],
@@ -527,6 +542,7 @@ separate document. Expert definitions may carry simple display metadata like
 - Delegation works beyond tier 2.
 - The transcript records and displays the delegation path.
 - Tool allowlists are enforced for user-defined experts.
+- Skill and command allowlists are enforced for user-defined experts.
 - MCP/server references resolve into available tools or validation errors.
 - Per-expert model/provider selection works.
 - Tier fallback works and is visibly reported.
@@ -541,4 +557,7 @@ separate document. Expert definitions may carry simple display metadata like
 - Memory refinement should decide what expert traces become durable ARC memory.
 - User-defined slash commands should decide whether commands can target experts,
   prompt profiles, sessions, or arbitrary agent actions.
+- User-defined slash commands and skills should also decide how command/skill
+  definitions attach to specific agents, whether by explicit ids, skill packs,
+  inheritance, or capability tags.
 - Configurable TUI module/sidebar layout deserves a separate architecture.
