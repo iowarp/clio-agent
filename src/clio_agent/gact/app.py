@@ -8712,6 +8712,10 @@ def build_app(
             if sess_rec is not None:
                 messages = list(app.state.messages.get(session_id, []))
                 context_files = list((app.state.context_files.get(session_id, {}) or {}).values())
+                context_files_by_mode: dict[str, int] = {"edit": 0, "pin": 0, "read": 0}
+                for row in context_files:
+                    mode = str(row.get("mode") or "read")
+                    context_files_by_mode[mode] = context_files_by_mode.get(mode, 0) + 1
                 transcript_tokens = sum(_estimate_message_context_tokens(m) for m in messages)
                 context_file_tokens = sum(_estimate_context_file_tokens(row) for row in context_files)
                 tokens_retained = transcript_tokens + context_file_tokens
@@ -8733,6 +8737,7 @@ def build_app(
                     tokens_budget=tokens_budget,
                     profiles_attached=0,
                     context_files_attached=len(context_files),
+                    context_files_by_mode=context_files_by_mode,
                     compact_summaries=compact_summaries,
                     token_pressure=pressure,
                     threshold_state=threshold_state,
