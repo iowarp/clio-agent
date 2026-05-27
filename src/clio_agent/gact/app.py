@@ -5251,15 +5251,30 @@ def build_app(
         """
 
         rows = list(app.state.permissions.values())
+        total_before_filters = len(rows)
         if session_id:
             rows = [r for r in rows if r.get("session_id") == session_id]
+        total_after_session_filter = len(rows)
         if status and status != "all":
             rows = [r for r in rows if r.get("status") == status]
+        total_after_status_filter = len(rows)
         rows.sort(key=lambda r: str(r.get("created_at") or ""), reverse=True)
         if limit <= 0:
             limit = 100
         limit = min(limit, 500)
-        return {"permissions": rows[:limit]}
+        return {
+            "permissions": rows[:limit],
+            "metadata": {
+                "session_id": session_id,
+                "status": status or "all",
+                "limit": limit,
+                "total": total_after_status_filter,
+                "returned": min(total_after_status_filter, limit),
+                "truncated": total_after_status_filter > limit,
+                "total_before_filters": total_before_filters,
+                "total_after_session_filter": total_after_session_filter,
+            },
+        }
 
     @app.post("/v1/permissions/{pid}")
     async def respond_permission(pid: str, request: Request) -> Response:

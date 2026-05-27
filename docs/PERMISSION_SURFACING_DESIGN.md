@@ -96,6 +96,9 @@ The TUI should use:
 
 - `GET /v1/permissions?session_id=<sid>&status=pending` for pending rows.
 - `GET /v1/permissions?session_id=<sid>&status=all` for audit rows.
+- Permission list responses include `metadata` with effective `session_id`,
+  `status`, `limit`, `total`, `returned`, and `truncated` so TUI audit views can
+  label filters and pagination honestly.
 - `GET /v1/policies` for durable rules.
 - `PUT /v1/policies` only if policy editing is in scope.
 
