@@ -540,6 +540,101 @@ def test_post_message_prompt_user_agent_executes_registered_agent(
     assert sess["status"] == "idle"
 
 
+def test_post_message_auto_routes_to_user_agent_by_keyword(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from .conftest import complete_turn
+
+    calls: list[tuple[str, str, str]] = []
+
+    def fake_prompt_agent(base_agent: Any, agent_def: Any, question: str, session_id: str) -> Any:
+        calls.append((agent_def.id, question, session_id))
+        return FakePrediction(
+            answer="USER_AGENT_ROUTED",
+            selected_expert=agent_def.id,
+            routing_rationale="matched registered user-agent keyword",
+            route_source="user_agent_keyword",
+        )
+
+    async def fake_stream_unavailable(
+        app: Any,
+        enriched_text: str,
+        sid: str,
+        emit_chunk: Any,
+        **kwargs: Any,
+    ) -> Any:
+        del enriched_text, emit_chunk, kwargs
+        from clio_agent.gact.app import _record_stream_fallback
+
+        _record_stream_fallback(app, sid, "dynamic_prompt_stream_unavailable")
+        return None
+
+    monkeypatch.setattr("clio_agent.gact.app._try_streamed_forward", fake_stream_unavailable)
+    monkeypatch.setattr("clio_agent.gact.app._run_prompt_user_agent", fake_prompt_agent)
+
+    agent = FakeClioAgent(answer="main should not run")
+    app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
+    with TestClient(app) as c:
+        assert (
+            c.post(
+                "/v1/agents",
+                json={
+                    "id": "reviewer",
+                    "title": "Reviewer",
+                    "system_prompt": "Review code carefully.",
+                    "keywords": ["code review", "reviewer"],
+                },
+            ).status_code
+            == 201
+        )
+        sid = c.post("/v1/sessions", json={"title": "x"}).json()["id"]
+        assistant = complete_turn(c, sid, "please do a code review of this patch")
+
+    assert agent.calls == []
+    assert calls == [("reviewer", "please do a code review of this patch", sid)]
+    assert assistant["parts"][0]["selected_agent"] == "reviewer"
+    assert assistant["parts"][0]["metadata"]["route_source"] == "user_agent_keyword"
+    assert assistant["parts"][1]["text"] == "USER_AGENT_ROUTED"
+
+
+def test_post_message_keyword_routing_chat_mode_uses_main_agent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from .conftest import complete_turn
+
+    def fail_prompt_agent(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("chat routing mode should not auto-route to user agent")
+
+    monkeypatch.setattr("clio_agent.gact.app._run_prompt_user_agent", fail_prompt_agent)
+
+    agent = FakeClioAgent(answer="MAIN_OK", selected_expert="")
+    app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
+    with TestClient(app) as c:
+        assert (
+            c.post(
+                "/v1/agents",
+                json={
+                    "id": "reviewer",
+                    "title": "Reviewer",
+                    "system_prompt": "Review code carefully.",
+                    "keywords": ["code review"],
+                },
+            ).status_code
+            == 201
+        )
+        sid = c.post(
+            "/v1/sessions",
+            json={"title": "x", "routing_mode": "chat"},
+        ).json()["id"]
+        assistant = complete_turn(c, sid, "please do a code review of this patch")
+
+    assert agent.calls == [("please do a code review of this patch", sid)]
+    assert [part["type"] for part in assistant["parts"]] == ["text"]
+    assert assistant["parts"][0]["text"] == "MAIN_OK"
+
+
 def test_post_message_prompt_user_agent_streams_live_when_available(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
