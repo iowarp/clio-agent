@@ -449,6 +449,23 @@ class PostMessageRequest(BaseModel):
         return self.text or ""
 
 
+class AgentCapabilityRef(BaseModel):
+    """Normalized agent-visible capability.
+
+    ``tools`` remains as the compact legacy list for existing clients. This
+    richer shape lets a TUI distinguish tools, skills, and slash commands
+    without scraping metadata or guessing from names.
+    """
+
+    kind: Literal["tool", "skill", "command"]
+    id: str
+    title: str = ""
+    description: str = ""
+    source: str = "builtin"
+    status: Literal["available", "unavailable", "unknown"] = "available"
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
 class AgentDef(BaseModel):
     """GACT §6.5 + v0.2 §4.3.1 multi-tier additions.
 
@@ -469,6 +486,9 @@ class AgentDef(BaseModel):
     default_model: str = ""
     parameters: dict[str, Any] = Field(default_factory=dict)
     tools: list[str] = Field(default_factory=list)
+    skills: list[str] = Field(default_factory=list)
+    commands: list[str] = Field(default_factory=list)
+    capability_refs: list[AgentCapabilityRef] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
     enabled: bool = True
     validation_errors: list[str] = Field(default_factory=list)

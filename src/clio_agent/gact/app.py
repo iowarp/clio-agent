@@ -4242,6 +4242,7 @@ from clio_agent.gact.expert_packs import load_expert_packs, validate_expert_hier
 from clio_agent.gact.messages import MessageStore
 from clio_agent.gact.sessions import SessionStore, _default_store_path
 from clio_agent.gact.types import (
+    AgentCapabilityRef,
     AgentDef,
     AuthInfo,
     BackendInfo,
@@ -8479,6 +8480,85 @@ def build_app(
 
     # ---- /v1/agents catalog (BBB10) + dynamic registry (#19) ---------
 
+    def _agent_with_capability_refs(agent_def: AgentDef) -> AgentDef:
+        """Attach normalized capability metadata to an AgentDef row."""
+
+        refs: list[AgentCapabilityRef] = [
+            AgentCapabilityRef(kind="tool", id=tool_id, title=tool_id, source="builtin")
+            for tool_id in agent_def.tools
+        ]
+        refs.extend(
+            AgentCapabilityRef(kind="skill", id=skill_id, title=skill_id, source=agent_def.source)
+            for skill_id in agent_def.skills
+        )
+        refs.extend(
+            AgentCapabilityRef(
+                kind="command",
+                id=command_id,
+                title=command_id,
+                source="builtin",
+            )
+            for command_id in agent_def.commands
+        )
+        refs.extend(agent_def.capability_refs)
+
+        if agent_def.id == "main":
+            command_ids = set(agent_def.commands)
+            for row in _BACKEND_COMMANDS:
+                command_id = row["id"]
+                if command_id in command_ids:
+                    continue
+                raw_status = row.get("status")
+                status: Literal["available", "unavailable", "unknown"] = (
+                    raw_status
+                    if raw_status in {"available", "unavailable", "unknown"}
+                    else "available"
+                )
+                refs.append(
+                    AgentCapabilityRef(
+                        kind="command",
+                        id=command_id,
+                        title=row.get("title", command_id),
+                        description=row.get("description", ""),
+                        source=row.get("source", "builtin"),
+                        status=status,
+                        metadata=(
+                            {"error": row["error"]}
+                            if row.get("error")
+                            else {}
+                        ),
+                    )
+                )
+                command_ids.add(command_id)
+            agent_def = agent_def.model_copy(update={"commands": sorted(command_ids)})
+
+        if agent_def.source == "skill" and agent_def.id not in agent_def.skills:
+            refs.append(
+                AgentCapabilityRef(
+                    kind="skill",
+                    id=agent_def.id,
+                    title=agent_def.title,
+                    description=agent_def.description,
+                    source=str(agent_def.metadata.get("skill_source", "skill")),
+                    metadata={
+                        "skill_path": agent_def.metadata.get("skill_path", ""),
+                        "skill_layout": agent_def.metadata.get("skill_layout", ""),
+                    },
+                )
+            )
+            agent_def = agent_def.model_copy(update={"skills": [*agent_def.skills, agent_def.id]})
+
+        deduped: list[AgentCapabilityRef] = []
+        seen: set[tuple[str, str]] = set()
+        for ref in refs:
+            key = (ref.kind, ref.id)
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(ref)
+
+        return agent_def.model_copy(update={"capability_refs": deduped})
+
     def _agent_rows() -> list[AgentDef]:
         rows = (
             _builtin_agents()
@@ -8486,7 +8566,7 @@ def build_app(
             + _load_skills_from_disk()
             + load_expert_packs()
         )
-        return validate_expert_hierarchy(rows)
+        return [_agent_with_capability_refs(row) for row in validate_expert_hierarchy(rows)]
 
     @app.get("/v1/agents", response_model=ListAgentsResponse)
     async def list_agents(tier: Optional[int] = None) -> ListAgentsResponse:
@@ -8560,7 +8640,7 @@ def build_app(
         req = dict(req)
         req["source"] = "user"
         agent = app.state.user_agents.upsert(req)
-        return AgentDef(**agent.to_wire())
+        return _agent_with_capability_refs(AgentDef(**agent.to_wire()))
 
     @app.put("/v1/agents/{agent_id}", response_model=AgentDef)
     async def update_agent(agent_id: str, req: dict[str, Any]) -> AgentDef:
@@ -8597,7 +8677,7 @@ def build_app(
         body["id"] = agent_id
         body["source"] = "user"
         agent = app.state.user_agents.upsert(body)
-        return AgentDef(**agent.to_wire())
+        return _agent_with_capability_refs(AgentDef(**agent.to_wire()))
 
     @app.delete("/v1/agents/{agent_id}")
     async def delete_agent(agent_id: str) -> Response:
