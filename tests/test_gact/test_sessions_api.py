@@ -60,6 +60,40 @@ def _seed_text_messages(client: TestClient, sid: str, messages: list[tuple[str, 
     client.app.state.message_store.replace_session(sid, seeded)
 
 
+def test_session_context_policy_reports_current_compartment_semantics(
+    client: TestClient,
+) -> None:
+    sid = client.post(
+        "/v1/sessions",
+        json={"title": "memory scope", "mode": "plan", "routing_mode": "chat"},
+    ).json()["id"]
+
+    resp = client.get(f"/v1/sessions/{sid}/context/policy")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["session_id"] == sid
+    assert body["memory_scope"] == "session"
+    assert body["writable_scope"] == "session"
+    assert body["cross_session_read_available"] is False
+    assert body["cross_session_read_endpoint"] is None
+    assert body["requires_user_consent"] is True
+    assert body["metadata"]["source"] == "clio_backend_default"
+    assert body["metadata"]["session_mode"] == "plan"
+    assert body["metadata"]["routing_mode"] == "chat"
+    assert body["metadata"]["arc_wired"] is False
+    assert any("Cross-session memory search" in note for note in body["notes"])
+
+
+def test_session_context_policy_unknown_session_404s(client: TestClient) -> None:
+    resp = client.get("/v1/sessions/sess_missing/context/policy")
+
+    assert resp.status_code == 404
+    detail = resp.json()["error"]
+    assert detail["error"] == "internal_error"
+    assert detail["details"]["session_id"] == "sess_missing"
+
+
 class CompactArc:
     """Minimal ARC fake for compact-memory tests."""
 

@@ -4205,6 +4205,7 @@ from clio_agent.gact.types import (
     PostMessageRequest,
     PostMessageResponse,
     Session,
+    SessionContextPolicy,
     SessionMemoryStats,
     Tokens,
     Tool,
@@ -4977,6 +4978,39 @@ def build_app(
                 ).model_dump(exclude_none=True),
             )
         return Session(**sess.to_wire())
+
+    @app.get("/v1/sessions/{sid}/context/policy", response_model=SessionContextPolicy)
+    async def get_session_context_policy(sid: str) -> SessionContextPolicy:
+        """Return CLIO's effective context compartment policy for one session."""
+
+        sess = app.state.sessions.get(sid)
+        if sess is None:
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="internal_error",
+                        message=f"session not found: {sid}",
+                        details={"session_id": sid},
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+
+        return SessionContextPolicy(
+            session_id=sid,
+            notes=[
+                "Conversation retrieval and writes are scoped to the active session.",
+                "Cross-session memory search is not exposed by this endpoint yet.",
+                "A future explicit tool may allow consented cross-session reads.",
+            ],
+            metadata={
+                "source": "clio_backend_default",
+                "session_mode": sess.mode,
+                "routing_mode": sess.routing_mode,
+                "arc_wired": app.state.arc is not None,
+            },
+        )
 
     @app.delete("/v1/sessions/{sid}")
     async def delete_session(sid: str) -> Response:
