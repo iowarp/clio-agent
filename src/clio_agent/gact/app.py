@@ -556,6 +556,32 @@ def _resolve_dynamic_agent(app: "FastAPI", agent_id: str) -> "AgentDef | None":
     return None
 
 
+def _keyword_routed_user_agent(app: "FastAPI", text: str) -> "AgentDef | None":
+    """Return the best registered user agent whose keyword matches text.
+
+    This intentionally ignores auto-discovered skills for now. Skills can be
+    numerous and global, so implicit routing only uses agents the user
+    registered directly in this CLIO backend.
+    """
+
+    normalized = f" {re.sub(r'[^a-z0-9_+-]+', ' ', text.lower())} "
+    matches: list[tuple[int, str, AgentDef]] = []
+    for row in app.state.user_agents.list():
+        agent = AgentDef(**row.to_wire())
+        for raw_keyword in agent.keywords:
+            keyword = str(raw_keyword or "").strip().lower()
+            if not keyword:
+                continue
+            needle = f" {re.sub(r'[^a-z0-9_+-]+', ' ', keyword)} "
+            if needle.strip() and needle in normalized:
+                matches.append((len(keyword), agent.id, agent))
+                break
+    if not matches:
+        return None
+    matches.sort(key=lambda item: (-item[0], item[1]))
+    return matches[0][2]
+
+
 def _user_agent_param(agent_def: "AgentDef", name: str) -> Any:
     """Return one user-agent generation parameter, if present."""
     params = agent_def.parameters if isinstance(agent_def.parameters, Mapping) else {}
@@ -1038,6 +1064,7 @@ async def _run_turn_in_background(
     rationale = ""
     route_source = ""
     route_reason = ""
+    auto_routed_agent: "AgentDef | None" = None
     execution_path = ""
     tools_called: list[dict[str, Any]] = []
     expert_handoffs: list[dict[str, Any]] = []
@@ -1210,6 +1237,16 @@ async def _run_turn_in_background(
 
         session_agent_id = _session_agent_id(sess)
         active_agent_id = turn_agent_id or session_agent_id
+        routing_mode = getattr(sess, "routing_mode", "auto") or "auto"
+        auto_routed_agent = None
+        if (
+            not turn_agent_id
+            and active_agent_id in {"", "main", "default"}
+            and routing_mode in {"auto", "experts"}
+        ):
+            auto_routed_agent = _keyword_routed_user_agent(app, user_text)
+            if auto_routed_agent is not None:
+                active_agent_id = auto_routed_agent.id
         from clio_agent.agent import cancellation_checker as _cancellation_checker  # noqa: PLC0415
 
         _refresh_argonne_lm_token(app.state.agent)
@@ -1261,7 +1298,7 @@ async def _run_turn_in_background(
             # rejects chat/none classifications. Keep the override scoped
             # to this turn context so concurrent sessions do not mutate the
             # shared ClioAgent instance.
-            routing_override = getattr(sess, "routing_mode", "auto") or "auto"
+            routing_override = routing_mode
             from clio_agent.agent import routing_mode_override as _routing_override  # noqa: PLC0415
 
             with _routing_override(routing_override), _cancellation_checker(cancel_requested):
@@ -1299,6 +1336,12 @@ async def _run_turn_in_background(
         rationale = getattr(pred, "routing_rationale", "")
         route_source = getattr(pred, "route_source", "") or ""
         route_reason = getattr(pred, "route_reason", "") or rationale
+        if auto_routed_agent is not None:
+            selected_agent = selected_agent or auto_routed_agent.id
+            keyword_reason = f"Matched registered user agent {auto_routed_agent.id!r} by keyword."
+            route_source = "user_agent_keyword"
+            rationale = rationale or keyword_reason
+            route_reason = keyword_reason
         pred_error_info = _coerce_error_info(getattr(pred, "error_info", None))
         if pred_error_info is not None:
             if pred_error_info.error == "cancelled":
