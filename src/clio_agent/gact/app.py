@@ -531,6 +531,20 @@ def _delete_session_context_files(app: "FastAPI", session_id: str) -> None:
         _flush_context_files(app)
 
 
+def _session_not_found(sid: str) -> HTTPException:
+    return HTTPException(
+        status_code=404,
+        detail=ErrorEnvelope(
+            error=ErrorInfo(
+                error="internal_error",
+                message=f"session not found: {sid}",
+                details={"session_id": sid},
+                recoverable=False,
+            )
+        ).model_dump(exclude_none=True),
+    )
+
+
 def _cancelled_error_info(
     sid: str,
     *,
@@ -2464,6 +2478,38 @@ def _validate_permission_policies(
     return clean, errors
 
 
+def _load_permission_policies(path: Path | None) -> list[dict[str, Any]]:
+    """Load persisted permission policies, ignoring invalid rows."""
+
+    if path is None or not path.exists():
+        return []
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    raw = data.get("policies", []) if isinstance(data, Mapping) else []
+    if not isinstance(raw, list):
+        return []
+    clean, _errors = _validate_permission_policies(raw)
+    return clean
+
+
+def _flush_permission_policies(app: "FastAPI") -> None:
+    """Persist the current permission policy list, if configured."""
+
+    path = getattr(app.state, "permission_policies_path", None)
+    if path is None:
+        return
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(
+        json.dumps({"policies": app.state.permission_policies}, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    tmp.replace(path)
+
+
 def _record_resolved_permission(
     app: "FastAPI",
     *,
@@ -2507,6 +2553,38 @@ def _record_resolved_permission(
             )
         )
     return pid
+
+
+def _append_permission_policy_from_resolution(
+    app: "FastAPI",
+    *,
+    row: Mapping[str, Any],
+    action: str,
+) -> dict[str, Any] | None:
+    """Persist allow_session/allow_workspace decisions as policy rules."""
+
+    if action not in {"allow_session", "allow_workspace"}:
+        return None
+    session_id = str(row.get("session_id") or "")
+    raw_tool_call = row.get("tool_call")
+    tool_call: Mapping[str, Any] = raw_tool_call if isinstance(raw_tool_call, Mapping) else {}
+    tool_name = str(tool_call.get("tool_name") or "*")
+    raw_args = tool_call.get("input")
+    args: Mapping[str, Any] = raw_args if isinstance(raw_args, Mapping) else {}
+    session = app.state.sessions.get(session_id) if session_id else None
+    workspace_id = str(getattr(session, "workspace_id", "") or "")
+    policy = {
+        "scope": "session" if action == "allow_session" else "workspace",
+        "scope_id": session_id if action == "allow_session" else workspace_id,
+        "tool_name_pattern": tool_name,
+        "action": "allow",
+        "created_from_permission_id": str(row.get("id") or ""),
+    }
+    path = _permission_path_from_args(args)
+    if path:
+        policy["path_pattern"] = path
+    app.state.permission_policies.append(policy)
+    return policy
 
 
 def _direct_permission_denied(
@@ -2668,6 +2746,16 @@ def _make_permission_gate(app: "FastAPI"):
             )
             return "deny"
         if policy_action in {"allow", "allow_session", "allow_workspace"}:
+            _record_resolved_permission(
+                app,
+                session_id=sid,
+                tool_name=name,
+                args=args,
+                status="auto_approved",
+                action="allow",
+                summary=f"destructive tool {name!r} allowed by permission policy",
+                reason=f"policy_{policy_action}",
+            )
             return "allow"
         if _is_safe_shell_diagnostic(name, args):
             return "allow"
@@ -3021,6 +3109,61 @@ def _stream_fallback_reason_capabilities() -> dict[str, dict[str, Any]]:
             key: list(value) if isinstance(value, list) else value for key, value in details.items()
         }
         for reason, details in _STREAM_FALLBACK_REASON_DEFINITIONS.items()
+    }
+
+
+_CAPABILITY_GAP_DEFINITIONS: dict[str, dict[str, Any]] = {
+    "voice": {
+        "status": "unsupported",
+        "advertised": False,
+        "category": "future_capability",
+        "description": (
+            "Voice input/output is reserved for future CLIO work and is not "
+            "wired to audio capture, transcription, or playback today."
+        ),
+        "client_behavior": "render_disabled",
+        "recovery_actions": ["use_text_input", "hide_or_disable_voice_controls"],
+        "related_endpoints": ["/v1/sessions/{sid}/voice/transcribe"],
+    },
+    "lsp": {
+        "status": "unsupported",
+        "advertised": False,
+        "category": "future_capability",
+        "description": (
+            "Language-server integration is outside the current CLIO GACT "
+            "surface; file and diff workflows are available instead."
+        ),
+        "client_behavior": "render_disabled",
+        "recovery_actions": ["use_files_and_diffs", "hide_or_disable_lsp_controls"],
+        "related_endpoints": ["/v1/lsp/*"],
+    },
+    "optimizer_command": {
+        "status": "unavailable",
+        "advertised": True,
+        "category": "deferred_command",
+        "description": (
+            "The /optimize slash command is kept visible as future CLIO "
+            "direction, but optimizer command execution is not wired yet."
+        ),
+        "client_behavior": "render_disabled",
+        "recovery_actions": [
+            "render_optimize_disabled",
+            "retry_after_optimizer_support_lands",
+        ],
+        "related_commands": ["/optimize"],
+        "related_endpoints": ["/v1/sessions/{sid}/commands/optimize"],
+    },
+}
+
+
+def _capability_gap_metadata() -> dict[str, dict[str, Any]]:
+    """Return CLIO capability gaps as client-renderable metadata."""
+
+    return {
+        name: {
+            key: list(value) if isinstance(value, list) else value for key, value in details.items()
+        }
+        for name, details in _CAPABILITY_GAP_DEFINITIONS.items()
     }
 
 
@@ -4695,8 +4838,9 @@ def build_app(
     # SPEC §6.11.b permission policies — list, not dict. Backends
     # consult this on every tool call to decide allow/deny/ask before
     # falling back to the per-tool permission_default. PUT replaces
-    # the whole list; in-memory.
-    app.state.permission_policies = []
+    # the whole list.
+    app.state.permission_policies_path = session_store_path.parent / "permission_policies.json"
+    app.state.permission_policies = _load_permission_policies(app.state.permission_policies_path)
     # iowarp/clio-agent#18: per-session task list (todo-style).
     # Keyed by session_id -> {task_id -> task dict}. In-memory.
     app.state.session_tasks = {}
@@ -5029,10 +5173,21 @@ def build_app(
                 x_clio_stream_fallback_reasons=_stream_fallback_reason_capabilities(),
                 x_clio_direct_delete_permissions=True,
                 x_clio_prompt_registry=True,
+                x_clio_capability_gaps=_capability_gap_metadata(),
             ),
             transports=TransportFlags(events_sse=True, events_websocket=False),
             auth=AuthInfo(schemes=["trust_socket"], current="trust_socket"),
         )
+
+    @app.get("/v1/capability-gaps")
+    async def capability_gaps() -> dict[str, Any]:
+        """Return intentionally unsupported or future CLIO capability rows.
+
+        This keeps "not supported yet" affordances visible as ideas without
+        making clients infer support from missing routes or failed commands.
+        """
+
+        return {"capability_gaps": _capability_gap_metadata()}
 
     # ---- 501 stubs for the rest of the surface ---------------------------
     # Every route in the v0.2 contract that we haven't wired yet
@@ -5214,17 +5369,7 @@ def build_app(
     async def delete_session(sid: str) -> Response:
         sess = app.state.sessions.get(sid)
         if sess is None:
-            raise HTTPException(
-                status_code=404,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="internal_error",
-                        message=f"session not found: {sid}",
-                        details={"session_id": sid},
-                        recoverable=False,
-                    )
-                ).model_dump(exclude_none=True),
-            )
+            raise _session_not_found(sid)
         _guard_direct_destructive_action(
             app,
             session_id=sid,
@@ -5251,22 +5396,291 @@ def build_app(
         _delete_session_context_files(app, sid)
         return Response(status_code=204)
 
+    def _reject_rollback_while_active(sid: str, sess: Any) -> None:
+        if getattr(sess, "status", "") in {"running", "waiting_permission"}:
+            raise HTTPException(
+                status_code=409,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="conflict",
+                        message=f"session {sid} cannot be rolled back while {sess.status}",
+                        details={"session_id": sid, "status": sess.status},
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+
+    def _publish_rollback_events(
+        sid: str,
+        *,
+        operation: str,
+        deleted_ids: list[str],
+        session_payload: dict[str, Any],
+        target_message_id: str = "",
+        include_target: bool = False,
+    ) -> None:
+        for message_id in deleted_ids:
+            app.state.bus.publish(
+                Event(
+                    type="message.deleted",
+                    session_id=sid,
+                    payload={
+                        "message_id": message_id,
+                        "session_id": sid,
+                        "operation": operation,
+                    },
+                )
+            )
+        app.state.bus.publish(
+            Event(
+                type=f"session.{operation}",
+                session_id=sid,
+                payload={
+                    "session_id": sid,
+                    "deleted_message_ids": deleted_ids,
+                    "target_message_id": target_message_id,
+                    "include_target": include_target,
+                },
+            )
+        )
+        app.state.bus.publish(
+            Event(
+                type="session.updated",
+                session_id=sid,
+                payload=session_payload,
+            )
+        )
+
+    def _commit_rollback(
+        sid: str,
+        *,
+        operation: str,
+        kept_messages: list[Message],
+        deleted_messages: list[Message],
+        target_message_id: str = "",
+        include_target: bool = False,
+    ) -> dict[str, Any]:
+        _replace_session_messages(app, sid, kept_messages)
+        deleted_ids = [m.id for m in deleted_messages]
+        updated = app.state.sessions.update(
+            sid,
+            message_count=len(kept_messages),
+            status="idle",
+            metadata_patch={
+                "last_rollback": {
+                    "operation": operation,
+                    "deleted_message_ids": deleted_ids,
+                    "target_message_id": target_message_id,
+                    "include_target": include_target,
+                    "memory_scope": "gact_visible_transcript_only",
+                    "occurred_at": datetime.now(timezone.utc).isoformat(),
+                }
+            },
+        )
+        if updated is None:
+            raise _session_not_found(sid)
+        session_payload = Session(**updated.to_wire()).model_dump(exclude_none=True)
+        _publish_rollback_events(
+            sid,
+            operation=operation,
+            deleted_ids=deleted_ids,
+            session_payload=session_payload,
+            target_message_id=target_message_id,
+            include_target=include_target,
+        )
+        return {
+            "session_id": sid,
+            "operation": operation,
+            "deleted_message_ids": deleted_ids,
+            "deleted_messages": deleted_ids,
+            "reverted_message_ids": deleted_ids,
+            "message_count": len(kept_messages),
+            "memory_scope": "gact_visible_transcript_only",
+            "session": session_payload,
+        }
+
+    @app.post("/v1/sessions/{sid}/undo")
+    async def undo_session(sid: str, request: Request) -> dict[str, Any]:
+        sess = app.state.sessions.get(sid)
+        if sess is None:
+            raise _session_not_found(sid)
+        _reject_rollback_while_active(sid, sess)
+        try:
+            body = await request.json()
+        except json.JSONDecodeError:
+            body = {}
+        if body is None:
+            body = {}
+        if not isinstance(body, dict):
+            raise HTTPException(
+                status_code=422,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="validation_error",
+                        message="undo request body must be an object",
+                        details={"session_id": sid},
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        raw_count = body.get("count", body.get("message_count", 1))
+        try:
+            count = int(raw_count) if isinstance(raw_count, str | int | float) else 1
+        except (TypeError, ValueError):
+            count = 1
+        if count < 1:
+            raise HTTPException(
+                status_code=422,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="validation_error",
+                        message="undo count must be at least 1",
+                        details={"session_id": sid, "count": raw_count},
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        messages = list(app.state.messages.get(sid, []))
+        deleted = messages[-count:]
+        kept = messages[: max(0, len(messages) - count)]
+        _guard_direct_destructive_action(
+            app,
+            session_id=sid,
+            workspace_id=sess.workspace_id,
+            tool_name="gact.session.undo",
+            args={"session_id": sid, "count": count},
+            summary=f"undo last {count} message(s) in session {sid}",
+            reason="user_requested_session_undo",
+        )
+        return _commit_rollback(
+            sid,
+            operation="undo",
+            kept_messages=kept,
+            deleted_messages=deleted,
+        )
+
+    @app.post("/v1/sessions/{sid}/rewind")
+    async def rewind_session(sid: str, request: Request) -> dict[str, Any]:
+        sess = app.state.sessions.get(sid)
+        if sess is None:
+            raise _session_not_found(sid)
+        _reject_rollback_while_active(sid, sess)
+        try:
+            body = await request.json()
+        except json.JSONDecodeError:
+            body = {}
+        if not isinstance(body, dict):
+            raise HTTPException(
+                status_code=422,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="validation_error",
+                        message="rewind request body must be an object",
+                        details={"session_id": sid},
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        target_message_id = str(
+            body.get("message_id")
+            or body.get("target_message_id")
+            or body.get("to_message_id")
+            or ""
+        ).strip()
+        if not target_message_id:
+            raise HTTPException(
+                status_code=422,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="validation_error",
+                        message="rewind requires message_id",
+                        details={"session_id": sid},
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        include_target = bool(body.get("include_target", False))
+        messages = list(app.state.messages.get(sid, []))
+        target_index = next(
+            (index for index, message in enumerate(messages) if message.id == target_message_id),
+            -1,
+        )
+        if target_index < 0:
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="not_found",
+                        message=f"message not found: {target_message_id}",
+                        details={"session_id": sid, "message_id": target_message_id},
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        keep_end = target_index if include_target else target_index + 1
+        kept = messages[:keep_end]
+        deleted = messages[keep_end:]
+        _guard_direct_destructive_action(
+            app,
+            session_id=sid,
+            workspace_id=sess.workspace_id,
+            tool_name="gact.session.rewind",
+            args={
+                "session_id": sid,
+                "message_id": target_message_id,
+                "include_target": include_target,
+            },
+            summary=f"rewind session {sid} to message {target_message_id}",
+            reason="user_requested_session_rewind",
+        )
+        return _commit_rollback(
+            sid,
+            operation="rewind",
+            kept_messages=kept,
+            deleted_messages=deleted,
+            target_message_id=target_message_id,
+            include_target=include_target,
+        )
+
     # ---- /v1/permissions (BBB23) --------------------------------------
 
     @app.get("/v1/permissions")
-    async def list_permissions(session_id: str = "", status: str = "") -> dict[str, Any]:
+    async def list_permissions(
+        session_id: str = "",
+        status: str = "",
+        limit: int = 100,
+    ) -> dict[str, Any]:
         """List permission requests.
 
         ?session_id=<sid> narrows to a session; ?status=pending
-        hides resolved rows. Both are optional.
+        hides resolved rows; ?status=all returns the audit ledger.
         """
 
         rows = list(app.state.permissions.values())
+        total_before_filters = len(rows)
         if session_id:
             rows = [r for r in rows if r.get("session_id") == session_id]
-        if status:
+        total_after_session_filter = len(rows)
+        if status and status != "all":
             rows = [r for r in rows if r.get("status") == status]
-        return {"permissions": rows}
+        total_after_status_filter = len(rows)
+        rows.sort(key=lambda r: str(r.get("created_at") or ""), reverse=True)
+        if limit <= 0:
+            limit = 100
+        limit = min(limit, 500)
+        return {
+            "permissions": rows[:limit],
+            "metadata": {
+                "session_id": session_id,
+                "status": status or "all",
+                "limit": limit,
+                "total": total_after_status_filter,
+                "returned": min(total_after_status_filter, limit),
+                "truncated": total_after_status_filter > limit,
+                "total_before_filters": total_before_filters,
+                "total_after_session_filter": total_after_session_filter,
+            },
+        }
 
     @app.post("/v1/permissions/{pid}")
     async def respond_permission(pid: str, request: Request) -> Response:
@@ -5312,6 +5726,9 @@ def build_app(
             row["status"] = "resolved"
             row["action"] = action
             row["resolved_at"] = datetime.now(timezone.utc).isoformat()
+            policy = _append_permission_policy_from_resolution(app, row=row, action=action)
+            if policy is not None:
+                row["policy"] = policy
             # iowarp/clio-agent#7: wake any MCPToolBridge thread
             # waiting on this permission's event.
             evt = app.state.permission_events.pop(pid, None)
@@ -10371,7 +10788,7 @@ def build_app(
     #
     # Declarative allow/deny/ask rules consulted before the per-tool
     # permission_default. PUT replaces the whole list (matches the
-    # gact-tui client's PutPolicies shape). In-memory; no persistence.
+    # gact-tui client's PutPolicies shape) and persists it locally.
 
     @app.get("/v1/policies")
     async def list_policies() -> dict[str, Any]:
@@ -10415,6 +10832,7 @@ def build_app(
                 ).model_dump(exclude_none=True),
             )
         app.state.permission_policies = clean
+        _flush_permission_policies(app)
         return {"policies": clean}
 
     # ---- DELETE /v1/messages/{id} ------------------------------------
