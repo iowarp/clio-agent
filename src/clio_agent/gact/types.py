@@ -96,6 +96,7 @@ class CapabilityFlags(BaseModel):
     x_clio_direct_delete_permissions: bool = False
     x_clio_prompt_registry: bool = False
     x_clio_expert_packs: bool = False
+    x_clio_agent_blueprints: bool = False
     x_clio_user_questions: bool = False
     x_clio_retry_attempts: bool = False
     x_clio_context_frames: bool = False

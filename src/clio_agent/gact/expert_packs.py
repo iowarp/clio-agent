@@ -472,18 +472,46 @@ def _parse_frontmatter(text: str) -> tuple[dict[str, Any], str]:
         return {}, text
     meta: dict[str, Any] = {}
     cur_key = ""
+    cur_map = ""
+    cur_map_list = ""
     for raw in lines[1:end]:
-        if raw.startswith("- "):
-            if cur_key and isinstance(meta.get(cur_key), list):
-                meta[cur_key].append(raw[2:].strip().strip("\"'"))
+        if not raw.strip() or raw.lstrip().startswith("#"):
+            continue
+        stripped = raw.strip()
+        indent = len(raw) - len(raw.lstrip(" "))
+        if stripped.startswith("- "):
+            value = stripped[2:].strip().strip("\"'")
+            if cur_map and cur_map_list:
+                container = meta.setdefault(cur_map, {})
+                if isinstance(container, dict):
+                    items = container.setdefault(cur_map_list, [])
+                    if isinstance(items, list):
+                        items.append(value)
+            elif cur_key and isinstance(meta.get(cur_key), list):
+                meta[cur_key].append(value)
             continue
         if ":" not in raw:
             continue
-        key, _, value = raw.partition(":")
+        key, _, value = stripped.partition(":")
         key = key.strip()
         value = value.strip()
         if not key:
             continue
+        if indent and cur_key:
+            if not isinstance(meta.get(cur_key), dict):
+                meta[cur_key] = {}
+            container = meta[cur_key]
+            if isinstance(container, dict):
+                if value:
+                    container[key] = value.strip("\"'")
+                    cur_map_list = ""
+                else:
+                    container[key] = []
+                    cur_map = cur_key
+                    cur_map_list = key
+            continue
+        cur_map = ""
+        cur_map_list = ""
         if value:
             meta[key] = value.strip("\"'")
             cur_key = ""
