@@ -2486,8 +2486,8 @@ class ClioAgent(dspy.Module):
         """Return whether deterministic pre-planner routing guards may run."""
         if routing_mode == "reasoning_only":
             return False
-        raw = os.environ.get("CLIO_ROUTING_GUARDS", "1").strip().lower()
-        return raw not in {"0", "false", "no", "off", "disabled"}
+        raw = os.environ.get("CLIO_ROUTING_GUARDS", "0").strip().lower()
+        return raw in {"1", "true", "yes", "on", "enabled"}
 
     def _build_capabilities_context(self, routing_mode: str = "auto") -> str:
         """Describe live experts and scoped tools for the planner."""

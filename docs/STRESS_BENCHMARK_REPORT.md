@@ -416,16 +416,17 @@ These are not claimed as verified by the current benchmark:
   declared through agent capability metadata (`guard_direct_suffixes`,
   `guard_coordinator_intents`, and `coordinated_file_suffixes`) and refuse to
   fire when multiple registered experts could own the same guard. This keeps
-  production guard behavior useful while allowing a future 25-expert registry to
+  opt-in guard behavior useful while allowing a future 25-expert registry to
   scale without more semantic `if expert == ...` branches. Unit coverage now
   registers 25 extra experts and verifies that the guard still selects the
-  registry-declared coordinator rather than depending on a three-expert table.
-- With `CLIO_ROUTING_GUARDS=0`, Qwopus still struggles to produce valid planner
+  registry-declared coordinator when `CLIO_ROUTING_GUARDS=1` rather than
+  depending on a three-expert table.
+- With default guard-free routing, Qwopus still struggles to produce valid planner
   output for the natural four-file cross-file prompt even after `/no_think`,
   compact capability retry, and the `4096` token floor. The workflow recovers
-  and completes, but this is not counted as clean planner routing. The production
-  registry guard remains useful, and the no-guard path remains a focused planner
-  hardening target.
+  and completes, but this is not counted as clean planner routing. The registry
+  guard remains useful as an opt-in comparison lane, and the default path remains
+  the focused planner hardening target.
 - clio-kit/NDP is now verified through CLIO's data-owned core gateway-visible
   `ndp_` tools, through GACT's direct external MCP install/call lane, and
   through one completed staged SAC waveform
