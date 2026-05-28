@@ -7436,12 +7436,16 @@ def build_app(
         return Session(**sess.to_wire())
 
     @app.get("/v1/sessions", response_model=ListSessionsResponse)
-    async def list_sessions(workspace_id: Optional[str] = None) -> ListSessionsResponse:
-        rows = app.state.sessions.list(workspace_id=workspace_id)
+    async def list_sessions(
+        workspace_id: Optional[str] = None,
+        include_all_workspaces: bool = False,
+    ) -> ListSessionsResponse:
+        effective_workspace_id = workspace_id or (None if include_all_workspaces else "ws_default")
+        rows = app.state.sessions.list(workspace_id=effective_workspace_id)
         return ListSessionsResponse(sessions=[Session(**row.to_wire()) for row in rows])
 
     @app.get("/v1/sessions/{sid}", response_model=Session)
-    async def get_session(sid: str) -> Session:
+    async def get_session(sid: str, workspace_id: Optional[str] = None) -> Session:
         sess = app.state.sessions.get(sid)
         if sess is None:
             raise HTTPException(
@@ -7452,6 +7456,23 @@ def build_app(
                         message=f"session not found: {sid}",
                         details={"session_id": sid},
                         recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        if workspace_id and sess.workspace_id != workspace_id:
+            raise HTTPException(
+                status_code=403,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="permission_error",
+                        message="session is outside the requested workspace scope",
+                        details={
+                            "session_id": sid,
+                            "session_workspace_id": sess.workspace_id,
+                            "requested_workspace_id": workspace_id,
+                            "scope": "other_workspace",
+                        },
+                        recoverable=True,
                     )
                 ).model_dump(exclude_none=True),
             )
@@ -7479,10 +7500,13 @@ def build_app(
         scope_meta = workspace_scope(ws).to_wire() if ws is not None else {}
         return SessionContextPolicy(
             session_id=sid,
+            cross_session_read_available=True,
+            cross_session_read_endpoint=f"/v1/sessions/{sid}/memory/tools/search-sessions",
             notes=[
                 "Conversation retrieval and writes are scoped to the active session.",
-                "Cross-session memory search is not exposed by this endpoint yet.",
-                "A future explicit tool may allow consented cross-session reads.",
+                "Cross-session memory tools require explicit user intent or policy.",
+                "Same-workspace memory can be searched through bounded, provenance-bearing tools.",
+                "Other-workspace memory is denied by default.",
             ],
             metadata={
                 "source": "clio_backend_default",
@@ -7490,6 +7514,8 @@ def build_app(
                 "routing_mode": sess.routing_mode,
                 "arc_wired": app.state.arc is not None,
                 "workspace": scope_meta,
+                "cross_session_default": "deny_without_user_intent",
+                "global_scope_default": "deny_without_global_intent",
             },
         )
 

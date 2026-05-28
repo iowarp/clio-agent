@@ -75,14 +75,17 @@ def test_session_context_policy_reports_current_compartment_semantics(
     assert body["session_id"] == sid
     assert body["memory_scope"] == "session"
     assert body["writable_scope"] == "session"
-    assert body["cross_session_read_available"] is False
-    assert body["cross_session_read_endpoint"] is None
+    assert body["cross_session_read_available"] is True
+    assert body["cross_session_read_endpoint"] == (
+        f"/v1/sessions/{sid}/memory/tools/search-sessions"
+    )
     assert body["requires_user_consent"] is True
     assert body["metadata"]["source"] == "clio_backend_default"
     assert body["metadata"]["session_mode"] == "plan"
     assert body["metadata"]["routing_mode"] == "chat"
     assert body["metadata"]["arc_wired"] is False
-    assert any("Cross-session memory search" in note for note in body["notes"])
+    assert body["metadata"]["cross_session_default"] == "deny_without_user_intent"
+    assert any("Other-workspace memory is denied" in note for note in body["notes"])
 
 
 def test_session_context_policy_unknown_session_404s(client: TestClient) -> None:
@@ -371,12 +374,44 @@ def test_get_v1_sessions_filter_by_workspace(client: TestClient) -> None:
     assert all(s["workspace_id"] == ws_a for s in resp.json()["sessions"])
 
 
+def test_get_v1_sessions_defaults_to_default_workspace_scope(client: TestClient) -> None:
+    ws_a = client.post("/v1/workspaces", json={"name": "alpha"}).json()["id"]
+    default = client.post("/v1/sessions", json={"title": "default"}).json()
+    client.post("/v1/sessions", json={"workspace_id": ws_a, "title": "a1"})
+
+    scoped = client.get("/v1/sessions")
+    assert scoped.status_code == 200
+    assert [s["id"] for s in scoped.json()["sessions"]] == [default["id"]]
+
+    all_rows = client.get("/v1/sessions", params={"include_all_workspaces": "true"})
+    assert all_rows.status_code == 200
+    assert {s["title"] for s in all_rows.json()["sessions"]} >= {"default", "a1"}
+
+
 def test_get_v1_sessions_sid_returns_single(client: TestClient) -> None:
     created = client.post("/v1/sessions", json={"title": "x"}).json()
     resp = client.get(f"/v1/sessions/{created['id']}")
     assert resp.status_code == 200
     assert resp.json()["id"] == created["id"]
     assert resp.json()["title"] == "x"
+
+
+def test_get_v1_sessions_sid_denies_mismatched_workspace_scope(
+    client: TestClient,
+) -> None:
+    ws_a = client.post("/v1/workspaces", json={"name": "alpha"}).json()["id"]
+    ws_b = client.post("/v1/workspaces", json={"name": "beta"}).json()["id"]
+    created = client.post(
+        "/v1/sessions",
+        json={"workspace_id": ws_a, "title": "alpha session"},
+    ).json()
+
+    resp = client.get(f"/v1/sessions/{created['id']}", params={"workspace_id": ws_b})
+
+    assert resp.status_code == 403
+    body = resp.json()
+    assert body["error"]["error"] == "permission_error"
+    assert body["error"]["details"]["scope"] == "other_workspace"
 
 
 def test_patch_v1_sessions_preserves_agent_and_model_refs(
