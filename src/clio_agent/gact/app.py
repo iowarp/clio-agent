@@ -137,6 +137,84 @@ def _new_memory_event_id() -> str:
     return f"mem_{uuid.uuid4().hex[:12]}"
 
 
+def _coerce_ask_user_action(pred: Any) -> dict[str, Any]:
+    """Extract an ask-user planner action from a prediction-like object."""
+
+    candidates = [
+        getattr(pred, "ask_user", None),
+        getattr(pred, "user_question", None),
+        getattr(pred, "action", None),
+    ]
+    action_json = getattr(pred, "action_json", None)
+    if isinstance(action_json, str) and action_json.strip():
+        try:
+            candidates.append(json.loads(action_json))
+        except json.JSONDecodeError:
+            pass
+    for raw in candidates:
+        if raw is None:
+            continue
+        if isinstance(raw, str):
+            try:
+                raw = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+        if not isinstance(raw, Mapping):
+            continue
+        action = str(raw.get("action") or raw.get("type") or "").strip().lower()
+        if action and action not in {"ask_user", "question", "user_question"}:
+            continue
+        question = str(raw.get("question") or raw.get("prompt") or "").strip()
+        if not question:
+            continue
+        choices_raw = raw.get("choices") or raw.get("options") or []
+        choices = choices_raw if isinstance(choices_raw, list) else []
+        return {
+            "question": question,
+            "choices": [c for c in choices if isinstance(c, Mapping)],
+            "allow_freeform": bool(raw.get("allow_freeform", True)),
+            "kind": str(raw.get("kind") or "").strip(),
+            "reason": str(raw.get("reason") or raw.get("category") or "").strip(),
+            "caller": raw.get("caller") if isinstance(raw.get("caller"), Mapping) else {},
+            "metadata": raw.get("metadata") if isinstance(raw.get("metadata"), Mapping) else {},
+        }
+    return {}
+
+
+def _ask_user_options_from_action(action: Mapping[str, Any]) -> list["UserQuestionOption"]:
+    options: list[UserQuestionOption] = []
+    for idx, choice in enumerate(action.get("choices", []) or []):
+        if not isinstance(choice, Mapping):
+            continue
+        label = str(choice.get("label") or choice.get("title") or choice.get("id") or "").strip()
+        value = str(choice.get("value") or choice.get("id") or label).strip()
+        description = str(choice.get("description") or "").strip()
+        if not label:
+            continue
+        options.append(
+            UserQuestionOption(
+                label=label,
+                value=value or f"choice_{idx + 1}",
+                description=description,
+            )
+        )
+    return options
+
+
+def _ask_user_resume_text(question: "UserQuestion") -> str:
+    selected = ", ".join(question.selected_options)
+    answer = question.answer.strip()
+    lines = [
+        "[Answer to agent question]",
+        f"Question: {question.prompt}",
+    ]
+    if selected:
+        lines.append(f"Selected option(s): {selected}")
+    if answer:
+        lines.append(f"Answer: {answer}")
+    return "\n".join(lines)
+
+
 def _iso_from_epoch(ts: float) -> str:
     """ISO-8601 UTC with microsecond precision to match the session
     registry's created_at format."""
@@ -2573,6 +2651,82 @@ async def _run_turn_in_background(
             error_info = pred_error_info
             if not error_info.details.get("partial", False):
                 answer_text = ""
+        ask_user_action = _coerce_ask_user_action(pred)
+        if error_info is None and ask_user_action:
+            now_iso = datetime.now(timezone.utc).isoformat()
+            options = _ask_user_options_from_action(ask_user_action)
+            kind_raw = str(ask_user_action.get("kind") or "").strip()
+            kind = kind_raw if kind_raw in {"freeform", "choice", "confirmation"} else ""
+            if not kind:
+                kind = "choice" if options and not ask_user_action.get("allow_freeform") else "freeform"
+            question = UserQuestion(
+                id=_new_question_id(),
+                session_id=sid,
+                prompt=str(ask_user_action["question"]),
+                status="pending",
+                kind=kind,  # type: ignore[arg-type]
+                options=options,
+                created_at=now_iso,
+                updated_at=now_iso,
+                source="orchestrator_action",
+                turn_id=user_msg.id,
+                attempt_id=retry_attempt_id,
+                metadata={
+                    **dict(ask_user_action.get("metadata") or {}),
+                    "reason": ask_user_action.get("reason", ""),
+                    "caller": ask_user_action.get("caller", {}),
+                    "resume_on_answer": True,
+                    "source_user_message_id": user_msg.id,
+                    "source_user_text": user_text,
+                    "selected_agent": selected_agent,
+                    "route_source": route_source,
+                    "route_reason": route_reason,
+                },
+            )
+            app.state.user_questions[question.id] = question
+            updated = app.state.sessions.update(
+                sid,
+                status="waiting_user",
+                message_count=len(app.state.messages.get(sid, [])),
+                metadata_patch={"pending_user_question_id": question.id},
+            )
+            _finalize_context_frame(
+                app,
+                sid,
+                context_frame["id"],
+                "",
+                "completed",
+                error_info=None,
+            )
+            bus.publish(
+                Event(
+                    type="user_question.created",
+                    session_id=sid,
+                    payload=question.model_dump(exclude_none=True),
+                )
+            )
+            bus.publish(
+                Event(
+                    type="session.status_changed",
+                    session_id=sid,
+                    payload={
+                        "session_id": sid,
+                        "status": "waiting_user",
+                        "prev_status": "running",
+                        "updated_at": updated.updated_at if updated is not None else "",
+                        "pending_user_question_id": question.id,
+                    },
+                )
+            )
+            if retry_attempt_id:
+                _update_retry_attempt(
+                    "completed",
+                    metadata_patch={
+                        "ask_user_question_id": question.id,
+                        "stop_reason": "waiting_user",
+                    },
+                )
+            return
         # iowarp/clio-agent#25: data branch reports which execution
         # path it took ("fast" or "expert_loop"). Empty when not
         # populated by ClioAgent.forward (older code paths, non-data
@@ -11540,12 +11694,47 @@ def build_app(
         app.state.user_questions[question_id] = updated
         if not _pending_user_questions(sid):
             sess = app.state.sessions.get(sid)
-            _set_session_status(
-                sid,
-                "idle",
-                prev_status=sess.status if sess is not None else "waiting_user",
-                metadata_patch={"pending_user_question_id": ""},
-            )
+            should_resume = bool(updated.metadata.get("resume_on_answer")) and sess is not None
+            if should_resume and app.state.agent is not None:
+                app.state.sessions.update(
+                    sid,
+                    metadata_patch={"pending_user_question_id": ""},
+                )
+                resumed_msg = _start_background_user_turn(
+                    sid,
+                    sess,
+                    _ask_user_resume_text(updated),
+                    metadata={
+                        "ask_user_question_id": updated.id,
+                        "ask_user_prompt": updated.prompt,
+                        "ask_user_answer": updated.answer,
+                        "ask_user_selected_options": updated.selected_options,
+                        "ask_user_source_turn_id": updated.turn_id,
+                        "ask_user_attempt_id": updated.attempt_id,
+                        "ask_user_caller": updated.metadata.get("caller", {}),
+                        "ask_user_resume": True,
+                    },
+                    prev_status=sess.status if sess is not None else "waiting_user",
+                )
+                app.state.bus.publish(
+                    Event(
+                        type="user_question.resumed",
+                        session_id=sid,
+                        payload={
+                            "question_id": updated.id,
+                            "session_id": sid,
+                            "queued_user_message_id": resumed_msg.id,
+                            "source_turn_id": updated.turn_id,
+                        },
+                    )
+                )
+            else:
+                _set_session_status(
+                    sid,
+                    "idle",
+                    prev_status=sess.status if sess is not None else "waiting_user",
+                    metadata_patch={"pending_user_question_id": ""},
+                )
         app.state.bus.publish(
             Event(
                 type="user_question.answered",
@@ -11676,7 +11865,29 @@ def build_app(
             if source_user is None or not _message_text(source_user):
                 execution_blocked_reason = "source_user_message_not_found"
             elif model_changed:
-                execution_blocked_reason = "model_override_not_executable"
+                envelope = _unsupported_model_ref_error(
+                    session_id=sid,
+                    source="retry",
+                    model_ref=model_payload,
+                    active_model=active_model,
+                )
+                envelope.error.details.update(
+                    {
+                        "message_id": message_id,
+                        "notes_present": bool(req.notes.strip()),
+                        "warning": warning,
+                        "recovery_actions": [
+                            "put_global_lm_provider",
+                            "retry_without_model_override",
+                            "retry_after_provider_switch",
+                            "exit",
+                        ],
+                    }
+                )
+                raise HTTPException(
+                    status_code=422,
+                    detail=envelope.model_dump(exclude_none=True),
+                )
         now_iso = datetime.now(timezone.utc).isoformat()
         attempt = TurnAttempt(
             id=_new_attempt_id(),

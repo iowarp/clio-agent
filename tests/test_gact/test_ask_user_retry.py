@@ -28,6 +28,44 @@ class _FakeAgent:
         )()
 
 
+class _AskUserAgent:
+    def __init__(self) -> None:
+        self.questions: list[str] = []
+
+    def forward(self, question: str, session_id: str):
+        self.questions.append(question)
+        if len(self.questions) == 1:
+            return type(
+                "Pred",
+                (),
+                {
+                    "answer": "",
+                    "selected_expert": "main",
+                    "routing_rationale": "needs clarification",
+                    "ask_user": {
+                        "action": "ask_user",
+                        "question": "Which dataset should I inspect?",
+                        "choices": [
+                            {"id": "small", "label": "Small"},
+                            {"id": "large", "label": "Large"},
+                        ],
+                        "allow_freeform": False,
+                        "reason": "missing_target_dataset",
+                        "caller": {"agent_id": "main", "expert_id": "planner"},
+                    },
+                },
+            )()
+        return type(
+            "Pred",
+            (),
+            {
+                "answer": f"resumed with: {question}",
+                "selected_expert": "main",
+                "routing_rationale": "answer supplied",
+            },
+        )()
+
+
 @pytest.fixture()
 def client(tmp_path: Path) -> TestClient:
     return TestClient(build_app(sessions_path=tmp_path / "sessions.json"))
@@ -94,6 +132,15 @@ def _wait_for_idle(client: TestClient, sid: str, timeout: float = 2.0) -> None:
     raise AssertionError("session did not return to idle")
 
 
+def _wait_for_status(client: TestClient, sid: str, status: str, timeout: float = 2.0) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if client.get(f"/v1/sessions/{sid}").json()["status"] == status:
+            return
+        time.sleep(0.02)
+    raise AssertionError(f"session did not reach {status}")
+
+
 def test_capabilities_advertise_ask_user_and_retry(client: TestClient) -> None:
     caps = client.get("/v1/capabilities").json()["capabilities"]
 
@@ -153,6 +200,64 @@ def test_create_and_answer_user_question_updates_session_state(client: TestClien
     assert session["metadata"]["pending_user_question_id"] == ""
     history = client.app.state.bus._history.get(sid, [])
     assert "user_question.answered" in [event.type for event in history]
+
+
+def test_orchestrator_ask_user_action_pauses_and_answer_resumes(tmp_path: Path) -> None:
+    agent = _AskUserAgent()
+    client = TestClient(build_app(sessions_path=tmp_path / "sessions.json", agent=agent))
+    sid = _create_session(client)
+
+    accepted = client.post(
+        f"/v1/sessions/{sid}/messages",
+        json={"parts": [{"type": "text", "text": "Inspect the dataset."}]},
+    )
+
+    assert accepted.status_code == 200, accepted.text
+    _wait_for_status(client, sid, "waiting_user")
+    listed = client.get(f"/v1/sessions/{sid}/questions?status=pending").json()
+    assert len(listed["questions"]) == 1
+    question = listed["questions"][0]
+    assert question["source"] == "orchestrator_action"
+    assert question["prompt"] == "Which dataset should I inspect?"
+    assert question["metadata"]["resume_on_answer"] is True
+    assert question["metadata"]["reason"] == "missing_target_dataset"
+    assert question["metadata"]["caller"]["expert_id"] == "planner"
+
+    answered = client.post(
+        f"/v1/sessions/{sid}/questions/{question['id']}/answer",
+        json={
+            "answer": "Use the large run.",
+            "selected_options": ["large"],
+            "metadata": {"answered_from": "test"},
+        },
+    )
+
+    assert answered.status_code == 200, answered.text
+    _wait_for_idle(client, sid)
+    assert agent.questions == [
+        "Inspect the dataset.",
+        "[Answer to agent question]\n"
+        "Question: Which dataset should I inspect?\n"
+        "Selected option(s): large\n"
+        "Answer: Use the large run.",
+    ]
+    messages = client.get(f"/v1/sessions/{sid}/messages").json()["messages"]
+    resume_user = next(msg for msg in messages if msg["metadata"].get("ask_user_resume"))
+    assert resume_user["metadata"]["ask_user_question_id"] == question["id"]
+    assert resume_user["metadata"]["ask_user_answer"] == "Use the large run."
+    assistant = next(
+        msg
+        for msg in messages
+        if msg["role"] == "assistant"
+        and any("resumed with:" in part.get("text", "") for part in msg["parts"])
+    )
+    assert assistant["role"] == "assistant"
+    assert "resumed with:" in assistant["parts"][1]["text"]
+    history = client.app.state.bus._history.get(sid, [])
+    event_types = [event.type for event in history]
+    assert "user_question.created" in event_types
+    assert "user_question.answered" in event_types
+    assert "user_question.resumed" in event_types
 
 
 def test_answer_rejects_invalid_choice(client: TestClient) -> None:
@@ -266,3 +371,30 @@ def test_retry_execute_queues_new_turn_with_attempt_provenance(tmp_path: Path) -
     event_types = [event.type for event in history]
     assert "turn.retry_running" in event_types
     assert "turn.retry_completed" in event_types
+
+
+def test_retry_execute_with_model_override_returns_structured_policy_error(
+    tmp_path: Path,
+) -> None:
+    agent = _FakeAgent()
+    client = TestClient(build_app(sessions_path=tmp_path / "sessions.json", agent=agent))
+    sid = _create_session(client)
+    _seed_turn(client, sid, user_text="Inspect the large dataset.")
+
+    resp = client.post(
+        f"/v1/sessions/{sid}/messages/msg_original/retry",
+        json={
+            "execute": True,
+            "notes": "Use a different model.",
+            "provider_id": "openai",
+            "model_id": "gpt-5.1",
+        },
+    )
+
+    assert resp.status_code == 422
+    body = resp.json()
+    assert body["error"]["error"] == "not_implemented"
+    assert body["error"]["details"]["source"] == "retry"
+    assert body["error"]["details"]["message_id"] == "msg_original"
+    assert "retry_without_model_override" in body["error"]["details"]["recovery_actions"]
+    assert client.get(f"/v1/sessions/{sid}/attempts").json()["attempts"] == []
