@@ -467,20 +467,20 @@ The audit log is JSONL. Each row records provider/model, prompt, dataset,
 selected expert, routing decision, elapsed runtime, tools called, artifacts,
 child sessions, error info, stream metadata, answer excerpt, and caveats.
 
-To test planner routing without deterministic pre-planner guards, restart GACT
-with:
+Planner routing now runs without deterministic pre-planner guards by default.
+To opt into registry-declared production guard routing for a guard-specific
+comparison run, restart GACT with:
 
 ```powershell
-$env:CLIO_ROUTING_GUARDS = '0'
+$env:CLIO_ROUTING_GUARDS = '1'
 $env:CLIO_LM_PLANNER_MAX_TOKENS = '4096'
 ```
 
-This mode is slower and more diagnostic. It should be used to find planner
-weaknesses that the production guard path intentionally avoids. In audit rows,
-`route_source="guard"` means a registry-declared guard selected the route before
-the planner; `route_source="dspy"` means the planner selected it;
-`route_source="recovery"` means the planner failed and CLIO recovered through a
-deterministic fallback while surfacing `error_info`.
+Default benchmark mode is slower and more diagnostic because it tests the hard
+planner/orchestrator path. In audit rows, `route_source="guard"` means a
+registry-declared guard selected the route before the planner; `route_source="dspy"`
+means the planner selected it; `route_source="recovery"` means the planner failed
+and CLIO recovered through a deterministic fallback while surfacing `error_info`.
 
 Do not force Qwopus below a `4096` planner cap. CLIO now raises too-small
 Qwopus/Qwen planner caps to `4096` because lower caps repeatedly cut off valid

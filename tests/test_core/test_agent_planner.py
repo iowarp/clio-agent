@@ -330,12 +330,17 @@ class TestAgentMaxSteps:
 
 
 class TestRoutingGuards:
-    def test_enabled_by_default(self, monkeypatch):
+    def test_disabled_by_default(self, monkeypatch):
         monkeypatch.delenv("CLIO_ROUTING_GUARDS", raising=False)
+        assert ClioAgent._routing_guards_enabled("auto") is False
+
+    @pytest.mark.parametrize("value", ["1", "true", "yes", "on", "enabled"])
+    def test_env_can_enable(self, monkeypatch, value):
+        monkeypatch.setenv("CLIO_ROUTING_GUARDS", value)
         assert ClioAgent._routing_guards_enabled("auto") is True
 
-    @pytest.mark.parametrize("value", ["0", "false", "no", "off", "disabled"])
-    def test_env_can_disable(self, monkeypatch, value):
+    @pytest.mark.parametrize("value", ["0", "false", "no", "off", "disabled", ""])
+    def test_env_false_values_disable(self, monkeypatch, value):
         monkeypatch.setenv("CLIO_ROUTING_GUARDS", value)
         assert ClioAgent._routing_guards_enabled("auto") is False
 
@@ -1061,7 +1066,9 @@ class TestRunAgentLoop:
         self,
         agent,
         tmp_path,
+        monkeypatch,
     ):
+        monkeypatch.setenv("CLIO_ROUTING_GUARDS", "1")
         first_path = tmp_path / "run.h5"
         second_path = tmp_path / "events.csv"
         first_path.touch()
@@ -1091,7 +1098,8 @@ class TestRunAgentLoop:
         assert "guard_coordinator_intents" in route.reason
         agent._plan_next_action.assert_not_called()
 
-    def test_bp5_guard_uses_registry_direct_suffix_metadata(self, agent, tmp_path):
+    def test_bp5_guard_uses_registry_direct_suffix_metadata(self, agent, tmp_path, monkeypatch):
+        monkeypatch.setenv("CLIO_ROUTING_GUARDS", "1")
         adios_path = tmp_path / "run.bp5"
         adios_path.mkdir()
         expert_result = MagicMock()
@@ -1120,7 +1128,9 @@ class TestRunAgentLoop:
         self,
         agent,
         tmp_path,
+        monkeypatch,
     ):
+        monkeypatch.setenv("CLIO_ROUTING_GUARDS", "1")
         first_path = tmp_path / "run.h5"
         second_path = tmp_path / "events.csv"
         first_path.touch()
@@ -1173,7 +1183,9 @@ class TestRunAgentLoop:
         self,
         agent,
         tmp_path,
+        monkeypatch,
     ):
+        monkeypatch.setenv("CLIO_ROUTING_GUARDS", "1")
         first_path = tmp_path / "run.h5"
         second_path = tmp_path / "events.csv"
         first_path.touch()
@@ -1224,7 +1236,7 @@ class TestRunAgentLoop:
         tmp_path,
         monkeypatch,
     ):
-        monkeypatch.setenv("CLIO_ROUTING_GUARDS", "0")
+        monkeypatch.delenv("CLIO_ROUTING_GUARDS", raising=False)
         first_path = tmp_path / "run.h5"
         second_path = tmp_path / "events.csv"
         first_path.touch()
