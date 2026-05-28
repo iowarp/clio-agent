@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
@@ -10,6 +12,7 @@ from clio_agent.gact.agent_blueprints import (
     validate_agent_blueprint_path,
 )
 from clio_agent.gact.app import build_app
+from tests.test_gact.conftest import complete_turn
 
 
 def _write_blueprint(root: Path, blueprint_id: str = "genomics") -> None:
@@ -54,6 +57,32 @@ Inspect variant evidence.
     )
 
 
+def _write_data_root_blueprint(root: Path, blueprint_id: str = "remote-data") -> None:
+    (root / "experts").mkdir(parents=True)
+    root.joinpath("AGENT.md").write_text(
+        f"""---
+id: {blueprint_id}
+version: 0.1.0
+title: Remote Data Agent
+default_expert: data
+---
+Remote marketplace agent.
+""",
+        encoding="utf-8",
+    )
+    root.joinpath("experts", "data.md").write_text(
+        """---
+id: data
+title: Remote Data Orchestrator
+tier: 1
+prompt_profile: heavy
+---
+REMOTE BLUEPRINT ORCHESTRATOR MARKER.
+""",
+        encoding="utf-8",
+    )
+
+
 def test_builtin_agent_blueprint_is_discoverable() -> None:
     blueprints = {row.id: row for row in discover_agent_blueprints()}
     agents = {row.id: row for row in load_agent_blueprints(blueprint_id="data-exploration")}
@@ -83,7 +112,7 @@ def test_agent_blueprint_activation_replaces_default_agent_graph(tmp_path: Path)
     blueprint = workspace / ".clio" / "agent-blueprints" / "genomics"
     _write_blueprint(blueprint)
 
-    app = build_app(sessions_path=tmp_path / "sessions.json")
+    app = build_app(sessions_path=tmp_path / "sessions.json", agent=SimpleNamespace())
     with TestClient(app) as client:
         wid = client.post(
             "/v1/workspaces",
@@ -116,7 +145,7 @@ def test_session_agent_overlay_is_session_local(tmp_path: Path) -> None:
     blueprint = tmp_path / "genomics"
     _write_blueprint(blueprint)
 
-    app = build_app(sessions_path=tmp_path / "sessions.json")
+    app = build_app(sessions_path=tmp_path / "sessions.json", agent=SimpleNamespace())
     with TestClient(app) as client:
         sid_a = client.post("/v1/sessions", json={"title": "A"}).json()["id"]
         sid_b = client.post("/v1/sessions", json={"title": "B"}).json()["id"]
@@ -175,6 +204,63 @@ def test_agent_blueprint_install_from_local_marketplace(tmp_path: Path) -> None:
     assert (workspace / ".clio" / "agent-blueprints" / "genomics" / ".clio-install.md").exists()
 
 
+def test_agent_blueprint_install_from_git_marketplace_records_pinned_metadata(
+    tmp_path: Path,
+) -> None:
+    marketplace = tmp_path / "marketplace"
+    _write_blueprint(marketplace / "genomics")
+    subprocess.run(["git", "init"], cwd=marketplace, check=True, stdout=subprocess.PIPE)
+    subprocess.run(["git", "add", "."], cwd=marketplace, check=True, stdout=subprocess.PIPE)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=CLIO Test",
+            "-c",
+            "user.email=clio@example.invalid",
+            "commit",
+            "-m",
+            "Add genomics blueprint",
+        ],
+        cwd=marketplace,
+        check=True,
+        stdout=subprocess.PIPE,
+    )
+    commit = subprocess.check_output(
+        ["git", "-C", str(marketplace), "rev-parse", "HEAD"],
+        text=True,
+    ).strip()
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    with TestClient(app) as client:
+        wid = client.post(
+            "/v1/workspaces",
+            json={
+                "name": "Workspace",
+                "root_path": str(workspace),
+                "storage_root": str(workspace / ".clio"),
+            },
+        ).json()["id"]
+        installed = client.post(
+            "/v1/agent-blueprints/install",
+            json={
+                "source": marketplace.as_uri(),
+                "scope": "workspace",
+                "workspace_id": wid,
+                "blueprint_id": "genomics",
+            },
+        )
+
+    assert installed.status_code == 201, installed.text
+    metadata = installed.json()["installed"][0]["install"]
+    assert metadata["source_kind"] == "git"
+    assert metadata["source"] == marketplace.as_uri()
+    assert metadata["commit"] == commit
+    assert metadata["checksum"]
+
+
 def test_agent_blueprint_update_and_delete_installed_blueprint(tmp_path: Path) -> None:
     marketplace = tmp_path / "marketplace"
     _write_blueprint(marketplace / "genomics")
@@ -221,6 +307,88 @@ Updated behavior.
         assert deleted.status_code == 200, deleted.text
 
     assert not (workspace / ".clio" / "agent-blueprints" / "genomics").exists()
+
+
+def test_active_agent_blueprint_drives_turn_runtime_and_overrides_builtin_ids(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    blueprint = workspace / ".clio" / "agent-blueprints" / "remote-data"
+    _write_data_root_blueprint(blueprint)
+    calls: list[dict[str, str]] = []
+
+    async def no_stream(*args, **kwargs):
+        return None
+
+    def fake_prompt_runner(base_agent, agent_def, question, session_id, cancel_requested=None):
+        del base_agent, cancel_requested
+        calls.append(
+            {
+                "agent_id": agent_def.id,
+                "title": agent_def.title,
+                "system_prompt": agent_def.system_prompt,
+                "question": question,
+                "session_id": session_id,
+            }
+        )
+        return SimpleNamespace(
+            answer=f"runtime from {agent_def.id}",
+            selected_expert=agent_def.id,
+            routing_rationale="session blueprint",
+            route_source="agent_blueprint",
+            error_info=None,
+        )
+
+    monkeypatch.setattr("clio_agent.gact.app._try_streamed_forward", no_stream)
+    monkeypatch.setattr("clio_agent.gact.app._run_prompt_user_agent", fake_prompt_runner)
+
+    app = build_app(sessions_path=tmp_path / "sessions.json", agent=SimpleNamespace())
+    with TestClient(app) as client:
+        wid = client.post(
+            "/v1/workspaces",
+            json={
+                "name": "Workspace",
+                "root_path": str(workspace),
+                "storage_root": str(workspace / ".clio"),
+            },
+        ).json()["id"]
+        sid_blueprint = client.post(
+            "/v1/sessions",
+            json={"title": "blueprint", "workspace_id": wid},
+        ).json()["id"]
+        sid_builtin = client.post(
+            "/v1/sessions",
+            json={"title": "builtin", "workspace_id": wid},
+        ).json()["id"]
+        assert client.post(
+            f"/v1/sessions/{sid_blueprint}/agent-blueprint",
+            json={"blueprint_id": "remote-data"},
+        ).status_code == 200
+        agents_blueprint = client.get(
+            "/v1/agents",
+            params={"session_id": sid_blueprint},
+        ).json()["agents"]
+        agents_builtin = client.get(
+            "/v1/agents",
+            params={"session_id": sid_builtin},
+        ).json()["agents"]
+        assistant = complete_turn(client, sid_blueprint, "prove runtime")
+
+    assert [row["id"] for row in agents_blueprint] == ["data"]
+    assert any(row["id"] == "analysis" for row in agents_builtin)
+    assert calls == [
+        {
+            "agent_id": "data",
+            "title": "Remote Data Orchestrator",
+            "system_prompt": "REMOTE BLUEPRINT ORCHESTRATOR MARKER.",
+            "question": "prove runtime",
+            "session_id": sid_blueprint,
+        }
+    ]
+    assert assistant["metadata"]["agent_runtime"]["agent_id"] == "data"
+    assert assistant["metadata"]["agent_runtime"]["source"] == "expert_pack"
+    assert assistant["metadata"]["agent_runtime"]["pack"]["id"] == "remote-data"
 
 
 def test_agent_blueprint_mcp_descriptor_installs_disabled(tmp_path: Path) -> None:

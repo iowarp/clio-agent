@@ -137,7 +137,11 @@ def parse_agent_blueprint_root(root: Path, *, scope: str) -> AgentBlueprintDefin
         root=path.parent,
         root_path=path,
         root_expert=str(
-            meta.get("root_expert") or meta.get("root") or meta.get("default_root_expert") or ""
+            meta.get("root_expert")
+            or meta.get("root")
+            or meta.get("default_expert")
+            or meta.get("default_root_expert")
+            or ""
         ).strip(),
         enabled=not errors,
         validation_errors=errors,

@@ -1390,6 +1390,193 @@ def _resolve_dynamic_agent(
     return None
 
 
+def _agent_definition_is_agent_blueprint(agent_def: "AgentDef") -> bool:
+    """Return whether an AgentDef came from an Agent Blueprint graph."""
+
+    metadata = agent_def.metadata if isinstance(agent_def.metadata, Mapping) else {}
+    return bool(metadata.get("agent_blueprint_id") or metadata.get("definition_kind") == "agent_blueprint")
+
+
+def _runtime_workspace_catalog_cwd(
+    app: "FastAPI",
+    *,
+    workspace_id: str = "",
+    session_id: str = "",
+) -> Path | None:
+    wid = workspace_id
+    if session_id:
+        sess = app.state.sessions.get(session_id)
+        if sess is not None:
+            wid = wid or str(getattr(sess, "workspace_id", "") or "")
+    if not wid:
+        return None
+    ws = app.state.workspaces.get(wid)
+    if ws is None:
+        return None
+    root_path = str(getattr(ws, "root_path", "") or "")
+    return Path(root_path).expanduser() if root_path else None
+
+
+def _runtime_active_agent_blueprint_id(app: "FastAPI", session_id: str = "") -> str:
+    if not session_id:
+        return ""
+    sess = app.state.sessions.get(session_id)
+    if sess is None:
+        return ""
+    metadata = getattr(sess, "metadata", {}) or {}
+    if not isinstance(metadata, Mapping):
+        return ""
+    return str(metadata.get("active_agent_blueprint_id") or "").strip()
+
+
+def _runtime_active_agent_blueprint_path(app: "FastAPI", session_id: str = "") -> Path | None:
+    if not session_id:
+        return None
+    sess = app.state.sessions.get(session_id)
+    if sess is None:
+        return None
+    metadata = getattr(sess, "metadata", {}) or {}
+    if not isinstance(metadata, Mapping):
+        return None
+    raw = str(metadata.get("active_agent_blueprint_path") or "").strip()
+    return Path(raw).expanduser() if raw else None
+
+
+def _runtime_session_agent_overlay(app: "FastAPI", session_id: str = "") -> dict[str, Any]:
+    if not session_id:
+        return {}
+    sess = app.state.sessions.get(session_id)
+    if sess is None:
+        return {}
+    metadata = getattr(sess, "metadata", {}) or {}
+    if not isinstance(metadata, Mapping):
+        return {}
+    overlay = metadata.get("agent_blueprint_overlay")
+    return dict(overlay) if isinstance(overlay, Mapping) else {}
+
+
+def _runtime_apply_session_agent_overlay(
+    app: "FastAPI",
+    rows: list["AgentDef"],
+    *,
+    session_id: str = "",
+) -> list["AgentDef"]:
+    overlay = _runtime_session_agent_overlay(app, session_id)
+    agents = overlay.get("agents") if isinstance(overlay, Mapping) else None
+    if not isinstance(agents, Mapping):
+        return rows
+    patchable = {
+        "title",
+        "description",
+        "system_prompt",
+        "prompt_id",
+        "prompt_profile",
+        "default_provider",
+        "default_model",
+        "parent_id",
+        "tier",
+        "specialization",
+        "keywords",
+        "tools",
+        "skills",
+        "commands",
+        "parameters",
+        "enabled",
+    }
+    out: list[AgentDef] = []
+    for row in rows:
+        raw_patch = agents.get(row.id)
+        if not isinstance(raw_patch, Mapping):
+            out.append(row)
+            continue
+        update = {key: value for key, value in raw_patch.items() if key in patchable}
+        metadata = {
+            **row.metadata,
+            "agent_blueprint_overlay": {
+                "session_id": session_id,
+                "fields": sorted(update),
+                "status": "applied",
+            },
+        }
+        out.append(row.model_copy(update={**update, "metadata": metadata}))
+    return out
+
+
+def _runtime_active_agent_blueprint_rows(
+    app: "FastAPI",
+    *,
+    session_id: str = "",
+    workspace_id: str = "",
+    prompt_registry: PromptRegistry | None = None,
+) -> list["AgentDef"]:
+    if not session_id:
+        return []
+    cwd = _runtime_workspace_catalog_cwd(app, workspace_id=workspace_id, session_id=session_id)
+    active_blueprint_id = _runtime_active_agent_blueprint_id(app, session_id)
+    active_blueprint_path = _runtime_active_agent_blueprint_path(app, session_id)
+    if active_blueprint_path is not None:
+        rows = load_agent_blueprint_path(active_blueprint_path, scope="session")
+    elif active_blueprint_id:
+        rows = load_agent_blueprints(cwd=cwd, blueprint_id=active_blueprint_id)
+    else:
+        rows = []
+    if not rows:
+        return []
+    rows = _runtime_apply_session_agent_overlay(app, rows, session_id=session_id)
+    return [
+        _apply_prompt_registry_to_agent(
+            app,
+            row,
+            prompt_registry=prompt_registry,
+        )
+        for row in validate_agent_hierarchy(_merge_agent_def_rows(rows))
+    ]
+
+
+def _runtime_active_agent_blueprint_agent_ids(app: "FastAPI", session_id: str = "") -> set[str]:
+    return {
+        row.id
+        for row in _runtime_active_agent_blueprint_rows(app, session_id=session_id)
+        if row.enabled
+    }
+
+
+def _runtime_active_agent_blueprint_root_id(app: "FastAPI", session_id: str = "") -> str:
+    rows = _runtime_active_agent_blueprint_rows(app, session_id=session_id)
+    if not rows:
+        return ""
+    requested_root = str(rows[0].metadata.get("agent_blueprint_root_expert") or "").strip()
+    if requested_root and any(row.id == requested_root and row.enabled for row in rows):
+        return requested_root
+    roots = [row for row in rows if row.enabled and not row.parent_id]
+    if len(roots) == 1:
+        return roots[0].id
+    enabled = [row for row in rows if row.enabled]
+    if not enabled:
+        return ""
+    return sorted(enabled, key=lambda row: (row.tier, row.id))[0].id
+
+
+def _resolve_runtime_dynamic_agent(
+    app: "FastAPI",
+    agent_id: str,
+    *,
+    session_id: str = "",
+    workspace_id: str = "",
+    prompt_registry: PromptRegistry | None = None,
+) -> "AgentDef | None":
+    if session_id:
+        for row in _runtime_active_agent_blueprint_rows(
+            app,
+            session_id=session_id,
+            workspace_id=workspace_id,
+            prompt_registry=prompt_registry,
+        ):
+            if row.id == agent_id and row.enabled:
+                return row
+    return _resolve_dynamic_agent(app, agent_id, prompt_registry=prompt_registry)
+
+
 def _agent_prompt_request(agent_def: "AgentDef") -> tuple[str, str]:
     """Return prompt id/profile requested by an agent definition."""
 
@@ -2396,7 +2583,7 @@ async def _run_turn_in_background(
                     }
                 )
                 continue
-            target = _resolve_dynamic_agent(app, target_id)
+            target = _resolve_runtime_dynamic_agent(app, target_id, session_id=sid)
             if target is None or target.source != "expert_pack" or not target.enabled:
                 executed.append(
                     {
@@ -2515,10 +2702,19 @@ async def _run_turn_in_background(
 
         session_agent_id = _session_agent_id(sess)
         active_agent_id = turn_agent_id or session_agent_id
+        active_blueprint_root_id = _runtime_active_agent_blueprint_root_id(app, sid)
+        active_blueprint_agent_ids = _runtime_active_agent_blueprint_agent_ids(app, sid)
+        if (
+            not turn_agent_id
+            and active_blueprint_root_id
+            and active_agent_id in {"", "main", "default"}
+        ):
+            active_agent_id = active_blueprint_root_id
         routing_mode = getattr(sess, "routing_mode", "auto") or "auto"
         auto_routed_agent = None
         if (
             not turn_agent_id
+            and not active_blueprint_agent_ids
             and active_agent_id in {"", "main", "default"}
             and routing_mode in {"auto", "experts"}
         ):
@@ -2529,16 +2725,17 @@ async def _run_turn_in_background(
 
         _refresh_argonne_lm_token(app.state.agent)
 
-        if active_agent_id not in _EXECUTABLE_SESSION_AGENT_IDS:
+        if active_agent_id not in _EXECUTABLE_SESSION_AGENT_IDS or active_agent_id in active_blueprint_agent_ids:
             prompt_registry_factory = getattr(app.state, "prompt_registry_for_request", None)
             prompt_registry = (
                 prompt_registry_factory(session_id=sid)
                 if callable(prompt_registry_factory)
                 else None
             )
-            dynamic_agent = _resolve_dynamic_agent(
+            dynamic_agent = _resolve_runtime_dynamic_agent(
                 app,
                 active_agent_id,
+                session_id=sid,
                 prompt_registry=prompt_registry,
             )
             if dynamic_agent is None:
@@ -12516,7 +12713,12 @@ def build_app(
             out.append(row.model_copy(update={**update, "metadata": metadata}))
         return out
 
-    def _agent_rows(session_id: str = "", workspace_id: str = "") -> list[AgentDef]:
+    def _active_session_agent_blueprint_rows(
+        session_id: str = "",
+        workspace_id: str = "",
+    ) -> list[AgentDef]:
+        if not session_id:
+            return []
         cwd = _workspace_catalog_cwd(workspace_id=workspace_id, session_id=session_id)
         active_blueprint_id = _active_session_agent_blueprint_id(session_id)
         active_blueprint_path = _active_session_agent_blueprint_path(session_id)
@@ -12540,6 +12742,58 @@ def build_app(
                 )
                 for row in validate_agent_hierarchy(_merge_agent_def_rows(rows))
             ]
+        return []
+
+    def _active_session_agent_blueprint_agent_ids(session_id: str = "") -> set[str]:
+        return {
+            row.id
+            for row in _active_session_agent_blueprint_rows(session_id=session_id)
+            if row.enabled
+        }
+
+    def _active_session_agent_blueprint_root_id(session_id: str = "") -> str:
+        rows = _active_session_agent_blueprint_rows(session_id=session_id)
+        if not rows:
+            return ""
+        requested_root = str(rows[0].metadata.get("agent_blueprint_root_expert") or "").strip()
+        if requested_root and any(row.id == requested_root and row.enabled for row in rows):
+            return requested_root
+        roots = [row for row in rows if row.enabled and not row.parent_id]
+        if len(roots) == 1:
+            return roots[0].id
+        enabled = [row for row in rows if row.enabled]
+        if not enabled:
+            return ""
+        return sorted(enabled, key=lambda row: (row.tier, row.id))[0].id
+
+    def _resolve_runtime_dynamic_agent(
+        agent_id: str,
+        *,
+        session_id: str = "",
+        workspace_id: str = "",
+        prompt_registry: PromptRegistry | None = None,
+    ) -> "AgentDef | None":
+        if session_id:
+            for row in _active_session_agent_blueprint_rows(
+                session_id=session_id,
+                workspace_id=workspace_id,
+            ):
+                if row.id == agent_id and row.enabled:
+                    return (
+                        _apply_prompt_registry_to_agent(app, row, prompt_registry=prompt_registry)
+                        if prompt_registry is not None
+                        else row
+                    )
+        return _resolve_dynamic_agent(app, agent_id, prompt_registry=prompt_registry)
+
+    def _agent_rows(session_id: str = "", workspace_id: str = "") -> list[AgentDef]:
+        cwd = _workspace_catalog_cwd(workspace_id=workspace_id, session_id=session_id)
+        rows = _active_session_agent_blueprint_rows(
+            session_id=session_id,
+            workspace_id=workspace_id,
+        )
+        if rows:
+            return rows
         active_pack_id = _active_session_expert_pack_id(session_id)
         active_pack_path = _active_session_expert_pack_path(session_id)
         explicit_session_rows = (
