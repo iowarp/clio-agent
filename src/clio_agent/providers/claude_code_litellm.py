@@ -115,7 +115,8 @@ def _run_exec(
         "text",
         "--model",
         model,
-        "--no-session-persistence",
+        "--session-id",
+        str(uuid.uuid4()),
         "--tools",
         "",
     ]

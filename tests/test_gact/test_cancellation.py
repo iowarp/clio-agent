@@ -338,3 +338,14 @@ def test_agent_forward_compat_passes_cancel_callback_to_custom_agent() -> None:
     assert pred.error_info["error"] == "cancelled"
     assert pred.error_info["details"]["execution_cancellation"] == "cooperative"
     assert pred.error_info["details"]["executor_work_may_continue"] is False
+
+
+def test_capabilities_do_not_claim_hard_upstream_abort(tmp_path: Path) -> None:
+    """Release contract: CLIO advertises truthful best-effort cancellation."""
+
+    client = _client(tmp_path)
+
+    caps = client.get("/v1/capabilities").json()["capabilities"]
+
+    assert caps["x_clio_cancellation"] == "best_effort"
+    assert caps["x_clio_executor_cancellation"] is False

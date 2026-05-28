@@ -27,13 +27,22 @@ def test_builtin_prompts_are_listed_and_resolvable(client: TestClient) -> None:
     prompts = {row["id"]: row for row in listed.json()["prompts"]}
     assert "clio.chat" in prompts
     assert "default" in prompts["clio.chat"]["profiles"]
+    assert "heavy" in prompts["clio.chat"]["profiles"]
+    assert "small_model" in prompts["clio.main.planner"]["profiles"]
 
     resolved = client.get("/v1/prompts/clio.chat").json()["prompt"]
     assert resolved["id"] == "clio.chat"
     assert resolved["profile"] == "default"
     assert "CLIO" in resolved["text"]
+    assert "Never claim a tool call" in resolved["text"]
     assert resolved["scope"] == "builtin"
     assert resolved["checksum"]
+
+    heavy = client.get("/v1/prompts/clio.main.planner?profile=heavy").json()["prompt"]
+    assert heavy["profile"] == "heavy"
+    assert heavy["metadata"]["alignment"] == "public_reference_matrix"
+    assert "delegate to scoped child experts" in heavy["text"]
+    assert "declared tools and experts" in heavy["text"]
 
 
 def test_put_prompt_saves_external_profile_and_resolution_uses_it(client: TestClient) -> None:
