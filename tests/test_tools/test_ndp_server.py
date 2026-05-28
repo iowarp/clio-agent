@@ -26,6 +26,76 @@ def _parse_result(result: Any) -> dict[str, Any]:
     return {"raw": str(data)}
 
 
+def test_clio_kit_transport_prefers_local_checkout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    checkout = tmp_path / "clio-kit"
+    checkout.mkdir()
+    monkeypatch.setenv("CLIO_KIT_PATH", str(checkout))
+    monkeypatch.delenv("CLIO_KIT_COMMAND", raising=False)
+
+    transport = ndp_module._clio_kit_transport("ndp")
+
+    assert transport.command == "uv"
+    assert transport.args == [
+        "--directory",
+        str(checkout.resolve()),
+        "run",
+        "clio-kit",
+        "mcp-server",
+        "ndp",
+    ]
+
+
+def test_clio_kit_transport_uses_explicit_command(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CLIO_KIT_PATH", str(tmp_path / "missing"))
+    monkeypatch.setenv("CLIO_KIT_COMMAND", "uv --directory /opt/clio-kit run clio-kit")
+
+    transport = ndp_module._clio_kit_transport("ndp")
+
+    assert transport.command == "uv"
+    assert transport.args == [
+        "--directory",
+        "/opt/clio-kit",
+        "run",
+        "clio-kit",
+        "mcp-server",
+        "ndp",
+    ]
+
+
+def test_clio_kit_transport_uses_path_command(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CLIO_KIT_PATH", str(tmp_path / "missing"))
+    monkeypatch.delenv("CLIO_KIT_COMMAND", raising=False)
+    monkeypatch.setattr(ndp_module.shutil, "which", lambda name: "/usr/bin/clio-kit")
+
+    transport = ndp_module._clio_kit_transport("ndp")
+
+    assert transport.command == "/usr/bin/clio-kit"
+    assert transport.args == ["mcp-server", "ndp"]
+
+
+def test_clio_kit_transport_falls_back_to_uvx(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CLIO_KIT_PATH", str(tmp_path / "missing"))
+    monkeypatch.delenv("CLIO_KIT_COMMAND", raising=False)
+    monkeypatch.setattr(ndp_module.shutil, "which", lambda name: None)
+
+    transport = ndp_module._clio_kit_transport("ndp")
+
+    assert transport.command == "uvx"
+    assert transport.args == ["--from", "clio-kit", "clio-kit", "mcp-server", "ndp"]
+
+
 @pytest.mark.asyncio
 async def test_ndp_server_lists_organizations_through_clio_kit(monkeypatch: pytest.MonkeyPatch):
     """NDP wrapper should pass exact args through to the clio-kit MCP server."""

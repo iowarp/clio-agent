@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import shutil
 import subprocess
 from pathlib import Path
@@ -35,7 +36,7 @@ _SIZE_UNITS = {
 
 
 def _clio_kit_transport(server_name: str = "ndp") -> StdioTransport:
-    """Return a stdio transport for a local clio-kit checkout or uvx package."""
+    """Return a stdio transport for a local clio-kit checkout or package command."""
     configured = os.environ.get("CLIO_KIT_PATH", "").strip()
     local_path = Path(configured).expanduser() if configured else Path("../clio-kit")
     local_path = local_path.resolve()
@@ -51,7 +52,23 @@ def _clio_kit_transport(server_name: str = "ndp") -> StdioTransport:
                 server_name,
             ],
         )
-    return StdioTransport(command="uvx", args=["clio-kit", "mcp-server", server_name])
+    configured_command = os.environ.get("CLIO_KIT_COMMAND", "").strip()
+    if configured_command:
+        parts = shlex.split(configured_command)
+        if parts:
+            return StdioTransport(
+                command=parts[0],
+                args=[*parts[1:], "mcp-server", server_name],
+            )
+
+    path_command = shutil.which("clio-kit")
+    if path_command:
+        return StdioTransport(command=path_command, args=["mcp-server", server_name])
+
+    return StdioTransport(
+        command="uvx",
+        args=["--from", "clio-kit", "clio-kit", "mcp-server", server_name],
+    )
 
 
 def _decode_text_content(result: Any) -> dict[str, Any]:
@@ -481,7 +498,11 @@ async def _call_clio_kit_ndp_tool(tool_name: str, args: dict[str, Any]) -> dict[
         return _tool_error(
             code="clio_kit_ndp_unavailable",
             message=f"Could not call clio-kit NDP MCP tool {tool_name!r}: {exc}",
-            next_action=("Install clio-kit or set CLIO_KIT_PATH to a local checkout, then retry."),
+            next_action=(
+                "Install clio-kit, set CLIO_KIT_PATH to a local checkout, "
+                "set CLIO_KIT_COMMAND to a launcher command, or ensure uvx can "
+                "resolve the clio-kit package."
+            ),
             details={"tool": tool_name, "args": args},
         )
 

@@ -15,6 +15,8 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
+import shutil
 import time
 from pathlib import Path
 from typing import Any
@@ -197,7 +199,7 @@ def _artifact_paths(message: dict[str, Any]) -> list[str]:
 
 
 def _clio_kit_stdio_spec(server_name: str) -> dict[str, Any]:
-    """Return a stdio MCP launch spec for a local or uvx clio-kit server."""
+    """Return a stdio MCP launch spec matching CLIO's NDP wrapper resolution."""
     configured = os.environ.get("CLIO_KIT_PATH", "").strip()
     local_path = Path(configured).expanduser() if configured else Path("../clio-kit")
     local_path = local_path.resolve()
@@ -213,7 +215,18 @@ def _clio_kit_stdio_spec(server_name: str) -> dict[str, Any]:
                 server_name,
             ],
         }
-    return {"command": "uvx", "args": ["clio-kit", "mcp-server", server_name]}
+    configured_command = os.environ.get("CLIO_KIT_COMMAND", "").strip()
+    if configured_command:
+        parts = shlex.split(configured_command)
+        if parts:
+            return {"command": parts[0], "args": [*parts[1:], "mcp-server", server_name]}
+    path_command = shutil.which("clio-kit")
+    if path_command:
+        return {"command": path_command, "args": ["mcp-server", server_name]}
+    return {
+        "command": "uvx",
+        "args": ["--from", "clio-kit", "clio-kit", "mcp-server", server_name],
+    }
 
 
 def _external_mcp_message(
