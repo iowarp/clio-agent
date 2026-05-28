@@ -140,6 +140,17 @@ scientific grounding, or TUI-visible semantics.
 - TUI-visible behaviors such as ask-user, retry, permissions, and fallback
   warnings are reflected in the relevant prompts.
 
+## Implementation Status
+
+The backend alignment pass is implemented in `src/clio_agent/prompts.py` and
+summarized in [PROMPT_ALIGNMENT_IMPLEMENTATION.md](PROMPT_ALIGNMENT_IMPLEMENTATION.md).
+
+Built-in prompt families now expose `default`, `heavy`, `light`,
+`small_model`, `fine_tuned`, and `debug` profiles through the same prompt
+registry used for external overrides. Resolved built-in prompts carry alignment
+metadata and family requirements so the GACT/TUI layer can inspect prompt
+provenance without re-implementing prompt rules.
+
 ## Dependencies
 
 - External editable prompt system.

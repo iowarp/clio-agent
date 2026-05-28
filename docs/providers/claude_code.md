@@ -10,9 +10,10 @@ constructs `dspy.LM(model="claude_code/<model>")`, LiteLLM routes that
 call to the custom handler, and the handler invokes `claude -p`.
 
 Claude Code is used only as a model transport. The provider passes
-`--tools ""` and `--no-session-persistence` so Claude Code's built-in
-agent tools are disabled; CLIO's planner, experts, and MCP tools remain
-the only tool execution path.
+`--tools ""` so Claude Code's built-in agent tools are disabled, and a
+fresh `--session-id` for each call so Claude Code state does not bleed
+between CLIO turns. CLIO's planner, experts, and MCP tools remain the only
+tool execution path.
 
 Claude Code does not expose a live token-streaming contract through this
 provider. GACT skips DSPy live streaming for `CLIO_LM_PROVIDER=claude_code`
@@ -79,3 +80,6 @@ uv run python scripts/run_demo_benchmark.py `
 The Claude lane records provider/model evidence, planner/routing behavior,
 tool-call argument generation, stream provenance, cancellation surfacing, and
 structured error surfacing separately from the ALCF/Qwopus benchmark report.
+The HDF5 tool/error cases pin the turn to CLIO's built-in `data` agent so
+ambient user skills cannot change the benchmark target; the separate no-guard
+cross-file case remains the planner/routing reliability proof.

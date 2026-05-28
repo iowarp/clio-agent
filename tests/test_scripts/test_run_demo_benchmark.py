@@ -96,6 +96,23 @@ def test_cancelled_case_passes_only_structured_cancelled_without_text() -> None:
     assert row["benchmark_lane"] == "claude_code"
 
 
+def test_expected_error_allows_structured_handoff_telemetry_only() -> None:
+    result = _result("missing_hdf5_error")
+    result.message["parts"].append(
+        {
+            "type": "text",
+            "text": "\ndata | failure | direct_tool",
+        }
+    )
+
+    assert result.passed is True
+    assert result.outcome == "expected_error"
+
+    result.message["parts"].append({"type": "text", "text": "The missing file looked valid."})
+
+    assert result.passed is False
+
+
 def test_claude_provider_lane_audit_requires_key_evidence() -> None:
     results = [
         _result("workflow_hdf5_overview"),

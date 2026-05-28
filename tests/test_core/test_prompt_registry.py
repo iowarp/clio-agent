@@ -7,6 +7,7 @@ from clio_agent.prompts import (
     PromptProfile,
     PromptRegistry,
     PromptSource,
+    builtin_prompt_definitions,
     parse_prompt_file,
 )
 
@@ -144,3 +145,54 @@ profile: default
     assert resolved.text == "builtin text"
     assert "prompt body is empty" in resolved.validation_errors
     assert resolved.metadata["invalid_sources"][0].endswith("bad-chat.md")
+
+
+def test_builtin_prompt_profiles_encode_alignment_requirements() -> None:
+    builtins = builtin_prompt_definitions()
+
+    for prompt_id in (
+        "clio.main.planner",
+        "clio.main.answer",
+        "clio.chat",
+        "clio.expert.data",
+        "clio.expert.analysis",
+        "clio.expert.visualization",
+    ):
+        row = builtins[prompt_id]
+        assert {
+            "default",
+            "heavy",
+            "light",
+            "small_model",
+            "fine_tuned",
+            "debug",
+        }.issubset(row.profiles)
+        assert row.metadata["alignment"] == "public_reference_matrix"
+        assert row.metadata["requirements"]
+        default = row.profiles["default"].text
+        heavy = row.profiles["heavy"].text
+        small = row.profiles["small_model"].text
+        debug = row.profiles["debug"].text
+        assert "tool telemetry" in default
+        assert "Never claim a tool call" in default
+        assert "delegate to scoped child experts" in heavy
+        assert "model/provider fallback" in heavy
+        assert "valid JSON" in small or "explicit schemas" in small
+        assert "prompt id/profile" in debug
+
+
+def test_prompt_alignment_profile_resolution_keeps_builtin_provenance(tmp_path: Path) -> None:
+    registry = PromptRegistry(
+        sources=[PromptSource("global", tmp_path / "missing")],
+        write_root=tmp_path,
+    )
+
+    resolved = registry.resolve("clio.main.planner", profile="small_model")
+
+    assert resolved is not None
+    assert resolved.profile == "small_model"
+    assert resolved.scope == "builtin"
+    assert resolved.metadata["alignment"] == "public_reference_matrix"
+    assert resolved.metadata["behavior_profile"] == "small_model"
+    assert "Return exactly one JSON object" in resolved.text
+    assert "declared tools and experts" in resolved.text

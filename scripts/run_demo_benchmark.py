@@ -54,6 +54,7 @@ class DemoCase:
     expected_actions: tuple[str, ...] = ()
     cancel_after_s: float = 0.0
     expects_cancelled: bool = False
+    turn_agent_id: str = ""
 
 
 @dataclass
@@ -155,7 +156,7 @@ class DemoResult:
                 and not self.text.strip()
             )
         if self.case.expects_error:
-            return self.blocking_error is not None and not self.text.strip()
+            return self.blocking_error is not None and not _non_telemetry_text(self.text).strip()
         if self.partial_error is not None:
             return False
         if self.blocking_error is not None:
@@ -223,6 +224,21 @@ class DemoResult:
 
 def _message_text(message: dict[str, Any]) -> str:
     return "\n".join(str(part.get("text", "")) for part in message.get("parts", []))
+
+
+def _non_telemetry_text(text: str) -> str:
+    """Drop CLIO's structured handoff telemetry lines from visible answer text."""
+
+    lines = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if re.fullmatch(
+            r"[A-Za-z0-9_.:-]+\s+\|\s+(success|failure)\s+\|\s+[A-Za-z0-9_.:-]+",
+            stripped,
+        ):
+            continue
+        lines.append(line)
+    return "\n".join(lines)
 
 
 def _routing_agent(message: dict[str, Any]) -> str:
@@ -310,10 +326,14 @@ def _post_turn(
     *,
     timeout_s: float,
     cancel_after_s: float = 0.0,
+    agent_id: str = "",
 ) -> dict[str, Any]:
     ack = http.post(
         f"/v1/sessions/{session_id}/messages",
-        json={"parts": [{"type": "text", "text": prompt}]},
+        json={
+            "parts": [{"type": "text", "text": prompt}],
+            **({"agent_id": agent_id} if agent_id else {}),
+        },
     )
     ack.raise_for_status()
     user_id = ack.json()["message_id"]
@@ -554,6 +574,7 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             expected_tool_prefixes=("hdf5_",),
             expected_terms=("electron_temperature", "density", "heat_flux"),
             complexity_tags=("hdf5", "data-expert", "tool-result-synthesis"),
+            turn_agent_id="data",
             prompt=(
                 f"I need to brief collaborators on this fusion output: {h5}. "
                 "What datasets are inside, what shapes and units matter, and what "
@@ -965,6 +986,7 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             expected_tool_prefixes=("hdf5_",),
             expects_error=True,
             complexity_tags=("error-surfacing", "no-fake-answer"),
+            turn_agent_id="data",
             prompt=(
                 f"Inspect this HDF5 file and tell me what datasets are inside: {missing}. "
                 "If the file is unavailable, surface the real error."
@@ -993,7 +1015,7 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             category="provider-hardening",
             session_group="claude_cancel",
             expects_cancelled=True,
-            cancel_after_s=0.2,
+            cancel_after_s=0.001,
             timeout_s=240.0,
             complexity_tags=("claude-code", "cancellation", "provider-boundary"),
             prompt=(
@@ -1140,7 +1162,13 @@ def run_benchmark(
                 for setup_index, setup_prompt in enumerate(case.setup_prompts, start=1):
                     print(f"  setup turn {setup_index}/{len(case.setup_prompts)}", flush=True)
                     setup_messages.append(
-                        _post_turn(http, session_id, setup_prompt, timeout_s=case.timeout_s)
+                        _post_turn(
+                            http,
+                            session_id,
+                            setup_prompt,
+                            timeout_s=case.timeout_s,
+                            agent_id=case.turn_agent_id,
+                        )
                     )
                     if case_delay_s > 0:
                         time.sleep(case_delay_s)
@@ -1168,6 +1196,7 @@ def run_benchmark(
                     case.prompt,
                     timeout_s=case.timeout_s,
                     cancel_after_s=case.cancel_after_s,
+                    agent_id=case.turn_agent_id,
                 )
                 elapsed_s = time.monotonic() - started
                 after_children = _children(http, session_id)

@@ -85,7 +85,8 @@ def test_run_exec_invokes_claude_with_tools_disabled() -> None:
         "--model",
     ]
     assert "sonnet" in argv
-    assert "--no-session-persistence" in argv
+    assert "--session-id" in argv
+    assert argv[argv.index("--session-id") + 1]
     assert "--tools" in argv
     assert argv[argv.index("--tools") + 1] == ""
     assert run_mock.call_args.kwargs["input"] == "hello"
