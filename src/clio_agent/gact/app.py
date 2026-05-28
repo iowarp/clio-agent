@@ -1032,6 +1032,62 @@ def _apply_prompt_registry_to_agent(app: "FastAPI", agent_def: "AgentDef") -> "A
     return agent_def.model_copy(update=updates)
 
 
+def _prompt_render_context(app: "FastAPI") -> dict[str, str]:
+    """Build the CLIO-owned dynamic context exposed to prompt templates."""
+
+    try:
+        agents = validate_expert_hierarchy(
+            _builtin_agents()
+            + [AgentDef(**row.to_wire()) for row in app.state.user_agents.list()]
+            + _load_skills_from_disk()
+            + load_expert_packs()
+        )
+    except Exception:
+        agents = _builtin_agents()
+    enabled_agents = [agent for agent in agents if getattr(agent, "enabled", True)]
+    by_parent: dict[str, list["AgentDef"]] = {}
+    for agent in enabled_agents:
+        by_parent.setdefault(agent.parent_id or "", []).append(agent)
+
+    def render_tree(parent_id: str = "", depth: int = 0) -> list[str]:
+        lines: list[str] = []
+        for agent in sorted(by_parent.get(parent_id, []), key=lambda row: (row.tier, row.id)):
+            indent = "  " * depth
+            detail = f" - {agent.description}" if agent.description else ""
+            lines.append(f"{indent}- {agent.id}: {agent.title}{detail}")
+            lines.extend(render_tree(agent.id, depth + 1))
+        return lines
+
+    flat_agents = [
+        f"- {agent.id}: {agent.title}" for agent in sorted(enabled_agents, key=lambda row: row.id)
+    ]
+    tools = [f"- {tool.id}: {tool.description}" for tool in _builtin_tools()]
+    commands: list[str] = []
+    try:
+        for row in _load_command_files_from_disk():
+            if row.get("enabled") and row.get("agent_invocable"):
+                commands.append(f"- {row.get('id')}: {row.get('description') or row.get('title')}")
+    except Exception:
+        commands = []
+    provider = getattr(app.state, "lm_config", None)
+    provider_summary = "{}"
+    if provider is not None:
+        try:
+            provider_summary = json.dumps(asdict(provider), sort_keys=True)
+        except Exception:
+            provider_summary = str(provider)
+    return {
+        "agents.available_tree": "\n".join(render_tree()) or "(no enabled experts)",
+        "agents.available_flat": "\n".join(flat_agents) or "(no enabled experts)",
+        "tools.available": "\n".join(tools) or "(no declared tools)",
+        "commands.agent_invocable": "\n".join(commands) or "(no agent-invocable commands)",
+        "memory.policy_summary": "Session-local by default; same-workspace/global reads require explicit policy or user intent.",
+        "permissions.policy_summary": "Permission-controlled actions must use CLIO policy gates and visible provenance.",
+        "provider.current": provider_summary,
+        "session.active_pack": "(no active expert pack)",
+    }
+
+
 def _keyword_routed_user_agent(app: "FastAPI", text: str) -> "AgentDef | None":
     """Return the best registered user agent whose keyword matches text.
 
@@ -6417,6 +6473,39 @@ def build_app(
                 ).model_dump(exclude_none=True),
             )
         return {"prompt": asdict(resolved)}
+
+    @app.post("/v1/prompts/{prompt_id:path}/render")
+    async def render_prompt(prompt_id: str, request: Request, profile: str = "") -> dict[str, Any]:
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        if not isinstance(body, dict):
+            body = {}
+        requested_profile = str(body.get("profile") or profile or "")
+        context_override = body.get("context")
+        context = _prompt_render_context(app)
+        if isinstance(context_override, Mapping):
+            for key, value in context_override.items():
+                context[str(key)] = str(value)
+        rendered = app.state.prompt_registry.render(
+            prompt_id,
+            profile=requested_profile,
+            context=context,
+        )
+        if rendered is None:
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="not_found",
+                        message=f"prompt not found: {prompt_id}",
+                        details={"prompt_id": prompt_id},
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        return {"prompt": asdict(rendered)}
 
     @app.put("/v1/prompts/{prompt_id:path}")
     async def save_prompt(prompt_id: str, request: Request) -> dict[str, Any]:

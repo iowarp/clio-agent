@@ -23,6 +23,7 @@ import inspect
 import os
 import re
 from dataclasses import dataclass, field
+from importlib import resources
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
@@ -74,6 +75,19 @@ class ResolvedPrompt:
     fallback_profile: str = ""
     validation_errors: list[str] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
+
+
+_RENDER_PLACEHOLDER_RE = re.compile(r"\{\{\s*([A-Za-z0-9_.-]+)\s*\}\}")
+_ALLOWED_RENDER_PLACEHOLDERS = {
+    "agents.available_tree",
+    "agents.available_flat",
+    "tools.available",
+    "commands.agent_invocable",
+    "memory.policy_summary",
+    "permissions.policy_summary",
+    "provider.current",
+    "session.active_pack",
+}
 
 
 def default_prompt_sources(*, cwd: Optional[Path] = None, config_dir: Optional[Path] = None) -> list[PromptSource]:
@@ -187,13 +201,7 @@ _PROMPT_ALIGNMENT_REQUIREMENTS: dict[str, tuple[str, ...]] = {
 
 
 def builtin_prompt_definitions() -> dict[str, PromptDefinition]:
-    """Return built-in CLIO prompt definitions.
-
-    These prompts still originate from current DSPy signature docstrings in this
-    slice, but they enter runtime through the same PromptDefinition shape as
-    external files. Later extraction can move the text to package data without
-    changing consumers.
-    """
+    """Return built-in CLIO prompt definitions loaded from package data."""
 
     rows: dict[str, PromptDefinition] = {}
 
@@ -207,8 +215,9 @@ def builtin_prompt_definitions() -> dict[str, PromptDefinition]:
             default_profile="default",
             profiles=profiles,
             scope="builtin",
+            source_path=f"package://clio_agent.prompt_packs.builtin/{prompt_id}.md",
             metadata={
-                "source": "dspy_signature",
+                "source": "packaged_prompt_file",
                 "alignment": "public_reference_matrix",
                 "references": "PROMPT_ALIGNMENT_REFERENCE_MATRIX.md",
                 "requirements": list(_PROMPT_ALIGNMENT_REQUIREMENTS.get(prompt_id, ())),
@@ -217,29 +226,24 @@ def builtin_prompt_definitions() -> dict[str, PromptDefinition]:
         )
 
     try:
-        from clio_agent.signatures.analysis_sig import AnalysisExpertSignature
-        from clio_agent.signatures.expert_sig import DataExpertSignature
-        from clio_agent.signatures.main_agent_sig import (
-            AgentActionSignature,
-            AgentAnswerSignature,
-            ChatAgentSignature,
-        )
-        from clio_agent.signatures.visualization_sig import VisualizationExpertSignature
-
-        add("clio.main.planner", "Main planner", AgentActionSignature.__doc__ or "")
-        add("clio.main.answer", "Main answer synthesizer", AgentAnswerSignature.__doc__ or "")
-        add("clio.chat", "Chat agent", ChatAgentSignature.__doc__ or "")
-        add("clio.expert.data", "Data expert", DataExpertSignature.__doc__ or "")
-        add("clio.expert.analysis", "Analysis expert", AnalysisExpertSignature.__doc__ or "")
-        add(
-            "clio.expert.visualization",
-            "Visualization expert",
-            VisualizationExpertSignature.__doc__ or "",
-        )
+        root = resources.files("clio_agent.prompt_packs.builtin")
+        for name in sorted(path.name for path in root.iterdir() if path.name.endswith(".md")):
+            text = (root / name).read_text(encoding="utf-8")
+            parsed = parse_prompt_text(
+                text,
+                scope="builtin",
+                source_path=f"package://clio_agent.prompt_packs.builtin/{name}",
+                fallback_id=name.removesuffix(".md"),
+            )
+            base_profile = next(iter(parsed.profiles.values()), None)
+            add(parsed.id, parsed.title or parsed.id, base_profile.text if base_profile else "")
+            rows[parsed.id].description = parsed.description
+            rows[parsed.id].source_path = parsed.source_path
+            rows[parsed.id].metadata.update(parsed.metadata)
     except Exception as exc:  # pragma: no cover - defensive import guard
         text = (
-            "CLIO built-in prompts could not be imported. Check the DSPy "
-            f"signature modules before running prompt alignment. Error: {type(exc).__name__}"
+            "CLIO built-in prompt files could not be imported. Check packaged "
+            f"prompt resources before running prompt alignment. Error: {type(exc).__name__}"
         )
         add("clio.chat", "Chat agent", text, description="fallback import-error prompt")
         rows["clio.chat"].enabled = False
@@ -345,6 +349,31 @@ class PromptRegistry:
             metadata={**row.metadata, **profile_row.metadata},
         )
 
+    def render(
+        self,
+        prompt_id: str,
+        *,
+        profile: str = "",
+        context: Optional[dict[str, str]] = None,
+    ) -> Optional[ResolvedPrompt]:
+        resolved = self.resolve(prompt_id, profile=profile)
+        if resolved is None:
+            return None
+        rendered_text, used, errors = render_prompt_text(resolved.text, context or {})
+        metadata = dict(resolved.metadata)
+        metadata["render"] = {
+            "placeholders_used": used,
+            "context_keys": sorted((context or {}).keys()),
+        }
+        return ResolvedPrompt(
+            **{
+                **as_resolved_dict(resolved),
+                "text": rendered_text,
+                "validation_errors": list(dict.fromkeys(resolved.validation_errors + errors)),
+                "metadata": metadata,
+            }
+        )
+
     def save(
         self,
         prompt_id: str,
@@ -405,7 +434,6 @@ class PromptRegistry:
 
 
 def parse_prompt_file(path: Path, *, scope: str) -> PromptDefinition:
-    errors: list[str] = []
     try:
         text = path.read_text(encoding="utf-8")
     except OSError as exc:
@@ -416,10 +444,21 @@ def parse_prompt_file(path: Path, *, scope: str) -> PromptDefinition:
             enabled=False,
             validation_errors=[f"unable to read prompt file: {exc}"],
         )
+    return parse_prompt_text(text, scope=scope, source_path=str(path), fallback_id=_fallback_prompt_id(path))
+
+
+def parse_prompt_text(
+    text: str,
+    *,
+    scope: str,
+    source_path: str = "",
+    fallback_id: str = "",
+) -> PromptDefinition:
+    errors: list[str] = []
     meta, body = _parse_frontmatter(text)
     prompt_id = str(meta.get("id") or "").strip()
     if not prompt_id:
-        prompt_id = _fallback_prompt_id(path)
+        prompt_id = fallback_id
         errors.append("missing required frontmatter field: id")
     elif not _PROMPT_ID_RE.fullmatch(prompt_id):
         errors.append("invalid prompt id; use letters, numbers, dots, underscores, and hyphens")
@@ -429,6 +468,8 @@ def parse_prompt_file(path: Path, *, scope: str) -> PromptDefinition:
         profile_name = "default"
     if not body.strip():
         errors.append("prompt body is empty")
+    placeholder_errors = _placeholder_validation_errors(body)
+    errors.extend(placeholder_errors)
     title = str(meta.get("title") or prompt_id).strip()
     description = str(meta.get("description") or "").strip()
     provider = str(meta.get("provider") or meta.get("default_provider") or "").strip()
@@ -437,7 +478,7 @@ def parse_prompt_file(path: Path, *, scope: str) -> PromptDefinition:
         name=profile_name,
         text=body,
         scope=scope,
-        source_path=str(path),
+        source_path=source_path,
         provider=provider,
         model=model,
         checksum=_checksum(body),
@@ -450,7 +491,7 @@ def parse_prompt_file(path: Path, *, scope: str) -> PromptDefinition:
         default_profile=str(meta.get("default_profile") or profile_name).strip() or profile_name,
         profiles={profile_name: profile},
         scope=scope,
-        source_path=str(path),
+        source_path=source_path,
         enabled=not errors,
         validation_errors=errors,
         metadata=_metadata_from_frontmatter(meta),
@@ -591,12 +632,66 @@ def _checksum(text: str) -> str:
 
 
 def _metadata_from_frontmatter(meta: dict[str, Any]) -> dict[str, Any]:
-    return {
+    metadata = {
         key[2:]: value
         for key, value in meta.items()
         if key.startswith("x_") and _is_frontmatter_scalar(value)
     }
+    requires = meta.get("requires")
+    if isinstance(requires, list):
+        metadata["requires"] = [str(item).strip() for item in requires if str(item).strip()]
+    placeholders = meta.get("render_placeholders")
+    if isinstance(placeholders, list):
+        metadata["render_placeholders"] = [
+            str(item).strip() for item in placeholders if str(item).strip()
+        ]
+    return metadata
 
 
 def _is_frontmatter_scalar(value: Any) -> bool:
     return isinstance(value, (str, int, float, bool))
+
+
+def _placeholder_validation_errors(text: str) -> list[str]:
+    unknown = sorted(
+        {
+            name
+            for name in _RENDER_PLACEHOLDER_RE.findall(text)
+            if name not in _ALLOWED_RENDER_PLACEHOLDERS
+        }
+    )
+    return [f"unknown render placeholder: {name}" for name in unknown]
+
+
+def render_prompt_text(text: str, context: dict[str, str]) -> tuple[str, list[str], list[str]]:
+    used: list[str] = []
+    errors: list[str] = []
+
+    def replace(match: re.Match[str]) -> str:
+        name = match.group(1)
+        if name not in _ALLOWED_RENDER_PLACEHOLDERS:
+            errors.append(f"unknown render placeholder: {name}")
+            return match.group(0)
+        used.append(name)
+        return str(context.get(name, f"[missing render context: {name}]"))
+
+    rendered = _RENDER_PLACEHOLDER_RE.sub(replace, text)
+    return rendered, sorted(set(used)), sorted(set(errors))
+
+
+def as_resolved_dict(row: ResolvedPrompt) -> dict[str, Any]:
+    return {
+        "id": row.id,
+        "profile": row.profile,
+        "text": row.text,
+        "title": row.title,
+        "description": row.description,
+        "scope": row.scope,
+        "source_path": row.source_path,
+        "provider": row.provider,
+        "model": row.model,
+        "checksum": row.checksum,
+        "fallback_profile": row.fallback_profile,
+        "validation_errors": list(row.validation_errors),
+        "metadata": dict(row.metadata),
+    }

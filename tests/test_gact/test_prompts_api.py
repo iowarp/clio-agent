@@ -37,12 +37,61 @@ def test_builtin_prompts_are_listed_and_resolvable(client: TestClient) -> None:
     assert "Never claim a tool call" in resolved["text"]
     assert resolved["scope"] == "builtin"
     assert resolved["checksum"]
+    assert resolved["source_path"].startswith("package://clio_agent.prompt_packs.builtin/")
+    assert resolved["metadata"]["source"] == "packaged_prompt_file"
 
     heavy = client.get("/v1/prompts/clio.main.planner?profile=heavy").json()["prompt"]
     assert heavy["profile"] == "heavy"
     assert heavy["metadata"]["alignment"] == "public_reference_matrix"
     assert "delegate to scoped child experts" in heavy["text"]
     assert "declared tools and experts" in heavy["text"]
+
+
+def test_prompt_render_expands_safe_dynamic_placeholders(client: TestClient) -> None:
+    resp = client.post(
+        "/v1/prompts/clio.main.planner/render",
+        json={
+            "profile": "heavy",
+            "context": {
+                "agents.available_tree": "- main: Main agent\n- data: Data expert",
+                "tools.available": "- hdf5_list_datasets: inspect HDF5 files",
+                "commands.agent_invocable": "- /summarize: summarize data",
+                "memory.policy_summary": "same-workspace memory allowed with user intent",
+                "permissions.policy_summary": "ask before destructive actions",
+                "provider.current": "provider=test model=fake",
+                "session.active_pack": "builtin",
+            },
+        },
+    )
+
+    assert resp.status_code == 200, resp.text
+    prompt = resp.json()["prompt"]
+    assert prompt["profile"] == "heavy"
+    assert "{{ agents.available_tree }}" not in prompt["text"]
+    assert "- data: Data expert" in prompt["text"]
+    assert "- hdf5_list_datasets: inspect HDF5 files" in prompt["text"]
+    assert "same-workspace memory allowed" in prompt["text"]
+    render = prompt["metadata"]["render"]
+    assert "agents.available_tree" in render["placeholders_used"]
+    assert "tools.available" in render["placeholders_used"]
+
+
+def test_prompt_render_reports_unknown_placeholder(client: TestClient) -> None:
+    saved = client.put(
+        "/v1/prompts/clio.bad_placeholder",
+        json={
+            "profile": "default",
+            "text": "This references {{ unknown.placeholder }}.",
+        },
+    )
+    assert saved.status_code == 200, saved.text
+
+    resp = client.post("/v1/prompts/clio.bad_placeholder/render", json={})
+
+    assert resp.status_code == 200, resp.text
+    prompt = resp.json()["prompt"]
+    assert "{{ unknown.placeholder }}" in prompt["text"]
+    assert "unknown render placeholder: unknown.placeholder" in prompt["validation_errors"]
 
 
 def test_put_prompt_saves_external_profile_and_resolution_uses_it(client: TestClient) -> None:
