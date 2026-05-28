@@ -20,6 +20,8 @@ Use these paths when replacing placeholders:
 - `{dirty}`: `tmp/clio-benchmark-data/facility_measurements_dirty.parquet`
 - `{csv}`: `tmp/clio-benchmark-data/sensor_events.csv`
 - `{adios}`: `tmp/clio-benchmark-data/gray scott noise 0.01 data.bp5`
+- `{fasta}`: `tmp/clio-benchmark-data/pathogen_reference.fasta`
+- `{vcf}`: `tmp/clio-benchmark-data/pathogen_sample_variants.vcf`
 
 For an automated evidence run, use:
 
@@ -153,6 +155,29 @@ Worked because you saw:
 - `adios_inspect_file` evidence.
 - BP5/profiling metadata discussion.
 - Honest dependency caveats if ADIOS2 runtime support is limited.
+
+## 6. Genomics Reference And Variant Review
+
+Agent: Data Exploration/Search Agent
+
+Prompt:
+
+```text
+Review this synthetic pathogen reference FASTA and variant call file: {fasta} and {vcf}. Summarize the reference composition, the variant types and effects, and what a collaborator should verify before treating the sample as analysis-ready.
+```
+
+Why this exists:
+
+This adds a non-NDP, non-HDF5/Parquet scientific domain. It should require the
+genomics expert boundary and FASTA/VCF tools instead of generic tabular or shell
+inspection.
+
+Worked because you saw:
+
+- `genomics_inspect_fasta` evidence.
+- `genomics_summarize_vcf` evidence.
+- Reference composition and variant effects such as `missense`, `frameshift`,
+  or `stop_gained` in the final review.
 
 ## Notes For Manual TUI Runs
 
