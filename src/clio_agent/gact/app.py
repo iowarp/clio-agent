@@ -943,6 +943,47 @@ def _session_agent_id(sess: Any) -> str:
     return str(getattr(agent, "id", "") or "").strip()
 
 
+def _merge_agent_def_rows(rows: list["AgentDef"]) -> list["AgentDef"]:
+    """Resolve agent rows by id while preserving provenance of overridden rows."""
+
+    merged: dict[str, AgentDef] = {}
+    chains: dict[str, list[dict[str, str]]] = {}
+    for row in rows:
+        chain = chains.setdefault(row.id, [])
+        if row.id in merged:
+            prior = merged[row.id]
+            chain.append(
+                {
+                    "source": prior.source,
+                    "scope": str(
+                        prior.metadata.get("expert_scope")
+                        or prior.metadata.get("pack_scope")
+                        or ""
+                    ),
+                    "pack_id": str(prior.metadata.get("pack_id") or ""),
+                    "definition_path": str(
+                        prior.metadata.get("definition_path")
+                        or prior.metadata.get("expert_path")
+                        or ""
+                    ),
+                }
+            )
+        current = {
+            "source": row.source,
+            "scope": str(
+                row.metadata.get("expert_scope") or row.metadata.get("pack_scope") or ""
+            ),
+            "pack_id": str(row.metadata.get("pack_id") or ""),
+            "definition_path": str(
+                row.metadata.get("definition_path") or row.metadata.get("expert_path") or ""
+            ),
+        }
+        merged[row.id] = row.model_copy(
+            update={"metadata": {**row.metadata, "override_chain": [*chain, current]}}
+        )
+    return list(merged.values())
+
+
 def _resolve_dynamic_agent(app: "FastAPI", agent_id: str) -> "AgentDef | None":
     """Return a registered user/skill/builtin/expert-pack agent definition by id."""
     if not agent_id:
@@ -953,7 +994,9 @@ def _resolve_dynamic_agent(app: "FastAPI", agent_id: str) -> "AgentDef | None":
     for skill in _load_skills_from_disk():
         if skill.id == agent_id:
             return _apply_prompt_registry_to_agent(app, skill)
-    expert_rows = validate_expert_hierarchy(_builtin_agents() + load_expert_packs())
+    expert_rows = validate_expert_hierarchy(
+        _merge_agent_def_rows(_builtin_agents() + load_expert_packs())
+    )
     for expert in expert_rows:
         if expert.id == agent_id and expert.enabled:
             return _apply_prompt_registry_to_agent(app, expert)
@@ -1037,10 +1080,12 @@ def _prompt_render_context(app: "FastAPI") -> dict[str, str]:
 
     try:
         agents = validate_expert_hierarchy(
-            _builtin_agents()
-            + [AgentDef(**row.to_wire()) for row in app.state.user_agents.list()]
-            + _load_skills_from_disk()
-            + load_expert_packs()
+            _merge_agent_def_rows(
+                _builtin_agents()
+                + [AgentDef(**row.to_wire()) for row in app.state.user_agents.list()]
+                + _load_skills_from_disk()
+                + load_expert_packs()
+            )
         )
     except Exception:
         agents = _builtin_agents()
@@ -1125,7 +1170,7 @@ def _dynamic_agent_runtime_provenance(
     active_model = _active_lm_model_ref(app)
     provider_id = agent_def.default_provider or active_model.get("provider_id", "")
     model_id = agent_def.default_model or active_model.get("model_id", "")
-    return {
+    payload: dict[str, Any] = {
         "kind": "dynamic_agent",
         "agent_id": agent_def.id,
         "source": agent_def.source,
@@ -1146,6 +1191,30 @@ def _dynamic_agent_runtime_provenance(
             "fallback_to_global": not (agent_def.default_provider and agent_def.default_model),
         },
     }
+    if agent_def.source == "expert_pack":
+        payload.update(
+            {
+                "parent_id": agent_def.parent_id,
+                "skills": list(agent_def.skills),
+                "commands": list(agent_def.commands),
+                "pack": {
+                    "id": str(agent_def.metadata.get("pack_id") or ""),
+                    "version": str(agent_def.metadata.get("pack_version") or ""),
+                    "scope": str(
+                        agent_def.metadata.get("pack_scope")
+                        or agent_def.metadata.get("expert_scope")
+                        or ""
+                    ),
+                    "definition_path": str(
+                        agent_def.metadata.get("definition_path")
+                        or agent_def.metadata.get("pack_definition_path")
+                        or agent_def.metadata.get("expert_path")
+                        or ""
+                    ),
+                },
+            }
+        )
+    return payload
 
 
 def _delegated_expert_agent_id(row: Mapping[str, Any]) -> str:
@@ -1980,8 +2049,10 @@ async def _run_turn_in_background(
 
             prompt = _delegated_expert_prompt(row, source_text)
             execution_mode = "tool_agent" if target.tools else "prompt_agent"
+            started_at = time.perf_counter()
             try:
                 pred_child = await _run_dynamic_agent_sync(target, prompt)
+                duration_ms = int((time.perf_counter() - started_at) * 1000)
                 output = str(getattr(pred_child, "answer", "") or "").strip()
                 child_rows: list[dict[str, Any]] = []
                 raw_child_rows = getattr(pred_child, "expert_handoffs", None) or []
@@ -2003,8 +2074,14 @@ async def _run_turn_in_background(
                         **row,
                         "agent_id": target.id,
                         "parent_id": parent_agent.id,
+                        "pack_id": str(target.metadata.get("pack_id") or ""),
+                        "pack_version": str(target.metadata.get("pack_version") or ""),
+                        "provider_id": target.default_provider,
+                        "model_id": target.default_model,
+                        "fallback_warnings": list(target.validation_errors),
                         "status": "completed",
                         "depth": depth,
+                        "duration_ms": duration_ms,
                         "execution_mode": execution_mode,
                         "input": prompt,
                         "output_summary": output[:500],
@@ -2019,8 +2096,14 @@ async def _run_turn_in_background(
                         **row,
                         "agent_id": target.id,
                         "parent_id": parent_agent.id,
+                        "pack_id": str(target.metadata.get("pack_id") or ""),
+                        "pack_version": str(target.metadata.get("pack_version") or ""),
+                        "provider_id": target.default_provider,
+                        "model_id": target.default_model,
+                        "fallback_warnings": list(target.validation_errors),
                         "status": "failed",
                         "depth": depth,
+                        "duration_ms": int((time.perf_counter() - started_at) * 1000),
                         "execution_mode": execution_mode,
                         "error": type(exc).__name__,
                         "message": str(exc),
@@ -5680,7 +5763,13 @@ def _tool_visible_to_for_catalog(tool_name: str) -> list[str]:
 from typing import Protocol
 
 from clio_agent.gact.events import Event, EventBus, heartbeat_payload
-from clio_agent.gact.expert_packs import load_expert_packs, validate_expert_hierarchy
+from clio_agent.gact.expert_packs import (
+    discover_expert_packs,
+    load_expert_pack_path,
+    load_expert_packs,
+    validate_expert_hierarchy,
+    validate_expert_pack_path,
+)
 from clio_agent.gact.messages import MessageStore
 from clio_agent.gact.sessions import SessionStore, _default_store_path
 from clio_agent.gact.types import (
@@ -11288,20 +11377,244 @@ def build_app(
 
         return agent_def.model_copy(update={"capability_refs": deduped})
 
-    def _agent_rows() -> list[AgentDef]:
+    def _workspace_catalog_cwd(workspace_id: str = "", session_id: str = "") -> Path | None:
+        wid = workspace_id
+        if session_id:
+            sess = app.state.sessions.get(session_id)
+            if sess is not None:
+                wid = wid or str(getattr(sess, "workspace_id", "") or "")
+        if not wid:
+            return None
+        ws = app.state.workspaces.get(wid)
+        if ws is None:
+            return None
+        root_path = str(getattr(ws, "root_path", "") or "")
+        return Path(root_path).expanduser() if root_path else None
+
+    def _active_session_expert_pack_id(session_id: str = "") -> str:
+        if not session_id:
+            return ""
+        sess = app.state.sessions.get(session_id)
+        if sess is None:
+            return ""
+        metadata = getattr(sess, "metadata", {}) or {}
+        if not isinstance(metadata, Mapping):
+            return ""
+        return str(metadata.get("active_expert_pack_id") or metadata.get("expert_pack_id") or "").strip()
+
+    def _active_session_expert_pack_path(session_id: str = "") -> Path | None:
+        if not session_id:
+            return None
+        sess = app.state.sessions.get(session_id)
+        if sess is None:
+            return None
+        metadata = getattr(sess, "metadata", {}) or {}
+        if not isinstance(metadata, Mapping):
+            return None
+        raw = str(metadata.get("active_expert_pack_path") or "").strip()
+        return Path(raw).expanduser() if raw else None
+
+    def _agent_rows(session_id: str = "", workspace_id: str = "") -> list[AgentDef]:
+        cwd = _workspace_catalog_cwd(workspace_id=workspace_id, session_id=session_id)
+        active_pack_id = _active_session_expert_pack_id(session_id)
+        active_pack_path = _active_session_expert_pack_path(session_id)
+        explicit_session_rows = (
+            load_expert_pack_path(active_pack_path, scope="session")
+            if active_pack_path is not None
+            else []
+        )
         rows = (
             _builtin_agents()
             + [AgentDef(**row.to_wire()) for row in app.state.user_agents.list()]
             + _load_skills_from_disk()
-            + load_expert_packs()
+            + load_expert_packs(cwd=cwd, pack_id=active_pack_id)
+            + explicit_session_rows
         )
         return [
             _apply_prompt_registry_to_agent(app, _agent_with_capability_refs(row))
-            for row in validate_expert_hierarchy(rows)
+            for row in validate_expert_hierarchy(_merge_agent_def_rows(rows))
         ]
 
+    @app.get("/v1/expert-packs")
+    async def list_expert_packs(workspace_id: Optional[str] = None) -> dict[str, Any]:
+        cwd = _workspace_catalog_cwd(workspace_id=workspace_id or "")
+        packs = [pack.to_wire() for pack in discover_expert_packs(cwd=cwd)]
+        return {"expert_packs": packs}
+
+    @app.get("/v1/expert-packs/{pack_id:path}")
+    async def get_expert_pack(pack_id: str, workspace_id: Optional[str] = None) -> dict[str, Any]:
+        cwd = _workspace_catalog_cwd(workspace_id=workspace_id or "")
+        for pack in discover_expert_packs(cwd=cwd):
+            if pack.id == pack_id:
+                agents = validate_expert_hierarchy(load_expert_packs(cwd=cwd, pack_id=pack_id))
+                return {
+                    "expert_pack": pack.to_wire(),
+                    "agents": [row.model_dump(exclude_none=True) for row in agents],
+                }
+        raise HTTPException(
+            status_code=404,
+            detail=ErrorEnvelope(
+                error=ErrorInfo(
+                    error="not_found",
+                    message=f"expert pack not found: {pack_id}",
+                    details={"pack_id": pack_id, "workspace_id": workspace_id or ""},
+                    recoverable=False,
+                )
+            ).model_dump(exclude_none=True),
+        )
+
+    @app.post("/v1/expert-packs/validate")
+    async def validate_expert_pack(req: dict[str, Any]) -> dict[str, Any]:
+        path = str(req.get("path") or "").strip()
+        if not path:
+            raise HTTPException(
+                status_code=400,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="validation_error",
+                        message="path is required",
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        return validate_expert_pack_path(Path(path), scope=str(req.get("scope") or "session"))
+
+    @app.get("/v1/sessions/{sid}/expert-pack")
+    async def get_session_expert_pack(sid: str) -> dict[str, Any]:
+        sess = app.state.sessions.get(sid)
+        if sess is None:
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="not_found",
+                        message=f"session not found: {sid}",
+                        details={"session_id": sid},
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        pack_id = _active_session_expert_pack_id(sid)
+        pack_path = _active_session_expert_pack_path(sid)
+        cwd = _workspace_catalog_cwd(session_id=sid)
+        pack = next((row for row in discover_expert_packs(cwd=cwd) if row.id == pack_id), None)
+        pack_wire: dict[str, Any] | None = pack.to_wire() if pack is not None else None
+        if pack is None and pack_path is not None:
+            validation = validate_expert_pack_path(pack_path, scope="session")
+            raw_pack = validation.get("pack")
+            pack_wire = raw_pack if isinstance(raw_pack, dict) else None
+        return {
+            "session_id": sid,
+            "workspace_id": getattr(sess, "workspace_id", ""),
+            "active_expert_pack_id": pack_id,
+            "active_expert_pack_path": str(pack_path) if pack_path is not None else "",
+            "expert_pack": pack_wire,
+        }
+
+    @app.post("/v1/sessions/{sid}/expert-pack")
+    async def set_session_expert_pack(sid: str, req: dict[str, Any]) -> dict[str, Any]:
+        sess = app.state.sessions.get(sid)
+        if sess is None:
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="not_found",
+                        message=f"session not found: {sid}",
+                        details={"session_id": sid},
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        pack_id = str(req.get("pack_id") or "").strip()
+        pack_path = str(req.get("path") or req.get("pack_path") or "").strip()
+        cwd = _workspace_catalog_cwd(session_id=sid)
+        if pack_path:
+            validation = validate_expert_pack_path(Path(pack_path), scope="session")
+            if not validation.get("enabled", False):
+                raise HTTPException(
+                    status_code=400,
+                    detail=ErrorEnvelope(
+                        error=ErrorInfo(
+                            error="validation_error",
+                            message="expert pack path is invalid",
+                            details={
+                                "path": pack_path,
+                                "validation_errors": validation.get("validation_errors", []),
+                            },
+                            recoverable=True,
+                        )
+                    ).model_dump(exclude_none=True),
+                )
+            pack_wire = validation["pack"]
+            updated = app.state.sessions.update(
+                sid,
+                metadata_patch={
+                    "active_expert_pack_id": str(pack_wire.get("id") or ""),
+                    "active_expert_pack_version": str(pack_wire.get("version") or ""),
+                    "active_expert_pack_scope": "session",
+                    "active_expert_pack_definition_path": str(pack_wire.get("definition_path") or ""),
+                    "active_expert_pack_path": str(Path(pack_path).expanduser()),
+                },
+            )
+            _mirror_workspace_session(app, sid)
+            return {
+                "session_id": sid,
+                "workspace_id": getattr(sess, "workspace_id", ""),
+                "active_expert_pack_id": str(pack_wire.get("id") or ""),
+                "active_expert_pack_path": str(Path(pack_path).expanduser()),
+                "expert_pack": pack_wire,
+                "session": Session(**updated.to_wire()).model_dump(exclude_none=True) if updated else None,
+            }
+        if not pack_id:
+            raise HTTPException(
+                status_code=400,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="validation_error",
+                        message="pack_id or path is required",
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        pack = next((row for row in discover_expert_packs(cwd=cwd) if row.id == pack_id), None)
+        if pack is None:
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="not_found",
+                        message=f"expert pack not found: {pack_id}",
+                        details={"pack_id": pack_id, "session_id": sid},
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        updated = app.state.sessions.update(
+            sid,
+            metadata_patch={
+                "active_expert_pack_id": pack.id,
+                "active_expert_pack_version": pack.version,
+                "active_expert_pack_scope": pack.scope,
+                "active_expert_pack_definition_path": str(pack.manifest_path or pack.root),
+                "active_expert_pack_path": "",
+            },
+        )
+        _mirror_workspace_session(app, sid)
+        return {
+            "session_id": sid,
+            "workspace_id": getattr(sess, "workspace_id", ""),
+            "active_expert_pack_id": pack.id,
+            "expert_pack": pack.to_wire(),
+            "session": Session(**updated.to_wire()).model_dump(exclude_none=True) if updated else None,
+        }
+
     @app.get("/v1/agents", response_model=ListAgentsResponse)
-    async def list_agents(tier: Optional[int] = None) -> ListAgentsResponse:
+    async def list_agents(
+        tier: Optional[int] = None,
+        session_id: Optional[str] = None,
+        workspace_id: Optional[str] = None,
+    ) -> ListAgentsResponse:
         """SPEC §6.5 + v0.2 §4.3.1: optional ?tier=N filter.
 
         Combines built-in tier-1/2 experts with any user-registered
@@ -11309,7 +11622,7 @@ def build_app(
         so the TUI's sidebar groups consistently.
         """
 
-        rows = _agent_rows()
+        rows = _agent_rows(session_id=session_id or "", workspace_id=workspace_id or "")
         if tier is not None:
             rows = [a for a in rows if a.tier == tier]
         return ListAgentsResponse(agents=rows)

@@ -138,7 +138,7 @@ _PROFILE_POLICIES: dict[str, str] = {
         - Prefer enumerated choices over implicit reasoning.
         - If a required capability/tool/expert is absent, return a bounded
           failure or ask-user question instead of improvising.
-        - Keep planner outputs valid JSON when a schema is required.
+        - Return exactly one JSON object when a planner schema is required.
     """,
     "fine_tuned": """
         Fine-tuned profile:
