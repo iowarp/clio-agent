@@ -639,6 +639,73 @@ def _memory_search_response(
     )
 
 
+def _load_context_files(path: Path | None) -> dict[str, dict[str, dict[str, Any]]]:
+    """Load persisted context-file attachments keyed by session id."""
+
+    if path is None or not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    sessions = data.get("sessions", {}) if isinstance(data, Mapping) else {}
+    if not isinstance(sessions, Mapping):
+        return {}
+    loaded: dict[str, dict[str, dict[str, Any]]] = {}
+    for sid, rows in sessions.items():
+        if not isinstance(rows, Mapping):
+            continue
+        bucket: dict[str, dict[str, Any]] = {}
+        for path_key, row in rows.items():
+            if not isinstance(row, Mapping):
+                continue
+            path_value = str(row.get("path") or path_key or "").strip()
+            if not path_value:
+                continue
+            bucket[path_value] = dict(row) | {"path": path_value}
+        if bucket:
+            loaded[str(sid)] = bucket
+    return loaded
+
+
+def _flush_context_files(app: "FastAPI") -> None:
+    """Persist the current context-file ledger, if persistence is configured."""
+
+    path = getattr(app.state, "context_files_path", None)
+    if path is None:
+        return
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(
+        json.dumps({"sessions": app.state.context_files}, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    tmp.replace(path)
+
+
+def _delete_session_context_files(app: "FastAPI", session_id: str) -> None:
+    """Remove one session's context-file ledger from memory and disk."""
+
+    if session_id in app.state.context_files:
+        app.state.context_files.pop(session_id, None)
+        _flush_context_files(app)
+
+
+def _session_not_found(sid: str) -> HTTPException:
+    return HTTPException(
+        status_code=404,
+        detail=ErrorEnvelope(
+            error=ErrorInfo(
+                error="internal_error",
+                message=f"session not found: {sid}",
+                details={"session_id": sid},
+                recoverable=False,
+            )
+        ).model_dump(exclude_none=True),
+    )
+
+
 def _cancelled_error_info(
     sid: str,
     *,
@@ -1213,6 +1280,7 @@ async def _run_turn_in_background(
     # Plain text concat — keeps the agent.py interface untouched and
     # works regardless of which expert handles the turn.
     context_file_error: ErrorInfo | None = None
+    context_file_provenance = _context_file_turn_provenance(app, sid, status="prepared")
     memory_search_metadata: dict[str, Any] = {}
     try:
         enriched_text = _enrich_with_context_files(app, sid, user_text)
@@ -1225,6 +1293,7 @@ async def _run_turn_in_background(
     except _ContextFileAccessError as exc:
         enriched_text = user_text
         context_file_error = exc.error_info
+        context_file_provenance = _context_file_turn_provenance(app, sid, status="error")
     context_frame = _record_context_frame(
         app,
         sid,
@@ -1829,6 +1898,8 @@ async def _run_turn_in_background(
         assistant_metadata["tools_called"] = tools_called
     if expert_handoffs:
         assistant_metadata["expert_handoffs"] = expert_handoffs
+    if context_file_provenance["files"]:
+        assistant_metadata["context_files"] = context_file_provenance
     if memory_search_metadata:
         assistant_metadata["memory_search"] = memory_search_metadata
     # iowarp/clio-agent#6: when streaming actually emitted chunks,
@@ -2743,6 +2814,38 @@ def _validate_permission_policies(
     return clean, errors
 
 
+def _load_permission_policies(path: Path | None) -> list[dict[str, Any]]:
+    """Load persisted permission policies, ignoring invalid rows."""
+
+    if path is None or not path.exists():
+        return []
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    raw = data.get("policies", []) if isinstance(data, Mapping) else []
+    if not isinstance(raw, list):
+        return []
+    clean, _errors = _validate_permission_policies(raw)
+    return clean
+
+
+def _flush_permission_policies(app: "FastAPI") -> None:
+    """Persist the current permission policy list, if configured."""
+
+    path = getattr(app.state, "permission_policies_path", None)
+    if path is None:
+        return
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(
+        json.dumps({"policies": app.state.permission_policies}, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    tmp.replace(path)
+
+
 def _record_resolved_permission(
     app: "FastAPI",
     *,
@@ -2786,6 +2889,38 @@ def _record_resolved_permission(
             )
         )
     return pid
+
+
+def _append_permission_policy_from_resolution(
+    app: "FastAPI",
+    *,
+    row: Mapping[str, Any],
+    action: str,
+) -> dict[str, Any] | None:
+    """Persist allow_session/allow_workspace decisions as policy rules."""
+
+    if action not in {"allow_session", "allow_workspace"}:
+        return None
+    session_id = str(row.get("session_id") or "")
+    raw_tool_call = row.get("tool_call")
+    tool_call: Mapping[str, Any] = raw_tool_call if isinstance(raw_tool_call, Mapping) else {}
+    tool_name = str(tool_call.get("tool_name") or "*")
+    raw_args = tool_call.get("input")
+    args: Mapping[str, Any] = raw_args if isinstance(raw_args, Mapping) else {}
+    session = app.state.sessions.get(session_id) if session_id else None
+    workspace_id = str(getattr(session, "workspace_id", "") or "")
+    policy = {
+        "scope": "session" if action == "allow_session" else "workspace",
+        "scope_id": session_id if action == "allow_session" else workspace_id,
+        "tool_name_pattern": tool_name,
+        "action": "allow",
+        "created_from_permission_id": str(row.get("id") or ""),
+    }
+    path = _permission_path_from_args(args)
+    if path:
+        policy["path_pattern"] = path
+    app.state.permission_policies.append(policy)
+    return policy
 
 
 def _direct_permission_denied(
@@ -2947,6 +3082,16 @@ def _make_permission_gate(app: "FastAPI"):
             )
             return "deny"
         if policy_action in {"allow", "allow_session", "allow_workspace"}:
+            _record_resolved_permission(
+                app,
+                session_id=sid,
+                tool_name=name,
+                args=args,
+                status="auto_approved",
+                action="allow",
+                summary=f"destructive tool {name!r} allowed by permission policy",
+                reason=f"policy_{policy_action}",
+            )
             return "allow"
         if _is_safe_shell_diagnostic(name, args):
             return "allow"
@@ -3300,6 +3445,61 @@ def _stream_fallback_reason_capabilities() -> dict[str, dict[str, Any]]:
             key: list(value) if isinstance(value, list) else value for key, value in details.items()
         }
         for reason, details in _STREAM_FALLBACK_REASON_DEFINITIONS.items()
+    }
+
+
+_CAPABILITY_GAP_DEFINITIONS: dict[str, dict[str, Any]] = {
+    "voice": {
+        "status": "unsupported",
+        "advertised": False,
+        "category": "future_capability",
+        "description": (
+            "Voice input/output is reserved for future CLIO work and is not "
+            "wired to audio capture, transcription, or playback today."
+        ),
+        "client_behavior": "render_disabled",
+        "recovery_actions": ["use_text_input", "hide_or_disable_voice_controls"],
+        "related_endpoints": ["/v1/sessions/{sid}/voice/transcribe"],
+    },
+    "lsp": {
+        "status": "unsupported",
+        "advertised": False,
+        "category": "future_capability",
+        "description": (
+            "Language-server integration is outside the current CLIO GACT "
+            "surface; file and diff workflows are available instead."
+        ),
+        "client_behavior": "render_disabled",
+        "recovery_actions": ["use_files_and_diffs", "hide_or_disable_lsp_controls"],
+        "related_endpoints": ["/v1/lsp/*"],
+    },
+    "optimizer_command": {
+        "status": "unavailable",
+        "advertised": True,
+        "category": "deferred_command",
+        "description": (
+            "The /optimize slash command is kept visible as future CLIO "
+            "direction, but optimizer command execution is not wired yet."
+        ),
+        "client_behavior": "render_disabled",
+        "recovery_actions": [
+            "render_optimize_disabled",
+            "retry_after_optimizer_support_lands",
+        ],
+        "related_commands": ["/optimize"],
+        "related_endpoints": ["/v1/sessions/{sid}/commands/optimize"],
+    },
+}
+
+
+def _capability_gap_metadata() -> dict[str, dict[str, Any]]:
+    """Return CLIO capability gaps as client-renderable metadata."""
+
+    return {
+        name: {
+            key: list(value) if isinstance(value, list) else value for key, value in details.items()
+        }
+        for name, details in _CAPABILITY_GAP_DEFINITIONS.items()
     }
 
 
@@ -3974,6 +4174,37 @@ def _enrich_with_requested_memory_search(
         + "\n\n## User question\n\n"
         + user_text
     ), metadata
+
+
+def _context_file_turn_provenance(app: "FastAPI", sid: str, *, status: str) -> dict[str, Any]:
+    """Return non-secret provenance for context files attached to this turn."""
+
+    rows = list((app.state.context_files.get(sid, {}) or {}).values())
+    files: list[dict[str, Any]] = []
+    for row in rows:
+        path = str(row.get("path") or "")
+        if not path:
+            continue
+        mode = str(row.get("mode") or "read")
+        file_row: dict[str, Any] = {
+            "path": path,
+            "mode": mode,
+            "status": status,
+            "inline_policy": "metadata_only" if mode == "edit" else "inline_or_inspect",
+        }
+        for key in ("source", "workspace_id", "display_path", "resolved_path", "added_at"):
+            value = row.get(key)
+            if value:
+                file_row[key] = value
+        if row.get("size") is not None:
+            file_row["size"] = row.get("size")
+        files.append(file_row)
+    return {
+        "status": status,
+        "count": len(files),
+        "max_inline_bytes": _CTX_MAX_BYTES,
+        "files": files,
+    }
 
 
 _CTX_MAX_BYTES = 32 * 1024  # 32 KB cap per attached file
@@ -5026,7 +5257,8 @@ def build_app(
     # CLIO-BBBBBBBBBB22: per-session context files. Keyed by
     # session_id, each value is an ordered dict of
     # path -> ContextFile dict.
-    app.state.context_files = {}
+    app.state.context_files_path = session_store_path.parent / "context_files.json"
+    app.state.context_files = _load_context_files(app.state.context_files_path)
     # iowarp/clio-agent#331: per-turn context truth frames. These
     # capture what visible transcript/context attachments were
     # retained for a turn, plus model/agent/prompt provenance.
@@ -5056,8 +5288,9 @@ def build_app(
     # SPEC §6.11.b permission policies — list, not dict. Backends
     # consult this on every tool call to decide allow/deny/ask before
     # falling back to the per-tool permission_default. PUT replaces
-    # the whole list; in-memory.
-    app.state.permission_policies = []
+    # the whole list.
+    app.state.permission_policies_path = session_store_path.parent / "permission_policies.json"
+    app.state.permission_policies = _load_permission_policies(app.state.permission_policies_path)
     # iowarp/clio-agent#18: per-session task list (todo-style).
     # Keyed by session_id -> {task_id -> task dict}. In-memory.
     app.state.session_tasks = {}
@@ -5391,10 +5624,21 @@ def build_app(
                 x_clio_direct_delete_permissions=True,
                 x_clio_prompt_registry=True,
                 x_clio_context_frames=True,
+                x_clio_capability_gaps=_capability_gap_metadata(),
             ),
             transports=TransportFlags(events_sse=True, events_websocket=False),
             auth=AuthInfo(schemes=["trust_socket"], current="trust_socket"),
         )
+
+    @app.get("/v1/capability-gaps")
+    async def capability_gaps() -> dict[str, Any]:
+        """Return intentionally unsupported or future CLIO capability rows.
+
+        This keeps "not supported yet" affordances visible as ideas without
+        making clients infer support from missing routes or failed commands.
+        """
+
+        return {"capability_gaps": _capability_gap_metadata()}
 
     # ---- 501 stubs for the rest of the surface ---------------------------
     # Every route in the v0.2 contract that we haven't wired yet
@@ -5609,17 +5853,7 @@ def build_app(
     async def delete_session(sid: str) -> Response:
         sess = app.state.sessions.get(sid)
         if sess is None:
-            raise HTTPException(
-                status_code=404,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="internal_error",
-                        message=f"session not found: {sid}",
-                        details={"session_id": sid},
-                        recoverable=False,
-                    )
-                ).model_dump(exclude_none=True),
-            )
+            raise _session_not_found(sid)
         _guard_direct_destructive_action(
             app,
             session_id=sid,
@@ -5643,24 +5877,294 @@ def build_app(
                 ).model_dump(exclude_none=True),
             )
         _delete_session_messages(app, sid)
+        _delete_session_context_files(app, sid)
         return Response(status_code=204)
+
+    def _reject_rollback_while_active(sid: str, sess: Any) -> None:
+        if getattr(sess, "status", "") in {"running", "waiting_permission"}:
+            raise HTTPException(
+                status_code=409,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="conflict",
+                        message=f"session {sid} cannot be rolled back while {sess.status}",
+                        details={"session_id": sid, "status": sess.status},
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+
+    def _publish_rollback_events(
+        sid: str,
+        *,
+        operation: str,
+        deleted_ids: list[str],
+        session_payload: dict[str, Any],
+        target_message_id: str = "",
+        include_target: bool = False,
+    ) -> None:
+        for message_id in deleted_ids:
+            app.state.bus.publish(
+                Event(
+                    type="message.deleted",
+                    session_id=sid,
+                    payload={
+                        "message_id": message_id,
+                        "session_id": sid,
+                        "operation": operation,
+                    },
+                )
+            )
+        app.state.bus.publish(
+            Event(
+                type=f"session.{operation}",
+                session_id=sid,
+                payload={
+                    "session_id": sid,
+                    "deleted_message_ids": deleted_ids,
+                    "target_message_id": target_message_id,
+                    "include_target": include_target,
+                },
+            )
+        )
+        app.state.bus.publish(
+            Event(
+                type="session.updated",
+                session_id=sid,
+                payload=session_payload,
+            )
+        )
+
+    def _commit_rollback(
+        sid: str,
+        *,
+        operation: str,
+        kept_messages: list[Message],
+        deleted_messages: list[Message],
+        target_message_id: str = "",
+        include_target: bool = False,
+    ) -> dict[str, Any]:
+        _replace_session_messages(app, sid, kept_messages)
+        deleted_ids = [m.id for m in deleted_messages]
+        updated = app.state.sessions.update(
+            sid,
+            message_count=len(kept_messages),
+            status="idle",
+            metadata_patch={
+                "last_rollback": {
+                    "operation": operation,
+                    "deleted_message_ids": deleted_ids,
+                    "target_message_id": target_message_id,
+                    "include_target": include_target,
+                    "memory_scope": "gact_visible_transcript_only",
+                    "occurred_at": datetime.now(timezone.utc).isoformat(),
+                }
+            },
+        )
+        if updated is None:
+            raise _session_not_found(sid)
+        session_payload = Session(**updated.to_wire()).model_dump(exclude_none=True)
+        _publish_rollback_events(
+            sid,
+            operation=operation,
+            deleted_ids=deleted_ids,
+            session_payload=session_payload,
+            target_message_id=target_message_id,
+            include_target=include_target,
+        )
+        return {
+            "session_id": sid,
+            "operation": operation,
+            "deleted_message_ids": deleted_ids,
+            "deleted_messages": deleted_ids,
+            "reverted_message_ids": deleted_ids,
+            "message_count": len(kept_messages),
+            "memory_scope": "gact_visible_transcript_only",
+            "session": session_payload,
+        }
+
+    @app.post("/v1/sessions/{sid}/undo")
+    async def undo_session(sid: str, request: Request) -> dict[str, Any]:
+        sess = app.state.sessions.get(sid)
+        if sess is None:
+            raise _session_not_found(sid)
+        _reject_rollback_while_active(sid, sess)
+        try:
+            body = await request.json()
+        except json.JSONDecodeError:
+            body = {}
+        if body is None:
+            body = {}
+        if not isinstance(body, dict):
+            raise HTTPException(
+                status_code=422,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="validation_error",
+                        message="undo request body must be an object",
+                        details={"session_id": sid},
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        raw_count = body.get("count", body.get("message_count", 1))
+        try:
+            count = int(raw_count) if isinstance(raw_count, str | int | float) else 1
+        except (TypeError, ValueError):
+            count = 1
+        if count < 1:
+            raise HTTPException(
+                status_code=422,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="validation_error",
+                        message="undo count must be at least 1",
+                        details={"session_id": sid, "count": raw_count},
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        messages = list(app.state.messages.get(sid, []))
+        deleted = messages[-count:]
+        kept = messages[: max(0, len(messages) - count)]
+        _guard_direct_destructive_action(
+            app,
+            session_id=sid,
+            workspace_id=sess.workspace_id,
+            tool_name="gact.session.undo",
+            args={"session_id": sid, "count": count},
+            summary=f"undo last {count} message(s) in session {sid}",
+            reason="user_requested_session_undo",
+        )
+        return _commit_rollback(
+            sid,
+            operation="undo",
+            kept_messages=kept,
+            deleted_messages=deleted,
+        )
+
+    @app.post("/v1/sessions/{sid}/rewind")
+    async def rewind_session(sid: str, request: Request) -> dict[str, Any]:
+        sess = app.state.sessions.get(sid)
+        if sess is None:
+            raise _session_not_found(sid)
+        _reject_rollback_while_active(sid, sess)
+        try:
+            body = await request.json()
+        except json.JSONDecodeError:
+            body = {}
+        if not isinstance(body, dict):
+            raise HTTPException(
+                status_code=422,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="validation_error",
+                        message="rewind request body must be an object",
+                        details={"session_id": sid},
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        target_message_id = str(
+            body.get("message_id")
+            or body.get("target_message_id")
+            or body.get("to_message_id")
+            or ""
+        ).strip()
+        if not target_message_id:
+            raise HTTPException(
+                status_code=422,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="validation_error",
+                        message="rewind requires message_id",
+                        details={"session_id": sid},
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        include_target = bool(body.get("include_target", False))
+        messages = list(app.state.messages.get(sid, []))
+        target_index = next(
+            (index for index, message in enumerate(messages) if message.id == target_message_id),
+            -1,
+        )
+        if target_index < 0:
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="not_found",
+                        message=f"message not found: {target_message_id}",
+                        details={"session_id": sid, "message_id": target_message_id},
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        keep_end = target_index if include_target else target_index + 1
+        kept = messages[:keep_end]
+        deleted = messages[keep_end:]
+        _guard_direct_destructive_action(
+            app,
+            session_id=sid,
+            workspace_id=sess.workspace_id,
+            tool_name="gact.session.rewind",
+            args={
+                "session_id": sid,
+                "message_id": target_message_id,
+                "include_target": include_target,
+            },
+            summary=f"rewind session {sid} to message {target_message_id}",
+            reason="user_requested_session_rewind",
+        )
+        return _commit_rollback(
+            sid,
+            operation="rewind",
+            kept_messages=kept,
+            deleted_messages=deleted,
+            target_message_id=target_message_id,
+            include_target=include_target,
+        )
 
     # ---- /v1/permissions (BBB23) --------------------------------------
 
     @app.get("/v1/permissions")
-    async def list_permissions(session_id: str = "", status: str = "") -> dict[str, Any]:
+    async def list_permissions(
+        session_id: str = "",
+        status: str = "",
+        limit: int = 100,
+    ) -> dict[str, Any]:
         """List permission requests.
 
         ?session_id=<sid> narrows to a session; ?status=pending
-        hides resolved rows. Both are optional.
+        hides resolved rows; ?status=all returns the audit ledger.
         """
 
         rows = list(app.state.permissions.values())
+        total_before_filters = len(rows)
         if session_id:
             rows = [r for r in rows if r.get("session_id") == session_id]
-        if status:
+        total_after_session_filter = len(rows)
+        if status and status != "all":
             rows = [r for r in rows if r.get("status") == status]
-        return {"permissions": rows}
+        total_after_status_filter = len(rows)
+        rows.sort(key=lambda r: str(r.get("created_at") or ""), reverse=True)
+        if limit <= 0:
+            limit = 100
+        limit = min(limit, 500)
+        return {
+            "permissions": rows[:limit],
+            "metadata": {
+                "session_id": session_id,
+                "status": status or "all",
+                "limit": limit,
+                "total": total_after_status_filter,
+                "returned": min(total_after_status_filter, limit),
+                "truncated": total_after_status_filter > limit,
+                "total_before_filters": total_before_filters,
+                "total_after_session_filter": total_after_session_filter,
+            },
+        }
 
     @app.post("/v1/permissions/{pid}")
     async def respond_permission(pid: str, request: Request) -> Response:
@@ -5706,6 +6210,9 @@ def build_app(
             row["status"] = "resolved"
             row["action"] = action
             row["resolved_at"] = datetime.now(timezone.utc).isoformat()
+            policy = _append_permission_policy_from_resolution(app, row=row, action=action)
+            if policy is not None:
+                row["policy"] = policy
             # iowarp/clio-agent#7: wake any MCPToolBridge thread
             # waiting on this permission's event.
             evt = app.state.permission_events.pop(pid, None)
@@ -6159,9 +6666,23 @@ def build_app(
                     status_code=404,
                     detail=ErrorEnvelope(
                         error=ErrorInfo(
-                            error="not_found",
+                            error="context_file_error",
                             message=f"context file not found: {path}",
-                            details={"path": path},
+                            details={
+                                "path": path,
+                                "resolved_path": str(resolved),
+                                "display_path": resolved_info.get("display_path") or path,
+                                "workspace_id": resolved_info.get("workspace_id") or "",
+                                "source": resolved_info.get("source") or "",
+                                "mode": mode,
+                                "operation": "exists",
+                                "recovery_actions": [
+                                    "choose_existing_file",
+                                    "remove_context_file",
+                                    "retry",
+                                    "exit",
+                                ],
+                            },
                             recoverable=True,
                         )
                     ).model_dump(exclude_none=True),
@@ -6171,9 +6692,23 @@ def build_app(
                     status_code=422,
                     detail=ErrorEnvelope(
                         error=ErrorInfo(
-                            error="bad_request",
+                            error="context_file_error",
                             message=f"context path is not a file: {path}",
-                            details={"path": path},
+                            details={
+                                "path": path,
+                                "resolved_path": str(resolved),
+                                "display_path": resolved_info.get("display_path") or path,
+                                "workspace_id": resolved_info.get("workspace_id") or "",
+                                "source": resolved_info.get("source") or "",
+                                "mode": mode,
+                                "operation": "is_file",
+                                "recovery_actions": [
+                                    "choose_existing_file",
+                                    "remove_context_file",
+                                    "retry",
+                                    "exit",
+                                ],
+                            },
                             recoverable=True,
                         )
                     ).model_dump(exclude_none=True),
@@ -6188,6 +6723,7 @@ def build_app(
         }
         bucket = app.state.context_files.setdefault(sid, {})
         bucket[row["path"]] = row
+        _flush_context_files(app)
         app.state.bus.publish(
             Event(
                 type="context.file.added",
@@ -6250,6 +6786,7 @@ def build_app(
             )
         removed = bucket.pop(matched_key, None) if matched_key else None
         if removed is not None:
+            _flush_context_files(app)
             app.state.bus.publish(
                 Event(
                     type="context.file.removed",
@@ -6319,6 +6856,11 @@ def build_app(
             new_sess.id,
             [m.model_copy(deep=True) for m in src_msgs],
         )
+        source_context_files = app.state.context_files.get(sid, {})
+        if source_context_files:
+            app.state.context_files[new_sess.id] = {
+                key: dict(row) for key, row in source_context_files.items()
+            }
         app.state.sessions.update(new_sess.id, message_count=len(src_msgs))
         return JSONResponse(
             status_code=201,
@@ -8681,6 +9223,9 @@ def build_app(
             "session": Session(**sess.to_wire()).model_dump(exclude_none=True),
             "workspace": (Workspace(**ws.to_wire()).model_dump(exclude_none=True) if ws else None),
             "messages": [m.model_dump(exclude_none=True) for m in msgs],
+            "context_files": [
+                dict(row) for row in app.state.context_files.get(sid, {}).values()
+            ],
         }
 
     @app.post("/v1/sessions/import", response_model=Session)
@@ -8709,6 +9254,16 @@ def build_app(
             except Exception:
                 continue
         _replace_session_messages(app, new_sess.id, msg_rows)
+        context_files: dict[str, dict[str, Any]] = {}
+        for row in blob.get("context_files", []):
+            if not isinstance(row, Mapping):
+                continue
+            path = str(row.get("path") or "").strip()
+            if not path:
+                continue
+            context_files[path] = dict(row)
+        if context_files:
+            app.state.context_files[new_sess.id] = context_files
         cost_total = sum(float(m.get("cost_usd", 0.0) or 0.0) for m in blob.get("messages", []))
         in_total = sum(
             int((m.get("tokens") or {}).get("input", 0) or 0) for m in blob.get("messages", [])
@@ -9335,6 +9890,10 @@ def build_app(
             if sess_rec is not None:
                 messages = list(app.state.messages.get(session_id, []))
                 context_files = list((app.state.context_files.get(session_id, {}) or {}).values())
+                context_files_by_mode: dict[str, int] = {"edit": 0, "pin": 0, "read": 0}
+                for row in context_files:
+                    mode = str(row.get("mode") or "read")
+                    context_files_by_mode[mode] = context_files_by_mode.get(mode, 0) + 1
                 transcript_tokens = sum(_estimate_message_context_tokens(m) for m in messages)
                 context_file_tokens = sum(_estimate_context_file_tokens(row) for row in context_files)
                 tokens_retained = transcript_tokens + context_file_tokens
@@ -9356,6 +9915,7 @@ def build_app(
                     tokens_budget=tokens_budget,
                     profiles_attached=0,
                     context_files_attached=len(context_files),
+                    context_files_by_mode=context_files_by_mode,
                     compact_summaries=compact_summaries,
                     token_pressure=pressure,
                     threshold_state=threshold_state,
@@ -9799,7 +10359,7 @@ def build_app(
         }
 
     @app.get("/v1/workspaces/{wid}/files/read")
-    async def read_workspace_file(wid: str, path: str) -> JSONResponse:
+    async def read_workspace_file(wid: str, path: str) -> Response:
         """SPEC §6.9 — read one file's content.
 
         Serves the raw bytes (text/plain) so the TUI's preview panel
@@ -9892,7 +10452,7 @@ def build_app(
                     )
                 ).model_dump(exclude_none=True),
             ) from exc
-        return JSONResponse(
+        return Response(
             content=data.decode("utf-8", errors="replace"),
             media_type="text/plain; charset=utf-8",
         )
@@ -10875,7 +11435,7 @@ def build_app(
     #
     # Declarative allow/deny/ask rules consulted before the per-tool
     # permission_default. PUT replaces the whole list (matches the
-    # gact-tui client's PutPolicies shape). In-memory; no persistence.
+    # gact-tui client's PutPolicies shape) and persists it locally.
 
     @app.get("/v1/policies")
     async def list_policies() -> dict[str, Any]:
@@ -10919,6 +11479,7 @@ def build_app(
                 ).model_dump(exclude_none=True),
             )
         app.state.permission_policies = clean
+        _flush_permission_policies(app)
         return {"policies": clean}
 
     # ---- DELETE /v1/messages/{id} ------------------------------------

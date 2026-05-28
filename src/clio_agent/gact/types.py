@@ -96,6 +96,7 @@ class CapabilityFlags(BaseModel):
     x_clio_direct_delete_permissions: bool = False
     x_clio_prompt_registry: bool = False
     x_clio_context_frames: bool = False
+    x_clio_capability_gaps: dict[str, dict[str, Any]] = Field(default_factory=dict)
 
 
 class TransportFlags(BaseModel):
@@ -178,6 +179,7 @@ class SessionMemoryStats(BaseModel):
     tokens_budget: Optional[int] = None  # null = unbounded
     profiles_attached: int = 0
     context_files_attached: int = 0
+    context_files_by_mode: dict[str, int] = Field(default_factory=dict)
     compact_summaries: int = 0
     token_pressure: float = 0.0
     threshold_state: Literal["empty", "normal", "warning", "critical"] = "empty"
