@@ -120,6 +120,34 @@ def test_select_real_orchestrator_lane_cases() -> None:
     )
 
 
+def test_real_orchestrator_is_run_benchmark_default_lane() -> None:
+    assert bench.run_benchmark.__kwdefaults__["lane"] == "real_orchestrator"
+
+
+def test_all_lane_keeps_unfiltered_campaign() -> None:
+    cases = [
+        bench.DemoCase(
+            case_id=case_id,
+            title=case_id,
+            category="test",
+            prompt="prompt",
+            why="why",
+            expected="expected",
+            session_group="test",
+        )
+        for case_id in (
+            "reasoning_cross_file_triage_nanoagents",
+            "workflow_hdf5_overview",
+            "missing_hdf5_error",
+        )
+    ]
+
+    selected, missing = bench._select_cases(cases, lane="all", case_ids=())
+
+    assert missing == []
+    assert selected == cases
+
+
 def test_cancelled_case_passes_only_structured_cancelled_without_text() -> None:
     result = _result("claude_cancellation_surface")
 

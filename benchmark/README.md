@@ -42,17 +42,6 @@ Start a GACT backend with a real provider, then run:
 
 ```bash
 uv run python scripts/run_demo_benchmark.py \
-  --base-url http://127.0.0.1:17960 \
-  --data-dir tmp/clio-benchmark-data \
-  --output-jsonl tmp/clio-real-provider-benchmark.jsonl \
-  --report docs/ALCF_DEMO_BENCHMARK_REPORT.md
-```
-
-For the real-orchestrator lane that fails shortcut routes, run:
-
-```bash
-uv run python scripts/run_demo_benchmark.py \
-  --lane real_orchestrator \
   --require-lane-criteria \
   --base-url http://127.0.0.1:17960 \
   --data-dir tmp/clio-benchmark-data \
@@ -60,6 +49,18 @@ uv run python scripts/run_demo_benchmark.py \
   --report benchmark/REAL_ORCHESTRATOR_REPORT.md
 ```
 
-The `--report` path is still the historical default report target. New evidence
-can use a provider-specific path under `docs/` or a future report path under
-this `benchmark/` directory.
+The default lane is `real_orchestrator`; it fails shortcut route sources such as
+`guard`, `user_agent_keyword`, and `recovery`. To run the older broad all-cases
+campaign explicitly, use:
+
+```bash
+uv run python scripts/run_demo_benchmark.py \
+  --lane all \
+  --base-url http://127.0.0.1:17960 \
+  --data-dir tmp/clio-benchmark-data \
+  --output-jsonl tmp/clio-real-provider-benchmark.jsonl \
+  --report docs/ALCF_DEMO_BENCHMARK_REPORT.md
+```
+
+New strict benchmark evidence should normally stay under this `benchmark/`
+directory. Historical provider-specific reports can remain under `docs/`.

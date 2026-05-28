@@ -25,7 +25,6 @@ For an automated evidence run, use:
 
 ```bash
 uv run python scripts/run_demo_benchmark.py \
-  --lane real_orchestrator \
   --require-lane-criteria \
   --base-url http://127.0.0.1:17960 \
   --data-dir tmp/clio-benchmark-data \
