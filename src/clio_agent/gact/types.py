@@ -95,6 +95,7 @@ class CapabilityFlags(BaseModel):
     x_clio_stream_fallback_reasons: dict[str, dict[str, Any]] = Field(default_factory=dict)
     x_clio_direct_delete_permissions: bool = False
     x_clio_prompt_registry: bool = False
+    x_clio_expert_packs: bool = False
     x_clio_user_questions: bool = False
     x_clio_retry_attempts: bool = False
     x_clio_context_frames: bool = False
@@ -522,6 +523,8 @@ class PostMessageRequest(BaseModel):
     parts: list[Part] = Field(default_factory=list)
     text: Optional[str] = None
     model: Optional[ModelRef] = None
+    agent: Optional[AgentRef] = None
+    agent_id: Optional[str] = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
     def extract_text(self) -> str:
@@ -537,6 +540,30 @@ class PostMessageRequest(BaseModel):
                 return p.text
         return self.text or ""
 
+    def extract_agent_id(self) -> str:
+        """Return a per-turn agent override, if the caller supplied one."""
+
+        if self.agent is not None and self.agent.id:
+            return self.agent.id
+        return self.agent_id or ""
+
+
+class AgentCapabilityRef(BaseModel):
+    """Normalized agent-visible capability.
+
+    ``tools`` remains as the compact legacy list for existing clients. This
+    richer shape lets a TUI distinguish tools, skills, and slash commands
+    without scraping metadata or guessing from names.
+    """
+
+    kind: Literal["tool", "skill", "command"]
+    id: str
+    title: str = ""
+    description: str = ""
+    source: str = "builtin"
+    status: Literal["available", "unavailable", "unknown"] = "available"
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
 
 class AgentDef(BaseModel):
     """GACT §6.5 + v0.2 §4.3.1 multi-tier additions.
@@ -547,15 +574,23 @@ class AgentDef(BaseModel):
     """
 
     id: str
-    source: Literal["builtin", "user", "recipe", "skill"] = "builtin"
+    source: Literal["builtin", "user", "recipe", "skill", "expert_pack"] = "builtin"
     title: str
     description: str = ""
+    parent_id: str = ""
     system_prompt: str = ""
+    prompt_id: str = ""
+    prompt_profile: str = ""
     default_provider: str = ""
     default_model: str = ""
     parameters: dict[str, Any] = Field(default_factory=dict)
     tools: list[str] = Field(default_factory=list)
+    skills: list[str] = Field(default_factory=list)
+    commands: list[str] = Field(default_factory=list)
+    capability_refs: list[AgentCapabilityRef] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
+    enabled: bool = True
+    validation_errors: list[str] = Field(default_factory=list)
 
     # v0.2 — multi-tier routing
     tier: int = 0  # 0 = untagged, 1 = orchestrator, 2 = specialist, 3 = nanoagent

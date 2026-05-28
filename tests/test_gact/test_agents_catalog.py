@@ -90,6 +90,28 @@ def test_list_agents_includes_known_experts(client: TestClient) -> None:
         assert expected in ids, f"expected tier-2 agent {expected!r}; got {ids}"
 
 
+def test_agents_expose_normalized_capability_refs(client: TestClient) -> None:
+    resp = client.get("/v1/agents")
+    assert resp.status_code == 200
+    by_id = {row["id"]: row for row in resp.json()["agents"]}
+
+    main_refs = {
+        (ref["kind"], ref["id"]): ref
+        for ref in by_id["main"]["capability_refs"]
+    }
+    assert ("command", "/clear") in main_refs
+    assert main_refs[("command", "/optimize")]["status"] == "unavailable"
+    assert main_refs[("command", "/optimize")]["metadata"]["error"] == "not_implemented"
+    assert "/cache-stats" in by_id["main"]["commands"]
+
+    data_refs = {
+        (ref["kind"], ref["id"]): ref
+        for ref in by_id["data"]["capability_refs"]
+    }
+    assert ("tool", "hdf5_analyze_dataset") in data_refs
+    assert data_refs[("tool", "hdf5_analyze_dataset")]["status"] == "available"
+
+
 def test_list_agents_unknown_tier_returns_empty(client: TestClient) -> None:
     resp = client.get("/v1/agents?tier=99")
     assert resp.status_code == 200

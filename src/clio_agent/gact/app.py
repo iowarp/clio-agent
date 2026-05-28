@@ -776,7 +776,7 @@ def _session_agent_id(sess: Any) -> str:
 
 
 def _resolve_dynamic_agent(app: "FastAPI", agent_id: str) -> "AgentDef | None":
-    """Return a registered user/skill/builtin agent definition by id."""
+    """Return a registered user/skill/builtin/expert-pack agent definition by id."""
     if not agent_id:
         return None
     row = app.state.user_agents.get(agent_id)
@@ -785,10 +785,98 @@ def _resolve_dynamic_agent(app: "FastAPI", agent_id: str) -> "AgentDef | None":
     for skill in _load_skills_from_disk():
         if skill.id == agent_id:
             return skill
-    for agent in _builtin_agents():
-        if agent.id == agent_id:
-            return agent
+    expert_rows = validate_expert_hierarchy(_builtin_agents() + load_expert_packs())
+    for expert in expert_rows:
+        if expert.id == agent_id and expert.enabled:
+            return expert
     return None
+
+
+def _keyword_routed_user_agent(app: "FastAPI", text: str) -> "AgentDef | None":
+    """Return the best registered user agent whose keyword matches text.
+
+    This intentionally ignores auto-discovered skills for now. Skills can be
+    numerous and global, so implicit routing only uses agents the user
+    registered directly in this CLIO backend.
+    """
+
+    normalized = f" {re.sub(r'[^a-z0-9_+-]+', ' ', text.lower())} "
+    matches: list[tuple[int, str, AgentDef]] = []
+    for row in app.state.user_agents.list():
+        agent = AgentDef(**row.to_wire())
+        for raw_keyword in agent.keywords:
+            keyword = str(raw_keyword or "").strip().lower()
+            if not keyword:
+                continue
+            needle = f" {re.sub(r'[^a-z0-9_+-]+', ' ', keyword)} "
+            if needle.strip() and needle in normalized:
+                matches.append((len(keyword), agent.id, agent))
+                break
+    if not matches:
+        return None
+    matches.sort(key=lambda item: (-item[0], item[1]))
+    return matches[0][2]
+
+
+def _dynamic_agent_runtime_provenance(
+    app: "FastAPI",
+    agent_def: "AgentDef",
+    *,
+    execution_mode: str,
+) -> dict[str, Any]:
+    """Return non-secret provenance for the dynamic agent used this turn."""
+
+    active_model = _active_lm_model_ref(app)
+    provider_id = agent_def.default_provider or active_model.get("provider_id", "")
+    model_id = agent_def.default_model or active_model.get("model_id", "")
+    return {
+        "kind": "dynamic_agent",
+        "agent_id": agent_def.id,
+        "source": agent_def.source,
+        "title": agent_def.title,
+        "execution_mode": execution_mode,
+        "tools": list(agent_def.tools),
+        "prompt": {
+            "source": "agent_definition",
+            "has_system_prompt": bool(agent_def.system_prompt.strip()),
+        },
+        "model": {
+            "provider_id": provider_id,
+            "model_id": model_id,
+            "provider_source": (
+                "agent_default" if agent_def.default_provider else "global_active"
+            ),
+            "model_source": "agent_default" if agent_def.default_model else "global_active",
+            "fallback_to_global": not (agent_def.default_provider and agent_def.default_model),
+        },
+    }
+
+
+def _delegated_expert_agent_id(row: Mapping[str, Any]) -> str:
+    """Return the requested delegated expert id from a handoff row."""
+
+    for key in ("delegate_to", "agent_id", "target_agent_id", "expert"):
+        value = str(row.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _delegated_expert_prompt(row: Mapping[str, Any], fallback: str) -> str:
+    for key in ("question", "input", "prompt", "request"):
+        value = str(row.get(key) or "").strip()
+        if value:
+            return value
+    return fallback
+
+
+def _should_execute_delegated_handoff(row: Mapping[str, Any]) -> bool:
+    if row.get("execute") is False:
+        return False
+    if row.get("execute") is True or row.get("delegate_to") or row.get("target_agent_id"):
+        return True
+    status = str(row.get("status") or "").strip().lower()
+    return status in {"requested", "pending", "delegate", "delegated"}
 
 
 def _user_agent_param(agent_def: "AgentDef", name: str) -> Any:
@@ -1243,6 +1331,7 @@ async def _run_turn_in_background(
     sid: str,
     user_text: str,
     user_msg: "Message",
+    turn_agent_id: str = "",
 ) -> None:
     """Drive an agent turn off the request thread.
 
@@ -1272,6 +1361,9 @@ async def _run_turn_in_background(
     rationale = ""
     route_source = ""
     route_reason = ""
+    auto_routed_agent: "AgentDef | None" = None
+    agent_runtime: dict[str, Any] = {}
+    dynamic_agent_used: "AgentDef | None" = None
     execution_path = ""
     tools_called: list[dict[str, Any]] = []
     expert_handoffs: list[dict[str, Any]] = []
@@ -1491,6 +1583,154 @@ async def _run_turn_in_background(
             turn_cancel_event.set()
             raise _TurnTimedOut(turn_timeout_s) from exc
 
+    async def _run_dynamic_agent_sync(agent_def: "AgentDef", prompt: str) -> Any:
+        runner = _run_tool_user_agent if agent_def.tools else _run_prompt_user_agent
+        loop = asyncio.get_running_loop()
+        turn_context = contextvars.copy_context()
+        return await _await_turn_work(
+            loop.run_in_executor(
+                None,
+                lambda: turn_context.run(
+                    _run_dynamic_agent_compat,
+                    runner,
+                    app.state.agent,
+                    agent_def,
+                    prompt,
+                    sid,
+                    cancel_requested,
+                ),
+            ),
+        )
+
+    async def _execute_delegated_experts(
+        parent_agent: "AgentDef",
+        rows: list[dict[str, Any]],
+        *,
+        source_text: str,
+        depth: int = 0,
+        seen: Optional[set[str]] = None,
+    ) -> list[dict[str, Any]]:
+        if seen is None:
+            seen = {parent_agent.id}
+        if depth >= 3:
+            return [
+                {
+                    **row,
+                    "status": "skipped",
+                    "skip_reason": "max_delegate_depth_reached",
+                    "parent_id": parent_agent.id,
+                    "depth": depth,
+                }
+                for row in rows
+                if _should_execute_delegated_handoff(row)
+            ]
+
+        executed: list[dict[str, Any]] = []
+        for row in rows:
+            if not _should_execute_delegated_handoff(row):
+                executed.append(row)
+                continue
+            target_id = _delegated_expert_agent_id(row)
+            if not target_id:
+                executed.append(
+                    {
+                        **row,
+                        "status": "skipped",
+                        "skip_reason": "missing_delegate_target",
+                        "parent_id": parent_agent.id,
+                        "depth": depth,
+                    }
+                )
+                continue
+            target = _resolve_dynamic_agent(app, target_id)
+            if target is None or target.source != "expert_pack" or not target.enabled:
+                executed.append(
+                    {
+                        **row,
+                        "agent_id": target_id,
+                        "status": "failed",
+                        "error": "delegate_not_available",
+                        "parent_id": parent_agent.id,
+                        "depth": depth,
+                    }
+                )
+                continue
+            if target.parent_id != parent_agent.id:
+                executed.append(
+                    {
+                        **row,
+                        "agent_id": target_id,
+                        "status": "failed",
+                        "error": "delegate_parent_mismatch",
+                        "parent_id": parent_agent.id,
+                        "target_parent_id": target.parent_id,
+                        "depth": depth,
+                    }
+                )
+                continue
+            if target.id in seen:
+                executed.append(
+                    {
+                        **row,
+                        "agent_id": target_id,
+                        "status": "failed",
+                        "error": "delegate_cycle_detected",
+                        "parent_id": parent_agent.id,
+                        "depth": depth,
+                    }
+                )
+                continue
+
+            prompt = _delegated_expert_prompt(row, source_text)
+            execution_mode = "tool_agent" if target.tools else "prompt_agent"
+            try:
+                pred_child = await _run_dynamic_agent_sync(target, prompt)
+                output = str(getattr(pred_child, "answer", "") or "").strip()
+                child_rows: list[dict[str, Any]] = []
+                raw_child_rows = getattr(pred_child, "expert_handoffs", None) or []
+                if isinstance(raw_child_rows, list):
+                    child_rows = [
+                        dict(child)
+                        for child in raw_child_rows
+                        if isinstance(child, dict)
+                    ]
+                nested = await _execute_delegated_experts(
+                    target,
+                    child_rows,
+                    source_text=prompt,
+                    depth=depth + 1,
+                    seen={*seen, target.id},
+                )
+                executed.append(
+                    {
+                        **row,
+                        "agent_id": target.id,
+                        "parent_id": parent_agent.id,
+                        "status": "completed",
+                        "depth": depth,
+                        "execution_mode": execution_mode,
+                        "input": prompt,
+                        "output_summary": output[:500],
+                        "children": nested,
+                    }
+                )
+            except (_TurnCancelled, _TurnTimedOut):
+                raise
+            except Exception as exc:  # noqa: BLE001
+                executed.append(
+                    {
+                        **row,
+                        "agent_id": target.id,
+                        "parent_id": parent_agent.id,
+                        "status": "failed",
+                        "depth": depth,
+                        "execution_mode": execution_mode,
+                        "error": type(exc).__name__,
+                        "message": str(exc),
+                    }
+                )
+        return executed
+
     try:
         if context_file_error is not None:
             raise _ContextFileAccessError(context_file_error)
@@ -1505,7 +1745,18 @@ async def _run_turn_in_background(
                 )
             )
 
-        active_agent_id = _session_agent_id(sess)
+        session_agent_id = _session_agent_id(sess)
+        active_agent_id = turn_agent_id or session_agent_id
+        routing_mode = getattr(sess, "routing_mode", "auto") or "auto"
+        auto_routed_agent = None
+        if (
+            not turn_agent_id
+            and active_agent_id in {"", "main", "default"}
+            and routing_mode in {"auto", "experts"}
+        ):
+            auto_routed_agent = _keyword_routed_user_agent(app, user_text)
+            if auto_routed_agent is not None:
+                active_agent_id = auto_routed_agent.id
         from clio_agent.agent import cancellation_checker as _cancellation_checker  # noqa: PLC0415
 
         _refresh_argonne_lm_token(app.state.agent)
@@ -1514,7 +1765,14 @@ async def _run_turn_in_background(
             dynamic_agent = _resolve_dynamic_agent(app, active_agent_id)
             if dynamic_agent is None:
                 raise _UnsupportedSessionAgent(active_agent_id)
+            dynamic_agent_used = dynamic_agent
             runner = _run_tool_user_agent if dynamic_agent.tools else _run_prompt_user_agent
+            execution_mode = "tool_agent" if dynamic_agent.tools else "prompt_agent"
+            agent_runtime = _dynamic_agent_runtime_provenance(
+                app,
+                dynamic_agent,
+                execution_mode=execution_mode,
+            )
             module = (
                 _build_tool_user_agent_module(app.state.agent, dynamic_agent)
                 if dynamic_agent.tools
@@ -1557,7 +1815,7 @@ async def _run_turn_in_background(
             # rejects chat/none classifications. Keep the override scoped
             # to this turn context so concurrent sessions do not mutate the
             # shared ClioAgent instance.
-            routing_override = getattr(sess, "routing_mode", "auto") or "auto"
+            routing_override = routing_mode
             from clio_agent.agent import routing_mode_override as _routing_override  # noqa: PLC0415
 
             with _routing_override(routing_override), _cancellation_checker(cancel_requested):
@@ -1595,6 +1853,12 @@ async def _run_turn_in_background(
         rationale = getattr(pred, "routing_rationale", "")
         route_source = getattr(pred, "route_source", "") or ""
         route_reason = getattr(pred, "route_reason", "") or rationale
+        if auto_routed_agent is not None:
+            selected_agent = selected_agent or auto_routed_agent.id
+            keyword_reason = f"Matched registered user agent {auto_routed_agent.id!r} by keyword."
+            route_source = "user_agent_keyword"
+            rationale = rationale or keyword_reason
+            route_reason = keyword_reason
         pred_error_info = _coerce_error_info(getattr(pred, "error_info", None))
         if pred_error_info is not None:
             if pred_error_info.error == "cancelled":
@@ -1611,6 +1875,16 @@ async def _run_turn_in_background(
         raw_handoffs = getattr(pred, "expert_handoffs", None) or []
         if isinstance(raw_handoffs, list):
             expert_handoffs = [dict(row) for row in raw_handoffs if isinstance(row, dict)]
+        if (
+            dynamic_agent_used is not None
+            and dynamic_agent_used.source == "expert_pack"
+            and expert_handoffs
+        ):
+            expert_handoffs = await _execute_delegated_experts(
+                dynamic_agent_used,
+                expert_handoffs,
+                source_text=enriched_text,
+            )
         # Drain the per-session observer ledger so direct-tool short-
         # circuits (HDF5/Parquet/fs experts that bypass ReAct) still
         # report tools_called on the assistant message metadata.
@@ -1927,6 +2201,13 @@ async def _run_turn_in_background(
             ledger.pop(sid, None)
 
     assistant_metadata: dict[str, Any] = {}
+    if turn_agent_id:
+        assistant_metadata["agent_override"] = {
+            "requested_agent_id": turn_agent_id,
+            "session_agent_id": _session_agent_id(sess),
+            "effective_agent_id": selected_agent or turn_agent_id,
+            "scope": "turn",
+        }
     should_report_stream_provenance = bool(answer_text) or error_info is not None
     text_stream_source = (
         ("live" if streamed_assistant_part_id is not None else "batch")
@@ -1958,6 +2239,8 @@ async def _run_turn_in_background(
         assistant_metadata["context_files"] = context_file_provenance
     if memory_search_metadata:
         assistant_metadata["memory_search"] = memory_search_metadata
+    if agent_runtime:
+        assistant_metadata["agent_runtime"] = agent_runtime
     # iowarp/clio-agent#6: when streaming actually emitted chunks,
     # reuse its message_id + part_id so the deltas + final
     # message line up. Otherwise mint a fresh id (existing path).
@@ -4711,6 +4994,7 @@ def _builtin_agents() -> list[AgentDef]:
                 "specialists based on keyword heuristics + LM classifier."
             ),
             system_prompt=_BUILTIN_SYSTEM_PROMPTS["main"],
+            parent_id="",
             tier=1,
             specialization="orchestrator",
             metadata={
@@ -4731,6 +5015,9 @@ def _builtin_agents() -> list[AgentDef]:
                 source="builtin",
                 title=name,
                 description=description,
+                parent_id=str(
+                    caps.get("parent_id") or caps.get("metadata", {}).get("parent") or "main"
+                ),
                 system_prompt=_BUILTIN_SYSTEM_PROMPTS.get(expert_id, ""),
                 tools=tools,
                 tier=int(caps.get("tier", 2)),
@@ -5091,9 +5378,11 @@ def _tool_visible_to_for_catalog(tool_name: str) -> list[str]:
 from typing import Protocol
 
 from clio_agent.gact.events import Event, EventBus, heartbeat_payload
+from clio_agent.gact.expert_packs import load_expert_packs, validate_expert_hierarchy
 from clio_agent.gact.messages import MessageStore
 from clio_agent.gact.sessions import SessionStore, _default_store_path
 from clio_agent.gact.types import (
+    AgentCapabilityRef,
     AgentDef,
     AnswerUserQuestionRequest,
     AuthInfo,
@@ -5825,6 +6114,7 @@ def build_app(
                 x_clio_stream_fallback_reasons=_stream_fallback_reason_capabilities(),
                 x_clio_direct_delete_permissions=True,
                 x_clio_prompt_registry=True,
+                x_clio_expert_packs=True,
                 x_clio_user_questions=True,
                 x_clio_retry_attempts=True,
                 x_clio_context_frames=True,
@@ -9896,8 +10186,16 @@ def build_app(
         *,
         metadata: Optional[dict[str, Any]] = None,
         prev_status: str = "idle",
+        turn_agent_id: str = "",
     ) -> Message:
         now = time.time()
+        user_metadata = dict(metadata or {})
+        if turn_agent_id:
+            user_metadata["agent_override"] = {
+                "requested_agent_id": turn_agent_id,
+                "session_agent_id": _session_agent_id(sess),
+                "scope": "turn",
+            }
         user_msg = Message(
             id=_new_message_id("user"),
             session_id=sid,
@@ -9905,7 +10203,7 @@ def build_app(
             created_at=_iso_from_epoch(now),
             updated_at=_iso_from_epoch(now),
             parts=[Part(id=_new_part_id(), type="text", text=user_text)],
-            metadata=metadata or {},
+            metadata=user_metadata,
         )
 
         _append_session_message(app, sid, user_msg)
@@ -9929,7 +10227,9 @@ def build_app(
             )
         )
 
-        task = asyncio.create_task(_run_turn_in_background(app, sid, user_text, user_msg))
+        task = asyncio.create_task(
+            _run_turn_in_background(app, sid, user_text, user_msg, turn_agent_id)
+        )
         app.state.in_flight_turns[sid] = task
 
         def _drop_task(_t, _sid=sid) -> None:
@@ -10441,6 +10741,7 @@ def build_app(
                 )
 
         user_text = req.extract_text()
+        turn_agent_id = req.extract_agent_id().strip()
         if not user_text:
             raise HTTPException(
                 status_code=422,
@@ -10468,6 +10769,7 @@ def build_app(
             user_text,
             metadata=req.metadata,
             prev_status="idle",
+            turn_agent_id=turn_agent_id,
         )
         # background_tasks parameter is unused but kept on the
         # signature so existing callers (and FastAPI's docs) don't
@@ -10544,12 +10846,93 @@ def build_app(
 
     # ---- /v1/agents catalog (BBB10) + dynamic registry (#19) ---------
 
+    def _agent_with_capability_refs(agent_def: AgentDef) -> AgentDef:
+        """Attach normalized capability metadata to an AgentDef row."""
+
+        refs: list[AgentCapabilityRef] = [
+            AgentCapabilityRef(kind="tool", id=tool_id, title=tool_id, source="builtin")
+            for tool_id in agent_def.tools
+        ]
+        refs.extend(
+            AgentCapabilityRef(kind="skill", id=skill_id, title=skill_id, source=agent_def.source)
+            for skill_id in agent_def.skills
+        )
+        refs.extend(
+            AgentCapabilityRef(
+                kind="command",
+                id=command_id,
+                title=command_id,
+                source="builtin",
+            )
+            for command_id in agent_def.commands
+        )
+        refs.extend(agent_def.capability_refs)
+
+        if agent_def.id == "main":
+            command_ids = set(agent_def.commands)
+            for row in _BACKEND_COMMANDS:
+                command_id = row["id"]
+                if command_id in command_ids:
+                    continue
+                raw_status = row.get("status")
+                status: Literal["available", "unavailable", "unknown"] = (
+                    raw_status
+                    if raw_status in {"available", "unavailable", "unknown"}
+                    else "available"
+                )
+                refs.append(
+                    AgentCapabilityRef(
+                        kind="command",
+                        id=command_id,
+                        title=row.get("title", command_id),
+                        description=row.get("description", ""),
+                        source=row.get("source", "builtin"),
+                        status=status,
+                        metadata=(
+                            {"error": row["error"]}
+                            if row.get("error")
+                            else {}
+                        ),
+                    )
+                )
+                command_ids.add(command_id)
+            agent_def = agent_def.model_copy(update={"commands": sorted(command_ids)})
+
+        if agent_def.source == "skill" and agent_def.id not in agent_def.skills:
+            refs.append(
+                AgentCapabilityRef(
+                    kind="skill",
+                    id=agent_def.id,
+                    title=agent_def.title,
+                    description=agent_def.description,
+                    source=str(agent_def.metadata.get("skill_source", "skill")),
+                    metadata={
+                        "skill_path": agent_def.metadata.get("skill_path", ""),
+                        "skill_layout": agent_def.metadata.get("skill_layout", ""),
+                    },
+                )
+            )
+            agent_def = agent_def.model_copy(update={"skills": [*agent_def.skills, agent_def.id]})
+
+        deduped: list[AgentCapabilityRef] = []
+        seen: set[tuple[str, str]] = set()
+        for ref in refs:
+            key = (ref.kind, ref.id)
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(ref)
+
+        return agent_def.model_copy(update={"capability_refs": deduped})
+
     def _agent_rows() -> list[AgentDef]:
-        return (
+        rows = (
             _builtin_agents()
             + [AgentDef(**row.to_wire()) for row in app.state.user_agents.list()]
             + _load_skills_from_disk()
+            + load_expert_packs()
         )
+        return [_agent_with_capability_refs(row) for row in validate_expert_hierarchy(rows)]
 
     @app.get("/v1/agents", response_model=ListAgentsResponse)
     async def list_agents(tier: Optional[int] = None) -> ListAgentsResponse:
@@ -10623,7 +11006,7 @@ def build_app(
         req = dict(req)
         req["source"] = "user"
         agent = app.state.user_agents.upsert(req)
-        return AgentDef(**agent.to_wire())
+        return _agent_with_capability_refs(AgentDef(**agent.to_wire()))
 
     @app.put("/v1/agents/{agent_id}", response_model=AgentDef)
     async def update_agent(agent_id: str, req: dict[str, Any]) -> AgentDef:
@@ -10660,7 +11043,7 @@ def build_app(
         body["id"] = agent_id
         body["source"] = "user"
         agent = app.state.user_agents.upsert(body)
-        return AgentDef(**agent.to_wire())
+        return _agent_with_capability_refs(AgentDef(**agent.to_wire()))
 
     @app.delete("/v1/agents/{agent_id}")
     async def delete_agent(agent_id: str) -> Response:

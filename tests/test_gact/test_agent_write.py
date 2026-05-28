@@ -35,6 +35,17 @@ def test_post_agent_then_list(client: TestClient) -> None:
             "specialization": "code_editing",
             "keywords": ["review", "lint"],
             "tools": ["fs_read_file"],
+            "skills": ["code-review"],
+            "commands": ["/review"],
+            "capability_refs": [
+                {
+                    "kind": "command",
+                    "id": "/review",
+                    "title": "Review current change",
+                    "source": "user",
+                    "status": "available",
+                }
+            ],
         },
     )
     assert new.status_code == 201
@@ -46,6 +57,17 @@ def test_post_agent_then_list(client: TestClient) -> None:
     assert body["default_provider"] == "lm_studio"
     assert body["default_model"] == "qwopus3.5-9b-v3"
     assert body["parameters"] == {"temperature": 0.1, "max_tokens": 2048}
+    assert body["skills"] == ["code-review"]
+    assert body["commands"] == ["/review"]
+    assert (
+        body["capability_refs"][0]["kind"],
+        body["capability_refs"][0]["id"],
+        body["capability_refs"][0]["status"],
+    ) == ("tool", "fs_read_file", "available")
+    assert any(
+        ref["kind"] == "command" and ref["id"] == "/review"
+        for ref in body["capability_refs"]
+    )
 
     # GET /v1/agents now includes it (and the built-ins).
     rows = client.get("/v1/agents").json()["agents"]
@@ -55,6 +77,8 @@ def test_post_agent_then_list(client: TestClient) -> None:
     listed = next(a for a in rows if a["id"] == "code_reviewer")
     assert listed["system_prompt"] == "Review the diff and report correctness issues."
     assert listed["default_model"] == "qwopus3.5-9b-v3"
+    assert listed["skills"] == ["code-review"]
+    assert listed["commands"] == ["/review"]
 
 
 def test_put_agent_replaces_existing(client: TestClient) -> None:
@@ -138,6 +162,8 @@ def test_persistence_round_trip(tmp_path: Path) -> None:
             "default_provider": "openai",
             "default_model": "gpt-4o-mini",
             "parameters": {"temperature": 0},
+            "skills": ["persisted-skill"],
+            "commands": ["/persisted"],
         },
     )
     c2 = TestClient(build_app(sessions_path=tmp_path / "s.json"))
@@ -147,6 +173,8 @@ def test_persistence_round_trip(tmp_path: Path) -> None:
     assert restored["default_provider"] == "openai"
     assert restored["default_model"] == "gpt-4o-mini"
     assert restored["parameters"] == {"temperature": 0}
+    assert restored["skills"] == ["persisted-skill"]
+    assert restored["commands"] == ["/persisted"]
 
 
 def test_builtin_agents_surface_prompts(client: TestClient) -> None:
@@ -185,6 +213,7 @@ def test_skill_agents_surface_prompt_and_model(monkeypatch, tmp_path: Path) -> N
     assert agent.default_provider == "lm_studio"
     assert agent.default_model == "qwopus3.5-9b-v3"
     assert agent.tools == ["fs_read_file", "parquet_analyze_schema"]
+    assert agent.skills == []
 
 
 def test_directory_skill_layouts_surface_as_skill_agents(monkeypatch, tmp_path: Path) -> None:
