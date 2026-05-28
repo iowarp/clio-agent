@@ -94,6 +94,23 @@ def test_prompt_render_reports_unknown_placeholder(client: TestClient) -> None:
     assert "unknown render placeholder: unknown.placeholder" in prompt["validation_errors"]
 
 
+def test_prompt_validate_and_reload_endpoints(client: TestClient) -> None:
+    invalid = client.post(
+        "/v1/prompts/clio.validate_me/validate",
+        json={"profile": "default", "text": "Bad {{ not.allowed }}"},
+    )
+
+    assert invalid.status_code == 200, invalid.text
+    assert invalid.json()["enabled"] is False
+    assert "unknown render placeholder: not.allowed" in invalid.json()["validation_errors"]
+
+    reload_resp = client.post("/v1/prompts/reload", json={})
+
+    assert reload_resp.status_code == 200, reload_resp.text
+    assert "clio.chat" in reload_resp.json()["reload"]["prompt_ids"]
+    assert reload_resp.json()["reload"]["prompt_count"] >= 1
+
+
 def test_put_prompt_saves_external_profile_and_resolution_uses_it(client: TestClient) -> None:
     resp = client.put(
         "/v1/prompts/clio.chat",
@@ -129,6 +146,129 @@ def test_put_prompt_rejects_invalid_profile(client: TestClient) -> None:
 
     assert resp.status_code == 422
     assert resp.json()["error"]["error"] == "bad_request"
+
+
+def test_session_prompt_override_does_not_leak_to_other_sessions(tmp_path: Path) -> None:
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    with TestClient(app) as c:
+        sid_a = c.post("/v1/sessions", json={"title": "A"}).json()["id"]
+        sid_b = c.post("/v1/sessions", json={"title": "B"}).json()["id"]
+        saved = c.put(
+            "/v1/prompts/clio.chat",
+            json={
+                "scope": "session",
+                "session_id": sid_a,
+                "profile": "default",
+                "text": "Session A chat prompt.",
+            },
+        )
+        assert saved.status_code == 200, saved.text
+
+        prompt_a = c.get(
+            "/v1/prompts/clio.chat",
+            params={"session_id": sid_a},
+        ).json()["prompt"]
+        prompt_b = c.get(
+            "/v1/prompts/clio.chat",
+            params={"session_id": sid_b},
+        ).json()["prompt"]
+
+    assert prompt_a["text"] == "Session A chat prompt."
+    assert prompt_a["scope"] == "session"
+    assert "Session A chat prompt." not in prompt_b["text"]
+
+
+def test_workspace_prompt_override_uses_workspace_root(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    with TestClient(app) as c:
+        wid = c.post(
+            "/v1/workspaces",
+            json={
+                "name": "Workspace",
+                "root_path": str(workspace),
+                "storage_root": str(workspace / ".clio"),
+            },
+        ).json()["id"]
+        saved = c.put(
+            "/v1/prompts/clio.chat",
+            json={
+                "scope": "workspace",
+                "workspace_id": wid,
+                "profile": "default",
+                "text": "Workspace chat prompt.",
+            },
+        )
+        assert saved.status_code == 200, saved.text
+        prompt = c.get(
+            "/v1/prompts/clio.chat",
+            params={"workspace_id": wid},
+        ).json()["prompt"]
+
+    assert (workspace / ".clio" / "prompts" / "clio.chat--default.md").exists()
+    assert prompt["text"] == "Workspace chat prompt."
+    assert prompt["scope"] == "workspace"
+
+
+def test_active_expert_pack_prompts_feed_agent_catalog_and_render_context(
+    tmp_path: Path,
+) -> None:
+    pack = tmp_path / "session-pack"
+    (pack / "experts").mkdir(parents=True)
+    (pack / "prompts").mkdir()
+    pack.joinpath("clio-pack.yaml").write_text(
+        """id: science-pack
+version: 0.1.0
+title: Science Pack
+""",
+        encoding="utf-8",
+    )
+    pack.joinpath("prompts", "science.root.md").write_text(
+        """---
+id: science.root
+profile: heavy
+provider: openai
+model: gpt-5.1
+---
+Use the science pack root prompt.
+""",
+        encoding="utf-8",
+    )
+    pack.joinpath("experts", "science.md").write_text(
+        """---
+id: science
+title: Science Root
+parent_id: main
+tier: 2
+prompt_id: science.root
+prompt_profile: heavy
+---
+Inline prompt should be replaced.
+""",
+        encoding="utf-8",
+    )
+
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    with TestClient(app) as c:
+        sid = c.post("/v1/sessions", json={"title": "science"}).json()["id"]
+        activated = c.post(
+            f"/v1/sessions/{sid}/expert-pack",
+            json={"path": str(pack)},
+        )
+        assert activated.status_code == 200, activated.text
+        agent = c.get("/v1/agents/science", params={"session_id": sid}).json()
+        rendered = c.post(
+            "/v1/prompts/clio.main.planner/render",
+            json={"session_id": sid},
+        ).json()["prompt"]
+
+    assert agent["system_prompt"] == "Use the science pack root prompt."
+    assert agent["default_provider"] == "openai"
+    assert agent["default_model"] == "gpt-5.1"
+    assert agent["metadata"]["prompt_resolution"]["scope"] == "session_pack"
+    assert "- science: Science Root" in rendered["text"]
+    assert "science-pack" in rendered["text"]
 
 
 def test_user_agent_runtime_uses_resolved_prompt_profile(

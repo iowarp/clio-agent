@@ -413,6 +413,16 @@ class PromptRegistry:
             raise ValueError(f"prompt was not saved: {clean_id}")
         return row
 
+    def reload(self) -> dict[str, Any]:
+        """Clear cached packaged prompts and return a fresh registry summary."""
+        self._builtin_cache = None
+        definitions = self._load_all()
+        return {
+            "prompt_count": len(definitions),
+            "prompt_ids": sorted(definitions),
+            "sources": [{"scope": source.scope, "root": str(source.root)} for source in self.sources],
+        }
+
     def _load_all(self) -> dict[str, PromptDefinition]:
         definitions = {pid: _clone_definition(row) for pid, row in self._builtins().items()}
         for source in self.sources:
