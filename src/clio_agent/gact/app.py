@@ -55,7 +55,7 @@ from clio_agent.gact.workspace_scope import (
     session_scope_label,
     workspace_scope,
 )
-from clio_agent.prompts import PromptRegistry, PromptSource
+from clio_agent.prompts import PromptRegistry, PromptSource, parse_prompt_text
 from clio_agent.tools.file_policy import validate_write_path
 from clio_agent.tools.fs_write import write_text_with_policy
 
@@ -984,22 +984,31 @@ def _merge_agent_def_rows(rows: list["AgentDef"]) -> list["AgentDef"]:
     return list(merged.values())
 
 
-def _resolve_dynamic_agent(app: "FastAPI", agent_id: str) -> "AgentDef | None":
+def _resolve_dynamic_agent(
+    app: "FastAPI",
+    agent_id: str,
+    *,
+    prompt_registry: PromptRegistry | None = None,
+) -> "AgentDef | None":
     """Return a registered user/skill/builtin/expert-pack agent definition by id."""
     if not agent_id:
         return None
     row = app.state.user_agents.get(agent_id)
     if row is not None:
-        return _apply_prompt_registry_to_agent(app, AgentDef(**row.to_wire()))
+        return _apply_prompt_registry_to_agent(
+            app,
+            AgentDef(**row.to_wire()),
+            prompt_registry=prompt_registry,
+        )
     for skill in _load_skills_from_disk():
         if skill.id == agent_id:
-            return _apply_prompt_registry_to_agent(app, skill)
+            return _apply_prompt_registry_to_agent(app, skill, prompt_registry=prompt_registry)
     expert_rows = validate_expert_hierarchy(
         _merge_agent_def_rows(_builtin_agents() + load_expert_packs())
     )
     for expert in expert_rows:
         if expert.id == agent_id and expert.enabled:
-            return _apply_prompt_registry_to_agent(app, expert)
+            return _apply_prompt_registry_to_agent(app, expert, prompt_registry=prompt_registry)
     return None
 
 
@@ -1009,14 +1018,16 @@ def _agent_prompt_request(agent_def: "AgentDef") -> tuple[str, str]:
     metadata = agent_def.metadata if isinstance(agent_def.metadata, Mapping) else {}
     params = agent_def.parameters if isinstance(agent_def.parameters, Mapping) else {}
     prompt_id = str(
-        metadata.get("prompt_id")
+        getattr(agent_def, "prompt_id", "")
+        or metadata.get("prompt_id")
         or metadata.get("prompt")
         or params.get("prompt_id")
         or params.get("prompt")
         or ""
     ).strip()
     prompt_profile = str(
-        metadata.get("prompt_profile")
+        getattr(agent_def, "prompt_profile", "")
+        or metadata.get("prompt_profile")
         or metadata.get("profile")
         or params.get("prompt_profile")
         or params.get("profile")
@@ -1044,13 +1055,18 @@ def _prompt_resolution_metadata(resolved: Any, *, requested_profile: str = "") -
     }
 
 
-def _apply_prompt_registry_to_agent(app: "FastAPI", agent_def: "AgentDef") -> "AgentDef":
+def _apply_prompt_registry_to_agent(
+    app: "FastAPI",
+    agent_def: "AgentDef",
+    *,
+    prompt_registry: PromptRegistry | None = None,
+) -> "AgentDef":
     """Resolve an agent's prompt registry reference into runtime prompt text."""
 
     prompt_id, prompt_profile = _agent_prompt_request(agent_def)
     if not prompt_id:
         return agent_def
-    registry = getattr(app.state, "prompt_registry", None)
+    registry = prompt_registry or getattr(app.state, "prompt_registry", None)
     if registry is None:
         return agent_def
     resolved = registry.resolve(prompt_id, profile=prompt_profile)
@@ -2142,7 +2158,17 @@ async def _run_turn_in_background(
         _refresh_argonne_lm_token(app.state.agent)
 
         if active_agent_id not in _EXECUTABLE_SESSION_AGENT_IDS:
-            dynamic_agent = _resolve_dynamic_agent(app, active_agent_id)
+            prompt_registry_factory = getattr(app.state, "prompt_registry_for_request", None)
+            prompt_registry = (
+                prompt_registry_factory(session_id=sid)
+                if callable(prompt_registry_factory)
+                else None
+            )
+            dynamic_agent = _resolve_dynamic_agent(
+                app,
+                active_agent_id,
+                prompt_registry=prompt_registry,
+            )
             if dynamic_agent is None:
                 raise _UnsupportedSessionAgent(active_agent_id)
             prompt_resolution = dict(dynamic_agent.metadata.get("prompt_resolution") or {})
@@ -6534,8 +6560,132 @@ def build_app(
 
     # ---- /v1/prompts (CLIO prompt registry) ------------------------------
 
+    def _prompt_workspace_root(workspace_id: str = "", session_id: str = "") -> Path:
+        wid = workspace_id
+        if session_id:
+            sess = app.state.sessions.get(session_id)
+            if sess is not None:
+                wid = wid or str(getattr(sess, "workspace_id", "") or "")
+        if wid:
+            ws = app.state.workspaces.get(wid)
+            if ws is not None:
+                root_path = str(getattr(ws, "root_path", "") or "")
+                if root_path:
+                    return Path(root_path).expanduser()
+        return Path.cwd()
+
+    def _active_prompt_pack_path(session_id: str = "") -> Path | None:
+        if not session_id:
+            return None
+        sess = app.state.sessions.get(session_id)
+        if sess is None:
+            return None
+        metadata = getattr(sess, "metadata", {}) or {}
+        if not isinstance(metadata, Mapping):
+            return None
+        raw = str(metadata.get("active_expert_pack_path") or "").strip()
+        return Path(raw).expanduser() if raw else None
+
+    def _prompt_sources_for_request(
+        *,
+        session_id: str = "",
+        workspace_id: str = "",
+    ) -> list[PromptSource]:
+        cwd = _prompt_workspace_root(workspace_id=workspace_id, session_id=session_id)
+        sources = [
+            PromptSource("global", prompt_write_root),
+        ]
+        for pack in discover_expert_packs(cwd=cwd):
+            prompt_root = pack.root / "prompts"
+            if prompt_root.is_dir():
+                sources.append(PromptSource(f"{pack.scope}_pack", prompt_root))
+        sources.append(PromptSource("workspace", cwd / ".clio" / "prompts"))
+        active_pack_path = _active_prompt_pack_path(session_id)
+        if active_pack_path is not None and (active_pack_path / "prompts").is_dir():
+            sources.append(PromptSource("session_pack", active_pack_path / "prompts"))
+        if session_id:
+            sources.append(PromptSource("session", prompt_write_root.parent / "session-prompts" / session_id))
+        return sources
+
+    def _prompt_write_root_for_request(
+        *,
+        scope: str,
+        session_id: str = "",
+        workspace_id: str = "",
+    ) -> Path:
+        if scope == "session":
+            if not session_id:
+                raise ValueError("session_id is required for session prompt writes")
+            return prompt_write_root.parent / "session-prompts" / session_id
+        if scope == "workspace":
+            cwd = _prompt_workspace_root(workspace_id=workspace_id, session_id=session_id)
+            return cwd / ".clio" / "prompts"
+        if scope in {"global", "user", ""}:
+            return prompt_write_root
+        raise ValueError("scope must be global, workspace, or session")
+
+    def _prompt_registry_for_request(
+        *,
+        session_id: str = "",
+        workspace_id: str = "",
+        write_scope: str = "global",
+    ) -> PromptRegistry:
+        sources = _prompt_sources_for_request(session_id=session_id, workspace_id=workspace_id)
+        return PromptRegistry(
+            sources=sources,
+            builtins=app.state.prompt_registry._builtins(),
+            write_root=_prompt_write_root_for_request(
+                scope=write_scope,
+                session_id=session_id,
+                workspace_id=workspace_id,
+            ),
+        )
+
+    app.state.prompt_registry_for_request = _prompt_registry_for_request
+
+    def _prompt_render_context_for_request(
+        *,
+        session_id: str = "",
+        workspace_id: str = "",
+    ) -> dict[str, str]:
+        context = _prompt_render_context(app)
+        if session_id or workspace_id:
+            try:
+                agents = [row for row in _agent_rows(session_id=session_id, workspace_id=workspace_id) if row.enabled]
+                by_parent: dict[str, list[AgentDef]] = {}
+                for agent in agents:
+                    by_parent.setdefault(agent.parent_id or "", []).append(agent)
+
+                def render_tree(parent_id: str = "", depth: int = 0) -> list[str]:
+                    lines: list[str] = []
+                    for agent in sorted(by_parent.get(parent_id, []), key=lambda row: (row.tier, row.id)):
+                        indent = "  " * depth
+                        detail = f" - {agent.description}" if agent.description else ""
+                        lines.append(f"{indent}- {agent.id}: {agent.title}{detail}")
+                        lines.extend(render_tree(agent.id, depth + 1))
+                    return lines
+
+                context["agents.available_tree"] = "\n".join(render_tree()) or "(no enabled experts)"
+                context["agents.available_flat"] = "\n".join(
+                    f"- {agent.id}: {agent.title}" for agent in sorted(agents, key=lambda row: row.id)
+                ) or "(no enabled experts)"
+            except Exception:
+                pass
+            if session_id:
+                pack_id = ""
+                sess = app.state.sessions.get(session_id)
+                if sess is not None:
+                    metadata = getattr(sess, "metadata", {}) or {}
+                    if isinstance(metadata, Mapping):
+                        pack_id = str(metadata.get("active_expert_pack_id") or "").strip()
+                context["session.active_pack"] = pack_id or "(no active expert pack)"
+        return context
+
     @app.get("/v1/prompts")
-    async def list_prompts() -> dict[str, Any]:
+    async def list_prompts(
+        session_id: Optional[str] = None,
+        workspace_id: Optional[str] = None,
+    ) -> dict[str, Any]:
         """List built-in and external prompt definitions.
 
         This is a CLIO vendor surface rather than a core GACT v0.2 route. The
@@ -6543,12 +6693,28 @@ def build_app(
         provenance without knowing where prompt files live on disk.
         """
 
-        rows = app.state.prompt_registry.list()
-        return {"prompts": [asdict(row) for row in rows]}
+        registry = _prompt_registry_for_request(
+            session_id=session_id or "",
+            workspace_id=workspace_id or "",
+        )
+        rows = registry.list()
+        return {
+            "prompts": [asdict(row) for row in rows],
+            "sources": [{"scope": source.scope, "root": str(source.root)} for source in registry.sources],
+        }
 
     @app.get("/v1/prompts/{prompt_id:path}")
-    async def get_prompt(prompt_id: str, profile: str = "") -> dict[str, Any]:
-        resolved = app.state.prompt_registry.resolve(prompt_id, profile=profile)
+    async def get_prompt(
+        prompt_id: str,
+        profile: str = "",
+        session_id: Optional[str] = None,
+        workspace_id: Optional[str] = None,
+    ) -> dict[str, Any]:
+        registry = _prompt_registry_for_request(
+            session_id=session_id or "",
+            workspace_id=workspace_id or "",
+        )
+        resolved = registry.resolve(prompt_id, profile=profile)
         if resolved is None:
             raise HTTPException(
                 status_code=404,
@@ -6572,12 +6738,18 @@ def build_app(
         if not isinstance(body, dict):
             body = {}
         requested_profile = str(body.get("profile") or profile or "")
+        session_id = str(body.get("session_id") or "")
+        workspace_id = str(body.get("workspace_id") or "")
         context_override = body.get("context")
-        context = _prompt_render_context(app)
+        registry = _prompt_registry_for_request(session_id=session_id, workspace_id=workspace_id)
+        context = _prompt_render_context_for_request(
+            session_id=session_id,
+            workspace_id=workspace_id,
+        )
         if isinstance(context_override, Mapping):
             for key, value in context_override.items():
                 context[str(key)] = str(value)
-        rendered = app.state.prompt_registry.render(
+        rendered = registry.render(
             prompt_id,
             profile=requested_profile,
             context=context,
@@ -6595,6 +6767,62 @@ def build_app(
                 ).model_dump(exclude_none=True),
             )
         return {"prompt": asdict(rendered)}
+
+    @app.post("/v1/prompts/{prompt_id:path}/validate")
+    async def validate_prompt(prompt_id: str, request: Request) -> dict[str, Any]:
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        if not isinstance(body, dict):
+            body = {}
+        text = str(body.get("text") or "")
+        profile = str(body.get("profile") or "default")
+        if text.strip():
+            rendered = f"---\nid: {prompt_id}\nprofile: {profile}\n---\n{text}"
+            parsed = parse_prompt_text(rendered, scope="validation", source_path="<request>")
+            return {
+                "enabled": parsed.enabled,
+                "validation_errors": parsed.validation_errors,
+                "prompt": asdict(parsed),
+            }
+        registry = _prompt_registry_for_request(
+            session_id=str(body.get("session_id") or ""),
+            workspace_id=str(body.get("workspace_id") or ""),
+        )
+        row = registry.get(prompt_id)
+        if row is None:
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="not_found",
+                        message=f"prompt not found: {prompt_id}",
+                        details={"prompt_id": prompt_id},
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        return {
+            "enabled": row.enabled,
+            "validation_errors": row.validation_errors,
+            "prompt": asdict(row),
+        }
+
+    @app.post("/v1/prompts/reload")
+    async def reload_prompts(request: Request) -> dict[str, Any]:
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        if not isinstance(body, dict):
+            body = {}
+        app.state.prompt_registry.reload()
+        registry = _prompt_registry_for_request(
+            session_id=str(body.get("session_id") or ""),
+            workspace_id=str(body.get("workspace_id") or ""),
+        )
+        return {"reload": registry.reload()}
 
     @app.put("/v1/prompts/{prompt_id:path}")
     async def save_prompt(prompt_id: str, request: Request) -> dict[str, Any]:
@@ -6617,8 +6845,16 @@ def build_app(
                     )
                 ).model_dump(exclude_none=True),
             )
+        session_id = str(body.get("session_id") or "")
+        workspace_id = str(body.get("workspace_id") or "")
+        scope = str(body.get("scope") or "global")
         try:
-            row = app.state.prompt_registry.save(
+            registry = _prompt_registry_for_request(
+                session_id=session_id,
+                workspace_id=workspace_id,
+                write_scope=scope,
+            )
+            row = registry.save(
                 prompt_id,
                 text=text,
                 profile=str(body.get("profile") or "default"),
@@ -11430,8 +11666,16 @@ def build_app(
             + load_expert_packs(cwd=cwd, pack_id=active_pack_id)
             + explicit_session_rows
         )
+        prompt_registry = _prompt_registry_for_request(
+            session_id=session_id,
+            workspace_id=workspace_id,
+        )
         return [
-            _apply_prompt_registry_to_agent(app, _agent_with_capability_refs(row))
+            _apply_prompt_registry_to_agent(
+                app,
+                _agent_with_capability_refs(row),
+                prompt_registry=prompt_registry,
+            )
             for row in validate_expert_hierarchy(_merge_agent_def_rows(rows))
         ]
 
@@ -11628,10 +11872,14 @@ def build_app(
         return ListAgentsResponse(agents=rows)
 
     @app.get("/v1/agents/{agent_id}", response_model=AgentDef)
-    async def get_agent(agent_id: str) -> AgentDef:
+    async def get_agent(
+        agent_id: str,
+        session_id: Optional[str] = None,
+        workspace_id: Optional[str] = None,
+    ) -> AgentDef:
         """SPEC §6.5 detail endpoint for built-in/user/skill agents."""
 
-        for row in _agent_rows():
+        for row in _agent_rows(session_id=session_id or "", workspace_id=workspace_id or ""):
             if row.id == agent_id:
                 return row
         raise HTTPException(
