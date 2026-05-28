@@ -23,6 +23,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from scripts.create_benchmark_data import create_benchmark_data
 
+_REAL_ORCHESTRATOR_FORBIDDEN_SOURCES = ("guard", "user_agent_keyword", "recovery")
+
 
 @dataclass(frozen=True)
 class DemoCase:
@@ -55,6 +57,7 @@ class DemoCase:
     cancel_after_s: float = 0.0
     expects_cancelled: bool = False
     turn_agent_id: str = ""
+    forbidden_route_sources: tuple[str, ...] = ()
 
 
 @dataclass
@@ -146,6 +149,14 @@ class DemoResult:
         return row if isinstance(row, dict) else {}
 
     @property
+    def route_source(self) -> str:
+        """Return the recorded routing source, if present."""
+        metadata = _routing_decision(self.message).get("metadata") or {}
+        if not isinstance(metadata, dict):
+            return ""
+        return str(metadata.get("route_source") or "")
+
+    @property
     def passed(self) -> bool:
         """Return whether this case satisfied its declared expectations."""
         if self.case.expects_cancelled:
@@ -160,6 +171,8 @@ class DemoResult:
         if self.partial_error is not None:
             return False
         if self.blocking_error is not None:
+            return False
+        if self.route_source in self.case.forbidden_route_sources:
             return False
         if self.case.expected_agent:
             expected_agents = (
@@ -493,6 +506,7 @@ def _case_row(result: DemoResult) -> dict[str, Any]:
         "stream_source": result.stream_source,
         "stream_fallback": result.stream_fallback,
         "routing_mode": result.case.routing_mode,
+        "forbidden_route_sources": list(result.case.forbidden_route_sources),
         "benchmark_lane": result.benchmark_lane,
         "complexity_score": result.complexity_score,
         "answer_excerpt": result.text[:1200],
@@ -514,6 +528,9 @@ def _result_from_case_row(row: dict[str, Any]) -> DemoResult:
         expects_error=str(row.get("outcome") or "") == "expected_error",
         expects_cancelled=str(row.get("outcome") or "") == "cancelled",
         complexity_tags=tuple(str(tag) for tag in row.get("complexity_tags", []) or []),
+        forbidden_route_sources=tuple(
+            str(source) for source in row.get("forbidden_route_sources", []) or []
+        ),
     )
     routing = dict(row.get("routing_decision") or {})
     if routing and routing.get("type") != "routing_decision":
@@ -748,6 +765,7 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             expected_agent="analysis",
             expected_terms=("data_validator", "analysis_validator", "csv_validator"),
             min_children=3,
+            forbidden_route_sources=_REAL_ORCHESTRATOR_FORBIDDEN_SOURCES,
             complexity_tags=("nanoagents", "tier-3", "hdf5", "parquet", "csv", "adios"),
             prompt=(
                 f"I have four related files from the same experiment: {h5}, {parquet}, "
@@ -767,6 +785,7 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             expected_terms=("data_validator", "analysis_validator", "csv_validator"),
             min_children=3,
             min_tool_calls=6,
+            forbidden_route_sources=_REAL_ORCHESTRATOR_FORBIDDEN_SOURCES,
             complexity_tags=(
                 "nanoagents",
                 "tier-3",
@@ -798,6 +817,7 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             expected_terms=("data_validator", "analysis_validator", "csv_validator"),
             min_children=3,
             timeout_s=720.0,
+            forbidden_route_sources=_REAL_ORCHESTRATOR_FORBIDDEN_SOURCES,
             complexity_tags=("no-guard", "planner", "nanoagents", "tier-3", "multi-file"),
             prompt=(
                 f"I have four related files from the same experiment: {h5}, {parquet}, "
@@ -841,6 +861,7 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             expected_tools=("adios_inspect_file",),
             expected_terms=("BP5", "profiling"),
             timeout_s=620.0,
+            forbidden_route_sources=_REAL_ORCHESTRATOR_FORBIDDEN_SOURCES,
             complexity_tags=("no-guard", "planner", "adios", "bp5"),
             prompt=(
                 f'This ADIOS BP5 output came from a Gray-Scott run: "{adios}". Tell me what '
@@ -911,6 +932,7 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             expected_handoff_agents=("ndp_catalog",),
             expected_terms=("dataset",),
             timeout_s=620.0,
+            forbidden_route_sources=_REAL_ORCHESTRATOR_FORBIDDEN_SOURCES,
             complexity_tags=("ndp", "clio-kit", "external-mcp"),
             prompt=(
                 "Find a few NOAA or climate-related datasets in the National Data Platform "
@@ -933,6 +955,7 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             expected_handoff_agents=("ndp_catalog", "sac_format"),
             expected_terms=("SAC", ".png"),
             timeout_s=900.0,
+            forbidden_route_sources=_REAL_ORCHESTRATOR_FORBIDDEN_SOURCES,
             complexity_tags=(
                 "ndp",
                 "earthscience",
@@ -1085,6 +1108,13 @@ def _create_sessions(http: httpx.Client, cases: list[DemoCase]) -> dict[str, str
 
 _BENCHMARK_LANES: dict[str, tuple[str, ...]] = {
     "default": (),
+    "real_orchestrator": (
+        "reasoning_cross_file_triage_nanoagents",
+        "cross_file_dirty_quality_gate_nanoagents",
+        "ndp_catalog_discovery",
+        "ndp_seismic_waveform_to_plot",
+        "reasoning_adios_bp5_container",
+    ),
     "claude_code": (
         "workflow_hdf5_overview",
         "workflow_parquet_profile",
@@ -1098,6 +1128,8 @@ _BENCHMARK_LANES: dict[str, tuple[str, ...]] = {
 def _lane_title(lane: str) -> str:
     if lane == "claude_code":
         return "CLIO Claude Code Real-Provider Benchmark Report"
+    if lane == "real_orchestrator":
+        return "CLIO Real-Orchestrator Benchmark Report"
     return "CLIO ALCF Demo Benchmark Report"
 
 
@@ -1220,6 +1252,7 @@ def run_benchmark(
                 status = result.outcome.upper()
                 print(
                     f"  {status} agent={result.selected_agent or '-'} "
+                    f"source={result.route_source or '-'} "
                     f"tools={','.join(result.tool_names) or '-'} "
                     f"children={len(result.child_sessions)} elapsed={elapsed_s:.1f}s",
                     flush=True,
@@ -1319,13 +1352,51 @@ def _stress_audit(results: list[DemoResult]) -> list[dict[str, Any]]:
 def _provider_lane_audit(results: list[DemoResult], lane: str) -> list[dict[str, Any]]:
     """Evaluate provider-specific evidence requirements."""
 
-    if lane != "claude_code":
-        return []
     by_case = {result.case.case_id: result for result in results}
 
     def passed(case_id: str) -> bool:
         result = by_case.get(case_id)
         return bool(result and result.passed)
+
+    if lane == "real_orchestrator":
+        forbidden = [
+            result
+            for result in results
+            if result.route_source in result.case.forbidden_route_sources
+        ]
+        return [
+            {
+                "criterion": "all selected cases avoid shortcut route sources",
+                "observed": len(results) - len(forbidden),
+                "required": len(results),
+                "passed": not forbidden,
+                "details": [
+                    f"{result.case.case_id}: route_source={result.route_source}"
+                    for result in forbidden
+                ],
+            },
+            {
+                "criterion": "planner multi-file hierarchy case passes",
+                "observed": int(passed("reasoning_cross_file_triage_nanoagents")),
+                "required": 1,
+                "passed": passed("reasoning_cross_file_triage_nanoagents"),
+            },
+            {
+                "criterion": "dirty cross-file quality gate passes",
+                "observed": int(passed("cross_file_dirty_quality_gate_nanoagents")),
+                "required": 1,
+                "passed": passed("cross_file_dirty_quality_gate_nanoagents"),
+            },
+            {
+                "criterion": "NDP-to-SAC-to-plot science chain passes",
+                "observed": int(passed("ndp_seismic_waveform_to_plot")),
+                "required": 1,
+                "passed": passed("ndp_seismic_waveform_to_plot"),
+            },
+        ]
+
+    if lane != "claude_code":
+        return []
 
     provider_rows = [
         result

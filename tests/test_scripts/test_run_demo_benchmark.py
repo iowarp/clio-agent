@@ -8,6 +8,7 @@ def _message(
     text: str = "ok",
     error: str | None = None,
     stream_source: str = "batch",
+    route_source: str = "dspy",
     tools: list[dict[str, object]] | None = None,
 ) -> dict[str, object]:
     error_info = None
@@ -15,7 +16,11 @@ def _message(
         error_info = {"error": error, "message": error, "details": {}, "recoverable": True}
     return {
         "parts": [
-            {"type": "routing_decision", "selected_agent": "analysis"},
+            {
+                "type": "routing_decision",
+                "selected_agent": "analysis",
+                "metadata": {"route_source": route_source},
+            },
             {"type": "text", "text": text},
         ],
         "metadata": {
@@ -86,6 +91,35 @@ def test_select_claude_code_lane_cases() -> None:
     assert [case.case_id for case in selected] == list(bench._BENCHMARK_LANES["claude_code"])
 
 
+def test_select_real_orchestrator_lane_cases() -> None:
+    cases = [
+        bench.DemoCase(
+            case_id=case_id,
+            title=case_id,
+            category="test",
+            prompt="prompt",
+            why="why",
+            expected="expected",
+            session_group="test",
+        )
+        for case_id in (
+            "reasoning_cross_file_triage_nanoagents",
+            "cross_file_dirty_quality_gate_nanoagents",
+            "ndp_catalog_discovery",
+            "ndp_seismic_waveform_to_plot",
+            "reasoning_adios_bp5_container",
+            "workflow_hdf5_overview",
+        )
+    ]
+
+    selected, missing = bench._select_cases(cases, lane="real_orchestrator", case_ids=())
+
+    assert missing == []
+    assert [case.case_id for case in selected] == list(
+        bench._BENCHMARK_LANES["real_orchestrator"]
+    )
+
+
 def test_cancelled_case_passes_only_structured_cancelled_without_text() -> None:
     result = _result("claude_cancellation_surface")
 
@@ -149,3 +183,73 @@ def test_render_report_includes_provider_lane_audit(tmp_path) -> None:
     assert "# CLIO Claude Code Real-Provider Benchmark Report" in report
     assert "Benchmark lane: `claude_code`" in report
     assert "## Provider Lane Audit" in report
+
+
+def test_forbidden_route_source_fails_real_orchestrator_case() -> None:
+    case = bench.DemoCase(
+        case_id="real_case",
+        title="real case",
+        category="test",
+        prompt="prompt",
+        why="why",
+        expected="expected",
+        session_group="test",
+        forbidden_route_sources=("guard", "user_agent_keyword", "recovery"),
+    )
+    result = bench.DemoResult(
+        case=case,
+        session_id="sess_test",
+        elapsed_s=1.0,
+        message=_message(route_source="guard"),
+        provider={"provider": "claude_code", "model": "sonnet", "api_base": ""},
+    )
+
+    assert result.route_source == "guard"
+    assert result.passed is False
+    row = bench._case_row(result)
+    assert row["forbidden_route_sources"] == ["guard", "user_agent_keyword", "recovery"]
+
+
+def test_real_orchestrator_lane_audit_requires_no_shortcuts() -> None:
+    good = bench.DemoResult(
+        case=bench.DemoCase(
+            case_id="reasoning_cross_file_triage_nanoagents",
+            title="good",
+            category="test",
+            prompt="prompt",
+            why="why",
+            expected="expected",
+            session_group="test",
+            forbidden_route_sources=("guard",),
+        ),
+        session_id="sess_good",
+        elapsed_s=1.0,
+        message=_message(route_source="dspy"),
+        provider={"provider": "claude_code", "model": "sonnet", "api_base": ""},
+        benchmark_lane="real_orchestrator",
+    )
+    shortcut = bench.DemoResult(
+        case=bench.DemoCase(
+            case_id="ndp_seismic_waveform_to_plot",
+            title="shortcut",
+            category="test",
+            prompt="prompt",
+            why="why",
+            expected="expected",
+            session_group="test",
+            forbidden_route_sources=("guard",),
+        ),
+        session_id="sess_shortcut",
+        elapsed_s=1.0,
+        message=_message(route_source="guard"),
+        provider={"provider": "claude_code", "model": "sonnet", "api_base": ""},
+        benchmark_lane="real_orchestrator",
+    )
+
+    audit = bench._provider_lane_audit([good, shortcut], "real_orchestrator")
+
+    shortcut_row = next(
+        item for item in audit if item["criterion"] == "all selected cases avoid shortcut route sources"
+    )
+    assert shortcut_row["passed"] is False
+    assert shortcut_row["observed"] == 1
