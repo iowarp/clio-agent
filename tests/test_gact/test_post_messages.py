@@ -513,6 +513,8 @@ def test_post_message_prompt_user_agent_executes_registered_agent(
                 "id": "reviewer",
                 "title": "Reviewer",
                 "system_prompt": "Reply exactly USER_AGENT_OK.",
+                "default_provider": "openai",
+                "default_model": "gpt-4.1",
             },
         )
         assert created.status_code == 201
@@ -537,7 +539,240 @@ def test_post_message_prompt_user_agent_executes_registered_agent(
     assert assistant["metadata"]["stream_fallback"]["reason"] == (
         "dynamic_prompt_stream_unavailable"
     )
+    assert assistant["metadata"]["agent_runtime"] == {
+        "kind": "dynamic_agent",
+        "agent_id": "reviewer",
+        "source": "user",
+        "title": "Reviewer",
+        "execution_mode": "prompt_agent",
+        "tools": [],
+        "prompt": {
+            "source": "agent_definition",
+            "has_system_prompt": True,
+        },
+        "model": {
+            "provider_id": "openai",
+            "model_id": "gpt-4.1",
+            "provider_source": "agent_default",
+            "model_source": "agent_default",
+            "fallback_to_global": False,
+        },
+    }
     assert sess["status"] == "idle"
+
+
+def test_post_message_agent_override_executes_user_agent_for_one_turn(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, str, str]] = []
+
+    def fake_prompt_agent(base_agent: Any, agent_def: Any, question: str, session_id: str) -> Any:
+        calls.append((agent_def.id, question, session_id))
+        return FakePrediction(
+            answer="OVERRIDE_AGENT_OK",
+            selected_expert=agent_def.id,
+            routing_rationale="per-turn agent override",
+        )
+
+    async def fake_stream_unavailable(
+        app: Any,
+        enriched_text: str,
+        sid: str,
+        emit_chunk: Any,
+        **kwargs: Any,
+    ) -> Any:
+        del enriched_text, emit_chunk, kwargs
+        from clio_agent.gact.app import _record_stream_fallback
+
+        _record_stream_fallback(app, sid, "dynamic_prompt_stream_unavailable")
+        return None
+
+    monkeypatch.setattr("clio_agent.gact.app._try_streamed_forward", fake_stream_unavailable)
+    monkeypatch.setattr("clio_agent.gact.app._run_prompt_user_agent", fake_prompt_agent)
+
+    agent = FakeClioAgent(answer="main agent should not run")
+    app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
+    with TestClient(app) as c:
+        assert (
+            c.post(
+                "/v1/agents",
+                json={
+                    "id": "reviewer",
+                    "title": "Reviewer",
+                    "system_prompt": "Reply exactly OVERRIDE_AGENT_OK.",
+                },
+            ).status_code
+            == 201
+        )
+        sid = c.post("/v1/sessions", json={"title": "x"}).json()["id"]
+        ack = c.post(
+            f"/v1/sessions/{sid}/messages",
+            json={
+                "parts": [{"type": "text", "text": "hi"}],
+                "agent": {"id": "reviewer"},
+            },
+        )
+        assert ack.status_code == 200, ack.text
+        user_id = ack.json()["message_id"]
+
+        deadline = time.monotonic() + 10
+        assistant = None
+        user_msg = None
+        while time.monotonic() < deadline:
+            msgs = c.get(f"/v1/sessions/{sid}/messages").json()["messages"]
+            user_msg = next((m for m in msgs if m["id"] == user_id), None)
+            for i, m in enumerate(msgs):
+                if m["id"] == user_id and i > 0 and msgs[i - 1]["role"] == "assistant":
+                    assistant = msgs[i - 1]
+                    break
+            if assistant is not None:
+                break
+            time.sleep(0.05)
+        assert assistant is not None
+        assert user_msg is not None
+        sess = c.get(f"/v1/sessions/{sid}").json()
+
+    assert agent.calls == []
+    assert calls == [("reviewer", "hi", sid)]
+    assert sess["agent"]["id"] == "main"
+    assert assistant["parts"][0]["selected_agent"] == "reviewer"
+    assert assistant["parts"][1]["text"] == "OVERRIDE_AGENT_OK"
+    assert assistant["metadata"]["agent_override"] == {
+        "requested_agent_id": "reviewer",
+        "session_agent_id": "main",
+        "effective_agent_id": "reviewer",
+        "scope": "turn",
+    }
+    assert user_msg["metadata"]["agent_override"] == {
+        "requested_agent_id": "reviewer",
+        "session_agent_id": "main",
+        "scope": "turn",
+    }
+
+
+def test_post_message_agent_id_override_reports_structured_error_without_mutating_session(
+    client: TestClient,
+    fake_agent: FakeClioAgent,
+) -> None:
+    from .conftest import complete_turn
+
+    sid = _create_session(client)
+    assistant = complete_turn(
+        client,
+        sid,
+        "hi",
+        json_override={"agent_id": "missing_agent"},
+    )
+    sess = client.get(f"/v1/sessions/{sid}").json()
+
+    assert fake_agent.calls == []
+    assert sess["agent"]["id"] == "main"
+    assert assistant["stop_reason"] == "error"
+    assert assistant["parts"][0]["selected_agent"] == "missing_agent"
+    assert assistant["error_info"]["error"] == "not_implemented"
+    assert assistant["error_info"]["details"]["agent_id"] == "missing_agent"
+    assert assistant["metadata"]["agent_override"] == {
+        "requested_agent_id": "missing_agent",
+        "session_agent_id": "main",
+        "effective_agent_id": "missing_agent",
+        "scope": "turn",
+    }
+
+
+def test_post_message_auto_routes_to_user_agent_by_keyword(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from .conftest import complete_turn
+
+    calls: list[tuple[str, str, str]] = []
+
+    def fake_prompt_agent(base_agent: Any, agent_def: Any, question: str, session_id: str) -> Any:
+        calls.append((agent_def.id, question, session_id))
+        return FakePrediction(
+            answer="USER_AGENT_ROUTED",
+            selected_expert=agent_def.id,
+            routing_rationale="matched registered user-agent keyword",
+            route_source="user_agent_keyword",
+        )
+
+    async def fake_stream_unavailable(
+        app: Any,
+        enriched_text: str,
+        sid: str,
+        emit_chunk: Any,
+        **kwargs: Any,
+    ) -> Any:
+        del enriched_text, emit_chunk, kwargs
+        from clio_agent.gact.app import _record_stream_fallback
+
+        _record_stream_fallback(app, sid, "dynamic_prompt_stream_unavailable")
+        return None
+
+    monkeypatch.setattr("clio_agent.gact.app._try_streamed_forward", fake_stream_unavailable)
+    monkeypatch.setattr("clio_agent.gact.app._run_prompt_user_agent", fake_prompt_agent)
+
+    agent = FakeClioAgent(answer="main should not run")
+    app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
+    with TestClient(app) as c:
+        assert (
+            c.post(
+                "/v1/agents",
+                json={
+                    "id": "reviewer",
+                    "title": "Reviewer",
+                    "system_prompt": "Review code carefully.",
+                    "keywords": ["code review", "reviewer"],
+                },
+            ).status_code
+            == 201
+        )
+        sid = c.post("/v1/sessions", json={"title": "x"}).json()["id"]
+        assistant = complete_turn(c, sid, "please do a code review of this patch")
+
+    assert agent.calls == []
+    assert calls == [("reviewer", "please do a code review of this patch", sid)]
+    assert assistant["parts"][0]["selected_agent"] == "reviewer"
+    assert assistant["parts"][0]["metadata"]["route_source"] == "user_agent_keyword"
+    assert assistant["parts"][1]["text"] == "USER_AGENT_ROUTED"
+
+
+def test_post_message_keyword_routing_chat_mode_uses_main_agent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from .conftest import complete_turn
+
+    def fail_prompt_agent(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("chat routing mode should not auto-route to user agent")
+
+    monkeypatch.setattr("clio_agent.gact.app._run_prompt_user_agent", fail_prompt_agent)
+
+    agent = FakeClioAgent(answer="MAIN_OK", selected_expert="")
+    app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
+    with TestClient(app) as c:
+        assert (
+            c.post(
+                "/v1/agents",
+                json={
+                    "id": "reviewer",
+                    "title": "Reviewer",
+                    "system_prompt": "Review code carefully.",
+                    "keywords": ["code review"],
+                },
+            ).status_code
+            == 201
+        )
+        sid = c.post(
+            "/v1/sessions",
+            json={"title": "x", "routing_mode": "chat"},
+        ).json()["id"]
+        assistant = complete_turn(c, sid, "please do a code review of this patch")
+
+    assert agent.calls == [("please do a code review of this patch", sid)]
+    assert [part["type"] for part in assistant["parts"]] == ["text"]
+    assert assistant["parts"][0]["text"] == "MAIN_OK"
 
 
 def test_post_message_prompt_user_agent_streams_live_when_available(
@@ -684,6 +919,25 @@ def test_post_message_tool_user_agent_executes_registered_agent(
     assert assistant["metadata"]["stream_fallback"]["reason"] == ("dynamic_tool_stream_unavailable")
     assert assistant["metadata"]["tools_called"][0]["name"] == "fs_read_file"
     assert assistant["metadata"]["tools_called"][0]["args"] == {"path": "README.md"}
+    assert assistant["metadata"]["agent_runtime"] == {
+        "kind": "dynamic_agent",
+        "agent_id": "tool_reviewer",
+        "source": "user",
+        "title": "Tool Reviewer",
+        "execution_mode": "tool_agent",
+        "tools": ["fs_read_file"],
+        "prompt": {
+            "source": "agent_definition",
+            "has_system_prompt": True,
+        },
+        "model": {
+            "provider_id": "",
+            "model_id": "",
+            "provider_source": "global_active",
+            "model_source": "global_active",
+            "fallback_to_global": True,
+        },
+    }
     assert sess["status"] == "idle"
 
 

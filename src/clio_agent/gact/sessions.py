@@ -18,7 +18,7 @@ Session shape mirrors GACT v0.2 §4.2:
       "id": "sess_...",
       "workspace_id": "ws_default",
       "title": "...",
-      "status": "idle" | "running" | "waiting_permission" | "error",
+      "status": "idle" | "running" | "waiting_permission" | "waiting_user" | "error",
       "created_at": "<ISO-8601 UTC>",
       "updated_at": "<ISO-8601 UTC>",
       "message_count": 0,
