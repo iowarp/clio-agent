@@ -49,6 +49,12 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from clio_agent.gact.workspace_scope import (
+    GLOBAL_WORKSPACE_ID,
+    resolve_workspace_storage_root,
+    session_scope_label,
+    workspace_scope,
+)
 from clio_agent.prompts import PromptRegistry, PromptSource
 from clio_agent.tools.file_policy import validate_write_path
 from clio_agent.tools.fs_write import write_text_with_policy
@@ -459,6 +465,7 @@ def _append_session_message(app: "FastAPI", session_id: str, message: "Message")
     store = getattr(app.state, "message_store", None)
     if store is not None:
         store.append(session_id, message)
+    _mirror_workspace_messages(app, session_id)
 
 
 def _extend_session_messages(
@@ -474,6 +481,7 @@ def _extend_session_messages(
     store = getattr(app.state, "message_store", None)
     if store is not None:
         store.extend(session_id, messages)
+    _mirror_workspace_messages(app, session_id)
 
 
 def _replace_session_messages(
@@ -487,6 +495,7 @@ def _replace_session_messages(
     store = getattr(app.state, "message_store", None)
     if store is not None:
         store.replace_session(session_id, list(messages))
+    _mirror_workspace_messages(app, session_id)
 
 
 def _delete_session_messages(app: "FastAPI", session_id: str) -> None:
@@ -496,6 +505,86 @@ def _delete_session_messages(app: "FastAPI", session_id: str) -> None:
     store = getattr(app.state, "message_store", None)
     if store is not None:
         store.delete_session(session_id)
+    _mirror_workspace_messages(app, session_id)
+
+
+def _workspace_for_session(app: "FastAPI", session_id: str) -> Any | None:
+    sess = app.state.sessions.get(session_id)
+    if sess is None:
+        return None
+    return app.state.workspaces.get(getattr(sess, "workspace_id", ""))
+
+
+def _workspace_storage_root_for_session(app: "FastAPI", session_id: str) -> Path | None:
+    ws = _workspace_for_session(app, session_id)
+    if ws is None:
+        return None
+    return resolve_workspace_storage_root(ws)
+
+
+def _mirror_workspace_session(app: "FastAPI", session_id: str) -> None:
+    """Persist one session row into the owning workspace storage root."""
+
+    sess = app.state.sessions.get(session_id)
+    root = _workspace_storage_root_for_session(app, session_id)
+    if sess is None or root is None:
+        return
+    path = root / "sessions.json"
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        data: dict[str, Any] = {}
+        if path.exists():
+            try:
+                loaded = json.loads(path.read_text(encoding="utf-8"))
+                if isinstance(loaded, dict):
+                    data = loaded
+            except Exception:
+                data = {}
+        data[session_id] = asdict(sess)
+        data[session_id].setdefault("metadata", {})
+        data[session_id]["metadata"]["workspace_storage_root"] = str(root)
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
+        os.replace(tmp, path)
+    except Exception:
+        return
+
+
+def _mirror_workspace_messages(app: "FastAPI", session_id: str) -> None:
+    """Persist one message ledger into the owning workspace storage root."""
+
+    root = _workspace_storage_root_for_session(app, session_id)
+    if root is None:
+        return
+    try:
+        store = MessageStore(root / "messages")
+        messages = list(app.state.messages.get(session_id, []))
+        if messages:
+            store.replace_session(session_id, messages)
+        else:
+            store.delete_session(session_id)
+    except Exception:
+        return
+
+
+def _remove_workspace_session_mirror(app: "FastAPI", session_id: str) -> None:
+    """Remove one mirrored session row from its workspace-local store."""
+
+    root = _workspace_storage_root_for_session(app, session_id)
+    if root is None:
+        return
+    try:
+        sessions_path = root / "sessions.json"
+        if sessions_path.exists():
+            data = json.loads(sessions_path.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                data.pop(session_id, None)
+                tmp = sessions_path.with_suffix(sessions_path.suffix + ".tmp")
+                tmp.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
+                os.replace(tmp, sessions_path)
+        MessageStore(root / "messages").delete_session(session_id)
+    except Exception:
+        return
 
 
 def _memory_search_terms(query: str) -> list[str]:
@@ -589,6 +678,26 @@ def _memory_search_response(
                 ).model_dump(exclude_none=True),
             )
         if include_cross_session:
+            active_workspace_id = workspace_id or str(getattr(sess, "workspace_id", "") or "")
+            if workspace_id and sess.workspace_id not in {workspace_id, GLOBAL_WORKSPACE_ID}:
+                raise HTTPException(
+                    status_code=403,
+                    detail=ErrorEnvelope(
+                        error=ErrorInfo(
+                            error="permission_error",
+                            message="memory search cannot cross workspace boundaries by default",
+                            details={
+                                "session_id": session_id,
+                                "session_workspace_id": sess.workspace_id,
+                                "requested_workspace_id": workspace_id,
+                                "scope": "other_workspace",
+                            },
+                            recoverable=True,
+                        )
+                    ).model_dump(exclude_none=True),
+                )
+            if active_workspace_id and not workspace_id:
+                sessions = app.state.sessions.list(workspace_id=active_workspace_id)
             session_ids = [s.id for s in sessions]
             if session_id not in session_ids:
                 session_ids.append(session_id)
@@ -597,6 +706,10 @@ def _memory_search_response(
     else:
         session_ids = [s.id for s in sessions]
 
+    active_workspace_id = workspace_id
+    if not active_workspace_id and session_id:
+        active_session = app.state.sessions.get(session_id)
+        active_workspace_id = str(getattr(active_session, "workspace_id", "") or "")
     sessions_by_id = {s.id: s for s in app.state.sessions.list()}
     hits: list[MemorySearchHit] = []
     for sid in session_ids:
@@ -617,6 +730,12 @@ def _memory_search_response(
                 if not matched:
                     continue
                 score = len(set(matched)) / len(set(terms))
+                scope_label = session_scope_label(
+                    active_workspace_id=active_workspace_id,
+                    target_workspace_id=sess.workspace_id,
+                    target_session_id=sid,
+                    active_session_id=session_id,
+                )
                 hits.append(
                     MemorySearchHit(
                         session_id=sid,
@@ -633,6 +752,8 @@ def _memory_search_response(
                         metadata={
                             "cross_session": sid != session_id,
                             "source": "gact_transcript",
+                            "scope": scope_label,
+                            "workspace_boundary": scope_label,
                         },
                     )
                 )
@@ -645,7 +766,8 @@ def _memory_search_response(
         hits=hits[:limit],
         metadata={
             "scope": "cross_session" if include_cross_session else "session",
-            "workspace_id": workspace_id,
+            "workspace_id": active_workspace_id,
+            "workspace_scope": "global" if active_workspace_id == GLOBAL_WORKSPACE_ID else "workspace",
             "limit": limit,
         },
     )
@@ -6372,6 +6494,7 @@ def build_app(
             edit_mode=req.edit_mode,
             routing_mode=req.routing_mode,
         )
+        _mirror_workspace_session(app, sess.id)
         return Session(**sess.to_wire())
 
     @app.patch("/v1/sessions/{sid}", response_model=Session)
@@ -6411,6 +6534,7 @@ def build_app(
                 payload=Session(**sess.to_wire()).model_dump(exclude_none=True),
             )
         )
+        _mirror_workspace_session(app, sid)
         return Session(**sess.to_wire())
 
     @app.get("/v1/sessions", response_model=ListSessionsResponse)
@@ -6453,6 +6577,8 @@ def build_app(
                 ).model_dump(exclude_none=True),
             )
 
+        ws = app.state.workspaces.get(sess.workspace_id)
+        scope_meta = workspace_scope(ws).to_wire() if ws is not None else {}
         return SessionContextPolicy(
             session_id=sid,
             notes=[
@@ -6465,6 +6591,7 @@ def build_app(
                 "session_mode": sess.mode,
                 "routing_mode": sess.routing_mode,
                 "arc_wired": app.state.arc is not None,
+                "workspace": scope_meta,
             },
         )
 
@@ -6482,6 +6609,7 @@ def build_app(
             summary=f"delete session {sid}",
             reason="user_requested_session_delete",
         )
+        _remove_workspace_session_mirror(app, sid)
         existed = app.state.sessions.delete(sid)
         if not existed:
             raise HTTPException(
@@ -11545,6 +11673,7 @@ def build_app(
         ws = app.state.workspaces.create(
             name=req.name,
             root_path=req.root_path,
+            storage_root=req.storage_root,
             metadata=req.metadata,
         )
         return Workspace(**ws.to_wire())
