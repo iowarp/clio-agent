@@ -111,6 +111,22 @@ def _new_part_id() -> str:
     return f"part_{uuid.uuid4().hex[:12]}"
 
 
+def _new_question_id() -> str:
+    return f"ques_{uuid.uuid4().hex[:12]}"
+
+
+def _new_attempt_id() -> str:
+    return f"att_{uuid.uuid4().hex[:12]}"
+
+
+def _new_context_frame_id() -> str:
+    return f"ctx_{uuid.uuid4().hex[:12]}"
+
+
+def _new_memory_event_id() -> str:
+    return f"mem_{uuid.uuid4().hex[:12]}"
+
+
 def _iso_from_epoch(ts: float) -> str:
     """ISO-8601 UTC with microsecond precision to match the session
     registry's created_at format."""
@@ -478,6 +494,226 @@ def _delete_session_messages(app: "FastAPI", session_id: str) -> None:
         store.delete_session(session_id)
 
 
+def _memory_search_terms(query: str) -> list[str]:
+    """Normalize a memory search query into unique lowercase terms."""
+
+    terms = [term.lower() for term in re.findall(r"[A-Za-z0-9_.@/-]+", query)]
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for term in terms:
+        if term in seen:
+            continue
+        seen.add(term)
+        deduped.append(term)
+    return deduped
+
+
+def _memory_search_excerpt(text: str, terms: list[str], *, max_chars: int = 480) -> str:
+    """Return a bounded excerpt around the earliest matched term."""
+
+    if len(text) <= max_chars:
+        return text
+    lowered = text.lower()
+    positions = [lowered.find(term) for term in terms if term and lowered.find(term) >= 0]
+    center = min(positions) if positions else 0
+    start = max(0, center - max_chars // 3)
+    end = min(len(text), start + max_chars)
+    start = max(0, end - max_chars)
+    prefix = "..." if start > 0 else ""
+    suffix = "..." if end < len(text) else ""
+    return prefix + text[start:end].strip() + suffix
+
+
+def _memory_search_response(
+    app: "FastAPI",
+    *,
+    query: str,
+    session_id: str = "",
+    workspace_id: str = "",
+    include_cross_session: bool = False,
+    limit: int = 20,
+    exclude_message_id: str = "",
+) -> "MemorySearchResponse":
+    """Search retained GACT transcript memory with explicit scope controls."""
+
+    terms = _memory_search_terms(query)
+    if not terms:
+        raise HTTPException(
+            status_code=422,
+            detail=ErrorEnvelope(
+                error=ErrorInfo(
+                    error="invalid_request",
+                    message="memory search query must contain at least one word",
+                    details={"query": query},
+                    recoverable=True,
+                )
+            ).model_dump(exclude_none=True),
+        )
+    if not include_cross_session and not session_id:
+        raise HTTPException(
+            status_code=422,
+            detail=ErrorEnvelope(
+                error=ErrorInfo(
+                    error="invalid_request",
+                    message="session_id is required unless include_cross_session=true",
+                    details={
+                        "include_cross_session": include_cross_session,
+                        "recovery_actions": [
+                            "provide_session_id",
+                            "set_include_cross_session",
+                        ],
+                    },
+                    recoverable=True,
+                )
+            ).model_dump(exclude_none=True),
+        )
+
+    limit = max(1, min(int(limit or 20), 100))
+    sessions = app.state.sessions.list(workspace_id=workspace_id or None)
+    if session_id:
+        sess = app.state.sessions.get(session_id)
+        if sess is None:
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="not_found",
+                        message=f"session not found: {session_id}",
+                        details={"session_id": session_id},
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        if include_cross_session:
+            session_ids = [s.id for s in sessions]
+            if session_id not in session_ids:
+                session_ids.append(session_id)
+        else:
+            session_ids = [session_id]
+    else:
+        session_ids = [s.id for s in sessions]
+
+    sessions_by_id = {s.id: s for s in app.state.sessions.list()}
+    hits: list[MemorySearchHit] = []
+    for sid in session_ids:
+        sess = sessions_by_id.get(sid)
+        if sess is None:
+            continue
+        for message in app.state.messages.get(sid, []):
+            if exclude_message_id and message.id == exclude_message_id:
+                continue
+            for part in message.parts:
+                if part.type not in {"text", "thinking", "error"}:
+                    continue
+                text = part.text.strip()
+                if not text:
+                    continue
+                lowered = text.lower()
+                matched = [term for term in terms if term in lowered]
+                if not matched:
+                    continue
+                score = len(set(matched)) / len(set(terms))
+                hits.append(
+                    MemorySearchHit(
+                        session_id=sid,
+                        session_title=sess.title,
+                        workspace_id=sess.workspace_id,
+                        message_id=message.id,
+                        part_id=part.id,
+                        role=message.role,
+                        created_at=message.created_at,
+                        updated_at=message.updated_at,
+                        text=_memory_search_excerpt(text, matched),
+                        score=round(score, 4),
+                        match_terms=sorted(set(matched)),
+                        metadata={
+                            "cross_session": sid != session_id,
+                            "source": "gact_transcript",
+                        },
+                    )
+                )
+
+    hits.sort(key=lambda hit: (hit.score, hit.created_at), reverse=True)
+    return MemorySearchResponse(
+        query=query,
+        include_cross_session=include_cross_session,
+        searched_sessions=session_ids,
+        hits=hits[:limit],
+        metadata={
+            "scope": "cross_session" if include_cross_session else "session",
+            "workspace_id": workspace_id,
+            "limit": limit,
+        },
+    )
+
+
+def _load_context_files(path: Path | None) -> dict[str, dict[str, dict[str, Any]]]:
+    """Load persisted context-file attachments keyed by session id."""
+
+    if path is None or not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    sessions = data.get("sessions", {}) if isinstance(data, Mapping) else {}
+    if not isinstance(sessions, Mapping):
+        return {}
+    loaded: dict[str, dict[str, dict[str, Any]]] = {}
+    for sid, rows in sessions.items():
+        if not isinstance(rows, Mapping):
+            continue
+        bucket: dict[str, dict[str, Any]] = {}
+        for path_key, row in rows.items():
+            if not isinstance(row, Mapping):
+                continue
+            path_value = str(row.get("path") or path_key or "").strip()
+            if not path_value:
+                continue
+            bucket[path_value] = dict(row) | {"path": path_value}
+        if bucket:
+            loaded[str(sid)] = bucket
+    return loaded
+
+
+def _flush_context_files(app: "FastAPI") -> None:
+    """Persist the current context-file ledger, if persistence is configured."""
+
+    path = getattr(app.state, "context_files_path", None)
+    if path is None:
+        return
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(
+        json.dumps({"sessions": app.state.context_files}, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    tmp.replace(path)
+
+
+def _delete_session_context_files(app: "FastAPI", session_id: str) -> None:
+    """Remove one session's context-file ledger from memory and disk."""
+
+    if session_id in app.state.context_files:
+        app.state.context_files.pop(session_id, None)
+        _flush_context_files(app)
+
+
+def _session_not_found(sid: str) -> HTTPException:
+    return HTTPException(
+        status_code=404,
+        detail=ErrorEnvelope(
+            error=ErrorInfo(
+                error="internal_error",
+                message=f"session not found: {sid}",
+                details={"session_id": sid},
+                recoverable=False,
+            )
+        ).model_dump(exclude_none=True),
+    )
+
+
 def _cancelled_error_info(
     sid: str,
     *,
@@ -540,7 +776,7 @@ def _session_agent_id(sess: Any) -> str:
 
 
 def _resolve_dynamic_agent(app: "FastAPI", agent_id: str) -> "AgentDef | None":
-    """Return a registered user/skill/expert-pack agent definition by id."""
+    """Return a registered user/skill/builtin/expert-pack agent definition by id."""
     if not agent_id:
         return None
     row = app.state.user_agents.get(agent_id)
@@ -551,7 +787,7 @@ def _resolve_dynamic_agent(app: "FastAPI", agent_id: str) -> "AgentDef | None":
             return skill
     expert_rows = validate_expert_hierarchy(_builtin_agents() + load_expert_packs())
     for expert in expert_rows:
-        if expert.id == agent_id and expert.source == "expert_pack" and expert.enabled:
+        if expert.id == agent_id and expert.enabled:
             return expert
     return None
 
@@ -1134,6 +1370,9 @@ async def _run_turn_in_background(
     proposed_diffs: list[Any] = []
     nanoagents: list[Any] = []
     thinking_text = ""
+    retry_attempt_id = ""
+    if isinstance(user_msg.metadata, dict):
+        retry_attempt_id = str(user_msg.metadata.get("retry_attempt_id") or "")
     turn_tokens: dict[str, int] = {
         "input": 0,
         "output": 0,
@@ -1142,16 +1381,69 @@ async def _run_turn_in_background(
     }
     turn_cost = 0.0
 
+    def _update_retry_attempt(
+        status: str,
+        *,
+        metadata_patch: Optional[dict[str, Any]] = None,
+    ) -> None:
+        if not retry_attempt_id:
+            return
+        attempt = app.state.turn_attempts.get(retry_attempt_id)
+        if attempt is None:
+            return
+        metadata = dict(attempt.metadata)
+        if metadata_patch:
+            metadata.update(metadata_patch)
+        updated = attempt.model_copy(
+            update={
+                "status": status,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+                "metadata": metadata,
+            }
+        )
+        app.state.turn_attempts[retry_attempt_id] = updated
+        app.state.bus.publish(
+            Event(
+                type=f"turn.retry_{status}",
+                session_id=sid,
+                payload=updated.model_dump(exclude_none=True),
+            )
+        )
+
+    if retry_attempt_id:
+        _update_retry_attempt(
+            "running",
+            metadata_patch={"executed_user_message_id": user_msg.id},
+        )
+
     # iowarp/clio-agent#5: prepend any attached context files to the
     # user's text so the agent's forward() sees them as primed input.
     # Plain text concat — keeps the agent.py interface untouched and
     # works regardless of which expert handles the turn.
     context_file_error: ErrorInfo | None = None
+    context_file_provenance = _context_file_turn_provenance(app, sid, status="prepared")
+    memory_search_metadata: dict[str, Any] = {}
     try:
         enriched_text = _enrich_with_context_files(app, sid, user_text)
+        enriched_text, memory_search_metadata = _enrich_with_requested_memory_search(
+            app,
+            sid,
+            enriched_text,
+            user_msg,
+        )
     except _ContextFileAccessError as exc:
         enriched_text = user_text
         context_file_error = exc.error_info
+        context_file_provenance = _context_file_turn_provenance(app, sid, status="error")
+    context_frame = _record_context_frame(
+        app,
+        sid,
+        sess,
+        user_msg,
+        user_text=user_text,
+        enriched_text=enriched_text,
+        context_error=context_file_error,
+    )
     # iowarp/clio-agent#20: pre_message hook can transform the
     # input or veto the turn. PermissionError → cancelled-style
     # error_info; the caller sees the hook's reason.
@@ -1177,6 +1469,13 @@ async def _run_turn_in_background(
                 )
             )
             app.state.sessions.update(sid, status="error")
+            _update_retry_attempt(
+                "failed",
+                metadata_patch={
+                    "execution_error": "permission_error",
+                    "executed_user_message_id": user_msg.id,
+                },
+            )
             bus.publish(
                 Event(
                     type="session.status_changed",
@@ -1936,6 +2235,10 @@ async def _run_turn_in_background(
         assistant_metadata["tools_called"] = tools_called
     if expert_handoffs:
         assistant_metadata["expert_handoffs"] = expert_handoffs
+    if context_file_provenance["files"]:
+        assistant_metadata["context_files"] = context_file_provenance
+    if memory_search_metadata:
+        assistant_metadata["memory_search"] = memory_search_metadata
     if agent_runtime:
         assistant_metadata["agent_runtime"] = agent_runtime
     # iowarp/clio-agent#6: when streaming actually emitted chunks,
@@ -1967,6 +2270,14 @@ async def _run_turn_in_background(
         stop_reason="cancelled" if cancelled_turn else ("error" if error_info else "end_turn"),
         error_info=error_info,
         metadata=assistant_metadata,
+    )
+    _finalize_context_frame(
+        app,
+        sid,
+        context_frame["id"],
+        assistant_msg.id,
+        "cancelled" if cancelled_turn else ("error" if error_info else "completed"),
+        error_info=error_info,
     )
 
     # Index file_diff parts so /diffs/apply + /diffs/reject find them.
@@ -2182,7 +2493,16 @@ async def _run_turn_in_background(
 
     # Persist + settle.
     final_status = "cancelled" if cancelled_turn else ("error" if error_info else "idle")
+    retry_status = "cancelled" if cancelled_turn else ("failed" if error_info else "completed")
     _append_session_message(app, sid, assistant_msg)
+    _update_retry_attempt(
+        retry_status,
+        metadata_patch={
+            "executed_user_message_id": user_msg.id,
+            "assistant_message_id": assistant_msg.id,
+            "stop_reason": completed_payload["stop_reason"],
+        },
+    )
     app.state.sessions.update(
         sid,
         status=final_status,
@@ -2239,6 +2559,155 @@ def _current_lm_model_id() -> str:
         return ""
     lm = getattr(dspy.settings, "lm", None) if hasattr(dspy, "settings") else None
     return getattr(lm, "model", "") if lm else ""
+
+
+def _estimate_context_tokens(text: str) -> int:
+    return max(1, len(text) // 4) if text else 0
+
+
+def _message_text_for_frame(message: "Message") -> str:
+    chunks: list[str] = []
+    for part in getattr(message, "parts", []) or []:
+        text = getattr(part, "text", "") or ""
+        if text:
+            chunks.append(text)
+        for attr in ("path", "unified_diff", "new_content"):
+            value = getattr(part, attr, "") or ""
+            if value:
+                chunks.append(str(value))
+    return "\n".join(chunks)
+
+
+def _record_context_frame(
+    app: "FastAPI",
+    sid: str,
+    sess: Any,
+    user_msg: "Message",
+    *,
+    user_text: str,
+    enriched_text: str,
+    context_error: Optional[ErrorInfo],
+) -> dict[str, Any]:
+    now = datetime.now(timezone.utc).isoformat()
+    visible_messages = list(app.state.messages.get(sid, []))
+    items: list[dict[str, Any]] = []
+    token_total = 0
+    for msg in visible_messages:
+        msg_text = _message_text_for_frame(msg)
+        tokens = (
+            int(getattr(msg.tokens, "input", 0) or 0)
+            + int(getattr(msg.tokens, "output", 0) or 0)
+            + int(getattr(msg.tokens, "cache_read", 0) or 0)
+            + int(getattr(msg.tokens, "cache_write", 0) or 0)
+        )
+        if tokens <= 0:
+            tokens = _estimate_context_tokens(msg_text)
+        token_total += tokens
+        items.append(
+            {
+                "kind": "message",
+                "source_id": msg.id,
+                "role": msg.role,
+                "included": True,
+                "reason": "visible_transcript",
+                "tokens_estimated": tokens,
+                "metadata": {
+                    "synthetic": (msg.metadata or {}).get("synthetic", ""),
+                    "part_count": len(msg.parts),
+                },
+            }
+        )
+
+    for row in (app.state.context_files.get(sid, {}) or {}).values():
+        path = str(row.get("resolved_path") or row.get("path") or "")
+        display_path = str(row.get("display_path") or row.get("path") or path)
+        try:
+            raw_size = int(row.get("size") or 0)
+        except (TypeError, ValueError):
+            raw_size = 0
+        tokens = max(0, min(max(raw_size, 0), _CTX_MAX_BYTES) // 4)
+        token_total += tokens
+        items.append(
+            {
+                "kind": "context_file",
+                "source_id": display_path,
+                "path": path,
+                "display_path": display_path,
+                "included": context_error is None,
+                "reason": "attached_context_file" if context_error is None else "context_error",
+                "tokens_estimated": tokens,
+                "metadata": {
+                    "mode": row.get("mode", ""),
+                    "source": row.get("source", ""),
+                    "workspace_id": row.get("workspace_id", ""),
+                    "language": row.get("language", ""),
+                },
+            }
+        )
+
+    enriched_delta = max(0, len(enriched_text) - len(user_text))
+    agent_ref = getattr(sess, "agent", {}) or {}
+    frame = {
+        "id": _new_context_frame_id(),
+        "session_id": sid,
+        "turn_id": user_msg.id,
+        "user_message_id": user_msg.id,
+        "assistant_message_id": "",
+        "created_at": now,
+        "updated_at": now,
+        "status": "context_error" if context_error is not None else "assembled",
+        "model": _active_lm_model_ref(app),
+        "agent": {
+            "id": _session_agent_id(sess),
+            "mode": agent_ref.get("mode", "") if isinstance(agent_ref, dict) else "",
+            "routing_mode": getattr(sess, "routing_mode", "auto"),
+            "session_mode": getattr(sess, "mode", "chat"),
+            "edit_mode": getattr(sess, "edit_mode", "diff"),
+        },
+        "prompt": {
+            "profile": (getattr(sess, "metadata", {}) or {}).get("prompt_profile", ""),
+            "source": "runtime_default",
+        },
+        "items": items,
+        "tokens_estimated": token_total,
+        "metadata": {
+            "retained_context_source": "visible_gact_transcript",
+            "token_estimate": "message_tokens_or_chars_div_4",
+            "context_file_injected_chars": enriched_delta,
+            "context_error": context_error.model_dump(exclude_none=True)
+            if context_error is not None
+            else {},
+        },
+    }
+    app.state.context_frames.setdefault(sid, []).append(frame)
+    app.state.bus.publish(Event(type="context.frame.created", session_id=sid, payload=frame))
+    return frame
+
+
+def _finalize_context_frame(
+    app: "FastAPI",
+    sid: str,
+    frame_id: str,
+    assistant_message_id: str,
+    status: str,
+    *,
+    error_info: Optional[ErrorInfo],
+) -> None:
+    frames = app.state.context_frames.get(sid, [])
+    for frame in frames:
+        if frame.get("id") != frame_id:
+            continue
+        frame["assistant_message_id"] = assistant_message_id
+        frame["status"] = status
+        frame["updated_at"] = datetime.now(timezone.utc).isoformat()
+        if error_info is not None:
+            frame.setdefault("metadata", {})["turn_error"] = error_info.model_dump(
+                exclude_none=True
+            )
+        app.state.bus.publish(
+            Event(type="context.frame.completed", session_id=sid, payload=frame)
+        )
+        break
 
 
 def _all_known_lms(app: "FastAPI") -> list[Any]:
@@ -2693,6 +3162,38 @@ def _validate_permission_policies(
     return clean, errors
 
 
+def _load_permission_policies(path: Path | None) -> list[dict[str, Any]]:
+    """Load persisted permission policies, ignoring invalid rows."""
+
+    if path is None or not path.exists():
+        return []
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    raw = data.get("policies", []) if isinstance(data, Mapping) else []
+    if not isinstance(raw, list):
+        return []
+    clean, _errors = _validate_permission_policies(raw)
+    return clean
+
+
+def _flush_permission_policies(app: "FastAPI") -> None:
+    """Persist the current permission policy list, if configured."""
+
+    path = getattr(app.state, "permission_policies_path", None)
+    if path is None:
+        return
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(
+        json.dumps({"policies": app.state.permission_policies}, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    tmp.replace(path)
+
+
 def _record_resolved_permission(
     app: "FastAPI",
     *,
@@ -2736,6 +3237,38 @@ def _record_resolved_permission(
             )
         )
     return pid
+
+
+def _append_permission_policy_from_resolution(
+    app: "FastAPI",
+    *,
+    row: Mapping[str, Any],
+    action: str,
+) -> dict[str, Any] | None:
+    """Persist allow_session/allow_workspace decisions as policy rules."""
+
+    if action not in {"allow_session", "allow_workspace"}:
+        return None
+    session_id = str(row.get("session_id") or "")
+    raw_tool_call = row.get("tool_call")
+    tool_call: Mapping[str, Any] = raw_tool_call if isinstance(raw_tool_call, Mapping) else {}
+    tool_name = str(tool_call.get("tool_name") or "*")
+    raw_args = tool_call.get("input")
+    args: Mapping[str, Any] = raw_args if isinstance(raw_args, Mapping) else {}
+    session = app.state.sessions.get(session_id) if session_id else None
+    workspace_id = str(getattr(session, "workspace_id", "") or "")
+    policy = {
+        "scope": "session" if action == "allow_session" else "workspace",
+        "scope_id": session_id if action == "allow_session" else workspace_id,
+        "tool_name_pattern": tool_name,
+        "action": "allow",
+        "created_from_permission_id": str(row.get("id") or ""),
+    }
+    path = _permission_path_from_args(args)
+    if path:
+        policy["path_pattern"] = path
+    app.state.permission_policies.append(policy)
+    return policy
 
 
 def _direct_permission_denied(
@@ -2897,6 +3430,16 @@ def _make_permission_gate(app: "FastAPI"):
             )
             return "deny"
         if policy_action in {"allow", "allow_session", "allow_workspace"}:
+            _record_resolved_permission(
+                app,
+                session_id=sid,
+                tool_name=name,
+                args=args,
+                status="auto_approved",
+                action="allow",
+                summary=f"destructive tool {name!r} allowed by permission policy",
+                reason=f"policy_{policy_action}",
+            )
             return "allow"
         if _is_safe_shell_diagnostic(name, args):
             return "allow"
@@ -3250,6 +3793,61 @@ def _stream_fallback_reason_capabilities() -> dict[str, dict[str, Any]]:
             key: list(value) if isinstance(value, list) else value for key, value in details.items()
         }
         for reason, details in _STREAM_FALLBACK_REASON_DEFINITIONS.items()
+    }
+
+
+_CAPABILITY_GAP_DEFINITIONS: dict[str, dict[str, Any]] = {
+    "voice": {
+        "status": "unsupported",
+        "advertised": False,
+        "category": "future_capability",
+        "description": (
+            "Voice input/output is reserved for future CLIO work and is not "
+            "wired to audio capture, transcription, or playback today."
+        ),
+        "client_behavior": "render_disabled",
+        "recovery_actions": ["use_text_input", "hide_or_disable_voice_controls"],
+        "related_endpoints": ["/v1/sessions/{sid}/voice/transcribe"],
+    },
+    "lsp": {
+        "status": "unsupported",
+        "advertised": False,
+        "category": "future_capability",
+        "description": (
+            "Language-server integration is outside the current CLIO GACT "
+            "surface; file and diff workflows are available instead."
+        ),
+        "client_behavior": "render_disabled",
+        "recovery_actions": ["use_files_and_diffs", "hide_or_disable_lsp_controls"],
+        "related_endpoints": ["/v1/lsp/*"],
+    },
+    "optimizer_command": {
+        "status": "unavailable",
+        "advertised": True,
+        "category": "deferred_command",
+        "description": (
+            "The /optimize slash command is kept visible as future CLIO "
+            "direction, but optimizer command execution is not wired yet."
+        ),
+        "client_behavior": "render_disabled",
+        "recovery_actions": [
+            "render_optimize_disabled",
+            "retry_after_optimizer_support_lands",
+        ],
+        "related_commands": ["/optimize"],
+        "related_endpoints": ["/v1/sessions/{sid}/commands/optimize"],
+    },
+}
+
+
+def _capability_gap_metadata() -> dict[str, dict[str, Any]]:
+    """Return CLIO capability gaps as client-renderable metadata."""
+
+    return {
+        name: {
+            key: list(value) if isinstance(value, list) else value for key, value in details.items()
+        }
+        for name, details in _CAPABILITY_GAP_DEFINITIONS.items()
     }
 
 
@@ -3820,6 +4418,143 @@ def _enrich_with_context_files(app: "FastAPI", sid: str, user_text: str) -> str:
     )
 
 
+def _memory_search_request_from_message(message: "Message", user_text: str) -> dict[str, Any] | None:
+    raw = message.metadata.get("memory_search") if isinstance(message.metadata, Mapping) else None
+    if raw is None and isinstance(message.metadata, Mapping):
+        if not message.metadata.get("include_cross_session_memory"):
+            return None
+        raw = {
+            "enabled": True,
+            "query": message.metadata.get("memory_search_query") or user_text,
+            "include_cross_session": True,
+            "reason": message.metadata.get("memory_search_reason") or "",
+        }
+    if not isinstance(raw, Mapping):
+        return None
+    if raw.get("enabled") is False:
+        return None
+    return dict(raw)
+
+
+def _enrich_with_requested_memory_search(
+    app: "FastAPI",
+    sid: str,
+    user_text: str,
+    user_msg: "Message",
+) -> tuple[str, dict[str, Any]]:
+    """Prepend explicitly requested memory-search hits to one turn.
+
+    This is intentionally opt-in through user message metadata. It gives the
+    orchestrator/TUI a tool-like way to make cross-session recall visible to the
+    model without weakening the default per-session context boundary.
+    """
+
+    req = _memory_search_request_from_message(user_msg, user_text)
+    if req is None:
+        return user_text, {}
+
+    query = str(req.get("query") or user_text).strip()
+    include_cross_session = bool(req.get("include_cross_session", False))
+    workspace_id = str(req.get("workspace_id") or "").strip()
+    reason = str(req.get("reason") or "").strip()
+    try:
+        limit = int(req.get("limit", 5) or 5)
+    except (TypeError, ValueError):
+        limit = 5
+    response = _memory_search_response(
+        app,
+        query=query,
+        session_id=sid,
+        workspace_id=workspace_id,
+        include_cross_session=include_cross_session,
+        limit=limit,
+        exclude_message_id=user_msg.id,
+    )
+    metadata = {
+        "query": response.query,
+        "include_cross_session": response.include_cross_session,
+        "searched_sessions": response.searched_sessions,
+        "hit_count": len(response.hits),
+        "reason": reason,
+        "scope": response.metadata.get("scope", ""),
+        "hits": [
+            {
+                "session_id": hit.session_id,
+                "session_title": hit.session_title,
+                "message_id": hit.message_id,
+                "part_id": hit.part_id,
+                "role": hit.role,
+                "match_terms": hit.match_terms,
+                "score": hit.score,
+                "cross_session": bool(hit.metadata.get("cross_session", False)),
+            }
+            for hit in response.hits
+        ],
+    }
+    app.state.bus.publish(
+        Event(
+            type="memory.search.completed",
+            session_id=sid,
+            payload=metadata,
+        )
+    )
+    if not response.hits:
+        return user_text, metadata
+
+    blocks = []
+    for idx, hit in enumerate(response.hits, start=1):
+        cross = "cross-session" if hit.metadata.get("cross_session") else "current-session"
+        title = hit.session_title or hit.session_id
+        blocks.append(
+            f"### Memory hit {idx}: {title} ({cross})\n"
+            f"- session_id: {hit.session_id}\n"
+            f"- message_id: {hit.message_id}\n"
+            f"- role: {hit.role}\n"
+            f"- matched_terms: {', '.join(hit.match_terms)}\n"
+            f"```\n{hit.text}\n```"
+        )
+    return (
+        "## Explicit Memory Search Results\n\n"
+        + f"Query: {response.query}\n"
+        + f"Reason: {reason or 'not provided'}\n"
+        + f"Scope: {metadata['scope']}\n\n"
+        + "\n\n".join(blocks)
+        + "\n\n## User question\n\n"
+        + user_text
+    ), metadata
+
+
+def _context_file_turn_provenance(app: "FastAPI", sid: str, *, status: str) -> dict[str, Any]:
+    """Return non-secret provenance for context files attached to this turn."""
+
+    rows = list((app.state.context_files.get(sid, {}) or {}).values())
+    files: list[dict[str, Any]] = []
+    for row in rows:
+        path = str(row.get("path") or "")
+        if not path:
+            continue
+        mode = str(row.get("mode") or "read")
+        file_row: dict[str, Any] = {
+            "path": path,
+            "mode": mode,
+            "status": status,
+            "inline_policy": "metadata_only" if mode == "edit" else "inline_or_inspect",
+        }
+        for key in ("source", "workspace_id", "display_path", "resolved_path", "added_at"):
+            value = row.get(key)
+            if value:
+                file_row[key] = value
+        if row.get("size") is not None:
+            file_row["size"] = row.get("size")
+        files.append(file_row)
+    return {
+        "status": status,
+        "count": len(files),
+        "max_inline_bytes": _CTX_MAX_BYTES,
+        "files": files,
+    }
+
+
 _CTX_MAX_BYTES = 32 * 1024  # 32 KB cap per attached file
 
 
@@ -4346,6 +5081,18 @@ def _load_skills_from_disk() -> list[AgentDef]:
             }
             if meta.get("model"):
                 metadata["model"] = str(meta["model"]).strip()
+            for key in (
+                "command",
+                "slash_command",
+                "slash-command",
+                "commands",
+                "slash_commands",
+                "slash-commands",
+                "prompt_template",
+                "prompt-template",
+            ):
+                if key in meta:
+                    metadata[key] = meta[key]
             if body:
                 # Stash the system-prompt body so future /v1/agents/{id}
                 # can return the full prompt without re-reading the file.
@@ -4368,6 +5115,89 @@ def _load_skills_from_disk() -> list[AgentDef]:
     return list(rows.values())
 
 
+def _load_command_files_from_disk() -> list[dict[str, Any]]:
+    """Discover CLIO/Claude-compatible Markdown command recipe files."""
+    import os
+    from pathlib import Path
+
+    rows: dict[str, dict[str, Any]] = {}
+    for root, source in _command_search_roots(Path.home(), Path(os.getcwd())):
+        if not root.exists() or not root.is_dir():
+            continue
+        for md in sorted(root.glob("*.md"), key=lambda path: str(path).lower()):
+            try:
+                text = md.read_text(encoding="utf-8")
+            except Exception:
+                continue
+            meta, body = _parse_skill_frontmatter(text)
+            command_id = _normalize_file_command_id(meta, md)
+            if not command_id:
+                continue
+            description = str(meta.get("description") or "").strip()
+            if not description:
+                for line in body.splitlines():
+                    line = line.strip()
+                    if line:
+                        description = line[:240]
+                        break
+
+            status = str(meta.get("status") or "available").strip() or "available"
+            disabled_reason = str(
+                meta.get("disabled_reason") or meta.get("disabled-reason") or ""
+            ).strip()
+            shell_fields = ("shell", "exec", "run", "command_line", "command-line")
+            if any(key in meta for key in shell_fields):
+                status = "unsupported"
+                disabled_reason = disabled_reason or (
+                    "direct local shell execution is not supported by CLIO user commands"
+                )
+
+            enabled = _truthy_command_field(meta.get("enabled"), status == "available")
+            if status != "available":
+                enabled = False
+            agent_id = str(
+                meta.get("agent")
+                or meta.get("agent_id")
+                or meta.get("target_agent")
+                or meta.get("target-agent")
+                or "main"
+            ).strip()
+            command = {
+                "id": command_id,
+                "title": str(meta.get("title") or command_id).strip(),
+                "description": description,
+                "source": "user",
+                "status": status,
+                "enabled": enabled,
+                "error": str(
+                    meta.get("error")
+                    or ("not_supported" if status == "unsupported" else "")
+                ),
+                "disabled_reason": disabled_reason,
+                "agent_id": agent_id,
+                "agent_source": "command_file",
+                "command_path": str(md),
+                "command_source": source,
+                "invocation": (
+                    "agent"
+                    if _truthy_command_field(meta.get("agent-invocable"), True)
+                    else "user"
+                ),
+                "user_invocable": _truthy_command_field(meta.get("user-invocable"), True),
+                "agent_invocable": _truthy_command_field(meta.get("agent-invocable"), True),
+                "argument_hint": str(
+                    meta.get("argument-hint") or meta.get("argument_hint") or ""
+                ),
+                "arguments": meta.get("arguments") or [],
+                "prompt_template": body,
+                "prompt_profile": str(
+                    meta.get("prompt-profile") or meta.get("prompt_profile") or ""
+                ),
+            }
+            rows.setdefault(command_id, command)
+    return list(rows.values())
+
+
 def _skill_search_roots(home: Path, cwd: Path) -> list[tuple[Path, str]]:
     """Return skill roots in override order."""
     return [
@@ -4378,6 +5208,34 @@ def _skill_search_roots(home: Path, cwd: Path) -> list[tuple[Path, str]]:
         (cwd / ".codex" / "skills", "codex"),
         (cwd / ".agents" / "skills", "agents"),
     ]
+
+
+def _command_search_roots(home: Path, cwd: Path) -> list[tuple[Path, str]]:
+    """Return command roots in precedence order; first matching id wins."""
+    return [
+        (cwd / ".clio" / "commands", "clio_workspace"),
+        (cwd / ".claude" / "commands", "claude_workspace"),
+        (home / ".config" / "clio-agent" / "commands", "clio_user"),
+        (home / ".claude" / "commands", "claude_user"),
+    ]
+
+
+def _normalize_file_command_id(meta: Mapping[str, Any], path: Path) -> str:
+    raw = meta.get("slash_id") or meta.get("slash-id") or meta.get("name") or path.stem
+    value = str(raw or "").strip()
+    if not value:
+        return ""
+    return value if value.startswith("/") else f"/{value}"
+
+
+def _truthy_command_field(value: Any, default: bool) -> bool:
+    if value in (None, ""):
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() not in {"0", "false", "no", "off", "disabled"}
+    return bool(value)
 
 
 def _skill_markdown_files(root: Path) -> list[Path]:
@@ -4526,12 +5384,14 @@ from clio_agent.gact.sessions import SessionStore, _default_store_path
 from clio_agent.gact.types import (
     AgentCapabilityRef,
     AgentDef,
+    AnswerUserQuestionRequest,
     AuthInfo,
     BackendInfo,
     CacheStats,
     Capabilities,
     CapabilityFlags,
     CreateSessionRequest,
+    CreateUserQuestionRequest,
     CreateWorkspaceRequest,
     ErrorEnvelope,
     ErrorInfo,
@@ -4545,20 +5405,28 @@ from clio_agent.gact.types import (
     LMProviderInfo,
     LMProviderPreset,
     LMProviderRequest,
+    MemorySearchHit,
+    MemorySearchResponse,
     MemoryStats,
     Message,
     Metrics,
     MetricsMessages,
     MetricsSessions,
+    ModelRef,
     Part,
     PostMessageRequest,
     PostMessageResponse,
+    RetryTurnRequest,
     Session,
+    SessionContextPolicy,
     SessionMemoryStats,
     Tokens,
     Tool,
     TransportFlags,
+    TurnAttempt,
     UpdateSessionRequest,
+    UserQuestion,
+    UserQuestionOption,
     Workspace,
 )
 from clio_agent.gact.workspaces import (
@@ -4855,6 +5723,7 @@ def build_app(
         ],
         write_root=prompt_write_root,
     )
+    app.state.memory_events = {}
     # CLIO-BBBBBBBBBB13: per-session pub/sub. POST /messages
     # publishes; /v1/sessions/{sid}/events subscribers consume.
     app.state.bus = EventBus()
@@ -4872,7 +5741,12 @@ def build_app(
     # CLIO-BBBBBBBBBB22: per-session context files. Keyed by
     # session_id, each value is an ordered dict of
     # path -> ContextFile dict.
-    app.state.context_files = {}
+    app.state.context_files_path = session_store_path.parent / "context_files.json"
+    app.state.context_files = _load_context_files(app.state.context_files_path)
+    # iowarp/clio-agent#331: per-turn context truth frames. These
+    # capture what visible transcript/context attachments were
+    # retained for a turn, plus model/agent/prompt provenance.
+    app.state.context_frames = {}
     # CLIO-BBBBBBBBBB21: per-session pending diffs. Keyed by
     # session_id -> list of {path, unified_diff, status,
     # part_id, message_id}. Status is "pending" until apply/reject
@@ -4888,6 +5762,13 @@ def build_app(
     # MCPToolBridge gate (running in a worker thread) can block on
     # the user's response without polling.
     app.state.permission_events = {}
+    # iowarp/clio-agent#333: structured ask-user protocol. The
+    # orchestrator/backend can publish pending questions; clients
+    # answer or cancel them through explicit endpoints.
+    app.state.user_questions = {}
+    # iowarp/clio-agent#333: retry attempts preserve provenance for
+    # retry-with-notes/model flows without mutating the original turn.
+    app.state.turn_attempts = {}
     # SPEC §6.17 hooks (declarative event→command/url callouts that
     # gact-tui drives via /v1/hooks). Distinct from CLIO's runtime
     # in-process Python hooks (clio_agent.runtime.hooks) — these are
@@ -4898,8 +5779,9 @@ def build_app(
     # SPEC §6.11.b permission policies — list, not dict. Backends
     # consult this on every tool call to decide allow/deny/ask before
     # falling back to the per-tool permission_default. PUT replaces
-    # the whole list; in-memory.
-    app.state.permission_policies = []
+    # the whole list.
+    app.state.permission_policies_path = session_store_path.parent / "permission_policies.json"
+    app.state.permission_policies = _load_permission_policies(app.state.permission_policies_path)
     # iowarp/clio-agent#18: per-session task list (todo-style).
     # Keyed by session_id -> {task_id -> task dict}. In-memory.
     app.state.session_tasks = {}
@@ -5233,10 +6115,24 @@ def build_app(
                 x_clio_direct_delete_permissions=True,
                 x_clio_prompt_registry=True,
                 x_clio_expert_packs=True,
+                x_clio_user_questions=True,
+                x_clio_retry_attempts=True,
+                x_clio_context_frames=True,
+                x_clio_capability_gaps=_capability_gap_metadata(),
             ),
             transports=TransportFlags(events_sse=True, events_websocket=False),
             auth=AuthInfo(schemes=["trust_socket"], current="trust_socket"),
         )
+
+    @app.get("/v1/capability-gaps")
+    async def capability_gaps() -> dict[str, Any]:
+        """Return intentionally unsupported or future CLIO capability rows.
+
+        This keeps "not supported yet" affordances visible as ideas without
+        making clients infer support from missing routes or failed commands.
+        """
+
+        return {"capability_gaps": _capability_gap_metadata()}
 
     # ---- 501 stubs for the rest of the surface ---------------------------
     # Every route in the v0.2 contract that we haven't wired yet
@@ -5414,8 +6310,10 @@ def build_app(
             )
         return Session(**sess.to_wire())
 
-    @app.delete("/v1/sessions/{sid}")
-    async def delete_session(sid: str) -> Response:
+    @app.get("/v1/sessions/{sid}/context/policy", response_model=SessionContextPolicy)
+    async def get_session_context_policy(sid: str) -> SessionContextPolicy:
+        """Return CLIO's effective context compartment policy for one session."""
+
         sess = app.state.sessions.get(sid)
         if sess is None:
             raise HTTPException(
@@ -5429,6 +6327,27 @@ def build_app(
                     )
                 ).model_dump(exclude_none=True),
             )
+
+        return SessionContextPolicy(
+            session_id=sid,
+            notes=[
+                "Conversation retrieval and writes are scoped to the active session.",
+                "Cross-session memory search is not exposed by this endpoint yet.",
+                "A future explicit tool may allow consented cross-session reads.",
+            ],
+            metadata={
+                "source": "clio_backend_default",
+                "session_mode": sess.mode,
+                "routing_mode": sess.routing_mode,
+                "arc_wired": app.state.arc is not None,
+            },
+        )
+
+    @app.delete("/v1/sessions/{sid}")
+    async def delete_session(sid: str) -> Response:
+        sess = app.state.sessions.get(sid)
+        if sess is None:
+            raise _session_not_found(sid)
         _guard_direct_destructive_action(
             app,
             session_id=sid,
@@ -5452,24 +6371,294 @@ def build_app(
                 ).model_dump(exclude_none=True),
             )
         _delete_session_messages(app, sid)
+        _delete_session_context_files(app, sid)
         return Response(status_code=204)
+
+    def _reject_rollback_while_active(sid: str, sess: Any) -> None:
+        if getattr(sess, "status", "") in {"running", "waiting_permission"}:
+            raise HTTPException(
+                status_code=409,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="conflict",
+                        message=f"session {sid} cannot be rolled back while {sess.status}",
+                        details={"session_id": sid, "status": sess.status},
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+
+    def _publish_rollback_events(
+        sid: str,
+        *,
+        operation: str,
+        deleted_ids: list[str],
+        session_payload: dict[str, Any],
+        target_message_id: str = "",
+        include_target: bool = False,
+    ) -> None:
+        for message_id in deleted_ids:
+            app.state.bus.publish(
+                Event(
+                    type="message.deleted",
+                    session_id=sid,
+                    payload={
+                        "message_id": message_id,
+                        "session_id": sid,
+                        "operation": operation,
+                    },
+                )
+            )
+        app.state.bus.publish(
+            Event(
+                type=f"session.{operation}",
+                session_id=sid,
+                payload={
+                    "session_id": sid,
+                    "deleted_message_ids": deleted_ids,
+                    "target_message_id": target_message_id,
+                    "include_target": include_target,
+                },
+            )
+        )
+        app.state.bus.publish(
+            Event(
+                type="session.updated",
+                session_id=sid,
+                payload=session_payload,
+            )
+        )
+
+    def _commit_rollback(
+        sid: str,
+        *,
+        operation: str,
+        kept_messages: list[Message],
+        deleted_messages: list[Message],
+        target_message_id: str = "",
+        include_target: bool = False,
+    ) -> dict[str, Any]:
+        _replace_session_messages(app, sid, kept_messages)
+        deleted_ids = [m.id for m in deleted_messages]
+        updated = app.state.sessions.update(
+            sid,
+            message_count=len(kept_messages),
+            status="idle",
+            metadata_patch={
+                "last_rollback": {
+                    "operation": operation,
+                    "deleted_message_ids": deleted_ids,
+                    "target_message_id": target_message_id,
+                    "include_target": include_target,
+                    "memory_scope": "gact_visible_transcript_only",
+                    "occurred_at": datetime.now(timezone.utc).isoformat(),
+                }
+            },
+        )
+        if updated is None:
+            raise _session_not_found(sid)
+        session_payload = Session(**updated.to_wire()).model_dump(exclude_none=True)
+        _publish_rollback_events(
+            sid,
+            operation=operation,
+            deleted_ids=deleted_ids,
+            session_payload=session_payload,
+            target_message_id=target_message_id,
+            include_target=include_target,
+        )
+        return {
+            "session_id": sid,
+            "operation": operation,
+            "deleted_message_ids": deleted_ids,
+            "deleted_messages": deleted_ids,
+            "reverted_message_ids": deleted_ids,
+            "message_count": len(kept_messages),
+            "memory_scope": "gact_visible_transcript_only",
+            "session": session_payload,
+        }
+
+    @app.post("/v1/sessions/{sid}/undo")
+    async def undo_session(sid: str, request: Request) -> dict[str, Any]:
+        sess = app.state.sessions.get(sid)
+        if sess is None:
+            raise _session_not_found(sid)
+        _reject_rollback_while_active(sid, sess)
+        try:
+            body = await request.json()
+        except json.JSONDecodeError:
+            body = {}
+        if body is None:
+            body = {}
+        if not isinstance(body, dict):
+            raise HTTPException(
+                status_code=422,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="validation_error",
+                        message="undo request body must be an object",
+                        details={"session_id": sid},
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        raw_count = body.get("count", body.get("message_count", 1))
+        try:
+            count = int(raw_count) if isinstance(raw_count, str | int | float) else 1
+        except (TypeError, ValueError):
+            count = 1
+        if count < 1:
+            raise HTTPException(
+                status_code=422,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="validation_error",
+                        message="undo count must be at least 1",
+                        details={"session_id": sid, "count": raw_count},
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        messages = list(app.state.messages.get(sid, []))
+        deleted = messages[-count:]
+        kept = messages[: max(0, len(messages) - count)]
+        _guard_direct_destructive_action(
+            app,
+            session_id=sid,
+            workspace_id=sess.workspace_id,
+            tool_name="gact.session.undo",
+            args={"session_id": sid, "count": count},
+            summary=f"undo last {count} message(s) in session {sid}",
+            reason="user_requested_session_undo",
+        )
+        return _commit_rollback(
+            sid,
+            operation="undo",
+            kept_messages=kept,
+            deleted_messages=deleted,
+        )
+
+    @app.post("/v1/sessions/{sid}/rewind")
+    async def rewind_session(sid: str, request: Request) -> dict[str, Any]:
+        sess = app.state.sessions.get(sid)
+        if sess is None:
+            raise _session_not_found(sid)
+        _reject_rollback_while_active(sid, sess)
+        try:
+            body = await request.json()
+        except json.JSONDecodeError:
+            body = {}
+        if not isinstance(body, dict):
+            raise HTTPException(
+                status_code=422,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="validation_error",
+                        message="rewind request body must be an object",
+                        details={"session_id": sid},
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        target_message_id = str(
+            body.get("message_id")
+            or body.get("target_message_id")
+            or body.get("to_message_id")
+            or ""
+        ).strip()
+        if not target_message_id:
+            raise HTTPException(
+                status_code=422,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="validation_error",
+                        message="rewind requires message_id",
+                        details={"session_id": sid},
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        include_target = bool(body.get("include_target", False))
+        messages = list(app.state.messages.get(sid, []))
+        target_index = next(
+            (index for index, message in enumerate(messages) if message.id == target_message_id),
+            -1,
+        )
+        if target_index < 0:
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="not_found",
+                        message=f"message not found: {target_message_id}",
+                        details={"session_id": sid, "message_id": target_message_id},
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        keep_end = target_index if include_target else target_index + 1
+        kept = messages[:keep_end]
+        deleted = messages[keep_end:]
+        _guard_direct_destructive_action(
+            app,
+            session_id=sid,
+            workspace_id=sess.workspace_id,
+            tool_name="gact.session.rewind",
+            args={
+                "session_id": sid,
+                "message_id": target_message_id,
+                "include_target": include_target,
+            },
+            summary=f"rewind session {sid} to message {target_message_id}",
+            reason="user_requested_session_rewind",
+        )
+        return _commit_rollback(
+            sid,
+            operation="rewind",
+            kept_messages=kept,
+            deleted_messages=deleted,
+            target_message_id=target_message_id,
+            include_target=include_target,
+        )
 
     # ---- /v1/permissions (BBB23) --------------------------------------
 
     @app.get("/v1/permissions")
-    async def list_permissions(session_id: str = "", status: str = "") -> dict[str, Any]:
+    async def list_permissions(
+        session_id: str = "",
+        status: str = "",
+        limit: int = 100,
+    ) -> dict[str, Any]:
         """List permission requests.
 
         ?session_id=<sid> narrows to a session; ?status=pending
-        hides resolved rows. Both are optional.
+        hides resolved rows; ?status=all returns the audit ledger.
         """
 
         rows = list(app.state.permissions.values())
+        total_before_filters = len(rows)
         if session_id:
             rows = [r for r in rows if r.get("session_id") == session_id]
-        if status:
+        total_after_session_filter = len(rows)
+        if status and status != "all":
             rows = [r for r in rows if r.get("status") == status]
-        return {"permissions": rows}
+        total_after_status_filter = len(rows)
+        rows.sort(key=lambda r: str(r.get("created_at") or ""), reverse=True)
+        if limit <= 0:
+            limit = 100
+        limit = min(limit, 500)
+        return {
+            "permissions": rows[:limit],
+            "metadata": {
+                "session_id": session_id,
+                "status": status or "all",
+                "limit": limit,
+                "total": total_after_status_filter,
+                "returned": min(total_after_status_filter, limit),
+                "truncated": total_after_status_filter > limit,
+                "total_before_filters": total_before_filters,
+                "total_after_session_filter": total_after_session_filter,
+            },
+        }
 
     @app.post("/v1/permissions/{pid}")
     async def respond_permission(pid: str, request: Request) -> Response:
@@ -5515,6 +6704,9 @@ def build_app(
             row["status"] = "resolved"
             row["action"] = action
             row["resolved_at"] = datetime.now(timezone.utc).isoformat()
+            policy = _append_permission_policy_from_resolution(app, row=row, action=action)
+            if policy is not None:
+                row["policy"] = policy
             # iowarp/clio-agent#7: wake any MCPToolBridge thread
             # waiting on this permission's event.
             evt = app.state.permission_events.pop(pid, None)
@@ -5846,6 +7038,55 @@ def build_app(
             "source": source,
         }
 
+    @app.get("/v1/sessions/{sid}/context/frames")
+    async def list_context_frames(sid: str, limit: int = 50) -> dict[str, Any]:
+        """List per-turn context truth frames for a session."""
+
+        if app.state.sessions.get(sid) is None:
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="internal_error",
+                        message=f"session not found: {sid}",
+                        details={"session_id": sid},
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        limit = max(1, min(int(limit or 50), 200))
+        rows = list(app.state.context_frames.get(sid, []))
+        return {"frames": rows[-limit:]}
+
+    @app.get("/v1/sessions/{sid}/context/frames/{frame_id}")
+    async def get_context_frame(sid: str, frame_id: str) -> dict[str, Any]:
+        if app.state.sessions.get(sid) is None:
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="internal_error",
+                        message=f"session not found: {sid}",
+                        details={"session_id": sid},
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        for row in app.state.context_frames.get(sid, []):
+            if row.get("id") == frame_id:
+                return {"frame": row}
+        raise HTTPException(
+            status_code=404,
+            detail=ErrorEnvelope(
+                error=ErrorInfo(
+                    error="not_found",
+                    message=f"context frame not found: {frame_id}",
+                    details={"session_id": sid, "frame_id": frame_id},
+                    recoverable=False,
+                )
+            ).model_dump(exclude_none=True),
+        )
+
     @app.get("/v1/sessions/{sid}/context/files")
     async def list_context_files(sid: str) -> dict[str, Any]:
         if app.state.sessions.get(sid) is None:
@@ -5919,9 +7160,23 @@ def build_app(
                     status_code=404,
                     detail=ErrorEnvelope(
                         error=ErrorInfo(
-                            error="not_found",
+                            error="context_file_error",
                             message=f"context file not found: {path}",
-                            details={"path": path},
+                            details={
+                                "path": path,
+                                "resolved_path": str(resolved),
+                                "display_path": resolved_info.get("display_path") or path,
+                                "workspace_id": resolved_info.get("workspace_id") or "",
+                                "source": resolved_info.get("source") or "",
+                                "mode": mode,
+                                "operation": "exists",
+                                "recovery_actions": [
+                                    "choose_existing_file",
+                                    "remove_context_file",
+                                    "retry",
+                                    "exit",
+                                ],
+                            },
                             recoverable=True,
                         )
                     ).model_dump(exclude_none=True),
@@ -5931,9 +7186,23 @@ def build_app(
                     status_code=422,
                     detail=ErrorEnvelope(
                         error=ErrorInfo(
-                            error="bad_request",
+                            error="context_file_error",
                             message=f"context path is not a file: {path}",
-                            details={"path": path},
+                            details={
+                                "path": path,
+                                "resolved_path": str(resolved),
+                                "display_path": resolved_info.get("display_path") or path,
+                                "workspace_id": resolved_info.get("workspace_id") or "",
+                                "source": resolved_info.get("source") or "",
+                                "mode": mode,
+                                "operation": "is_file",
+                                "recovery_actions": [
+                                    "choose_existing_file",
+                                    "remove_context_file",
+                                    "retry",
+                                    "exit",
+                                ],
+                            },
                             recoverable=True,
                         )
                     ).model_dump(exclude_none=True),
@@ -5948,6 +7217,7 @@ def build_app(
         }
         bucket = app.state.context_files.setdefault(sid, {})
         bucket[row["path"]] = row
+        _flush_context_files(app)
         app.state.bus.publish(
             Event(
                 type="context.file.added",
@@ -6010,6 +7280,7 @@ def build_app(
             )
         removed = bucket.pop(matched_key, None) if matched_key else None
         if removed is not None:
+            _flush_context_files(app)
             app.state.bus.publish(
                 Event(
                     type="context.file.removed",
@@ -6079,6 +7350,11 @@ def build_app(
             new_sess.id,
             [m.model_copy(deep=True) for m in src_msgs],
         )
+        source_context_files = app.state.context_files.get(sid, {})
+        if source_context_files:
+            app.state.context_files[new_sess.id] = {
+                key: dict(row) for key, row in source_context_files.items()
+            }
         app.state.sessions.update(new_sess.id, message_count=len(src_msgs))
         return JSONResponse(
             status_code=201,
@@ -6256,14 +7532,184 @@ def build_app(
         },
     ]
 
+    def _normalize_command_id(raw: Any) -> str:
+        value = str(raw or "").strip()
+        if not value:
+            return ""
+        return value if value.startswith("/") else f"/{value}"
+
+    def _command_defs_from_agent(agent_def: AgentDef) -> list[dict[str, Any]]:
+        metadata = agent_def.metadata if isinstance(agent_def.metadata, Mapping) else {}
+        raw_defs: list[Any] = []
+        for key in ("commands", "slash_commands", "slash-commands"):
+            value = metadata.get(key)
+            if isinstance(value, list):
+                raw_defs.extend(value)
+            elif value:
+                raw_defs.append(value)
+        for key in ("command", "slash_command", "slash-command"):
+            value = metadata.get(key)
+            if value:
+                raw_defs.append(value)
+
+        rows: list[dict[str, Any]] = []
+        for raw in raw_defs:
+            if isinstance(raw, str):
+                command_id = _normalize_command_id(raw)
+                row: dict[str, Any] = {}
+            elif isinstance(raw, Mapping):
+                command_id = _normalize_command_id(
+                    raw.get("id") or raw.get("name") or raw.get("command")
+                )
+                row = dict(raw)
+            else:
+                continue
+            if not command_id:
+                continue
+            status = str(row.get("status") or "available")
+            enabled = _truthy_command_field(row.get("enabled"), status == "available")
+            if status != "available":
+                enabled = False
+            agent_invocable = _truthy_command_field(
+                row.get("agent_invocable", row.get("agent-invocable")),
+                False,
+            )
+            user_invocable = _truthy_command_field(
+                row.get("user_invocable", row.get("user-invocable")),
+                True,
+            )
+            rows.append(
+                {
+                    "id": command_id,
+                    "title": str(row.get("title") or agent_def.title or command_id),
+                    "description": str(row.get("description") or agent_def.description or ""),
+                    "source": "user",
+                    "status": status,
+                    "enabled": enabled,
+                    "error": str(row.get("error") or ""),
+                    "disabled_reason": str(row.get("disabled_reason") or ""),
+                    "agent_id": agent_def.id,
+                    "agent_source": agent_def.source,
+                    "invocation": str(row.get("invocation") or "agent"),
+                    "user_invocable": user_invocable,
+                    "agent_invocable": agent_invocable,
+                    "argument_hint": str(
+                        row.get("argument_hint") or row.get("argument-hint") or ""
+                    ),
+                    "arguments": row.get("arguments") or [],
+                    "prompt_template": str(
+                        row.get("prompt_template")
+                        or row.get("prompt-template")
+                        or row.get("prompt")
+                        or metadata.get("prompt_template")
+                        or metadata.get("prompt-template")
+                        or ""
+                    ),
+                }
+            )
+        return rows
+
+    def _user_command_rows() -> list[dict[str, Any]]:
+        rows: dict[str, dict[str, Any]] = {}
+        for command in _load_command_files_from_disk():
+            rows.setdefault(command["id"], command)
+        agents = [AgentDef(**row.to_wire()) for row in app.state.user_agents.list()]
+        agents.extend(_load_skills_from_disk())
+        for agent_def in agents:
+            for command in _command_defs_from_agent(agent_def):
+                rows.setdefault(command["id"], command)
+        return sorted(rows.values(), key=lambda row: row["id"])
+
+    def _all_command_rows() -> list[dict[str, Any]]:
+        rows = {command["id"]: dict(command) for command in _BACKEND_COMMANDS}
+        for command in _user_command_rows():
+            rows.setdefault(command["id"], command)
+        return list(rows.values())
+
+    def _render_command_prompt(
+        command_meta: Mapping[str, Any],
+        *,
+        user_input: str,
+        args: Any,
+        cmd_id: str,
+        agent_id: str,
+    ) -> str:
+        prompt_template = str(command_meta.get("prompt_template") or "")
+        if not prompt_template:
+            return user_input or str(command_meta.get("description") or cmd_id)
+        rendered = (
+            prompt_template.replace("{{input}}", user_input)
+            .replace("{{args}}", user_input)
+            .replace("$ARGUMENTS", user_input)
+            .replace("{{command}}", cmd_id)
+            .replace("{{agent_id}}", agent_id)
+        )
+        if isinstance(args, Mapping):
+            for key, value in args.items():
+                rendered = rendered.replace(f"{{{{args.{key}}}}}", str(value))
+        return rendered
+
+    def _command_required_argument_names(command_meta: Mapping[str, Any]) -> list[str]:
+        specs = command_meta.get("arguments") or []
+        if isinstance(specs, str):
+            return [specs] if specs.strip() else []
+        if not isinstance(specs, list):
+            return []
+        required: list[str] = []
+        for spec in specs:
+            if isinstance(spec, str) and spec.strip():
+                required.append(spec.strip())
+            elif isinstance(spec, Mapping) and _truthy_command_field(
+                spec.get("required"),
+                False,
+            ):
+                name = str(spec.get("name") or spec.get("id") or "").strip()
+                if name:
+                    required.append(name)
+        return required
+
+    def _validate_command_arguments(
+        command_meta: Mapping[str, Any],
+        *,
+        args: Any,
+        user_input: str,
+        cmd_id: str,
+    ) -> None:
+        required = _command_required_argument_names(command_meta)
+        if not required:
+            return
+        if not isinstance(args, Mapping):
+            if user_input:
+                return
+            missing = required
+        else:
+            missing = [name for name in required if args.get(name) in (None, "")]
+        if not missing:
+            return
+        raise HTTPException(
+            status_code=422,
+            detail=ErrorEnvelope(
+                error=ErrorInfo(
+                    error="invalid_arguments",
+                    message=f"command {cmd_id} is missing required arguments",
+                    details={
+                        "command": cmd_id,
+                        "missing": missing,
+                        "argument_hint": command_meta.get("argument_hint", ""),
+                    },
+                    recoverable=True,
+                )
+            ).model_dump(exclude_none=True),
+        )
+
     @app.get("/v1/commands")
     async def list_commands() -> dict[str, Any]:
         """SPEC §6.13 — backend-provided slash commands."""
 
-        return {"commands": _BACKEND_COMMANDS}
+        return {"commands": _all_command_rows()}
 
     @app.post("/v1/sessions/{sid}/commands/{cmd}")
-    async def dispatch_command(sid: str, cmd: str) -> dict[str, Any]:
+    async def dispatch_command(sid: str, cmd: str, request: Request) -> dict[str, Any]:
         """Dispatch a backend command for a session. Returns a
         system-style result the TUI can render inline as a message.
         """
@@ -6283,7 +7729,7 @@ def build_app(
 
         # Accept "clear" or "/clear"; the TUI sends both shapes.
         cmd_id = cmd if cmd.startswith("/") else "/" + cmd
-        commands_by_id = {c["id"]: c for c in _BACKEND_COMMANDS}
+        commands_by_id = {c["id"]: c for c in _all_command_rows()}
         command_meta = commands_by_id.get(cmd_id)
         if command_meta is None:
             raise HTTPException(
@@ -6321,6 +7767,114 @@ def build_app(
                     )
                 ).model_dump(exclude_none=True),
             )
+
+        try:
+            request_body = await request.json()
+        except Exception:
+            request_body = {}
+        if not isinstance(request_body, dict):
+            request_body = {}
+
+        if command_meta.get("source") == "user":
+            agent_id = str(command_meta.get("agent_id") or "")
+            agent_def = _resolve_dynamic_agent(app, agent_id)
+            if agent_def is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail=ErrorEnvelope(
+                        error=ErrorInfo(
+                            error="not_found",
+                            message=f"command agent not found: {agent_id}",
+                            details={"command": cmd_id, "agent_id": agent_id},
+                            recoverable=True,
+                        )
+                    ).model_dump(exclude_none=True),
+                )
+            args = request_body.get("args")
+            if args is None:
+                args = request_body.get("arguments")
+            user_input = str(
+                request_body.get("input")
+                or request_body.get("text")
+                or request_body.get("prompt")
+                or ""
+            ).strip()
+            if not user_input and args not in (None, ""):
+                if isinstance(args, str):
+                    user_input = args
+                elif isinstance(args, Mapping) and len(args) == 1:
+                    user_input = str(next(iter(args.values())))
+                else:
+                    user_input = json.dumps(args, sort_keys=True, default=str)
+            _validate_command_arguments(
+                command_meta,
+                args=args,
+                user_input=user_input,
+                cmd_id=cmd_id,
+            )
+            question = _render_command_prompt(
+                command_meta,
+                user_input=user_input,
+                args=args,
+                cmd_id=cmd_id,
+                agent_id=agent_id,
+            )
+            if agent_def.tools:
+                pred = _run_tool_user_agent(app.state.agent, agent_def, question, sid)
+            else:
+                pred = _run_prompt_user_agent(app.state.agent, agent_def, question, sid)
+            agent_body_text = str(getattr(pred, "answer", "") or "").strip()
+            if not agent_body_text:
+                agent_body_text = f"user command {cmd_id} completed with no answer"
+
+            from clio_agent.gact.types import Message, Part, Tokens  # noqa: PLC0415
+
+            sys_msg = Message(
+                id=f"msg_cmd_{uuid.uuid4().hex[:10]}",
+                session_id=sid,
+                role="assistant",
+                created_at=datetime.now(timezone.utc).isoformat(),
+                updated_at=datetime.now(timezone.utc).isoformat(),
+                parts=[
+                    Part(
+                        id=f"part_cmd_{uuid.uuid4().hex[:10]}",
+                        type="text",
+                        metadata={
+                            "synthetic": "command_result",
+                            "command": cmd_id,
+                            "agent_id": agent_id,
+                        },
+                        text=agent_body_text,
+                    )
+                ],
+                tokens=Tokens(input=0, output=0, cache_read=0, cache_write=0),
+                cost_usd=0.0,
+                stop_reason="end_turn",
+                metadata={
+                    "synthetic": "command_result",
+                    "command": cmd_id,
+                    "agent_id": agent_id,
+                    "route_source": "user_command",
+                },
+            )
+            _append_session_message(app, sid, sys_msg)
+            app.state.sessions.update(sid, message_count=len(app.state.messages.get(sid, [])))
+            app.state.bus.publish(
+                Event(
+                    type="message.created",
+                    session_id=sid,
+                    payload=sys_msg.model_dump(exclude_none=True),
+                )
+            )
+            return {
+                "command": cmd_id,
+                "session_id": sid,
+                "result": {
+                    "type": "agent_message",
+                    "text": agent_body_text,
+                    "agent_id": agent_id,
+                },
+            }
 
         # Side effects + system message body per command.
         body_text: str
@@ -7757,15 +9311,19 @@ def build_app(
         # future /resume can recover full history). The TUI doesn't see
         # archived messages — only the compact summary + anything that
         # comes after it.
+        event_id = _new_memory_event_id()
+        compacted_at = datetime.now(timezone.utc).isoformat()
         archive = app.state.__dict__.setdefault("session_archives", {})
         archive.setdefault(sid, []).append(
             {
                 "compacted_at": time.time(),
+                "memory_event_id": event_id,
                 "messages": list(ledger),
             }
         )
 
         arc = getattr(agent, "arc", None)
+        arc_status = "not_configured"
         if arc is not None:
             try:
                 from clio_agent.arc.schema import (  # noqa: PLC0415
@@ -7781,6 +9339,7 @@ def build_app(
                     metadata={
                         "source": "gact_compact",
                         "synthetic": "compact_summary",
+                        "memory_event_id": event_id,
                         "archived_count": len(ledger),
                     },
                 )
@@ -7810,6 +9369,7 @@ def build_app(
                     conv.metadata["compacted_at"] = now_ts
                     conv.metadata["archived_message_count"] = len(ledger)
                 arc.store_conversation(conv)
+                arc_status = "stored"
             except Exception as exc:  # noqa: BLE001
                 raise HTTPException(
                     status_code=500,
@@ -7834,16 +9394,44 @@ def build_app(
                 Part(
                     id=f"part_compact_{uuid.uuid4().hex[:10]}",
                     type="text",
-                    metadata={"synthetic": "compact_summary"},
+                    metadata={
+                        "synthetic": "compact_summary",
+                        "memory_event_id": event_id,
+                    },
                     text="[compact summary]\n" + (summary or "").strip(),
                 )
             ],
             tokens=Tokens(input=0, output=0, cache_read=0, cache_write=0),
             cost_usd=0.0,
             stop_reason="end_turn",
-            metadata={"synthetic": "compact_summary"},
+            metadata={
+                "synthetic": "compact_summary",
+                "memory_event_id": event_id,
+            },
         )
         _replace_session_messages(app, sid, [compact_message])
+        memory_event = {
+            "id": event_id,
+            "version": 1,
+            "type": "compact_summary",
+            "session_id": sid,
+            "created_at": compacted_at,
+            "updated_at": compacted_at,
+            "summary_message_id": compact_message.id,
+            "archived_count": len(ledger),
+            "summary_chars": len((summary or "")),
+            "transcript_chars": len(transcript),
+            "transcript_limit": transcript_limit,
+            "per_part_limit": per_part_limit,
+            "focus": focus,
+            "arc_status": arc_status,
+            "metadata": {
+                "source": "gact_compact",
+                "synthetic": "compact_summary",
+                "evidence_index": "[exact retained evidence index]" in (summary or ""),
+            },
+        }
+        app.state.memory_events.setdefault(sid, []).append(memory_event)
 
         # Publish so any open SSE stream redraws.
         app.state.bus.publish(
@@ -7851,17 +9439,73 @@ def build_app(
                 type="session.compacted",
                 session_id=sid,
                 payload={
+                    "event_id": event_id,
                     "archived_count": len(ledger),
                     "summary_chars": len((summary or "")),
+                    "summary_message_id": compact_message.id,
+                    "version": 1,
                 },
             )
         )
         return {
             "session_id": sid,
             "compacted": True,
+            "event_id": event_id,
             "archived_count": len(ledger),
             "summary": summary,
         }
+
+    @app.get("/v1/sessions/{sid}/memory/events")
+    async def list_session_memory_events(sid: str, limit: int = 50) -> dict[str, Any]:
+        sess = app.state.sessions.get(sid)
+        if sess is None:
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="not_found",
+                        message=f"session not found: {sid}",
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        if limit <= 0:
+            limit = 50
+        limit = min(limit, 200)
+        events = list(app.state.memory_events.get(sid, []))
+        return {"events": events[-limit:]}
+
+    @app.get("/v1/sessions/{sid}/memory/events/{event_id}")
+    async def get_session_memory_event(sid: str, event_id: str) -> dict[str, Any]:
+        sess = app.state.sessions.get(sid)
+        if sess is None:
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="not_found",
+                        message=f"session not found: {sid}",
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        event = next(
+            (row for row in app.state.memory_events.get(sid, []) if row.get("id") == event_id),
+            None,
+        )
+        if event is None:
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="not_found",
+                        message=f"memory event not found: {event_id}",
+                        details={"session_id": sid, "event_id": event_id},
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        return {"event": event}
 
     @app.delete("/v1/mcp/servers/{sid}", status_code=204)
     async def uninstall_mcp_server(sid: str) -> None:
@@ -8351,6 +9995,9 @@ def build_app(
             "session": Session(**sess.to_wire()).model_dump(exclude_none=True),
             "workspace": (Workspace(**ws.to_wire()).model_dump(exclude_none=True) if ws else None),
             "messages": [m.model_dump(exclude_none=True) for m in msgs],
+            "context_files": [
+                dict(row) for row in app.state.context_files.get(sid, {}).values()
+            ],
         }
 
     @app.post("/v1/sessions/import", response_model=Session)
@@ -8379,6 +10026,16 @@ def build_app(
             except Exception:
                 continue
         _replace_session_messages(app, new_sess.id, msg_rows)
+        context_files: dict[str, dict[str, Any]] = {}
+        for row in blob.get("context_files", []):
+            if not isinstance(row, Mapping):
+                continue
+            path = str(row.get("path") or "").strip()
+            if not path:
+                continue
+            context_files[path] = dict(row)
+        if context_files:
+            app.state.context_files[new_sess.id] = context_files
         cost_total = sum(float(m.get("cost_usd", 0.0) or 0.0) for m in blob.get("messages", []))
         in_total = sum(
             int((m.get("tokens") or {}).get("input", 0) or 0) for m in blob.get("messages", [])
@@ -8451,6 +10108,470 @@ def build_app(
                 )
         matches.sort(key=lambda r: r["score"], reverse=True)
         return {"matches": matches}
+
+    # ---- Ask-user and retry protocol (#333) --------------------------
+
+    def _session_not_found(sid: str) -> HTTPException:
+        return HTTPException(
+            status_code=404,
+            detail=ErrorEnvelope(
+                error=ErrorInfo(
+                    error="internal_error",
+                    message=f"session not found: {sid}",
+                    details={"session_id": sid},
+                    recoverable=False,
+                )
+            ).model_dump(exclude_none=True),
+        )
+
+    def _question_not_found(sid: str, question_id: str) -> HTTPException:
+        return HTTPException(
+            status_code=404,
+            detail=ErrorEnvelope(
+                error=ErrorInfo(
+                    error="not_found",
+                    message=f"user question not found: {question_id}",
+                    details={"session_id": sid, "question_id": question_id},
+                    recoverable=False,
+                )
+            ).model_dump(exclude_none=True),
+        )
+
+    def _pending_user_questions(sid: str) -> list[UserQuestion]:
+        return [
+            q
+            for q in app.state.user_questions.values()
+            if q.session_id == sid and q.status == "pending"
+        ]
+
+    def _set_session_status(
+        sid: str,
+        status: str,
+        *,
+        prev_status: str = "",
+        metadata_patch: Optional[dict[str, Any]] = None,
+    ) -> None:
+        updated = app.state.sessions.update(
+            sid,
+            status=status,
+            metadata_patch=metadata_patch,
+        )
+        app.state.bus.publish(
+            Event(
+                type="session.status_changed",
+                session_id=sid,
+                payload={
+                    "session_id": sid,
+                    "status": status,
+                    "prev_status": prev_status,
+                    "updated_at": updated.updated_at if updated is not None else "",
+                },
+            )
+        )
+
+    def _normalize_question_options(
+        req: CreateUserQuestionRequest,
+    ) -> list[UserQuestionOption]:
+        if req.kind == "confirmation" and not req.options:
+            return [
+                UserQuestionOption(label="Yes", value="yes", description=""),
+                UserQuestionOption(label="No", value="no", description=""),
+            ]
+        return list(req.options)
+
+    def _start_background_user_turn(
+        sid: str,
+        sess: Session,
+        user_text: str,
+        *,
+        metadata: Optional[dict[str, Any]] = None,
+        prev_status: str = "idle",
+        turn_agent_id: str = "",
+    ) -> Message:
+        now = time.time()
+        user_metadata = dict(metadata or {})
+        if turn_agent_id:
+            user_metadata["agent_override"] = {
+                "requested_agent_id": turn_agent_id,
+                "session_agent_id": _session_agent_id(sess),
+                "scope": "turn",
+            }
+        user_msg = Message(
+            id=_new_message_id("user"),
+            session_id=sid,
+            role="user",
+            created_at=_iso_from_epoch(now),
+            updated_at=_iso_from_epoch(now),
+            parts=[Part(id=_new_part_id(), type="text", text=user_text)],
+            metadata=user_metadata,
+        )
+
+        _append_session_message(app, sid, user_msg)
+        app.state.sessions.update(sid, status="running")
+        app.state.bus.publish(
+            Event(
+                type="session.status_changed",
+                session_id=sid,
+                payload={
+                    "session_id": sid,
+                    "status": "running",
+                    "prev_status": prev_status,
+                },
+            )
+        )
+        app.state.bus.publish(
+            Event(
+                type="message.created",
+                session_id=sid,
+                payload=user_msg.model_dump(exclude_none=True),
+            )
+        )
+
+        task = asyncio.create_task(
+            _run_turn_in_background(app, sid, user_text, user_msg, turn_agent_id)
+        )
+        app.state.in_flight_turns[sid] = task
+
+        def _drop_task(_t, _sid=sid) -> None:
+            cur = app.state.in_flight_turns.get(_sid)
+            if cur is _t:
+                app.state.in_flight_turns.pop(_sid, None)
+
+        task.add_done_callback(_drop_task)
+        return user_msg
+
+    def _message_text(message: Message) -> str:
+        return "\n".join(
+            part.text for part in message.parts if part.type == "text" and part.text
+        ).strip()
+
+    def _retry_source_user_message(messages: list[Message], source: Message) -> Message | None:
+        if source.role == "user":
+            return source
+        try:
+            source_index = next(idx for idx, msg in enumerate(messages) if msg.id == source.id)
+        except StopIteration:
+            return None
+        for msg in reversed(messages[:source_index]):
+            if msg.role == "user":
+                return msg
+        return None
+
+    def _retry_user_text(original_text: str, notes: str) -> str:
+        notes = notes.strip()
+        if not notes:
+            return original_text
+        return f"{original_text}\n\n[Retry notes]\n{notes}"
+
+    @app.get("/v1/sessions/{sid}/questions")
+    async def list_user_questions(sid: str, status: str = "") -> dict[str, Any]:
+        if app.state.sessions.get(sid) is None:
+            raise _session_not_found(sid)
+        rows = [q for q in app.state.user_questions.values() if q.session_id == sid]
+        if status:
+            rows = [q for q in rows if q.status == status]
+        rows.sort(key=lambda q: q.created_at, reverse=True)
+        return {"questions": [q.model_dump(exclude_none=True) for q in rows]}
+
+    @app.post("/v1/sessions/{sid}/questions", response_model=UserQuestion, status_code=201)
+    async def create_user_question(
+        sid: str,
+        req: CreateUserQuestionRequest,
+    ) -> UserQuestion:
+        sess = app.state.sessions.get(sid)
+        if sess is None:
+            raise _session_not_found(sid)
+        prompt = req.prompt.strip()
+        if not prompt:
+            raise HTTPException(
+                status_code=422,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="bad_request",
+                        message="missing required field: prompt",
+                        details={"field": "prompt"},
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        now_iso = datetime.now(timezone.utc).isoformat()
+        row = UserQuestion(
+            id=_new_question_id(),
+            session_id=sid,
+            prompt=prompt,
+            kind=req.kind,
+            options=_normalize_question_options(req),
+            created_at=now_iso,
+            updated_at=now_iso,
+            expires_at=req.expires_at,
+            source=req.source or "orchestrator",
+            turn_id=req.turn_id,
+            attempt_id=req.attempt_id,
+            metadata=req.metadata,
+        )
+        app.state.user_questions[row.id] = row
+        _set_session_status(
+            sid,
+            "waiting_user",
+            prev_status=sess.status,
+            metadata_patch={"pending_user_question_id": row.id},
+        )
+        app.state.bus.publish(
+            Event(
+                type="user_question.created",
+                session_id=sid,
+                payload=row.model_dump(exclude_none=True),
+            )
+        )
+        return row
+
+    @app.post("/v1/sessions/{sid}/questions/{question_id}/answer", response_model=UserQuestion)
+    async def answer_user_question(
+        sid: str,
+        question_id: str,
+        req: AnswerUserQuestionRequest,
+    ) -> UserQuestion:
+        if app.state.sessions.get(sid) is None:
+            raise _session_not_found(sid)
+        row = app.state.user_questions.get(question_id)
+        if row is None or row.session_id != sid:
+            raise _question_not_found(sid, question_id)
+        if row.status != "pending":
+            raise HTTPException(
+                status_code=409,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="bad_request",
+                        message=f"user question is already {row.status}",
+                        details={"session_id": sid, "question_id": question_id},
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        allowed_values = {o.value or o.label for o in row.options}
+        selected = [s for s in req.selected_options if s]
+        if allowed_values and selected and any(s not in allowed_values for s in selected):
+            raise HTTPException(
+                status_code=422,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="bad_request",
+                        message="selected option is not valid for this question",
+                        details={
+                            "session_id": sid,
+                            "question_id": question_id,
+                            "allowed": sorted(allowed_values),
+                        },
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        updated = row.model_copy(
+            update={
+                "status": "answered",
+                "answer": req.answer,
+                "selected_options": selected,
+                "answer_metadata": req.metadata,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }
+        )
+        app.state.user_questions[question_id] = updated
+        if not _pending_user_questions(sid):
+            sess = app.state.sessions.get(sid)
+            _set_session_status(
+                sid,
+                "idle",
+                prev_status=sess.status if sess is not None else "waiting_user",
+                metadata_patch={"pending_user_question_id": ""},
+            )
+        app.state.bus.publish(
+            Event(
+                type="user_question.answered",
+                session_id=sid,
+                payload=updated.model_dump(exclude_none=True),
+            )
+        )
+        return updated
+
+    @app.post("/v1/sessions/{sid}/questions/{question_id}/cancel", response_model=UserQuestion)
+    async def cancel_user_question(sid: str, question_id: str) -> UserQuestion:
+        if app.state.sessions.get(sid) is None:
+            raise _session_not_found(sid)
+        row = app.state.user_questions.get(question_id)
+        if row is None or row.session_id != sid:
+            raise _question_not_found(sid, question_id)
+        if row.status == "pending":
+            row = row.model_copy(
+                update={
+                    "status": "cancelled",
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                }
+            )
+            app.state.user_questions[question_id] = row
+        if not _pending_user_questions(sid):
+            sess = app.state.sessions.get(sid)
+            _set_session_status(
+                sid,
+                "idle",
+                prev_status=sess.status if sess is not None else "waiting_user",
+                metadata_patch={"pending_user_question_id": ""},
+            )
+        app.state.bus.publish(
+            Event(
+                type="user_question.cancelled",
+                session_id=sid,
+                payload=row.model_dump(exclude_none=True),
+            )
+        )
+        return row
+
+    @app.get("/v1/sessions/{sid}/attempts")
+    async def list_turn_attempts(sid: str) -> dict[str, Any]:
+        if app.state.sessions.get(sid) is None:
+            raise _session_not_found(sid)
+        rows = [a for a in app.state.turn_attempts.values() if a.session_id == sid]
+        rows.sort(key=lambda a: a.created_at, reverse=True)
+        return {"attempts": [a.model_dump(exclude_none=True) for a in rows]}
+
+    @app.post(
+        "/v1/sessions/{sid}/messages/{message_id}/retry",
+        response_model=TurnAttempt,
+        status_code=202,
+    )
+    async def retry_turn(sid: str, message_id: str, req: RetryTurnRequest) -> TurnAttempt:
+        sess = app.state.sessions.get(sid)
+        if sess is None:
+            raise _session_not_found(sid)
+        messages = app.state.messages.get(sid, [])
+        source = next((m for m in messages if m.id == message_id), None)
+        if source is None:
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="not_found",
+                        message=f"message not found: {message_id}",
+                        details={"session_id": sid, "message_id": message_id},
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        model_payload = (req.model or ModelRef()).model_dump()
+        if req.provider_id:
+            model_payload["provider_id"] = req.provider_id
+        if req.model_id:
+            model_payload["model_id"] = req.model_id
+        active_model = _active_lm_model_ref(app)
+        model_changed = bool(
+            (model_payload.get("provider_id") or model_payload.get("model_id"))
+            and (
+                model_payload.get("provider_id", "") != active_model.get("provider_id", "")
+                or model_payload.get("model_id", "") != active_model.get("model_id", "")
+            )
+        )
+        warning = ""
+        if model_changed:
+            warning = (
+                "Retrying with a different model/provider may recompute provider-side KV "
+                "cache, increase time to first token, increase latency/cost, and produce "
+                "different tool or reasoning behavior."
+            )
+        execution_blocked_reason = ""
+        retry_user_msg: Message | None = None
+        source_user = _retry_source_user_message(messages, source)
+        if req.execute:
+            if app.state.agent is None:
+                raise HTTPException(
+                    status_code=503,
+                    detail=_agent_not_available_error(app, sid).model_dump(exclude_none=True),
+                )
+            lm_status = getattr(app.state, "lm_config_status", {}) or {}
+            if lm_status.get("state") == "configuring":
+                raise HTTPException(
+                    status_code=503,
+                    detail=ErrorEnvelope(
+                        error=ErrorInfo(
+                            error="provider_configuring",
+                            message=(
+                                "LM provider configuration is still in progress; retry after "
+                                "it finishes."
+                            ),
+                            details={
+                                "session_id": sid,
+                                "operation_id": lm_status.get("operation_id", ""),
+                                "provider": lm_status.get("provider", ""),
+                                "model": lm_status.get("model", ""),
+                                "recovery_actions": [
+                                    "wait",
+                                    "check_lm_provider_status",
+                                    "retry",
+                                ],
+                            },
+                            recoverable=True,
+                        )
+                    ).model_dump(exclude_none=True),
+                )
+            if source_user is None or not _message_text(source_user):
+                execution_blocked_reason = "source_user_message_not_found"
+            elif model_changed:
+                execution_blocked_reason = "model_override_not_executable"
+        now_iso = datetime.now(timezone.utc).isoformat()
+        attempt = TurnAttempt(
+            id=_new_attempt_id(),
+            session_id=sid,
+            source_message_id=message_id,
+            status=(
+                "queued"
+                if req.execute and not execution_blocked_reason
+                else ("failed" if req.execute else "recorded")
+            ),
+            created_at=now_iso,
+            updated_at=now_iso,
+            notes=req.notes,
+            model=ModelRef(**model_payload),
+            warning=warning,
+            metadata={
+                **req.metadata,
+                "source_message_role": source.role,
+                "source_user_message_id": source_user.id if source_user is not None else "",
+                "active_model": active_model,
+                "retry_protocol": "queued_for_execution" if req.execute else "recorded_for_replay",
+                "execution_blocked_reason": execution_blocked_reason,
+            },
+        )
+        app.state.turn_attempts[attempt.id] = attempt
+        if req.execute and not execution_blocked_reason and source_user is not None:
+            retry_text = _retry_user_text(_message_text(source_user), req.notes)
+            retry_user_msg = _start_background_user_turn(
+                sid,
+                sess,
+                retry_text,
+                metadata={
+                    "retry_attempt_id": attempt.id,
+                    "retry_source_message_id": message_id,
+                    "retry_source_user_message_id": source_user.id,
+                    "retry_notes": req.notes,
+                    **req.metadata,
+                },
+                prev_status=sess.status,
+            )
+            attempt = attempt.model_copy(
+                update={
+                    "metadata": {
+                        **attempt.metadata,
+                        "queued_user_message_id": retry_user_msg.id,
+                    }
+                }
+            )
+            app.state.turn_attempts[attempt.id] = attempt
+        app.state.bus.publish(
+            Event(
+                type="turn.retry_requested",
+                session_id=sid,
+                payload=attempt.model_dump(exclude_none=True),
+            )
+        )
+        return attempt
 
     # ---- POST /v1/sessions/{sid}/cancel (BBB20) -----------------------
 
@@ -8638,65 +10759,18 @@ def build_app(
                 ).model_dump(exclude_none=True),
             )
 
-        now = time.time()
-        user_metadata = dict(req.metadata)
-        if turn_agent_id:
-            user_metadata["agent_override"] = {
-                "requested_agent_id": turn_agent_id,
-                "session_agent_id": _session_agent_id(sess),
-                "scope": "turn",
-            }
-        user_msg = Message(
-            id=_new_message_id("user"),
-            session_id=sid,
-            role="user",
-            created_at=_iso_from_epoch(now),
-            updated_at=_iso_from_epoch(now),
-            parts=[Part(id=_new_part_id(), type="text", text=user_text)],
-            metadata=user_metadata,
-        )
-
         # Persist + publish the user message synchronously so by the
         # time the ack returns, GET /messages reflects it. Then mark
         # the session running, then schedule the turn in the
         # background and return.
-        _append_session_message(app, sid, user_msg)
-        app.state.sessions.update(sid, status="running")
-        app.state.bus.publish(
-            Event(
-                type="session.status_changed",
-                session_id=sid,
-                payload={"session_id": sid, "status": "running", "prev_status": "idle"},
-            )
+        user_msg = _start_background_user_turn(
+            sid,
+            sess,
+            user_text,
+            metadata=req.metadata,
+            prev_status="idle",
+            turn_agent_id=turn_agent_id,
         )
-        app.state.bus.publish(
-            Event(
-                type="message.created",
-                session_id=sid,
-                payload=user_msg.model_dump(exclude_none=True),
-            )
-        )
-
-        # iowarp/clio-agent#3: switched from BackgroundTasks (which
-        # doesn't expose the task back) to asyncio.create_task so
-        # /v1/sessions/{sid}/cancel can track the in-flight turn.
-        # The cancel handler gives cooperative checks a short grace
-        # window, then calls .cancel() if the task is still running.
-        # We schedule the task on the
-        # running loop AFTER queueing background_tasks (which
-        # FastAPI now runs nothing in, but kept as a hook in case
-        # we want a post-response side-effect later).
-        task = asyncio.create_task(
-            _run_turn_in_background(app, sid, user_text, user_msg, turn_agent_id)
-        )
-        app.state.in_flight_turns[sid] = task
-
-        def _drop_task(_t, _sid=sid) -> None:
-            cur = app.state.in_flight_turns.get(_sid)
-            if cur is _t:
-                app.state.in_flight_turns.pop(_sid, None)
-
-        task.add_done_callback(_drop_task)
         # background_tasks parameter is unused but kept on the
         # signature so existing callers (and FastAPI's docs) don't
         # change shape.
@@ -9096,6 +11170,10 @@ def build_app(
             if sess_rec is not None:
                 messages = list(app.state.messages.get(session_id, []))
                 context_files = list((app.state.context_files.get(session_id, {}) or {}).values())
+                context_files_by_mode: dict[str, int] = {"edit": 0, "pin": 0, "read": 0}
+                for row in context_files:
+                    mode = str(row.get("mode") or "read")
+                    context_files_by_mode[mode] = context_files_by_mode.get(mode, 0) + 1
                 transcript_tokens = sum(_estimate_message_context_tokens(m) for m in messages)
                 context_file_tokens = sum(_estimate_context_file_tokens(row) for row in context_files)
                 tokens_retained = transcript_tokens + context_file_tokens
@@ -9117,6 +11195,7 @@ def build_app(
                     tokens_budget=tokens_budget,
                     profiles_attached=0,
                     context_files_attached=len(context_files),
+                    context_files_by_mode=context_files_by_mode,
                     compact_summaries=compact_summaries,
                     token_pressure=pressure,
                     threshold_state=threshold_state,
@@ -9139,6 +11218,30 @@ def build_app(
             session=session_block,
             global_=global_stats,  # type: ignore[call-arg]  # Pydantic alias "global"
             metadata=metadata,
+        )
+
+    @app.get("/v1/memory/search", response_model=MemorySearchResponse)
+    async def memory_search(
+        query: str,
+        session_id: str = "",
+        workspace_id: str = "",
+        include_cross_session: bool = False,
+        limit: int = 20,
+    ) -> MemorySearchResponse:
+        """Search retained transcript memory.
+
+        Normal calls are session-scoped. Cross-session search is intentionally
+        opt-in so future orchestrator tools can support "based on the last few
+        days" without silently leaking unrelated sessions into every turn.
+        """
+
+        return _memory_search_response(
+            app,
+            query=query,
+            session_id=session_id,
+            workspace_id=workspace_id,
+            include_cross_session=include_cross_session,
+            limit=limit,
         )
 
     # ---- /v1/sessions/{sid}/events SSE (BBB13) -----------------------
@@ -9536,7 +11639,7 @@ def build_app(
         }
 
     @app.get("/v1/workspaces/{wid}/files/read")
-    async def read_workspace_file(wid: str, path: str) -> JSONResponse:
+    async def read_workspace_file(wid: str, path: str) -> Response:
         """SPEC §6.9 — read one file's content.
 
         Serves the raw bytes (text/plain) so the TUI's preview panel
@@ -9629,7 +11732,7 @@ def build_app(
                     )
                 ).model_dump(exclude_none=True),
             ) from exc
-        return JSONResponse(
+        return Response(
             content=data.decode("utf-8", errors="replace"),
             media_type="text/plain; charset=utf-8",
         )
@@ -10612,7 +12715,7 @@ def build_app(
     #
     # Declarative allow/deny/ask rules consulted before the per-tool
     # permission_default. PUT replaces the whole list (matches the
-    # gact-tui client's PutPolicies shape). In-memory; no persistence.
+    # gact-tui client's PutPolicies shape) and persists it locally.
 
     @app.get("/v1/policies")
     async def list_policies() -> dict[str, Any]:
@@ -10656,6 +12759,7 @@ def build_app(
                 ).model_dump(exclude_none=True),
             )
         app.state.permission_policies = clean
+        _flush_permission_policies(app)
         return {"policies": clean}
 
     # ---- DELETE /v1/messages/{id} ------------------------------------

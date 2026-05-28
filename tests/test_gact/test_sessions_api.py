@@ -60,6 +60,40 @@ def _seed_text_messages(client: TestClient, sid: str, messages: list[tuple[str, 
     client.app.state.message_store.replace_session(sid, seeded)
 
 
+def test_session_context_policy_reports_current_compartment_semantics(
+    client: TestClient,
+) -> None:
+    sid = client.post(
+        "/v1/sessions",
+        json={"title": "memory scope", "mode": "plan", "routing_mode": "chat"},
+    ).json()["id"]
+
+    resp = client.get(f"/v1/sessions/{sid}/context/policy")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["session_id"] == sid
+    assert body["memory_scope"] == "session"
+    assert body["writable_scope"] == "session"
+    assert body["cross_session_read_available"] is False
+    assert body["cross_session_read_endpoint"] is None
+    assert body["requires_user_consent"] is True
+    assert body["metadata"]["source"] == "clio_backend_default"
+    assert body["metadata"]["session_mode"] == "plan"
+    assert body["metadata"]["routing_mode"] == "chat"
+    assert body["metadata"]["arc_wired"] is False
+    assert any("Cross-session memory search" in note for note in body["notes"])
+
+
+def test_session_context_policy_unknown_session_404s(client: TestClient) -> None:
+    resp = client.get("/v1/sessions/sess_missing/context/policy")
+
+    assert resp.status_code == 404
+    detail = resp.json()["error"]
+    assert detail["error"] == "internal_error"
+    assert detail["details"]["session_id"] == "sess_missing"
+
+
 class CompactArc:
     """Minimal ARC fake for compact-memory tests."""
 
@@ -154,17 +188,38 @@ def test_compact_retries_transient_provider_errors(tmp_path: Path) -> None:
         body = resp.json()
         assert body["compacted"] is True
         assert body["summary"] == "Recovered compact summary."
+        assert body["event_id"].startswith("mem_")
         assert agent.retry_labels == ["compact_summary"]
         assert agent.chat_calls == 2
         assert agent.arc.conversation is not None
         arc_messages = agent.arc.conversation.messages
         assert len(arc_messages) == 1
         assert arc_messages[0].metadata["source"] == "gact_compact"
+        assert arc_messages[0].metadata["memory_event_id"] == body["event_id"]
         assert "Recovered compact summary." in arc_messages[0].content
         messages = c.get(f"/v1/sessions/{sid}/messages").json()["messages"]
         assert len(messages) == 1
         assert messages[0]["parts"][0]["metadata"]["synthetic"] == "compact_summary"
+        assert messages[0]["metadata"]["memory_event_id"] == body["event_id"]
         assert "Recovered compact summary." in messages[0]["parts"][0]["text"]
+        events = c.get(f"/v1/sessions/{sid}/memory/events").json()["events"]
+        assert len(events) == 1
+        event = events[0]
+        assert event["id"] == body["event_id"]
+        assert event["version"] == 1
+        assert event["type"] == "compact_summary"
+        assert event["summary_message_id"] == messages[0]["id"]
+        assert event["archived_count"] == 1
+        assert event["arc_status"] == "stored"
+        assert event["metadata"]["source"] == "gact_compact"
+        detail = c.get(f"/v1/sessions/{sid}/memory/events/{body['event_id']}").json()
+        assert detail["event"]["id"] == body["event_id"]
+        compact_events = [
+            e
+            for e in c.app.state.bus._history.get(sid, [])
+            if e.type == "session.compacted"
+        ]
+        assert compact_events[-1].payload["event_id"] == body["event_id"]
 
 
 def test_compact_surfaces_exhausted_transient_provider_errors(tmp_path: Path) -> None:
@@ -182,6 +237,23 @@ def test_compact_surfaces_exhausted_transient_provider_errors(tmp_path: Path) ->
         assert "compact summarisation failed" in body["error"]["message"]
         assert "Tokens/minute limit exceeded" in body["error"]["message"]
         assert agent.retry_labels == ["compact_summary"]
+
+
+def test_memory_events_unknown_session_and_event_404(tmp_path: Path) -> None:
+    agent = RetryCompactAgent()
+    with TestClient(build_app(sessions_path=tmp_path / "sessions.json", agent=agent)) as c:
+        sid = c.post("/v1/sessions", json={"title": "compact me"}).json()["id"]
+        _seed_text_message(c, sid, "important experiment details and next steps")
+        resp = c.post(f"/v1/sessions/{sid}/compact", json={})
+        assert resp.status_code == 200, resp.text
+
+        missing_session = c.get("/v1/sessions/sess_missing/memory/events")
+        missing_event = c.get(f"/v1/sessions/{sid}/memory/events/mem_missing")
+
+        assert missing_session.status_code == 404
+        assert missing_session.json()["error"]["error"] == "not_found"
+        assert missing_event.status_code == 404
+        assert missing_event.json()["error"]["details"]["event_id"] == "mem_missing"
 
 
 def test_compact_prompt_preserves_late_scientific_identifiers(tmp_path: Path) -> None:
