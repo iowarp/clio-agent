@@ -99,6 +99,17 @@ def test_cancel_flips_status_and_publishes_event(tmp_path: Path) -> None:
     # Session now reports cancelled.
     row = client.get(f"/v1/sessions/{sid}").json()
     assert row["status"] == "cancelled"
+    status_events = [
+        e
+        for e in client.app.state.bus._history.get(sid, [])
+        if e.type == "session.status_changed" and e.payload.get("status") == "cancelled"
+    ]
+    attempt = status_events[-1].payload["cancellation_attempt"]
+    assert attempt["session_id"] == sid
+    assert attempt["in_flight"] is False
+    assert attempt["hard_abort_supported"] is False
+    assert attempt["upstream_abort"] == "not_supported"
+    assert attempt["executor_work_may_continue"] is False
 
 
 def test_cancel_unknown_session_404s_with_v0_2_envelope(tmp_path: Path) -> None:
@@ -187,6 +198,14 @@ def test_cancel_reports_best_effort_for_executor_thread(tmp_path: Path) -> None:
         assert assistant["error_info"]["error"] == "cancelled"
         assert assistant["error_info"]["details"]["execution_cancellation"] == "best_effort"
         assert assistant["error_info"]["details"]["executor_work_may_continue"] is True
+        assert assistant["error_info"]["details"]["hard_abort_supported"] is False
+        assert assistant["error_info"]["details"]["upstream_abort"] == "not_supported"
+        attempt = assistant["error_info"]["details"]["cancellation_attempt"]
+        assert attempt["session_id"] == sid
+        assert attempt["in_flight"] is True
+        assert attempt["cooperative_signal_sent"] is True
+        assert attempt["asyncio_task_cancel_scheduled"] is True
+        assert attempt["executor_work_may_continue"] is True
         status_events = [
             e
             for e in app.state.bus._history.get(sid, [])
@@ -195,6 +214,7 @@ def test_cancel_reports_best_effort_for_executor_thread(tmp_path: Path) -> None:
         assert status_events
         assert status_events[-1].payload["execution_cancellation"] == "best_effort"
         assert status_events[-1].payload["executor_work_may_continue"] is True
+        assert status_events[-1].payload["cancellation_attempt"]["id"] == attempt["id"]
 
         # The executor thread can still finish after the GACT envelope
         # has truthfully settled as cancelled.
@@ -294,6 +314,10 @@ def test_cancel_before_turn_skips_agent_forward(tmp_path: Path) -> None:
     assert assistant["error_info"]["error"] == "cancelled"
     assert assistant["error_info"]["details"]["execution_cancellation"] == "turn_boundary"
     assert assistant["error_info"]["details"]["executor_work_may_continue"] is False
+    attempt = assistant["error_info"]["details"]["cancellation_attempt"]
+    assert attempt["in_flight"] is False
+    assert attempt["hard_abort_supported"] is False
+    assert attempt["upstream_abort"] == "not_supported"
 
 
 def test_agent_forward_compat_passes_cancel_callback_to_custom_agent() -> None:

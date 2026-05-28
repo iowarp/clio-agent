@@ -111,6 +111,10 @@ def _new_part_id() -> str:
     return f"part_{uuid.uuid4().hex[:12]}"
 
 
+def _new_cancellation_attempt_id() -> str:
+    return f"cancel_{uuid.uuid4().hex[:12]}"
+
+
 def _new_question_id() -> str:
     return f"ques_{uuid.uuid4().hex[:12]}"
 
@@ -730,6 +734,48 @@ def _cancelled_error_info(
         },
         recoverable=True,
     )
+
+
+def _cancellation_attempt_summary(attempt: Mapping[str, Any] | None) -> dict[str, Any]:
+    if not attempt:
+        return {}
+    return {
+        key: attempt[key]
+        for key in (
+            "id",
+            "session_id",
+            "requested_at",
+            "in_flight",
+            "cooperative_signal_sent",
+            "asyncio_task_cancel_scheduled",
+            "asyncio_task_cancel_sent",
+            "hard_abort_supported",
+            "upstream_abort",
+            "executor_work_may_continue",
+        )
+        if key in attempt
+    }
+
+
+def _enrich_cancellation_error_info(
+    app: "FastAPI",
+    sid: str,
+    error_info: "ErrorInfo | None",
+) -> "ErrorInfo | None":
+    """Attach durable cancellation-attempt evidence to cancelled turns."""
+
+    if error_info is None or error_info.error != "cancelled":
+        return error_info
+    attempts = getattr(app.state, "cancel_attempts", None)
+    attempt = attempts.get(sid) if isinstance(attempts, Mapping) else None
+    if not attempt:
+        return error_info
+    details = error_info.details
+    details.setdefault("cancellation_attempt_id", attempt.get("id", ""))
+    details.setdefault("cancellation_attempt", _cancellation_attempt_summary(attempt))
+    details.setdefault("hard_abort_supported", attempt.get("hard_abort_supported", False))
+    details.setdefault("upstream_abort", attempt.get("upstream_abort", "not_supported"))
+    return error_info
 
 
 def _context_file_access_error(
@@ -2267,6 +2313,7 @@ async def _run_turn_in_background(
             )
         )
 
+    error_info = _enrich_cancellation_error_info(app, sid, error_info)
     cancelled_turn = error_info is not None and error_info.error == "cancelled"
     if cancelled_turn:
         app.state.cancel_flags.discard(sid)
@@ -2592,6 +2639,7 @@ async def _run_turn_in_background(
         cancellation_status = {
             "execution_cancellation": error_info.details.get("execution_cancellation"),
             "executor_work_may_continue": error_info.details.get("executor_work_may_continue"),
+            "cancellation_attempt": error_info.details.get("cancellation_attempt", {}),
         }
     bus.publish(
         Event(
@@ -5814,6 +5862,7 @@ def build_app(
     # the signal — no payload.
     app.state.cancel_flags = set()
     app.state.cancel_events = {}
+    app.state.cancel_attempts = {}
     # CLIO-BBBBBBBBBB22: per-session context files. Keyed by
     # session_id, each value is an ordered dict of
     # path -> ContextFile dict.
@@ -10699,10 +10748,30 @@ def build_app(
         cancellation_pending = False
         if in_flight is not None and not in_flight.done():
             cancellation_pending = True
+        attempt = {
+            "id": _new_cancellation_attempt_id(),
+            "session_id": sid,
+            "requested_at": datetime.now(timezone.utc).isoformat(),
+            "in_flight": cancellation_pending,
+            "cooperative_signal_sent": event is not None,
+            "asyncio_task_cancel_scheduled": cancellation_pending,
+            "asyncio_task_cancel_sent": False,
+            "hard_abort_supported": False,
+            "upstream_abort": "not_supported",
+            "executor_work_may_continue": cancellation_pending,
+        }
+        app.state.cancel_attempts[sid] = attempt
+        if cancellation_pending:
 
             async def _cancel_after_grace(task: asyncio.Task, session_id: str) -> None:
                 await asyncio.sleep(0.1)
                 if session_id in app.state.cancel_flags and not task.done():
+                    latest_attempt = app.state.cancel_attempts.get(session_id)
+                    if latest_attempt is attempt:
+                        attempt["asyncio_task_cancel_sent"] = True
+                        attempt["asyncio_task_cancelled_at"] = datetime.now(
+                            timezone.utc
+                        ).isoformat()
                     task.cancel()
 
             asyncio.create_task(_cancel_after_grace(in_flight, sid))
@@ -10719,6 +10788,7 @@ def build_app(
                         "cooperative_pending" if cancellation_pending else "none"
                     ),
                     "executor_work_may_continue": cancellation_pending,
+                    "cancellation_attempt": _cancellation_attempt_summary(attempt),
                 },
             )
         )
