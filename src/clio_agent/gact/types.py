@@ -178,6 +178,7 @@ class SessionMemoryStats(BaseModel):
     tokens_budget: Optional[int] = None  # null = unbounded
     profiles_attached: int = 0
     context_files_attached: int = 0
+    context_files_by_mode: dict[str, int] = Field(default_factory=dict)
     compact_summaries: int = 0
     token_pressure: float = 0.0
     threshold_state: Literal["empty", "normal", "warning", "critical"] = "empty"

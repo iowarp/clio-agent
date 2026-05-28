@@ -155,6 +155,29 @@ def test_memory_stats_reports_retained_context_files_and_compaction_pressure(
     assert body["metadata"]["retained_context_source"] == "visible_gact_transcript"
 
 
+def test_memory_stats_session_block_counts_context_files_by_mode(
+    client_with_arc: TestClient,
+    tmp_path: Path,
+) -> None:
+    sid = client_with_arc.post("/v1/sessions", json={"title": "x"}).json()["id"]
+    read_file = tmp_path / "notes.md"
+    pin_file = tmp_path / "dataset.csv"
+    read_file.write_text("notes\n")
+    pin_file.write_text("a,b\n")
+
+    for path, mode in [(read_file, "read"), (pin_file, "pin"), ("scratch.txt", "edit")]:
+        resp = client_with_arc.post(
+            f"/v1/sessions/{sid}/context/files",
+            json={"path": str(path), "mode": mode},
+        )
+        assert resp.status_code == 200
+
+    body = client_with_arc.get(f"/v1/memory/stats?session_id={sid}").json()
+    session = body["session"]
+    assert session["context_files_attached"] == 3
+    assert session["context_files_by_mode"] == {"edit": 1, "pin": 1, "read": 1}
+
+
 def test_memory_stats_unknown_session_returns_empty_block_not_404(
     client_with_arc: TestClient,
 ) -> None:
@@ -167,6 +190,8 @@ def test_memory_stats_unknown_session_returns_empty_block_not_404(
     s = resp.json()["session"]
     assert s["session_id"] == "sess_nope"
     assert s["messages_retained"] == 0
+    assert s["context_files_attached"] == 0
+    assert s["context_files_by_mode"] == {}
 
 
 def test_memory_stats_no_session_query_returns_no_session_block(

@@ -478,6 +478,59 @@ def _delete_session_messages(app: "FastAPI", session_id: str) -> None:
         store.delete_session(session_id)
 
 
+def _load_context_files(path: Path | None) -> dict[str, dict[str, dict[str, Any]]]:
+    """Load persisted context-file attachments keyed by session id."""
+
+    if path is None or not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    sessions = data.get("sessions", {}) if isinstance(data, Mapping) else {}
+    if not isinstance(sessions, Mapping):
+        return {}
+    loaded: dict[str, dict[str, dict[str, Any]]] = {}
+    for sid, rows in sessions.items():
+        if not isinstance(rows, Mapping):
+            continue
+        bucket: dict[str, dict[str, Any]] = {}
+        for path_key, row in rows.items():
+            if not isinstance(row, Mapping):
+                continue
+            path_value = str(row.get("path") or path_key or "").strip()
+            if not path_value:
+                continue
+            bucket[path_value] = dict(row) | {"path": path_value}
+        if bucket:
+            loaded[str(sid)] = bucket
+    return loaded
+
+
+def _flush_context_files(app: "FastAPI") -> None:
+    """Persist the current context-file ledger, if persistence is configured."""
+
+    path = getattr(app.state, "context_files_path", None)
+    if path is None:
+        return
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(
+        json.dumps({"sessions": app.state.context_files}, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    tmp.replace(path)
+
+
+def _delete_session_context_files(app: "FastAPI", session_id: str) -> None:
+    """Remove one session's context-file ledger from memory and disk."""
+
+    if session_id in app.state.context_files:
+        app.state.context_files.pop(session_id, None)
+        _flush_context_files(app)
+
+
 def _session_not_found(sid: str) -> HTTPException:
     return HTTPException(
         status_code=404,
@@ -1066,11 +1119,13 @@ async def _run_turn_in_background(
     # Plain text concat — keeps the agent.py interface untouched and
     # works regardless of which expert handles the turn.
     context_file_error: ErrorInfo | None = None
+    context_file_provenance = _context_file_turn_provenance(app, sid, status="prepared")
     try:
         enriched_text = _enrich_with_context_files(app, sid, user_text)
     except _ContextFileAccessError as exc:
         enriched_text = user_text
         context_file_error = exc.error_info
+        context_file_provenance = _context_file_turn_provenance(app, sid, status="error")
     # iowarp/clio-agent#20: pre_message hook can transform the
     # input or veto the turn. PermissionError → cancelled-style
     # error_info; the caller sees the hook's reason.
@@ -1666,6 +1721,8 @@ async def _run_turn_in_background(
         assistant_metadata["tools_called"] = tools_called
     if expert_handoffs:
         assistant_metadata["expert_handoffs"] = expert_handoffs
+    if context_file_provenance["files"]:
+        assistant_metadata["context_files"] = context_file_provenance
     # iowarp/clio-agent#6: when streaming actually emitted chunks,
     # reuse its message_id + part_id so the deltas + final
     # message line up. Otherwise mint a fresh id (existing path).
@@ -3677,6 +3734,37 @@ def _enrich_with_context_files(app: "FastAPI", sid: str, user_text: str) -> str:
     )
 
 
+def _context_file_turn_provenance(app: "FastAPI", sid: str, *, status: str) -> dict[str, Any]:
+    """Return non-secret provenance for context files attached to this turn."""
+
+    rows = list((app.state.context_files.get(sid, {}) or {}).values())
+    files: list[dict[str, Any]] = []
+    for row in rows:
+        path = str(row.get("path") or "")
+        if not path:
+            continue
+        mode = str(row.get("mode") or "read")
+        file_row: dict[str, Any] = {
+            "path": path,
+            "mode": mode,
+            "status": status,
+            "inline_policy": "metadata_only" if mode == "edit" else "inline_or_inspect",
+        }
+        for key in ("source", "workspace_id", "display_path", "resolved_path", "added_at"):
+            value = row.get(key)
+            if value:
+                file_row[key] = value
+        if row.get("size") is not None:
+            file_row["size"] = row.get("size")
+        files.append(file_row)
+    return {
+        "status": status,
+        "count": len(files),
+        "max_inline_bytes": _CTX_MAX_BYTES,
+        "files": files,
+    }
+
+
 _CTX_MAX_BYTES = 32 * 1024  # 32 KB cap per attached file
 
 
@@ -4723,7 +4811,8 @@ def build_app(
     # CLIO-BBBBBBBBBB22: per-session context files. Keyed by
     # session_id, each value is an ordered dict of
     # path -> ContextFile dict.
-    app.state.context_files = {}
+    app.state.context_files_path = session_store_path.parent / "context_files.json"
+    app.state.context_files = _load_context_files(app.state.context_files_path)
     # CLIO-BBBBBBBBBB21: per-session pending diffs. Keyed by
     # session_id -> list of {path, unified_diff, status,
     # part_id, message_id}. Status is "pending" until apply/reject
@@ -5304,6 +5393,7 @@ def build_app(
                 ).model_dump(exclude_none=True),
             )
         _delete_session_messages(app, sid)
+        _delete_session_context_files(app, sid)
         return Response(status_code=204)
 
     def _reject_rollback_while_active(sid: str, sess: Any) -> None:
@@ -6043,9 +6133,23 @@ def build_app(
                     status_code=404,
                     detail=ErrorEnvelope(
                         error=ErrorInfo(
-                            error="not_found",
+                            error="context_file_error",
                             message=f"context file not found: {path}",
-                            details={"path": path},
+                            details={
+                                "path": path,
+                                "resolved_path": str(resolved),
+                                "display_path": resolved_info.get("display_path") or path,
+                                "workspace_id": resolved_info.get("workspace_id") or "",
+                                "source": resolved_info.get("source") or "",
+                                "mode": mode,
+                                "operation": "exists",
+                                "recovery_actions": [
+                                    "choose_existing_file",
+                                    "remove_context_file",
+                                    "retry",
+                                    "exit",
+                                ],
+                            },
                             recoverable=True,
                         )
                     ).model_dump(exclude_none=True),
@@ -6055,9 +6159,23 @@ def build_app(
                     status_code=422,
                     detail=ErrorEnvelope(
                         error=ErrorInfo(
-                            error="bad_request",
+                            error="context_file_error",
                             message=f"context path is not a file: {path}",
-                            details={"path": path},
+                            details={
+                                "path": path,
+                                "resolved_path": str(resolved),
+                                "display_path": resolved_info.get("display_path") or path,
+                                "workspace_id": resolved_info.get("workspace_id") or "",
+                                "source": resolved_info.get("source") or "",
+                                "mode": mode,
+                                "operation": "is_file",
+                                "recovery_actions": [
+                                    "choose_existing_file",
+                                    "remove_context_file",
+                                    "retry",
+                                    "exit",
+                                ],
+                            },
                             recoverable=True,
                         )
                     ).model_dump(exclude_none=True),
@@ -6072,6 +6190,7 @@ def build_app(
         }
         bucket = app.state.context_files.setdefault(sid, {})
         bucket[row["path"]] = row
+        _flush_context_files(app)
         app.state.bus.publish(
             Event(
                 type="context.file.added",
@@ -6134,6 +6253,7 @@ def build_app(
             )
         removed = bucket.pop(matched_key, None) if matched_key else None
         if removed is not None:
+            _flush_context_files(app)
             app.state.bus.publish(
                 Event(
                     type="context.file.removed",
@@ -6203,6 +6323,11 @@ def build_app(
             new_sess.id,
             [m.model_copy(deep=True) for m in src_msgs],
         )
+        source_context_files = app.state.context_files.get(sid, {})
+        if source_context_files:
+            app.state.context_files[new_sess.id] = {
+                key: dict(row) for key, row in source_context_files.items()
+            }
         app.state.sessions.update(new_sess.id, message_count=len(src_msgs))
         return JSONResponse(
             status_code=201,
@@ -8475,6 +8600,9 @@ def build_app(
             "session": Session(**sess.to_wire()).model_dump(exclude_none=True),
             "workspace": (Workspace(**ws.to_wire()).model_dump(exclude_none=True) if ws else None),
             "messages": [m.model_dump(exclude_none=True) for m in msgs],
+            "context_files": [
+                dict(row) for row in app.state.context_files.get(sid, {}).values()
+            ],
         }
 
     @app.post("/v1/sessions/import", response_model=Session)
@@ -8503,6 +8631,16 @@ def build_app(
             except Exception:
                 continue
         _replace_session_messages(app, new_sess.id, msg_rows)
+        context_files: dict[str, dict[str, Any]] = {}
+        for row in blob.get("context_files", []):
+            if not isinstance(row, Mapping):
+                continue
+            path = str(row.get("path") or "").strip()
+            if not path:
+                continue
+            context_files[path] = dict(row)
+        if context_files:
+            app.state.context_files[new_sess.id] = context_files
         cost_total = sum(float(m.get("cost_usd", 0.0) or 0.0) for m in blob.get("messages", []))
         in_total = sum(
             int((m.get("tokens") or {}).get("input", 0) or 0) for m in blob.get("messages", [])
@@ -9129,6 +9267,10 @@ def build_app(
             if sess_rec is not None:
                 messages = list(app.state.messages.get(session_id, []))
                 context_files = list((app.state.context_files.get(session_id, {}) or {}).values())
+                context_files_by_mode: dict[str, int] = {"edit": 0, "pin": 0, "read": 0}
+                for row in context_files:
+                    mode = str(row.get("mode") or "read")
+                    context_files_by_mode[mode] = context_files_by_mode.get(mode, 0) + 1
                 transcript_tokens = sum(_estimate_message_context_tokens(m) for m in messages)
                 context_file_tokens = sum(_estimate_context_file_tokens(row) for row in context_files)
                 tokens_retained = transcript_tokens + context_file_tokens
@@ -9150,6 +9292,7 @@ def build_app(
                     tokens_budget=tokens_budget,
                     profiles_attached=0,
                     context_files_attached=len(context_files),
+                    context_files_by_mode=context_files_by_mode,
                     compact_summaries=compact_summaries,
                     token_pressure=pressure,
                     threshold_state=threshold_state,
@@ -9569,7 +9712,7 @@ def build_app(
         }
 
     @app.get("/v1/workspaces/{wid}/files/read")
-    async def read_workspace_file(wid: str, path: str) -> JSONResponse:
+    async def read_workspace_file(wid: str, path: str) -> Response:
         """SPEC §6.9 — read one file's content.
 
         Serves the raw bytes (text/plain) so the TUI's preview panel
@@ -9662,7 +9805,7 @@ def build_app(
                     )
                 ).model_dump(exclude_none=True),
             ) from exc
-        return JSONResponse(
+        return Response(
             content=data.decode("utf-8", errors="replace"),
             media_type="text/plain; charset=utf-8",
         )

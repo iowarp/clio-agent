@@ -66,13 +66,21 @@ def test_read_mode_inlines_file_content(setup) -> None:
         f"/v1/sessions/{sid}/context/files",
         json={"path": str(fpath), "mode": "read"},
     )
-    complete_turn(c, sid, "summarise")
+    assistant = complete_turn(c, sid, "summarise")
     seen, _ = agent.calls[-1]
     assert "Attached files" in seen
     assert "Project notes" in seen
     assert "important insight" in seen
     # Original prompt still present.
     assert "summarise" in seen
+    context_files = assistant["metadata"]["context_files"]
+    assert context_files["status"] == "prepared"
+    assert context_files["count"] == 1
+    assert context_files["max_inline_bytes"] == 32 * 1024
+    assert context_files["files"][0]["path"] == str(fpath)
+    assert context_files["files"][0]["mode"] == "read"
+    assert context_files["files"][0]["inline_policy"] == "inline_or_inspect"
+    assert context_files["files"][0]["status"] == "prepared"
 
 
 def test_workspace_relative_mention_inlines_file_and_strips_at_marker(setup) -> None:
@@ -109,12 +117,15 @@ def test_edit_mode_includes_only_header(setup) -> None:
         f"/v1/sessions/{sid}/context/files",
         json={"path": str(fpath), "mode": "edit"},
     )
-    complete_turn(c, sid, "rename")
+    assistant = complete_turn(c, sid, "rename")
     seen, _ = agent.calls[-1]
     assert "code.py" in seen
     assert "mode=edit" in seen
     # Body should NOT be inlined for edit mode.
     assert "def f()" not in seen
+    assert assistant["metadata"]["context_files"]["files"][0]["inline_policy"] == (
+        "metadata_only"
+    )
 
 
 def test_missing_edit_mode_path_remains_visible(setup) -> None:
@@ -160,6 +171,9 @@ def test_read_file_deleted_after_attach_surfaces_error(setup) -> None:
         "retry",
         "exit",
     ]
+    assert assistant["metadata"]["context_files"]["status"] == "error"
+    assert assistant["metadata"]["context_files"]["files"][0]["path"] == str(fpath)
+    assert assistant["metadata"]["context_files"]["files"][0]["status"] == "error"
     completed = [ev for ev in app.state.bus._history.get(sid, []) if ev.type == "message.completed"]
     assert completed, "turn did not publish message.completed"
     payload = completed[-1].payload
