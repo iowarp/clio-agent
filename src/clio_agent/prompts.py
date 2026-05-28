@@ -87,6 +87,7 @@ _ALLOWED_RENDER_PLACEHOLDERS = {
     "permissions.policy_summary",
     "provider.current",
     "session.active_pack",
+    "session.active_agent_blueprint",
 }
 
 
@@ -103,107 +104,58 @@ def default_prompt_sources(*, cwd: Optional[Path] = None, config_dir: Optional[P
     ]
 
 
-_PROFILE_POLICIES: dict[str, str] = {
-    "default": """
-        CLIO alignment baseline:
-        - Treat backend capability metadata, tool telemetry, context frames, and
-          permission state as authoritative.
-        - Prefer declared CLIO tools and expert handoffs over guessing.
-        - Preserve exact file paths, dataset ids, column names, artifact paths,
-          and caveats from observed evidence.
-        - Never claim a tool call, expert handoff, prompt profile, memory search,
-          permission decision, retry, or model fallback happened unless runtime
-          metadata proves it.
-    """,
-    "heavy": """
-        Heavy profile:
-        - Use deliberate planning for high-stakes scientific workflows.
-        - Check whether parent experts should delegate to scoped child experts,
-          and record observable handoff intent when delegation is appropriate.
-        - Separate observed evidence, interpretation, uncertainty, and next
-          actions. Keep all scientific identifiers exact.
-        - Surface model/provider fallback, retry recomputation, memory/context
-          pressure, permission blockers, and unsupported capability gaps.
-    """,
-    "light": """
-        Light profile:
-        - Be concise and low-latency while staying grounded.
-        - Choose the obvious declared tool or expert quickly; otherwise ask a
-          structured follow-up question or state the missing input.
-        - Avoid long rationale. Preserve exact evidence and failure causes.
-    """,
-    "small_model": """
-        Small-model profile:
-        - Use narrow action spaces and explicit schemas.
-        - Prefer enumerated choices over implicit reasoning.
-        - If a required capability/tool/expert is absent, return a bounded
-          failure or ask-user question instead of improvising.
-        - Return exactly one JSON object when a planner schema is required.
-    """,
-    "fine_tuned": """
-        Fine-tuned profile:
-        - Assume CLIO role behavior is already trained; keep reminders minimal.
-        - Retain non-negotiable guardrails: declared capabilities only,
-          telemetry-backed tool claims, exact scientific identifiers, and
-          visible provenance for memory, prompts, permissions, retries, and
-          fallback.
-    """,
-    "debug": """
-        Debug profile:
-        - Preserve normal user-facing truth while adding provenance-oriented
-          details useful for tests, benchmarks, and TUI inspection.
-        - Include prompt id/profile, selected expert, context source,
-          tool/handoff evidence, fallback reason, and structured error state
-          when those metadata fields are available.
-    """,
-}
+def _builtin_profile_policies() -> dict[str, str]:
+    """Load built-in profile policy text from packaged Markdown files."""
+
+    rows: dict[str, str] = {}
+    try:
+        root = resources.files("clio_agent.prompt_packs.builtin") / "profiles"
+        for name in sorted(path.name for path in root.iterdir() if path.name.endswith(".md")):
+            parsed = parse_prompt_text(
+                (root / name).read_text(encoding="utf-8"),
+                scope="builtin",
+                source_path=f"package://clio_agent.prompt_packs.builtin/profiles/{name}",
+                fallback_id=name.removesuffix(".md"),
+            )
+            profile = next(iter(parsed.profiles.values()), None)
+            if profile is not None:
+                rows[parsed.id] = profile.text
+    except Exception:
+        return {}
+    return rows
 
 
-_PROMPT_ALIGNMENT_REQUIREMENTS: dict[str, tuple[str, ...]] = {
-    "clio.main.planner": (
-        "Return only the required planner schema.",
-        "Choose only declared tools and experts.",
-        "Delegate to child experts only when their declared scope/tools match the request.",
-        "Use ask-user questions or bounded failure when required information is missing.",
-        "Never convert unsupported commands, voice, or unavailable tools into runnable actions.",
-    ),
-    "clio.main.answer": (
-        "Synthesize only from observed tool/expert results and context-frame evidence.",
-        "Distinguish observation, interpretation, caveat, and next action.",
-        "Surface provider/tool/routing/cancellation errors honestly.",
-        "Mention fallback/retry/permission state only when metadata proves it.",
-    ),
-    "clio.chat": (
-        "Handle ordinary conversation without inventing file-specific facts.",
-        "Route scientific file facts through the owning expert/tool boundary.",
-        "Explain CLIO capability gaps and TODO commands honestly.",
-        "Ask a structured follow-up question when user intent is underspecified.",
-    ),
-    "clio.expert.data": (
-        "Use data-format tools as source of truth.",
-        "Stay bounded to storage, file format, I/O, NDP catalog, and data discovery scope.",
-        "Preserve exact paths, dataset ids, resource ids, shapes, compression, and caveats.",
-        "Delegate content statistics or visualization when another declared expert owns the work.",
-    ),
-    "clio.expert.analysis": (
-        "Use schema/statistics/query tool outputs as source of truth.",
-        "Do not fabricate columns, distributions, null rates, or quality findings.",
-        "Separate statistical interpretation from observed values.",
-        "Recommend visualization or data-format follow-up only when evidence supports it.",
-    ),
-    "clio.expert.visualization": (
-        "Describe only charts/artifacts actually generated by tools.",
-        "Preserve absolute artifact paths and chart caveats.",
-        "Use prior analysis/context evidence when available instead of re-inventing data facts.",
-        "Report plotting/tool failures with concrete recovery actions.",
-    ),
-}
+def _builtin_alignment_requirements() -> dict[str, tuple[str, ...]]:
+    """Load built-in prompt-family requirements from packaged Markdown files."""
+
+    rows: dict[str, tuple[str, ...]] = {}
+    try:
+        root = resources.files("clio_agent.prompt_packs.builtin") / "requirements"
+        for name in sorted(path.name for path in root.iterdir() if path.name.endswith(".md")):
+            parsed = parse_prompt_text(
+                (root / name).read_text(encoding="utf-8"),
+                scope="builtin",
+                source_path=f"package://clio_agent.prompt_packs.builtin/requirements/{name}",
+                fallback_id=name.removesuffix(".md"),
+            )
+            profile = next(iter(parsed.profiles.values()), None)
+            if profile is None:
+                continue
+            rows[parsed.id] = tuple(
+                line.strip()[2:].strip()
+                for line in profile.text.splitlines()
+                if line.strip().startswith("- ")
+            )
+    except Exception:
+        return {}
+    return rows
 
 
 def builtin_prompt_definitions() -> dict[str, PromptDefinition]:
     """Return built-in CLIO prompt definitions loaded from package data."""
 
     rows: dict[str, PromptDefinition] = {}
+    alignment_requirements = _builtin_alignment_requirements()
 
     def add(prompt_id: str, title: str, text: str, *, description: str = "") -> None:
         cleaned = inspect.cleandoc(text or "").strip()
@@ -220,19 +172,32 @@ def builtin_prompt_definitions() -> dict[str, PromptDefinition]:
                 "source": "packaged_prompt_file",
                 "alignment": "public_reference_matrix",
                 "references": "PROMPT_ALIGNMENT_REFERENCE_MATRIX.md",
-                "requirements": list(_PROMPT_ALIGNMENT_REQUIREMENTS.get(prompt_id, ())),
+                "requirements": list(alignment_requirements.get(prompt_id, ())),
                 "profiles": list(profiles),
             },
         )
 
     try:
         root = resources.files("clio_agent.prompt_packs.builtin")
-        for name in sorted(path.name for path in root.iterdir() if path.name.endswith(".md")):
-            text = (root / name).read_text(encoding="utf-8")
+        prompt_files = [
+            (path, path.name)
+            for path in root.iterdir()
+            if path.name.endswith(".md")
+        ]
+        runtime_root = root / "runtime"
+        if runtime_root.is_dir():
+            prompt_files.extend(
+                (path, f"runtime/{path.name}")
+                for path in runtime_root.iterdir()
+                if path.name.endswith(".md")
+            )
+        for path, source_name in sorted(prompt_files, key=lambda item: item[1]):
+            name = path.name
+            text = path.read_text(encoding="utf-8")
             parsed = parse_prompt_text(
                 text,
                 scope="builtin",
-                source_path=f"package://clio_agent.prompt_packs.builtin/{name}",
+                source_path=f"package://clio_agent.prompt_packs.builtin/{source_name}",
                 fallback_id=name.removesuffix(".md"),
             )
             base_profile = next(iter(parsed.profiles.values()), None)
@@ -256,12 +221,12 @@ def _aligned_builtin_profiles(prompt_id: str, base_text: str) -> dict[str, Promp
     """Return CLIO's aligned built-in prompt profiles for one prompt family."""
 
     base = base_text.strip()
-    requirements = "\n".join(
-        f"- {item}" for item in _PROMPT_ALIGNMENT_REQUIREMENTS.get(prompt_id, ())
-    )
+    alignment_requirements = _builtin_alignment_requirements()
+    profile_policies = _builtin_profile_policies()
+    requirements = "\n".join(f"- {item}" for item in alignment_requirements.get(prompt_id, ()))
     family_block = f"\n\nPrompt-family requirements:\n{requirements}" if requirements else ""
     profiles: dict[str, PromptProfile] = {}
-    for name, policy in _PROFILE_POLICIES.items():
+    for name, policy in profile_policies.items():
         profile_text = "\n\n".join(
             part
             for part in (

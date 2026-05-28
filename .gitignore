@@ -46,6 +46,7 @@ tool_cache/
 # Tool-generated files
 tool_output/
 .clio-agent-artifacts/
+.clio/
 *.tool.log
 mcp_*.log
 

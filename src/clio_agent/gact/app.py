@@ -1390,6 +1390,193 @@ def _resolve_dynamic_agent(
     return None
 
 
+def _agent_definition_is_agent_blueprint(agent_def: "AgentDef") -> bool:
+    """Return whether an AgentDef came from an Agent Blueprint graph."""
+
+    metadata = agent_def.metadata if isinstance(agent_def.metadata, Mapping) else {}
+    return bool(metadata.get("agent_blueprint_id") or metadata.get("definition_kind") == "agent_blueprint")
+
+
+def _runtime_workspace_catalog_cwd(
+    app: "FastAPI",
+    *,
+    workspace_id: str = "",
+    session_id: str = "",
+) -> Path | None:
+    wid = workspace_id
+    if session_id:
+        sess = app.state.sessions.get(session_id)
+        if sess is not None:
+            wid = wid or str(getattr(sess, "workspace_id", "") or "")
+    if not wid:
+        return None
+    ws = app.state.workspaces.get(wid)
+    if ws is None:
+        return None
+    root_path = str(getattr(ws, "root_path", "") or "")
+    return Path(root_path).expanduser() if root_path else None
+
+
+def _runtime_active_agent_blueprint_id(app: "FastAPI", session_id: str = "") -> str:
+    if not session_id:
+        return ""
+    sess = app.state.sessions.get(session_id)
+    if sess is None:
+        return ""
+    metadata = getattr(sess, "metadata", {}) or {}
+    if not isinstance(metadata, Mapping):
+        return ""
+    return str(metadata.get("active_agent_blueprint_id") or "").strip()
+
+
+def _runtime_active_agent_blueprint_path(app: "FastAPI", session_id: str = "") -> Path | None:
+    if not session_id:
+        return None
+    sess = app.state.sessions.get(session_id)
+    if sess is None:
+        return None
+    metadata = getattr(sess, "metadata", {}) or {}
+    if not isinstance(metadata, Mapping):
+        return None
+    raw = str(metadata.get("active_agent_blueprint_path") or "").strip()
+    return Path(raw).expanduser() if raw else None
+
+
+def _runtime_session_agent_overlay(app: "FastAPI", session_id: str = "") -> dict[str, Any]:
+    if not session_id:
+        return {}
+    sess = app.state.sessions.get(session_id)
+    if sess is None:
+        return {}
+    metadata = getattr(sess, "metadata", {}) or {}
+    if not isinstance(metadata, Mapping):
+        return {}
+    overlay = metadata.get("agent_blueprint_overlay")
+    return dict(overlay) if isinstance(overlay, Mapping) else {}
+
+
+def _runtime_apply_session_agent_overlay(
+    app: "FastAPI",
+    rows: list["AgentDef"],
+    *,
+    session_id: str = "",
+) -> list["AgentDef"]:
+    overlay = _runtime_session_agent_overlay(app, session_id)
+    agents = overlay.get("agents") if isinstance(overlay, Mapping) else None
+    if not isinstance(agents, Mapping):
+        return rows
+    patchable = {
+        "title",
+        "description",
+        "system_prompt",
+        "prompt_id",
+        "prompt_profile",
+        "default_provider",
+        "default_model",
+        "parent_id",
+        "tier",
+        "specialization",
+        "keywords",
+        "tools",
+        "skills",
+        "commands",
+        "parameters",
+        "enabled",
+    }
+    out: list[AgentDef] = []
+    for row in rows:
+        raw_patch = agents.get(row.id)
+        if not isinstance(raw_patch, Mapping):
+            out.append(row)
+            continue
+        update = {key: value for key, value in raw_patch.items() if key in patchable}
+        metadata = {
+            **row.metadata,
+            "agent_blueprint_overlay": {
+                "session_id": session_id,
+                "fields": sorted(update),
+                "status": "applied",
+            },
+        }
+        out.append(row.model_copy(update={**update, "metadata": metadata}))
+    return out
+
+
+def _runtime_active_agent_blueprint_rows(
+    app: "FastAPI",
+    *,
+    session_id: str = "",
+    workspace_id: str = "",
+    prompt_registry: PromptRegistry | None = None,
+) -> list["AgentDef"]:
+    if not session_id:
+        return []
+    cwd = _runtime_workspace_catalog_cwd(app, workspace_id=workspace_id, session_id=session_id)
+    active_blueprint_id = _runtime_active_agent_blueprint_id(app, session_id)
+    active_blueprint_path = _runtime_active_agent_blueprint_path(app, session_id)
+    if active_blueprint_path is not None:
+        rows = load_agent_blueprint_path(active_blueprint_path, scope="session")
+    elif active_blueprint_id:
+        rows = load_agent_blueprints(cwd=cwd, blueprint_id=active_blueprint_id)
+    else:
+        rows = []
+    if not rows:
+        return []
+    rows = _runtime_apply_session_agent_overlay(app, rows, session_id=session_id)
+    return [
+        _apply_prompt_registry_to_agent(
+            app,
+            row,
+            prompt_registry=prompt_registry,
+        )
+        for row in validate_agent_hierarchy(_merge_agent_def_rows(rows))
+    ]
+
+
+def _runtime_active_agent_blueprint_agent_ids(app: "FastAPI", session_id: str = "") -> set[str]:
+    return {
+        row.id
+        for row in _runtime_active_agent_blueprint_rows(app, session_id=session_id)
+        if row.enabled
+    }
+
+
+def _runtime_active_agent_blueprint_root_id(app: "FastAPI", session_id: str = "") -> str:
+    rows = _runtime_active_agent_blueprint_rows(app, session_id=session_id)
+    if not rows:
+        return ""
+    requested_root = str(rows[0].metadata.get("agent_blueprint_root_expert") or "").strip()
+    if requested_root and any(row.id == requested_root and row.enabled for row in rows):
+        return requested_root
+    roots = [row for row in rows if row.enabled and not row.parent_id]
+    if len(roots) == 1:
+        return roots[0].id
+    enabled = [row for row in rows if row.enabled]
+    if not enabled:
+        return ""
+    return sorted(enabled, key=lambda row: (row.tier, row.id))[0].id
+
+
+def _resolve_runtime_dynamic_agent(
+    app: "FastAPI",
+    agent_id: str,
+    *,
+    session_id: str = "",
+    workspace_id: str = "",
+    prompt_registry: PromptRegistry | None = None,
+) -> "AgentDef | None":
+    if session_id:
+        for row in _runtime_active_agent_blueprint_rows(
+            app,
+            session_id=session_id,
+            workspace_id=workspace_id,
+            prompt_registry=prompt_registry,
+        ):
+            if row.id == agent_id and row.enabled:
+                return row
+    return _resolve_dynamic_agent(app, agent_id, prompt_registry=prompt_registry)
+
+
 def _agent_prompt_request(agent_def: "AgentDef") -> tuple[str, str]:
     """Return prompt id/profile requested by an agent definition."""
 
@@ -1704,13 +1891,7 @@ def _prompt_user_agent_signature() -> Any:
     import dspy  # noqa: PLC0415
 
     class PromptUserAgentSignature(dspy.Signature):
-        """Run a registered CLIO user agent.
-
-        Follow the supplied system_prompt exactly. Answer from the
-        prompt and user request. Do not claim to have called tools.
-        If a requested fact requires unavailable tool execution, say
-        what is missing instead of inventing it.
-        """
+        """Run a registered CLIO user agent using supplied runtime instructions."""
 
         system_prompt: str = dspy.InputField(desc="Registered agent instructions")
         question: str = dspy.InputField(desc="User message for this agent")
@@ -1727,16 +1908,17 @@ def _build_prompt_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> A
         create_chat_adapter,
         create_lm,
     )
+    from clio_agent.prompts import PromptRegistry  # noqa: PLC0415
 
     class PromptUserAgentModule(dspy.Module):
         def __init__(self, base_agent: Any, agent_def: "AgentDef") -> None:
             super().__init__()
             self.agent_def = agent_def
             self.config = _dynamic_agent_lm_config(base_agent, agent_def)
-            self.system_prompt = agent_def.system_prompt.strip() or (
-                f"You are the CLIO user agent {agent_def.id!r}. "
-                "Answer directly and do not invent tool results."
-            )
+            runtime = PromptRegistry().resolve("clio.runtime.prompt_user_agent")
+            runtime_text = str(getattr(runtime, "text", "") or "").strip()
+            agent_prompt = agent_def.system_prompt.strip() or agent_def.description
+            self.system_prompt = "\n\n".join(part for part in (runtime_text, agent_prompt) if part)
             self.answer_synthesizer = dspy.Predict(_prompt_user_agent_signature())
 
         def forward(
@@ -1792,12 +1974,7 @@ def _tool_user_agent_signature() -> Any:
     import dspy  # noqa: PLC0415
 
     class ToolUserAgentSignature(dspy.Signature):
-        """Run a registered CLIO user agent with its declared MCP tools.
-
-        Follow the supplied system_prompt exactly. Use only the tools
-        made available to this agent. Surface tool failures explicitly
-        instead of inventing results.
-        """
+        """Run a registered CLIO user agent using supplied tool runtime instructions."""
 
         system_prompt: str = dspy.InputField(desc="Registered agent instructions")
         question: str = dspy.InputField(desc="User message for this agent")
@@ -1847,6 +2024,7 @@ def _build_tool_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> Any
         create_chat_adapter,
         create_lm,
     )
+    from clio_agent.prompts import PromptRegistry  # noqa: PLC0415
 
     class ToolUserAgentModule(dspy.Module):
         def __init__(self, base_agent: Any, agent_def: "AgentDef") -> None:
@@ -1854,7 +2032,10 @@ def _build_tool_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> Any
             self.agent_def = agent_def
             self.config = _dynamic_agent_lm_config(base_agent, agent_def)
             self.tools = _dynamic_agent_tools(base_agent, agent_def)
-            self.system_prompt = agent_def.system_prompt.strip() or agent_def.description
+            runtime = PromptRegistry().resolve("clio.runtime.tool_user_agent")
+            runtime_text = str(getattr(runtime, "text", "") or "").strip()
+            agent_prompt = agent_def.system_prompt.strip() or agent_def.description
+            self.system_prompt = "\n\n".join(part for part in (runtime_text, agent_prompt) if part)
             self.react_agent = dspy.ReAct(
                 _tool_user_agent_signature(),
                 tools=self.tools,
@@ -2402,7 +2583,7 @@ async def _run_turn_in_background(
                     }
                 )
                 continue
-            target = _resolve_dynamic_agent(app, target_id)
+            target = _resolve_runtime_dynamic_agent(app, target_id, session_id=sid)
             if target is None or target.source != "expert_pack" or not target.enabled:
                 executed.append(
                     {
@@ -2521,10 +2702,19 @@ async def _run_turn_in_background(
 
         session_agent_id = _session_agent_id(sess)
         active_agent_id = turn_agent_id or session_agent_id
+        active_blueprint_root_id = _runtime_active_agent_blueprint_root_id(app, sid)
+        active_blueprint_agent_ids = _runtime_active_agent_blueprint_agent_ids(app, sid)
+        if (
+            not turn_agent_id
+            and active_blueprint_root_id
+            and active_agent_id in {"", "main", "default"}
+        ):
+            active_agent_id = active_blueprint_root_id
         routing_mode = getattr(sess, "routing_mode", "auto") or "auto"
         auto_routed_agent = None
         if (
             not turn_agent_id
+            and not active_blueprint_agent_ids
             and active_agent_id in {"", "main", "default"}
             and routing_mode in {"auto", "experts"}
         ):
@@ -2535,16 +2725,17 @@ async def _run_turn_in_background(
 
         _refresh_argonne_lm_token(app.state.agent)
 
-        if active_agent_id not in _EXECUTABLE_SESSION_AGENT_IDS:
+        if active_agent_id not in _EXECUTABLE_SESSION_AGENT_IDS or active_agent_id in active_blueprint_agent_ids:
             prompt_registry_factory = getattr(app.state, "prompt_registry_for_request", None)
             prompt_registry = (
                 prompt_registry_factory(session_id=sid)
                 if callable(prompt_registry_factory)
                 else None
             )
-            dynamic_agent = _resolve_dynamic_agent(
+            dynamic_agent = _resolve_runtime_dynamic_agent(
                 app,
                 active_agent_id,
+                session_id=sid,
                 prompt_registry=prompt_registry,
             )
             if dynamic_agent is None:
@@ -5849,6 +6040,20 @@ def _builtin_agents() -> list[AgentDef]:
     orchestrator dispatches rather than acting itself).
     """
 
+    blueprint_rows = load_agent_blueprints(blueprint_id="data-exploration")
+    if blueprint_rows:
+        builtin_rows = []
+        for row in blueprint_rows:
+            metadata = {
+                **row.metadata,
+                "source_blueprint": "builtin",
+                "routes_to": sorted(_EXPERT_CAPABILITIES) if row.id == "main" else row.metadata.get("routes_to", []),
+            }
+            if row.parent_id:
+                metadata.setdefault("parent", row.parent_id)
+            builtin_rows.append(row.model_copy(update={"source": "builtin", "metadata": metadata}))
+        return builtin_rows
+
     rows: list[AgentDef] = [
         AgentDef(
             id="main",
@@ -6254,6 +6459,17 @@ def _tool_visible_to_for_catalog(tool_name: str) -> list[str]:
 
 from typing import Protocol
 
+from clio_agent.gact.agent_blueprints import (
+    discover_agent_blueprints,
+    install_agent_blueprint,
+    load_agent_blueprint_path,
+    load_agent_blueprints,
+    load_mcp_descriptors,
+    uninstall_agent_blueprint,
+    update_installed_agent_blueprint,
+    validate_agent_blueprint_path,
+    validate_agent_hierarchy,
+)
 from clio_agent.gact.events import Event, EventBus, heartbeat_payload
 from clio_agent.gact.expert_packs import (
     discover_expert_packs,
@@ -7004,6 +7220,7 @@ def build_app(
                 x_clio_direct_delete_permissions=True,
                 x_clio_prompt_registry=True,
                 x_clio_expert_packs=True,
+                x_clio_agent_blueprints=True,
                 x_clio_user_questions=True,
                 x_clio_retry_attempts=True,
                 x_clio_context_frames=True,
@@ -7071,6 +7288,18 @@ def build_app(
             if prompt_root.is_dir():
                 sources.append(PromptSource(f"{pack.scope}_pack", prompt_root))
         sources.append(PromptSource("workspace", cwd / ".clio" / "prompts"))
+        if session_id:
+            active_blueprint_path = _active_session_agent_blueprint_path(session_id)
+            active_blueprint_id = _active_session_agent_blueprint_id(session_id)
+            active_blueprint_root = active_blueprint_path
+            if active_blueprint_root is None and active_blueprint_id:
+                active = next(
+                    (row for row in discover_agent_blueprints(cwd=cwd) if row.id == active_blueprint_id),
+                    None,
+                )
+                active_blueprint_root = active.root if active is not None else None
+            if active_blueprint_root is not None and (active_blueprint_root / "prompts").is_dir():
+                sources.append(PromptSource("session_agent_blueprint", active_blueprint_root / "prompts"))
         active_pack_path = _active_prompt_pack_path(session_id)
         if active_pack_path is not None and (active_pack_path / "prompts").is_dir():
             sources.append(PromptSource("session_pack", active_pack_path / "prompts"))
@@ -7144,6 +7373,7 @@ def build_app(
                 pass
             if session_id:
                 pack_id = ""
+                blueprint_id = ""
                 agent_id = ""
                 sess = app.state.sessions.get(session_id)
                 if sess is not None:
@@ -7151,7 +7381,9 @@ def build_app(
                     metadata = getattr(sess, "metadata", {}) or {}
                     if isinstance(metadata, Mapping):
                         pack_id = str(metadata.get("active_expert_pack_id") or "").strip()
+                        blueprint_id = str(metadata.get("active_agent_blueprint_id") or "").strip()
                 context["session.active_pack"] = pack_id or "(no active expert pack)"
+                context["session.active_agent_blueprint"] = blueprint_id or "(no active agent blueprint)"
                 try:
                     commands = [
                         f"- {row.get('id')}: {row.get('description') or row.get('title')}"
@@ -10116,7 +10348,7 @@ def build_app(
     # ---- /v1/mcp/servers (#13) ---------------------------------------
 
     @app.get("/v1/mcp/servers")
-    async def list_mcp_servers() -> dict[str, Any]:
+    async def list_mcp_servers(workspace_id: str = "") -> dict[str, Any]:
         """SPEC §6.7 — enumerate MCP servers the backend has mounted.
 
         Returns BOTH the bundled in-process servers (fs/hdf5/parquet)
@@ -10124,10 +10356,10 @@ def build_app(
         Each row carries id/name/status/transport/tools_count/tools.
         """
 
-        rows = _mcp_server_rows()
+        rows = _mcp_server_rows(cwd=_workspace_catalog_cwd(workspace_id=workspace_id))
         return {"servers": rows}
 
-    def _mcp_server_rows() -> list[dict[str, Any]]:
+    def _mcp_server_rows(cwd: Path | None = None) -> list[dict[str, Any]]:
         """Return bundled plus installed MCP server catalog rows."""
         rows: list[dict[str, Any]] = []
         # In-process bundled servers (fs/hdf5/parquet via gateway).
@@ -10177,6 +10409,29 @@ def build_app(
                     "spec": info.get("spec", {}),
                 }
             )
+        try:
+            for blueprint in discover_agent_blueprints(cwd=cwd):
+                for descriptor in load_mcp_descriptors(
+                    blueprint.root,
+                    scope=blueprint.scope,
+                    blueprint_id=blueprint.id,
+                ):
+                    rows.append(
+                        {
+                            "id": f"agent_blueprint_mcp_{descriptor['id']}",
+                            "name": descriptor["name"],
+                            "status": "disabled",
+                            "transport": descriptor.get("transport") or "unknown",
+                            "tools_count": 0,
+                            "tools": [],
+                            "spec": descriptor,
+                            "source": "agent_blueprint",
+                            "agent_blueprint_id": blueprint.id,
+                            "enabled": False,
+                        }
+                    )
+        except Exception:
+            pass
         return rows
 
     @app.post("/v1/mcp/servers", status_code=201)
@@ -12382,8 +12637,163 @@ def build_app(
         raw = str(metadata.get("active_expert_pack_path") or "").strip()
         return Path(raw).expanduser() if raw else None
 
+    def _active_session_agent_blueprint_id(session_id: str = "") -> str:
+        if not session_id:
+            return ""
+        sess = app.state.sessions.get(session_id)
+        if sess is None:
+            return ""
+        metadata = getattr(sess, "metadata", {}) or {}
+        if not isinstance(metadata, Mapping):
+            return ""
+        return str(metadata.get("active_agent_blueprint_id") or "").strip()
+
+    def _active_session_agent_blueprint_path(session_id: str = "") -> Path | None:
+        if not session_id:
+            return None
+        sess = app.state.sessions.get(session_id)
+        if sess is None:
+            return None
+        metadata = getattr(sess, "metadata", {}) or {}
+        if not isinstance(metadata, Mapping):
+            return None
+        raw = str(metadata.get("active_agent_blueprint_path") or "").strip()
+        return Path(raw).expanduser() if raw else None
+
+    def _session_agent_overlay(session_id: str = "") -> dict[str, Any]:
+        if not session_id:
+            return {}
+        sess = app.state.sessions.get(session_id)
+        if sess is None:
+            return {}
+        metadata = getattr(sess, "metadata", {}) or {}
+        if not isinstance(metadata, Mapping):
+            return {}
+        overlay = metadata.get("agent_blueprint_overlay")
+        return dict(overlay) if isinstance(overlay, Mapping) else {}
+
+    def _apply_session_agent_overlay(rows: list[AgentDef], session_id: str = "") -> list[AgentDef]:
+        overlay = _session_agent_overlay(session_id)
+        agents = overlay.get("agents") if isinstance(overlay, Mapping) else None
+        if not isinstance(agents, Mapping):
+            return rows
+        out: list[AgentDef] = []
+        patchable = {
+            "title",
+            "description",
+            "system_prompt",
+            "prompt_id",
+            "prompt_profile",
+            "default_provider",
+            "default_model",
+            "parent_id",
+            "tier",
+            "specialization",
+            "keywords",
+            "tools",
+            "skills",
+            "commands",
+            "parameters",
+            "enabled",
+        }
+        for row in rows:
+            raw_patch = agents.get(row.id)
+            if not isinstance(raw_patch, Mapping):
+                out.append(row)
+                continue
+            update = {key: value for key, value in raw_patch.items() if key in patchable}
+            metadata = {
+                **row.metadata,
+                "agent_blueprint_overlay": {
+                    "session_id": session_id,
+                    "fields": sorted(update),
+                    "status": "applied",
+                },
+            }
+            out.append(row.model_copy(update={**update, "metadata": metadata}))
+        return out
+
+    def _active_session_agent_blueprint_rows(
+        session_id: str = "",
+        workspace_id: str = "",
+    ) -> list[AgentDef]:
+        if not session_id:
+            return []
+        cwd = _workspace_catalog_cwd(workspace_id=workspace_id, session_id=session_id)
+        active_blueprint_id = _active_session_agent_blueprint_id(session_id)
+        active_blueprint_path = _active_session_agent_blueprint_path(session_id)
+        if active_blueprint_path is not None:
+            rows = load_agent_blueprint_path(active_blueprint_path, scope="session")
+        elif active_blueprint_id:
+            rows = load_agent_blueprints(cwd=cwd, blueprint_id=active_blueprint_id)
+        else:
+            rows = []
+        if rows:
+            rows = _apply_session_agent_overlay(rows, session_id=session_id)
+            prompt_registry = _prompt_registry_for_request(
+                session_id=session_id,
+                workspace_id=workspace_id,
+            )
+            return [
+                _apply_prompt_registry_to_agent(
+                    app,
+                    _agent_with_capability_refs(row),
+                    prompt_registry=prompt_registry,
+                )
+                for row in validate_agent_hierarchy(_merge_agent_def_rows(rows))
+            ]
+        return []
+
+    def _active_session_agent_blueprint_agent_ids(session_id: str = "") -> set[str]:
+        return {
+            row.id
+            for row in _active_session_agent_blueprint_rows(session_id=session_id)
+            if row.enabled
+        }
+
+    def _active_session_agent_blueprint_root_id(session_id: str = "") -> str:
+        rows = _active_session_agent_blueprint_rows(session_id=session_id)
+        if not rows:
+            return ""
+        requested_root = str(rows[0].metadata.get("agent_blueprint_root_expert") or "").strip()
+        if requested_root and any(row.id == requested_root and row.enabled for row in rows):
+            return requested_root
+        roots = [row for row in rows if row.enabled and not row.parent_id]
+        if len(roots) == 1:
+            return roots[0].id
+        enabled = [row for row in rows if row.enabled]
+        if not enabled:
+            return ""
+        return sorted(enabled, key=lambda row: (row.tier, row.id))[0].id
+
+    def _resolve_runtime_dynamic_agent(
+        agent_id: str,
+        *,
+        session_id: str = "",
+        workspace_id: str = "",
+        prompt_registry: PromptRegistry | None = None,
+    ) -> "AgentDef | None":
+        if session_id:
+            for row in _active_session_agent_blueprint_rows(
+                session_id=session_id,
+                workspace_id=workspace_id,
+            ):
+                if row.id == agent_id and row.enabled:
+                    return (
+                        _apply_prompt_registry_to_agent(app, row, prompt_registry=prompt_registry)
+                        if prompt_registry is not None
+                        else row
+                    )
+        return _resolve_dynamic_agent(app, agent_id, prompt_registry=prompt_registry)
+
     def _agent_rows(session_id: str = "", workspace_id: str = "") -> list[AgentDef]:
         cwd = _workspace_catalog_cwd(workspace_id=workspace_id, session_id=session_id)
+        rows = _active_session_agent_blueprint_rows(
+            session_id=session_id,
+            workspace_id=workspace_id,
+        )
+        if rows:
+            return rows
         active_pack_id = _active_session_expert_pack_id(session_id)
         active_pack_path = _active_session_expert_pack_path(session_id)
         explicit_session_rows = (
@@ -12410,6 +12820,465 @@ def build_app(
             )
             for row in validate_expert_hierarchy(_merge_agent_def_rows(rows))
         ]
+
+    @app.get("/v1/agent-blueprints")
+    async def list_agent_blueprints(workspace_id: Optional[str] = None) -> dict[str, Any]:
+        cwd = _workspace_catalog_cwd(workspace_id=workspace_id or "")
+        blueprints = [row.to_wire() for row in discover_agent_blueprints(cwd=cwd)]
+        return {"agent_blueprints": blueprints}
+
+    @app.get("/v1/agent-blueprints/{blueprint_id:path}")
+    async def get_agent_blueprint(
+        blueprint_id: str,
+        workspace_id: Optional[str] = None,
+    ) -> dict[str, Any]:
+        cwd = _workspace_catalog_cwd(workspace_id=workspace_id or "")
+        for blueprint in discover_agent_blueprints(cwd=cwd):
+            if blueprint.id == blueprint_id:
+                agents = validate_agent_hierarchy(
+                    load_agent_blueprints(cwd=cwd, blueprint_id=blueprint_id),
+                    blueprint=blueprint,
+                )
+                return {
+                    "agent_blueprint": blueprint.to_wire(),
+                    "agents": [row.model_dump(exclude_none=True) for row in agents],
+                    "mcp_descriptors": load_mcp_descriptors(
+                        blueprint.root,
+                        scope=blueprint.scope,
+                        blueprint_id=blueprint.id,
+                    ),
+                }
+        raise HTTPException(
+            status_code=404,
+            detail=ErrorEnvelope(
+                error=ErrorInfo(
+                    error="not_found",
+                    message=f"agent blueprint not found: {blueprint_id}",
+                    details={"agent_blueprint_id": blueprint_id, "workspace_id": workspace_id or ""},
+                    recoverable=False,
+                )
+            ).model_dump(exclude_none=True),
+        )
+
+    @app.post("/v1/agent-blueprints/validate")
+    async def validate_agent_blueprint(req: dict[str, Any]) -> dict[str, Any]:
+        path = str(req.get("path") or "").strip()
+        if not path:
+            raise HTTPException(
+                status_code=400,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="validation_error",
+                        message="path is required",
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        return validate_agent_blueprint_path(Path(path), scope=str(req.get("scope") or "session"))
+
+    @app.post("/v1/agent-blueprints/install", status_code=201)
+    async def install_agent_blueprint_route(req: dict[str, Any]) -> dict[str, Any]:
+        source = str(req.get("source") or req.get("url") or req.get("path") or "").strip()
+        if not source:
+            raise HTTPException(
+                status_code=400,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="validation_error",
+                        message="source, url, or path is required",
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        scope = str(req.get("scope") or "workspace").strip()
+        if scope not in {"global", "workspace"}:
+            raise HTTPException(
+                status_code=422,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="bad_request",
+                        message="scope must be global or workspace",
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        cwd = _workspace_catalog_cwd(workspace_id=str(req.get("workspace_id") or ""))
+        try:
+            return install_agent_blueprint(
+                source=source,
+                scope=scope,  # type: ignore[arg-type]
+                cwd=cwd or Path.cwd(),
+                ref=str(req.get("ref") or ""),
+                blueprint_id=str(req.get("blueprint_id") or ""),
+            )
+        except (OSError, ValueError, subprocess.CalledProcessError) as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="validation_error",
+                        message=f"agent blueprint install failed: {exc}",
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            ) from exc
+
+    @app.post("/v1/agent-blueprints/{blueprint_id:path}/update")
+    async def update_agent_blueprint_route(
+        blueprint_id: str,
+        req: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        body = req or {}
+        scope = str(body.get("scope") or "workspace").strip()
+        if scope not in {"global", "workspace"}:
+            raise HTTPException(
+                status_code=422,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="bad_request",
+                        message="scope must be global or workspace",
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        cwd = _workspace_catalog_cwd(workspace_id=str(body.get("workspace_id") or ""))
+        try:
+            return update_installed_agent_blueprint(
+                blueprint_id=blueprint_id,
+                scope=scope,  # type: ignore[arg-type]
+                cwd=cwd or Path.cwd(),
+            )
+        except (OSError, ValueError, subprocess.CalledProcessError) as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="validation_error",
+                        message=f"agent blueprint update failed: {exc}",
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            ) from exc
+
+    @app.delete("/v1/agent-blueprints/{blueprint_id:path}")
+    async def delete_agent_blueprint_route(
+        blueprint_id: str,
+        scope: str = "workspace",
+        workspace_id: str = "",
+    ) -> dict[str, Any]:
+        if blueprint_id == "data-exploration" and scope == "builtin":
+            raise HTTPException(
+                status_code=400,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="bad_request",
+                        message="built-in agent blueprints cannot be deleted",
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        if scope not in {"global", "workspace"}:
+            raise HTTPException(
+                status_code=422,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="bad_request",
+                        message="scope must be global or workspace",
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        cwd = _workspace_catalog_cwd(workspace_id=workspace_id)
+        try:
+            return uninstall_agent_blueprint(
+                blueprint_id=blueprint_id,
+                scope=scope,  # type: ignore[arg-type]
+                cwd=cwd or Path.cwd(),
+            )
+        except OSError as exc:
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="not_found",
+                        message=str(exc),
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            ) from exc
+
+    @app.post("/v1/agent-blueprints/{blueprint_id:path}/mcp/{descriptor_id}/enable")
+    async def enable_agent_blueprint_mcp_descriptor(
+        blueprint_id: str,
+        descriptor_id: str,
+        req: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        body = req or {}
+        cwd = _workspace_catalog_cwd(workspace_id=str(body.get("workspace_id") or ""))
+        blueprint = next(
+            (row for row in discover_agent_blueprints(cwd=cwd) if row.id == blueprint_id),
+            None,
+        )
+        if blueprint is None:
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="not_found",
+                        message=f"agent blueprint not found: {blueprint_id}",
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        descriptors = load_mcp_descriptors(
+            blueprint.root,
+            scope=blueprint.scope,
+            blueprint_id=blueprint.id,
+        )
+        descriptor = next((row for row in descriptors if row["id"] == descriptor_id), None)
+        if descriptor is None:
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="not_found",
+                        message=f"MCP descriptor not found: {descriptor_id}",
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        if descriptor.get("validation_errors"):
+            raise HTTPException(
+                status_code=400,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="validation_error",
+                        message="MCP descriptor is invalid",
+                        details={"validation_errors": descriptor.get("validation_errors", [])},
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        sid = f"agent_blueprint_mcp_{blueprint_id}_{descriptor_id}"
+        if not hasattr(app.state, "external_mcp_servers"):
+            app.state.external_mcp_servers = {}
+        spec: dict[str, Any] = {"transport": descriptor.get("transport")}
+        if descriptor.get("command"):
+            spec["command"] = descriptor["command"]
+        if descriptor.get("args"):
+            spec["args"] = list(descriptor.get("args") or [])
+        if descriptor.get("url"):
+            spec["url"] = descriptor["url"]
+        app.state.external_mcp_servers[sid] = {
+            "id": sid,
+            "name": descriptor.get("name") or descriptor_id,
+            "status": "enabled_pending_probe",
+            "transport": descriptor.get("transport") or "unknown",
+            "tools": [],
+            "spec": spec,
+            "source": "agent_blueprint",
+            "agent_blueprint_id": blueprint_id,
+            "descriptor_id": descriptor_id,
+        }
+        return {
+            "id": sid,
+            "name": descriptor.get("name") or descriptor_id,
+            "status": "enabled_pending_probe",
+            "transport": descriptor.get("transport") or "unknown",
+            "tools_count": 0,
+            "tools": [],
+            "spec": spec,
+            "source": "agent_blueprint",
+            "agent_blueprint_id": blueprint_id,
+            "descriptor_id": descriptor_id,
+        }
+
+    @app.get("/v1/sessions/{sid}/agent-blueprint")
+    async def get_session_agent_blueprint(sid: str) -> dict[str, Any]:
+        sess = app.state.sessions.get(sid)
+        if sess is None:
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="not_found",
+                        message=f"session not found: {sid}",
+                        details={"session_id": sid},
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        blueprint_id = _active_session_agent_blueprint_id(sid)
+        blueprint_path = _active_session_agent_blueprint_path(sid)
+        cwd = _workspace_catalog_cwd(session_id=sid)
+        blueprint = next(
+            (row for row in discover_agent_blueprints(cwd=cwd) if row.id == blueprint_id),
+            None,
+        )
+        blueprint_wire: dict[str, Any] | None = blueprint.to_wire() if blueprint is not None else None
+        if blueprint is None and blueprint_path is not None:
+            validation = validate_agent_blueprint_path(blueprint_path, scope="session")
+            raw_blueprint = validation.get("agent_blueprint")
+            blueprint_wire = raw_blueprint if isinstance(raw_blueprint, dict) else None
+        return {
+            "session_id": sid,
+            "workspace_id": getattr(sess, "workspace_id", ""),
+            "active_agent_blueprint_id": blueprint_id,
+            "active_agent_blueprint_path": str(blueprint_path) if blueprint_path is not None else "",
+            "agent_blueprint": blueprint_wire,
+            "agent_overlay": _session_agent_overlay(sid),
+        }
+
+    @app.post("/v1/sessions/{sid}/agent-blueprint")
+    async def set_session_agent_blueprint(sid: str, req: dict[str, Any]) -> dict[str, Any]:
+        sess = app.state.sessions.get(sid)
+        if sess is None:
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="not_found",
+                        message=f"session not found: {sid}",
+                        details={"session_id": sid},
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        blueprint_id = str(req.get("blueprint_id") or req.get("agent_blueprint_id") or "").strip()
+        blueprint_path = str(req.get("path") or req.get("blueprint_path") or "").strip()
+        cwd = _workspace_catalog_cwd(session_id=sid)
+        if blueprint_path:
+            validation = validate_agent_blueprint_path(Path(blueprint_path), scope="session")
+            if not validation.get("enabled", False):
+                raise HTTPException(
+                    status_code=400,
+                    detail=ErrorEnvelope(
+                        error=ErrorInfo(
+                            error="validation_error",
+                            message="agent blueprint path is invalid",
+                            details={
+                                "path": blueprint_path,
+                                "validation_errors": validation.get("validation_errors", []),
+                            },
+                            recoverable=True,
+                        )
+                    ).model_dump(exclude_none=True),
+                )
+            blueprint_wire = validation["agent_blueprint"]
+            updated = app.state.sessions.update(
+                sid,
+                metadata_patch={
+                    "active_agent_blueprint_id": str(blueprint_wire.get("id") or ""),
+                    "active_agent_blueprint_version": str(blueprint_wire.get("version") or ""),
+                    "active_agent_blueprint_scope": "session",
+                    "active_agent_blueprint_definition_path": str(
+                        blueprint_wire.get("definition_path") or ""
+                    ),
+                    "active_agent_blueprint_path": str(Path(blueprint_path).expanduser()),
+                    "active_expert_pack_id": "",
+                    "active_expert_pack_path": "",
+                },
+            )
+        else:
+            if not blueprint_id:
+                raise HTTPException(
+                    status_code=400,
+                    detail=ErrorEnvelope(
+                        error=ErrorInfo(
+                            error="validation_error",
+                            message="blueprint_id or path is required",
+                            recoverable=True,
+                        )
+                    ).model_dump(exclude_none=True),
+                )
+            blueprint = next((row for row in discover_agent_blueprints(cwd=cwd) if row.id == blueprint_id), None)
+            if blueprint is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail=ErrorEnvelope(
+                        error=ErrorInfo(
+                            error="not_found",
+                            message=f"agent blueprint not found: {blueprint_id}",
+                            details={"agent_blueprint_id": blueprint_id, "session_id": sid},
+                            recoverable=False,
+                        )
+                    ).model_dump(exclude_none=True),
+                )
+            blueprint_wire = blueprint.to_wire()
+            updated = app.state.sessions.update(
+                sid,
+                metadata_patch={
+                    "active_agent_blueprint_id": blueprint.id,
+                    "active_agent_blueprint_version": blueprint.version,
+                    "active_agent_blueprint_scope": blueprint.scope,
+                    "active_agent_blueprint_definition_path": str(blueprint.root_path),
+                    "active_agent_blueprint_path": "",
+                    "active_expert_pack_id": "",
+                    "active_expert_pack_path": "",
+                },
+            )
+        _mirror_workspace_session(app, sid)
+        return {
+            "session_id": sid,
+            "workspace_id": getattr(sess, "workspace_id", ""),
+            "active_agent_blueprint_id": str(blueprint_wire.get("id") or ""),
+            "active_agent_blueprint_path": str(blueprint_path),
+            "agent_blueprint": blueprint_wire,
+            "session": Session(**updated.to_wire()).model_dump(exclude_none=True) if updated else None,
+        }
+
+    @app.get("/v1/sessions/{sid}/agent-overlay")
+    async def get_session_agent_overlay(sid: str) -> dict[str, Any]:
+        if app.state.sessions.get(sid) is None:
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="not_found",
+                        message=f"session not found: {sid}",
+                        details={"session_id": sid},
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        return {"session_id": sid, "agent_overlay": _session_agent_overlay(sid)}
+
+    @app.put("/v1/sessions/{sid}/agent-overlay")
+    async def put_session_agent_overlay(sid: str, req: dict[str, Any]) -> dict[str, Any]:
+        if app.state.sessions.get(sid) is None:
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="not_found",
+                        message=f"session not found: {sid}",
+                        details={"session_id": sid},
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        overlay = req.get("agent_overlay", req)
+        if not isinstance(overlay, Mapping):
+            raise HTTPException(
+                status_code=422,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="bad_request",
+                        message="agent overlay must be an object",
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        updated = app.state.sessions.update(
+            sid,
+            metadata_patch={"agent_blueprint_overlay": dict(overlay)},
+        )
+        _mirror_workspace_session(app, sid)
+        return {
+            "session_id": sid,
+            "agent_overlay": dict(overlay),
+            "session": Session(**updated.to_wire()).model_dump(exclude_none=True) if updated else None,
+        }
 
     @app.get("/v1/expert-packs")
     async def list_expert_packs(workspace_id: Optional[str] = None) -> dict[str, Any]:
