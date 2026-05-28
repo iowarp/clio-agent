@@ -97,6 +97,10 @@ SCIENTIFIC_FILE_SUFFIXES = {
     ".tar",
     ".tgz",
     ".gz",
+    ".fa",
+    ".fasta",
+    ".fna",
+    ".vcf",
 }
 PLANNER_HIDDEN_TOOL_NAMES = {"fs_read_file", "fs_apply_edit_write"}
 MULTI_FILE_ANALYSIS_TERMS = (
@@ -430,6 +434,37 @@ class ClioAgent(dspy.Module):
                 ],
                 specialization="data_visualization",
                 metadata={"file_suffixes": [".parquet", ".csv", ".sac", ".tar"]},
+            ),
+        )
+
+        self.registry.register_agent(
+            "genomics",
+            self,
+            AgentCapability(
+                keywords=[
+                    "genomics",
+                    "genome",
+                    "sequence",
+                    "fasta",
+                    "variant",
+                    "vcf",
+                    "mutation",
+                    "sample",
+                ],
+                description=(
+                    "Genomics review expert for small FASTA references and VCF variant files. "
+                    "Uses sequence composition and variant-summary tools before synthesis."
+                ),
+                tools=[
+                    "genomics_inspect_fasta",
+                    "genomics_summarize_vcf",
+                ],
+                specialization="genomics",
+                metadata={
+                    "file_suffixes": [".fa", ".fasta", ".fna", ".vcf"],
+                    "guard_coordinator_intents": ["multi_file_analysis"],
+                    "coordinated_file_suffixes": [".fa", ".fasta", ".fna", ".vcf"],
+                },
             ),
         )
 
@@ -1733,6 +1768,83 @@ class ClioAgent(dspy.Module):
                     answer = (
                         f"{expert_result.analysis}\n\n"
                         f"Recommendations:\n{expert_result.recommendations}"
+                    )
+                    return expert_id, answer, expert_result, None
+
+                if dispatch_id == "genomics":
+                    started = time.time()
+                    paths = extract_file_paths(
+                        expert_question,
+                        expert_context,
+                        {".fa", ".fasta", ".fna", ".vcf"},
+                    )
+                    fasta_paths = [
+                        path
+                        for path in paths
+                        if Path(str(path)).suffix.lower() in {".fa", ".fasta", ".fna"}
+                    ]
+                    vcf_paths = [
+                        path for path in paths if Path(str(path)).suffix.lower() == ".vcf"
+                    ]
+                    observations: list[str] = []
+                    if fasta_paths:
+                        fasta_result = self._execute_tool_action(
+                            "genomics_inspect_fasta",
+                            {"filepath": str(fasta_paths[0])},
+                            trace,
+                            question=expert_question,
+                            file_context=expert_context,
+                        )
+                        observations.append(
+                            "FASTA: " + json.dumps(compact_tool_result(fasta_result, max_text=900))
+                        )
+                    if vcf_paths:
+                        vcf_result = self._execute_tool_action(
+                            "genomics_summarize_vcf",
+                            {"filepath": str(vcf_paths[0])},
+                            trace,
+                            question=expert_question,
+                            file_context=expert_context,
+                        )
+                        observations.append(
+                            "VCF: " + json.dumps(compact_tool_result(vcf_result, max_text=900))
+                        )
+                    if not observations:
+                        return (
+                            expert_id,
+                            "",
+                            None,
+                            RoutingError(
+                                "The genomics expert needs a FASTA, FNA, FA, or VCF file path.",
+                                details=self._recovery_details(
+                                    expert=expert_id,
+                                    next_action=(
+                                        "Provide at least one FASTA/FNA/FA or VCF file under "
+                                        "the allowed workspace roots."
+                                    ),
+                                ),
+                            ).to_dict(),
+                        )
+                    answer = (
+                        "Genomics review:\n"
+                        + "\n\n".join(observations)
+                        + "\n\nRecommendations:\n"
+                        "- Review PASS variants with high-impact EFFECT labels first.\n"
+                        "- Compare variant positions against the named contigs before downstream use."
+                    )
+                    expert_result = dspy.Prediction(
+                        analysis=answer,
+                        recommendations="Validate high-impact calls and confirm sample provenance.",
+                        metadata={"expert": "genomics", "paths": [str(path) for path in paths]},
+                    )
+                    self._record_expert_handoff(
+                        trace,
+                        expert_id=expert_id,
+                        dispatch_target=dispatch_id,
+                        stage="planner_dispatch",
+                        input_summary=expert_question,
+                        result=expert_result,
+                        duration_ms=(time.time() - started) * 1000,
                     )
                     return expert_id, answer, expert_result, None
 

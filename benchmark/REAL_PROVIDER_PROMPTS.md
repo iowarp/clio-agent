@@ -21,6 +21,8 @@ current run:
 - `{dirty}` - dirty facility Parquet file.
 - `{csv}` - sensor/event CSV file.
 - `{adios}` - ADIOS/BP5 Gray-Scott output.
+- `{fasta}` - synthetic pathogen FASTA reference.
+- `{vcf}` - synthetic pathogen VCF variant calls.
 
 ## Primary Prompt Set
 
@@ -149,6 +151,32 @@ Why this matters:
 
 This is the cleanest single-file grounding test. It catches fake HDF5 summaries,
 bad path handling, and weak tool-result synthesis.
+
+### 5b. Genomics Reference And Variant Review
+
+Case id: `genomics_reference_variant_review`
+
+Category: `genomics`
+
+Expected route: `genomics`
+
+Expected evidence:
+
+- FASTA inspection through `genomics_inspect_fasta`.
+- VCF variant summary through `genomics_summarize_vcf`.
+- Grounded discussion of reference composition and variant effects.
+
+Prompt:
+
+```text
+Review this synthetic pathogen reference FASTA and variant call file: {fasta} and {vcf}. Summarize the reference composition, the variant types and effects, and what a collaborator should verify before treating the sample as analysis-ready.
+```
+
+Why this matters:
+
+This is the first genomics benchmark case. It adds a non-NDP domain and proves
+that CLIO can grow new tool-backed expert boundaries beyond existing
+HDF5/Parquet/ADIOS/NDP/SAC paths.
 
 ### 6. Provider Swap Preserves Session Context
 

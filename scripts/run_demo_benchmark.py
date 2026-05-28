@@ -579,6 +579,8 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
     dirty = manifest["parquet"]["dirty_path"]
     csv_path = manifest["csv"]["path"]
     adios = manifest["adios"]["path"]
+    fasta = manifest["genomics"]["fasta_path"]
+    vcf = manifest["genomics"]["vcf_path"]
     missing = str(Path(h5).with_name("missing_fusion_run.h5"))
 
     return [
@@ -1001,6 +1003,32 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             why="Checks whether a specific visualization intent maps to the right chart tool.",
         ),
         DemoCase(
+            case_id="genomics_reference_variant_review",
+            title="Genomics reference and variant review",
+            category="genomics",
+            session_group="genomics",
+            expected_agent="genomics",
+            expected_tools=("genomics_inspect_fasta", "genomics_summarize_vcf"),
+            expected_terms=("chrA", "plasmidB", "missense", "frameshift"),
+            timeout_s=620.0,
+            forbidden_route_sources=_REAL_ORCHESTRATOR_FORBIDDEN_SOURCES,
+            complexity_tags=("genomics", "fasta", "vcf", "new-domain", "multi-file"),
+            prompt=(
+                f"Review this synthetic pathogen reference FASTA and variant call file: "
+                f"{fasta} and {vcf}. Summarize the reference composition, the variant "
+                "types and effects, and what a collaborator should verify before treating "
+                "the sample as analysis-ready."
+            ),
+            expected=(
+                "CLIO uses FASTA and VCF genomics tools, then grounds a review in sequence "
+                "composition and variant effect evidence."
+            ),
+            why=(
+                "Adds a non-NDP, non-HDF5/Parquet domain that requires new domain tools and "
+                "a new expert boundary."
+            ),
+        ),
+        DemoCase(
             case_id="missing_hdf5_error",
             title="Missing file error surfacing",
             category="hardening",
@@ -1111,6 +1139,7 @@ _BENCHMARK_LANES: dict[str, tuple[str, ...]] = {
     "real_orchestrator": (
         "reasoning_cross_file_triage_nanoagents",
         "cross_file_dirty_quality_gate_nanoagents",
+        "genomics_reference_variant_review",
         "ndp_catalog_discovery",
         "ndp_seismic_waveform_to_plot",
         "reasoning_adios_bp5_container",

@@ -113,6 +113,16 @@ TOOL_CATALOG: dict[str, ToolCatalogEntry] = {
         {"seismic", "sac", "waveform", "visualization", "plot"},
         visible_to={"visualization"},
     ),
+    "genomics_inspect_fasta": _entry(
+        "genomics_inspect_fasta",
+        "genomics",
+        {"genomics", "fasta", "sequence", "inspect"},
+    ),
+    "genomics_summarize_vcf": _entry(
+        "genomics_summarize_vcf",
+        "genomics",
+        {"genomics", "vcf", "variants", "sequence", "analysis"},
+    ),
     "plot_histogram": _entry(
         "plot_histogram", "visualization", {"visualization", "plot", "histogram"}
     ),

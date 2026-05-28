@@ -591,6 +591,7 @@ class TestSessionFileResolution:
 class TestSelectedExpertForTool:
     def test_known_tool_returns_registered_owner(self, agent):
         assert agent._selected_expert_for_tool("hdf5_analyze_file") == "data"
+        assert agent._selected_expert_for_tool("genomics_inspect_fasta") == "genomics"
 
     def test_unknown_tool_surfaces_routing_error(self, agent):
         with pytest.raises(RoutingError, match="unknown tool") as exc_info:

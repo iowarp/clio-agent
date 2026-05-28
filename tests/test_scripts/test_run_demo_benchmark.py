@@ -105,6 +105,7 @@ def test_select_real_orchestrator_lane_cases() -> None:
         for case_id in (
             "reasoning_cross_file_triage_nanoagents",
             "cross_file_dirty_quality_gate_nanoagents",
+            "genomics_reference_variant_review",
             "ndp_catalog_discovery",
             "ndp_seismic_waveform_to_plot",
             "reasoning_adios_bp5_container",

@@ -222,6 +222,57 @@ def create_csv(filepath: Path) -> dict[str, Any]:
     }
 
 
+def create_genomics(output_dir: Path) -> dict[str, Any]:
+    """Create small FASTA and VCF files for genomics benchmark workflows."""
+    fasta_path = output_dir / "pathogen_reference.fasta"
+    vcf_path = output_dir / "pathogen_sample_variants.vcf"
+
+    rng = np.random.default_rng(20260524)
+    bases = np.array(list("ACGT"))
+    contigs: dict[str, str] = {}
+    for contig, length, gc_bias in (
+        ("chrA", 4800, [0.21, 0.29, 0.29, 0.21]),
+        ("plasmidB", 1250, [0.33, 0.17, 0.17, 0.33]),
+    ):
+        sequence = "".join(rng.choice(bases, size=length, p=gc_bias).tolist())
+        contigs[contig] = sequence
+
+    with fasta_path.open("w", encoding="utf-8") as handle:
+        for contig, sequence in contigs.items():
+            handle.write(f">{contig} synthetic pathogen benchmark reference\n")
+            for start in range(0, len(sequence), 80):
+                handle.write(sequence[start : start + 80] + "\n")
+
+    variants = [
+        ("chrA", 128, "var001", "A", "G", 72.0, "PASS", "GENE=repA;EFFECT=missense"),
+        ("chrA", 790, "var002", "CT", "C", 54.5, "PASS", "GENE=membrane;EFFECT=frameshift"),
+        ("chrA", 1432, "var003", "G", "GA", 61.2, "PASS", "GENE=polymerase;EFFECT=insertion"),
+        ("chrA", 3104, "var004", "T", "C", 22.1, "LowQual", "GENE=hypothetical;EFFECT=synonymous"),
+        ("plasmidB", 217, "var005", "C", "T", 88.4, "PASS", "GENE=resistance;EFFECT=stop_gained"),
+        ("plasmidB", 904, "var006", "GTA", "G", 47.3, "PASS", "GENE=mobility;EFFECT=deletion"),
+    ]
+    with vcf_path.open("w", encoding="utf-8") as handle:
+        handle.write("##fileformat=VCFv4.2\n")
+        handle.write("##source=clio-benchmark\n")
+        handle.write('##INFO=<ID=GENE,Number=1,Type=String,Description="Synthetic gene label">\n')
+        handle.write('##INFO=<ID=EFFECT,Number=1,Type=String,Description="Synthetic effect label">\n')
+        handle.write("#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tsample_A\n")
+        for row in variants:
+            chrom, pos, var_id, ref, alt, qual, filter_value, info = row
+            handle.write(
+                f"{chrom}\t{pos}\t{var_id}\t{ref}\t{alt}\t{qual:.1f}\t"
+                f"{filter_value}\t{info}\tGT:DP\t0/1:42\n"
+            )
+
+    return {
+        "fasta_path": str(fasta_path),
+        "vcf_path": str(vcf_path),
+        "records": len(contigs),
+        "variants": len(variants),
+        "expected_terms": ["chrA", "plasmidB", "missense", "frameshift", "stop_gained"],
+    }
+
+
 def create_adios_bp5(output_dir: Path) -> dict[str, Any]:
     """Copy a real BP5 sample when present, otherwise create a BP-like container."""
     destination = output_dir / "gray scott noise 0.01 data.bp5"
@@ -275,6 +326,7 @@ def create_benchmark_data(output_dir: Path) -> dict[str, Any]:
         output_dir / "facility_measurements_dirty.parquet",
     )
     csv_info = create_csv(output_dir / "sensor_events.csv")
+    genomics = create_genomics(output_dir)
     adios = create_adios_bp5(output_dir)
 
     manifest: dict[str, Any] = {
@@ -283,6 +335,7 @@ def create_benchmark_data(output_dir: Path) -> dict[str, Any]:
         "hdf5": hdf5,
         "parquet": parquet,
         "csv": csv_info,
+        "genomics": genomics,
         "adios": adios,
     }
     manifest_path = output_dir / "manifest.json"
