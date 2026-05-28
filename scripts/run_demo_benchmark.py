@@ -1107,7 +1107,7 @@ def _create_sessions(http: httpx.Client, cases: list[DemoCase]) -> dict[str, str
 
 
 _BENCHMARK_LANES: dict[str, tuple[str, ...]] = {
-    "default": (),
+    "all": (),
     "real_orchestrator": (
         "reasoning_cross_file_triage_nanoagents",
         "cross_file_dirty_quality_gate_nanoagents",
@@ -1130,6 +1130,8 @@ def _lane_title(lane: str) -> str:
         return "CLIO Claude Code Real-Provider Benchmark Report"
     if lane == "real_orchestrator":
         return "CLIO Real-Orchestrator Benchmark Report"
+    if lane == "all":
+        return "CLIO Full Real-Provider Benchmark Report"
     return "CLIO ALCF Demo Benchmark Report"
 
 
@@ -1143,7 +1145,7 @@ def _select_cases(
 
     if lane not in _BENCHMARK_LANES:
         return [], [f"unknown benchmark lane: {lane}"]
-    if lane != "default":
+    if lane != "all":
         wanted = set(_BENCHMARK_LANES[lane])
         cases = [case for case in cases if case.case_id in wanted]
     if case_ids:
@@ -1163,7 +1165,7 @@ def run_benchmark(
     case_delay_s: float = 0.0,
     require_stress_criteria: bool = False,
     require_lane_criteria: bool = False,
-    lane: str = "default",
+    lane: str = "real_orchestrator",
     case_ids: tuple[str, ...] = (),
 ) -> int:
     """Run demo cases and write JSONL plus a markdown report."""
@@ -1743,13 +1745,13 @@ def main() -> None:
     parser.add_argument(
         "--output-jsonl",
         type=Path,
-        default=Path("tmp/clio-demo-benchmark-alcf.jsonl"),
+        default=Path("tmp/clio-real-orchestrator-benchmark.jsonl"),
         help="Output evidence JSONL path.",
     )
     parser.add_argument(
         "--report",
         type=Path,
-        default=Path("docs/ALCF_DEMO_BENCHMARK_REPORT.md"),
+        default=Path("benchmark/REAL_ORCHESTRATOR_REPORT.md"),
         help="Output markdown report path.",
     )
     parser.add_argument(
@@ -1778,8 +1780,8 @@ def main() -> None:
     parser.add_argument(
         "--lane",
         choices=sorted(_BENCHMARK_LANES),
-        default="default",
-        help="Provider-specific benchmark lane to run.",
+        default="real_orchestrator",
+        help="Benchmark lane to run. Defaults to the strict real-orchestrator lane.",
     )
     parser.add_argument(
         "--require-lane-criteria",
