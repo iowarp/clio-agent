@@ -3055,6 +3055,61 @@ def _stream_fallback_reason_capabilities() -> dict[str, dict[str, Any]]:
     }
 
 
+_CAPABILITY_GAP_DEFINITIONS: dict[str, dict[str, Any]] = {
+    "voice": {
+        "status": "unsupported",
+        "advertised": False,
+        "category": "future_capability",
+        "description": (
+            "Voice input/output is reserved for future CLIO work and is not "
+            "wired to audio capture, transcription, or playback today."
+        ),
+        "client_behavior": "render_disabled",
+        "recovery_actions": ["use_text_input", "hide_or_disable_voice_controls"],
+        "related_endpoints": ["/v1/sessions/{sid}/voice/transcribe"],
+    },
+    "lsp": {
+        "status": "unsupported",
+        "advertised": False,
+        "category": "future_capability",
+        "description": (
+            "Language-server integration is outside the current CLIO GACT "
+            "surface; file and diff workflows are available instead."
+        ),
+        "client_behavior": "render_disabled",
+        "recovery_actions": ["use_files_and_diffs", "hide_or_disable_lsp_controls"],
+        "related_endpoints": ["/v1/lsp/*"],
+    },
+    "optimizer_command": {
+        "status": "unavailable",
+        "advertised": True,
+        "category": "deferred_command",
+        "description": (
+            "The /optimize slash command is kept visible as future CLIO "
+            "direction, but optimizer command execution is not wired yet."
+        ),
+        "client_behavior": "render_disabled",
+        "recovery_actions": [
+            "render_optimize_disabled",
+            "retry_after_optimizer_support_lands",
+        ],
+        "related_commands": ["/optimize"],
+        "related_endpoints": ["/v1/sessions/{sid}/commands/optimize"],
+    },
+}
+
+
+def _capability_gap_metadata() -> dict[str, dict[str, Any]]:
+    """Return CLIO capability gaps as client-renderable metadata."""
+
+    return {
+        name: {
+            key: list(value) if isinstance(value, list) else value for key, value in details.items()
+        }
+        for name, details in _CAPABILITY_GAP_DEFINITIONS.items()
+    }
+
+
 def _stream_fallback_payload(reason: str, message: str = "") -> dict[str, Any]:
     """Build structured metadata for a batch text delivery path."""
 
@@ -5029,10 +5084,21 @@ def build_app(
                 x_clio_stream_fallback_reasons=_stream_fallback_reason_capabilities(),
                 x_clio_direct_delete_permissions=True,
                 x_clio_prompt_registry=True,
+                x_clio_capability_gaps=_capability_gap_metadata(),
             ),
             transports=TransportFlags(events_sse=True, events_websocket=False),
             auth=AuthInfo(schemes=["trust_socket"], current="trust_socket"),
         )
+
+    @app.get("/v1/capability-gaps")
+    async def capability_gaps() -> dict[str, Any]:
+        """Return intentionally unsupported or future CLIO capability rows.
+
+        This keeps "not supported yet" affordances visible as ideas without
+        making clients infer support from missing routes or failed commands.
+        """
+
+        return {"capability_gaps": _capability_gap_metadata()}
 
     # ---- 501 stubs for the rest of the surface ---------------------------
     # Every route in the v0.2 contract that we haven't wired yet
