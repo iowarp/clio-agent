@@ -255,6 +255,267 @@ def test_workspace_command_file_is_listed_and_dispatches_to_builtin_agent(
     assert calls == [("main", "Review src/app.py at src/app.py with main.", sid)]
 
 
+def test_agent_invocable_command_planner_visibility_and_allowed_call(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, str, str]] = []
+
+    def fake_prompt_agent(base_agent: Any, agent_def: Any, question: str, session_id: str) -> Any:
+        calls.append((agent_def.id, question, session_id))
+        return _Pred(answer="SUMMARY_OK", selected_expert=agent_def.id)
+
+    monkeypatch.setattr("clio_agent.gact.app._run_prompt_user_agent", fake_prompt_agent)
+    monkeypatch.chdir(tmp_path)
+    command_dir = tmp_path / ".clio" / "commands"
+    command_dir.mkdir(parents=True)
+    (command_dir / "summarize.md").write_text(
+        "\n".join(
+            [
+                "---",
+                "name: summarize",
+                "title: Summarize",
+                "description: Summarize a dataset",
+                "agent: main",
+                "agent-invocable: true",
+                "arguments:",
+                "- path",
+                "---",
+                "Summarize {{args.path}}.",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (command_dir / "user_only.md").write_text(
+        "\n".join(
+            [
+                "---",
+                "name: user-only",
+                "title: User Only",
+                "agent: main",
+                "agent-invocable: false",
+                "---",
+                "User only.",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    c = TestClient(build_app(sessions_path=tmp_path / "s.json", agent=_Agent()))
+    c.post(
+        "/v1/agents",
+        json={
+            "id": "caller",
+            "title": "Caller",
+            "system_prompt": "Call allowed commands.",
+            "metadata": {"commands": ["/summarize"]},
+        },
+    )
+    sid = c.post("/v1/sessions", json={"title": "t", "agent": {"id": "caller"}}).json()["id"]
+
+    planner = c.get("/v1/commands", params={"planner": "true", "agent_id": "caller"}).json()[
+        "commands"
+    ]
+    visible_ids = {row["id"] for row in planner}
+    assert "/summarize" in visible_ids
+    assert "/user-only" not in visible_ids
+
+    resp = c.post(
+        f"/v1/sessions/{sid}/commands/summarize",
+        json={
+            "caller": {"type": "agent", "agent_id": "caller"},
+            "args": {"path": "data.csv"},
+        },
+    ).json()
+
+    assert resp["result"]["text"] == "SUMMARY_OK"
+    assert resp["result"]["audit"]["caller_type"] == "agent"
+    assert resp["result"]["audit"]["caller_agent_id"] == "caller"
+    assert resp["result"]["audit"]["args"] == {"path": "data.csv"}
+    assert calls == [("main", "Summarize data.csv.", sid)]
+    assert c.app.state.command_audit[-1]["status"] == "completed"
+
+
+def test_agent_invocable_command_denies_missing_allowlist_and_records_audit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    command_dir = tmp_path / ".clio" / "commands"
+    command_dir.mkdir(parents=True)
+    (command_dir / "summarize.md").write_text(
+        "\n".join(
+            [
+                "---",
+                "name: summarize",
+                "agent: main",
+                "agent-invocable: true",
+                "---",
+                "Summarize.",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    c = TestClient(build_app(sessions_path=tmp_path / "s.json", agent=_Agent()))
+    c.post(
+        "/v1/agents",
+        json={"id": "caller", "title": "Caller", "system_prompt": "No commands."},
+    )
+    sid = c.post("/v1/sessions", json={"title": "t", "agent": {"id": "caller"}}).json()["id"]
+
+    resp = c.post(
+        f"/v1/sessions/{sid}/commands/summarize",
+        json={"caller": {"type": "agent", "agent_id": "caller"}},
+    )
+
+    assert resp.status_code == 403
+    body = resp.json()["error"]
+    assert body["error"] == "command_denied"
+    assert body["details"]["audit"]["status"] == "denied"
+    assert c.app.state.command_audit[-1]["error"] == "command /summarize is not allowed for agent caller"
+
+
+def test_agent_invocable_command_invalid_args_records_audit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    command_dir = tmp_path / ".clio" / "commands"
+    command_dir.mkdir(parents=True)
+    (command_dir / "summarize.md").write_text(
+        "\n".join(
+            [
+                "---",
+                "name: summarize",
+                "agent: main",
+                "agent-invocable: true",
+                "arguments:",
+                "- path",
+                "---",
+                "Summarize {{args.path}}.",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    c = TestClient(build_app(sessions_path=tmp_path / "s.json", agent=_Agent()))
+    c.post(
+        "/v1/agents",
+        json={
+            "id": "caller",
+            "title": "Caller",
+            "system_prompt": "Call allowed commands.",
+            "metadata": {"commands": ["/summarize"]},
+        },
+    )
+    sid = c.post("/v1/sessions", json={"title": "t", "agent": {"id": "caller"}}).json()["id"]
+
+    resp = c.post(
+        f"/v1/sessions/{sid}/commands/summarize",
+        json={"caller": {"type": "agent", "agent_id": "caller"}, "args": {}},
+    )
+
+    assert resp.status_code == 422
+    assert resp.json()["error"]["error"] == "invalid_arguments"
+    assert c.app.state.command_audit[-1]["status"] == "failed"
+    assert c.app.state.command_audit[-1]["error"] == "invalid_arguments"
+
+
+def test_expert_pack_command_allowlist_controls_planner_visibility(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".clio" / "experts").mkdir(parents=True)
+    (tmp_path / ".clio" / "commands").mkdir(parents=True)
+    (tmp_path / ".clio" / "experts" / "dataset.md").write_text(
+        """---
+id: dataset_expert
+title: Dataset Expert
+parent_id: main
+tier: 2
+commands: [summarize-dataset]
+---
+Work with datasets.
+""",
+        encoding="utf-8",
+    )
+    (tmp_path / ".clio" / "commands" / "summarize-dataset.md").write_text(
+        "\n".join(
+            [
+                "---",
+                "name: summarize-dataset",
+                "agent: main",
+                "agent-invocable: true",
+                "---",
+                "Summarize.",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / ".clio" / "commands" / "other.md").write_text(
+        "\n".join(
+            [
+                "---",
+                "name: other",
+                "agent: main",
+                "agent-invocable: true",
+                "---",
+                "Other.",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    c = TestClient(build_app(sessions_path=tmp_path / "s.json", agent=_Agent()))
+
+    planner = c.get(
+        "/v1/commands",
+        params={"planner": "true", "agent_id": "dataset_expert"},
+    ).json()["commands"]
+
+    assert {row["id"] for row in planner} == {"/summarize-dataset"}
+
+
+def test_workspace_commands_do_not_leak_between_workspace_requests(tmp_path: Path) -> None:
+    ws_a = tmp_path / "workspace-a"
+    ws_b = tmp_path / "workspace-b"
+    for workspace, command_id in ((ws_a, "a-command"), (ws_b, "b-command")):
+        command_dir = workspace / ".clio" / "commands"
+        command_dir.mkdir(parents=True)
+        (command_dir / f"{command_id}.md").write_text(
+            "\n".join(
+                [
+                    "---",
+                    f"name: {command_id}",
+                    "agent: main",
+                    "agent-invocable: true",
+                    "---",
+                    f"Run {command_id}.",
+                ]
+            ),
+            encoding="utf-8",
+        )
+    c = TestClient(build_app(sessions_path=tmp_path / "s.json", agent=_Agent()))
+    wid_a = c.post(
+        "/v1/workspaces",
+        json={"name": "A", "root_path": str(ws_a), "storage_root": str(ws_a / ".clio")},
+    ).json()["id"]
+    wid_b = c.post(
+        "/v1/workspaces",
+        json={"name": "B", "root_path": str(ws_b), "storage_root": str(ws_b / ".clio")},
+    ).json()["id"]
+
+    ids_a = {
+        row["id"] for row in c.get("/v1/commands", params={"workspace_id": wid_a}).json()["commands"]
+    }
+    ids_b = {
+        row["id"] for row in c.get("/v1/commands", params={"workspace_id": wid_b}).json()["commands"]
+    }
+
+    assert "/a-command" in ids_a
+    assert "/b-command" not in ids_a
+    assert "/b-command" in ids_b
+    assert "/a-command" not in ids_b
+
+
 def test_compatible_claude_command_file_is_listed(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
