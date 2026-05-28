@@ -61,3 +61,21 @@ not in Claude Code's internal tool system.
 **No live streaming.** This provider shells out to `claude -p`, which returns
 a completed JSON result. Use GACT stream metadata to distinguish this
 post-hoc delivery from providers that emit live token chunks.
+
+## Benchmark Lane
+
+Run the CLIO real-provider benchmark lane against a live GACT backend that was
+started with `CLIO_LM_PROVIDER=claude_code`:
+
+```powershell
+uv run python scripts/run_demo_benchmark.py `
+  --base-url http://127.0.0.1:17920 `
+  --lane claude_code `
+  --output-jsonl tmp/clio-demo-benchmark-claude-code.jsonl `
+  --report docs/CLAUDE_CODE_BENCHMARK_REPORT.md `
+  --require-lane-criteria
+```
+
+The Claude lane records provider/model evidence, planner/routing behavior,
+tool-call argument generation, stream provenance, cancellation surfacing, and
+structured error surfacing separately from the ALCF/Qwopus benchmark report.

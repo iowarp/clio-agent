@@ -52,6 +52,8 @@ class DemoCase:
     provider_swap_preset_id: str = ""
     provider_swap_model: str = ""
     expected_actions: tuple[str, ...] = ()
+    cancel_after_s: float = 0.0
+    expects_cancelled: bool = False
 
 
 @dataclass
@@ -66,6 +68,7 @@ class DemoResult:
     child_sessions: list[dict[str, Any]] = field(default_factory=list)
     setup_messages: list[dict[str, Any]] = field(default_factory=list)
     actions: list[dict[str, Any]] = field(default_factory=list)
+    benchmark_lane: str = "default"
 
     @property
     def selected_agent(self) -> str:
@@ -131,8 +134,26 @@ class DemoResult:
         return _partial_error(self.message)
 
     @property
+    def stream_source(self) -> str:
+        """Return the recorded GACT stream source for the assistant message."""
+        return str((self.message.get("metadata") or {}).get("stream_source") or "")
+
+    @property
+    def stream_fallback(self) -> dict[str, Any]:
+        """Return stream fallback metadata, if present."""
+        row = (self.message.get("metadata") or {}).get("stream_fallback") or {}
+        return row if isinstance(row, dict) else {}
+
+    @property
     def passed(self) -> bool:
         """Return whether this case satisfied its declared expectations."""
+        if self.case.expects_cancelled:
+            error_info = self.message.get("error_info")
+            return (
+                isinstance(error_info, dict)
+                and error_info.get("error") == "cancelled"
+                and not self.text.strip()
+            )
         if self.case.expects_error:
             return self.blocking_error is not None and not self.text.strip()
         if self.partial_error is not None:
@@ -177,6 +198,8 @@ class DemoResult:
     @property
     def outcome(self) -> str:
         """Return a human-readable outcome category."""
+        if self.case.expects_cancelled:
+            return "cancelled" if self.passed else "fail"
         if self.case.expects_error:
             return "expected_error" if self.passed else "fail"
         if self.partial_error is not None:
@@ -286,6 +309,7 @@ def _post_turn(
     prompt: str,
     *,
     timeout_s: float,
+    cancel_after_s: float = 0.0,
 ) -> dict[str, Any]:
     ack = http.post(
         f"/v1/sessions/{session_id}/messages",
@@ -293,6 +317,10 @@ def _post_turn(
     )
     ack.raise_for_status()
     user_id = ack.json()["message_id"]
+    if cancel_after_s > 0:
+        time.sleep(cancel_after_s)
+        cancel = http.post(f"/v1/sessions/{session_id}/cancel")
+        cancel.raise_for_status()
 
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
@@ -442,7 +470,10 @@ def _case_row(result: DemoResult) -> dict[str, Any]:
         "partial_error": result.partial_error,
         "stop_reason": result.message.get("stop_reason"),
         "provider": result.provider,
+        "stream_source": result.stream_source,
+        "stream_fallback": result.stream_fallback,
         "routing_mode": result.case.routing_mode,
+        "benchmark_lane": result.benchmark_lane,
         "complexity_score": result.complexity_score,
         "answer_excerpt": result.text[:1200],
         "complexity_tags": list(result.case.complexity_tags),
@@ -461,6 +492,7 @@ def _result_from_case_row(row: dict[str, Any]) -> DemoResult:
         why=str(row.get("why") or ""),
         routing_mode=str(row.get("routing_mode") or "auto"),
         expects_error=str(row.get("outcome") or "") == "expected_error",
+        expects_cancelled=str(row.get("outcome") or "") == "cancelled",
         complexity_tags=tuple(str(tag) for tag in row.get("complexity_tags", []) or []),
     )
     routing = dict(row.get("routing_decision") or {})
@@ -474,6 +506,8 @@ def _result_from_case_row(row: dict[str, Any]) -> DemoResult:
         "metadata": {
             "tools_called": row.get("tools_called") or [],
             "expert_handoffs": row.get("expert_handoffs") or [],
+            "stream_source": row.get("stream_source") or "",
+            "stream_fallback": row.get("stream_fallback") or {},
         },
         "error_info": row.get("error_info"),
         "stop_reason": row.get("stop_reason"),
@@ -488,6 +522,7 @@ def _result_from_case_row(row: dict[str, Any]) -> DemoResult:
         child_sessions=list(row.get("child_sessions") or []),
         setup_messages=setup_messages,
         actions=list(row.get("actions") or []),
+        benchmark_lane=str(row.get("benchmark_lane") or "recorded"),
     )
 
 
@@ -953,6 +988,27 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             why="Adds a second deliberate surfaced-error benchmark outside the HDF5 path.",
         ),
         DemoCase(
+            case_id="claude_cancellation_surface",
+            title="Claude Code cancellation surface",
+            category="provider-hardening",
+            session_group="claude_cancel",
+            expects_cancelled=True,
+            cancel_after_s=0.2,
+            timeout_s=240.0,
+            complexity_tags=("claude-code", "cancellation", "provider-boundary"),
+            prompt=(
+                "Cancellation benchmark: prepare a very detailed scientific review plan for "
+                f"{h5}, {parquet}, and {csv_path}. Include staged reasoning, validation "
+                "checks, schema comparisons, and collaborator handoff notes so this turn should "
+                "remain active long enough for the benchmark runner to cancel it."
+            ),
+            expected="CLIO settles the GACT envelope as a structured cancelled turn.",
+            why=(
+                "The Claude lane must prove cancellation surfacing separately from successful "
+                "tool and planner cases, without claiming hard upstream abort."
+            ),
+        ),
+        DemoCase(
             case_id="provider_swap_memory_followup",
             title="Provider swap preserves session context",
             category="provider-hardening",
@@ -1005,6 +1061,45 @@ def _create_sessions(http: httpx.Client, cases: list[DemoCase]) -> dict[str, str
     return session_ids
 
 
+_BENCHMARK_LANES: dict[str, tuple[str, ...]] = {
+    "default": (),
+    "claude_code": (
+        "workflow_hdf5_overview",
+        "workflow_parquet_profile",
+        "reasoning_cross_file_triage_nanoagents",
+        "missing_hdf5_error",
+        "claude_cancellation_surface",
+    ),
+}
+
+
+def _lane_title(lane: str) -> str:
+    if lane == "claude_code":
+        return "CLIO Claude Code Real-Provider Benchmark Report"
+    return "CLIO ALCF Demo Benchmark Report"
+
+
+def _select_cases(
+    cases: list[DemoCase],
+    *,
+    lane: str,
+    case_ids: tuple[str, ...],
+) -> tuple[list[DemoCase], list[str]]:
+    """Apply provider-lane and explicit case filters."""
+
+    if lane not in _BENCHMARK_LANES:
+        return [], [f"unknown benchmark lane: {lane}"]
+    if lane != "default":
+        wanted = set(_BENCHMARK_LANES[lane])
+        cases = [case for case in cases if case.case_id in wanted]
+    if case_ids:
+        requested = set(case_ids)
+        missing = sorted(requested - {case.case_id for case in cases})
+        cases = [case for case in cases if case.case_id in requested]
+        return cases, missing
+    return cases, []
+
+
 def run_benchmark(
     base_url: str,
     data_dir: Path,
@@ -1013,21 +1108,20 @@ def run_benchmark(
     *,
     case_delay_s: float = 0.0,
     require_stress_criteria: bool = False,
+    require_lane_criteria: bool = False,
+    lane: str = "default",
     case_ids: tuple[str, ...] = (),
 ) -> int:
     """Run demo cases and write JSONL plus a markdown report."""
     manifest = create_benchmark_data(data_dir)
     cases = _make_cases(manifest)
-    if case_ids:
-        requested = set(case_ids)
-        cases = [case for case in cases if case.case_id in requested]
-        missing = sorted(requested - {case.case_id for case in cases})
-        if missing:
-            print(f"Unknown case id(s): {', '.join(missing)}", file=sys.stderr)
-            return 2
-        if not cases:
-            print("No cases selected.", file=sys.stderr)
-            return 2
+    cases, missing = _select_cases(cases, lane=lane, case_ids=case_ids)
+    if missing:
+        print(f"Unknown case id(s): {', '.join(missing)}", file=sys.stderr)
+        return 2
+    if not cases:
+        print("No cases selected.", file=sys.stderr)
+        return 2
     results: list[DemoResult] = []
     output_jsonl.parent.mkdir(parents=True, exist_ok=True)
     report_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1068,7 +1162,13 @@ def run_benchmark(
                     )
                 provider = _provider(http)
                 started = time.monotonic()
-                message = _post_turn(http, session_id, case.prompt, timeout_s=case.timeout_s)
+                message = _post_turn(
+                    http,
+                    session_id,
+                    case.prompt,
+                    timeout_s=case.timeout_s,
+                    cancel_after_s=case.cancel_after_s,
+                )
                 elapsed_s = time.monotonic() - started
                 after_children = _children(http, session_id)
                 new_children = [
@@ -1083,6 +1183,7 @@ def run_benchmark(
                     child_sessions=new_children,
                     setup_messages=setup_messages,
                     actions=actions,
+                    benchmark_lane=lane,
                 )
                 results.append(result)
                 log.write(json.dumps(_case_row(result), ensure_ascii=False, default=str) + "\n")
@@ -1100,6 +1201,9 @@ def run_benchmark(
     report_path.write_text(_render_report(results, output_jsonl), encoding="utf-8")
     cases_passed = all(result.passed for result in results)
     audit_passed = all(item["passed"] for item in _stress_audit(results))
+    lane_passed = all(item["passed"] for item in _provider_lane_audit(results, lane))
+    if require_lane_criteria:
+        return 0 if cases_passed and lane_passed else 1
     if require_stress_criteria:
         return 0 if cases_passed and audit_passed else 1
     return 0 if cases_passed else 1
@@ -1183,22 +1287,97 @@ def _stress_audit(results: list[DemoResult]) -> list[dict[str, Any]]:
     ]
 
 
+def _provider_lane_audit(results: list[DemoResult], lane: str) -> list[dict[str, Any]]:
+    """Evaluate provider-specific evidence requirements."""
+
+    if lane != "claude_code":
+        return []
+    by_case = {result.case.case_id: result for result in results}
+
+    def passed(case_id: str) -> bool:
+        result = by_case.get(case_id)
+        return bool(result and result.passed)
+
+    provider_rows = [
+        result
+        for result in results
+        if str(result.provider.get("provider") or "").strip()
+        and str(result.provider.get("model") or "").strip()
+    ]
+    stream_rows = [result for result in results if result.stream_source]
+    return [
+        {
+            "criterion": "provider/model recorded for every case",
+            "observed": len(provider_rows),
+            "required": len(results),
+            "passed": len(provider_rows) == len(results),
+        },
+        {
+            "criterion": "planner JSON/routing reliability case passes",
+            "observed": int(passed("reasoning_cross_file_triage_nanoagents")),
+            "required": 1,
+            "passed": passed("reasoning_cross_file_triage_nanoagents"),
+        },
+        {
+            "criterion": "tool-call argument generation cases pass",
+            "observed": sum(
+                int(passed(case_id))
+                for case_id in ("workflow_hdf5_overview", "workflow_parquet_profile")
+            ),
+            "required": 2,
+            "passed": passed("workflow_hdf5_overview") and passed("workflow_parquet_profile"),
+        },
+        {
+            "criterion": "stream provenance captured",
+            "observed": len(stream_rows),
+            "required": len(results),
+            "passed": len(stream_rows) == len(results),
+            "details": [
+                f"{result.case.case_id}: stream_source={result.stream_source or '-'}"
+                + (
+                    f", fallback={result.stream_fallback.get('reason')}"
+                    if result.stream_fallback
+                    else ""
+                )
+                for result in results
+            ],
+        },
+        {
+            "criterion": "cancellation surfaces as structured cancelled turn",
+            "observed": int(passed("claude_cancellation_surface")),
+            "required": 1,
+            "passed": passed("claude_cancellation_surface"),
+        },
+        {
+            "criterion": "provider-specific failures stay visible",
+            "observed": int(passed("missing_hdf5_error")),
+            "required": 1,
+            "passed": passed("missing_hdf5_error"),
+        },
+    ]
+
+
 def _render_report(results: list[DemoResult], output_jsonl: Path) -> str:
     clean_passes = sum(1 for result in results if result.outcome == "pass")
     expected_errors = sum(1 for result in results if result.outcome == "expected_error")
+    expected_cancelled = sum(1 for result in results if result.outcome == "cancelled")
     partials = sum(1 for result in results if result.outcome == "partial")
     failures = sum(1 for result in results if result.outcome == "fail")
+    lane = results[0].benchmark_lane if results else "default"
     audit = _stress_audit(results)
+    provider_audit = _provider_lane_audit(results, lane)
     best = sorted(results, key=lambda result: result.complexity_score, reverse=True)[:10]
     lines = [
-        "# CLIO ALCF Demo Benchmark Report",
+        f"# {_lane_title(lane)}",
         "",
         f"Generated: {time.strftime('%Y-%m-%d %H:%M:%S %Z')}",
         f"Evidence JSONL: `{output_jsonl}`",
+        f"Benchmark lane: `{lane}`",
         "",
         (
             f"Result: {clean_passes}/{len(results)} clean passes, "
-            f"{expected_errors} expected surfaced errors, {partials} partial recoveries, "
+            f"{expected_errors} expected surfaced errors, "
+            f"{expected_cancelled} expected cancellations, {partials} partial recoveries, "
             f"{failures} failures."
         ),
         "",
@@ -1231,6 +1410,35 @@ def _render_report(results: list[DemoResult], output_jsonl: Path) -> str:
     if audit_details:
         lines.extend(["", "High-event or long-running cases:", ""])
         lines.extend(f"- {detail}" for detail in audit_details)
+    if provider_audit:
+        lines.extend(
+            [
+                "",
+                "## Provider Lane Audit",
+                "",
+                "| Criterion | Observed | Required | Status |",
+                "| --- | ---: | ---: | --- |",
+            ]
+        )
+        for item in provider_audit:
+            lines.append(
+                "| "
+                + " | ".join(
+                    [
+                        item["criterion"],
+                        str(item["observed"]),
+                        str(item["required"]),
+                        "pass" if item["passed"] else "gap",
+                    ]
+                )
+                + " |"
+            )
+        provider_details = [
+            detail for item in provider_audit for detail in item.get("details", [])
+        ]
+        if provider_details:
+            lines.extend(["", "Provider evidence details:", ""])
+            lines.extend(f"- {detail}" for detail in provider_details)
     lines.extend(
         [
             "",
@@ -1467,6 +1675,17 @@ def main() -> None:
         action="store_true",
         help="Exit non-zero unless the documented stress coverage audit passes.",
     )
+    parser.add_argument(
+        "--lane",
+        choices=sorted(_BENCHMARK_LANES),
+        default="default",
+        help="Provider-specific benchmark lane to run.",
+    )
+    parser.add_argument(
+        "--require-lane-criteria",
+        action="store_true",
+        help="Exit non-zero unless the selected provider lane audit passes.",
+    )
     args = parser.parse_args()
     if args.render_existing_jsonl is not None:
         render_report_from_jsonl(args.render_existing_jsonl.resolve(), args.report.resolve())
@@ -1479,6 +1698,8 @@ def main() -> None:
             args.report.resolve(),
             case_delay_s=max(0.0, args.case_delay_s),
             require_stress_criteria=args.require_stress_criteria,
+            require_lane_criteria=args.require_lane_criteria,
+            lane=args.lane,
             case_ids=tuple(args.case),
         )
     )
