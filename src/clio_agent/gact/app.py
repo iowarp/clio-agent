@@ -111,6 +111,14 @@ def _new_part_id() -> str:
     return f"part_{uuid.uuid4().hex[:12]}"
 
 
+def _new_question_id() -> str:
+    return f"ques_{uuid.uuid4().hex[:12]}"
+
+
+def _new_attempt_id() -> str:
+    return f"att_{uuid.uuid4().hex[:12]}"
+
+
 def _new_context_frame_id() -> str:
     return f"ctx_{uuid.uuid4().hex[:12]}"
 
@@ -1267,6 +1275,9 @@ async def _run_turn_in_background(
     proposed_diffs: list[Any] = []
     nanoagents: list[Any] = []
     thinking_text = ""
+    retry_attempt_id = ""
+    if isinstance(user_msg.metadata, dict):
+        retry_attempt_id = str(user_msg.metadata.get("retry_attempt_id") or "")
     turn_tokens: dict[str, int] = {
         "input": 0,
         "output": 0,
@@ -1274,6 +1285,41 @@ async def _run_turn_in_background(
         "cache_write": 0,
     }
     turn_cost = 0.0
+
+    def _update_retry_attempt(
+        status: str,
+        *,
+        metadata_patch: Optional[dict[str, Any]] = None,
+    ) -> None:
+        if not retry_attempt_id:
+            return
+        attempt = app.state.turn_attempts.get(retry_attempt_id)
+        if attempt is None:
+            return
+        metadata = dict(attempt.metadata)
+        if metadata_patch:
+            metadata.update(metadata_patch)
+        updated = attempt.model_copy(
+            update={
+                "status": status,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+                "metadata": metadata,
+            }
+        )
+        app.state.turn_attempts[retry_attempt_id] = updated
+        app.state.bus.publish(
+            Event(
+                type=f"turn.retry_{status}",
+                session_id=sid,
+                payload=updated.model_dump(exclude_none=True),
+            )
+        )
+
+    if retry_attempt_id:
+        _update_retry_attempt(
+            "running",
+            metadata_patch={"executed_user_message_id": user_msg.id},
+        )
 
     # iowarp/clio-agent#5: prepend any attached context files to the
     # user's text so the agent's forward() sees them as primed input.
@@ -1328,6 +1374,13 @@ async def _run_turn_in_background(
                 )
             )
             app.state.sessions.update(sid, status="error")
+            _update_retry_attempt(
+                "failed",
+                metadata_patch={
+                    "execution_error": "permission_error",
+                    "executed_user_message_id": user_msg.id,
+                },
+            )
             bus.publish(
                 Event(
                     type="session.status_changed",
@@ -2154,7 +2207,16 @@ async def _run_turn_in_background(
 
     # Persist + settle.
     final_status = "cancelled" if cancelled_turn else ("error" if error_info else "idle")
+    retry_status = "cancelled" if cancelled_turn else ("failed" if error_info else "completed")
     _append_session_message(app, sid, assistant_msg)
+    _update_retry_attempt(
+        retry_status,
+        metadata_patch={
+            "executed_user_message_id": user_msg.id,
+            "assistant_message_id": assistant_msg.id,
+            "stop_reason": completed_payload["stop_reason"],
+        },
+    )
     app.state.sessions.update(
         sid,
         status=final_status,
@@ -4907,12 +4969,14 @@ from clio_agent.gact.messages import MessageStore
 from clio_agent.gact.sessions import SessionStore, _default_store_path
 from clio_agent.gact.types import (
     AgentDef,
+    AnswerUserQuestionRequest,
     AuthInfo,
     BackendInfo,
     CacheStats,
     Capabilities,
     CapabilityFlags,
     CreateSessionRequest,
+    CreateUserQuestionRequest,
     CreateWorkspaceRequest,
     ErrorEnvelope,
     ErrorInfo,
@@ -4933,16 +4997,21 @@ from clio_agent.gact.types import (
     Metrics,
     MetricsMessages,
     MetricsSessions,
+    ModelRef,
     Part,
     PostMessageRequest,
     PostMessageResponse,
+    RetryTurnRequest,
     Session,
     SessionContextPolicy,
     SessionMemoryStats,
     Tokens,
     Tool,
     TransportFlags,
+    TurnAttempt,
     UpdateSessionRequest,
+    UserQuestion,
+    UserQuestionOption,
     Workspace,
 )
 from clio_agent.gact.workspaces import (
@@ -5278,6 +5347,13 @@ def build_app(
     # MCPToolBridge gate (running in a worker thread) can block on
     # the user's response without polling.
     app.state.permission_events = {}
+    # iowarp/clio-agent#333: structured ask-user protocol. The
+    # orchestrator/backend can publish pending questions; clients
+    # answer or cancel them through explicit endpoints.
+    app.state.user_questions = {}
+    # iowarp/clio-agent#333: retry attempts preserve provenance for
+    # retry-with-notes/model flows without mutating the original turn.
+    app.state.turn_attempts = {}
     # SPEC §6.17 hooks (declarative event→command/url callouts that
     # gact-tui drives via /v1/hooks). Distinct from CLIO's runtime
     # in-process Python hooks (clio_agent.runtime.hooks) — these are
@@ -5623,6 +5699,8 @@ def build_app(
                 x_clio_stream_fallback_reasons=_stream_fallback_reason_capabilities(),
                 x_clio_direct_delete_permissions=True,
                 x_clio_prompt_registry=True,
+                x_clio_user_questions=True,
+                x_clio_retry_attempts=True,
                 x_clio_context_frames=True,
                 x_clio_capability_gaps=_capability_gap_metadata(),
             ),
@@ -9337,6 +9415,460 @@ def build_app(
         matches.sort(key=lambda r: r["score"], reverse=True)
         return {"matches": matches}
 
+    # ---- Ask-user and retry protocol (#333) --------------------------
+
+    def _session_not_found(sid: str) -> HTTPException:
+        return HTTPException(
+            status_code=404,
+            detail=ErrorEnvelope(
+                error=ErrorInfo(
+                    error="internal_error",
+                    message=f"session not found: {sid}",
+                    details={"session_id": sid},
+                    recoverable=False,
+                )
+            ).model_dump(exclude_none=True),
+        )
+
+    def _question_not_found(sid: str, question_id: str) -> HTTPException:
+        return HTTPException(
+            status_code=404,
+            detail=ErrorEnvelope(
+                error=ErrorInfo(
+                    error="not_found",
+                    message=f"user question not found: {question_id}",
+                    details={"session_id": sid, "question_id": question_id},
+                    recoverable=False,
+                )
+            ).model_dump(exclude_none=True),
+        )
+
+    def _pending_user_questions(sid: str) -> list[UserQuestion]:
+        return [
+            q
+            for q in app.state.user_questions.values()
+            if q.session_id == sid and q.status == "pending"
+        ]
+
+    def _set_session_status(
+        sid: str,
+        status: str,
+        *,
+        prev_status: str = "",
+        metadata_patch: Optional[dict[str, Any]] = None,
+    ) -> None:
+        updated = app.state.sessions.update(
+            sid,
+            status=status,
+            metadata_patch=metadata_patch,
+        )
+        app.state.bus.publish(
+            Event(
+                type="session.status_changed",
+                session_id=sid,
+                payload={
+                    "session_id": sid,
+                    "status": status,
+                    "prev_status": prev_status,
+                    "updated_at": updated.updated_at if updated is not None else "",
+                },
+            )
+        )
+
+    def _normalize_question_options(
+        req: CreateUserQuestionRequest,
+    ) -> list[UserQuestionOption]:
+        if req.kind == "confirmation" and not req.options:
+            return [
+                UserQuestionOption(label="Yes", value="yes", description=""),
+                UserQuestionOption(label="No", value="no", description=""),
+            ]
+        return list(req.options)
+
+    def _start_background_user_turn(
+        sid: str,
+        sess: Session,
+        user_text: str,
+        *,
+        metadata: Optional[dict[str, Any]] = None,
+        prev_status: str = "idle",
+    ) -> Message:
+        now = time.time()
+        user_msg = Message(
+            id=_new_message_id("user"),
+            session_id=sid,
+            role="user",
+            created_at=_iso_from_epoch(now),
+            updated_at=_iso_from_epoch(now),
+            parts=[Part(id=_new_part_id(), type="text", text=user_text)],
+            metadata=metadata or {},
+        )
+
+        _append_session_message(app, sid, user_msg)
+        app.state.sessions.update(sid, status="running")
+        app.state.bus.publish(
+            Event(
+                type="session.status_changed",
+                session_id=sid,
+                payload={
+                    "session_id": sid,
+                    "status": "running",
+                    "prev_status": prev_status,
+                },
+            )
+        )
+        app.state.bus.publish(
+            Event(
+                type="message.created",
+                session_id=sid,
+                payload=user_msg.model_dump(exclude_none=True),
+            )
+        )
+
+        task = asyncio.create_task(_run_turn_in_background(app, sid, user_text, user_msg))
+        app.state.in_flight_turns[sid] = task
+
+        def _drop_task(_t, _sid=sid) -> None:
+            cur = app.state.in_flight_turns.get(_sid)
+            if cur is _t:
+                app.state.in_flight_turns.pop(_sid, None)
+
+        task.add_done_callback(_drop_task)
+        return user_msg
+
+    def _message_text(message: Message) -> str:
+        return "\n".join(
+            part.text for part in message.parts if part.type == "text" and part.text
+        ).strip()
+
+    def _retry_source_user_message(messages: list[Message], source: Message) -> Message | None:
+        if source.role == "user":
+            return source
+        try:
+            source_index = next(idx for idx, msg in enumerate(messages) if msg.id == source.id)
+        except StopIteration:
+            return None
+        for msg in reversed(messages[:source_index]):
+            if msg.role == "user":
+                return msg
+        return None
+
+    def _retry_user_text(original_text: str, notes: str) -> str:
+        notes = notes.strip()
+        if not notes:
+            return original_text
+        return f"{original_text}\n\n[Retry notes]\n{notes}"
+
+    @app.get("/v1/sessions/{sid}/questions")
+    async def list_user_questions(sid: str, status: str = "") -> dict[str, Any]:
+        if app.state.sessions.get(sid) is None:
+            raise _session_not_found(sid)
+        rows = [q for q in app.state.user_questions.values() if q.session_id == sid]
+        if status:
+            rows = [q for q in rows if q.status == status]
+        rows.sort(key=lambda q: q.created_at, reverse=True)
+        return {"questions": [q.model_dump(exclude_none=True) for q in rows]}
+
+    @app.post("/v1/sessions/{sid}/questions", response_model=UserQuestion, status_code=201)
+    async def create_user_question(
+        sid: str,
+        req: CreateUserQuestionRequest,
+    ) -> UserQuestion:
+        sess = app.state.sessions.get(sid)
+        if sess is None:
+            raise _session_not_found(sid)
+        prompt = req.prompt.strip()
+        if not prompt:
+            raise HTTPException(
+                status_code=422,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="bad_request",
+                        message="missing required field: prompt",
+                        details={"field": "prompt"},
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        now_iso = datetime.now(timezone.utc).isoformat()
+        row = UserQuestion(
+            id=_new_question_id(),
+            session_id=sid,
+            prompt=prompt,
+            kind=req.kind,
+            options=_normalize_question_options(req),
+            created_at=now_iso,
+            updated_at=now_iso,
+            expires_at=req.expires_at,
+            source=req.source or "orchestrator",
+            turn_id=req.turn_id,
+            attempt_id=req.attempt_id,
+            metadata=req.metadata,
+        )
+        app.state.user_questions[row.id] = row
+        _set_session_status(
+            sid,
+            "waiting_user",
+            prev_status=sess.status,
+            metadata_patch={"pending_user_question_id": row.id},
+        )
+        app.state.bus.publish(
+            Event(
+                type="user_question.created",
+                session_id=sid,
+                payload=row.model_dump(exclude_none=True),
+            )
+        )
+        return row
+
+    @app.post("/v1/sessions/{sid}/questions/{question_id}/answer", response_model=UserQuestion)
+    async def answer_user_question(
+        sid: str,
+        question_id: str,
+        req: AnswerUserQuestionRequest,
+    ) -> UserQuestion:
+        if app.state.sessions.get(sid) is None:
+            raise _session_not_found(sid)
+        row = app.state.user_questions.get(question_id)
+        if row is None or row.session_id != sid:
+            raise _question_not_found(sid, question_id)
+        if row.status != "pending":
+            raise HTTPException(
+                status_code=409,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="bad_request",
+                        message=f"user question is already {row.status}",
+                        details={"session_id": sid, "question_id": question_id},
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        allowed_values = {o.value or o.label for o in row.options}
+        selected = [s for s in req.selected_options if s]
+        if allowed_values and selected and any(s not in allowed_values for s in selected):
+            raise HTTPException(
+                status_code=422,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="bad_request",
+                        message="selected option is not valid for this question",
+                        details={
+                            "session_id": sid,
+                            "question_id": question_id,
+                            "allowed": sorted(allowed_values),
+                        },
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        updated = row.model_copy(
+            update={
+                "status": "answered",
+                "answer": req.answer,
+                "selected_options": selected,
+                "answer_metadata": req.metadata,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }
+        )
+        app.state.user_questions[question_id] = updated
+        if not _pending_user_questions(sid):
+            sess = app.state.sessions.get(sid)
+            _set_session_status(
+                sid,
+                "idle",
+                prev_status=sess.status if sess is not None else "waiting_user",
+                metadata_patch={"pending_user_question_id": ""},
+            )
+        app.state.bus.publish(
+            Event(
+                type="user_question.answered",
+                session_id=sid,
+                payload=updated.model_dump(exclude_none=True),
+            )
+        )
+        return updated
+
+    @app.post("/v1/sessions/{sid}/questions/{question_id}/cancel", response_model=UserQuestion)
+    async def cancel_user_question(sid: str, question_id: str) -> UserQuestion:
+        if app.state.sessions.get(sid) is None:
+            raise _session_not_found(sid)
+        row = app.state.user_questions.get(question_id)
+        if row is None or row.session_id != sid:
+            raise _question_not_found(sid, question_id)
+        if row.status == "pending":
+            row = row.model_copy(
+                update={
+                    "status": "cancelled",
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                }
+            )
+            app.state.user_questions[question_id] = row
+        if not _pending_user_questions(sid):
+            sess = app.state.sessions.get(sid)
+            _set_session_status(
+                sid,
+                "idle",
+                prev_status=sess.status if sess is not None else "waiting_user",
+                metadata_patch={"pending_user_question_id": ""},
+            )
+        app.state.bus.publish(
+            Event(
+                type="user_question.cancelled",
+                session_id=sid,
+                payload=row.model_dump(exclude_none=True),
+            )
+        )
+        return row
+
+    @app.get("/v1/sessions/{sid}/attempts")
+    async def list_turn_attempts(sid: str) -> dict[str, Any]:
+        if app.state.sessions.get(sid) is None:
+            raise _session_not_found(sid)
+        rows = [a for a in app.state.turn_attempts.values() if a.session_id == sid]
+        rows.sort(key=lambda a: a.created_at, reverse=True)
+        return {"attempts": [a.model_dump(exclude_none=True) for a in rows]}
+
+    @app.post(
+        "/v1/sessions/{sid}/messages/{message_id}/retry",
+        response_model=TurnAttempt,
+        status_code=202,
+    )
+    async def retry_turn(sid: str, message_id: str, req: RetryTurnRequest) -> TurnAttempt:
+        sess = app.state.sessions.get(sid)
+        if sess is None:
+            raise _session_not_found(sid)
+        messages = app.state.messages.get(sid, [])
+        source = next((m for m in messages if m.id == message_id), None)
+        if source is None:
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="not_found",
+                        message=f"message not found: {message_id}",
+                        details={"session_id": sid, "message_id": message_id},
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        model_payload = (req.model or ModelRef()).model_dump()
+        if req.provider_id:
+            model_payload["provider_id"] = req.provider_id
+        if req.model_id:
+            model_payload["model_id"] = req.model_id
+        active_model = _active_lm_model_ref(app)
+        model_changed = bool(
+            (model_payload.get("provider_id") or model_payload.get("model_id"))
+            and (
+                model_payload.get("provider_id", "") != active_model.get("provider_id", "")
+                or model_payload.get("model_id", "") != active_model.get("model_id", "")
+            )
+        )
+        warning = ""
+        if model_changed:
+            warning = (
+                "Retrying with a different model/provider may recompute provider-side KV "
+                "cache, increase time to first token, increase latency/cost, and produce "
+                "different tool or reasoning behavior."
+            )
+        execution_blocked_reason = ""
+        retry_user_msg: Message | None = None
+        source_user = _retry_source_user_message(messages, source)
+        if req.execute:
+            if app.state.agent is None:
+                raise HTTPException(
+                    status_code=503,
+                    detail=_agent_not_available_error(app, sid).model_dump(exclude_none=True),
+                )
+            lm_status = getattr(app.state, "lm_config_status", {}) or {}
+            if lm_status.get("state") == "configuring":
+                raise HTTPException(
+                    status_code=503,
+                    detail=ErrorEnvelope(
+                        error=ErrorInfo(
+                            error="provider_configuring",
+                            message=(
+                                "LM provider configuration is still in progress; retry after "
+                                "it finishes."
+                            ),
+                            details={
+                                "session_id": sid,
+                                "operation_id": lm_status.get("operation_id", ""),
+                                "provider": lm_status.get("provider", ""),
+                                "model": lm_status.get("model", ""),
+                                "recovery_actions": [
+                                    "wait",
+                                    "check_lm_provider_status",
+                                    "retry",
+                                ],
+                            },
+                            recoverable=True,
+                        )
+                    ).model_dump(exclude_none=True),
+                )
+            if source_user is None or not _message_text(source_user):
+                execution_blocked_reason = "source_user_message_not_found"
+            elif model_changed:
+                execution_blocked_reason = "model_override_not_executable"
+        now_iso = datetime.now(timezone.utc).isoformat()
+        attempt = TurnAttempt(
+            id=_new_attempt_id(),
+            session_id=sid,
+            source_message_id=message_id,
+            status=(
+                "queued"
+                if req.execute and not execution_blocked_reason
+                else ("failed" if req.execute else "recorded")
+            ),
+            created_at=now_iso,
+            updated_at=now_iso,
+            notes=req.notes,
+            model=ModelRef(**model_payload),
+            warning=warning,
+            metadata={
+                **req.metadata,
+                "source_message_role": source.role,
+                "source_user_message_id": source_user.id if source_user is not None else "",
+                "active_model": active_model,
+                "retry_protocol": "queued_for_execution" if req.execute else "recorded_for_replay",
+                "execution_blocked_reason": execution_blocked_reason,
+            },
+        )
+        app.state.turn_attempts[attempt.id] = attempt
+        if req.execute and not execution_blocked_reason and source_user is not None:
+            retry_text = _retry_user_text(_message_text(source_user), req.notes)
+            retry_user_msg = _start_background_user_turn(
+                sid,
+                sess,
+                retry_text,
+                metadata={
+                    "retry_attempt_id": attempt.id,
+                    "retry_source_message_id": message_id,
+                    "retry_source_user_message_id": source_user.id,
+                    "retry_notes": req.notes,
+                    **req.metadata,
+                },
+                prev_status=sess.status,
+            )
+            attempt = attempt.model_copy(
+                update={
+                    "metadata": {
+                        **attempt.metadata,
+                        "queued_user_message_id": retry_user_msg.id,
+                    }
+                }
+            )
+            app.state.turn_attempts[attempt.id] = attempt
+        app.state.bus.publish(
+            Event(
+                type="turn.retry_requested",
+                session_id=sid,
+                payload=attempt.model_dump(exclude_none=True),
+            )
+        )
+        return attempt
+
     # ---- POST /v1/sessions/{sid}/cancel (BBB20) -----------------------
 
     @app.post("/v1/sessions/{sid}/cancel")
@@ -9522,56 +10054,17 @@ def build_app(
                 ).model_dump(exclude_none=True),
             )
 
-        now = time.time()
-        user_msg = Message(
-            id=_new_message_id("user"),
-            session_id=sid,
-            role="user",
-            created_at=_iso_from_epoch(now),
-            updated_at=_iso_from_epoch(now),
-            parts=[Part(id=_new_part_id(), type="text", text=user_text)],
-            metadata=req.metadata,
-        )
-
         # Persist + publish the user message synchronously so by the
         # time the ack returns, GET /messages reflects it. Then mark
         # the session running, then schedule the turn in the
         # background and return.
-        _append_session_message(app, sid, user_msg)
-        app.state.sessions.update(sid, status="running")
-        app.state.bus.publish(
-            Event(
-                type="session.status_changed",
-                session_id=sid,
-                payload={"session_id": sid, "status": "running", "prev_status": "idle"},
-            )
+        user_msg = _start_background_user_turn(
+            sid,
+            sess,
+            user_text,
+            metadata=req.metadata,
+            prev_status="idle",
         )
-        app.state.bus.publish(
-            Event(
-                type="message.created",
-                session_id=sid,
-                payload=user_msg.model_dump(exclude_none=True),
-            )
-        )
-
-        # iowarp/clio-agent#3: switched from BackgroundTasks (which
-        # doesn't expose the task back) to asyncio.create_task so
-        # /v1/sessions/{sid}/cancel can track the in-flight turn.
-        # The cancel handler gives cooperative checks a short grace
-        # window, then calls .cancel() if the task is still running.
-        # We schedule the task on the
-        # running loop AFTER queueing background_tasks (which
-        # FastAPI now runs nothing in, but kept as a hook in case
-        # we want a post-response side-effect later).
-        task = asyncio.create_task(_run_turn_in_background(app, sid, user_text, user_msg))
-        app.state.in_flight_turns[sid] = task
-
-        def _drop_task(_t, _sid=sid) -> None:
-            cur = app.state.in_flight_turns.get(_sid)
-            if cur is _t:
-                app.state.in_flight_turns.pop(_sid, None)
-
-        task.add_done_callback(_drop_task)
         # background_tasks parameter is unused but kept on the
         # signature so existing callers (and FastAPI's docs) don't
         # change shape.
