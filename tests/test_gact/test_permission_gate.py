@@ -180,7 +180,60 @@ def test_permission_policy_allow_skips_prompt(tmp_path: Path) -> None:
             decision = gate("shell.exec", {"cmd": "echo ok"})
 
         assert decision == "allow"
-        assert app.state.permissions == {}
+        rows = list(app.state.permissions.values())
+        assert len(rows) == 1
+        assert rows[0]["session_id"] == sid
+        assert rows[0]["status"] == "auto_approved"
+        assert rows[0]["action"] == "allow"
+        assert rows[0]["reason"] == "policy_allow"
+
+
+def test_allow_session_resolution_adds_policy_and_audits_future_calls(
+    tmp_path: Path,
+) -> None:
+    app = build_app(sessions_path=tmp_path / "s.json")
+    with TestClient(app) as c:
+        sid = c.post("/v1/sessions", json={"title": "t"}).json()["id"]
+        gate = _make_permission_gate(app)
+        decision_holder: dict[str, str] = {}
+
+        def run_gate() -> None:
+            with _tool_session_context(sid):
+                decision_holder["decision"] = gate(
+                    "shell.exec",
+                    {"cmd": "rm -rf /tmp/old", "path": "/tmp/old"},
+                )
+
+        thread = threading.Thread(target=run_gate)
+        thread.start()
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline and not app.state.permissions:
+            time.sleep(0.01)
+        assert app.state.permissions
+        pending = next(iter(app.state.permissions.values()))
+
+        resp = c.post(f"/v1/permissions/{pending['id']}", json={"action": "allow_session"})
+        assert resp.status_code == 204
+        thread.join(timeout=2.0)
+        assert decision_holder["decision"] == "allow"
+        assert app.state.permission_policies == [
+            {
+                "scope": "session",
+                "scope_id": sid,
+                "tool_name_pattern": "shell.exec",
+                "action": "allow",
+                "created_from_permission_id": pending["id"],
+                "path_pattern": "/tmp/old",
+            }
+        ]
+
+        with _tool_session_context(sid):
+            decision = gate("shell.exec", {"cmd": "rm -rf /tmp/old", "path": "/tmp/old"})
+
+        assert decision == "allow"
+        rows = list(app.state.permissions.values())
+        assert [row["status"] for row in rows] == ["resolved", "auto_approved"]
+        assert rows[-1]["reason"] == "policy_allow"
 
 
 def _put_single_policy(
@@ -458,6 +511,62 @@ def test_put_policies_normalizes_valid_policy_and_preserves_unknown_fields(
     assert app.state.permission_policies == resp.json()["policies"]
 
 
+def test_permission_policies_persist_across_app_rebuild(tmp_path: Path) -> None:
+    app = build_app(sessions_path=tmp_path / "s.json")
+    with TestClient(app) as c:
+        resp = c.put(
+            "/v1/policies",
+            json={
+                "policies": [
+                    {
+                        "scope": "workspace",
+                        "scope_id": "ws_default",
+                        "tool_name_pattern": "shell.*",
+                        "path_pattern": "/tmp/*",
+                        "action": "ask",
+                    }
+                ]
+            },
+        )
+    assert resp.status_code == 200
+
+    rebuilt = build_app(sessions_path=tmp_path / "s.json")
+    with TestClient(rebuilt) as c:
+        body = c.get("/v1/policies").json()
+
+    assert body["policies"] == resp.json()["policies"]
+    assert rebuilt.state.permission_policies == resp.json()["policies"]
+
+
+def test_invalid_policy_update_does_not_overwrite_persisted_policies(tmp_path: Path) -> None:
+    app = build_app(sessions_path=tmp_path / "s.json")
+    with TestClient(app) as c:
+        original = c.put(
+            "/v1/policies",
+            json={
+                "policies": [
+                    {
+                        "scope": "session",
+                        "scope_id": "sess_existing",
+                        "tool_name_pattern": "shell.*",
+                        "action": "deny",
+                    }
+                ]
+            },
+        ).json()["policies"]
+        resp = c.put(
+            "/v1/policies",
+            json={"policies": [{"scope": "project", "action": "alow"}]},
+        )
+    assert resp.status_code == 422
+
+    rebuilt = build_app(sessions_path=tmp_path / "s.json")
+    with TestClient(rebuilt) as c:
+        body = c.get("/v1/policies").json()
+
+    assert body["policies"] == original
+
+
 def test_external_mcp_call_policy_deny_blocks_before_tool_execution(tmp_path: Path) -> None:
     app = build_app(sessions_path=tmp_path / "s.json")
     app.state.external_mcp_servers = {
@@ -561,7 +670,11 @@ def test_external_mcp_call_policy_allow_executes_without_prompt(
         assert FakeClient.called is True
         body = resp.json()
         assert body["content"] == [{"type": "text", "text": "exec:echo ok"}]
-        assert app.state.permissions == {}
+        row = _last_permission(app)
+        assert row["session_id"] == sid
+        assert row["status"] == "auto_approved"
+        assert row["reason"] == "policy_allow"
+        assert row["tool_call"]["tool_name"] == "shell.exec"
 
 
 def test_external_mcp_call_uses_explicit_session_for_policy_and_telemetry(
@@ -638,9 +751,11 @@ def test_external_mcp_call_uses_explicit_session_for_policy_and_telemetry(
         older_history = app.state.bus._history.get(older_sid, [])
         newer_history = app.state.bus._history.get(newer_sid, [])
         assert [e.type for e in older_history] == [
+            "permission.resolved",
             "tool.call.started",
             "tool.call.completed",
         ]
+        assert older_history[0].payload["reason"] == "policy_allow"
         assert newer_history == []
         assert app.state.tool_call_ledger[older_sid][0]["name"] == "shell.exec"
         assert newer_sid not in app.state.tool_call_ledger

@@ -91,3 +91,17 @@ def test_persistence_round_trip(tmp_path: Path) -> None:
     c2 = TestClient(build_app(sessions_path=tmp_path / "s.json"))
     body = c2.get("/v1/workspaces").json()
     assert any(w["name"] == "persistent" for w in body["workspaces"])
+
+
+def test_workspace_file_read_returns_plain_text_not_json(tmp_path: Path) -> None:
+    c = _client(tmp_path)
+    c.app.state.workspaces.update("ws_default", root_path=str(tmp_path))
+    target = tmp_path / "notes.md"
+    target.write_text("hello picker\n", encoding="utf-8")
+
+    resp = c.get("/v1/workspaces/ws_default/files/read", params={"path": "notes.md"})
+
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("text/plain")
+    assert resp.text == "hello picker\n"
+    assert resp.content == b"hello picker\n"

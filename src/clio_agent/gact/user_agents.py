@@ -41,6 +41,9 @@ class UserAgent:
     specialization: str = ""
     keywords: list[str] = field(default_factory=list)
     tools: list[str] = field(default_factory=list)
+    skills: list[str] = field(default_factory=list)
+    commands: list[str] = field(default_factory=list)
+    capability_refs: list[dict[str, Any]] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_wire(self) -> dict[str, Any]:
@@ -87,6 +90,9 @@ class UserAgentStore:
                         "parameters": dict(row.get("parameters", {})),
                         "keywords": list(row.get("keywords", [])),
                         "tools": list(row.get("tools", [])),
+                        "skills": list(row.get("skills", [])),
+                        "commands": list(row.get("commands", [])),
+                        "capability_refs": list(row.get("capability_refs", [])),
                         "metadata": dict(row.get("metadata", {})),
                     }
                 )
@@ -121,6 +127,9 @@ class UserAgentStore:
             specialization=payload.get("specialization", "") or "",
             keywords=list(payload.get("keywords") or []),
             tools=list(payload.get("tools") or []),
+            skills=list(payload.get("skills") or []),
+            commands=list(payload.get("commands") or []),
+            capability_refs=list(payload.get("capability_refs") or []),
             metadata=dict(payload.get("metadata") or {}),
         )
         with self._lock:
