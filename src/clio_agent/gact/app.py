@@ -478,6 +478,20 @@ def _delete_session_messages(app: "FastAPI", session_id: str) -> None:
         store.delete_session(session_id)
 
 
+def _session_not_found(sid: str) -> HTTPException:
+    return HTTPException(
+        status_code=404,
+        detail=ErrorEnvelope(
+            error=ErrorInfo(
+                error="internal_error",
+                message=f"session not found: {sid}",
+                details={"session_id": sid},
+                recoverable=False,
+            )
+        ).model_dump(exclude_none=True),
+    )
+
+
 def _cancelled_error_info(
     sid: str,
     *,
@@ -5125,17 +5139,7 @@ def build_app(
     async def delete_session(sid: str) -> Response:
         sess = app.state.sessions.get(sid)
         if sess is None:
-            raise HTTPException(
-                status_code=404,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="internal_error",
-                        message=f"session not found: {sid}",
-                        details={"session_id": sid},
-                        recoverable=False,
-                    )
-                ).model_dump(exclude_none=True),
-            )
+            raise _session_not_found(sid)
         _guard_direct_destructive_action(
             app,
             session_id=sid,
@@ -5160,6 +5164,252 @@ def build_app(
             )
         _delete_session_messages(app, sid)
         return Response(status_code=204)
+
+    def _reject_rollback_while_active(sid: str, sess: Any) -> None:
+        if getattr(sess, "status", "") in {"running", "waiting_permission"}:
+            raise HTTPException(
+                status_code=409,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="conflict",
+                        message=f"session {sid} cannot be rolled back while {sess.status}",
+                        details={"session_id": sid, "status": sess.status},
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+
+    def _publish_rollback_events(
+        sid: str,
+        *,
+        operation: str,
+        deleted_ids: list[str],
+        session_payload: dict[str, Any],
+        target_message_id: str = "",
+        include_target: bool = False,
+    ) -> None:
+        for message_id in deleted_ids:
+            app.state.bus.publish(
+                Event(
+                    type="message.deleted",
+                    session_id=sid,
+                    payload={
+                        "message_id": message_id,
+                        "session_id": sid,
+                        "operation": operation,
+                    },
+                )
+            )
+        app.state.bus.publish(
+            Event(
+                type=f"session.{operation}",
+                session_id=sid,
+                payload={
+                    "session_id": sid,
+                    "deleted_message_ids": deleted_ids,
+                    "target_message_id": target_message_id,
+                    "include_target": include_target,
+                },
+            )
+        )
+        app.state.bus.publish(
+            Event(
+                type="session.updated",
+                session_id=sid,
+                payload=session_payload,
+            )
+        )
+
+    def _commit_rollback(
+        sid: str,
+        *,
+        operation: str,
+        kept_messages: list[Message],
+        deleted_messages: list[Message],
+        target_message_id: str = "",
+        include_target: bool = False,
+    ) -> dict[str, Any]:
+        _replace_session_messages(app, sid, kept_messages)
+        deleted_ids = [m.id for m in deleted_messages]
+        updated = app.state.sessions.update(
+            sid,
+            message_count=len(kept_messages),
+            status="idle",
+            metadata_patch={
+                "last_rollback": {
+                    "operation": operation,
+                    "deleted_message_ids": deleted_ids,
+                    "target_message_id": target_message_id,
+                    "include_target": include_target,
+                    "memory_scope": "gact_visible_transcript_only",
+                    "occurred_at": datetime.now(timezone.utc).isoformat(),
+                }
+            },
+        )
+        if updated is None:
+            raise _session_not_found(sid)
+        session_payload = Session(**updated.to_wire()).model_dump(exclude_none=True)
+        _publish_rollback_events(
+            sid,
+            operation=operation,
+            deleted_ids=deleted_ids,
+            session_payload=session_payload,
+            target_message_id=target_message_id,
+            include_target=include_target,
+        )
+        return {
+            "session_id": sid,
+            "operation": operation,
+            "deleted_message_ids": deleted_ids,
+            "deleted_messages": deleted_ids,
+            "reverted_message_ids": deleted_ids,
+            "message_count": len(kept_messages),
+            "memory_scope": "gact_visible_transcript_only",
+            "session": session_payload,
+        }
+
+    @app.post("/v1/sessions/{sid}/undo")
+    async def undo_session(sid: str, request: Request) -> dict[str, Any]:
+        sess = app.state.sessions.get(sid)
+        if sess is None:
+            raise _session_not_found(sid)
+        _reject_rollback_while_active(sid, sess)
+        try:
+            body = await request.json()
+        except json.JSONDecodeError:
+            body = {}
+        if body is None:
+            body = {}
+        if not isinstance(body, dict):
+            raise HTTPException(
+                status_code=422,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="validation_error",
+                        message="undo request body must be an object",
+                        details={"session_id": sid},
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        raw_count = body.get("count", body.get("message_count", 1))
+        try:
+            count = int(raw_count) if isinstance(raw_count, str | int | float) else 1
+        except (TypeError, ValueError):
+            count = 1
+        if count < 1:
+            raise HTTPException(
+                status_code=422,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="validation_error",
+                        message="undo count must be at least 1",
+                        details={"session_id": sid, "count": raw_count},
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        messages = list(app.state.messages.get(sid, []))
+        deleted = messages[-count:]
+        kept = messages[: max(0, len(messages) - count)]
+        _guard_direct_destructive_action(
+            app,
+            session_id=sid,
+            workspace_id=sess.workspace_id,
+            tool_name="gact.session.undo",
+            args={"session_id": sid, "count": count},
+            summary=f"undo last {count} message(s) in session {sid}",
+            reason="user_requested_session_undo",
+        )
+        return _commit_rollback(
+            sid,
+            operation="undo",
+            kept_messages=kept,
+            deleted_messages=deleted,
+        )
+
+    @app.post("/v1/sessions/{sid}/rewind")
+    async def rewind_session(sid: str, request: Request) -> dict[str, Any]:
+        sess = app.state.sessions.get(sid)
+        if sess is None:
+            raise _session_not_found(sid)
+        _reject_rollback_while_active(sid, sess)
+        try:
+            body = await request.json()
+        except json.JSONDecodeError:
+            body = {}
+        if not isinstance(body, dict):
+            raise HTTPException(
+                status_code=422,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="validation_error",
+                        message="rewind request body must be an object",
+                        details={"session_id": sid},
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        target_message_id = str(
+            body.get("message_id")
+            or body.get("target_message_id")
+            or body.get("to_message_id")
+            or ""
+        ).strip()
+        if not target_message_id:
+            raise HTTPException(
+                status_code=422,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="validation_error",
+                        message="rewind requires message_id",
+                        details={"session_id": sid},
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        include_target = bool(body.get("include_target", False))
+        messages = list(app.state.messages.get(sid, []))
+        target_index = next(
+            (index for index, message in enumerate(messages) if message.id == target_message_id),
+            -1,
+        )
+        if target_index < 0:
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="not_found",
+                        message=f"message not found: {target_message_id}",
+                        details={"session_id": sid, "message_id": target_message_id},
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        keep_end = target_index if include_target else target_index + 1
+        kept = messages[:keep_end]
+        deleted = messages[keep_end:]
+        _guard_direct_destructive_action(
+            app,
+            session_id=sid,
+            workspace_id=sess.workspace_id,
+            tool_name="gact.session.rewind",
+            args={
+                "session_id": sid,
+                "message_id": target_message_id,
+                "include_target": include_target,
+            },
+            summary=f"rewind session {sid} to message {target_message_id}",
+            reason="user_requested_session_rewind",
+        )
+        return _commit_rollback(
+            sid,
+            operation="rewind",
+            kept_messages=kept,
+            deleted_messages=deleted,
+            target_message_id=target_message_id,
+            include_target=include_target,
+        )
 
     # ---- /v1/permissions (BBB23) --------------------------------------
 
