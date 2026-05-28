@@ -5526,13 +5526,16 @@ def _load_skills_from_disk() -> list[AgentDef]:
     return list(rows.values())
 
 
-def _load_command_files_from_disk() -> list[dict[str, Any]]:
+def _load_command_files_from_disk(
+    *,
+    home: Path | None = None,
+    cwd: Path | None = None,
+) -> list[dict[str, Any]]:
     """Discover CLIO/Claude-compatible Markdown command recipe files."""
     import os
-    from pathlib import Path
 
     rows: dict[str, dict[str, Any]] = {}
-    for root, source in _command_search_roots(Path.home(), Path(os.getcwd())):
+    for root, source in _command_search_roots(home or Path.home(), cwd or Path(os.getcwd())):
         if not root.exists() or not root.is_dir():
             continue
         for md in sorted(root.glob("*.md"), key=lambda path: str(path).lower()):
@@ -5591,11 +5594,20 @@ def _load_command_files_from_disk() -> list[dict[str, Any]]:
                 "command_source": source,
                 "invocation": (
                     "agent"
-                    if _truthy_command_field(meta.get("agent-invocable"), True)
+                    if _truthy_command_field(
+                        meta.get("agent-invocable", meta.get("agent_invocable")),
+                        False,
+                    )
                     else "user"
                 ),
-                "user_invocable": _truthy_command_field(meta.get("user-invocable"), True),
-                "agent_invocable": _truthy_command_field(meta.get("agent-invocable"), True),
+                "user_invocable": _truthy_command_field(
+                    meta.get("user-invocable", meta.get("user_invocable")),
+                    True,
+                ),
+                "agent_invocable": _truthy_command_field(
+                    meta.get("agent-invocable", meta.get("agent_invocable")),
+                    False,
+                ),
                 "argument_hint": str(
                     meta.get("argument-hint") or meta.get("argument_hint") or ""
                 ),
@@ -6141,6 +6153,7 @@ def build_app(
         write_root=prompt_write_root,
     )
     app.state.memory_events = {}
+    app.state.command_audit = []
     # CLIO-BBBBBBBBBB13: per-session pub/sub. POST /messages
     # publishes; /v1/sessions/{sid}/events subscribers consume.
     app.state.bus = EventBus()
@@ -6673,12 +6686,25 @@ def build_app(
                 pass
             if session_id:
                 pack_id = ""
+                agent_id = ""
                 sess = app.state.sessions.get(session_id)
                 if sess is not None:
+                    agent_id = _session_agent_id(sess)
                     metadata = getattr(sess, "metadata", {}) or {}
                     if isinstance(metadata, Mapping):
                         pack_id = str(metadata.get("active_expert_pack_id") or "").strip()
                 context["session.active_pack"] = pack_id or "(no active expert pack)"
+                try:
+                    commands = [
+                        f"- {row.get('id')}: {row.get('description') or row.get('title')}"
+                        for row in _planner_command_rows(
+                            agent_id=agent_id,
+                            cwd=_command_cwd_for_request(session_id),
+                        )
+                    ]
+                    context["commands.agent_invocable"] = "\n".join(commands) or "(no agent-invocable commands)"
+                except Exception:
+                    pass
         return context
 
     @app.get("/v1/prompts")
@@ -8276,9 +8302,23 @@ def build_app(
             )
         return rows
 
-    def _user_command_rows() -> list[dict[str, Any]]:
+    def _command_cwd_for_request(session_id: str = "", workspace_id: str = "") -> Path | None:
+        wid = workspace_id
+        if session_id:
+            sess = app.state.sessions.get(session_id)
+            if sess is not None:
+                wid = wid or str(getattr(sess, "workspace_id", "") or "")
+        if not wid:
+            return None
+        ws = app.state.workspaces.get(wid)
+        if ws is None:
+            return None
+        root_path = str(getattr(ws, "root_path", "") or "")
+        return Path(root_path).expanduser() if root_path else None
+
+    def _user_command_rows(cwd: Path | None = None) -> list[dict[str, Any]]:
         rows: dict[str, dict[str, Any]] = {}
-        for command in _load_command_files_from_disk():
+        for command in _load_command_files_from_disk(cwd=cwd):
             rows.setdefault(command["id"], command)
         agents = [AgentDef(**row.to_wire()) for row in app.state.user_agents.list()]
         agents.extend(_load_skills_from_disk())
@@ -8287,9 +8327,9 @@ def build_app(
                 rows.setdefault(command["id"], command)
         return sorted(rows.values(), key=lambda row: row["id"])
 
-    def _all_command_rows() -> list[dict[str, Any]]:
+    def _all_command_rows(cwd: Path | None = None) -> list[dict[str, Any]]:
         rows = {command["id"]: dict(command) for command in _BACKEND_COMMANDS}
-        for command in _user_command_rows():
+        for command in _user_command_rows(cwd=cwd):
             rows.setdefault(command["id"], command)
         return list(rows.values())
 
@@ -8369,11 +8409,83 @@ def build_app(
             ).model_dump(exclude_none=True),
         )
 
+    def _agent_allowed_command_ids(agent_def: AgentDef) -> set[str]:
+        ids = {_normalize_command_id(command_id) for command_id in agent_def.commands}
+        metadata = agent_def.metadata if isinstance(agent_def.metadata, Mapping) else {}
+        for key in ("commands", "allowed_commands", "agent_commands"):
+            value = metadata.get(key)
+            values = value if isinstance(value, list) else [value] if value else []
+            for item in values:
+                if isinstance(item, str):
+                    ids.add(_normalize_command_id(item))
+                elif isinstance(item, Mapping):
+                    ids.add(_normalize_command_id(item.get("id") or item.get("command")))
+        ids.discard("")
+        return ids
+
+    def _planner_command_rows(agent_id: str = "", cwd: Path | None = None) -> list[dict[str, Any]]:
+        allowed: set[str] | None = None
+        if agent_id:
+            agent_def = _resolve_dynamic_agent(app, agent_id)
+            allowed = _agent_allowed_command_ids(agent_def) if agent_def is not None else set()
+        rows: list[dict[str, Any]] = []
+        for command in _all_command_rows(cwd=cwd):
+            command_id = str(command.get("id") or "")
+            planner_visible = (
+                command.get("enabled") is not False
+                and command.get("status") == "available"
+                and command.get("agent_invocable") is True
+                and command.get("agent_source") != "shell"
+                and (allowed is None or command_id in allowed)
+            )
+            enriched = {**command, "planner_visible": planner_visible}
+            if planner_visible:
+                rows.append(enriched)
+        return rows
+
+    def _command_audit_row(
+        *,
+        sid: str,
+        cmd_id: str,
+        command_meta: Mapping[str, Any],
+        caller_type: str,
+        caller_agent_id: str,
+        args: Any,
+        status: str,
+        result_text: str = "",
+        error: str = "",
+    ) -> dict[str, Any]:
+        row = {
+            "id": f"cmd_audit_{uuid.uuid4().hex[:10]}",
+            "session_id": sid,
+            "command": cmd_id,
+            "caller_type": caller_type,
+            "caller_agent_id": caller_agent_id,
+            "target_agent": str(command_meta.get("agent_id") or ""),
+            "args": args if isinstance(args, Mapping) else {},
+            "status": status,
+            "result": result_text,
+            "error": error,
+            "command_source": str(command_meta.get("command_source") or command_meta.get("source") or ""),
+            "command_path": str(command_meta.get("command_path") or ""),
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+        app.state.command_audit.append(row)
+        return row
+
     @app.get("/v1/commands")
-    async def list_commands() -> dict[str, Any]:
+    async def list_commands(
+        agent_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        workspace_id: Optional[str] = None,
+        planner: bool = False,
+    ) -> dict[str, Any]:
         """SPEC §6.13 — backend-provided slash commands."""
 
-        return {"commands": _all_command_rows()}
+        cwd = _command_cwd_for_request(session_id or "", workspace_id or "")
+        if planner:
+            return {"commands": _planner_command_rows(agent_id=agent_id or "", cwd=cwd)}
+        return {"commands": _all_command_rows(cwd=cwd)}
 
     @app.post("/v1/sessions/{sid}/commands/{cmd}")
     async def dispatch_command(sid: str, cmd: str, request: Request) -> dict[str, Any]:
@@ -8396,7 +8508,9 @@ def build_app(
 
         # Accept "clear" or "/clear"; the TUI sends both shapes.
         cmd_id = cmd if cmd.startswith("/") else "/" + cmd
-        commands_by_id = {c["id"]: c for c in _all_command_rows()}
+        commands_by_id = {
+            c["id"]: c for c in _all_command_rows(cwd=_command_cwd_for_request(sid))
+        }
         command_meta = commands_by_id.get(cmd_id)
         if command_meta is None:
             raise HTTPException(
@@ -8441,6 +8555,52 @@ def build_app(
             request_body = {}
         if not isinstance(request_body, dict):
             request_body = {}
+        caller = request_body.get("caller")
+        caller_meta = caller if isinstance(caller, Mapping) else {}
+        caller_type = str(caller_meta.get("type") or request_body.get("caller_type") or "user")
+        caller_agent_id = str(
+            caller_meta.get("agent_id")
+            or caller_meta.get("expert_id")
+            or request_body.get("caller_agent_id")
+            or ""
+        ).strip()
+        if caller_type == "agent":
+            caller_agent = _resolve_dynamic_agent(app, caller_agent_id)
+            allowed_ids = _agent_allowed_command_ids(caller_agent) if caller_agent else set()
+            deny_reason = ""
+            if command_meta.get("agent_invocable") is not True:
+                deny_reason = "command is not agent-invocable"
+            elif caller_agent is None:
+                deny_reason = f"caller agent not found: {caller_agent_id}"
+            elif cmd_id not in allowed_ids:
+                deny_reason = f"command {cmd_id} is not allowed for agent {caller_agent_id}"
+            if deny_reason:
+                audit = _command_audit_row(
+                    sid=sid,
+                    cmd_id=cmd_id,
+                    command_meta=command_meta,
+                    caller_type=caller_type,
+                    caller_agent_id=caller_agent_id,
+                    args=request_body.get("args") or {},
+                    status="denied",
+                    error=deny_reason,
+                )
+                raise HTTPException(
+                    status_code=403,
+                    detail=ErrorEnvelope(
+                        error=ErrorInfo(
+                            error="command_denied",
+                            message=deny_reason,
+                            details={
+                                "command": cmd_id,
+                                "caller_type": caller_type,
+                                "caller_agent_id": caller_agent_id,
+                                "audit": audit,
+                            },
+                            recoverable=True,
+                        )
+                    ).model_dump(exclude_none=True),
+                )
 
         if command_meta.get("source") == "user":
             agent_id = str(command_meta.get("agent_id") or "")
@@ -8473,12 +8633,26 @@ def build_app(
                     user_input = str(next(iter(args.values())))
                 else:
                     user_input = json.dumps(args, sort_keys=True, default=str)
-            _validate_command_arguments(
-                command_meta,
-                args=args,
-                user_input=user_input,
-                cmd_id=cmd_id,
-            )
+            try:
+                _validate_command_arguments(
+                    command_meta,
+                    args=args,
+                    user_input=user_input,
+                    cmd_id=cmd_id,
+                )
+            except HTTPException as exc:
+                if caller_type == "agent":
+                    _command_audit_row(
+                        sid=sid,
+                        cmd_id=cmd_id,
+                        command_meta=command_meta,
+                        caller_type=caller_type,
+                        caller_agent_id=caller_agent_id,
+                        args=args if isinstance(args, Mapping) else {},
+                        status="failed",
+                        error="invalid_arguments",
+                    )
+                raise exc
             question = _render_command_prompt(
                 command_meta,
                 user_input=user_input,
@@ -8493,6 +8667,16 @@ def build_app(
             agent_body_text = str(getattr(pred, "answer", "") or "").strip()
             if not agent_body_text:
                 agent_body_text = f"user command {cmd_id} completed with no answer"
+            audit = _command_audit_row(
+                sid=sid,
+                cmd_id=cmd_id,
+                command_meta=command_meta,
+                caller_type=caller_type,
+                caller_agent_id=caller_agent_id,
+                args=args if isinstance(args, Mapping) else {},
+                status="completed",
+                result_text=agent_body_text,
+            )
 
             from clio_agent.gact.types import Message, Part, Tokens  # noqa: PLC0415
 
@@ -8510,6 +8694,9 @@ def build_app(
                             "synthetic": "command_result",
                             "command": cmd_id,
                             "agent_id": agent_id,
+                            "caller_type": caller_type,
+                            "caller_agent_id": caller_agent_id,
+                            "command_audit_id": audit["id"],
                         },
                         text=agent_body_text,
                     )
@@ -8522,6 +8709,9 @@ def build_app(
                     "command": cmd_id,
                     "agent_id": agent_id,
                     "route_source": "user_command",
+                    "caller_type": caller_type,
+                    "caller_agent_id": caller_agent_id,
+                    "command_audit": audit,
                 },
             )
             _append_session_message(app, sid, sys_msg)
@@ -8540,6 +8730,7 @@ def build_app(
                     "type": "agent_message",
                     "text": agent_body_text,
                     "agent_id": agent_id,
+                    "audit": audit,
                 },
             }
 
