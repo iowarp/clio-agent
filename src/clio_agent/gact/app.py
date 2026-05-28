@@ -2421,6 +2421,38 @@ def _validate_permission_policies(
     return clean, errors
 
 
+def _load_permission_policies(path: Path | None) -> list[dict[str, Any]]:
+    """Load persisted permission policies, ignoring invalid rows."""
+
+    if path is None or not path.exists():
+        return []
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    raw = data.get("policies", []) if isinstance(data, Mapping) else []
+    if not isinstance(raw, list):
+        return []
+    clean, _errors = _validate_permission_policies(raw)
+    return clean
+
+
+def _flush_permission_policies(app: "FastAPI") -> None:
+    """Persist the current permission policy list, if configured."""
+
+    path = getattr(app.state, "permission_policies_path", None)
+    if path is None:
+        return
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(
+        json.dumps({"policies": app.state.permission_policies}, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    tmp.replace(path)
+
+
 def _record_resolved_permission(
     app: "FastAPI",
     *,
@@ -2464,6 +2496,38 @@ def _record_resolved_permission(
             )
         )
     return pid
+
+
+def _append_permission_policy_from_resolution(
+    app: "FastAPI",
+    *,
+    row: Mapping[str, Any],
+    action: str,
+) -> dict[str, Any] | None:
+    """Persist allow_session/allow_workspace decisions as policy rules."""
+
+    if action not in {"allow_session", "allow_workspace"}:
+        return None
+    session_id = str(row.get("session_id") or "")
+    raw_tool_call = row.get("tool_call")
+    tool_call: Mapping[str, Any] = raw_tool_call if isinstance(raw_tool_call, Mapping) else {}
+    tool_name = str(tool_call.get("tool_name") or "*")
+    raw_args = tool_call.get("input")
+    args: Mapping[str, Any] = raw_args if isinstance(raw_args, Mapping) else {}
+    session = app.state.sessions.get(session_id) if session_id else None
+    workspace_id = str(getattr(session, "workspace_id", "") or "")
+    policy = {
+        "scope": "session" if action == "allow_session" else "workspace",
+        "scope_id": session_id if action == "allow_session" else workspace_id,
+        "tool_name_pattern": tool_name,
+        "action": "allow",
+        "created_from_permission_id": str(row.get("id") or ""),
+    }
+    path = _permission_path_from_args(args)
+    if path:
+        policy["path_pattern"] = path
+    app.state.permission_policies.append(policy)
+    return policy
 
 
 def _direct_permission_denied(
@@ -2625,6 +2689,16 @@ def _make_permission_gate(app: "FastAPI"):
             )
             return "deny"
         if policy_action in {"allow", "allow_session", "allow_workspace"}:
+            _record_resolved_permission(
+                app,
+                session_id=sid,
+                tool_name=name,
+                args=args,
+                status="auto_approved",
+                action="allow",
+                summary=f"destructive tool {name!r} allowed by permission policy",
+                reason=f"policy_{policy_action}",
+            )
             return "allow"
         if _is_safe_shell_diagnostic(name, args):
             return "allow"
@@ -4620,8 +4694,9 @@ def build_app(
     # SPEC §6.11.b permission policies — list, not dict. Backends
     # consult this on every tool call to decide allow/deny/ask before
     # falling back to the per-tool permission_default. PUT replaces
-    # the whole list; in-memory.
-    app.state.permission_policies = []
+    # the whole list.
+    app.state.permission_policies_path = session_store_path.parent / "permission_policies.json"
+    app.state.permission_policies = _load_permission_policies(app.state.permission_policies_path)
     # iowarp/clio-agent#18: per-session task list (todo-style).
     # Keyed by session_id -> {task_id -> task dict}. In-memory.
     app.state.session_tasks = {}
@@ -5414,19 +5489,42 @@ def build_app(
     # ---- /v1/permissions (BBB23) --------------------------------------
 
     @app.get("/v1/permissions")
-    async def list_permissions(session_id: str = "", status: str = "") -> dict[str, Any]:
+    async def list_permissions(
+        session_id: str = "",
+        status: str = "",
+        limit: int = 100,
+    ) -> dict[str, Any]:
         """List permission requests.
 
         ?session_id=<sid> narrows to a session; ?status=pending
-        hides resolved rows. Both are optional.
+        hides resolved rows; ?status=all returns the audit ledger.
         """
 
         rows = list(app.state.permissions.values())
+        total_before_filters = len(rows)
         if session_id:
             rows = [r for r in rows if r.get("session_id") == session_id]
-        if status:
+        total_after_session_filter = len(rows)
+        if status and status != "all":
             rows = [r for r in rows if r.get("status") == status]
-        return {"permissions": rows}
+        total_after_status_filter = len(rows)
+        rows.sort(key=lambda r: str(r.get("created_at") or ""), reverse=True)
+        if limit <= 0:
+            limit = 100
+        limit = min(limit, 500)
+        return {
+            "permissions": rows[:limit],
+            "metadata": {
+                "session_id": session_id,
+                "status": status or "all",
+                "limit": limit,
+                "total": total_after_status_filter,
+                "returned": min(total_after_status_filter, limit),
+                "truncated": total_after_status_filter > limit,
+                "total_before_filters": total_before_filters,
+                "total_after_session_filter": total_after_session_filter,
+            },
+        }
 
     @app.post("/v1/permissions/{pid}")
     async def respond_permission(pid: str, request: Request) -> Response:
@@ -5472,6 +5570,9 @@ def build_app(
             row["status"] = "resolved"
             row["action"] = action
             row["resolved_at"] = datetime.now(timezone.utc).isoformat()
+            policy = _append_permission_policy_from_resolution(app, row=row, action=action)
+            if policy is not None:
+                row["policy"] = policy
             # iowarp/clio-agent#7: wake any MCPToolBridge thread
             # waiting on this permission's event.
             evt = app.state.permission_events.pop(pid, None)
@@ -10478,7 +10579,7 @@ def build_app(
     #
     # Declarative allow/deny/ask rules consulted before the per-tool
     # permission_default. PUT replaces the whole list (matches the
-    # gact-tui client's PutPolicies shape). In-memory; no persistence.
+    # gact-tui client's PutPolicies shape) and persists it locally.
 
     @app.get("/v1/policies")
     async def list_policies() -> dict[str, Any]:
@@ -10522,6 +10623,7 @@ def build_app(
                 ).model_dump(exclude_none=True),
             )
         app.state.permission_policies = clean
+        _flush_permission_policies(app)
         return {"policies": clean}
 
     # ---- DELETE /v1/messages/{id} ------------------------------------
