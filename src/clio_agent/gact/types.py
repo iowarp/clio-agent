@@ -314,6 +314,7 @@ class Workspace(BaseModel):
     id: str
     name: str
     root_path: str = ""
+    storage_root: str = ""
     created_at: str
     updated_at: str
     config: dict[str, Any] = Field(default_factory=dict)
@@ -325,6 +326,7 @@ class CreateWorkspaceRequest(BaseModel):
 
     name: str
     root_path: str = ""
+    storage_root: str = ""
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 

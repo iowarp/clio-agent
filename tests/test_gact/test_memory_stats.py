@@ -21,6 +21,7 @@ from fastapi.testclient import TestClient
 
 from clio_agent.gact.app import build_app
 from clio_agent.gact.types import Message, Part, Tokens
+from clio_agent.gact.workspaces import Workspace
 
 
 class FakeARC:
@@ -399,7 +400,75 @@ def test_memory_search_cross_session_returns_provenance(
     assert by_session[sid_a]["workspace_id"] == ws_science
     assert by_session[sid_a]["metadata"]["source"] == "gact_transcript"
     assert by_session[sid_a]["metadata"]["cross_session"] is True
+    assert by_session[sid_a]["metadata"]["scope"] == "workspace"
     assert by_session[sid_b]["metadata"]["cross_session"] is False
+    assert by_session[sid_b]["metadata"]["scope"] == "session"
+    assert body["metadata"]["workspace_scope"] == "workspace"
+
+
+def test_memory_search_denies_other_workspace_active_session(
+    client_with_arc: TestClient,
+) -> None:
+    ws_science = client_with_arc.post(
+        "/v1/workspaces",
+        json={"name": "Science", "root_path": ""},
+    ).json()["id"]
+    ws_other = client_with_arc.post(
+        "/v1/workspaces",
+        json={"name": "Other", "root_path": ""},
+    ).json()["id"]
+    sid_other = client_with_arc.post(
+        "/v1/sessions",
+        json={"title": "Other workspace", "workspace_id": ws_other},
+    ).json()["id"]
+
+    resp = client_with_arc.get(
+        "/v1/memory/search",
+        params={
+            "query": "pressure dataset",
+            "session_id": sid_other,
+            "workspace_id": ws_science,
+            "include_cross_session": "true",
+        },
+    )
+
+    assert resp.status_code == 403
+    body = resp.json()
+    assert body["error"]["error"] == "permission_error"
+    assert body["error"]["details"]["scope"] == "other_workspace"
+
+
+def test_memory_search_marks_global_scope(client_with_arc: TestClient) -> None:
+    client_with_arc.app.state.workspaces._workspaces["ws_global"] = Workspace(  # type: ignore[attr-defined]
+        id="ws_global",
+        name="global",
+        root_path="",
+    )
+    sid = client_with_arc.post(
+        "/v1/sessions",
+        json={"title": "Global insight", "workspace_id": "ws_global"},
+    ).json()["id"]
+    _add_text_message(
+        client_with_arc,
+        sid,
+        message_id="msg_global",
+        role="assistant",
+        text="User-level insight about pressure dataset work.",
+        created_at="2026-05-25T12:00:00+00:00",
+    )
+
+    resp = client_with_arc.get(
+        "/v1/memory/search",
+        params={
+            "query": "pressure dataset",
+            "workspace_id": "ws_global",
+            "include_cross_session": "true",
+        },
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["metadata"]["workspace_scope"] == "global"
+    assert body["hits"][0]["metadata"]["scope"] == "global"
 
 
 def test_memory_search_unknown_session_404s(client_with_arc: TestClient) -> None:
