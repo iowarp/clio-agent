@@ -97,6 +97,8 @@ class CapabilityFlags(BaseModel):
     x_clio_prompt_registry: bool = False
     x_clio_user_questions: bool = False
     x_clio_retry_attempts: bool = False
+    x_clio_context_frames: bool = False
+    x_clio_capability_gaps: dict[str, dict[str, Any]] = Field(default_factory=dict)
 
 
 class TransportFlags(BaseModel):
@@ -179,10 +181,29 @@ class SessionMemoryStats(BaseModel):
     tokens_budget: Optional[int] = None  # null = unbounded
     profiles_attached: int = 0
     context_files_attached: int = 0
+    context_files_by_mode: dict[str, int] = Field(default_factory=dict)
     compact_summaries: int = 0
     token_pressure: float = 0.0
     threshold_state: Literal["empty", "normal", "warning", "critical"] = "empty"
     compaction_recommended: bool = False
+
+
+class SessionContextPolicy(BaseModel):
+    """Effective context and memory policy for one session.
+
+    This is intentionally separate from ``Session.metadata`` so clients can
+    discover CLIO's current memory compartment semantics without reverse
+    engineering ad-hoc metadata keys.
+    """
+
+    session_id: str
+    memory_scope: Literal["session"] = "session"
+    writable_scope: Literal["session"] = "session"
+    cross_session_read_available: bool = False
+    cross_session_read_endpoint: Optional[str] = None
+    requires_user_consent: bool = True
+    notes: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class GlobalMemoryStats(BaseModel):
@@ -212,6 +233,66 @@ class MemoryStats(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
     model_config = {"populate_by_name": True}
+
+
+class MemorySearchHit(BaseModel):
+    """One transcript-memory match.
+
+    This is intentionally provenance-heavy so a future orchestrator or TUI can
+    show where cross-session memory came from before using it as context.
+    """
+
+    session_id: str
+    session_title: str = ""
+    workspace_id: str = ""
+    message_id: str
+    part_id: str = ""
+    role: Literal["user", "assistant", "system", "tool"]
+    created_at: str
+    updated_at: str = ""
+    text: str
+    score: float = 0.0
+    match_terms: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class MemorySearchResponse(BaseModel):
+    """GET /v1/memory/search response."""
+
+    query: str
+    include_cross_session: bool = False
+    searched_sessions: list[str] = Field(default_factory=list)
+    hits: list[MemorySearchHit] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ContextFrameItem(BaseModel):
+    kind: str
+    source_id: str = ""
+    role: str = ""
+    path: str = ""
+    display_path: str = ""
+    included: bool = True
+    reason: str = ""
+    tokens_estimated: int = 0
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ContextFrame(BaseModel):
+    id: str
+    session_id: str
+    turn_id: str = ""
+    user_message_id: str = ""
+    assistant_message_id: str = ""
+    created_at: str
+    updated_at: str
+    status: Literal["assembled", "context_error", "completed", "error", "cancelled"] = "assembled"
+    model: dict[str, str] = Field(default_factory=dict)
+    agent: dict[str, Any] = Field(default_factory=dict)
+    prompt: dict[str, Any] = Field(default_factory=dict)
+    items: list[ContextFrameItem] = Field(default_factory=list)
+    tokens_estimated: int = 0
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
