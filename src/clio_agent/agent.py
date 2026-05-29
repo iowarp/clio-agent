@@ -102,6 +102,7 @@ SCIENTIFIC_FILE_SUFFIXES = {
     ".fna",
     ".vcf",
     ".cif",
+    ".geojson",
 }
 PLANNER_HIDDEN_TOOL_NAMES = {"fs_read_file", "fs_apply_edit_write"}
 MULTI_FILE_ANALYSIS_TERMS = (
@@ -495,6 +496,36 @@ class ClioAgent(dspy.Module):
                     "file_suffixes": [".cif"],
                     "guard_coordinator_intents": ["multi_file_analysis"],
                     "coordinated_file_suffixes": [".cif"],
+                },
+            ),
+        )
+
+        self.registry.register_agent(
+            "geospatial",
+            self,
+            AgentCapability(
+                keywords=[
+                    "geospatial",
+                    "geojson",
+                    "spatial",
+                    "geometry",
+                    "map",
+                    "coordinates",
+                    "bbox",
+                    "bounding box",
+                    "feature",
+                    "polygon",
+                ],
+                description=(
+                    "Geospatial expert for GeoJSON feature collections. Uses feature, "
+                    "geometry, property, and coordinate-bounds inspection before synthesis."
+                ),
+                tools=["geospatial_inspect_geojson"],
+                specialization="geospatial",
+                metadata={
+                    "file_suffixes": [".geojson"],
+                    "guard_coordinator_intents": ["multi_file_analysis"],
+                    "coordinated_file_suffixes": [".geojson"],
                 },
             ),
         )
@@ -1921,6 +1952,61 @@ class ClioAgent(dspy.Module):
                         analysis=answer,
                         recommendations="Validate symmetry, occupancies, and structure provenance.",
                         metadata={"expert": "materials", "paths": [str(path) for path in paths]},
+                    )
+                    self._record_expert_handoff(
+                        trace,
+                        expert_id=expert_id,
+                        dispatch_target=dispatch_id,
+                        stage="planner_dispatch",
+                        input_summary=expert_question,
+                        result=expert_result,
+                        duration_ms=(time.time() - started) * 1000,
+                    )
+                    return expert_id, answer, expert_result, None
+
+                if dispatch_id == "geospatial":
+                    started = time.time()
+                    paths = extract_file_paths(expert_question, expert_context, {".geojson"})
+                    geospatial_observations: list[str] = []
+                    if paths:
+                        geojson_result = self._execute_tool_action(
+                            "geospatial_inspect_geojson",
+                            {"filepath": str(paths[0])},
+                            trace,
+                            question=expert_question,
+                            file_context=expert_context,
+                        )
+                        geospatial_observations.append(
+                            "GeoJSON: "
+                            + json.dumps(compact_tool_result(geojson_result, max_text=1000))
+                        )
+                    if not geospatial_observations:
+                        return (
+                            expert_id,
+                            "",
+                            None,
+                            RoutingError(
+                                "The geospatial expert needs a GeoJSON file path.",
+                                details=self._recovery_details(
+                                    expert=expert_id,
+                                    next_action=(
+                                        "Provide at least one GeoJSON file under the allowed "
+                                        "workspace roots."
+                                    ),
+                                ),
+                            ).to_dict(),
+                        )
+                    answer = (
+                        "Geospatial data review:\n"
+                        + "\n\n".join(geospatial_observations)
+                        + "\n\nRecommendations:\n"
+                        "- Verify coordinate reference system assumptions before map overlay.\n"
+                        "- Check property completeness for features used in downstream analysis."
+                    )
+                    expert_result = dspy.Prediction(
+                        analysis=answer,
+                        recommendations="Validate CRS assumptions, bounds, and feature properties.",
+                        metadata={"expert": "geospatial", "paths": [str(path) for path in paths]},
                     )
                     self._record_expert_handoff(
                         trace,
