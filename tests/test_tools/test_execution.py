@@ -98,6 +98,25 @@ async def test_async_mcp_tool_executor_timeout_cancels_tool_call():
     assert executor.closed is True
 
 
+@pytest.mark.asyncio
+async def test_async_mcp_tool_executor_uses_per_tool_timeout_default():
+    """Long-running staging tools should not inherit the short metadata timeout."""
+    fake_client = FakeClient(delay=0.05)
+    executor = AsyncMCPToolExecutor(
+        object(),
+        timeout=0.01,
+        client_factory=lambda _: fake_client,
+    )
+    await executor.start()
+
+    try:
+        result = await executor.call_tool("ndp_stage_resource", {"value": "slow"})
+    finally:
+        await executor.aclose()
+
+    assert '"name": "ndp_stage_resource"' in result
+
+
 def test_sync_mcp_tool_executor_closes_client_and_loop():
     """close() should shut down the client and background loop idempotently."""
     fake_client = FakeClient()
@@ -140,6 +159,23 @@ def test_sync_mcp_tool_executor_timeout_cancels_tool_call():
 
     assert fake_client.exited is True
     assert executor.closed is True
+
+
+def test_sync_mcp_tool_executor_uses_per_tool_timeout_default():
+    """Sync executor should apply the same long-tool timeout map."""
+    fake_client = FakeClient(delay=0.05)
+    executor = SyncMCPToolExecutor(
+        object(),
+        timeout=0.01,
+        client_factory=lambda _: fake_client,
+    )
+
+    try:
+        result = executor.call_tool("ndp_stage_resource", {"value": "slow"})
+    finally:
+        executor.close()
+
+    assert '"name": "ndp_stage_resource"' in result
 
 
 def test_sync_mcp_tool_executor_uses_late_global_hooks():
