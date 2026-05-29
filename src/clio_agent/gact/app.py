@@ -10516,7 +10516,9 @@ def build_app(
 
         # Third-party servers installed at runtime.
         installed = getattr(app.state, "external_mcp_servers", {})
+        installed_ids: set[str] = set()
         for sid, info in sorted(installed.items()):
+            installed_ids.add(str(sid))
             rows.append(
                 {
                     "id": sid,
@@ -10535,9 +10537,16 @@ def build_app(
                     scope=blueprint.scope,
                     blueprint_id=blueprint.id,
                 ):
+                    descriptor_server_id = f"agent_blueprint_mcp_{blueprint.id}_{descriptor['id']}"
+                    legacy_descriptor_server_id = f"agent_blueprint_mcp_{descriptor['id']}"
+                    if (
+                        descriptor_server_id in installed_ids
+                        or legacy_descriptor_server_id in installed_ids
+                    ):
+                        continue
                     rows.append(
                         {
-                            "id": f"agent_blueprint_mcp_{descriptor['id']}",
+                            "id": descriptor_server_id,
                             "name": descriptor["name"],
                             "status": "disabled",
                             "transport": descriptor.get("transport") or "unknown",
@@ -13535,7 +13544,7 @@ def build_app(
             spec["args"] = list(descriptor.get("args") or [])
         if descriptor.get("url"):
             spec["url"] = descriptor["url"]
-        declared_tools = [
+        declared_tools: list[dict[str, Any]] = [
             {
                 **tool,
                 "status": "enabled_pending_probe",
@@ -13547,28 +13556,111 @@ def build_app(
             for tool in descriptor.get("tools") or []
             if isinstance(tool, Mapping)
         ]
+        probe = bool(body.get("probe", True))
+        status = "enabled_pending_probe"
+        connect_error = ""
+        tools = declared_tools
+        if probe:
+            try:
+                from fastmcp import Client  # noqa: PLC0415
+                from fastmcp.client.transports import (  # noqa: PLC0415
+                    StdioTransport,
+                    StreamableHttpTransport,
+                )
+
+                transport_kind = str(descriptor.get("transport") or "")
+                if transport_kind == "stdio":
+                    transport = StdioTransport(
+                        command=str(descriptor.get("command") or ""),
+                        args=list(descriptor.get("args") or []),
+                    )
+                elif transport_kind in {"http", "streamable-http"}:
+                    transport = StreamableHttpTransport(url=str(descriptor.get("url") or ""))  # type: ignore[assignment]
+                else:
+                    raise ValueError(f"unsupported MCP descriptor transport: {transport_kind}")
+                async with Client(transport) as client:
+                    live_tools = await client.list_tools()
+                tools = []
+                declared_by_name = {
+                    str(tool.get("name") or tool.get("id") or ""): tool
+                    for tool in declared_tools
+                    if str(tool.get("name") or tool.get("id") or "")
+                }
+                for live_tool in live_tools:
+                    tool_name = str(getattr(live_tool, "name", "") or "")
+                    if not tool_name:
+                        continue
+                    declared = declared_by_name.get(tool_name, {})
+                    tools.append(
+                        {
+                            **declared,
+                            "id": tool_name,
+                            "name": tool_name,
+                            "description": getattr(live_tool, "description", "") or declared.get("description") or "",
+                            "status": "ready",
+                            "enabled": True,
+                            "server_id": sid,
+                            "descriptor_id": descriptor_id,
+                            "agent_blueprint_id": blueprint_id,
+                            "input_schema": getattr(live_tool, "inputSchema", None)
+                            or getattr(live_tool, "input_schema", None)
+                            or declared.get("input_schema")
+                            or {},
+                            "output_schema": getattr(live_tool, "outputSchema", None)
+                            or getattr(live_tool, "output_schema", None)
+                            or declared.get("output_schema")
+                            or {},
+                        }
+                    )
+                declared_names = {
+                    str(tool.get("name") or tool.get("id") or "")
+                    for tool in declared_tools
+                    if str(tool.get("name") or tool.get("id") or "")
+                }
+                missing = sorted(declared_names - {str(tool.get("name") or "") for tool in tools})
+                for tool_name in missing:
+                    declared = declared_by_name.get(tool_name, {})
+                    tools.append(
+                        {
+                            **declared,
+                            "id": tool_name,
+                            "name": tool_name,
+                            "status": "missing_after_probe",
+                            "enabled": False,
+                            "server_id": sid,
+                            "descriptor_id": descriptor_id,
+                            "agent_blueprint_id": blueprint_id,
+                        }
+                    )
+                status = "ready" if tools and any(tool.get("enabled") for tool in tools) else "no_tools"
+            except Exception as exc:  # noqa: BLE001
+                connect_error = repr(exc)
+                status = "error"
         app.state.external_mcp_servers[sid] = {
             "id": sid,
             "name": descriptor.get("name") or descriptor_id,
-            "status": "enabled_pending_probe",
+            "status": status,
             "transport": descriptor.get("transport") or "unknown",
-            "tools": declared_tools,
+            "tools": tools,
             "spec": spec,
             "source": "agent_blueprint",
             "agent_blueprint_id": blueprint_id,
             "descriptor_id": descriptor_id,
         }
+        if connect_error:
+            app.state.external_mcp_servers[sid]["error"] = connect_error
         return {
             "id": sid,
             "name": descriptor.get("name") or descriptor_id,
-            "status": "enabled_pending_probe",
+            "status": status,
             "transport": descriptor.get("transport") or "unknown",
-            "tools_count": len(declared_tools),
-            "tools": declared_tools,
+            "tools_count": len(tools),
+            "tools": tools,
             "spec": spec,
             "source": "agent_blueprint",
             "agent_blueprint_id": blueprint_id,
             "descriptor_id": descriptor_id,
+            **({"error": connect_error} if connect_error else {}),
         }
 
     @app.get("/v1/sessions/{sid}/agent-blueprint")

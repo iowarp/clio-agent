@@ -3,7 +3,9 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
+import pytest
 from fastapi.testclient import TestClient
 
 from clio_agent.gact.agent_blueprints import (
@@ -773,7 +775,7 @@ EarthScope descriptor.
         rows_before = client.get("/v1/mcp/servers", params={"workspace_id": wid}).json()["servers"]
         enabled = client.post(
             "/v1/agent-blueprints/earth/mcp/earthscope/enable",
-            json={"workspace_id": wid},
+            json={"workspace_id": wid, "probe": False},
         )
         assert enabled.status_code == 200, enabled.text
         rows_after = client.get("/v1/mcp/servers", params={"workspace_id": wid}).json()["servers"]
@@ -819,7 +821,7 @@ EarthScope descriptor.
         ).json()["id"]
         enabled = client.post(
             "/v1/agent-blueprints/earth/mcp/earthscope/enable",
-            json={"workspace_id": wid},
+            json={"workspace_id": wid, "probe": False},
         )
         tools = client.get("/v1/tools").json()["tools"]
         detail = client.get("/v1/tools/earthscope_query").json()
@@ -831,3 +833,96 @@ EarthScope descriptor.
     assert declared["status"] == "enabled_pending_probe"
     assert declared["enabled"] is False
     assert detail["descriptor_id"] == "earthscope"
+
+
+def test_enabled_agent_blueprint_mcp_descriptor_probes_and_calls_tool(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class FakeClient:
+        called_tool = ""
+
+        def __init__(self, transport: Any) -> None:
+            self.transport = transport
+
+        async def __aenter__(self) -> "FakeClient":
+            return self
+
+        async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+            return None
+
+        async def list_tools(self) -> list[Any]:
+            return [
+                SimpleNamespace(
+                    name="earthscope_query",
+                    description="query EarthScope catalog",
+                    inputSchema={"type": "object"},
+                    outputSchema={"type": "object"},
+                )
+            ]
+
+        async def call_tool(self, name: str, args: dict[str, Any]) -> Any:
+            FakeClient.called_tool = name
+            return SimpleNamespace(
+                content=[SimpleNamespace(type="text", text=f"{name}:{args['q']}")],
+                isError=False,
+            )
+
+    import fastmcp
+    import fastmcp.client.transports as transports
+
+    monkeypatch.setattr(fastmcp, "Client", FakeClient)
+    monkeypatch.setattr(transports, "StdioTransport", lambda command, args: (command, args))
+
+    workspace = tmp_path / "workspace"
+    root = workspace / ".clio" / "agent-blueprints" / "earth"
+    _write_blueprint(root, blueprint_id="earth")
+    (root / "tools").mkdir()
+    root.joinpath("tools", "earthscope.md").write_text(
+        """---
+id: earthscope
+name: EarthScope MCP
+transport: stdio
+command: earthscope-mcp
+args:
+  - serve
+tools:
+  - earthscope_query
+---
+EarthScope descriptor.
+""",
+        encoding="utf-8",
+    )
+
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    with TestClient(app) as client:
+        wid = client.post(
+            "/v1/workspaces",
+            json={
+                "name": "Workspace",
+                "root_path": str(workspace),
+                "storage_root": str(workspace / ".clio"),
+            },
+        ).json()["id"]
+        enabled = client.post(
+            "/v1/agent-blueprints/earth/mcp/earthscope/enable",
+            json={"workspace_id": wid},
+        )
+        call = client.post(
+            "/v1/mcp/servers/agent_blueprint_mcp_earth_earthscope/call",
+            json={"tool": "earthscope_query", "args": {"q": "ANMO"}},
+        )
+        tools = client.get("/v1/tools").json()["tools"]
+
+    assert enabled.status_code == 200, enabled.text
+    body = enabled.json()
+    assert body["status"] == "ready"
+    assert body["tools"][0]["enabled"] is True
+    assert body["tools"][0]["input_schema"] == {"type": "object"}
+    assert call.status_code == 200, call.text
+    assert FakeClient.called_tool == "earthscope_query"
+    assert call.json()["content"] == [
+        {"type": "text", "text": "earthscope_query:ANMO"}
+    ]
+    declared = next(row for row in tools if row["id"] == "earthscope_query")
+    assert declared["enabled"] is True
+    assert declared["status"] == "ready"

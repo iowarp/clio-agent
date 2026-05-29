@@ -227,6 +227,15 @@ Installing a Blueprint records descriptors but does not enable them
 automatically. User or workspace policy must explicitly enable MCP servers
 before their tools become callable.
 
+Enabling a descriptor through
+`POST /v1/agent-blueprints/{blueprint_id}/mcp/{descriptor_id}/enable` probes the
+declared MCP server by default. A successful probe stores the server under the
+stable id `agent_blueprint_mcp_{blueprint_id}_{descriptor_id}`, records the live
+tool schemas, marks tools `enabled=true`, and makes them callable through
+`POST /v1/mcp/servers/{server_id}/call` subject to the normal permission policy.
+Clients may pass `{"probe": false}` to stage a descriptor as
+`enabled_pending_probe` without making its tools callable.
+
 Validation distinguishes:
 
 - missing tool;
@@ -320,7 +329,8 @@ Catalog responses should make the active Agent explicit:
 - Child Experts are callable only through declared graph edges.
 - Memory tools work for Experts that declare them and continue to enforce
   CLIO's memory policy.
-- MCP descriptors install disabled by default and require explicit enablement.
+- MCP descriptors install disabled by default; explicit enablement probes the
+  server and makes successfully discovered tools visible/callable.
 - Session overlay edits do not affect other sessions or installed Blueprints.
 - Prompt provenance points to Markdown files/checksums.
 - Tests prevent behavior-bearing runtime/system prompt strings from returning
