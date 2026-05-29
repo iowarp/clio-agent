@@ -22,6 +22,8 @@ alongside this summary:
   `benchmark/CROSS_FILE_DIRTY_EVIDENCE.jsonl`
 - `benchmark/CROSS_FILE_TRIAGE_REPORT.md` /
   `benchmark/CROSS_FILE_TRIAGE_EVIDENCE.jsonl`
+- `benchmark/FRESH_REAL_ORCHESTRATOR_REPORT.md` /
+  `benchmark/FRESH_REAL_ORCHESTRATOR_EVIDENCE.jsonl`
 
 ## Evidence Runs
 
@@ -76,7 +78,8 @@ tools are not broken. It does not prove that the benchmark worked.
 | At least two real visual artifacts | Met | `ndp_seismic_waveform_to_plot`, `csv_status_visual_summary`, and `dirty_quality_dashboard_multi_turn` each record verified PNG artifacts with nonzero byte sizes. |
 | At least two workflows needed new or materially improved tool support | Met | The NDP waveform workflow required SAC/EarthScope tooling and handoffs fixed in #439/#443. Cross-domain workflows required new genomics, materials, geospatial, imaging, and mass-spec tool servers (#397, #399, #401, #403, #405) plus mzML/PNG fixes (#410/#412). Visualization artifact placement was corrected in #447. |
 | Per-workflow provenance fields | Met for recorded rows | JSONL rows include route graph/metrics, route source, experts/handoffs, branch count, tool calls, elapsed time, files, artifacts, provider/model, and pass/fail outcome. |
-| Honest final report | Met with caveats | This summary lists fixes made and remaining weaknesses. Current remaining weaknesses are fresh-machine replay and broader non-seismic NDP breadth if those are release gates. |
+| Fresh-machine runnable evidence | Met | `FRESH_REAL_ORCHESTRATOR_EVIDENCE.jsonl` records a clean replay from isolated XDG config, isolated ARC working directory, fresh generated data, and a clean artifact root. The replay passed 12/12 selected real-orchestrator cases. |
+| Honest final report | Met with caveats | This summary lists fixes made and remaining weaknesses. Current remaining weakness: broader non-seismic NDP breadth if that becomes a release gate. |
 
 ## Passing Workflows
 
@@ -250,6 +253,13 @@ six tool calls, and a final triage answer grounded in the logged file evidence.
   evidence, not a pytest-style result.
 - #454 recorded real-session evidence for the no-guard cross-file triage
   nanoagent case.
+- #459 fixed fresh-install NDP catalog fallback when the published clio-kit
+  `uvx` entry point is unavailable.
+- #461 separated optional extended stress coverage from the real-orchestrator
+  benchmark pass/fail gate.
+- #458 recorded a clean fresh-directory replay of the documented
+  `real_orchestrator` lane: 12/12 clean passes, `route_source=dspy` for every
+  case, four verified artifacts, max expert depth 5, and max branch fanout 4.
 
 ## Remaining Gaps
 
@@ -265,9 +275,7 @@ multi-hop or fanout paths through recorded session evidence:
 - `reasoning_cross_file_triage_nanoagents`: four child sessions and six
   file/tool inspections with shortcut routing disabled.
 
-Still needed before treating this as a release-quality benchmark package:
+Remaining caveat before treating this as broad NDP coverage:
 
-- one fresh-machine run using the documented commands and a clean artifact
-  directory;
 - more NDP-backed workflows outside the seismic happy path if NDP breadth is a
   release criterion.
