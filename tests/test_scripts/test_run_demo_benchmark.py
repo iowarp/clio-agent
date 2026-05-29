@@ -105,6 +105,8 @@ def test_select_real_orchestrator_lane_cases() -> None:
         for case_id in (
             "reasoning_cross_file_triage_nanoagents",
             "cross_file_dirty_quality_gate_nanoagents",
+            "csv_status_visual_summary",
+            "dirty_quality_dashboard_multi_turn",
             "genomics_reference_variant_review",
             "materials_cif_structure_review",
             "geospatial_field_site_review",
@@ -151,7 +153,8 @@ def test_real_orchestrator_turns_pin_root_agent() -> None:
     )
 
     assert bench._turn_agent_id_for_lane(case, "real_orchestrator") == "main"
-    assert bench._turn_agent_id_for_lane(case, "all") == ""
+    assert bench._turn_agent_id_for_lane(case, "all") == "main"
+    assert bench._turn_agent_id_for_lane(case, "claude_code") == "main"
     assert bench._turn_agent_id_for_lane(explicit, "real_orchestrator") == "data"
 
 

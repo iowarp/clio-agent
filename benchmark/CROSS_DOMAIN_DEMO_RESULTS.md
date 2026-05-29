@@ -1,9 +1,15 @@
 # CLIO Cross-Domain Demo Results
 
-This document is the short human-facing record for the first real
-cross-domain CLIO demo pass. The full generated report is
-`benchmark/LIVE_CROSS_DOMAIN_REPORT.md`; the raw JSONL evidence is
-`benchmark/LIVE_CROSS_DOMAIN_EVIDENCE.jsonl`.
+This document is the short human-facing record for the current real
+cross-domain CLIO demo evidence. Generated reports and raw JSONL evidence are
+kept alongside this summary:
+
+- `benchmark/LIVE_CROSS_DOMAIN_REPORT.md` /
+  `benchmark/LIVE_CROSS_DOMAIN_EVIDENCE.jsonl`
+- `benchmark/NDP_WAVEFORM_REPORT.md` /
+  `benchmark/NDP_WAVEFORM_EVIDENCE.jsonl`
+- `benchmark/VISUAL_MULTITURN_REPORT.md` /
+  `benchmark/VISUAL_MULTITURN_EVIDENCE.jsonl`
 
 ## Run
 
@@ -103,6 +109,50 @@ Worked because CLIO selected the mass-spec expert and called
 `mass_spec_inspect_mzml`. Evidence included spectrum count, MS-level
 distribution, m/z range, peak count, scan IDs, and total ion current summary.
 
+### NDP Seismic Waveform To Plot
+
+Agent path: `visualization -> data -> ndp_catalog -> analysis -> sac_format -> visualization`
+
+Prompt:
+
+```text
+Find a bounded seismic waveform dataset from a seismological or Earth-science organization in the National Data Platform. Choose a usable resource, stage it if it is small enough, inspect the waveform content, compute representative trace statistics, and produce a plot artifact. If a candidate is too large or unavailable, surface that as the result instead of inventing a plot.
+```
+
+Worked because CLIO used `ndp_*` catalog/staging tools, recovered from
+unavailable Hive resources through a bounded EarthScope waveform fetch,
+inspected SAC content with `sac_inspect_archive`, computed trace statistics,
+and produced a verified PNG artifact.
+
+### CSV Status Distribution Chart
+
+Agent: `visualization`
+
+Prompt:
+
+```text
+Create a PNG bar chart of the event status distribution from the CSV stream we just inspected. Tell me where it was saved and what field was plotted.
+```
+
+Worked because the setup turn inspected `sensor_events.csv`, the follow-up turn
+stayed on the root CLIO orchestrator, CLIO selected visualization with
+`route_source=dspy`, called `plot_bar_chart`, and verified
+`event_status_distribution.png` on disk.
+
+### Dirty Data Dashboard After Quality Review
+
+Agent: `visualization`
+
+Prompt:
+
+```text
+Create a compact dashboard PNG for the dirty Parquet export we just reviewed. Use it to support the quality review, and tell me where the artifact was saved.
+```
+
+Worked because the setup turn reviewed the dirty Parquet export, the follow-up
+turn recovered the reviewed file context, called `plot_summary`, and verified a
+real dashboard PNG on disk.
+
 ## Fixes Made During This Pass
 
 - #408 fixed scientific path extraction for new domain suffixes.
@@ -113,13 +163,21 @@ distribution, m/z range, peak count, scan IDs, and total ion current summary.
 - #416 counted PNG scientific inputs as data files.
 - #418 filtered benchmark path evidence so scientific slash terms like `m/z`
   are not recorded as fake files.
+- #439 made the NDP waveform benchmark reach real SAC inspection/statistics and
+  a verified PNG artifact.
+- #446 fixed the benchmark runner so all benchmark lanes pin turns to the root
+  CLIO orchestrator unless a case explicitly overrides the agent. This avoided
+  accidental execution through a non-executable dynamic session agent.
 
 ## Remaining Gaps
 
-This pass proves five single-expert cross-domain workflows. It does not yet
-complete the full umbrella benchmark target. Still needed:
+Current committed evidence proves five single-expert cross-domain workflows, one
+deep NDP/SAC/visualization workflow, and two multi-turn visualization artifact
+workflows. It does not yet complete the full umbrella benchmark target. Still
+needed:
 
 - multi-branch workflows with child sessions or tier-3 expert handoffs;
-- NDP-backed workflows with bounded catalog staging/download;
-- more visualization artifacts from analyzed data;
+- more NDP-backed workflows outside the seismic happy path;
+- more visualization artifacts from analyzed data if the final target is ten
+  workflows rather than the minimum five;
 - a full fresh-machine run using the documented commands.
