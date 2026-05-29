@@ -584,6 +584,7 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
     cif = manifest["materials"]["cif_path"]
     geojson = manifest["geospatial"]["geojson_path"]
     png = manifest["imaging"]["png_path"]
+    mzml = manifest["mass_spec"]["mzml_path"]
     missing = str(Path(h5).with_name("missing_fusion_run.h5"))
 
     return [
@@ -1108,6 +1109,32 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             ),
         ),
         DemoCase(
+            case_id="mass_spec_mzml_qc_review",
+            title="Mass spectrometry mzML QC review",
+            category="mass_spec",
+            session_group="mass_spec",
+            expected_agent="mass_spec",
+            expected_tools=("mass_spec_inspect_mzml",),
+            expected_terms=("mzML", "ms level", "scan=1", "total ion current"),
+            timeout_s=620.0,
+            forbidden_route_sources=_REAL_ORCHESTRATOR_FORBIDDEN_SOURCES,
+            complexity_tags=("mass-spec", "mzml", "proteomics", "new-domain"),
+            prompt=(
+                f"Review this proteomics mzML run for collaborator handoff: {mzml}. "
+                "Summarize the spectra, MS-level balance, m/z coverage, intensity/TIC "
+                "evidence, and what acquisition metadata should be verified before "
+                "peptide-search analysis."
+            ),
+            expected=(
+                "CLIO uses mzML mass spectrometry tools and grounds the review in spectra, "
+                "MS levels, m/z range, peak counts, and TIC evidence."
+            ),
+            why=(
+                "Adds a structured XML scientific instrument domain with spectra and "
+                "ion-current semantics, not generic XML text inspection."
+            ),
+        ),
+        DemoCase(
             case_id="missing_hdf5_error",
             title="Missing file error surfacing",
             category="hardening",
@@ -1222,6 +1249,7 @@ _BENCHMARK_LANES: dict[str, tuple[str, ...]] = {
         "materials_cif_structure_review",
         "geospatial_field_site_review",
         "microscopy_png_readiness_review",
+        "mass_spec_mzml_qc_review",
         "ndp_catalog_discovery",
         "ndp_seismic_waveform_to_plot",
         "reasoning_adios_bp5_container",

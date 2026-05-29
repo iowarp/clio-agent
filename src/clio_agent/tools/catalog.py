@@ -138,6 +138,11 @@ TOOL_CATALOG: dict[str, ToolCatalogEntry] = {
         "imaging",
         {"imaging", "microscopy", "png", "image", "inspect"},
     ),
+    "mass_spec_inspect_mzml": _entry(
+        "mass_spec_inspect_mzml",
+        "mass_spec",
+        {"mass-spectrometry", "mzml", "proteomics", "spectra", "inspect"},
+    ),
     "plot_histogram": _entry(
         "plot_histogram", "visualization", {"visualization", "plot", "histogram"}
     ),

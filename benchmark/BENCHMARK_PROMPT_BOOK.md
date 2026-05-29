@@ -25,6 +25,7 @@ Use these paths when replacing placeholders:
 - `{cif}`: `tmp/clio-benchmark-data/strontium_titanate.cif`
 - `{geojson}`: `tmp/clio-benchmark-data/field_sites.geojson`
 - `{png}`: `tmp/clio-benchmark-data/microscopy_cells.png`
+- `{mzml}`: `tmp/clio-benchmark-data/proteomics_qc.mzML`
 
 For an automated evidence run, use:
 
@@ -247,6 +248,28 @@ Worked because you saw:
 - `imaging_inspect_png` evidence.
 - Dimensions, mode/channel, and intensity statistics.
 - Foreground pixel or region evidence plus acquisition metadata caveats.
+
+## 10. Mass Spectrometry mzML QC Review
+
+Agent: Data Exploration/Search Agent
+
+Prompt:
+
+```text
+Review this proteomics mzML run for collaborator handoff: {mzml}. Summarize the spectra, MS-level balance, m/z coverage, intensity/TIC evidence, and what acquisition metadata should be verified before peptide-search analysis.
+```
+
+Why this exists:
+
+This adds a scientific instrument-data domain with spectra, MS levels, m/z
+arrays, and ion-current semantics. It should not pass by treating mzML as
+generic XML text.
+
+Worked because you saw:
+
+- `mass_spec_inspect_mzml` evidence.
+- Spectrum counts, MS-level distribution, and m/z range.
+- TIC or intensity evidence plus acquisition metadata caveats.
 
 ## Notes For Manual TUI Runs
 

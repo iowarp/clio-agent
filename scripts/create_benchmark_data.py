@@ -393,6 +393,52 @@ def create_imaging(output_dir: Path) -> dict[str, Any]:
     }
 
 
+def create_mass_spec(output_dir: Path) -> dict[str, Any]:
+    """Create a small mzML-style XML fixture for mass spectrometry workflows."""
+    mzml_path = output_dir / "proteomics_qc.mzML"
+    spectra = [
+        ("scan=1", 1, 0.12, [401.2, 455.8, 512.3, 609.4], [1200.0, 5400.0, 2100.0, 800.0]),
+        ("scan=2", 2, 0.18, [522.2, 701.4, 884.6], [2300.0, 890.0, 440.0]),
+        ("scan=3", 1, 0.25, [399.8, 455.8, 612.1, 777.7], [980.0, 5100.0, 1600.0, 1200.0]),
+        ("scan=4", 2, 0.31, [488.9, 650.2, 933.5], [1800.0, 720.0, 610.0]),
+    ]
+    lines = [
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        '<mzML xmlns="http://psi.hupo.org/ms/mzml" id="clio_proteomics_qc">',
+        '  <run id="run_benchmark">',
+        f'    <spectrumList count="{len(spectra)}">',
+    ]
+    for spectrum_id, ms_level, scan_time, mz_values, intensities in spectra:
+        tic = sum(intensities)
+        lines.extend(
+            [
+                f'      <spectrum id="{spectrum_id}" defaultArrayLength="{len(mz_values)}">',
+                f'        <cvParam name="ms level" value="{ms_level}"/>',
+                f'        <cvParam name="total ion current" value="{tic:.1f}"/>',
+                f'        <scanList count="1"><scan><cvParam name="scan start time" value="{scan_time:.2f}" unitName="minute"/></scan></scanList>',
+                "        <binaryDataArrayList count=\"2\">",
+                "          <binaryDataArray>",
+                '            <cvParam name="m/z array"/>',
+                "            <binary>" + " ".join(f"{value:.4f}" for value in mz_values) + "</binary>",
+                "          </binaryDataArray>",
+                "          <binaryDataArray>",
+                '            <cvParam name="intensity array"/>',
+                "            <binary>" + " ".join(f"{value:.1f}" for value in intensities) + "</binary>",
+                "          </binaryDataArray>",
+                "        </binaryDataArrayList>",
+                "      </spectrum>",
+            ]
+        )
+    lines.extend(["    </spectrumList>", "  </run>", "</mzML>", ""])
+    mzml_path.write_text("\n".join(lines), encoding="utf-8")
+    return {
+        "mzml_path": str(mzml_path),
+        "spectra": len(spectra),
+        "ms_levels": {"1": 2, "2": 2},
+        "expected_terms": ["scan=1", "scan=2", "ms level", "total ion current", "m/z"],
+    }
+
+
 def create_adios_bp5(output_dir: Path) -> dict[str, Any]:
     """Copy a real BP5 sample when present, otherwise create a BP-like container."""
     destination = output_dir / "gray scott noise 0.01 data.bp5"
@@ -450,6 +496,7 @@ def create_benchmark_data(output_dir: Path) -> dict[str, Any]:
     materials = create_materials(output_dir)
     geospatial = create_geospatial(output_dir)
     imaging = create_imaging(output_dir)
+    mass_spec = create_mass_spec(output_dir)
     adios = create_adios_bp5(output_dir)
 
     manifest: dict[str, Any] = {
@@ -462,6 +509,7 @@ def create_benchmark_data(output_dir: Path) -> dict[str, Any]:
         "materials": materials,
         "geospatial": geospatial,
         "imaging": imaging,
+        "mass_spec": mass_spec,
         "adios": adios,
     }
     manifest_path = output_dir / "manifest.json"
