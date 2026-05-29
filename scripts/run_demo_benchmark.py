@@ -1925,6 +1925,13 @@ def _render_report(results: list[DemoResult], output_jsonl: Path) -> str:
         f"Benchmark lane: `{lane}`",
         "",
         (
+            "This is a CLIO session-evidence audit. It is produced from real "
+            "session JSONL rows and should be reviewed as prompt, route, tool, "
+            "artifact, error, and final-answer evidence. Pytest coverage only "
+            "guards the harness and tools; it is not the benchmark result."
+        ),
+        "",
+        (
             f"Result: {clean_passes}/{len(results)} clean passes, "
             f"{expected_errors} expected surfaced errors, "
             f"{expected_cancelled} expected cancellations, {partials} partial recoveries, "

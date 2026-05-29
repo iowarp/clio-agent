@@ -1,7 +1,11 @@
 # CLIO Real-Orchestrator Benchmark Prompt Book
 
-This is the human-facing benchmark set for manual TUI runs on a fresh machine.
-Use a real provider and the normal CLIO orchestrator. The benchmark should not
+This is the human-facing benchmark set for real CLIO sessions on a fresh
+machine. The benchmark is not a pytest suite. It is a set of natural prompts to
+run through the normal CLIO orchestrator, then audit from the recorded JSONL log
+and generated markdown report.
+
+Use a real provider and the normal CLIO session path. The benchmark should not
 be judged as passing if a case succeeds only through shortcut routing, keyword
 routing, guard routing, or recovery routing.
 
@@ -27,7 +31,8 @@ Use these paths when replacing placeholders:
 - `{png}`: `tmp/clio-benchmark-data/microscopy_cells.png`
 - `{mzml}`: `tmp/clio-benchmark-data/proteomics_qc.mzML`
 
-For an automated evidence run, use:
+For a repeatable session-evidence run, start `clio-agent-gact`, configure the
+provider you want to evaluate, then use:
 
 ```bash
 uv run python scripts/run_demo_benchmark.py \
@@ -40,6 +45,10 @@ uv run python scripts/run_demo_benchmark.py \
 
 ## Pass Standard
 
+The JSONL evidence and generated report are the source of truth. Pytest may
+protect the benchmark runner, fixture generator, or individual tools, but
+pytest success is not a benchmark pass.
+
 A passing run should show:
 
 - `routing_decision.metadata.route_source` is not `guard`, `user_agent_keyword`,
@@ -50,6 +59,14 @@ A passing run should show:
 - Visualization cases produce a real PNG path when data is available.
 - NDP cases either stage/analyze a bounded resource or return an honest
   unavailable/too-large result without inventing downstream artifacts.
+
+When reviewing a completed run, inspect the JSONL row for each case and confirm:
+
+- The selected route and route graph match the intended agent hierarchy.
+- Tool calls include arguments, results, errors, durations, and artifact paths.
+- The final answer cites the same evidence that appears in the log.
+- Any failure says where it failed, why it failed, and whether a follow-up issue
+  was filed before or while fixing it.
 
 ## 1. Cross-File Triage
 

@@ -232,6 +232,11 @@ above:
 
 ## Evidence Required For Each Run
 
+The benchmark is a real-session evidence audit, not a pytest-style result. Unit
+and integration tests are guardrails for the runner and tools. A benchmark pass
+requires JSONL/report evidence from natural prompts sent through CLIO's normal
+session path.
+
 Every benchmark run should save:
 
 - Prompt and scenario ID.
@@ -248,6 +253,10 @@ Every benchmark run should save:
 - Final answer.
 - Pass/fail reason.
 - Bugs filed or fixes made.
+
+The human review should read the JSONL first, then the generated report. The
+report is a summary of recorded session evidence; it should not introduce claims
+that are absent from the JSONL.
 
 ## Completion Criteria
 
