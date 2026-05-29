@@ -1,6 +1,6 @@
 # CLIO Marketplace Agent Benchmark Report
 
-Generated: 2026-05-29 08:26:08 CDT
+Generated: 2026-05-29 08:41:00 CDT
 Evidence JSONL: `/home/jcernuda/clio-agent/benchmark/MARKETPLACE_UNIFIED_EVIDENCE.jsonl`
 Benchmark lane: `marketplace_agents`
 
@@ -30,7 +30,7 @@ High-event or long-running cases:
 
 - Max elapsed case: `marketplace_seismic_waveform_review` (742.6s)
 - Max expert depth: `marketplace_seismic_waveform_review` (6)
-- Max branch fanout: `marketplace_genomics_reference_review` (0)
+- Max branch fanout: `marketplace_seismic_waveform_review` (5)
 - Unique tools used: genomics_inspect_fasta, genomics_summarize_vcf, geospatial_inspect_geojson, mass_spec_inspect_mzml, materials_inspect_cif, ndp_get_dataset_details, ndp_list_organizations, ndp_search_datasets, ndp_stage_resource, sac_compute_trace_statistics, sac_fetch_earthscope_waveform, sac_inspect_archive, sac_plot_traces
 - Data/input files referenced: 6
 - Artifacts verified on disk: 1/1
@@ -77,8 +77,8 @@ Selected agent: `main`
 Active Agent Blueprint: `seismic-waveform-review`
 Provider/model: `codex` / `gpt-5.5` via `codex://exec`
 Provider settings: temperature=1.0, max_tokens=32000, context_length=0, thinking_budget=0
-Route graph: orchestrator -> main; data -> ndp_catalog -> data; main -> data -> main; analysis -> sac_format -> analysis; main -> analysis -> main; main -> visualization -> main
-Route metrics: depth=6, branches=0, tools=16
+Route graph: orchestrator -> main; analysis -> sac_format -> analysis; main -> analysis -> main; main -> visualization -> main; main -> data -> main; data -> ndp_catalog -> data
+Route metrics: depth=6, branches=5, sync_handoffs=5, child_sessions=0, tools=16
 Expert handoffs: data x3, ndp_catalog x2, main x3, analysis x3, sac_format x2, visualization
 Tools: ndp_search_datasets, ndp_search_datasets, ndp_get_dataset_details, ndp_stage_resource, ndp_search_datasets, ndp_search_datasets, ndp_list_organizations, ndp_search_datasets, ndp_search_datasets, sac_fetch_earthscope_waveform, sac_inspect_archive, sac_compute_trace_statistics, sac_fetch_earthscope_waveform, sac_inspect_archive, sac_compute_trace_statistics, sac_plot_traces
 Data/input files: /home/jcernuda/clio-agent/tmp/clio-seismic-staging/earthscope_IU_ANMO_00_BHZ_2010-02-27T063000.sac
@@ -120,7 +120,7 @@ Active Agent Blueprint: `genomics-review`
 Provider/model: `codex` / `gpt-5.5` via `codex://exec`
 Provider settings: temperature=1.0, max_tokens=32000, context_length=0, thinking_budget=0
 Route graph: orchestrator -> reference
-Route metrics: depth=1, branches=0, tools=1
+Route metrics: depth=1, branches=0, sync_handoffs=0, child_sessions=0, tools=1
 Expert handoffs: none
 Tools: genomics_inspect_fasta
 Data/input files: /home/jcernuda/clio-agent/tmp/clio-benchmark-data/pathogen_reference.fasta
@@ -183,7 +183,7 @@ Active Agent Blueprint: `genomics-review`
 Provider/model: `codex` / `gpt-5.5` via `codex://exec`
 Provider settings: temperature=1.0, max_tokens=32000, context_length=0, thinking_budget=0
 Route graph: orchestrator -> variants
-Route metrics: depth=1, branches=0, tools=1
+Route metrics: depth=1, branches=0, sync_handoffs=0, child_sessions=0, tools=1
 Expert handoffs: none
 Tools: genomics_summarize_vcf
 Data/input files: /home/jcernuda/clio-agent/tmp/clio-benchmark-data/pathogen_sample_variants.vcf
@@ -255,7 +255,7 @@ Active Agent Blueprint: `materials-crystal-review`
 Provider/model: `codex` / `gpt-5.5` via `codex://exec`
 Provider settings: temperature=1.0, max_tokens=32000, context_length=0, thinking_budget=0
 Route graph: orchestrator -> crystal_structure
-Route metrics: depth=1, branches=0, tools=1
+Route metrics: depth=1, branches=0, sync_handoffs=0, child_sessions=0, tools=1
 Expert handoffs: none
 Tools: materials_inspect_cif
 Data/input files: /home/jcernuda/clio-agent/tmp/clio-benchmark-data/strontium_titanate.cif
@@ -316,7 +316,7 @@ Active Agent Blueprint: `geospatial-field-review`
 Provider/model: `codex` / `gpt-5.5` via `codex://exec`
 Provider settings: temperature=1.0, max_tokens=32000, context_length=0, thinking_budget=0
 Route graph: orchestrator -> spatial_features
-Route metrics: depth=1, branches=0, tools=1
+Route metrics: depth=1, branches=0, sync_handoffs=0, child_sessions=0, tools=1
 Expert handoffs: none
 Tools: geospatial_inspect_geojson
 Data/input files: /home/jcernuda/clio-agent/tmp/clio-benchmark-data/field_sites.geojson
@@ -379,7 +379,7 @@ Active Agent Blueprint: `proteomics-mzml-review`
 Provider/model: `codex` / `gpt-5.5` via `codex://exec`
 Provider settings: temperature=1.0, max_tokens=32000, context_length=0, thinking_budget=0
 Route graph: orchestrator -> mass_spec
-Route metrics: depth=1, branches=0, tools=1
+Route metrics: depth=1, branches=0, sync_handoffs=0, child_sessions=0, tools=1
 Expert handoffs: none
 Tools: mass_spec_inspect_mzml
 Data/input files: /home/jcernuda/clio-agent/tmp/clio-benchmark-data/proteomics_qc.mzML
