@@ -709,6 +709,87 @@ class TestDataExpert:
         assert [row.params["dataset_identifier"] for row in stage_calls] == ["bad", "good"]
         expert.close()
 
+    def test_ndp_waveform_staging_does_not_fall_back_to_lidar_geojson(self):
+        """Waveform requests should not recover to unrelated seismic lidar metadata."""
+
+        class FakeExecutor:
+            closed = False
+
+            def to_dspy_tools(self):
+                def fake_tool(**kwargs):
+                    return "{}"
+
+                return [
+                    dspy.Tool(
+                        func=fake_tool,
+                        name="ndp_search_datasets",
+                        desc="Search NDP datasets.",
+                        args={},
+                    ),
+                    dspy.Tool(
+                        func=fake_tool,
+                        name="ndp_get_dataset_details",
+                        desc="Get NDP details.",
+                        args={},
+                    ),
+                    dspy.Tool(
+                        func=fake_tool,
+                        name="ndp_stage_resource",
+                        desc="Stage NDP resources.",
+                        args={},
+                    ),
+                ]
+
+            def call_tool(self, name, args):
+                if name == "ndp_list_organizations":
+                    return '{"organizations":[],"count":0,"server":"global"}'
+                if name == "ndp_search_datasets":
+                    return (
+                        '{"datasets":['
+                        '{"id":"wave","name":"waveform-data","title":"ScP Waveforms",'
+                        '"notes":"SAC waveform data","resource_count":1,'
+                        '"resource_urls":["https://hive.example/wave.tar"]},'
+                        '{"id":"lidar","name":"central-seismic-lidar",'
+                        '"title":"Central Seismic Zone Lidar",'
+                        '"notes":"Lidar point cloud spatial extents",'
+                        '"resource_count":1,"resource_formats":["GEOJSON"],'
+                        '"resource_urls":["https://example.test/spatial_extents.geojson"]}'
+                        '],"count":2,"server":"global"}'
+                    )
+                if name == "ndp_get_dataset_details":
+                    assert args["dataset_identifier"] == "wave"
+                    return (
+                        '{"id":"wave","resources":[{"name":"wave.tar",'
+                        '"url":"https://hive.example/wave.tar"}]}'
+                    )
+                assert name == "ndp_stage_resource"
+                assert args["dataset_identifier"] == "wave"
+                return (
+                    '{"error":{"type":"tool_error","code":"webget_failed",'
+                    '"message":"curl failed","next_action":"try another waveform mirror"}}'
+                )
+
+            def close(self):
+                self.closed = True
+
+        expert = NDPExpert(tool_executor=FakeExecutor())
+
+        result = expert(
+            question=(
+                "Find a bounded seismic waveform dataset, stage it, inspect waveform "
+                "content, compute trace statistics, and produce a plot."
+            )
+        )
+
+        assert "none could be staged" in result.analysis
+        stage_calls = [row for row in result.tool_provenance if row.tool == "ndp_stage_resource"]
+        detail_calls = [
+            row for row in result.tool_provenance if row.tool == "ndp_get_dataset_details"
+        ]
+        assert [row.params["dataset_identifier"] for row in detail_calls] == ["wave"]
+        assert [row.params["dataset_identifier"] for row in stage_calls] == ["wave"]
+        expert.close()
+
 
 class TestDataExpertSignature:
     """Test the DataExpertSignature prompt."""
