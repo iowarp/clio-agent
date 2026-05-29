@@ -20,6 +20,8 @@ alongside this summary:
   `benchmark/VISUAL_MULTITURN_EVIDENCE.jsonl`
 - `benchmark/CROSS_FILE_DIRTY_REPORT.md` /
   `benchmark/CROSS_FILE_DIRTY_EVIDENCE.jsonl`
+- `benchmark/CROSS_FILE_TRIAGE_REPORT.md` /
+  `benchmark/CROSS_FILE_TRIAGE_EVIDENCE.jsonl`
 
 ## Evidence Runs
 
@@ -197,6 +199,21 @@ four tool-backed child sessions, and called HDF5, ADIOS/BP5, dirty Parquet, and
 CSV tools. The run recorded `branch_count=4`, six tool calls, and the final
 answer synthesized each file's evidence into a collaborator handoff gate.
 
+### No-Guard Cross-File Triage
+
+Agent path: `analysis -> [csv_validator, analysis_validator, adios_validator, data_validator]`
+
+Prompt:
+
+```text
+I have four related files from the same experiment: tmp/clio-benchmark-data/fusion_run.h5, tmp/clio-benchmark-data/facility_measurements.parquet, tmp/clio-benchmark-data/sensor_events.csv, and "tmp/clio-benchmark-data/gray scott noise 0.01 data.bp5". Give me a cross-file triage summary: what is in each file, whether the measurements look ready for downstream analysis, and what I should check next.
+```
+
+Worked because CLIO selected `analysis` through `route_source=dspy` even with
+shortcut routing disabled, spawned four tool-backed child sessions, and called
+HDF5, ADIOS/BP5, Parquet, and CSV tools. The run recorded `branch_count=4`,
+six tool calls, and a final triage answer grounded in the logged file evidence.
+
 ## Fixes Made During This Pass
 
 - #408 fixed scientific path extraction for new domain suffixes.
@@ -218,24 +235,26 @@ answer synthesized each file's evidence into a collaborator handoff gate.
   fanout case.
 - #452 clarified that the benchmark summary is an index over JSONL session
   evidence, not a pytest-style result.
+- #454 recorded real-session evidence for the no-guard cross-file triage
+  nanoagent case.
 
 ## Remaining Gaps
 
 Current committed evidence proves five single-expert cross-domain workflows, one
 deep NDP/SAC/visualization workflow, two multi-turn visualization artifact
-workflows, and one cross-file nanoagent fanout workflow. It proves at least two
+workflows, and two cross-file nanoagent fanout workflows. It proves at least two
 multi-hop or fanout paths through recorded session evidence:
 
 - `ndp_seismic_waveform_to_plot`: multi-expert path through NDP catalog, SAC
   analysis, and visualization.
 - `cross_file_dirty_quality_gate_nanoagents`: four child sessions and six
   file/tool inspections.
+- `reasoning_cross_file_triage_nanoagents`: four child sessions and six
+  file/tool inspections with shortcut routing disabled.
 
 Still needed before treating this as a release-quality benchmark package:
 
 - one fresh-machine run using the documented commands and a clean artifact
   directory;
 - more NDP-backed workflows outside the seismic happy path if NDP breadth is a
-  release criterion;
-- one more recorded workflow if the final target is ten committed workflows
-  rather than the current nine.
+  release criterion.
