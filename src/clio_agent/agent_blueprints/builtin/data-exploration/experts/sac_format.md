@@ -13,6 +13,7 @@ keywords:
   - seismic
 tools:
   - sac_inspect_archive
+  - sac_fetch_earthscope_waveform
   - sac_compute_trace_statistics
   - sac_plot_traces
 prompt_id: clio.expert.analysis

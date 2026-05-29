@@ -418,6 +418,7 @@ class ClioAgent(dspy.Module):
                 ),
                 tools=[
                     "sac_inspect_archive",
+                    "sac_fetch_earthscope_waveform",
                     "sac_compute_trace_statistics",
                     "sac_plot_traces",
                 ],
@@ -2412,7 +2413,8 @@ class ClioAgent(dspy.Module):
         for observation in reversed(list(getattr(expert_result, "tool_provenance", []) or [])):
             result = getattr(observation, "result", None)
             if (
-                getattr(observation, "tool", "") == "ndp_stage_resource"
+                getattr(observation, "tool", "")
+                in {"ndp_stage_resource", "sac_fetch_earthscope_waveform"}
                 and isinstance(result, dict)
                 and result.get("staged")
                 and result.get("path")
@@ -2421,7 +2423,8 @@ class ClioAgent(dspy.Module):
         for observation in reversed(list(getattr(expert_result, "tools", []) or [])):
             result = getattr(observation, "result", None)
             if (
-                getattr(observation, "tool", "") == "ndp_stage_resource"
+                getattr(observation, "tool", "")
+                in {"ndp_stage_resource", "sac_fetch_earthscope_waveform"}
                 and isinstance(result, dict)
                 and result.get("staged")
                 and result.get("path")

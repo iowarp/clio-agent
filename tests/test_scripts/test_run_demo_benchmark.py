@@ -267,12 +267,15 @@ def test_expected_error_allows_structured_handoff_telemetry_only() -> None:
     assert result.passed is False
 
 
-def test_case_alternate_criteria_accept_grounded_blocker_path() -> None:
+def test_ndp_waveform_case_requires_sac_and_png_path() -> None:
     message = _message(
-        text="Staging note: bounded NDP attempts completed, but none could be staged.",
-        tools=[{"name": "ndp_stage_resource"}],
+        text="SAC statistics were computed and a .png path was mentioned, but no artifact exists.",
+        tools=[{"name": "ndp_stage_resource"}, {"name": "sac_compute_trace_statistics"}],
     )
-    message["metadata"]["expert_handoffs"] = [{"agent_id": "ndp_catalog"}]
+    message["metadata"]["expert_handoffs"] = [
+        {"agent_id": "ndp_catalog"},
+        {"agent_id": "sac_format"},
+    ]
     result = bench.DemoResult(
         case=bench.DemoCase(
             case_id="ndp_seismic_waveform_to_plot",
@@ -284,14 +287,9 @@ def test_case_alternate_criteria_accept_grounded_blocker_path() -> None:
             session_group="test",
             expected_agent=("analysis", "data", "ndp_catalog"),
             expected_tool_prefixes=("ndp_", "sac_"),
-            expected_tool_prefix_groups=(("ndp_", "sac_"), ("ndp_",)),
             expected_handoff_agents=("ndp_catalog", "sac_format"),
-            expected_handoff_agent_groups=(("ndp_catalog", "sac_format"), ("ndp_catalog",)),
             expected_terms=("SAC", ".png"),
-            expected_term_groups=(
-                ("SAC", ".png"),
-                ("Staging note", "none could be staged"),
-            ),
+            min_artifacts=1,
         ),
         session_id="sess_test",
         elapsed_s=1.0,
@@ -299,7 +297,7 @@ def test_case_alternate_criteria_accept_grounded_blocker_path() -> None:
         provider={},
     )
 
-    assert result.passed is True
+    assert result.passed is False
 
 
 def test_case_alternate_criteria_keep_strict_failures() -> None:
@@ -315,12 +313,10 @@ def test_case_alternate_criteria_keep_strict_failures() -> None:
             expected="expected",
             session_group="test",
             expected_agent=("analysis", "data", "ndp_catalog"),
-            expected_tool_prefix_groups=(("ndp_", "sac_"), ("ndp_",)),
-            expected_handoff_agent_groups=(("ndp_catalog", "sac_format"), ("ndp_catalog",)),
-            expected_term_groups=(
-                ("SAC", ".png"),
-                ("Staging note", "none could be staged"),
-            ),
+            expected_tool_prefixes=("ndp_", "sac_"),
+            expected_handoff_agents=("ndp_catalog", "sac_format"),
+            expected_terms=("SAC", ".png"),
+            min_artifacts=1,
         ),
         session_id="sess_test",
         elapsed_s=1.0,
@@ -469,7 +465,7 @@ def test_real_orchestrator_lane_audit_requires_artifact_verification() -> None:
     assert artifact_row["observed"] == 0
 
 
-def test_real_orchestrator_ndp_blocker_audit_does_not_claim_sac_plot() -> None:
+def test_real_orchestrator_ndp_blocker_audit_requires_sac_plot() -> None:
     message = _message(
         text="Staging note: bounded NDP attempts completed, but none could be staged.",
         tools=[{"name": "ndp_stage_resource"}],
@@ -485,12 +481,10 @@ def test_real_orchestrator_ndp_blocker_audit_does_not_claim_sac_plot() -> None:
             expected="expected",
             session_group="test",
             expected_agent=("analysis", "data", "ndp_catalog"),
-            expected_tool_prefix_groups=(("ndp_", "sac_"), ("ndp_",)),
-            expected_handoff_agent_groups=(("ndp_catalog", "sac_format"), ("ndp_catalog",)),
-            expected_term_groups=(
-                ("SAC", ".png"),
-                ("Staging note", "none could be staged"),
-            ),
+            expected_tool_prefixes=("ndp_", "sac_"),
+            expected_handoff_agents=("ndp_catalog", "sac_format"),
+            expected_terms=("SAC", ".png"),
+            min_artifacts=1,
         ),
         session_id="sess_ndp",
         elapsed_s=1.0,
@@ -507,15 +501,14 @@ def test_real_orchestrator_ndp_blocker_audit_does_not_claim_sac_plot() -> None:
     ndp_row = next(
         item
         for item in audit
-        if item["criterion"] == "NDP waveform benchmark passes with honest artifact status"
+        if item["criterion"] == "NDP waveform benchmark reaches verified SAC/PNG artifact"
     )
     full_chain_row = next(
-        item for item in audit if item["criterion"] == "NDP full SAC/PNG chain verified when reached"
+        item for item in audit if item["criterion"] == "NDP full SAC/PNG chain verified"
     )
-    assert artifact_row["required"] == 0
-    assert ndp_row["passed"] is True
-    assert ndp_row["details"] == [
-        "accepted grounded NDP blocker path; no SAC/PNG artifact was verified"
-    ]
-    assert full_chain_row["passed"] is True
+    assert artifact_row["required"] == 1
+    assert artifact_row["observed"] == 0
+    assert ndp_row["passed"] is False
+    assert ndp_row["details"] == []
+    assert full_chain_row["passed"] is False
     assert full_chain_row["observed"] == 0
