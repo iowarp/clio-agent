@@ -630,6 +630,85 @@ class TestDataExpert:
         ]
         expert.close()
 
+    def test_ndp_staging_recovers_to_alternative_candidate(self):
+        """NDP staging should keep trying bounded alternatives after one resource fails."""
+
+        class FakeExecutor:
+            closed = False
+
+            def to_dspy_tools(self):
+                def fake_tool(**kwargs):
+                    return "{}"
+
+                return [
+                    dspy.Tool(
+                        func=fake_tool,
+                        name="ndp_search_datasets",
+                        desc="Search NDP datasets.",
+                        args={},
+                    ),
+                    dspy.Tool(
+                        func=fake_tool,
+                        name="ndp_get_dataset_details",
+                        desc="Get NDP details.",
+                        args={},
+                    ),
+                    dspy.Tool(
+                        func=fake_tool,
+                        name="ndp_stage_resource",
+                        desc="Stage NDP resources.",
+                        args={},
+                    ),
+                ]
+
+            def call_tool(self, name, args):
+                if name == "ndp_list_organizations":
+                    return '{"organizations":[],"count":0,"server":"global"}'
+                if name == "ndp_search_datasets":
+                    return (
+                        '{"datasets":['
+                        '{"id":"bad","name":"bad-waveform","title":"Bad Waveform",'
+                        '"notes":"SAC waveform data","resource_count":1,'
+                        '"resource_urls":["https://down.example/bad.tar"]},'
+                        '{"id":"good","name":"good-waveform","title":"Good Waveform",'
+                        '"notes":"SAC waveform data","resource_count":1,'
+                        '"resource_urls":["https://up.example/good.tar"]}'
+                        '],"count":2,"server":"global"}'
+                    )
+                if name == "ndp_get_dataset_details":
+                    return (
+                        '{"id":"%s","resources":[{"name":"waveforms.tar",'
+                        '"url":"https://example.test/waveforms.tar"}]}'
+                    ) % args["dataset_identifier"]
+                assert name == "ndp_stage_resource"
+                if args["dataset_identifier"] == "bad":
+                    return (
+                        '{"error":{"type":"tool_error","code":"resource_download_failed",'
+                        '"message":"download timed out","next_action":"try another mirror"}}'
+                    )
+                return (
+                    '{"staged":true,"path":"/tmp/good-waveforms.tar",'
+                    '"size_bytes":2048,"url":"https://up.example/good.tar"}'
+                )
+
+            def close(self):
+                self.closed = True
+
+        expert = NDPExpert(tool_executor=FakeExecutor())
+
+        result = expert(
+            question=(
+                "Find a seismic waveform dataset in NDP, stage it, inspect the data, "
+                "analyze the signal, and plot it."
+            )
+        )
+
+        assert "CLIO staged the selected NDP resource at /tmp/good-waveforms.tar" in result.analysis
+        assert "after 1 failed attempt(s)" in result.analysis
+        stage_calls = [row for row in result.tool_provenance if row.tool == "ndp_stage_resource"]
+        assert [row.params["dataset_identifier"] for row in stage_calls] == ["bad", "good"]
+        expert.close()
+
 
 class TestDataExpertSignature:
     """Test the DataExpertSignature prompt."""
