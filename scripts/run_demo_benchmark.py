@@ -24,6 +24,27 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from scripts.create_benchmark_data import create_benchmark_data
 
 _REAL_ORCHESTRATOR_FORBIDDEN_SOURCES = ("guard", "user_agent_keyword", "recovery")
+_DATA_FILE_SUFFIXES = {
+    ".bp",
+    ".bp4",
+    ".bp5",
+    ".cif",
+    ".csv",
+    ".fa",
+    ".fasta",
+    ".fna",
+    ".geojson",
+    ".gz",
+    ".h5",
+    ".hdf5",
+    ".mzml",
+    ".parquet",
+    ".png",
+    ".sac",
+    ".tar",
+    ".tgz",
+    ".vcf",
+}
 
 
 @dataclass(frozen=True)
@@ -381,6 +402,8 @@ def _data_file_paths(prompt: str, tools: list[dict[str, Any]]) -> list[str]:
     deduped: list[str] = []
     for candidate in candidates:
         if not candidate:
+            continue
+        if Path(candidate).suffix.lower() not in _DATA_FILE_SUFFIXES:
             continue
         if candidate not in deduped:
             deduped.append(candidate)

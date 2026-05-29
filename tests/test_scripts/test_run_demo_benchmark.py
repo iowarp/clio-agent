@@ -215,6 +215,15 @@ def test_case_row_records_route_file_and_artifact_evidence(tmp_path) -> None:
     ]
 
 
+def test_data_file_paths_ignore_scientific_slash_terms(tmp_path) -> None:
+    mzml = tmp_path / "proteomics_qc.mzML"
+    prompt = f"Review {mzml}. Include m/z coverage and intensity/TIC evidence."
+
+    paths = bench._data_file_paths(prompt, [])
+
+    assert paths == [str(mzml)]
+
+
 def test_expected_error_allows_structured_handoff_telemetry_only() -> None:
     result = _result("missing_hdf5_error")
     result.message["parts"].append(
