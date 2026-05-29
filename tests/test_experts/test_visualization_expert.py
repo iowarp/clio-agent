@@ -146,6 +146,18 @@ class TestPlotHistogram:
         assert os.path.exists(result)
         assert os.path.getsize(result) > 0
 
+    def test_plot_histogram_default_uses_artifact_root(
+        self, sample_parquet, tmp_path, monkeypatch
+    ):
+        """Empty output_path should write under CLIO_ARTIFACT_DIR/charts."""
+        artifact_root = tmp_path / "artifacts"
+        monkeypatch.setenv("CLIO_ARTIFACT_DIR", str(artifact_root))
+
+        result = plot_histogram(sample_parquet, "temperature")
+
+        assert result == str((artifact_root / "charts" / "histogram_temperature.png").resolve())
+        assert os.path.exists(result)
+
     def test_plot_histogram_bad_file(self, tmp_path):
         """Test histogram returns error string for missing file."""
         result = plot_histogram("/nonexistent/file.parquet", "temperature")
@@ -207,6 +219,18 @@ class TestPlotBarChart:
         assert os.path.exists(result)
         assert os.path.getsize(result) > 0
 
+    def test_plot_bar_chart_default_uses_artifact_root(
+        self, sample_parquet, tmp_path, monkeypatch
+    ):
+        """Empty output_path should write under CLIO_ARTIFACT_DIR/charts."""
+        artifact_root = tmp_path / "artifacts"
+        monkeypatch.setenv("CLIO_ARTIFACT_DIR", str(artifact_root))
+
+        result = plot_bar_chart(sample_parquet, "city")
+
+        assert result == str((artifact_root / "charts" / "bar_chart_city.png").resolve())
+        assert os.path.exists(result)
+
     def test_plot_bar_chart_bad_column(self, sample_parquet, tmp_path):
         """Test bar chart returns error for nonexistent column."""
         output = str(tmp_path / "bar_bad.png")
@@ -225,6 +249,20 @@ class TestPlotScatter:
         assert os.path.exists(result)
         assert os.path.getsize(result) > 0
 
+    def test_plot_scatter_default_uses_artifact_root(
+        self, sample_parquet, tmp_path, monkeypatch
+    ):
+        """Empty output_path should write under CLIO_ARTIFACT_DIR/charts."""
+        artifact_root = tmp_path / "artifacts"
+        monkeypatch.setenv("CLIO_ARTIFACT_DIR", str(artifact_root))
+
+        result = plot_scatter(sample_parquet, "id", "temperature")
+
+        assert result == str(
+            (artifact_root / "charts" / "scatter_id_vs_temperature.png").resolve()
+        )
+        assert os.path.exists(result)
+
     def test_plot_scatter_bad_column(self, sample_parquet, tmp_path):
         """Test scatter returns error for nonexistent column."""
         output = str(tmp_path / "scatter_bad.png")
@@ -242,6 +280,20 @@ class TestPlotSummary:
         assert result == os.path.abspath(output)
         assert os.path.exists(result)
         assert os.path.getsize(result) > 0
+
+    def test_plot_summary_default_uses_artifact_root(
+        self, sample_parquet, tmp_path, monkeypatch
+    ):
+        """Empty output_path should write under CLIO_ARTIFACT_DIR/charts."""
+        artifact_root = tmp_path / "artifacts"
+        monkeypatch.setenv("CLIO_ARTIFACT_DIR", str(artifact_root))
+
+        result = plot_summary(sample_parquet)
+
+        assert result == str(
+            (artifact_root / "charts" / f"summary_{os.path.splitext(os.path.basename(sample_parquet))[0]}.png").resolve()
+        )
+        assert os.path.exists(result)
 
     def test_plot_summary_bad_file(self):
         """Test summary returns error for missing file."""
