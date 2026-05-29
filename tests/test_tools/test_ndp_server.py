@@ -414,6 +414,9 @@ async def test_ndp_stage_resource_uses_curl_webget_path(
         "--silent",
     ]
     assert "--max-filesize" in calls[0]
+    assert calls[0][calls[0].index("--connect-timeout") + 1] == "8"
+    assert calls[0][calls[0].index("--max-time") + 1] == "45"
+    assert calls[0][calls[0].index("--retry") + 1] == "1"
 
 
 @pytest.mark.asyncio

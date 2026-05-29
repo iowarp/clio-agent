@@ -20,6 +20,11 @@ ndp_server = FastMCP("ndp")
 
 _GLOBAL_CKAN_API = "https://nationaldataplatform.org/catalog/api/3/action"
 _MAX_STAGE_BYTES = 50 * 1024 * 1024
+_WEBGET_CONNECT_TIMEOUT_S = 8
+_WEBGET_MAX_TIME_S = 45
+_WEBGET_RETRY_COUNT = 1
+_WEBGET_RETRY_DELAY_S = 1
+_WEBGET_SUBPROCESS_TIMEOUT_S = 60
 _SIZE_UNITS = {
     "b": 1,
     "byte": 1,
@@ -337,13 +342,13 @@ def _stage_curl_resource(
         "--show-error",
         "--silent",
         "--connect-timeout",
-        "20",
+        str(_WEBGET_CONNECT_TIMEOUT_S),
         "--max-time",
-        "600",
+        str(_WEBGET_MAX_TIME_S),
         "--retry",
-        "2",
+        str(_WEBGET_RETRY_COUNT),
         "--retry-delay",
-        "2",
+        str(_WEBGET_RETRY_DELAY_S),
         "--max-filesize",
         str(max_bytes),
         "--output",
@@ -356,7 +361,7 @@ def _stage_curl_resource(
             check=False,
             capture_output=True,
             text=True,
-            timeout=660,
+            timeout=_WEBGET_SUBPROCESS_TIMEOUT_S,
         )
     except subprocess.TimeoutExpired:
         partial_path.unlink(missing_ok=True)
@@ -367,7 +372,7 @@ def _stage_curl_resource(
             details={
                 "url": url,
                 "method": "curl",
-                "timeout_s": 660,
+                "timeout_s": _WEBGET_SUBPROCESS_TIMEOUT_S,
                 "command": _redacted_command(command),
             },
         )
