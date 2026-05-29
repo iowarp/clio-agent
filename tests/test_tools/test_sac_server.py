@@ -13,6 +13,7 @@ from pytest import MonkeyPatch
 
 from clio_agent.tools.servers.sac_server import (
     compute_trace_statistics,
+    fetch_earthscope_waveform,
     inspect_archive,
     plot_traces,
 )
@@ -101,3 +102,37 @@ def test_plot_traces_creates_png(tmp_path: Path) -> None:
     assert result["output_path"] == str(output_path)
     assert output_path.exists()
     assert output_path.stat().st_size > 0
+
+
+def test_fetch_earthscope_waveform_stages_valid_sac(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """EarthScope fallback staging should save inspectable SAC bytes."""
+
+    class FakeResponse:
+        status_code = 200
+        url = "https://service.earthscope.org/irisws/timeseries/1/query?output=sacbl"
+        text = ""
+
+        def iter_content(self, chunk_size: int):
+            del chunk_size
+            yield _sac_bytes(npts=20)
+
+    def fake_get(url, *, params, stream, timeout):
+        assert "earthscope" in url
+        assert params["output"] == "sacbl"
+        assert stream is True
+        assert timeout == (8, 45)
+        return FakeResponse()
+
+    monkeypatch.setattr(sac_module.requests, "get", fake_get)
+
+    result = fetch_earthscope_waveform(output_dir=str(tmp_path))
+
+    assert result["staged"] is True
+    assert result["source"] == "earthscope_irisws_timeseries"
+    staged_path = Path(result["path"])
+    assert staged_path.exists()
+    stats = compute_trace_statistics(str(staged_path))
+    assert stats["traces"][0]["npts"] == 20

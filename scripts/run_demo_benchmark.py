@@ -82,6 +82,7 @@ class DemoCase:
     expects_cancelled: bool = False
     turn_agent_id: str = ""
     forbidden_route_sources: tuple[str, ...] = ()
+    min_artifacts: int = 0
 
 
 @dataclass
@@ -232,6 +233,14 @@ class DemoResult:
             self.case.expected_term_groups,
         ):
             return False
+        if self.case.min_artifacts:
+            verified_artifacts = [
+                row
+                for row in self.artifact_evidence
+                if row.get("exists") and int(row.get("size_bytes") or 0) > 0
+            ]
+            if len(verified_artifacts) < self.case.min_artifacts:
+                return False
         if len(self.child_sessions) < self.case.min_children:
             return False
         for expected_action in self.case.expected_actions:
@@ -1169,12 +1178,10 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             expected_tool_prefixes=("ndp_", "sac_"),
             expected_tool_prefix_groups=(("ndp_", "sac_"), ("ndp_",)),
             expected_handoff_agents=("ndp_catalog", "sac_format"),
-            expected_handoff_agent_groups=(("ndp_catalog", "sac_format"), ("ndp_catalog",)),
+            expected_handoff_agent_groups=(),
             expected_terms=("SAC", ".png"),
-            expected_term_groups=(
-                ("SAC", ".png"),
-                ("Staging note", "none could be staged"),
-            ),
+            expected_term_groups=(),
+            min_artifacts=1,
             timeout_s=900.0,
             forbidden_route_sources=_REAL_ORCHESTRATOR_FORBIDDEN_SOURCES,
             complexity_tags=(
@@ -1737,11 +1744,14 @@ def _provider_lane_audit(results: list[DemoResult], lane: str) -> list[dict[str,
         artifact_expected = [
             result
             for result in results
-            if result.passed
-            and (
+            if (
+                result.case.min_artifacts > 0
+                or result.passed
+                and (
                 ".png" in result.text.lower()
                 or any(path.lower().endswith(".png") for path in result.artifacts)
                 or result.route_metrics["artifact_count"] > 0
+                )
             )
         ]
         missing_artifact_evidence = [
@@ -1766,9 +1776,7 @@ def _provider_lane_audit(results: list[DemoResult], lane: str) -> list[dict[str,
         )
         ndp_details = []
         if ndp_waveform and ndp_waveform.passed and not ndp_full_chain:
-            ndp_details.append(
-                "accepted grounded NDP blocker path; no SAC/PNG artifact was verified"
-            )
+            ndp_details.append("NDP case passed without verified SAC/PNG artifact evidence")
         return [
             {
                 "criterion": "all selected cases avoid shortcut route sources",
@@ -1813,17 +1821,17 @@ def _provider_lane_audit(results: list[DemoResult], lane: str) -> list[dict[str,
                 "passed": passed("cross_file_dirty_quality_gate_nanoagents"),
             },
             {
-                "criterion": "NDP waveform benchmark passes with honest artifact status",
+                "criterion": "NDP waveform benchmark reaches verified SAC/PNG artifact",
                 "observed": int(passed("ndp_seismic_waveform_to_plot")),
                 "required": 1,
-                "passed": passed("ndp_seismic_waveform_to_plot"),
+                "passed": bool(ndp_full_chain),
                 "details": ndp_details,
             },
             {
-                "criterion": "NDP full SAC/PNG chain verified when reached",
+                "criterion": "NDP full SAC/PNG chain verified",
                 "observed": int(ndp_full_chain),
-                "required": 0,
-                "passed": True,
+                "required": 1,
+                "passed": bool(ndp_full_chain),
                 "details": [] if ndp_full_chain else ["full SAC/PNG path not reached in this run"],
             },
         ]

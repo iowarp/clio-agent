@@ -101,6 +101,12 @@ TOOL_CATALOG: dict[str, ToolCatalogEntry] = {
         {"scientific-data", "seismic", "sac", "inspect"},
         visible_to={"data"},
     ),
+    "sac_fetch_earthscope_waveform": _entry(
+        "sac_fetch_earthscope_waveform",
+        "sac_format",
+        {"seismic", "sac", "download", "earthscope", "staging"},
+        visible_to={"data", "analysis"},
+    ),
     "sac_compute_trace_statistics": _entry(
         "sac_compute_trace_statistics",
         "sac_format",

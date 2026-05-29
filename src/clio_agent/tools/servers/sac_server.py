@@ -8,6 +8,7 @@ not pretend to support MiniSEED, SEGY, or remote object stores.
 from __future__ import annotations
 
 import math
+import re
 import struct
 import tarfile
 import time
@@ -15,6 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import requests
 from fastmcp import FastMCP
 
 from clio_agent.tools.file_policy import FilePolicyError, validate_read_path, validate_write_path
@@ -23,6 +25,7 @@ sac_server = FastMCP("sac")
 
 _SAC_HEADER_BYTES = 632
 _MAX_SAC_BYTES = 8 * 1024 * 1024
+_EARTHSCOPE_TIMESERIES_URL = "https://service.earthscope.org/irisws/timeseries/1/query"
 
 
 @dataclass(frozen=True)
@@ -72,6 +75,27 @@ def _clean_positive_int(value: int | str | None, *, default: int, max_value: int
     except (TypeError, ValueError):
         return default
     return max(1, min(parsed, max_value))
+
+
+def _clean_token(value: str | None, *, default: str, max_len: int = 16) -> str:
+    """Return a bounded FDSN token suitable for service parameters and filenames."""
+    text = str(value or default).strip()
+    if not text:
+        text = default
+    cleaned = re.sub(r"[^A-Za-z0-9_.-]+", "", text)[:max_len]
+    return cleaned or default
+
+
+def _clean_duration(value: int | str | None) -> int:
+    """Return a bounded waveform fetch duration in seconds."""
+    return _clean_positive_int(value, default=60, max_value=600)
+
+
+def _safe_stage_filename(*parts: str) -> str:
+    """Build a stable filename from bounded service parameters."""
+    stem = "_".join(_clean_token(part, default="x", max_len=32) for part in parts)
+    stem = re.sub(r"_+", "_", stem).strip("._") or "earthscope_waveform"
+    return f"{stem}.sac"
 
 
 def _normalize_member_filter(value: str | None) -> str:
@@ -224,6 +248,24 @@ def _parse_sac_trace(member: str, payload: bytes) -> SacTrace:
     )
 
 
+def _write_bounded_response(response: requests.Response, output_path: Path) -> int:
+    """Write a streaming HTTP response while enforcing the SAC byte cap."""
+    total = 0
+    with output_path.open("wb") as handle:
+        for chunk in response.iter_content(chunk_size=64 * 1024):
+            if not chunk:
+                continue
+            total += len(chunk)
+            if total > _MAX_SAC_BYTES:
+                handle.close()
+                output_path.unlink(missing_ok=True)
+                raise ValueError(
+                    f"EarthScope waveform exceeded {_MAX_SAC_BYTES} byte SAC staging cap."
+                )
+            handle.write(chunk)
+    return total
+
+
 def _load_sac_traces(
     filepath: str,
     *,
@@ -240,6 +282,97 @@ def _load_sac_traces(
     )
     traces = [_parse_sac_trace(member, payload) for member, payload in payloads]
     return safe_path, total, traces
+
+
+@sac_server.tool()
+def fetch_earthscope_waveform(
+    network: str | None = "IU",
+    station: str | None = "ANMO",
+    location: str | None = "00",
+    channel: str | None = "BHZ",
+    starttime: str | None = "2010-02-27T06:30:00",
+    duration: int | str | None = 60,
+    output_dir: str | None = None,
+) -> dict[str, Any]:
+    """Fetch a bounded EarthScope waveform segment as a local SAC file.
+
+    This is a recovery/staging tool for workflows where catalog metadata points
+    at unavailable archives but the underlying public waveform service can
+    provide a small concrete trace for downstream SAC inspection and plotting.
+    """
+
+    net = _clean_token(network, default="IU")
+    sta = _clean_token(station, default="ANMO")
+    loc = _clean_token(location, default="00", max_len=8)
+    cha = _clean_token(channel, default="BHZ")
+    start = str(starttime or "2010-02-27T06:30:00").strip()
+    seconds = _clean_duration(duration)
+    try:
+        destination_dir = Path(output_dir or Path.cwd() / "tmp" / "clio-seismic-staging")
+        destination_dir.mkdir(parents=True, exist_ok=True)
+        filename = _safe_stage_filename("earthscope", net, sta, loc or "--", cha, start)
+        output_path = validate_write_path(str(destination_dir / filename), field="output_path")
+    except FilePolicyError as exc:
+        return exc.to_result()
+
+    params = {
+        "net": net,
+        "sta": sta,
+        "loc": loc,
+        "cha": cha,
+        "starttime": start,
+        "duration": str(seconds),
+        "output": "sacbl",
+    }
+    try:
+        response = requests.get(
+            _EARTHSCOPE_TIMESERIES_URL,
+            params=params,
+            stream=True,
+            timeout=(8, 45),
+        )
+        if response.status_code >= 400:
+            body = response.text[:500]
+            return _tool_error(
+                code="earthscope_waveform_fetch_failed",
+                message=f"EarthScope returned HTTP {response.status_code}: {body}",
+                next_action=(
+                    "Try a different station/channel/time window or use NDP metadata "
+                    "to choose a more specific waveform request."
+                ),
+                details={"url": response.url, "status_code": response.status_code},
+            )
+        size_bytes = _write_bounded_response(response, output_path)
+        _load_sac_traces(str(output_path), member_filter=None, max_traces=1)
+    except requests.RequestException as exc:
+        return _tool_error(
+            code="earthscope_waveform_fetch_failed",
+            message=f"Could not fetch EarthScope waveform: {exc}",
+            next_action="Retry with a different public waveform source or shorter time window.",
+            details={"params": params},
+        )
+    except (OSError, ValueError) as exc:
+        return _tool_error(
+            code="earthscope_waveform_stage_failed",
+            message=str(exc),
+            next_action="Retry with a smaller or different SAC-compatible waveform segment.",
+            details={"params": params},
+        )
+
+    return {
+        "staged": True,
+        "path": str(output_path),
+        "size_bytes": size_bytes,
+        "source": "earthscope_irisws_timeseries",
+        "source_url": response.url,
+        "network": net,
+        "station": sta,
+        "location": loc,
+        "channel": cha,
+        "starttime": start,
+        "duration_s": seconds,
+        "_meta": {"tool": "fetch_earthscope_waveform", "status": "success"},
+    }
 
 
 def _trace_stats(trace: SacTrace) -> dict[str, Any]:
@@ -424,4 +557,10 @@ def plot_traces(
         )
 
 
-__all__ = ["sac_server", "inspect_archive", "compute_trace_statistics", "plot_traces"]
+__all__ = [
+    "sac_server",
+    "fetch_earthscope_waveform",
+    "inspect_archive",
+    "compute_trace_statistics",
+    "plot_traces",
+]

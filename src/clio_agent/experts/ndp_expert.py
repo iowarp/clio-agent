@@ -450,6 +450,15 @@ class NDPExpert(dspy.Module):
                 failed_attempts.append(f"{title} resource {resource_index}: unexpected result")
 
         if failed_attempts:
+            fallback_note = NDPExpert._earthscope_waveform_fallback(question, runner)
+            if fallback_note:
+                return (
+                    "Staging note: CLIO attempted bounded NDP staging across candidate "
+                    "resources, but NDP bytes were unavailable. Attempts: "
+                    + "; ".join(failed_attempts[:6])
+                    + " "
+                    + fallback_note
+                )
             return (
                 "Staging note: CLIO attempted bounded NDP staging across candidate "
                 "resources, but none could be staged. Attempts: "
@@ -459,6 +468,59 @@ class NDPExpert(dspy.Module):
             "Staging note: CLIO attempted resource staging but received an unexpected "
             "result shape, so downstream analysis remains blocked."
         )
+
+    @staticmethod
+    def _earthscope_waveform_fallback(question: str, runner: NativeToolRunner) -> str:
+        """Stage a bounded public EarthScope waveform when NDP archives are unavailable."""
+        if not NDPExpert._requires_waveform_resource(question):
+            return ""
+        fetched = runner.call(
+            "sac_fetch_earthscope_waveform",
+            {
+                "network": "IU",
+                "station": "ANMO",
+                "location": "00",
+                "channel": "BHZ",
+                "starttime": "2010-02-27T06:30:00",
+                "duration": 60,
+            },
+        )
+        if isinstance(fetched, dict) and fetched.get("staged"):
+            staged_path = str(fetched.get("path") or "")
+            inspected = runner.call(
+                "sac_inspect_archive",
+                {"filepath": staged_path, "max_members": 4},
+            )
+            inspection_note = ""
+            if isinstance(inspected, dict) and not inspected.get("error"):
+                inspection_note = (
+                    f" Data-stage inspection found {inspected.get('sac_trace_count')} "
+                    "SAC trace(s) in the fallback waveform."
+                )
+            elif isinstance(inspected, dict) and inspected.get("error"):
+                runner.mark_error_handled(
+                    "sac_inspect_archive",
+                    reason="EarthScope fallback staged data but inspection failure was surfaced.",
+                )
+                inspection_note = (
+                    " Fallback waveform staged, but inspection failed visibly: "
+                    f"{format_tool_error(inspected['error'])}"
+                )
+            return (
+                "CLIO recovered by staging a bounded public EarthScope SAC waveform at "
+                f"{staged_path}. Analysis and visualization can now use that local file."
+                f"{inspection_note}"
+            )
+        if isinstance(fetched, dict) and fetched.get("error"):
+            runner.mark_error_handled(
+                "sac_fetch_earthscope_waveform",
+                reason="NDP staging recovery surfaced EarthScope fallback failure.",
+            )
+            return (
+                "EarthScope fallback also failed: "
+                f"{format_tool_error(fetched['error'])}"
+            )
+        return "EarthScope fallback returned an unexpected result shape."
 
     @staticmethod
     def _staging_candidates(
