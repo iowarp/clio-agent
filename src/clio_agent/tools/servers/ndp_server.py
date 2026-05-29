@@ -226,6 +226,111 @@ def _global_ckan_package_show(dataset_identifier: str) -> dict[str, Any]:
     return decoded["result"]
 
 
+def _global_ckan_organization_list(name_filter: str | None) -> dict[str, Any]:
+    """Fetch organizations directly from public NDP CKAN."""
+    response = requests.get(
+        f"{_GLOBAL_CKAN_API}/organization_list",
+        params={"all_fields": "true"},
+        timeout=20,
+    )
+    response.raise_for_status()
+    decoded = response.json()
+    result = decoded.get("result")
+    if not decoded.get("success") or not isinstance(result, list):
+        raise ValueError(f"CKAN organization_list returned unsuccessful response: {decoded!r}")
+
+    needle = (name_filter or "").strip().lower()
+    organizations: list[Any] = []
+    for row in result:
+        if not isinstance(row, dict):
+            continue
+        name = str(row.get("name") or "").strip()
+        title = str(row.get("title") or row.get("display_name") or "").strip()
+        if needle and needle not in name.lower() and needle not in title.lower():
+            continue
+        organizations.append(
+            {
+                "id": row.get("id"),
+                "name": name,
+                "title": title,
+                "package_count": row.get("package_count"),
+            }
+        )
+    return {
+        "organizations": organizations[:8],
+        "count": len(organizations),
+        "server": "global",
+        "name_filter": name_filter,
+        "_meta": {
+            "tool": "list_organizations",
+            "status": "success",
+            "source": "ckan_organization_list",
+        },
+        "organizations_truncated": len(organizations) > 8,
+    }
+
+
+def _global_ckan_package_search(args: dict[str, Any]) -> dict[str, Any]:
+    """Search datasets directly from public NDP CKAN."""
+    terms: list[str] = []
+    for value in args.get("search_terms") or []:
+        if str(value).strip():
+            terms.append(str(value).strip())
+    for key in (
+        "search_term",
+        "dataset_name",
+        "dataset_title",
+        "dataset_description",
+        "resource_name",
+        "resource_description",
+        "resource_url",
+    ):
+        value = args.get(key)
+        if value and str(value).strip():
+            terms.append(str(value).strip())
+    query = " ".join(terms).strip() or "*:*"
+
+    filters: list[str] = []
+    owner_org = args.get("owner_org")
+    if owner_org:
+        filters.append(f"organization:{owner_org}")
+    resource_format = args.get("resource_format")
+    if resource_format:
+        filters.append(f"res_format:{resource_format}")
+
+    limit = args.get("limit") or 10
+    params: dict[str, Any] = {"q": query, "rows": min(int(limit), 20)}
+    if filters:
+        params["fq"] = " ".join(filters)
+    response = requests.get(
+        f"{_GLOBAL_CKAN_API}/package_search",
+        params=params,
+        timeout=20,
+    )
+    response.raise_for_status()
+    decoded = response.json()
+    result = decoded.get("result")
+    if not decoded.get("success") or not isinstance(result, dict):
+        raise ValueError(f"CKAN package_search returned unsuccessful response: {decoded!r}")
+    rows = result.get("results") or []
+    if not isinstance(rows, list):
+        rows = []
+    compacted = [_compact_dataset(row) for row in rows[:4]]
+    return {
+        "datasets": compacted,
+        "count": len(compacted),
+        "total_found": result.get("count", len(compacted)),
+        "server": "global",
+        "_meta": {
+            "tool": "search_datasets",
+            "status": "success",
+            "source": "ckan_package_search",
+            "clio_kit_fallback": True,
+        },
+        "datasets_truncated": len(rows) > 4,
+    }
+
+
 def _resource_matches(resource: dict[str, Any], resource_name: str | None) -> bool:
     """Return whether a resource row matches an optional name/id/url selector."""
     if not resource_name:
@@ -727,7 +832,15 @@ async def list_organizations(
         "name_filter": _clean_optional_text(name_filter),
         "server": _clean_server(server, allowed={"local", "global", "pre_ckan"}),
     }
-    return await _call_clio_kit_ndp_tool("list_organizations", args)
+    clio_kit_result = await _call_clio_kit_ndp_tool("list_organizations", args)
+    if not clio_kit_result.get("error") or args["server"] != "global":
+        return clio_kit_result
+    try:
+        direct = _global_ckan_organization_list(args["name_filter"])
+    except Exception:
+        return clio_kit_result
+    direct["_meta"]["clio_kit_error"] = clio_kit_result["error"]
+    return direct
 
 
 @ndp_server.tool()
@@ -766,10 +879,19 @@ async def search_datasets(
         "server": _clean_server(server, allowed={"local", "global"}),
         "limit": _clean_limit(limit),
     }
-    return await _call_clio_kit_ndp_tool(
+    cleaned_args = {key: value for key, value in args.items() if value is not None}
+    clio_kit_result = await _call_clio_kit_ndp_tool(
         "search_datasets",
-        {key: value for key, value in args.items() if value is not None},
+        cleaned_args,
     )
+    if not clio_kit_result.get("error") or cleaned_args.get("server") != "global":
+        return clio_kit_result
+    try:
+        direct = _global_ckan_package_search(cleaned_args)
+    except Exception:
+        return clio_kit_result
+    direct["_meta"]["clio_kit_error"] = clio_kit_result["error"]
+    return direct
 
 
 @ndp_server.tool()

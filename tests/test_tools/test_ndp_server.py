@@ -127,6 +127,67 @@ async def test_ndp_server_lists_organizations_through_clio_kit(monkeypatch: pyte
 
 
 @pytest.mark.asyncio
+async def test_ndp_list_organizations_falls_back_to_ckan(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Fresh installs should still list global organizations if clio-kit fails."""
+
+    async def fake_call(tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "error": {
+                "type": "tool_error",
+                "code": "clio_kit_ndp_unavailable",
+                "message": "Connection closed",
+                "details": {"tool": tool_name, "args": args},
+            }
+        }
+
+    class FakeResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, Any]:
+            return {
+                "success": True,
+                "result": [
+                    {
+                        "id": "org1",
+                        "name": "noaa-global-systems-laboratory",
+                        "title": "NOAA Global Systems Laboratory",
+                        "package_count": 3,
+                    },
+                    {
+                        "id": "org2",
+                        "name": "ucr-earth-and-planetary-sciences",
+                        "title": "UCR Earth and Planetary Sciences",
+                        "package_count": 1,
+                    },
+                ],
+            }
+
+    monkeypatch.setattr(ndp_module, "_call_clio_kit_ndp_tool", fake_call)
+    monkeypatch.setattr(ndp_module.requests, "get", lambda *args, **kwargs: FakeResponse())
+
+    async with Client(ndp_server) as client:
+        result = await client.call_tool(
+            "list_organizations",
+            {"name_filter": "noaa", "server": "global"},
+        )
+
+    data = _parse_result(result)
+    assert data["organizations"] == [
+        {
+            "id": "org1",
+            "name": "noaa-global-systems-laboratory",
+            "title": "NOAA Global Systems Laboratory",
+            "package_count": 3,
+        }
+    ]
+    assert data["_meta"]["source"] == "ckan_organization_list"
+    assert data["_meta"]["clio_kit_error"]["code"] == "clio_kit_ndp_unavailable"
+
+
+@pytest.mark.asyncio
 async def test_ndp_search_omits_null_arguments(monkeypatch: pytest.MonkeyPatch):
     """The wrapper should not forward null filters that change clio-kit semantics."""
     calls: list[tuple[str, dict[str, Any]]] = []
@@ -149,6 +210,71 @@ async def test_ndp_search_omits_null_arguments(monkeypatch: pytest.MonkeyPatch):
             {"search_terms": ["climate"], "server": "global", "limit": 3},
         )
     ]
+
+
+@pytest.mark.asyncio
+async def test_ndp_search_falls_back_to_ckan(monkeypatch: pytest.MonkeyPatch):
+    """Fresh installs should still search global datasets if clio-kit fails."""
+
+    async def fake_call(tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "error": {
+                "type": "tool_error",
+                "code": "clio_kit_ndp_unavailable",
+                "message": "Connection closed",
+                "details": {"tool": tool_name, "args": args},
+            }
+        }
+
+    class FakeResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, Any]:
+            return {
+                "success": True,
+                "result": {
+                    "count": 1,
+                    "results": [
+                        {
+                            "id": "ds1",
+                            "name": "salton-sea-seismic-data",
+                            "title": "Salton Sea Seismic Data",
+                            "owner_org": "ucr-earth-and-planetary-sciences",
+                            "notes": "MiniSEED waveform data",
+                            "resources": [
+                                {
+                                    "name": "Salton Sea Seismic Waveforms",
+                                    "url": "osdf:///ndp/public/ucr_seis/Data_Salton",
+                                }
+                            ],
+                        }
+                    ],
+                },
+            }
+
+    calls: list[dict[str, Any]] = []
+
+    def fake_get(*args: Any, **kwargs: Any) -> FakeResponse:
+        calls.append(kwargs.get("params") or {})
+        return FakeResponse()
+
+    monkeypatch.setattr(ndp_module, "_call_clio_kit_ndp_tool", fake_call)
+    monkeypatch.setattr(ndp_module.requests, "get", fake_get)
+
+    async with Client(ndp_server) as client:
+        result = await client.call_tool(
+            "search_datasets",
+            {"search_terms": ["seismic"], "server": "global", "limit": 3},
+        )
+
+    data = _parse_result(result)
+    assert calls[0]["q"] == "seismic"
+    assert calls[0]["rows"] == 3
+    assert data["datasets"][0]["name"] == "salton-sea-seismic-data"
+    assert data["datasets"][0]["resource_urls"] == ["osdf:///ndp/public/ucr_seis/Data_Salton"]
+    assert data["_meta"]["source"] == "ckan_package_search"
+    assert data["_meta"]["clio_kit_error"]["code"] == "clio_kit_ndp_unavailable"
 
 
 @pytest.mark.asyncio
