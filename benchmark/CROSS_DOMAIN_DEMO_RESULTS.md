@@ -65,6 +65,19 @@ summary. A workflow is only a real benchmark pass when the log shows:
 Pytest output can prove that the runner, fixture generator, and individual
 tools are not broken. It does not prove that the benchmark worked.
 
+## Acceptance Matrix
+
+| Requirement | Status | Evidence |
+| --- | --- | --- |
+| 5-10 completed workflows | Met | Ten committed JSONL rows across `LIVE_CROSS_DOMAIN_EVIDENCE.jsonl`, `NDP_WAVEFORM_EVIDENCE.jsonl`, `VISUAL_MULTITURN_EVIDENCE.jsonl`, `CROSS_FILE_DIRTY_EVIDENCE.jsonl`, and `CROSS_FILE_TRIAGE_EVIDENCE.jsonl`. |
+| At least four distinct domains | Met | Genomics, materials, geospatial, imaging, mass spectrometry, seismic/NDP/SAC, CSV/Parquet/HDF5, and ADIOS/BP5 all have recorded evidence rows. |
+| Real orchestrator/provider/tools/data | Met for recorded rows | Each JSONL row records `provider=codex`, `model=gpt-5.5`, `route_source=dspy`, selected agent, tool calls, input files, elapsed time, and outcome. |
+| At least two multi-hop or fanout workflows | Met | `ndp_seismic_waveform_to_plot` records a five-expert path. `cross_file_dirty_quality_gate_nanoagents` and `reasoning_cross_file_triage_nanoagents` each record four child sessions and six tool calls. |
+| At least two real visual artifacts | Met | `ndp_seismic_waveform_to_plot`, `csv_status_visual_summary`, and `dirty_quality_dashboard_multi_turn` each record verified PNG artifacts with nonzero byte sizes. |
+| At least two workflows needed new or materially improved tool support | Met | The NDP waveform workflow required SAC/EarthScope tooling and handoffs fixed in #439/#443. Cross-domain workflows required new genomics, materials, geospatial, imaging, and mass-spec tool servers (#397, #399, #401, #403, #405) plus mzML/PNG fixes (#410/#412). Visualization artifact placement was corrected in #447. |
+| Per-workflow provenance fields | Met for recorded rows | JSONL rows include route graph/metrics, route source, experts/handoffs, branch count, tool calls, elapsed time, files, artifacts, provider/model, and pass/fail outcome. |
+| Honest final report | Met with caveats | This summary lists fixes made and remaining weaknesses. Current remaining weaknesses are fresh-machine replay and broader non-seismic NDP breadth if those are release gates. |
+
 ## Passing Workflows
 
 ### Genomics Reference And Variant Review
