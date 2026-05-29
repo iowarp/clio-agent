@@ -14,6 +14,7 @@ import shutil
 import subprocess
 import tempfile
 from dataclasses import asdict, dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
@@ -128,6 +129,7 @@ def parse_agent_blueprint_root(root: Path, *, scope: str) -> AgentBlueprintDefin
     raw_defaults = meta.get("defaults")
     defaults = raw_defaults if isinstance(raw_defaults, dict) else {}
     requirements = meta.get("requires") if isinstance(meta.get("requires"), dict) else {}
+    install_metadata = read_install_metadata(path.parent)
     return AgentBlueprintDefinition(
         id=blueprint_id,
         version=str(meta.get("version") or "").strip(),
@@ -152,7 +154,8 @@ def parse_agent_blueprint_root(root: Path, *, scope: str) -> AgentBlueprintDefin
             "compatibility": meta.get("compatibility") if isinstance(meta.get("compatibility"), dict) else {},
             "requires": requirements,
             "blueprint": meta.get("blueprint") if isinstance(meta.get("blueprint"), dict) else {},
-            "install": meta.get("install") if isinstance(meta.get("install"), dict) else {},
+            "install": install_metadata
+            or (meta.get("install") if isinstance(meta.get("install"), dict) else {}),
         },
     )
 
@@ -351,6 +354,7 @@ def install_agent_blueprint(
                 "source_kind": source_kind,
                 "ref": ref,
                 "commit": commit,
+                "installed_at": datetime.now(UTC).isoformat(),
                 "checksum": _tree_checksum(dest),
                 "scope": scope,
             }

@@ -260,6 +260,12 @@ def test_marketplace_install_supports_distinct_session_blueprints(tmp_path: Path
 
     assert genomics["active_agent_blueprint_id"] == "genomics-review"
     assert materials["active_agent_blueprint_id"] == "materials-crystal-review"
+    assert genomics["activation"]["active_agent_blueprint_source"] == str(marketplace)
+    assert genomics["activation"]["active_agent_blueprint_source_kind"] == "path"
+    assert genomics["activation"]["active_agent_blueprint_checksum"]
+    assert genomics["activation"]["active_agent_blueprint_installed_at"]
+    assert materials["activation"]["active_agent_blueprint_source"] == str(marketplace)
+    assert materials["activation"]["active_agent_blueprint_checksum"]
     assert {row["id"] for row in genomics_agents} == {"root", "variant"}
     assert {row["id"] for row in materials_agents} == {"data"}
 
@@ -319,6 +325,7 @@ def test_agent_blueprint_install_from_git_marketplace_records_pinned_metadata(
     assert metadata["source"] == marketplace.as_uri()
     assert metadata["commit"] == commit
     assert metadata["checksum"]
+    assert metadata["installed_at"]
 
 
 def test_agent_blueprint_update_and_delete_installed_blueprint(tmp_path: Path) -> None:
