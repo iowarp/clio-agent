@@ -422,7 +422,20 @@ def _tools(message: dict[str, Any]) -> list[dict[str, Any]]:
 
 def _expert_handoffs(message: dict[str, Any]) -> list[dict[str, Any]]:
     rows = (message.get("metadata") or {}).get("expert_handoffs") or []
-    return rows if isinstance(rows, list) else []
+    if not isinstance(rows, list):
+        return []
+    flattened: list[dict[str, Any]] = []
+
+    def visit(row: Any) -> None:
+        if not isinstance(row, dict):
+            return
+        flattened.append(row)
+        for child in row.get("children") or []:
+            visit(child)
+
+    for row in rows:
+        visit(row)
+    return flattened
 
 
 def _tool_name(row: dict[str, Any]) -> str:
@@ -469,8 +482,11 @@ def _artifact_paths(message: dict[str, Any]) -> list[str]:
     )
     deduped: list[str] = []
     for candidate in candidates:
-        if candidate not in deduped:
-            deduped.append(candidate)
+        path = _clean_path_candidate(candidate)
+        if not path or path.startswith("//") or re.match(r"^[a-z]+://", path, re.I):
+            continue
+        if path not in deduped:
+            deduped.append(path)
     return deduped
 
 
@@ -1723,6 +1739,44 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             why="Proves a proteomics marketplace agent can be loaded per session.",
         ),
         DemoCase(
+            case_id="marketplace_seismic_waveform_review",
+            title="Marketplace seismic waveform recovery review",
+            category="marketplace-seismic",
+            session_group="marketplace_seismic",
+            agent_blueprint_id="seismic-waveform-review",
+            expected_agent=("data", "analysis", "visualization", "main"),
+            expected_tool_prefixes=("ndp_", "sac_"),
+            expected_tools=("sac_fetch_earthscope_waveform",),
+            expected_handoff_agents=("ndp_catalog", "sac_format"),
+            expected_terms=("SAC", ".png"),
+            min_artifacts=1,
+            timeout_s=900.0,
+            forbidden_route_sources=_REAL_ORCHESTRATOR_FORBIDDEN_SOURCES,
+            complexity_tags=(
+                "marketplace",
+                "seismic",
+                "ndp",
+                "sac",
+                "agent-blueprint",
+                "artifact",
+            ),
+            prompt=(
+                "Using the active seismic waveform review agent, find bounded seismic "
+                "waveform evidence through NDP discovery, recover with an alternate SAC "
+                "source if NDP staging is blocked, inspect the waveform, compute trace "
+                "statistics, and produce a PNG plot artifact without using stale local files."
+            ),
+            expected=(
+                "CLIO runs the seismic-waveform-review marketplace Agent Blueprint, "
+                "surfaces NDP staging blockers, recovers with an observed EarthScope SAC "
+                "path, and creates a verified PNG artifact."
+            ),
+            why=(
+                "Proves the marketplace can carry the strongest hierarchical workflow, "
+                "not just single-expert file inspection packages."
+            ),
+        ),
+        DemoCase(
             case_id="missing_hdf5_error",
             title="Missing file error surfacing",
             category="hardening",
@@ -1909,6 +1963,7 @@ _BENCHMARK_LANES: dict[str, tuple[str, ...]] = {
         "marketplace_materials_crystal_review",
         "marketplace_geospatial_field_review",
         "marketplace_proteomics_mzml_review",
+        "marketplace_seismic_waveform_review",
     ),
     "claude_code": (
         "workflow_hdf5_overview",
@@ -2328,10 +2383,10 @@ def _provider_lane_audit(results: list[DemoResult], lane: str) -> list[dict[str,
                 "details": missing_blueprint,
             },
             {
-                "criterion": "at least four distinct marketplace Agent Blueprints",
+                "criterion": "at least five distinct marketplace Agent Blueprints",
                 "observed": len(active),
-                "required": 4,
-                "passed": len(active) >= 4,
+                "required": 5,
+                "passed": len(active) >= 5,
                 "details": sorted(active),
             },
             {

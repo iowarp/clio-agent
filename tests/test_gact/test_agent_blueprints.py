@@ -13,7 +13,13 @@ from clio_agent.gact.agent_blueprints import (
     load_agent_blueprints,
     validate_agent_blueprint_path,
 )
-from clio_agent.gact.app import _builtin_agents, _dynamic_agent_tools, _gact_app_context, build_app
+from clio_agent.gact.app import (
+    _builtin_agents,
+    _dynamic_agent_tools,
+    _gact_app_context,
+    _runtime_dynamic_agent_children_context,
+    build_app,
+)
 from clio_agent.gact.types import AgentDef
 from tests.test_gact.conftest import complete_turn
 
@@ -157,6 +163,56 @@ def test_agent_blueprint_activation_replaces_default_agent_graph(tmp_path: Path)
     assert set(agents) == {"root", "variant"}
     assert "data" not in agents
     assert agents["variant"]["metadata"]["agent_blueprint_id"] == "genomics"
+
+
+def test_agent_blueprint_root_runtime_context_lists_declared_children(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    blueprint = workspace / ".clio" / "agent-blueprints" / "genomics"
+    _write_blueprint(blueprint)
+    blueprint.joinpath("experts", "root.md").write_text(
+        """---
+id: root
+title: Genomics Root
+tier: 1
+prompt_id: clio.main.planner
+---
+Coordinate genomics work.
+""",
+        encoding="utf-8",
+    )
+
+    app = build_app(sessions_path=tmp_path / "sessions.json", agent=SimpleNamespace())
+    with TestClient(app) as client:
+        wid = client.post(
+            "/v1/workspaces",
+            json={
+                "name": "Workspace",
+                "root_path": str(workspace),
+                "storage_root": str(workspace / ".clio"),
+            },
+        ).json()["id"]
+        sid = client.post(
+            "/v1/sessions",
+            json={"title": "genomics", "workspace_id": wid},
+        ).json()["id"]
+        assert client.post(
+            f"/v1/sessions/{sid}/agent-blueprint",
+            json={"blueprint_id": "genomics"},
+        ).status_code == 200
+        root = next(
+            AgentDef(**row)
+            for row in client.get("/v1/agents", params={"session_id": sid}).json()["agents"]
+            if row["id"] == "root"
+        )
+
+    context = _runtime_dynamic_agent_children_context(app, root, session_id=sid)
+
+    assert "Declared child experts" in context
+    assert "variant: Variant Expert" in context
+    assert "memory_search_sessions" in context
+    assert "expert_handoffs JSON array" in context
+    assert "{{" not in root.system_prompt
+    assert "- variant: Variant Expert" in root.system_prompt
 
 
 def test_session_agent_overlay_is_session_local(tmp_path: Path) -> None:

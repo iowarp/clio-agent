@@ -69,6 +69,10 @@ _ACTIVE_GACT_APP: contextvars.ContextVar[Any | None] = contextvars.ContextVar(
     "clio_gact_active_app",
     default=None,
 )
+_ACTIVE_GACT_SESSION_ID: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "clio_gact_active_session_id",
+    default="",
+)
 
 
 @contextmanager
@@ -1539,13 +1543,19 @@ def _runtime_active_agent_blueprint_rows(
     if not rows:
         return []
     rows = _runtime_apply_session_agent_overlay(app, rows, session_id=session_id)
+    rows = validate_agent_hierarchy(_merge_agent_def_rows(rows))
+    render_context = _prompt_render_context(app)
+    render_context.update(_agent_rows_prompt_render_context(rows))
+    render_context["session.active_agent_blueprint"] = active_blueprint_id or "(no active agent blueprint)"
+    render_context["session.active_pack"] = active_blueprint_id or "(no active expert pack)"
     return [
         _apply_prompt_registry_to_agent(
             app,
             row,
             prompt_registry=prompt_registry,
+            render_context=render_context,
         )
-        for row in validate_agent_hierarchy(_merge_agent_def_rows(rows))
+        for row in rows
     ]
 
 
@@ -1636,11 +1646,37 @@ def _prompt_resolution_metadata(resolved: Any, *, requested_profile: str = "") -
     }
 
 
+def _agent_rows_prompt_render_context(rows: list["AgentDef"]) -> dict[str, str]:
+    """Render an agent tree for prompt placeholders without loading more rows."""
+
+    enabled_agents = [agent for agent in rows if getattr(agent, "enabled", True)]
+    by_parent: dict[str, list["AgentDef"]] = {}
+    for agent in enabled_agents:
+        by_parent.setdefault(agent.parent_id or "", []).append(agent)
+
+    def render_tree(parent_id: str = "", depth: int = 0) -> list[str]:
+        lines: list[str] = []
+        for agent in sorted(by_parent.get(parent_id, []), key=lambda row: (row.tier, row.id)):
+            indent = "  " * depth
+            detail = f" - {agent.description}" if agent.description else ""
+            lines.append(f"{indent}- {agent.id}: {agent.title}{detail}")
+            lines.extend(render_tree(agent.id, depth + 1))
+        return lines
+
+    return {
+        "agents.available_tree": "\n".join(render_tree()) or "(no enabled experts)",
+        "agents.available_flat": "\n".join(
+            f"- {agent.id}: {agent.title}" for agent in sorted(enabled_agents, key=lambda row: row.id)
+        ) or "(no enabled experts)",
+    }
+
+
 def _apply_prompt_registry_to_agent(
     app: "FastAPI",
     agent_def: "AgentDef",
     *,
     prompt_registry: PromptRegistry | None = None,
+    render_context: dict[str, str] | None = None,
 ) -> "AgentDef":
     """Resolve an agent's prompt registry reference into runtime prompt text."""
 
@@ -1650,7 +1686,11 @@ def _apply_prompt_registry_to_agent(
     registry = prompt_registry or getattr(app.state, "prompt_registry", None)
     if registry is None:
         return agent_def
-    resolved = registry.resolve(prompt_id, profile=prompt_profile)
+    resolved = (
+        registry.render(prompt_id, profile=prompt_profile, context=render_context)
+        if render_context is not None
+        else registry.resolve(prompt_id, profile=prompt_profile)
+    )
     metadata = dict(agent_def.metadata)
     if resolved is None:
         metadata["prompt_resolution"] = {
@@ -1754,6 +1794,200 @@ def _keyword_routed_user_agent(app: "FastAPI", text: str) -> "AgentDef | None":
         return None
     matches.sort(key=lambda item: (-item[0], item[1]))
     return matches[0][2]
+
+
+def _coerce_expert_handoff_rows(value: Any) -> list[dict[str, Any]]:
+    """Normalize model-returned expert handoff data into dict rows."""
+
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [dict(row) for row in value if isinstance(row, Mapping)]
+    if isinstance(value, tuple):
+        return [dict(row) for row in value if isinstance(row, Mapping)]
+    if isinstance(value, str):
+        text = value.strip()
+        if not text or text in {"[]", "null", "None"}:
+            return []
+        if text.startswith("```"):
+            text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.IGNORECASE).strip()
+            text = re.sub(r"\s*```$", "", text).strip()
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            match = re.search(r"(\[[\s\S]*\])", text)
+            if match is None:
+                return []
+            try:
+                parsed = json.loads(match.group(1))
+            except json.JSONDecodeError:
+                return []
+        return _coerce_expert_handoff_rows(parsed)
+    return []
+
+
+def _runtime_dynamic_agent_children_context(
+    app: "FastAPI",
+    agent_def: "AgentDef",
+    *,
+    session_id: str = "",
+) -> str:
+    """Render declared child experts for a runtime Agent Blueprint expert."""
+
+    if agent_def.source != "expert_pack" or not session_id:
+        return ""
+    rows = [
+        row
+        for row in _runtime_active_agent_blueprint_rows(app, session_id=session_id)
+        if row.enabled and row.parent_id == agent_def.id
+    ]
+    if not rows:
+        return ""
+    lines = [
+        "Declared child experts available for synchronous delegation:",
+    ]
+    for row in sorted(rows, key=lambda item: (item.tier, item.id)):
+        capabilities: list[str] = []
+        if row.tools:
+            capabilities.append("tools=" + ", ".join(row.tools))
+        if row.skills:
+            capabilities.append("skills=" + ", ".join(row.skills))
+        if row.commands:
+            capabilities.append("commands=" + ", ".join(row.commands))
+        capability_text = f" ({'; '.join(capabilities)})" if capabilities else ""
+        detail = f" - {row.description}" if row.description else ""
+        lines.append(
+            f"- {row.id}: {row.title}; tier={row.tier or 'unspecified'}; "
+            f"specialization={row.specialization or 'unspecified'}{capability_text}{detail}"
+        )
+    lines.append(
+        "When a child expert should act, return an expert_handoffs JSON array "
+        "with rows like {\"delegate_to\":\"child_id\",\"question\":\"specific task\","
+        "\"status\":\"requested\"}. CLIO will run that child synchronously, return a "
+        "compact result to this expert, and then ask this expert to continue."
+    )
+    return "\n".join(lines)
+
+
+def _dynamic_parent_resume_prompt(
+    original_request: str,
+    parent_agent: "AgentDef",
+    executed_handoffs: list[dict[str, Any]],
+) -> str:
+    """Build the compact continuation prompt given back to a dynamic parent."""
+
+    rows: list[str] = []
+    for row in executed_handoffs:
+        if str(row.get("stage") or "") != "delegate.completed":
+            continue
+        agent_id = str(row.get("agent_id") or row.get("delegate_to") or "")
+        status = str(row.get("status") or "")
+        summary = str(row.get("output_summary") or row.get("summary") or "").strip()
+        children = row.get("children")
+        child_note = ""
+        if isinstance(children, list) and children:
+            child_note = f"; nested_child_events={len(children)}"
+        rows.append(f"- {agent_id}: status={status}{child_note}; result={summary}")
+    result_block = "\n".join(rows) or "- No completed child delegation results were returned."
+    return (
+        f"Original user request:\n{original_request}\n\n"
+        f"Returned child expert results for parent expert {parent_agent.id!r}:\n"
+        f"{result_block}\n\n"
+        "Continue from these results. Do not repeat a completed child delegation unless "
+        "the compact result says it failed or more evidence is required. If another "
+        "declared child expert is needed, return expert_handoffs for the next child. "
+        "If the workflow is complete, return the final answer and an empty expert_handoffs array."
+    )
+
+
+def _compact_dynamic_delegation_output(output: str, *, limit: int = 2200) -> str:
+    """Compact child output while retaining exact evidence needed by parents."""
+
+    text = output.strip()
+    if len(text) <= limit:
+        return text
+    evidence_index = _compact_exact_evidence_index(text)
+    stat_lines: list[str] = []
+    stat_terms = (
+        "trace",
+        "npts",
+        "delta",
+        "sampling",
+        "min",
+        "max",
+        "mean",
+        "std",
+        "peak",
+        "duration",
+        "start time",
+        "end time",
+        "network",
+        "station",
+        "channel",
+    )
+    for raw_line in text.splitlines():
+        line = " ".join(raw_line.strip().split())
+        if not line:
+            continue
+        lowered = line.lower()
+        if any(term in lowered for term in stat_terms):
+            if line not in stat_lines:
+                stat_lines.append(line)
+        if len(stat_lines) >= 24:
+            break
+    retained_blocks: list[str] = []
+    if evidence_index:
+        retained_blocks.append(evidence_index)
+    if stat_lines:
+        retained_blocks.append("Retained numeric/trace evidence:\n" + "\n".join(f"- {line}" for line in stat_lines))
+    retained = "\n\n".join(retained_blocks)
+    head_limit = max(800, limit // 2)
+    tail_limit = max(500, limit - head_limit - len(retained) - 120)
+    head = text[:head_limit].rstrip()
+    tail = text[-tail_limit:].lstrip() if tail_limit > 0 else ""
+    pieces = [head, "[...delegation output truncated; exact evidence retained below...]"]
+    if retained:
+        pieces.append(retained)
+    if tail:
+        pieces.append("[tail]\n" + tail)
+    return "\n\n".join(pieces)
+
+
+def _dynamic_answer_has_pending_child_work(answer: str) -> bool:
+    """Return true when a resumed parent answer appears to leave child work pending."""
+
+    text = answer.lower()
+    pending_terms = (
+        "next step",
+        "should next",
+        "still need",
+        "needs to",
+        "need to",
+        "not produced",
+        "not produce",
+        "not complete",
+        "cannot proceed",
+        "cannot be completed",
+        "cannot complete",
+        "no png",
+        "no plot",
+        "no artifact",
+        "no staged",
+        "no recovered",
+        "unable to",
+        "requires a",
+        "requires an",
+        "blocker",
+        "blocked",
+        "recover",
+        "recovery",
+        "visualization should",
+        "produce a png",
+        "create a png",
+        "create a plot",
+        "plot artifact",
+    )
+    return any(term in text for term in pending_terms)
 
 
 def _dynamic_agent_runtime_provenance(
@@ -1926,6 +2160,12 @@ def _prompt_user_agent_signature() -> Any:
         system_prompt: str = dspy.InputField(desc="Registered agent instructions")
         question: str = dspy.InputField(desc="User message for this agent")
         answer: str = dspy.OutputField(desc="User-facing answer")
+        expert_handoffs: str = dspy.OutputField(
+            desc=(
+                "JSON array of synchronous child expert delegations to execute next. "
+                "Use [] when no child expert should be called."
+            )
+        )
 
     return PromptUserAgentSignature
 
@@ -1949,7 +2189,19 @@ def _build_prompt_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> A
             runtime = PromptRegistry().resolve("clio.runtime.prompt_user_agent")
             runtime_text = str(getattr(runtime, "text", "") or "").strip()
             agent_prompt = agent_def.system_prompt.strip() or agent_def.description
-            self.system_prompt = "\n\n".join(part for part in (runtime_text, agent_prompt) if part)
+            app = _ACTIVE_GACT_APP.get()
+            child_context = (
+                _runtime_dynamic_agent_children_context(
+                    app,
+                    agent_def,
+                    session_id=_ACTIVE_GACT_SESSION_ID.get(),
+                )
+                if app is not None
+                else ""
+            )
+            self.system_prompt = "\n\n".join(
+                part for part in (runtime_text, agent_prompt, child_context) if part
+            )
             self.answer_synthesizer = dspy.Predict(_prompt_user_agent_signature())
 
         def forward(
@@ -1994,6 +2246,9 @@ def _build_prompt_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> A
                 routing_rationale=f"Session selected user agent {self.agent_def.id!r}.",
                 route_source="user_agent",
                 session_id=session_id,
+                expert_handoffs=_coerce_expert_handoff_rows(
+                    getattr(result, "expert_handoffs", None)
+                ),
                 error_info=None,
             )
 
@@ -2010,6 +2265,12 @@ def _tool_user_agent_signature() -> Any:
         system_prompt: str = dspy.InputField(desc="Registered agent instructions")
         question: str = dspy.InputField(desc="User message for this agent")
         answer: str = dspy.OutputField(desc="User-facing answer")
+        expert_handoffs: str = dspy.OutputField(
+            desc=(
+                "JSON array of synchronous child expert delegations to execute next. "
+                "Use [] when no child expert should be called."
+            )
+        )
 
     return ToolUserAgentSignature
 
@@ -2216,7 +2477,19 @@ def _build_tool_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> Any
             runtime = PromptRegistry().resolve("clio.runtime.tool_user_agent")
             runtime_text = str(getattr(runtime, "text", "") or "").strip()
             agent_prompt = agent_def.system_prompt.strip() or agent_def.description
-            self.system_prompt = "\n\n".join(part for part in (runtime_text, agent_prompt) if part)
+            app = _ACTIVE_GACT_APP.get()
+            child_context = (
+                _runtime_dynamic_agent_children_context(
+                    app,
+                    agent_def,
+                    session_id=_ACTIVE_GACT_SESSION_ID.get(),
+                )
+                if app is not None
+                else ""
+            )
+            self.system_prompt = "\n\n".join(
+                part for part in (runtime_text, agent_prompt, child_context) if part
+            )
             self.react_agent = dspy.ReAct(
                 _tool_user_agent_signature(),
                 tools=self.tools,
@@ -2266,6 +2539,9 @@ def _build_tool_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> Any
                 routing_rationale=f"Session selected tool user agent {self.agent_def.id!r}.",
                 route_source="user_agent",
                 session_id=session_id,
+                expert_handoffs=_coerce_expert_handoff_rows(
+                    getattr(result, "expert_handoffs", None)
+                ),
                 trajectory=getattr(result, "trajectory", None),
                 error_info=None,
             )
@@ -2281,12 +2557,16 @@ def _run_prompt_user_agent(
     cancel_requested: Any | None = None,
 ) -> Any:
     """Execute a prompt-only user/skill agent through DSPy/LiteLLM."""
-    module = _build_prompt_user_agent_module(base_agent, agent_def)
-    return module.forward(
-        question=question,
-        session_id=session_id,
-        cancel_requested=cancel_requested,
-    )
+    token = _ACTIVE_GACT_SESSION_ID.set(session_id)
+    try:
+        module = _build_prompt_user_agent_module(base_agent, agent_def)
+        return module.forward(
+            question=question,
+            session_id=session_id,
+            cancel_requested=cancel_requested,
+        )
+    finally:
+        _ACTIVE_GACT_SESSION_ID.reset(token)
 
 
 def _run_tool_user_agent(
@@ -2297,12 +2577,16 @@ def _run_tool_user_agent(
     cancel_requested: Any | None = None,
 ) -> Any:
     """Execute a tool-declaring user/skill agent through DSPy ReAct."""
-    module = _build_tool_user_agent_module(base_agent, agent_def)
-    return module.forward(
-        question=question,
-        session_id=session_id,
-        cancel_requested=cancel_requested,
-    )
+    token = _ACTIVE_GACT_SESSION_ID.set(session_id)
+    try:
+        module = _build_tool_user_agent_module(base_agent, agent_def)
+        return module.forward(
+            question=question,
+            session_id=session_id,
+            cancel_requested=cancel_requested,
+        )
+    finally:
+        _ACTIVE_GACT_SESSION_ID.reset(token)
 
 
 def _tool_call_event_key(call: Mapping[str, Any]) -> tuple[str, str]:
@@ -2810,22 +3094,26 @@ async def _run_turn_in_background(
             try:
                 pred_child = await _run_dynamic_agent_sync(target, prompt)
                 duration_ms = int((time.perf_counter() - started_at) * 1000)
+                nested: list[dict[str, Any]] = []
+                if target.source == "expert_pack":
+                    pred_child, nested = await _settle_dynamic_agent_delegations(
+                        target,
+                        pred_child,
+                        source_text=prompt,
+                    )
                 output = str(getattr(pred_child, "answer", "") or "").strip()
-                child_rows: list[dict[str, Any]] = []
-                raw_child_rows = getattr(pred_child, "expert_handoffs", None) or []
-                if isinstance(raw_child_rows, list):
-                    child_rows = [
-                        dict(child)
-                        for child in raw_child_rows
-                        if isinstance(child, dict)
-                    ]
-                nested = await _execute_delegated_experts(
-                    target,
-                    child_rows,
-                    source_text=prompt,
-                    depth=depth + 1,
-                    seen={*seen, target.id},
-                )
+                output_summary = _compact_dynamic_delegation_output(output)
+                if not nested:
+                    child_rows = _coerce_expert_handoff_rows(
+                        getattr(pred_child, "expert_handoffs", None)
+                    )
+                    nested = await _execute_delegated_experts(
+                        target,
+                        child_rows,
+                        source_text=prompt,
+                        depth=depth + 1,
+                        seen={*seen, target.id},
+                    )
                 completed_row = {
                     **row,
                     "agent_id": target.id,
@@ -2844,7 +3132,7 @@ async def _run_turn_in_background(
                     "duration_ms": duration_ms,
                     "execution_mode": execution_mode,
                     "input": prompt,
-                    "output_summary": output[:500],
+                    "output_summary": output_summary,
                     "children": nested,
                 }
                 executed.append(completed_row)
@@ -2859,7 +3147,7 @@ async def _run_turn_in_background(
                         "resumed_from": target.id,
                         "return_payload": "compact_result",
                         "depth": depth,
-                        "output_summary": output[:500],
+                        "output_summary": output_summary,
                     }
                 )
             except (_TurnCancelled, _TurnTimedOut):
@@ -2884,6 +3172,73 @@ async def _run_turn_in_background(
                     }
                 )
         return executed
+
+    async def _settle_dynamic_agent_delegations(
+        parent_agent: "AgentDef",
+        initial_pred: Any,
+        *,
+        source_text: str,
+    ) -> tuple[Any, list[dict[str, Any]]]:
+        """Run sync child delegations and re-enter the parent with compact returns."""
+
+        latest_pred = initial_pred
+        all_rows: list[dict[str, Any]] = []
+        max_rounds = _user_agent_int_param(parent_agent, "max_sync_delegation_rounds", 4)
+        max_rounds = max(1, min(max_rounds, 8))
+        missing_handoff_repairs = 0
+        for _round in range(max_rounds):
+            requested_rows = _coerce_expert_handoff_rows(
+                getattr(latest_pred, "expert_handoffs", None)
+            )
+            executable_rows = [row for row in requested_rows if _should_execute_delegated_handoff(row)]
+            if not executable_rows:
+                child_context = _runtime_dynamic_agent_children_context(
+                    app,
+                    parent_agent,
+                    session_id=sid,
+                )
+                previous_answer = str(getattr(latest_pred, "answer", "") or "").strip()
+                should_repair_missing_handoff = (
+                    child_context
+                    and missing_handoff_repairs < 2
+                    and (_round == 0 or _dynamic_answer_has_pending_child_work(previous_answer))
+                )
+                if should_repair_missing_handoff:
+                    missing_handoff_repairs += 1
+                    repair_prompt = (
+                        f"Original user request:\n{source_text}\n\n"
+                        f"Previous non-executable answer from parent expert {parent_agent.id!r}:\n"
+                        f"{previous_answer}\n\n"
+                        f"{child_context}\n\n"
+                        "The previous answer described delegation but did not return executable "
+                        "expert_handoffs. Continue by returning concrete expert_handoffs JSON rows "
+                        "for the next declared child expert that should act. Do not say you will "
+                        "route or delegate unless expert_handoffs contains the requested child call. "
+                        "If no child should run, explain why and return expert_handoffs as []."
+                    )
+                    latest_pred = await _run_dynamic_agent_sync(parent_agent, repair_prompt)
+                    continue
+                break
+            executed_rows = await _execute_delegated_experts(
+                parent_agent,
+                requested_rows,
+                source_text=source_text,
+            )
+            all_rows.extend(executed_rows)
+            completed_rows = [
+                row
+                for row in executed_rows
+                if row.get("status") == "completed" and row.get("stage") == "delegate.completed"
+            ]
+            if not completed_rows:
+                break
+            continuation_prompt = _dynamic_parent_resume_prompt(
+                source_text,
+                parent_agent,
+                executed_rows,
+            )
+            latest_pred = await _run_dynamic_agent_sync(parent_agent, continuation_prompt)
+        return latest_pred, all_rows
 
     try:
         if context_file_error is not None:
@@ -2949,11 +3304,15 @@ async def _run_turn_in_background(
                 execution_mode=execution_mode,
             )
             with _gact_app_context(app):
-                module = (
-                    _build_tool_user_agent_module(app.state.agent, dynamic_agent)
-                    if dynamic_agent.tools
-                    else _build_prompt_user_agent_module(app.state.agent, dynamic_agent)
-                )
+                session_token = _ACTIVE_GACT_SESSION_ID.set(sid)
+                try:
+                    module = (
+                        _build_tool_user_agent_module(app.state.agent, dynamic_agent)
+                        if dynamic_agent.tools
+                        else _build_prompt_user_agent_module(app.state.agent, dynamic_agent)
+                    )
+                finally:
+                    _ACTIVE_GACT_SESSION_ID.reset(session_token)
             with _cancellation_checker(cancel_requested), _tool_session_context(sid):
                 pred = await _await_turn_work(
                     _try_streamed_forward_compat(
@@ -3024,6 +3383,13 @@ async def _run_turn_in_background(
                                 ),
                             ),
                         )
+        if dynamic_agent_used is not None and dynamic_agent_used.source == "expert_pack":
+            pred, expert_handoffs = await _settle_dynamic_agent_delegations(
+                dynamic_agent_used,
+                pred,
+                source_text=enriched_text,
+            )
+
         answer_text = getattr(pred, "answer", "")
         selected_agent = getattr(pred, "selected_expert", "") or ""
         rationale = getattr(pred, "routing_rationale", "")
@@ -3125,18 +3491,8 @@ async def _run_turn_in_background(
         execution_path = getattr(pred, "execution_path", "") or ""
         tools_called = _extract_tools_called(pred)
         raw_handoffs = getattr(pred, "expert_handoffs", None) or []
-        if isinstance(raw_handoffs, list):
-            expert_handoffs = [dict(row) for row in raw_handoffs if isinstance(row, dict)]
-        if (
-            dynamic_agent_used is not None
-            and dynamic_agent_used.source == "expert_pack"
-            and expert_handoffs
-        ):
-            expert_handoffs = await _execute_delegated_experts(
-                dynamic_agent_used,
-                expert_handoffs,
-                source_text=enriched_text,
-            )
+        if not expert_handoffs:
+            expert_handoffs = _coerce_expert_handoff_rows(raw_handoffs)
         # Drain the per-session observer ledger so direct-tool short-
         # circuits (HDF5/Parquet/fs experts that bypass ReAct) still
         # report tools_called on the assistant message metadata.
@@ -13454,11 +13810,19 @@ def build_app(
             rows = validate_agent_hierarchy(_merge_agent_def_rows(rows))
             rows = _apply_agent_blueprint_mcp_descriptor_validation(rows)
             rows = _apply_enabled_agent_blueprint_mcp_tools(rows)
+            active_blueprint_id = _active_session_agent_blueprint_id(session_id)
+            render_context = _prompt_render_context(app)
+            render_context.update(_agent_rows_prompt_render_context(rows))
+            render_context["session.active_agent_blueprint"] = (
+                active_blueprint_id or "(no active agent blueprint)"
+            )
+            render_context["session.active_pack"] = active_blueprint_id or "(no active expert pack)"
             return [
                 _apply_prompt_registry_to_agent(
                     app,
                     _agent_with_capability_refs(row),
                     prompt_registry=prompt_registry,
+                    render_context=render_context,
                 )
                 for row in rows
             ]
@@ -13499,11 +13863,7 @@ def build_app(
                 workspace_id=workspace_id,
             ):
                 if row.id == agent_id and row.enabled:
-                    return (
-                        _apply_prompt_registry_to_agent(app, row, prompt_registry=prompt_registry)
-                        if prompt_registry is not None
-                        else row
-                    )
+                    return row
         return _resolve_dynamic_agent(app, agent_id, prompt_registry=prompt_registry)
 
     def _agent_rows(session_id: str = "", workspace_id: str = "") -> list[AgentDef]:

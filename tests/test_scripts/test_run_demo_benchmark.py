@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from scripts import run_demo_benchmark as bench
 
 
@@ -365,6 +367,73 @@ def test_ndp_waveform_case_requires_sac_and_png_path() -> None:
     )
 
     assert result.passed is False
+
+
+def test_nested_expert_handoffs_count_for_case_expectations(tmp_path: Path) -> None:
+    png = tmp_path / "waveform.png"
+    png.write_bytes(b"png")
+    message = _message(
+        text=f"SAC statistics complete and PNG artifact saved at {png}",
+        tools=[
+            {"name": "ndp_stage_resource"},
+            {"name": "sac_compute_trace_statistics"},
+            {"name": "sac_plot_traces", "result": {"output_path": str(png)}},
+        ],
+    )
+    message["parts"][0]["selected_agent"] = "main"
+    message["metadata"]["expert_handoffs"] = [
+        {
+            "agent_id": "data",
+            "children": [{"agent_id": "ndp_catalog"}],
+            "output_summary": "NDP blocker returned.",
+        },
+        {
+            "agent_id": "analysis",
+            "children": [{"agent_id": "sac_format"}],
+            "output_summary": "SAC statistics complete.",
+        },
+        {"agent_id": "visualization", "output_summary": f"PNG artifact: {png}"},
+    ]
+    result = bench.DemoResult(
+        case=bench.DemoCase(
+            case_id="marketplace_seismic_waveform_review",
+            title="marketplace seismic",
+            category="test",
+            prompt="prompt",
+            why="why",
+            expected="expected",
+            session_group="test",
+            agent_blueprint_id="seismic-waveform-review",
+            expected_agent=("data", "analysis", "visualization", "main"),
+            expected_tool_prefixes=("ndp_", "sac_"),
+            expected_tools=("sac_plot_traces",),
+            expected_handoff_agents=("ndp_catalog", "sac_format"),
+            expected_terms=("SAC", ".png"),
+            min_artifacts=1,
+        ),
+        session_id="sess_test",
+        elapsed_s=1.0,
+        message=message,
+        provider={},
+        agent_blueprint={"active_agent_blueprint_id": "seismic-waveform-review"},
+    )
+
+    assert result.handoff_agent_ids == ["data", "ndp_catalog", "analysis", "sac_format", "visualization"]
+    assert result.passed is True
+
+
+def test_remote_png_urls_do_not_count_as_local_artifacts(tmp_path: Path) -> None:
+    png = tmp_path / "local.png"
+    png.write_bytes(b"png")
+    message = _message(
+        text=(
+            "Remote reference https://example.org/generated.png and "
+            f"local artifact {png}"
+        ),
+        tools=[],
+    )
+
+    assert bench._artifact_paths(message) == [str(png)]
 
 
 def test_expected_terms_can_match_tool_and_handoff_evidence() -> None:
