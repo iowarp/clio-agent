@@ -54,6 +54,20 @@ async def test_inspect_png_returns_image_summary(png_file):
 
 
 @pytest.mark.asyncio
+async def test_inspect_png_accepts_null_threshold(png_file):
+    async with Client(imaging_server) as client:
+        result = await client.call_tool(
+            "inspect_png",
+            {"filepath": str(png_file), "threshold": None},
+        )
+    data = _parse_result(result)
+
+    assert data["ok"] is True
+    assert data["threshold"] == 32
+    assert data["connected_regions"] == 2
+
+
+@pytest.mark.asyncio
 async def test_gateway_exposes_imaging_tool(png_file):
     async with Client(gateway) as client:
         result = await client.call_tool("imaging_inspect_png", {"filepath": str(png_file)})
