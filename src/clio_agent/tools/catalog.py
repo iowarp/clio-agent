@@ -123,6 +123,11 @@ TOOL_CATALOG: dict[str, ToolCatalogEntry] = {
         "genomics",
         {"genomics", "vcf", "variants", "sequence", "analysis"},
     ),
+    "materials_inspect_cif": _entry(
+        "materials_inspect_cif",
+        "materials",
+        {"materials", "crystallography", "cif", "structure", "inspect"},
+    ),
     "plot_histogram": _entry(
         "plot_histogram", "visualization", {"visualization", "plot", "histogram"}
     ),

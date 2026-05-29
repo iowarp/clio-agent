@@ -101,6 +101,7 @@ SCIENTIFIC_FILE_SUFFIXES = {
     ".fasta",
     ".fna",
     ".vcf",
+    ".cif",
 }
 PLANNER_HIDDEN_TOOL_NAMES = {"fs_read_file", "fs_apply_edit_write"}
 MULTI_FILE_ANALYSIS_TERMS = (
@@ -464,6 +465,36 @@ class ClioAgent(dspy.Module):
                     "file_suffixes": [".fa", ".fasta", ".fna", ".vcf"],
                     "guard_coordinator_intents": ["multi_file_analysis"],
                     "coordinated_file_suffixes": [".fa", ".fasta", ".fna", ".vcf"],
+                },
+            ),
+        )
+
+        self.registry.register_agent(
+            "materials",
+            self,
+            AgentCapability(
+                keywords=[
+                    "materials",
+                    "material",
+                    "crystal",
+                    "crystallography",
+                    "structure",
+                    "cif",
+                    "unit cell",
+                    "space group",
+                    "atom site",
+                    "density",
+                ],
+                description=(
+                    "Materials/crystallography expert for CIF structure files. Uses "
+                    "unit-cell, formula, species, and atom-site inspection before synthesis."
+                ),
+                tools=["materials_inspect_cif"],
+                specialization="materials",
+                metadata={
+                    "file_suffixes": [".cif"],
+                    "guard_coordinator_intents": ["multi_file_analysis"],
+                    "coordinated_file_suffixes": [".cif"],
                 },
             ),
         )
@@ -1836,6 +1867,60 @@ class ClioAgent(dspy.Module):
                         analysis=answer,
                         recommendations="Validate high-impact calls and confirm sample provenance.",
                         metadata={"expert": "genomics", "paths": [str(path) for path in paths]},
+                    )
+                    self._record_expert_handoff(
+                        trace,
+                        expert_id=expert_id,
+                        dispatch_target=dispatch_id,
+                        stage="planner_dispatch",
+                        input_summary=expert_question,
+                        result=expert_result,
+                        duration_ms=(time.time() - started) * 1000,
+                    )
+                    return expert_id, answer, expert_result, None
+
+                if dispatch_id == "materials":
+                    started = time.time()
+                    paths = extract_file_paths(expert_question, expert_context, {".cif"})
+                    material_observations: list[str] = []
+                    if paths:
+                        cif_result = self._execute_tool_action(
+                            "materials_inspect_cif",
+                            {"filepath": str(paths[0])},
+                            trace,
+                            question=expert_question,
+                            file_context=expert_context,
+                        )
+                        material_observations.append(
+                            "CIF: " + json.dumps(compact_tool_result(cif_result, max_text=1000))
+                        )
+                    if not material_observations:
+                        return (
+                            expert_id,
+                            "",
+                            None,
+                            RoutingError(
+                                "The materials expert needs a CIF file path.",
+                                details=self._recovery_details(
+                                    expert=expert_id,
+                                    next_action=(
+                                        "Provide at least one CIF file under the allowed "
+                                        "workspace roots."
+                                    ),
+                                ),
+                            ).to_dict(),
+                        )
+                    answer = (
+                        "Materials structure review:\n"
+                        + "\n\n".join(material_observations)
+                        + "\n\nRecommendations:\n"
+                        "- Verify the space group and unit-cell parameters against provenance.\n"
+                        "- Confirm occupancies/species before simulation or collaborator handoff."
+                    )
+                    expert_result = dspy.Prediction(
+                        analysis=answer,
+                        recommendations="Validate symmetry, occupancies, and structure provenance.",
+                        metadata={"expert": "materials", "paths": [str(path) for path in paths]},
                     )
                     self._record_expert_handoff(
                         trace,
