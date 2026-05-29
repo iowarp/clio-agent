@@ -57,6 +57,7 @@ from clio_agent.gact.workspace_scope import (
     workspace_scope,
 )
 from clio_agent.prompts import PromptRegistry, PromptSource, parse_prompt_text
+from clio_agent.tools.catalog import TOOL_CATALOG
 from clio_agent.tools.file_policy import validate_write_path
 from clio_agent.tools.fs_write import write_text_with_policy
 
@@ -12754,13 +12755,8 @@ def build_app(
         overlay = metadata.get("agent_blueprint_overlay")
         return dict(overlay) if isinstance(overlay, Mapping) else {}
 
-    def _apply_session_agent_overlay(rows: list[AgentDef], session_id: str = "") -> list[AgentDef]:
-        overlay = _session_agent_overlay(session_id)
-        agents = overlay.get("agents") if isinstance(overlay, Mapping) else None
-        if not isinstance(agents, Mapping):
-            return rows
-        out: list[AgentDef] = []
-        patchable = {
+    def _agent_overlay_patchable_fields() -> set[str]:
+        return {
             "title",
             "description",
             "system_prompt",
@@ -12778,6 +12774,33 @@ def build_app(
             "parameters",
             "enabled",
         }
+
+    def _base_session_agent_blueprint_rows(
+        session_id: str = "",
+        workspace_id: str = "",
+    ) -> list[AgentDef]:
+        if not session_id:
+            return []
+        cwd = _workspace_catalog_cwd(workspace_id=workspace_id, session_id=session_id)
+        active_blueprint_id = _active_session_agent_blueprint_id(session_id)
+        active_blueprint_path = _active_session_agent_blueprint_path(session_id)
+        if active_blueprint_path is not None:
+            return load_agent_blueprint_path(active_blueprint_path, scope="session")
+        if active_blueprint_id:
+            return load_agent_blueprints(cwd=cwd, blueprint_id=active_blueprint_id)
+        return []
+
+    def _apply_agent_overlay_rows(
+        rows: list[AgentDef],
+        overlay: Mapping[str, Any],
+        *,
+        session_id: str = "",
+    ) -> list[AgentDef]:
+        agents = overlay.get("agents") if isinstance(overlay, Mapping) else None
+        if not isinstance(agents, Mapping):
+            return rows
+        patchable = _agent_overlay_patchable_fields()
+        out: list[AgentDef] = []
         for row in rows:
             raw_patch = agents.get(row.id)
             if not isinstance(raw_patch, Mapping):
@@ -12795,21 +12818,324 @@ def build_app(
             out.append(row.model_copy(update={**update, "metadata": metadata}))
         return out
 
+    def _apply_session_agent_overlay(rows: list[AgentDef], session_id: str = "") -> list[AgentDef]:
+        overlay = _session_agent_overlay(session_id)
+        return _apply_agent_overlay_rows(rows, overlay, session_id=session_id)
+
+    def _known_agent_overlay_tool_names() -> set[str]:
+        names = set(TOOL_CATALOG)
+        names.update(
+            {
+                "memory_search_sessions",
+                "memory_read_session_summary",
+                "memory_read_context_frame",
+            }
+        )
+        tool_executor = getattr(getattr(app.state, "agent", None), "tool_executor", None)
+        if tool_executor is not None and hasattr(tool_executor, "to_dspy_tools"):
+            try:
+                for tool in tool_executor.to_dspy_tools():
+                    name = str(getattr(tool, "name", "") or "").strip()
+                    if name:
+                        names.add(name)
+            except Exception:
+                pass
+        for server in (getattr(app.state, "external_mcp_servers", {}) or {}).values():
+            if not isinstance(server, Mapping):
+                continue
+            for tool in server.get("tools") or []:
+                if isinstance(tool, Mapping):
+                    name = str(tool.get("name") or tool.get("id") or "").strip()
+                else:
+                    name = str(getattr(tool, "name", "") or getattr(tool, "id", "") or "").strip()
+                if name:
+                    names.add(name)
+        return names
+
+    def _known_agent_overlay_provider_ids() -> set[str]:
+        providers = {str(row.id) for row in _LM_PRESETS if str(row.id).strip()}
+        providers.update({str(row.provider) for row in _LM_PRESETS if str(row.provider).strip()})
+        return providers
+
+    def _overlay_validation_error(
+        errors: list[dict[str, Any]],
+        *,
+        code: str,
+        message: str,
+        agent_id: str = "",
+        field: str = "",
+    ) -> None:
+        row: dict[str, Any] = {"code": code, "message": message}
+        if agent_id:
+            row["agent_id"] = agent_id
+        if field:
+            row["field"] = field
+        errors.append(row)
+
+    def _validate_session_agent_overlay_payload(
+        overlay: Mapping[str, Any],
+        *,
+        session_id: str,
+        workspace_id: str = "",
+    ) -> dict[str, Any]:
+        errors: list[dict[str, Any]] = []
+        diagnostics: list[dict[str, Any]] = []
+        base_rows = _base_session_agent_blueprint_rows(session_id=session_id, workspace_id=workspace_id)
+        base_ids = {row.id for row in base_rows}
+        agents = overlay.get("agents")
+        if not base_rows:
+            _overlay_validation_error(
+                errors,
+                code="missing_active_agent_blueprint",
+                message="session has no active Agent Blueprint to overlay",
+            )
+        if agents is None:
+            agents = {}
+        if not isinstance(agents, Mapping):
+            _overlay_validation_error(
+                errors,
+                code="invalid_agents",
+                message="agent overlay 'agents' must be an object",
+                field="agents",
+            )
+            agents = {}
+        patchable = _agent_overlay_patchable_fields()
+        known_tools = _known_agent_overlay_tool_names()
+        known_providers = _known_agent_overlay_provider_ids()
+        prompt_registry = _prompt_registry_for_request(
+            session_id=session_id,
+            workspace_id=workspace_id,
+        )
+        for raw_agent_id, raw_patch in agents.items():
+            agent_id = str(raw_agent_id)
+            if agent_id not in base_ids:
+                _overlay_validation_error(
+                    errors,
+                    code="unknown_agent_id",
+                    message=f"overlay references unknown expert: {agent_id}",
+                    agent_id=agent_id,
+                    field="agents",
+                )
+                continue
+            if not isinstance(raw_patch, Mapping):
+                _overlay_validation_error(
+                    errors,
+                    code="invalid_agent_patch",
+                    message=f"overlay patch for {agent_id} must be an object",
+                    agent_id=agent_id,
+                    field="agents",
+                )
+                continue
+            unknown_fields = sorted(str(key) for key in raw_patch if str(key) not in patchable)
+            for field_name in unknown_fields:
+                _overlay_validation_error(
+                    errors,
+                    code="unknown_field",
+                    message=f"overlay field is not editable: {field_name}",
+                    agent_id=agent_id,
+                    field=field_name,
+                )
+            if "tools" in raw_patch:
+                raw_tools = raw_patch.get("tools")
+                if not isinstance(raw_tools, list) or any(not isinstance(item, str) for item in raw_tools):
+                    _overlay_validation_error(
+                        errors,
+                        code="invalid_tools",
+                        message="tools must be a list of tool ids",
+                        agent_id=agent_id,
+                        field="tools",
+                    )
+                else:
+                    for tool_name in raw_tools:
+                        if tool_name not in known_tools:
+                            _overlay_validation_error(
+                                errors,
+                                code="unknown_tool",
+                                message=f"unknown tool: {tool_name}",
+                                agent_id=agent_id,
+                                field="tools",
+                            )
+            if "prompt_id" in raw_patch or "prompt_profile" in raw_patch:
+                prompt_id = str(raw_patch.get("prompt_id") or "").strip()
+                if prompt_id and prompt_registry.resolve(prompt_id) is None:
+                    _overlay_validation_error(
+                        errors,
+                        code="unknown_prompt",
+                        message=f"prompt not found: {prompt_id}",
+                        agent_id=agent_id,
+                        field="prompt_id",
+                    )
+            if "default_provider" in raw_patch:
+                provider_id = str(raw_patch.get("default_provider") or "").strip()
+                if provider_id and provider_id not in known_providers:
+                    _overlay_validation_error(
+                        errors,
+                        code="unknown_provider",
+                        message=f"provider not found: {provider_id}",
+                        agent_id=agent_id,
+                        field="default_provider",
+                    )
+            for string_field in ("title", "description", "system_prompt", "prompt_id", "prompt_profile", "default_provider", "default_model", "parent_id", "specialization"):
+                if string_field in raw_patch and raw_patch.get(string_field) is not None and not isinstance(raw_patch.get(string_field), str):
+                    _overlay_validation_error(
+                        errors,
+                        code="invalid_field_type",
+                        message=f"{string_field} must be a string",
+                        agent_id=agent_id,
+                        field=string_field,
+                    )
+            for list_field in ("keywords", "skills", "commands"):
+                if list_field in raw_patch:
+                    value = raw_patch.get(list_field)
+                    if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
+                        _overlay_validation_error(
+                            errors,
+                            code="invalid_field_type",
+                            message=f"{list_field} must be a list of strings",
+                            agent_id=agent_id,
+                            field=list_field,
+                        )
+            if "tier" in raw_patch and not isinstance(raw_patch.get("tier"), int):
+                _overlay_validation_error(
+                    errors,
+                    code="invalid_field_type",
+                    message="tier must be an integer",
+                    agent_id=agent_id,
+                    field="tier",
+                )
+            if "enabled" in raw_patch and not isinstance(raw_patch.get("enabled"), bool):
+                _overlay_validation_error(
+                    errors,
+                    code="invalid_field_type",
+                    message="enabled must be a boolean",
+                    agent_id=agent_id,
+                    field="enabled",
+                )
+            if "parameters" in raw_patch and not isinstance(raw_patch.get("parameters"), Mapping):
+                _overlay_validation_error(
+                    errors,
+                    code="invalid_field_type",
+                    message="parameters must be an object",
+                    agent_id=agent_id,
+                    field="parameters",
+                )
+        applied_rows = _apply_agent_overlay_rows(base_rows, overlay, session_id=session_id)
+        validated_rows = validate_agent_hierarchy(_merge_agent_def_rows(applied_rows))
+        for row in validated_rows:
+            for error in row.validation_errors:
+                _overlay_validation_error(
+                    errors,
+                    code="invalid_hierarchy",
+                    message=error,
+                    agent_id=row.id,
+                )
+        if agents:
+            diagnostics.append(
+                {
+                    "code": "overlay_scope",
+                    "message": "overlay applies only to this session until explicitly exported",
+                    "session_id": session_id,
+                }
+            )
+        return {
+            "enabled": not errors,
+            "validation_errors": errors,
+            "diagnostics": diagnostics,
+            "agent_count": len(base_rows),
+            "overlay_agent_count": len(agents),
+        }
+
+    def _agent_blueprint_export_root(
+        *,
+        scope: str,
+        session_id: str,
+        workspace_id: str = "",
+    ) -> Path:
+        if scope == "workspace":
+            cwd = _workspace_catalog_cwd(workspace_id=workspace_id, session_id=session_id)
+            return (cwd or Path.cwd()) / ".clio" / "agent-blueprints"
+        if scope == "global":
+            base = os.environ.get("XDG_CONFIG_HOME")
+            config_root = Path(base) / "clio-agent" if base else Path.home() / ".config" / "clio-agent"
+            return config_root / "agent-blueprints"
+        raise ValueError("scope must be workspace or global")
+
+    def _frontmatter_scalar(value: Any) -> str:
+        return json.dumps(str(value or ""))
+
+    def _frontmatter_list_lines(key: str, values: list[str]) -> list[str]:
+        if not values:
+            return []
+        lines = [f"{key}:"]
+        lines.extend(f"  - {_frontmatter_scalar(value)}" for value in values)
+        return lines
+
+    def _agent_blueprint_expert_markdown(row: AgentDef) -> str:
+        lines = [
+            "---",
+            f"id: {_frontmatter_scalar(row.id)}",
+            f"title: {_frontmatter_scalar(row.title or row.id)}",
+        ]
+        for key, value in (
+            ("description", row.description),
+            ("parent_id", row.parent_id),
+            ("prompt_id", row.prompt_id),
+            ("prompt_profile", row.prompt_profile),
+            ("provider", row.default_provider),
+            ("model", row.default_model),
+            ("specialization", row.specialization),
+        ):
+            if value:
+                lines.append(f"{key}: {_frontmatter_scalar(value)}")
+        lines.append(f"tier: {int(row.tier or 1)}")
+        if row.enabled is False:
+            lines.append("enabled: false")
+        lines.extend(_frontmatter_list_lines("tools", list(row.tools or [])))
+        lines.extend(_frontmatter_list_lines("skills", list(row.skills or [])))
+        lines.extend(_frontmatter_list_lines("commands", list(row.commands or [])))
+        lines.extend(_frontmatter_list_lines("keywords", list(row.keywords or [])))
+        for key, value in sorted((row.parameters or {}).items()):
+            lines.append(f"param_{key}: {_frontmatter_scalar(value)}")
+        lines.extend(["---", row.system_prompt or row.description or row.title or row.id, ""])
+        return "\n".join(lines)
+
+    def _write_exported_agent_blueprint(
+        *,
+        root: Path,
+        blueprint_id: str,
+        title: str,
+        session_id: str,
+        rows: list[AgentDef],
+    ) -> None:
+        root.mkdir(parents=True, exist_ok=True)
+        experts_root = root / "experts"
+        experts_root.mkdir(parents=True, exist_ok=True)
+        roots = [row for row in rows if not row.parent_id]
+        root_expert = roots[0].id if roots else (rows[0].id if rows else "")
+        manifest = [
+            "---",
+            f"id: {_frontmatter_scalar(blueprint_id)}",
+            "version: \"0.1.0\"",
+            f"title: {_frontmatter_scalar(title or blueprint_id)}",
+            f"root_expert: {_frontmatter_scalar(root_expert)}",
+            "---",
+            f"Exported from session overlay {session_id}.",
+            "",
+        ]
+        (root / "AGENT.md").write_text("\n".join(manifest), encoding="utf-8")
+        for row in rows:
+            (experts_root / f"{row.id}.md").write_text(
+                _agent_blueprint_expert_markdown(row),
+                encoding="utf-8",
+            )
+
     def _active_session_agent_blueprint_rows(
         session_id: str = "",
         workspace_id: str = "",
     ) -> list[AgentDef]:
         if not session_id:
             return []
-        cwd = _workspace_catalog_cwd(workspace_id=workspace_id, session_id=session_id)
-        active_blueprint_id = _active_session_agent_blueprint_id(session_id)
-        active_blueprint_path = _active_session_agent_blueprint_path(session_id)
-        if active_blueprint_path is not None:
-            rows = load_agent_blueprint_path(active_blueprint_path, scope="session")
-        elif active_blueprint_id:
-            rows = load_agent_blueprints(cwd=cwd, blueprint_id=active_blueprint_id)
-        else:
-            rows = []
+        rows = _base_session_agent_blueprint_rows(session_id=session_id, workspace_id=workspace_id)
         if rows:
             rows = _apply_session_agent_overlay(rows, session_id=session_id)
             prompt_registry = _prompt_registry_for_request(
@@ -13321,7 +13647,8 @@ def build_app(
 
     @app.get("/v1/sessions/{sid}/agent-overlay")
     async def get_session_agent_overlay(sid: str) -> dict[str, Any]:
-        if app.state.sessions.get(sid) is None:
+        sess = app.state.sessions.get(sid)
+        if sess is None:
             raise HTTPException(
                 status_code=404,
                 detail=ErrorEnvelope(
@@ -13333,11 +13660,18 @@ def build_app(
                     )
                 ).model_dump(exclude_none=True),
             )
-        return {"session_id": sid, "agent_overlay": _session_agent_overlay(sid)}
+        overlay = _session_agent_overlay(sid)
+        validation = _validate_session_agent_overlay_payload(
+            overlay,
+            session_id=sid,
+            workspace_id=getattr(sess, "workspace_id", ""),
+        )
+        return {"session_id": sid, "agent_overlay": overlay, "validation": validation}
 
     @app.put("/v1/sessions/{sid}/agent-overlay")
     async def put_session_agent_overlay(sid: str, req: dict[str, Any]) -> dict[str, Any]:
-        if app.state.sessions.get(sid) is None:
+        sess = app.state.sessions.get(sid)
+        if sess is None:
             raise HTTPException(
                 status_code=404,
                 detail=ErrorEnvelope(
@@ -13361,6 +13695,23 @@ def build_app(
                     )
                 ).model_dump(exclude_none=True),
             )
+        validation = _validate_session_agent_overlay_payload(
+            overlay,
+            session_id=sid,
+            workspace_id=getattr(sess, "workspace_id", ""),
+        )
+        if not validation["enabled"]:
+            raise HTTPException(
+                status_code=422,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="validation_error",
+                        message="agent overlay is invalid",
+                        details={"validation": validation},
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            )
         updated = app.state.sessions.update(
             sid,
             metadata_patch={"agent_blueprint_overlay": dict(overlay)},
@@ -13369,7 +13720,150 @@ def build_app(
         return {
             "session_id": sid,
             "agent_overlay": dict(overlay),
+            "validation": validation,
             "session": Session(**updated.to_wire()).model_dump(exclude_none=True) if updated else None,
+        }
+
+    @app.post("/v1/sessions/{sid}/agent-overlay/export", status_code=201)
+    async def export_session_agent_overlay(sid: str, req: dict[str, Any] | None = None) -> dict[str, Any]:
+        sess = app.state.sessions.get(sid)
+        if sess is None:
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="not_found",
+                        message=f"session not found: {sid}",
+                        details={"session_id": sid},
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        body = req or {}
+        blueprint_id = str(body.get("blueprint_id") or body.get("agent_blueprint_id") or "").strip()
+        if not blueprint_id or not re.fullmatch(r"[A-Za-z0-9_.-]+", blueprint_id):
+            raise HTTPException(
+                status_code=422,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="validation_error",
+                        message="blueprint_id must use letters, numbers, dots, underscores, and hyphens",
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        scope = str(body.get("scope") or "workspace").strip()
+        if scope not in {"workspace", "global"}:
+            raise HTTPException(
+                status_code=422,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="bad_request",
+                        message="scope must be workspace or global",
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        workspace_id = str(body.get("workspace_id") or getattr(sess, "workspace_id", "") or "")
+        overlay = _session_agent_overlay(sid)
+        validation = _validate_session_agent_overlay_payload(
+            overlay,
+            session_id=sid,
+            workspace_id=workspace_id,
+        )
+        if not validation["enabled"]:
+            raise HTTPException(
+                status_code=422,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="validation_error",
+                        message="agent overlay is invalid",
+                        details={"validation": validation},
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        base_rows = _base_session_agent_blueprint_rows(session_id=sid, workspace_id=workspace_id)
+        if not base_rows:
+            raise HTTPException(
+                status_code=400,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="validation_error",
+                        message="session has no active Agent Blueprint to export",
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        rows = validate_agent_hierarchy(
+            _merge_agent_def_rows(_apply_agent_overlay_rows(base_rows, overlay, session_id=sid))
+        )
+        if any(row.validation_errors for row in rows):
+            raise HTTPException(
+                status_code=422,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="validation_error",
+                        message="effective overlay hierarchy is invalid",
+                        details={
+                            "validation_errors": [
+                                f"{row.id}: {error}"
+                                for row in rows
+                                for error in row.validation_errors
+                            ]
+                        },
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        export_root = _agent_blueprint_export_root(
+            scope=scope,
+            session_id=sid,
+            workspace_id=workspace_id,
+        ) / blueprint_id
+        if export_root.exists() and not bool(body.get("overwrite", False)):
+            raise HTTPException(
+                status_code=409,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="conflict",
+                        message=f"agent blueprint already exists: {blueprint_id}",
+                        details={"path": str(export_root)},
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        if export_root.exists():
+            shutil.rmtree(export_root)
+        _write_exported_agent_blueprint(
+            root=export_root,
+            blueprint_id=blueprint_id,
+            title=str(body.get("title") or blueprint_id),
+            session_id=sid,
+            rows=rows,
+        )
+        validation_after = validate_agent_blueprint_path(export_root, scope=scope)
+        if not validation_after.get("enabled", False):
+            raise HTTPException(
+                status_code=500,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="internal_error",
+                        message="exported Agent Blueprint did not validate",
+                        details={"validation": validation_after},
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        return {
+            "session_id": sid,
+            "workspace_id": workspace_id,
+            "scope": scope,
+            "source_session_id": sid,
+            "agent_blueprint": validation_after.get("agent_blueprint"),
+            "agents": validation_after.get("agents", []),
+            "path": str(export_root),
+            "validation": validation_after,
         }
 
     @app.get("/v1/expert-packs")

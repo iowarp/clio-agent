@@ -176,6 +176,109 @@ def test_session_agent_overlay_is_session_local(tmp_path: Path) -> None:
     assert agent_b["default_model"] == ""
 
 
+def test_session_agent_overlay_rejects_invalid_contracts(tmp_path: Path) -> None:
+    blueprint = tmp_path / "genomics"
+    _write_blueprint(blueprint)
+
+    app = build_app(sessions_path=tmp_path / "sessions.json", agent=SimpleNamespace())
+    with TestClient(app) as client:
+        sid = client.post("/v1/sessions", json={"title": "A"}).json()["id"]
+        assert client.post(
+            f"/v1/sessions/{sid}/agent-blueprint",
+            json={"path": str(blueprint)},
+        ).status_code == 200
+
+        broken_parent = client.put(
+            f"/v1/sessions/{sid}/agent-overlay",
+            json={"agents": {"variant": {"parent_id": "missing-parent"}}},
+        )
+        bad_tool = client.put(
+            f"/v1/sessions/{sid}/agent-overlay",
+            json={"agents": {"variant": {"tools": ["definitely_missing_tool"]}}},
+        )
+        bad_provider = client.put(
+            f"/v1/sessions/{sid}/agent-overlay",
+            json={"agents": {"variant": {"default_provider": "definitely_missing_provider"}}},
+        )
+        bad_prompt = client.put(
+            f"/v1/sessions/{sid}/agent-overlay",
+            json={"agents": {"variant": {"prompt_id": "definitely.missing.prompt"}}},
+        )
+        unknown_agent = client.put(
+            f"/v1/sessions/{sid}/agent-overlay",
+            json={"agents": {"missing-agent": {"title": "Nope"}}},
+        )
+        overlay_state = client.get(f"/v1/sessions/{sid}/agent-overlay").json()
+
+    assert broken_parent.status_code == 422
+    assert "parent_id not found" in broken_parent.text
+    assert bad_tool.status_code == 422
+    assert "unknown tool" in bad_tool.text
+    assert bad_provider.status_code == 422
+    assert "provider not found" in bad_provider.text
+    assert bad_prompt.status_code == 422
+    assert "prompt not found" in bad_prompt.text
+    assert unknown_agent.status_code == 422
+    assert "unknown expert" in unknown_agent.text
+    assert overlay_state["agent_overlay"] == {}
+    assert overlay_state["validation"]["enabled"] is True
+
+
+def test_session_agent_overlay_can_export_workspace_blueprint(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    source = tmp_path / "source" / "genomics"
+    _write_blueprint(source)
+
+    app = build_app(sessions_path=tmp_path / "sessions.json", agent=SimpleNamespace())
+    with TestClient(app) as client:
+        wid = client.post(
+            "/v1/workspaces",
+            json={
+                "name": "Workspace",
+                "root_path": str(workspace),
+                "storage_root": str(workspace / ".clio"),
+            },
+        ).json()["id"]
+        sid = client.post(
+            "/v1/sessions",
+            json={"title": "A", "workspace_id": wid},
+        ).json()["id"]
+        assert client.post(
+            f"/v1/sessions/{sid}/agent-blueprint",
+            json={"path": str(source)},
+        ).status_code == 200
+        saved = client.put(
+            f"/v1/sessions/{sid}/agent-overlay",
+            json={
+                "agents": {
+                    "variant": {
+                        "title": "Session A Variant Expert",
+                        "system_prompt": "Review this workspace's variant evidence.",
+                    }
+                }
+            },
+        )
+        assert saved.status_code == 200, saved.text
+
+        exported = client.post(
+            f"/v1/sessions/{sid}/agent-overlay/export",
+            json={
+                "blueprint_id": "genomics-session-a",
+                "title": "Genomics Session A",
+                "workspace_id": wid,
+            },
+        )
+        listed = client.get("/v1/agent-blueprints", params={"workspace_id": wid}).json()
+
+    assert exported.status_code == 201, exported.text
+    exported_root = workspace / ".clio" / "agent-blueprints" / "genomics-session-a"
+    assert exported_root.joinpath("AGENT.md").exists()
+    assert "Session A Variant Expert" in exported_root.joinpath("experts", "variant.md").read_text()
+    assert "Variant Expert" in source.joinpath("experts", "variant.md").read_text()
+    assert {row["id"] for row in exported.json()["agents"]} == {"root", "variant"}
+    assert "genomics-session-a" in {row["id"] for row in listed["agent_blueprints"]}
+
+
 def test_agent_blueprint_install_from_local_marketplace(tmp_path: Path) -> None:
     marketplace = tmp_path / "marketplace"
     _write_blueprint(marketplace / "genomics")

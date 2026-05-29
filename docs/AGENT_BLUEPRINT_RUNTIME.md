@@ -288,9 +288,16 @@ Add first-class Agent Blueprint APIs:
 - `POST /v1/sessions/{sid}/agent-blueprint`
 - `GET /v1/sessions/{sid}/agent-overlay`
 - `PUT /v1/sessions/{sid}/agent-overlay`
+- `POST /v1/sessions/{sid}/agent-overlay/export`
 
 Keep existing `/v1/expert-packs` routes as compatibility aliases during
 migration.
+
+Session overlays are drafts over the active Agent Blueprint. `PUT` validates
+the edited graph, prompt references, provider ids, and declared tools before it
+persists the overlay. `POST /agent-overlay/export` is the explicit save/fork
+operation: it materializes the effective session overlay as a new workspace or
+global Agent Blueprint without mutating the installed source Blueprint.
 
 Catalog responses should make the active Agent explicit:
 
