@@ -27,6 +27,7 @@ from clio_agent.gact.expert_packs import (
     validate_expert_hierarchy,
 )
 from clio_agent.gact.types import AgentDef
+from clio_agent.tools.catalog import TOOL_CATALOG
 
 _BLUEPRINT_ROOT_NAME = "AGENT.md"
 _BLUEPRINT_ID_RE = r"^[A-Za-z0-9_.-]+$"
@@ -181,8 +182,11 @@ def load_agent_blueprints(
 
 def validate_agent_blueprint_path(path: Path, *, scope: str = "session") -> dict[str, Any]:
     blueprint = parse_agent_blueprint_root(path, scope=scope)
-    rows = validate_agent_hierarchy(_load_blueprint_agents(blueprint), blueprint=blueprint)
     mcp_descriptors = load_mcp_descriptors(blueprint.root, scope=scope, blueprint_id=blueprint.id)
+    rows = _validate_agent_tool_references(
+        validate_agent_hierarchy(_load_blueprint_agents(blueprint), blueprint=blueprint),
+        mcp_descriptors=mcp_descriptors,
+    )
     errors = list(blueprint.validation_errors)
     for row in rows:
         errors.extend(f"{row.id}: {error}" for error in row.validation_errors)
@@ -238,6 +242,73 @@ def validate_agent_hierarchy(
     return out
 
 
+_MEMORY_TOOL_NAMES = {
+    "memory_search_sessions",
+    "memory_read_session_summary",
+    "memory_read_context_frame",
+}
+
+
+def _validate_agent_tool_references(
+    rows: list[AgentDef],
+    *,
+    mcp_descriptors: list[dict[str, Any]],
+) -> list[AgentDef]:
+    builtin_tools = set(TOOL_CATALOG) | _MEMORY_TOOL_NAMES
+    descriptor_tools: dict[str, dict[str, Any]] = {}
+    for descriptor in mcp_descriptors:
+        for tool in descriptor.get("tools") or []:
+            if not isinstance(tool, dict):
+                continue
+            tool_id = str(tool.get("id") or tool.get("name") or "").strip()
+            if tool_id:
+                descriptor_tools[tool_id] = descriptor
+    out: list[AgentDef] = []
+    for row in rows:
+        errors = list(row.validation_errors)
+        diagnostics = list(row.metadata.get("tool_diagnostics", []))
+        for tool_name in row.tools:
+            if tool_name in builtin_tools:
+                continue
+            descriptor_match = descriptor_tools.get(tool_name)
+            if descriptor_match is not None:
+                descriptor_id = str(descriptor_match.get("id") or "")
+                errors.append(
+                    f"MCP tool requires explicit enablement: {tool_name}"
+                    + (f" (descriptor: {descriptor_id})" if descriptor_id else "")
+                )
+                diagnostics.append(
+                    {
+                        "tool": tool_name,
+                        "status": "disabled",
+                        "source": "agent_blueprint_mcp_descriptor",
+                        "descriptor_id": descriptor_id,
+                    }
+                )
+                continue
+            errors.append(f"unknown tool reference: {tool_name}")
+            diagnostics.append(
+                {
+                    "tool": tool_name,
+                    "status": "missing",
+                    "source": "agent_blueprint",
+                }
+            )
+        metadata = dict(row.metadata)
+        if diagnostics:
+            metadata["tool_diagnostics"] = diagnostics
+        out.append(
+            row.model_copy(
+                update={
+                    "metadata": metadata,
+                    "enabled": row.enabled and not errors,
+                    "validation_errors": errors,
+                }
+            )
+        )
+    return out
+
+
 def load_mcp_descriptors(
     root: Path,
     *,
@@ -283,6 +354,16 @@ def load_mcp_descriptors(
                 "transport": transport,
                 "command": str(meta.get("command") or ""),
                 "args": _list_field(meta, "args"),
+                "tools": [
+                    {
+                        "id": tool_name,
+                        "name": tool_name,
+                        "status": "disabled",
+                        "enabled": False,
+                        "source": "agent_blueprint_mcp_descriptor",
+                    }
+                    for tool_name in _list_field(meta, "tools")
+                ],
                 "url": str(meta.get("url") or ""),
                 "enabled": False,
                 "status": "disabled",

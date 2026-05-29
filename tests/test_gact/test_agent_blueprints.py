@@ -588,6 +588,74 @@ EarthScope descriptor.
     assert descriptor["transport"] == "stdio"
 
 
+def test_agent_blueprint_mcp_tool_references_require_enablement(tmp_path: Path) -> None:
+    root = tmp_path / "marketplace" / "earth"
+    _write_blueprint(root, blueprint_id="earth")
+    root.joinpath("experts", "variant.md").write_text(
+        """---
+id: variant
+title: Variant Expert
+parent_id: root
+tier: 2
+tools:
+  - earthscope_query
+---
+Use the external EarthScope catalog.
+""",
+        encoding="utf-8",
+    )
+    (root / "tools").mkdir()
+    root.joinpath("tools", "earthscope.md").write_text(
+        """---
+id: earthscope
+name: EarthScope MCP
+transport: stdio
+command: earthscope-mcp
+args:
+  - serve
+tools:
+  - earthscope_query
+---
+EarthScope descriptor.
+""",
+        encoding="utf-8",
+    )
+
+    body = validate_agent_blueprint_path(root)
+    rows = {row["id"]: row for row in body["agents"]}
+
+    assert body["enabled"] is False
+    assert "MCP tool requires explicit enablement" in "\n".join(body["validation_errors"])
+    assert rows["variant"]["enabled"] is False
+    assert rows["variant"]["metadata"]["tool_diagnostics"][0]["tool"] == "earthscope_query"
+    assert body["mcp_descriptors"][0]["tools"][0]["status"] == "disabled"
+
+
+def test_agent_blueprint_validation_reports_unknown_tools(tmp_path: Path) -> None:
+    root = tmp_path / "marketplace" / "earth"
+    _write_blueprint(root, blueprint_id="earth")
+    root.joinpath("experts", "variant.md").write_text(
+        """---
+id: variant
+title: Variant Expert
+parent_id: root
+tier: 2
+tools:
+  - missing_external_tool
+---
+Use an undeclared external tool.
+""",
+        encoding="utf-8",
+    )
+
+    body = validate_agent_blueprint_path(root)
+
+    assert body["enabled"] is False
+    assert "unknown tool reference: missing_external_tool" in "\n".join(
+        body["validation_errors"]
+    )
+
+
 def test_agent_blueprint_mcp_descriptor_requires_explicit_enablement(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     root = workspace / ".clio" / "agent-blueprints" / "earth"
@@ -631,3 +699,50 @@ EarthScope descriptor.
     )
     assert enabled.json()["status"] == "enabled_pending_probe"
     assert any(row["id"] == "agent_blueprint_mcp_earth_earthscope" for row in rows_after)
+
+
+def test_enabled_agent_blueprint_mcp_descriptor_exposes_declared_tools(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    root = workspace / ".clio" / "agent-blueprints" / "earth"
+    _write_blueprint(root, blueprint_id="earth")
+    (root / "tools").mkdir()
+    root.joinpath("tools", "earthscope.md").write_text(
+        """---
+id: earthscope
+name: EarthScope MCP
+transport: stdio
+command: earthscope-mcp
+args:
+  - serve
+tools:
+  - earthscope_query
+---
+EarthScope descriptor.
+""",
+        encoding="utf-8",
+    )
+
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    with TestClient(app) as client:
+        wid = client.post(
+            "/v1/workspaces",
+            json={
+                "name": "Workspace",
+                "root_path": str(workspace),
+                "storage_root": str(workspace / ".clio"),
+            },
+        ).json()["id"]
+        enabled = client.post(
+            "/v1/agent-blueprints/earth/mcp/earthscope/enable",
+            json={"workspace_id": wid},
+        )
+        tools = client.get("/v1/tools").json()["tools"]
+        detail = client.get("/v1/tools/earthscope_query").json()
+
+    assert enabled.status_code == 200, enabled.text
+    assert enabled.json()["tools_count"] == 1
+    declared = next(row for row in tools if row["id"] == "earthscope_query")
+    assert declared["source"] == "agent_blueprint_mcp_descriptor"
+    assert declared["status"] == "enabled_pending_probe"
+    assert declared["enabled"] is False
+    assert detail["descriptor_id"] == "earthscope"
