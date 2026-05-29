@@ -13,7 +13,8 @@ from clio_agent.gact.agent_blueprints import (
     load_agent_blueprints,
     validate_agent_blueprint_path,
 )
-from clio_agent.gact.app import _builtin_agents, build_app
+from clio_agent.gact.app import _builtin_agents, _dynamic_agent_tools, _gact_app_context, build_app
+from clio_agent.gact.types import AgentDef
 from tests.test_gact.conftest import complete_turn
 
 
@@ -941,3 +942,150 @@ EarthScope descriptor.
     declared = next(row for row in tools if row["id"] == "earthscope_query")
     assert declared["enabled"] is True
     assert declared["status"] == "ready"
+
+
+def test_enabled_agent_blueprint_mcp_tool_reenables_session_expert(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeClient:
+        def __init__(self, transport: Any) -> None:
+            self.transport = transport
+
+        async def __aenter__(self) -> "FakeClient":
+            return self
+
+        async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+            return None
+
+        async def list_tools(self) -> list[Any]:
+            return [
+                SimpleNamespace(
+                    name="earthscope_query",
+                    description="query EarthScope catalog",
+                    inputSchema={"type": "object"},
+                    outputSchema={"type": "object"},
+                )
+            ]
+
+    import fastmcp
+    import fastmcp.client.transports as transports
+
+    monkeypatch.setattr(fastmcp, "Client", FakeClient)
+    monkeypatch.setattr(transports, "StdioTransport", lambda command, args: (command, args))
+
+    workspace = tmp_path / "workspace"
+    root = workspace / ".clio" / "agent-blueprints" / "earth"
+    _write_blueprint(root, blueprint_id="earth")
+    root.joinpath("experts", "variant.md").write_text(
+        """---
+id: variant
+title: Variant Expert
+parent_id: root
+tier: 2
+tools:
+  - earthscope_query
+---
+Use the external EarthScope catalog.
+""",
+        encoding="utf-8",
+    )
+    (root / "tools").mkdir()
+    root.joinpath("tools", "earthscope.md").write_text(
+        """---
+id: earthscope
+name: EarthScope MCP
+transport: stdio
+command: earthscope-mcp
+args:
+  - serve
+tools:
+  - earthscope_query
+---
+EarthScope descriptor.
+""",
+        encoding="utf-8",
+    )
+
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    with TestClient(app) as client:
+        wid = client.post(
+            "/v1/workspaces",
+            json={
+                "name": "Workspace",
+                "root_path": str(workspace),
+                "storage_root": str(workspace / ".clio"),
+            },
+        ).json()["id"]
+        sid = client.post(
+            "/v1/sessions",
+            json={"title": "earth", "workspace_id": wid},
+        ).json()["id"]
+        assert client.post(
+            f"/v1/sessions/{sid}/agent-blueprint",
+            json={"blueprint_id": "earth"},
+        ).status_code == 200
+        before = {
+            row["id"]: row
+            for row in client.get("/v1/agents", params={"session_id": sid}).json()["agents"]
+        }
+        enabled = client.post(
+            "/v1/agent-blueprints/earth/mcp/earthscope/enable",
+            json={"workspace_id": wid},
+        )
+        after = {
+            row["id"]: row
+            for row in client.get("/v1/agents", params={"session_id": sid}).json()["agents"]
+        }
+
+    assert before["variant"]["enabled"] is False
+    assert "MCP tool requires explicit enablement" in "\n".join(
+        before["variant"]["validation_errors"]
+    )
+    assert enabled.status_code == 200, enabled.text
+    assert after["variant"]["enabled"] is True
+    assert after["variant"]["validation_errors"] == []
+    assert "tool_diagnostics" not in after["variant"]["metadata"]
+
+
+def test_dynamic_agent_tools_include_enabled_agent_blueprint_mcp_tool(tmp_path: Path) -> None:
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    app.state.external_mcp_servers = {
+        "agent_blueprint_mcp_earth_earthscope": {
+            "id": "agent_blueprint_mcp_earth_earthscope",
+            "name": "EarthScope MCP",
+            "status": "ready",
+            "spec": {
+                "transport": "stdio",
+                "command": "earthscope-mcp",
+                "args": ["serve"],
+            },
+            "tools": [
+                {
+                    "id": "earthscope_query",
+                    "name": "earthscope_query",
+                    "description": "query EarthScope catalog",
+                    "status": "ready",
+                    "enabled": True,
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {"q": {"type": "string"}},
+                    },
+                }
+            ],
+        }
+    }
+    base_agent = SimpleNamespace(
+        tool_executor=SimpleNamespace(to_dspy_tools=lambda: []),
+    )
+    agent_def = AgentDef(
+        id="variant",
+        source="expert_pack",
+        title="Variant",
+        tools=["earthscope_query"],
+    )
+
+    with _gact_app_context(app):
+        tools = _dynamic_agent_tools(base_agent, agent_def)
+
+    assert [tool.name for tool in tools] == ["earthscope_query"]
