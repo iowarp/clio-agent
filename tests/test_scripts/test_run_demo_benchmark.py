@@ -467,3 +467,55 @@ def test_real_orchestrator_lane_audit_requires_artifact_verification() -> None:
     )
     assert artifact_row["passed"] is False
     assert artifact_row["observed"] == 0
+
+
+def test_real_orchestrator_ndp_blocker_audit_does_not_claim_sac_plot() -> None:
+    message = _message(
+        text="Staging note: bounded NDP attempts completed, but none could be staged.",
+        tools=[{"name": "ndp_stage_resource"}],
+    )
+    message["metadata"]["expert_handoffs"] = [{"agent_id": "ndp_catalog"}]
+    result = bench.DemoResult(
+        case=bench.DemoCase(
+            case_id="ndp_seismic_waveform_to_plot",
+            title="ndp waveform",
+            category="test",
+            prompt="prompt",
+            why="why",
+            expected="expected",
+            session_group="test",
+            expected_agent=("analysis", "data", "ndp_catalog"),
+            expected_tool_prefix_groups=(("ndp_", "sac_"), ("ndp_",)),
+            expected_handoff_agent_groups=(("ndp_catalog", "sac_format"), ("ndp_catalog",)),
+            expected_term_groups=(
+                ("SAC", ".png"),
+                ("Staging note", "none could be staged"),
+            ),
+        ),
+        session_id="sess_ndp",
+        elapsed_s=1.0,
+        message=message,
+        provider={"provider": "codex", "model": "gpt-5.5", "api_base": ""},
+        benchmark_lane="real_orchestrator",
+    )
+
+    audit = bench._provider_lane_audit([result], "real_orchestrator")
+
+    artifact_row = next(
+        item for item in audit if item["criterion"] == "artifact-producing cases verify artifacts on disk"
+    )
+    ndp_row = next(
+        item
+        for item in audit
+        if item["criterion"] == "NDP waveform benchmark passes with honest artifact status"
+    )
+    full_chain_row = next(
+        item for item in audit if item["criterion"] == "NDP full SAC/PNG chain verified when reached"
+    )
+    assert artifact_row["required"] == 0
+    assert ndp_row["passed"] is True
+    assert ndp_row["details"] == [
+        "accepted grounded NDP blocker path; no SAC/PNG artifact was verified"
+    ]
+    assert full_chain_row["passed"] is True
+    assert full_chain_row["observed"] == 0
