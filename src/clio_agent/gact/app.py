@@ -6049,39 +6049,6 @@ _EXPERT_CAPABILITIES: dict[str, dict[str, Any]] = {
 }
 
 
-_BUILTIN_SYSTEM_PROMPTS: dict[str, str] = {
-    "main": (
-        "You are CLIO's agent planner. You control a tool-using scientific data "
-        "agent and route user requests to the correct specialist or tool path."
-    ),
-    "data": (
-        "You are the CLIO Data Expert, a specialized autonomous agent for "
-        "scientific data file formats, storage optimization, I/O performance, "
-        "and external dataset discovery."
-    ),
-    "ndp_catalog": (
-        "You are the CLIO NDP Catalog Expert, a nested data agent for National "
-        "Data Platform and EarthScope-style dataset discovery and bounded staging."
-    ),
-    "analysis": (
-        "You are the CLIO Analysis Expert, a specialized autonomous agent for "
-        "statistical analysis, data profiling, and data quality."
-    ),
-    "sac_format": (
-        "You are the CLIO SAC Format Expert, a nested format agent for SAC "
-        "waveform archive inspection, trace statistics, and plot-ready outputs."
-    ),
-    "visualization": (
-        "You are the CLIO Visualization Expert, a specialized autonomous agent for "
-        "generating scientific data visualizations from tool-grounded data."
-    ),
-    "utility": (
-        "You are the CLIO Utility Expert. Use permission-gated utility tools for "
-        "simple shell diagnostics and environment checks."
-    ),
-}
-
-
 def _signature_prompt(signature: Any) -> str:
     """Return a cleaned DSPy signature docstring for catalog display."""
     return inspect.cleandoc(getattr(signature, "__doc__", "") or "")
@@ -6102,64 +6069,19 @@ def _builtin_agents() -> list[AgentDef]:
     orchestrator dispatches rather than acting itself).
     """
 
-    blueprint_rows = load_agent_blueprints(blueprint_id="data-exploration")
-    if blueprint_rows:
-        builtin_rows = []
-        for row in blueprint_rows:
-            metadata = {
-                **row.metadata,
-                "source_blueprint": "builtin",
-                "routes_to": sorted(_EXPERT_CAPABILITIES) if row.id == "main" else row.metadata.get("routes_to", []),
-            }
-            if row.parent_id:
-                metadata.setdefault("parent", row.parent_id)
-            builtin_rows.append(row.model_copy(update={"source": "builtin", "metadata": metadata}))
-        return builtin_rows
-
-    rows: list[AgentDef] = [
-        AgentDef(
-            id="main",
-            source="builtin",
-            title="Main Agent",
-            description=(
-                "Tier-1 orchestrator. Routes user queries to tier-2 "
-                "specialists based on keyword heuristics + LM classifier."
-            ),
-            system_prompt=_BUILTIN_SYSTEM_PROMPTS["main"],
-            parent_id="",
-            tier=1,
-            specialization="orchestrator",
-            metadata={
-                "routes_to": sorted(_EXPERT_CAPABILITIES),
-                "route_type": "tier_1_orchestrator",
-            },
-        ),
-    ]
-
-    for expert_id, caps in _EXPERT_CAPABILITIES.items():
-        name = caps.get("name", expert_id.replace("_", " ").title())
-        description = caps.get("description", "")
-        keywords = list(caps.get("keywords", []))
-        tools = list(_EXPERT_TOOLS.get(expert_id, []))
-        rows.append(
-            AgentDef(
-                id=expert_id,
-                source="builtin",
-                title=name,
-                description=description,
-                parent_id=str(
-                    caps.get("parent_id") or caps.get("metadata", {}).get("parent") or "main"
-                ),
-                system_prompt=_BUILTIN_SYSTEM_PROMPTS.get(expert_id, ""),
-                tools=tools,
-                tier=int(caps.get("tier", 2)),
-                specialization=_EXPERT_SPECIALIZATION.get(expert_id, expert_id),
-                keywords=keywords,
-                metadata=dict(caps.get("metadata", {})),
-            )
-        )
-
-    return rows
+    builtin_rows = []
+    for row in load_agent_blueprints(blueprint_id="data-exploration"):
+        metadata = {
+            **row.metadata,
+            "source_blueprint": "builtin",
+            "routes_to": sorted(_EXPERT_CAPABILITIES)
+            if row.id == "main"
+            else row.metadata.get("routes_to", []),
+        }
+        if row.parent_id:
+            metadata.setdefault("parent", row.parent_id)
+        builtin_rows.append(row.model_copy(update={"source": "builtin", "metadata": metadata}))
+    return builtin_rows
 
 
 def _load_skills_from_disk() -> list[AgentDef]:
