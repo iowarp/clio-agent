@@ -10,6 +10,8 @@ kept alongside this summary:
   `benchmark/NDP_WAVEFORM_EVIDENCE.jsonl`
 - `benchmark/VISUAL_MULTITURN_REPORT.md` /
   `benchmark/VISUAL_MULTITURN_EVIDENCE.jsonl`
+- `benchmark/CROSS_FILE_DIRTY_REPORT.md` /
+  `benchmark/CROSS_FILE_DIRTY_EVIDENCE.jsonl`
 
 ## Run
 
@@ -153,6 +155,21 @@ Worked because the setup turn reviewed the dirty Parquet export, the follow-up
 turn recovered the reviewed file context, called `plot_summary`, and verified a
 real dashboard PNG on disk.
 
+### Dirty Cross-File Quality Gate
+
+Agent path: `analysis -> [csv_validator, analysis_validator, adios_validator, data_validator]`
+
+Prompt:
+
+```text
+Before I share this run, build a quality gate across tmp/clio-benchmark-data/fusion_run.h5, tmp/clio-benchmark-data/facility_measurements_dirty.parquet, tmp/clio-benchmark-data/sensor_events.csv, and "tmp/clio-benchmark-data/gray scott noise 0.01 data.bp5". I need to know what each file proves, where the dirty tabular export is risky, and which checks block collaborator handoff.
+```
+
+Worked because CLIO selected `analysis` through `route_source=dspy`, spawned
+four tool-backed child sessions, and called HDF5, ADIOS/BP5, dirty Parquet, and
+CSV tools. The run recorded `branch_count=4`, six tool calls, and the final
+answer synthesized each file's evidence into a collaborator handoff gate.
+
 ## Fixes Made During This Pass
 
 - #408 fixed scientific path extraction for new domain suffixes.
@@ -168,15 +185,18 @@ real dashboard PNG on disk.
 - #446 fixed the benchmark runner so all benchmark lanes pin turns to the root
   CLIO orchestrator unless a case explicitly overrides the agent. This avoided
   accidental execution through a non-executable dynamic session agent.
+- #447 fixed visualization default output paths so tool-loop charts land under
+  the CLIO artifact root instead of the repo root.
 
 ## Remaining Gaps
 
 Current committed evidence proves five single-expert cross-domain workflows, one
-deep NDP/SAC/visualization workflow, and two multi-turn visualization artifact
-workflows. It does not yet complete the full umbrella benchmark target. Still
-needed:
+deep NDP/SAC/visualization workflow, two multi-turn visualization artifact
+workflows, and one cross-file nanoagent fanout workflow. It does not yet
+complete the full umbrella benchmark target. Still needed:
 
-- multi-branch workflows with child sessions or tier-3 expert handoffs;
+- at least one more multi-branch workflow with child sessions or tier-3 expert
+  handoffs;
 - more NDP-backed workflows outside the seismic happy path;
 - more visualization artifacts from analyzed data if the final target is ten
   workflows rather than the minimum five;
