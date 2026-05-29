@@ -71,6 +71,8 @@ async def test_inspect_mzml_returns_spectrum_summary(mzml_file):
     assert data["total_peak_count"] == 5
     assert data["mz_range"] == [100.0, 300.0]
     assert data["tic_total"] == 725.0
+    assert data["total_ion_current_total"] == 725.0
+    assert data["total_ion_current_max"] == 600.0
     assert data["representative_spectra"][0]["id"] == "scan=1"
 
 
