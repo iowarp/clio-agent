@@ -442,6 +442,13 @@ def test_rehydrated_ndp_waveform_case_preserves_artifact_requirement() -> None:
     assert rehydrated.passed is False
 
 
+def test_ndp_waveform_case_accepts_later_phase_selected_agent() -> None:
+    cases = bench._canonical_cases_by_id()
+    case = cases["ndp_seismic_waveform_to_plot"]
+
+    assert case.expected_agent == ("data", "analysis", "visualization")
+
+
 def test_rehydrated_genomics_case_preserves_tool_evidence_term_matching() -> None:
     message = _message(
         text="Reference and variant review completed.",

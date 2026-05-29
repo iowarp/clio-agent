@@ -569,6 +569,8 @@ def _route_graph(result: DemoResult) -> dict[str, Any]:
         elif parent_id:
             add_node(parent_id, "expert")
             add_edge(parent_id, agent_id, "handoff")
+            if stage == "direct_tool":
+                add_edge(agent_id, parent_id, "return")
         elif previous_expert and stage != "planner_dispatch":
             add_edge(previous_expert, agent_id, "handoff")
         else:
@@ -651,6 +653,14 @@ def _missing_sync_return_pairs(result: DemoResult) -> list[str]:
             stage = str(row.get("stage") or "")
             agent_id = str(row.get("agent_id") or "")
             row_parent = str(row.get("parent_id") or "")
+            if (
+                agent_id == child_id
+                and row_parent == parent_id
+                and stage == "direct_tool"
+                and str(row.get("status") or "") in {"success", "failure"}
+            ):
+                has_child_return = True
+                has_parent_resume = True
             if (
                 agent_id == child_id
                 and row_parent == parent_id
@@ -1407,8 +1417,9 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             title="NDP seismic waveform discovery to plot",
             category="hierarchical-science",
             session_group="ndp_seismic",
-            expected_agent="data",
+            expected_agent=("data", "analysis", "visualization"),
             expected_tool_prefixes=("ndp_", "sac_"),
+            expected_tools=("sac_fetch_earthscope_waveform",),
             expected_tool_prefix_groups=(("ndp_", "sac_"), ("ndp_",)),
             expected_handoff_agents=("ndp_catalog", "sac_format"),
             expected_handoff_agent_groups=(),

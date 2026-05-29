@@ -17,6 +17,7 @@ from clio_agent.agent import ClioAgent, _mass_spec_qc_sentence, cancellation_che
 from clio_agent.errors import CancellationError, RoutingError
 from clio_agent.harness import RouteDecision, RunTrace, ToolObservation
 from clio_agent.registry.registry import AgentCapability
+from clio_agent.signatures.main_agent_sig import AgentActionSignature
 from clio_agent.tools.execution import set_global_tool_observer
 
 
@@ -530,6 +531,174 @@ class TestBuildCapabilitiesContext:
         )
 
         assert observation["local_paths"] == ["/tmp/example_waveform.sac"]
+
+    def test_expert_observation_ignores_failed_tool_local_paths(self, agent):
+        result = MagicMock()
+        result.metadata = {"expert": "ndp_catalog"}
+        result.tools = (
+            ToolObservation(
+                tool="ndp_stage_resource",
+                params={},
+                result={
+                    "error": {"code": "webget_failed"},
+                    "details": {
+                        "command": [
+                            "curl",
+                            "--output",
+                            "/tmp/clio-ndp-staging/stale_waveform.sac",
+                        ]
+                    },
+                },
+                duration_ms=1.0,
+                ok=False,
+            ),
+        )
+        result.tool_provenance = ()
+
+        observation = agent._expert_loop_observation(
+            step=1,
+            expert="data",
+            answer="staging failed",
+            expert_result=result,
+            error_info=None,
+            reason="test",
+        )
+
+        assert observation["local_paths"] == []
+
+    def test_expert_observation_exposes_parent_recovery_actions(self, agent):
+        result = MagicMock()
+        result.metadata = {
+            "expert": "ndp_catalog",
+            "staging": {
+                "status": "blocked",
+                "reason": "staging_failed",
+                "recommended_parent_actions": [
+                    "broaden_catalog_search",
+                    "delegate_to_utility_download",
+                    "ask_user_for_dataset_hint",
+                ],
+            },
+        }
+        result.tools = ()
+        result.tool_provenance = ()
+
+        observation = agent._expert_loop_observation(
+            step=1,
+            expert="data",
+            answer="NDP staging failed with a transport blocker.",
+            expert_result=result,
+            error_info=None,
+            reason="test",
+        )
+
+        assert observation["recommended_parent_actions"] == [
+            "broaden_catalog_search",
+            "delegate_to_utility_download",
+            "ask_user_for_dataset_hint",
+        ]
+
+    def test_planner_signature_allows_parent_recovery_after_child_failure(self):
+        doc = AgentActionSignature.__doc__ or ""
+
+        assert "recommended_parent_actions" in doc
+        assert "sac_fetch_earthscope_waveform" in doc
+        assert "repeat the same failed" in doc
+
+    def test_downstream_recovery_expert_requires_observed_waveform_path(self, agent):
+        observations = [
+            {
+                "step": 1,
+                "type": "expert",
+                "ok": True,
+                "metadata": {
+                    "staging": {
+                        "status": "blocked",
+                        "recommended_parent_actions": ["try_another_provider"],
+                    }
+                },
+            }
+        ]
+
+        error = agent._recovery_expert_path_scope_error(
+            "analysis",
+            "Analyze the recovered waveform and make a plot.",
+            observations,
+        )
+
+        assert error is not None
+        assert error["expert"] == "analysis"
+        assert "without naming an explicit current-turn waveform path" in error["message"]
+
+    def test_premature_answer_after_recoverable_ndp_blocker_is_rejected(self, agent):
+        agent._plan_next_action = MagicMock(
+            side_effect=[
+                {"action": "expert", "expert": "data", "question": "", "reason": "discover"},
+                {"action": "answer", "answer": "NDP failed; stop.", "reason": "blocked"},
+                {
+                    "action": "expert",
+                    "expert": "analysis",
+                    "question": "Analyze /tmp/stale_waveform.sac and plot it.",
+                    "reason": "bad stale expert path",
+                },
+                {
+                    "action": "tool",
+                    "tool": "sac_plot_traces",
+                    "args": {"filepath": "/tmp/stale_waveform.sac"},
+                    "reason": "bad stale plot",
+                },
+                {
+                    "action": "tool",
+                    "tool": "sac_fetch_earthscope_waveform",
+                    "args": {},
+                    "reason": "recover waveform",
+                },
+                {
+                    "action": "tool",
+                    "tool": "sac_plot_traces",
+                    "args": {"filepath": "/tmp/example_waveform.sac"},
+                    "reason": "plot recovered waveform",
+                },
+                {"action": "answer", "answer": "Plot ready.", "reason": "done"},
+            ]
+        )
+        ndp_result = MagicMock()
+        ndp_result.metadata = {
+            "expert": "ndp_catalog",
+            "staging": {
+                "status": "blocked",
+                "recommended_parent_actions": ["try_another_provider"],
+            },
+        }
+        ndp_result.tools = ()
+        ndp_result.tool_provenance = ()
+        agent._dispatch_expert_action = MagicMock(
+            return_value=("data", "NDP staging failed.", ndp_result, None)
+        )
+        def execute(tool_name, _raw_args, _trace, **_kwargs):
+            if tool_name == "sac_fetch_earthscope_waveform":
+                return {"path": "/tmp/example_waveform.sac", "staged": True}
+            if tool_name == "sac_plot_traces":
+                return {"output_path": "/tmp/example_waveform.png", "ok": True}
+            raise AssertionError(tool_name)
+
+        agent._execute_tool_action = MagicMock(side_effect=execute)
+
+        selected, answer, *_ = agent._run_agent_loop(
+            question="Find seismic waveform data and produce a plot artifact.",
+            session_context="",
+            file_context="",
+            trace=_trace(),
+        )
+
+        assert selected == "analysis"
+        assert answer == "Plot ready."
+        assert agent._plan_next_action.call_count == 7
+        agent._dispatch_expert_action.assert_called_once()
+        assert [call.args[0] for call in agent._execute_tool_action.call_args_list] == [
+            "sac_fetch_earthscope_waveform",
+            "sac_plot_traces",
+        ]
 
     def test_downstream_expert_receives_current_turn_observations(self, agent):
         data_result = MagicMock()
