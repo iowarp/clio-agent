@@ -896,3 +896,62 @@ def test_real_orchestrator_audit_requires_sync_parent_resume() -> None:
     )
     assert sync_row["passed"] is False
     assert sync_row["details"] == ["ndp_seismic_waveform_to_plot: missing=['data->ndp_catalog']"]
+
+
+def test_render_report_from_multiple_jsonls_combines_marketplace_evidence(tmp_path: Path) -> None:
+    blueprints = [
+        ("marketplace_genomics_reference_review", "genomics-review", "reference", "genomics_inspect_fasta"),
+        ("marketplace_materials_crystal_review", "materials-crystal-review", "crystal_structure", "materials_inspect_cif"),
+        ("marketplace_geospatial_field_review", "geospatial-field-review", "spatial_features", "geospatial_inspect_geojson"),
+        ("marketplace_proteomics_mzml_review", "proteomics-mzml-review", "mass_spec", "mass_spec_inspect_mzml"),
+        ("marketplace_seismic_waveform_review", "seismic-waveform-review", "main", "sac_plot_traces"),
+    ]
+    rows: list[dict[str, object]] = []
+    for case_id, blueprint_id, selected_agent, tool_name in blueprints:
+        message = _message(
+            text=f"{blueprint_id} completed",
+            route_source="user_agent",
+            tools=[{"name": tool_name}],
+        )
+        message["parts"][0]["selected_agent"] = selected_agent
+        result = bench.DemoResult(
+            case=bench.DemoCase(
+                case_id=case_id,
+                title=case_id,
+                category="marketplace-test",
+                prompt="prompt",
+                why="why",
+                expected="expected",
+                session_group="marketplace",
+                agent_blueprint_id=blueprint_id,
+                expected_tools=(tool_name,),
+            ),
+            session_id=f"sess_{case_id}",
+            elapsed_s=1.0,
+            message=message,
+            provider={"provider": "codex", "model": "gpt-5.5", "api_base": ""},
+            benchmark_lane="marketplace_agents",
+            agent_blueprint={"active_agent_blueprint_id": blueprint_id},
+        )
+        rows.append(bench._case_row(result))
+
+    first = tmp_path / "marketplace-a.jsonl"
+    second = tmp_path / "marketplace-b.jsonl"
+    first.write_text(
+        "".join(bench.json.dumps(row, sort_keys=True) + "\n" for row in rows[:3]),
+        encoding="utf-8",
+    )
+    second.write_text(
+        "".join(bench.json.dumps(row, sort_keys=True) + "\n" for row in rows[3:]),
+        encoding="utf-8",
+    )
+    combined = tmp_path / "combined.jsonl"
+    report = tmp_path / "combined.md"
+
+    bench.render_report_from_jsonls([first, second], combined, report)
+
+    assert len(combined.read_text(encoding="utf-8").splitlines()) == 5
+    report_text = report.read_text(encoding="utf-8")
+    assert "at least five distinct marketplace Agent Blueprints | 5 | 5 | pass" in report_text
+    assert "seismic-waveform-review" in report_text
+    assert "genomics-review" in report_text
