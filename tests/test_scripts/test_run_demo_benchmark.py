@@ -163,6 +163,56 @@ def test_cancelled_case_passes_only_structured_cancelled_without_text() -> None:
     assert row["benchmark_lane"] == "claude_code"
 
 
+def test_case_row_records_route_file_and_artifact_evidence(tmp_path) -> None:
+    data_file = tmp_path / "sample.parquet"
+    data_file.write_text("placeholder", encoding="utf-8")
+    artifact = tmp_path / "chart.png"
+    artifact.write_bytes(b"png")
+    message = _message(
+        text=f"Saved chart to {artifact}",
+        tools=[
+            {
+                "name": "plot_summary",
+                "args": {"filepath": str(data_file)},
+                "result": {"artifact_path": str(artifact)},
+            }
+        ],
+    )
+    message["metadata"]["expert_handoffs"] = [
+        {"agent_id": "analysis", "stage": "planner_dispatch"},
+        {"agent_id": "visualization", "stage": "handoff"},
+    ]
+    result = bench.DemoResult(
+        case=bench.DemoCase(
+            case_id="artifact_case",
+            title="artifact",
+            category="test",
+            prompt=f"Create a plot from {data_file}",
+            why="why",
+            expected="expected",
+            session_group="test",
+            expected_tools=("plot_summary",),
+        ),
+        session_id="sess_test",
+        elapsed_s=2.0,
+        message=message,
+        provider={"provider": "claude_code", "model": "sonnet", "api_base": ""},
+    )
+
+    row = bench._case_row(result)
+
+    assert row["data_files"] == [str(data_file)]
+    assert row["artifact_evidence"] == [
+        {"path": str(artifact), "exists": True, "size_bytes": 3}
+    ]
+    assert row["route_metrics"]["expert_depth"] == 2
+    assert row["route_metrics"]["tool_call_count"] == 1
+    assert row["route_graph"]["edges"][:2] == [
+        {"from": "orchestrator", "to": "analysis", "kind": "route"},
+        {"from": "analysis", "to": "visualization", "kind": "handoff"},
+    ]
+
+
 def test_expected_error_allows_structured_handoff_telemetry_only() -> None:
     result = _result("missing_hdf5_error")
     result.message["parts"].append(
@@ -215,6 +265,7 @@ def test_render_report_includes_provider_lane_audit(tmp_path) -> None:
 
     assert "# CLIO Claude Code Real-Provider Benchmark Report" in report
     assert "Benchmark lane: `claude_code`" in report
+    assert "## Evidence Summary" in report
     assert "## Provider Lane Audit" in report
 
 
@@ -286,3 +337,32 @@ def test_real_orchestrator_lane_audit_requires_no_shortcuts() -> None:
     )
     assert shortcut_row["passed"] is False
     assert shortcut_row["observed"] == 1
+
+
+def test_real_orchestrator_lane_audit_requires_artifact_verification() -> None:
+    case = bench.DemoCase(
+        case_id="visual_case",
+        title="visual",
+        category="test",
+        prompt="make a png",
+        why="why",
+        expected="expected",
+        session_group="test",
+        expected_terms=(".png",),
+    )
+    result = bench.DemoResult(
+        case=case,
+        session_id="sess_visual",
+        elapsed_s=1.0,
+        message=_message(text="Saved chart to /tmp/clio-missing-artifact.png"),
+        provider={"provider": "claude_code", "model": "sonnet", "api_base": ""},
+        benchmark_lane="real_orchestrator",
+    )
+
+    audit = bench._provider_lane_audit([result], "real_orchestrator")
+
+    artifact_row = next(
+        item for item in audit if item["criterion"] == "artifact-producing cases verify artifacts on disk"
+    )
+    assert artifact_row["passed"] is False
+    assert artifact_row["observed"] == 0

@@ -234,6 +234,26 @@ class DemoResult:
             + len(self.case.complexity_tags) * 2
         )
 
+    @property
+    def data_files(self) -> list[str]:
+        """Return local data paths referenced by the prompt or tool arguments."""
+        return _data_file_paths(self.case.prompt, self.tools)
+
+    @property
+    def artifact_evidence(self) -> list[dict[str, Any]]:
+        """Return artifact path existence and size evidence."""
+        return _artifact_evidence(self.artifacts)
+
+    @property
+    def route_graph(self) -> dict[str, Any]:
+        """Return structured routing evidence for this result."""
+        return _route_graph(self)
+
+    @property
+    def route_metrics(self) -> dict[str, Any]:
+        """Return route depth/fanout/tool metrics used by the report."""
+        return _route_metrics(self)
+
 
 def _message_text(message: dict[str, Any]) -> str:
     return "\n".join(str(part.get("text", "")) for part in message.get("parts", []))
@@ -325,6 +345,112 @@ def _artifact_paths(message: dict[str, Any]) -> list[str]:
         if candidate not in deduped:
             deduped.append(candidate)
     return deduped
+
+
+def _path_like_strings(value: Any) -> list[str]:
+    """Extract path-like strings from nested tool metadata."""
+    if isinstance(value, str):
+        return re.findall(
+            r"[A-Za-z]:\\[^\n\r\"']+|/(?:[^\s,\"'`]|\\ )+",
+            value,
+        )
+    if isinstance(value, dict):
+        paths: list[str] = []
+        for item in value.values():
+            paths.extend(_path_like_strings(item))
+        return paths
+    if isinstance(value, list):
+        paths = []
+        for item in value:
+            paths.extend(_path_like_strings(item))
+        return paths
+    return []
+
+
+def _clean_path_candidate(path: str) -> str:
+    """Trim punctuation commonly attached to prose path references."""
+    return path.strip().strip(".,;:)\"'")
+
+
+def _data_file_paths(prompt: str, tools: list[dict[str, Any]]) -> list[str]:
+    """Extract local data/input paths from a prompt and tool argument metadata."""
+    candidates = [_clean_path_candidate(path) for path in _path_like_strings(prompt)]
+    for row in tools:
+        args = row.get("args") or row.get("arguments") or {}
+        candidates.extend(_clean_path_candidate(path) for path in _path_like_strings(args))
+    deduped: list[str] = []
+    for candidate in candidates:
+        if not candidate:
+            continue
+        if candidate.endswith(".png"):
+            continue
+        if candidate not in deduped:
+            deduped.append(candidate)
+    return deduped
+
+
+def _artifact_evidence(artifacts: list[str]) -> list[dict[str, Any]]:
+    """Return existence evidence for local artifact paths."""
+    rows: list[dict[str, Any]] = []
+    for raw_path in artifacts:
+        path = _clean_path_candidate(raw_path)
+        exists = Path(path).exists()
+        size_bytes = Path(path).stat().st_size if exists and Path(path).is_file() else 0
+        rows.append({"path": path, "exists": exists, "size_bytes": size_bytes})
+    return rows
+
+
+def _route_graph(result: DemoResult) -> dict[str, Any]:
+    """Build a machine-readable route graph from routing and handoff evidence."""
+    nodes: list[dict[str, Any]] = []
+    edges: list[dict[str, str]] = []
+
+    def add_node(node_id: str, node_type: str) -> None:
+        if not node_id:
+            return
+        if any(row["id"] == node_id and row["type"] == node_type for row in nodes):
+            return
+        nodes.append({"id": node_id, "type": node_type})
+
+    selected = result.selected_agent
+    add_node("orchestrator", "orchestrator")
+    if selected:
+        add_node(selected, "expert")
+        edges.append({"from": "orchestrator", "to": selected, "kind": "route"})
+
+    previous = selected
+    for row in result.expert_handoffs:
+        agent_id = str(row.get("agent_id") or "")
+        if not agent_id:
+            continue
+        add_node(agent_id, "expert")
+        if previous and previous != agent_id:
+            edges.append({"from": previous, "to": agent_id, "kind": "handoff"})
+        previous = agent_id
+
+    for child in result.child_sessions:
+        child_id = str(child.get("id") or child.get("title") or child.get("name") or "")
+        if not child_id:
+            continue
+        add_node(child_id, "child_session")
+        edges.append({"from": selected or "orchestrator", "to": child_id, "kind": "branch"})
+
+    return {"nodes": nodes, "edges": edges}
+
+
+def _route_metrics(result: DemoResult) -> dict[str, Any]:
+    """Return aggregate routing/tool metrics for benchmark comparison."""
+    graph = _route_graph(result)
+    expert_nodes = [row for row in graph["nodes"] if row.get("type") == "expert"]
+    branch_edges = [row for row in graph["edges"] if row.get("kind") == "branch"]
+    return {
+        "expert_depth": len(expert_nodes),
+        "branch_count": len(branch_edges),
+        "unique_experts": len({row.get("id") for row in expert_nodes}),
+        "unique_tools": len(set(result.tool_names)),
+        "tool_call_count": len(result.tools),
+        "artifact_count": len(result.artifacts),
+    }
 
 
 def _children(http: httpx.Client, parent_session_id: str) -> list[dict[str, Any]]:
@@ -490,6 +616,7 @@ def _case_row(result: DemoResult) -> dict[str, Any]:
         "routing_decision": _routing_decision(result.message),
         "tools_called": result.tools,
         "tool_names": result.tool_names,
+        "data_files": result.data_files,
         "expert_handoffs": result.expert_handoffs,
         "handoff_agent_ids": result.handoff_agent_ids,
         "handoff_event_count": result.handoff_event_count,
@@ -499,6 +626,9 @@ def _case_row(result: DemoResult) -> dict[str, Any]:
         "setup_message_ids": [row.get("id") for row in result.setup_messages],
         "actions": result.actions,
         "artifacts": result.artifacts,
+        "artifact_evidence": result.artifact_evidence,
+        "route_graph": result.route_graph,
+        "route_metrics": result.route_metrics,
         "error_info": result.message.get("error_info"),
         "partial_error": result.partial_error,
         "stop_reason": result.message.get("stop_reason"),
@@ -539,6 +669,7 @@ def _result_from_case_row(row: dict[str, Any]) -> DemoResult:
         "parts": [
             routing,
             {"type": "text", "text": str(row.get("answer_excerpt") or "")},
+            {"type": "text", "text": "\n".join(str(path) for path in row.get("artifacts", []) or [])},
         ],
         "metadata": {
             "tools_called": row.get("tools_called") or [],
@@ -1505,6 +1636,35 @@ def _provider_lane_audit(results: list[DemoResult], lane: str) -> list[dict[str,
             for result in results
             if result.route_source in result.case.forbidden_route_sources
         ]
+        passing_results = [result for result in results if result.passed]
+        missing_route_evidence = [
+            result
+            for result in passing_results
+            if result.passed
+            and (
+                not result.route_graph["nodes"]
+                or result.route_metrics["expert_depth"] <= 0
+                or (result.case.expected_tools and result.route_metrics["tool_call_count"] <= 0)
+            )
+        ]
+        artifact_expected = [
+            result
+            for result in results
+            if result.passed
+            and (
+                any(term.lower() == ".png" for term in result.case.expected_terms)
+                or result.route_metrics["artifact_count"] > 0
+            )
+        ]
+        missing_artifact_evidence = [
+            result
+            for result in artifact_expected
+            if not result.artifact_evidence
+            or any(
+                not row.get("exists") or int(row.get("size_bytes") or 0) <= 0
+                for row in result.artifact_evidence
+            )
+        ]
         return [
             {
                 "criterion": "all selected cases avoid shortcut route sources",
@@ -1514,6 +1674,26 @@ def _provider_lane_audit(results: list[DemoResult], lane: str) -> list[dict[str,
                 "details": [
                     f"{result.case.case_id}: route_source={result.route_source}"
                     for result in forbidden
+                ],
+            },
+            {
+                "criterion": "passing cases include structured route/tool evidence",
+                "observed": len(passing_results) - len(missing_route_evidence),
+                "required": len(passing_results),
+                "passed": not missing_route_evidence,
+                "details": [
+                    f"{result.case.case_id}: route_metrics={result.route_metrics}"
+                    for result in missing_route_evidence
+                ],
+            },
+            {
+                "criterion": "artifact-producing cases verify artifacts on disk",
+                "observed": len(artifact_expected) - len(missing_artifact_evidence),
+                "required": len(artifact_expected),
+                "passed": not missing_artifact_evidence,
+                "details": [
+                    f"{result.case.case_id}: artifact_evidence={result.artifact_evidence}"
+                    for result in missing_artifact_evidence
                 ],
             },
             {
@@ -1608,6 +1788,15 @@ def _render_report(results: list[DemoResult], output_jsonl: Path) -> str:
     audit = _stress_audit(results)
     provider_audit = _provider_lane_audit(results, lane)
     best = sorted(results, key=lambda result: result.complexity_score, reverse=True)[:10]
+    max_elapsed = max(results, key=lambda result: result.elapsed_s, default=None)
+    max_depth = max(results, key=lambda result: result.route_metrics["expert_depth"], default=None)
+    max_branch = max(results, key=lambda result: result.route_metrics["branch_count"], default=None)
+    all_tools = sorted({tool for result in results for tool in result.tool_names if tool})
+    all_files = sorted({path for result in results for path in result.data_files})
+    artifact_rows = [
+        row for result in results for row in result.artifact_evidence if row.get("path")
+    ]
+    verified_artifacts = [row for row in artifact_rows if row.get("exists") and row.get("size_bytes", 0) > 0]
     lines = [
         f"# {_lane_title(lane)}",
         "",
@@ -1651,6 +1840,19 @@ def _render_report(results: list[DemoResult], output_jsonl: Path) -> str:
     if audit_details:
         lines.extend(["", "High-event or long-running cases:", ""])
         lines.extend(f"- {detail}" for detail in audit_details)
+    lines.extend(
+        [
+            "",
+            "## Evidence Summary",
+            "",
+            f"- Max elapsed case: {_result_metric_label(max_elapsed, 'elapsed')}",
+            f"- Max expert depth: {_result_metric_label(max_depth, 'expert_depth')}",
+            f"- Max branch fanout: {_result_metric_label(max_branch, 'branch_count')}",
+            f"- Unique tools used: {', '.join(all_tools) if all_tools else 'none'}",
+            f"- Data/input files referenced: {len(all_files)}",
+            f"- Artifacts verified on disk: {len(verified_artifacts)}/{len(artifact_rows)}",
+        ]
+    )
     if provider_audit:
         lines.extend(
             [
@@ -1717,6 +1919,10 @@ def _render_report(results: list[DemoResult], output_jsonl: Path) -> str:
         tool_text = ", ".join(result.tool_names) or "none"
         handoff_text = _handoff_summary(result) or "none"
         artifact_text = ", ".join(result.artifacts) or "none"
+        artifact_evidence_text = ", ".join(
+            f"{row['path']} ({'ok' if row.get('exists') and row.get('size_bytes', 0) > 0 else 'missing'}, {row.get('size_bytes', 0)} B)"
+            for row in result.artifact_evidence
+        ) or "none"
         action_text = ", ".join(
             f"{action.get('type')}={'ok' if action.get('ok') else 'failed'}"
             for action in result.actions
@@ -1736,12 +1942,15 @@ def _render_report(results: list[DemoResult], output_jsonl: Path) -> str:
                 f"Provider/model: {_provider_model_summary(result.provider)}",
                 f"Provider settings: {_provider_settings_summary(result.provider)}",
                 f"Route graph: {_route_graph_summary(result)}",
+                f"Route metrics: depth={result.route_metrics['expert_depth']}, branches={result.route_metrics['branch_count']}, tools={result.route_metrics['tool_call_count']}",
                 f"Expert handoffs: {handoff_text}",
                 f"Tools: {tool_text}",
+                f"Data/input files: {', '.join(result.data_files) or 'none'}",
                 f"Setup turns: {len(result.setup_messages)}",
                 f"Actions: {action_text or 'none'}",
                 f"Child sessions: {child_text or 'none'}",
                 f"Artifacts: {artifact_text}",
+                f"Artifact evidence: {artifact_evidence_text}",
                 f"Elapsed: {result.elapsed_s:.1f}s",
                 "",
                 "Prompt:",
@@ -1814,6 +2023,16 @@ def _render_report(results: list[DemoResult], output_jsonl: Path) -> str:
                 ]
             )
     return "\n".join(lines).strip() + "\n"
+
+
+def _result_metric_label(result: DemoResult | None, metric: str) -> str:
+    """Return a compact campaign metric label."""
+    if result is None:
+        return "none"
+    if metric == "elapsed":
+        return f"`{result.case.case_id}` ({result.elapsed_s:.1f}s)"
+    value = result.route_metrics.get(metric, 0)
+    return f"`{result.case.case_id}` ({value})"
 
 
 def _handoff_summary(result: DemoResult) -> str:
