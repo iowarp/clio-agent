@@ -14,7 +14,7 @@ import os
 import re
 import sys
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -46,6 +46,7 @@ _DATA_FILE_SUFFIXES = {
     ".tgz",
     ".vcf",
 }
+_CANONICAL_CASES_BY_ID: dict[str, "DemoCase"] | None = None
 
 
 @dataclass(frozen=True)
@@ -902,27 +903,41 @@ def _case_row(result: DemoResult) -> dict[str, Any]:
 
 def _result_from_case_row(row: dict[str, Any]) -> DemoResult:
     """Rehydrate a recorded JSONL evidence row for markdown report rendering."""
-    case = DemoCase(
-        case_id=str(row.get("case") or ""),
-        title=str(row.get("title") or row.get("case") or ""),
-        category=str(row.get("category") or ""),
-        session_group=str(row.get("session_group") or row.get("case") or "recorded"),
-        prompt=str(row.get("prompt") or ""),
-        expected=str(row.get("expected") or ""),
-        why=str(row.get("why") or ""),
-        routing_mode=str(row.get("routing_mode") or "auto"),
-        expects_error=str(row.get("outcome") or "") == "expected_error",
-        expects_cancelled=str(row.get("outcome") or "") == "cancelled",
-        complexity_tags=tuple(str(tag) for tag in row.get("complexity_tags", []) or []),
-        forbidden_route_sources=tuple(
-            str(source) for source in row.get("forbidden_route_sources", []) or []
-        ),
-        agent_blueprint_id=str(
-            (row.get("agent_blueprint") or {}).get("active_agent_blueprint_id")
-            if isinstance(row.get("agent_blueprint"), dict)
-            else ""
-        ),
-    )
+    case_id = str(row.get("case") or "")
+    canonical_case = _canonical_cases_by_id().get(case_id)
+    if canonical_case is not None:
+        case = replace(
+            canonical_case,
+            title=str(row.get("title") or canonical_case.title),
+            category=str(row.get("category") or canonical_case.category),
+            session_group=str(row.get("session_group") or canonical_case.session_group),
+            prompt=str(row.get("prompt") or canonical_case.prompt),
+            expected=str(row.get("expected") or canonical_case.expected),
+            why=str(row.get("why") or canonical_case.why),
+            routing_mode=str(row.get("routing_mode") or canonical_case.routing_mode),
+        )
+    else:
+        case = DemoCase(
+            case_id=case_id,
+            title=str(row.get("title") or row.get("case") or ""),
+            category=str(row.get("category") or ""),
+            session_group=str(row.get("session_group") or row.get("case") or "recorded"),
+            prompt=str(row.get("prompt") or ""),
+            expected=str(row.get("expected") or ""),
+            why=str(row.get("why") or ""),
+            routing_mode=str(row.get("routing_mode") or "auto"),
+            expects_error=str(row.get("outcome") or "") == "expected_error",
+            expects_cancelled=str(row.get("outcome") or "") == "cancelled",
+            complexity_tags=tuple(str(tag) for tag in row.get("complexity_tags", []) or []),
+            forbidden_route_sources=tuple(
+                str(source) for source in row.get("forbidden_route_sources", []) or []
+            ),
+            agent_blueprint_id=str(
+                (row.get("agent_blueprint") or {}).get("active_agent_blueprint_id")
+                if isinstance(row.get("agent_blueprint"), dict)
+                else ""
+            ),
+        )
     routing = dict(row.get("routing_decision") or {})
     if routing and routing.get("type") != "routing_decision":
         routing["type"] = "routing_decision"
@@ -976,6 +991,38 @@ def render_report_from_jsonl(output_jsonl: Path, report_path: Path) -> None:
             rows.append(json.loads(line))
     results = [_result_from_case_row(row) for row in rows]
     report_path.write_text(_render_report(results, output_jsonl.resolve()), encoding="utf-8")
+
+
+def _canonical_cases_by_id() -> dict[str, DemoCase]:
+    """Return benchmark cases with their full pass/fail criteria intact."""
+    global _CANONICAL_CASES_BY_ID
+    if _CANONICAL_CASES_BY_ID is None:
+        _CANONICAL_CASES_BY_ID = {
+            case.case_id: case for case in _make_cases(_canonical_benchmark_manifest())
+        }
+    return _CANONICAL_CASES_BY_ID
+
+
+def _canonical_benchmark_manifest() -> dict[str, Any]:
+    """Build a path-only manifest for report rehydration without writing fixtures."""
+    root = Path("benchmark-data")
+    return {
+        "hdf5": {"path": str(root / "fusion_run.h5")},
+        "parquet": {
+            "path": str(root / "facility_measurements.parquet"),
+            "dirty_path": str(root / "facility_measurements_dirty.parquet"),
+        },
+        "csv": {"path": str(root / "sensor_events.csv")},
+        "adios": {"path": str(root / "gray scott noise 0.01 data.bp5")},
+        "genomics": {
+            "fasta_path": str(root / "synthetic_pathogen.fa"),
+            "vcf_path": str(root / "synthetic_pathogen.vcf"),
+        },
+        "materials": {"cif_path": str(root / "perovskite_reference.cif")},
+        "geospatial": {"geojson_path": str(root / "field_sites.geojson")},
+        "imaging": {"png_path": str(root / "microscopy_cells.png")},
+        "mass_spec": {"mzml_path": str(root / "proteomics_qc.mzML")},
+    }
 
 
 def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
