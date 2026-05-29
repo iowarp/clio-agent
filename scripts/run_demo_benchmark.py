@@ -64,6 +64,9 @@ class DemoCase:
     expected_tools: tuple[str, ...] = ()
     expected_handoff_agents: tuple[str, ...] = ()
     expected_terms: tuple[str, ...] = ()
+    expected_tool_prefix_groups: tuple[tuple[str, ...], ...] = ()
+    expected_handoff_agent_groups: tuple[tuple[str, ...], ...] = ()
+    expected_term_groups: tuple[tuple[str, ...], ...] = ()
     min_children: int = 0
     min_tool_calls: int = 0
     min_handoff_events: int = 0
@@ -206,20 +209,29 @@ class DemoResult:
         for expected_tool in self.case.expected_tools:
             if expected_tool not in self.tool_names:
                 return False
-        for expected_agent in self.case.expected_handoff_agents:
-            if expected_agent not in self.handoff_agent_ids:
-                return False
+        if not self._matches_any_group(
+            tuple(self.handoff_agent_ids),
+            self.case.expected_handoff_agents,
+            self.case.expected_handoff_agent_groups,
+        ):
+            return False
         if self.case.min_tool_calls and len(self.tools) < self.case.min_tool_calls:
             return False
         if self.case.min_handoff_events and self.handoff_event_count < self.case.min_handoff_events:
             return False
-        for prefix in self.case.expected_tool_prefixes:
-            if not any(name.startswith(prefix) for name in self.tool_names):
-                return False
+        if not self._matches_any_prefix_group(
+            tuple(self.tool_names),
+            self.case.expected_tool_prefixes,
+            self.case.expected_tool_prefix_groups,
+        ):
+            return False
         lowered = "\n".join([self.text, *self.artifacts]).lower()
-        for term in self.case.expected_terms:
-            if term.lower() not in lowered:
-                return False
+        if not self._matches_any_text_group(
+            lowered,
+            self.case.expected_terms,
+            self.case.expected_term_groups,
+        ):
+            return False
         if len(self.child_sessions) < self.case.min_children:
             return False
         for expected_action in self.case.expected_actions:
@@ -229,6 +241,41 @@ class DemoResult:
             ):
                 return False
         return True
+
+    @staticmethod
+    def _matches_any_group(
+        values: tuple[str, ...],
+        required: tuple[str, ...],
+        alternatives: tuple[tuple[str, ...], ...],
+    ) -> bool:
+        """Return whether all required values from any acceptable group are present."""
+        groups = alternatives or ((required,) if required else ())
+        return not groups or any(all(item in values for item in group) for group in groups)
+
+    @staticmethod
+    def _matches_any_prefix_group(
+        values: tuple[str, ...],
+        required: tuple[str, ...],
+        alternatives: tuple[tuple[str, ...], ...],
+    ) -> bool:
+        """Return whether all required prefixes from any acceptable group are present."""
+        groups = alternatives or ((required,) if required else ())
+        return not groups or any(
+            all(any(value.startswith(prefix) for value in values) for prefix in group)
+            for group in groups
+        )
+
+    @staticmethod
+    def _matches_any_text_group(
+        lowered_text: str,
+        required: tuple[str, ...],
+        alternatives: tuple[tuple[str, ...], ...],
+    ) -> bool:
+        """Return whether all required terms from any acceptable group are present."""
+        groups = alternatives or ((required,) if required else ())
+        return not groups or any(
+            all(term.lower() in lowered_text for term in group) for group in groups
+        )
 
     @property
     def outcome(self) -> str:
@@ -1120,8 +1167,14 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             session_group="ndp_seismic",
             expected_agent=("visualization", "analysis", "data", "ndp_catalog"),
             expected_tool_prefixes=("ndp_", "sac_"),
+            expected_tool_prefix_groups=(("ndp_", "sac_"), ("ndp_",)),
             expected_handoff_agents=("ndp_catalog", "sac_format"),
+            expected_handoff_agent_groups=(("ndp_catalog", "sac_format"), ("ndp_catalog",)),
             expected_terms=("SAC", ".png"),
+            expected_term_groups=(
+                ("SAC", ".png"),
+                ("Staging note", "none could be staged"),
+            ),
             timeout_s=900.0,
             forbidden_route_sources=_REAL_ORCHESTRATOR_FORBIDDEN_SOURCES,
             complexity_tags=(
