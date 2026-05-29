@@ -24,6 +24,7 @@ current run:
 - `{fasta}` - synthetic pathogen FASTA reference.
 - `{vcf}` - synthetic pathogen VCF variant calls.
 - `{cif}` - synthetic strontium titanate CIF structure.
+- `{geojson}` - synthetic field-site GeoJSON features.
 
 ## Primary Prompt Set
 
@@ -203,6 +204,31 @@ Why this matters:
 
 This adds a non-NDP materials science domain with a distinct scientific file
 format and a new tool-backed expert boundary.
+
+### 5d. Geospatial Field-Site Review
+
+Case id: `geospatial_field_site_review`
+
+Category: `geospatial`
+
+Expected route: `geospatial`
+
+Expected evidence:
+
+- GeoJSON inspection through `geospatial_inspect_geojson`.
+- Geometry counts, bounding box, and property keys.
+- Grounded warnings about CRS assumptions or property completeness.
+
+Prompt:
+
+```text
+Review this field-site GeoJSON for spatial analysis readiness: {geojson}. Summarize the feature types, coordinate bounds, key properties, and what a collaborator should verify before using it in a map overlay.
+```
+
+Why this matters:
+
+This adds a non-NDP geospatial domain with coordinate and geometry semantics,
+not just generic JSON inspection.
 
 ### 6. Provider Swap Preserves Session Context
 

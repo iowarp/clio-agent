@@ -23,6 +23,7 @@ Use these paths when replacing placeholders:
 - `{fasta}`: `tmp/clio-benchmark-data/pathogen_reference.fasta`
 - `{vcf}`: `tmp/clio-benchmark-data/pathogen_sample_variants.vcf`
 - `{cif}`: `tmp/clio-benchmark-data/strontium_titanate.cif`
+- `{geojson}`: `tmp/clio-benchmark-data/field_sites.geojson`
 
 For an automated evidence run, use:
 
@@ -202,6 +203,27 @@ Worked because you saw:
 - Unit-cell and space-group details such as `P m -3 m`.
 - Species/atom-site evidence for `Sr`, `Ti`, and `O` and a collaborator handoff
   check around occupancies or provenance.
+
+## 8. Geospatial Field-Site Review
+
+Agent: Data Exploration/Search Agent
+
+Prompt:
+
+```text
+Review this field-site GeoJSON for spatial analysis readiness: {geojson}. Summarize the feature types, coordinate bounds, key properties, and what a collaborator should verify before using it in a map overlay.
+```
+
+Why this exists:
+
+This adds a geospatial domain with coordinate, bounds, geometry, and property
+semantics. It should not pass by treating GeoJSON as generic JSON text.
+
+Worked because you saw:
+
+- `geospatial_inspect_geojson` evidence.
+- Feature types such as `Point`, `LineString`, or `Polygon`.
+- A bounding box and property keys such as `site_id`, `kind`, or `status`.
 
 ## Notes For Manual TUI Runs
 

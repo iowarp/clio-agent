@@ -593,6 +593,7 @@ class TestSelectedExpertForTool:
         assert agent._selected_expert_for_tool("hdf5_analyze_file") == "data"
         assert agent._selected_expert_for_tool("genomics_inspect_fasta") == "genomics"
         assert agent._selected_expert_for_tool("materials_inspect_cif") == "materials"
+        assert agent._selected_expert_for_tool("geospatial_inspect_geojson") == "geospatial"
 
     def test_unknown_tool_surfaces_routing_error(self, agent):
         with pytest.raises(RoutingError, match="unknown tool") as exc_info:

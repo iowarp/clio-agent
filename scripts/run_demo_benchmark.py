@@ -582,6 +582,7 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
     fasta = manifest["genomics"]["fasta_path"]
     vcf = manifest["genomics"]["vcf_path"]
     cif = manifest["materials"]["cif_path"]
+    geojson = manifest["geospatial"]["geojson_path"]
     missing = str(Path(h5).with_name("missing_fusion_run.h5"))
 
     return [
@@ -1055,6 +1056,31 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             ),
         ),
         DemoCase(
+            case_id="geospatial_field_site_review",
+            title="Geospatial field-site review",
+            category="geospatial",
+            session_group="geospatial",
+            expected_agent="geospatial",
+            expected_tools=("geospatial_inspect_geojson",),
+            expected_terms=("north_ridge", "south_valley", "study_boundary", "Polygon"),
+            timeout_s=620.0,
+            forbidden_route_sources=_REAL_ORCHESTRATOR_FORBIDDEN_SOURCES,
+            complexity_tags=("geospatial", "geojson", "new-domain"),
+            prompt=(
+                f"Review this field-site GeoJSON for spatial analysis readiness: {geojson}. "
+                "Summarize the feature types, coordinate bounds, key properties, and what "
+                "a collaborator should verify before using it in a map overlay."
+            ),
+            expected=(
+                "CLIO uses GeoJSON geospatial tools and grounds the review in feature, "
+                "geometry, bounds, and property evidence."
+            ),
+            why=(
+                "Adds a non-NDP geospatial domain with coordinate and geometry semantics, "
+                "not just generic JSON text inspection."
+            ),
+        ),
+        DemoCase(
             case_id="missing_hdf5_error",
             title="Missing file error surfacing",
             category="hardening",
@@ -1167,6 +1193,7 @@ _BENCHMARK_LANES: dict[str, tuple[str, ...]] = {
         "cross_file_dirty_quality_gate_nanoagents",
         "genomics_reference_variant_review",
         "materials_cif_structure_review",
+        "geospatial_field_site_review",
         "ndp_catalog_discovery",
         "ndp_seismic_waveform_to_plot",
         "reasoning_adios_bp5_container",

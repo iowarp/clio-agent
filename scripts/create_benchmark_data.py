@@ -311,6 +311,57 @@ def create_materials(output_dir: Path) -> dict[str, Any]:
     }
 
 
+def create_geospatial(output_dir: Path) -> dict[str, Any]:
+    """Create a GeoJSON file for geospatial benchmark workflows."""
+    geojson_path = output_dir / "field_sites.geojson"
+    payload = {
+        "type": "FeatureCollection",
+        "name": "clio_benchmark_field_sites",
+        "features": [
+            {
+                "type": "Feature",
+                "properties": {"site_id": "north_ridge", "kind": "sensor", "status": "active"},
+                "geometry": {"type": "Point", "coordinates": [-105.2705, 40.015]},
+            },
+            {
+                "type": "Feature",
+                "properties": {"site_id": "south_valley", "kind": "sensor", "status": "maintenance"},
+                "geometry": {"type": "Point", "coordinates": [-105.251, 39.991]},
+            },
+            {
+                "type": "Feature",
+                "properties": {"site_id": "access_transect", "kind": "transect", "status": "active"},
+                "geometry": {
+                    "type": "LineString",
+                    "coordinates": [[-105.281, 40.004], [-105.268, 40.012], [-105.252, 40.019]],
+                },
+            },
+            {
+                "type": "Feature",
+                "properties": {"site_id": "study_boundary", "kind": "boundary", "status": "active"},
+                "geometry": {
+                    "type": "Polygon",
+                    "coordinates": [
+                        [
+                            [-105.292, 39.982],
+                            [-105.238, 39.982],
+                            [-105.238, 40.026],
+                            [-105.292, 40.026],
+                            [-105.292, 39.982],
+                        ]
+                    ],
+                },
+            },
+        ],
+    }
+    geojson_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    return {
+        "geojson_path": str(geojson_path),
+        "features": len(payload["features"]),
+        "expected_terms": ["north_ridge", "south_valley", "study_boundary", "Point", "Polygon"],
+    }
+
+
 def create_adios_bp5(output_dir: Path) -> dict[str, Any]:
     """Copy a real BP5 sample when present, otherwise create a BP-like container."""
     destination = output_dir / "gray scott noise 0.01 data.bp5"
@@ -366,6 +417,7 @@ def create_benchmark_data(output_dir: Path) -> dict[str, Any]:
     csv_info = create_csv(output_dir / "sensor_events.csv")
     genomics = create_genomics(output_dir)
     materials = create_materials(output_dir)
+    geospatial = create_geospatial(output_dir)
     adios = create_adios_bp5(output_dir)
 
     manifest: dict[str, Any] = {
@@ -376,6 +428,7 @@ def create_benchmark_data(output_dir: Path) -> dict[str, Any]:
         "csv": csv_info,
         "genomics": genomics,
         "materials": materials,
+        "geospatial": geospatial,
         "adios": adios,
     }
     manifest_path = output_dir / "manifest.json"
