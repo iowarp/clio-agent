@@ -4005,9 +4005,13 @@ class ClioAgent(dspy.Module):
         selected: str,
         trace: RunTrace,
     ) -> dict[str, Any] | None:
-        """Return structured error_info for the first failed tool in a trace."""
-        successful_tools = [tool.tool for tool in trace.tools if tool.ok]
-        for observation in trace.tools:
+        """Return structured error_info for unrecovered failed tools in a trace."""
+        last_success_index = -1
+        for index, observation in enumerate(trace.tools):
+            if observation.ok:
+                last_success_index = index
+        successful_tools = [tool.tool for tool in trace.tools[: last_success_index + 1] if tool.ok]
+        for observation in trace.tools[last_success_index + 1 :]:
             if observation.ok:
                 continue
             error = cls._tool_error_from_result(observation.tool, observation.result)

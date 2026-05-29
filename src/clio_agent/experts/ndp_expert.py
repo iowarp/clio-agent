@@ -353,82 +353,131 @@ class NDPExpert(dspy.Module):
         ):
             return ""
 
-        candidate = (
-            NDPExpert._select_stageable_seismic_dataset(rows)
-            or NDPExpert._select_seismic_dataset(rows)
-            or (rows[0] if rows else None)
-        )
-        if candidate is None:
+        candidates = NDPExpert._staging_candidates(rows)
+        if not candidates:
             return (
                 "Staging note: no dataset candidate was available, so CLIO did not "
                 "attempt resource staging."
             )
 
-        identifier = str(candidate.get("id") or candidate.get("name") or "").strip()
-        if not identifier:
-            return (
-                "Staging note: the selected dataset did not expose an id or name, so "
-                "CLIO could not request detailed resource metadata."
-            )
+        failed_attempts: list[str] = []
+        for candidate in candidates:
+            identifier = str(candidate.get("id") or candidate.get("name") or "").strip()
+            if not identifier:
+                failed_attempts.append("candidate without dataset id/name")
+                continue
 
-        identifier_type = "id" if candidate.get("id") else "name"
-        details = runner.call(
-            "ndp_get_dataset_details",
-            {
-                "dataset_identifier": identifier,
-                "identifier_type": identifier_type,
-                "server": "global",
-            },
-        )
-        if isinstance(details, dict) and details.get("error"):
-            return (
-                "Staging note: dataset detail lookup failed before download: "
-                f"{format_tool_error(details['error'])}"
+            identifier_type = "id" if candidate.get("id") else "name"
+            title = str(candidate.get("title") or candidate.get("name") or identifier)
+            details = runner.call(
+                "ndp_get_dataset_details",
+                {
+                    "dataset_identifier": identifier,
+                    "identifier_type": identifier_type,
+                    "server": "global",
+                },
             )
-
-        staged = runner.call(
-            "ndp_stage_resource",
-            {
-                "dataset_identifier": identifier,
-                "identifier_type": identifier_type,
-                "resource_index": 0,
-                "server": "global",
-            },
-        )
-        if isinstance(staged, dict) and staged.get("staged"):
-            staged_path = str(staged.get("path") or "")
-            inspection_note = ""
-            if staged_path.lower().endswith((".sac", ".tar", ".tgz", ".gz")):
-                inspected = runner.call(
-                    "sac_inspect_archive",
-                    {"filepath": staged_path, "max_members": 8},
+            if isinstance(details, dict) and details.get("error"):
+                failed_attempts.append(
+                    f"{title}: detail lookup failed: {format_tool_error(details['error'])}"
                 )
-                if isinstance(inspected, dict) and not inspected.get("error"):
-                    inspection_note = (
-                        f" Data-stage inspection found {inspected.get('sac_trace_count')} "
-                        "SAC traces in the staged file."
+                continue
+
+            for resource_index in range(NDPExpert._resource_attempt_count(candidate, details)):
+                staged = runner.call(
+                    "ndp_stage_resource",
+                    {
+                        "dataset_identifier": identifier,
+                        "identifier_type": identifier_type,
+                        "resource_index": resource_index,
+                        "server": "global",
+                    },
+                )
+                if isinstance(staged, dict) and staged.get("staged"):
+                    staged_path = str(staged.get("path") or "")
+                    inspection_note = ""
+                    if staged_path.lower().endswith((".sac", ".tar", ".tgz", ".gz")):
+                        inspected = runner.call(
+                            "sac_inspect_archive",
+                            {"filepath": staged_path, "max_members": 8},
+                        )
+                        if isinstance(inspected, dict) and not inspected.get("error"):
+                            inspection_note = (
+                                f" Data-stage inspection found {inspected.get('sac_trace_count')} "
+                                "SAC traces in the staged file."
+                            )
+                        elif isinstance(inspected, dict) and inspected.get("error"):
+                            inspection_note = (
+                                " Data-stage seismic inspection failed visibly: "
+                                f"{format_tool_error(inspected['error'])}"
+                            )
+                    attempted = (
+                        f" after {len(failed_attempts)} failed attempt(s)"
+                        if failed_attempts
+                        else ""
                     )
-                elif isinstance(inspected, dict) and inspected.get("error"):
-                    inspection_note = (
-                        " Data-stage seismic inspection failed visibly: "
-                        f"{format_tool_error(inspected['error'])}"
+                    return (
+                        "Staging note: CLIO staged the selected NDP resource at "
+                        f"{staged_path}{attempted}. Analysis and visualization can now use that "
+                        f"local file if the format is supported.{inspection_note}"
                     )
+                if isinstance(staged, dict) and staged.get("error"):
+                    code = (
+                        staged["error"].get("code")
+                        if isinstance(staged["error"], dict)
+                        else "tool_error"
+                    )
+                    failed_attempts.append(f"{title} resource {resource_index}: {code}")
+                    continue
+                failed_attempts.append(f"{title} resource {resource_index}: unexpected result")
+
+        if failed_attempts:
             return (
-                "Staging note: CLIO staged the selected NDP resource at "
-                f"{staged_path}. Analysis and visualization can now use that "
-                f"local file if the format is supported.{inspection_note}"
-            )
-        if isinstance(staged, dict) and staged.get("error"):
-            code = staged["error"].get("code") if isinstance(staged["error"], dict) else None
-            code_text = f" [{code}]" if code else ""
-            return (
-                "Staging note: CLIO attempted to stage the selected NDP resource, but "
-                f"staging failed visibly{code_text}: {format_tool_error(staged['error'])}"
+                "Staging note: CLIO attempted bounded NDP staging across candidate "
+                "resources, but none could be staged. Attempts: "
+                + "; ".join(failed_attempts[:6])
             )
         return (
             "Staging note: CLIO attempted resource staging but received an unexpected "
             "result shape, so downstream analysis remains blocked."
         )
+
+    @staticmethod
+    def _staging_candidates(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Return bounded NDP dataset candidates in recovery order."""
+
+        unique: dict[str, dict[str, Any]] = {}
+        for row in sorted(rows, key=NDPExpert._dataset_priority, reverse=True):
+            key = str(row.get("id") or row.get("name") or len(unique))
+            unique.setdefault(key, row)
+        return list(unique.values())[:5]
+
+    @staticmethod
+    def _resource_attempt_count(candidate: dict[str, Any], details: Any) -> int:
+        """Return a bounded number of resource indexes worth attempting."""
+
+        counts: list[int] = []
+        resources = details.get("resources") if isinstance(details, dict) else None
+        if isinstance(resources, list):
+            counts.append(len(resources))
+        if isinstance(details, dict):
+            urls = details.get("resource_urls")
+            if isinstance(urls, dict):
+                try:
+                    counts.append(int(urls.get("count") or 0))
+                except (TypeError, ValueError):
+                    pass
+            elif isinstance(urls, list):
+                counts.append(len(urls))
+        try:
+            counts.append(int(candidate.get("resource_count") or 0))
+        except (TypeError, ValueError):
+            pass
+        urls = candidate.get("resource_urls")
+        if isinstance(urls, list):
+            counts.append(len(urls))
+        count = max([value for value in counts if value > 0], default=1)
+        return max(1, min(count, 3))
 
     @staticmethod
     def _recommendations(question: str, rows: list[Any]) -> str:
