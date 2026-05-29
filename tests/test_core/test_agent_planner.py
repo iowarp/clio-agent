@@ -14,7 +14,7 @@ from unittest.mock import ANY, MagicMock, patch
 import pytest
 
 from clio_agent.agent import ClioAgent, _mass_spec_qc_sentence, cancellation_checker
-from clio_agent.errors import CancellationError, ProviderError, RoutingError
+from clio_agent.errors import CancellationError, RoutingError
 from clio_agent.harness import RouteDecision, RunTrace, ToolObservation
 from clio_agent.registry.registry import AgentCapability
 from clio_agent.tools.execution import set_global_tool_observer
