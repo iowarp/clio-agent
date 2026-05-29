@@ -713,7 +713,7 @@ def test_expert_pack_agent_executes_delegated_child_expert(
     def fake_prompt_agent(base_agent: Any, agent_def: Any, question: str, session_id: str) -> Any:
         del base_agent
         calls.append((agent_def.id, question, session_id))
-        if agent_def.id == "root_review":
+        if agent_def.id == "root_review" and len([row for row in calls if row[0] == "root_review"]) == 1:
             return type(
                 "Pred",
                 (),
@@ -728,6 +728,17 @@ def test_expert_pack_agent_executes_delegated_child_expert(
                             "status": "requested",
                         }
                     ],
+                },
+            )()
+        if agent_def.id == "root_review":
+            return type(
+                "Pred",
+                (),
+                {
+                    "answer": "ROOT_FINAL",
+                    "selected_expert": agent_def.id,
+                    "routing_rationale": "parent resumed after child expert",
+                    "expert_handoffs": [],
                 },
             )()
         return type(
@@ -779,7 +790,9 @@ Inspect schemas.
     assert calls == [
         ("root_review", "inspect data.csv", sid),
         ("schema_review", "Inspect the CSV schema", sid),
+        ("root_review", calls[2][1], sid),
     ]
+    assert "Returned child expert results" in calls[2][1]
     handoffs = assistant["metadata"]["expert_handoffs"]
     handoff = next(row for row in handoffs if row["agent_id"] == "schema_review")
     assert handoff["agent_id"] == "schema_review"
@@ -795,4 +808,4 @@ Inspect schemas.
     assert resumed["resumed_from"] == "schema_review"
     assert assistant["parts"][1]["type"] == "expert_handoff"
     assert assistant["parts"][1]["metadata"]["status"] == "completed"
-    assert assistant["parts"][-1]["text"] == "ROOT_OK"
+    assert assistant["parts"][-1]["text"] == "ROOT_FINAL"
