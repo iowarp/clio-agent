@@ -13,7 +13,7 @@ from unittest.mock import ANY, MagicMock, patch
 
 import pytest
 
-from clio_agent.agent import ClioAgent, cancellation_checker
+from clio_agent.agent import ClioAgent, _mass_spec_qc_sentence, cancellation_checker
 from clio_agent.errors import CancellationError, ProviderError, RoutingError
 from clio_agent.harness import RouteDecision, RunTrace
 from clio_agent.registry.registry import AgentCapability
@@ -67,6 +67,20 @@ class TestCoerceText:
 
     def test_fallback_str(self):
         assert ClioAgent._coerce_text(object()) != ""
+
+
+def test_mass_spec_qc_sentence_uses_readable_terms():
+    sentence = _mass_spec_qc_sentence(
+        {
+            "ms_levels": {"1": 2, "2": 2},
+            "total_ion_current_total": 25140.0,
+            "total_ion_current_max": 9500.0,
+        }
+    )
+
+    assert "MS level distribution" in sentence
+    assert "Total ion current evidence" in sentence
+    assert "25140.0" in sentence
 
 
 class TestParseActionJson:
