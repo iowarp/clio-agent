@@ -166,6 +166,8 @@ def test_cancelled_case_passes_only_structured_cancelled_without_text() -> None:
 def test_case_row_records_route_file_and_artifact_evidence(tmp_path) -> None:
     data_file = tmp_path / "sample.parquet"
     data_file.write_text("placeholder", encoding="utf-8")
+    png_input = tmp_path / "cells.png"
+    png_input.write_bytes(b"png-input")
     artifact = tmp_path / "chart.png"
     artifact.write_bytes(b"png")
     message = _message(
@@ -187,7 +189,7 @@ def test_case_row_records_route_file_and_artifact_evidence(tmp_path) -> None:
             case_id="artifact_case",
             title="artifact",
             category="test",
-            prompt=f"Create a plot from {data_file}",
+            prompt=f"Create a plot from {data_file} and inspect {png_input}",
             why="why",
             expected="expected",
             session_group="test",
@@ -201,7 +203,7 @@ def test_case_row_records_route_file_and_artifact_evidence(tmp_path) -> None:
 
     row = bench._case_row(result)
 
-    assert row["data_files"] == [str(data_file)]
+    assert row["data_files"] == [str(data_file), str(png_input)]
     assert row["artifact_evidence"] == [
         {"path": str(artifact), "exists": True, "size_bytes": 3}
     ]
