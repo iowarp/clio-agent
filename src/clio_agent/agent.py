@@ -830,6 +830,7 @@ class ClioAgent(dspy.Module):
         selected = "chat"
         last_expert_result: Any = None
         last_error_info: dict[str, Any] | None = None
+        error_info: dict[str, Any] | None = None
         accumulated_nanoagents: list[dict[str, Any]] = []
         route = trace.route
 
