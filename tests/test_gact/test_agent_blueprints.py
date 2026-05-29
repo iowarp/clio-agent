@@ -204,6 +204,66 @@ def test_agent_blueprint_install_from_local_marketplace(tmp_path: Path) -> None:
     assert (workspace / ".clio" / "agent-blueprints" / "genomics" / ".clio-install.md").exists()
 
 
+def test_marketplace_install_supports_distinct_session_blueprints(tmp_path: Path) -> None:
+    marketplace = tmp_path / "marketplace"
+    _write_blueprint(marketplace / "genomics-review", blueprint_id="genomics-review")
+    _write_data_root_blueprint(
+        marketplace / "materials-crystal-review",
+        blueprint_id="materials-crystal-review",
+    )
+    workspace = tmp_path / "workspace"
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    with TestClient(app) as client:
+        wid = client.post(
+            "/v1/workspaces",
+            json={
+                "name": "Workspace",
+                "root_path": str(workspace),
+                "storage_root": str(workspace / ".clio"),
+            },
+        ).json()["id"]
+        install = client.post(
+            "/v1/agent-blueprints/install",
+            json={"source": str(marketplace), "scope": "workspace", "workspace_id": wid},
+        )
+        assert install.status_code == 201, install.text
+        installed = {row["id"] for row in install.json()["installed"]}
+        assert installed == {"genomics-review", "materials-crystal-review"}
+
+        sid_genomics = client.post(
+            "/v1/sessions",
+            json={"title": "genomics", "workspace_id": wid},
+        ).json()["id"]
+        sid_materials = client.post(
+            "/v1/sessions",
+            json={"title": "materials", "workspace_id": wid},
+        ).json()["id"]
+        assert client.post(
+            f"/v1/sessions/{sid_genomics}/agent-blueprint",
+            json={"blueprint_id": "genomics-review"},
+        ).status_code == 200
+        assert client.post(
+            f"/v1/sessions/{sid_materials}/agent-blueprint",
+            json={"blueprint_id": "materials-crystal-review"},
+        ).status_code == 200
+
+        genomics = client.get(f"/v1/sessions/{sid_genomics}/agent-blueprint").json()
+        materials = client.get(f"/v1/sessions/{sid_materials}/agent-blueprint").json()
+        genomics_agents = client.get(
+            "/v1/agents",
+            params={"session_id": sid_genomics},
+        ).json()["agents"]
+        materials_agents = client.get(
+            "/v1/agents",
+            params={"session_id": sid_materials},
+        ).json()["agents"]
+
+    assert genomics["active_agent_blueprint_id"] == "genomics-review"
+    assert materials["active_agent_blueprint_id"] == "materials-crystal-review"
+    assert {row["id"] for row in genomics_agents} == {"root", "variant"}
+    assert {row["id"] for row in materials_agents} == {"data"}
+
+
 def test_agent_blueprint_install_from_git_marketplace_records_pinned_metadata(
     tmp_path: Path,
 ) -> None:

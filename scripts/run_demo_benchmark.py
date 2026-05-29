@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
 import time
@@ -83,6 +84,7 @@ class DemoCase:
     turn_agent_id: str = ""
     forbidden_route_sources: tuple[str, ...] = ()
     min_artifacts: int = 0
+    agent_blueprint_id: str = ""
 
 
 @dataclass
@@ -100,6 +102,7 @@ class DemoResult:
     setup_messages: list[dict[str, Any]] = field(default_factory=list)
     actions: list[dict[str, Any]] = field(default_factory=list)
     benchmark_lane: str = "default"
+    agent_blueprint: dict[str, Any] = field(default_factory=dict)
 
     @property
     def selected_agent(self) -> str:
@@ -110,6 +113,11 @@ class DemoResult:
     def text(self) -> str:
         """Return visible assistant text."""
         return _message_text(self.message)
+
+    @property
+    def visible_text(self) -> str:
+        """Return only user-facing assistant text parts."""
+        return _visible_message_text(self.message)
 
     @property
     def tools(self) -> list[dict[str, Any]]:
@@ -184,6 +192,11 @@ class DemoResult:
         return str(metadata.get("route_source") or "")
 
     @property
+    def active_agent_blueprint_id(self) -> str:
+        """Return the session Agent Blueprint active for this benchmark case."""
+        return str(self.agent_blueprint.get("active_agent_blueprint_id") or "")
+
+    @property
     def passed(self) -> bool:
         """Return whether this case satisfied its declared expectations."""
         if self.case.expects_cancelled:
@@ -208,6 +221,9 @@ class DemoResult:
                 else self.case.expected_agent
             )
             if self.selected_agent not in expected_agents:
+                return False
+        if self.case.agent_blueprint_id:
+            if self.active_agent_blueprint_id != self.case.agent_blueprint_id:
                 return False
         for expected_tool in self.case.expected_tools:
             if expected_tool not in self.tool_names:
@@ -336,6 +352,14 @@ class DemoResult:
 
 def _message_text(message: dict[str, Any]) -> str:
     return "\n".join(str(part.get("text", "")) for part in message.get("parts", []))
+
+
+def _visible_message_text(message: dict[str, Any]) -> str:
+    return "\n".join(
+        str(part.get("text", ""))
+        for part in message.get("parts", [])
+        if part.get("type") == "text"
+    )
 
 
 def _non_telemetry_text(text: str) -> str:
@@ -778,13 +802,14 @@ def _case_row(result: DemoResult) -> dict[str, Any]:
         "partial_error": result.partial_error,
         "stop_reason": result.message.get("stop_reason"),
         "provider": result.provider,
+        "agent_blueprint": result.agent_blueprint,
         "stream_source": result.stream_source,
         "stream_fallback": result.stream_fallback,
         "routing_mode": result.case.routing_mode,
         "forbidden_route_sources": list(result.case.forbidden_route_sources),
         "benchmark_lane": result.benchmark_lane,
         "complexity_score": result.complexity_score,
-        "answer_excerpt": result.text[:1200],
+        "answer_excerpt": result.visible_text[:1200],
         "complexity_tags": list(result.case.complexity_tags),
     }
 
@@ -805,6 +830,11 @@ def _result_from_case_row(row: dict[str, Any]) -> DemoResult:
         complexity_tags=tuple(str(tag) for tag in row.get("complexity_tags", []) or []),
         forbidden_route_sources=tuple(
             str(source) for source in row.get("forbidden_route_sources", []) or []
+        ),
+        agent_blueprint_id=str(
+            (row.get("agent_blueprint") or {}).get("active_agent_blueprint_id")
+            if isinstance(row.get("agent_blueprint"), dict)
+            else ""
         ),
     )
     routing = dict(row.get("routing_decision") or {})
@@ -848,6 +878,7 @@ def _result_from_case_row(row: dict[str, Any]) -> DemoResult:
         setup_messages=setup_messages,
         actions=list(row.get("actions") or []),
         benchmark_lane=str(row.get("benchmark_lane") or "recorded"),
+        agent_blueprint=dict(row.get("agent_blueprint") or {}),
     )
 
 
@@ -1426,6 +1457,128 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             ),
         ),
         DemoCase(
+            case_id="marketplace_genomics_reference_review",
+            title="Marketplace genomics FASTA reference review",
+            category="marketplace-genomics",
+            session_group="marketplace_genomics_reference",
+            agent_blueprint_id="genomics-review",
+            turn_agent_id="reference",
+            expected_agent="reference",
+            expected_tools=("genomics_inspect_fasta",),
+            expected_terms=("chrA", "plasmidB"),
+            timeout_s=620.0,
+            forbidden_route_sources=_REAL_ORCHESTRATOR_FORBIDDEN_SOURCES,
+            complexity_tags=("marketplace", "genomics", "fasta", "agent-blueprint"),
+            prompt=(
+                f"Review this reference FASTA for collaborator handoff: {fasta}. "
+                "Summarize contigs, composition evidence, and what should be verified "
+                "before variant interpretation."
+            ),
+            expected=(
+                "CLIO runs the genomics-review marketplace Agent Blueprint in this "
+                "session and uses the reference expert's FASTA tool."
+            ),
+            why=(
+                "Proves a domain agent installed from the marketplace can be activated "
+                "per session and execute its own expert/tool surface."
+            ),
+        ),
+        DemoCase(
+            case_id="marketplace_genomics_variant_review",
+            title="Marketplace genomics VCF variant review",
+            category="marketplace-genomics",
+            session_group="marketplace_genomics_variants",
+            agent_blueprint_id="genomics-review",
+            turn_agent_id="variants",
+            expected_agent="variants",
+            expected_tools=("genomics_summarize_vcf",),
+            expected_terms=("missense", "frameshift"),
+            timeout_s=620.0,
+            forbidden_route_sources=_REAL_ORCHESTRATOR_FORBIDDEN_SOURCES,
+            complexity_tags=("marketplace", "genomics", "vcf", "agent-blueprint"),
+            prompt=(
+                f"Review this VCF for collaborator handoff: {vcf}. Summarize variant "
+                "types, likely effects, and what should be verified before analysis."
+            ),
+            expected=(
+                "CLIO runs the genomics-review marketplace Agent Blueprint in this "
+                "session and uses the variants expert's VCF tool."
+            ),
+            why=(
+                "Exercises a second expert in the same marketplace agent, proving the "
+                "active blueprint changes the available expert surface."
+            ),
+        ),
+        DemoCase(
+            case_id="marketplace_materials_crystal_review",
+            title="Marketplace materials CIF review",
+            category="marketplace-materials",
+            session_group="marketplace_materials",
+            agent_blueprint_id="materials-crystal-review",
+            turn_agent_id="crystal_structure",
+            expected_agent="crystal_structure",
+            expected_tools=("materials_inspect_cif",),
+            expected_terms=("SrTiO3", "P m -3 m"),
+            timeout_s=620.0,
+            forbidden_route_sources=_REAL_ORCHESTRATOR_FORBIDDEN_SOURCES,
+            complexity_tags=("marketplace", "materials", "cif", "agent-blueprint"),
+            prompt=(
+                f"Review this CIF as a materials handoff: {cif}. Summarize formula, "
+                "symmetry, species, and what simulation metadata should be verified."
+            ),
+            expected=(
+                "CLIO runs the materials-crystal-review marketplace Agent Blueprint "
+                "and uses the crystal_structure expert."
+            ),
+            why="Proves a separate materials marketplace agent can be loaded per session.",
+        ),
+        DemoCase(
+            case_id="marketplace_geospatial_field_review",
+            title="Marketplace geospatial GeoJSON review",
+            category="marketplace-geospatial",
+            session_group="marketplace_geospatial",
+            agent_blueprint_id="geospatial-field-review",
+            turn_agent_id="spatial_features",
+            expected_agent="spatial_features",
+            expected_tools=("geospatial_inspect_geojson",),
+            expected_terms=("feature", "geometry", "bounds"),
+            timeout_s=620.0,
+            forbidden_route_sources=_REAL_ORCHESTRATOR_FORBIDDEN_SOURCES,
+            complexity_tags=("marketplace", "geospatial", "geojson", "agent-blueprint"),
+            prompt=(
+                f"Review this GeoJSON for field-site map readiness: {geojson}. "
+                "Summarize feature types, bounds, properties, and map-overlay risks."
+            ),
+            expected=(
+                "CLIO runs the geospatial-field-review marketplace Agent Blueprint "
+                "and uses the spatial_features expert."
+            ),
+            why="Proves a geospatial marketplace agent can be loaded per session.",
+        ),
+        DemoCase(
+            case_id="marketplace_proteomics_mzml_review",
+            title="Marketplace proteomics mzML review",
+            category="marketplace-proteomics",
+            session_group="marketplace_proteomics",
+            agent_blueprint_id="proteomics-mzml-review",
+            turn_agent_id="mass_spec",
+            expected_agent="mass_spec",
+            expected_tools=("mass_spec_inspect_mzml",),
+            expected_terms=("spectra", "tic"),
+            timeout_s=620.0,
+            forbidden_route_sources=_REAL_ORCHESTRATOR_FORBIDDEN_SOURCES,
+            complexity_tags=("marketplace", "proteomics", "mzml", "agent-blueprint"),
+            prompt=(
+                f"Review this mzML run for proteomics handoff: {mzml}. Summarize "
+                "spectra, MS-level balance, m/z coverage, TIC evidence, and metadata risks."
+            ),
+            expected=(
+                "CLIO runs the proteomics-mzml-review marketplace Agent Blueprint "
+                "and uses the mass_spec expert."
+            ),
+            why="Proves a proteomics marketplace agent can be loaded per session.",
+        ),
+        DemoCase(
             case_id="missing_hdf5_error",
             title="Missing file error surfacing",
             category="hardening",
@@ -1515,20 +1668,79 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
 
 def _session_key(case: DemoCase) -> str:
     """Return stable session bucket for a case."""
-    return f"{case.session_group}:{case.routing_mode}"
+    blueprint = case.agent_blueprint_id or "builtin"
+    return f"{case.session_group}:{case.routing_mode}:{blueprint}"
 
 
-def _create_sessions(http: httpx.Client, cases: list[DemoCase]) -> dict[str, str]:
+def _ensure_benchmark_workspace(http: httpx.Client, root_path: Path) -> str:
+    """Create or reuse a workspace rooted at the benchmark checkout."""
+
+    root = str(root_path.expanduser().resolve())
+    response = http.get("/v1/workspaces")
+    response.raise_for_status()
+    for row in response.json().get("workspaces", []):
+        if str(row.get("root_path") or "") == root:
+            return str(row.get("id") or "")
+
+    created = http.post(
+        "/v1/workspaces",
+        json={
+            "name": "CLIO marketplace benchmark",
+            "root_path": root,
+            "storage_root": str(Path(root) / ".clio"),
+        },
+    )
+    created.raise_for_status()
+    return str(created.json().get("id") or "")
+
+
+def _install_marketplace_blueprints(http: httpx.Client, source: str, *, workspace_id: str) -> None:
+    """Install all Agent Blueprints from a marketplace source into workspace scope."""
+    if not source:
+        raise ValueError(
+            "marketplace benchmark cases require --marketplace-source or CLIO_MARKETPLACE_SOURCE"
+        )
+    response = http.post(
+        "/v1/agent-blueprints/install",
+        json={"source": source, "scope": "workspace", "workspace_id": workspace_id},
+        timeout=180.0,
+    )
+    response.raise_for_status()
+
+
+def _create_sessions(
+    http: httpx.Client,
+    cases: list[DemoCase],
+    *,
+    workspace_id: str = "",
+) -> dict[str, str]:
     session_ids: dict[str, str] = {}
     for key in dict.fromkeys(_session_key(case) for case in cases):
-        group, routing_mode = key.rsplit(":", 1)
+        group, routing_mode, blueprint_id = key.rsplit(":", 2)
         payload = {"title": f"demo {group}"}
+        if workspace_id:
+            payload["workspace_id"] = workspace_id
         if routing_mode != "auto":
             payload["routing_mode"] = routing_mode
         response = http.post("/v1/sessions", json=payload)
         response.raise_for_status()
-        session_ids[key] = response.json()["id"]
+        session_id = response.json()["id"]
+        if blueprint_id != "builtin":
+            blueprint_response = http.post(
+                f"/v1/sessions/{session_id}/agent-blueprint",
+                json={"blueprint_id": blueprint_id},
+            )
+            blueprint_response.raise_for_status()
+        session_ids[key] = session_id
     return session_ids
+
+
+def _session_agent_blueprint(http: httpx.Client, session_id: str) -> dict[str, Any]:
+    response = http.get(f"/v1/sessions/{session_id}/agent-blueprint")
+    if response.status_code >= 400:
+        return {"error": response.text}
+    body = response.json()
+    return body if isinstance(body, dict) else {}
 
 
 _BENCHMARK_LANES: dict[str, tuple[str, ...]] = {
@@ -1547,6 +1759,13 @@ _BENCHMARK_LANES: dict[str, tuple[str, ...]] = {
         "ndp_seismic_waveform_to_plot",
         "reasoning_adios_bp5_container",
     ),
+    "marketplace_agents": (
+        "marketplace_genomics_reference_review",
+        "marketplace_genomics_variant_review",
+        "marketplace_materials_crystal_review",
+        "marketplace_geospatial_field_review",
+        "marketplace_proteomics_mzml_review",
+    ),
     "claude_code": (
         "workflow_hdf5_overview",
         "workflow_parquet_profile",
@@ -1562,6 +1781,8 @@ def _lane_title(lane: str) -> str:
         return "CLIO Claude Code Real-Provider Benchmark Report"
     if lane == "real_orchestrator":
         return "CLIO Real-Orchestrator Benchmark Report"
+    if lane == "marketplace_agents":
+        return "CLIO Marketplace Agent Benchmark Report"
     if lane == "all":
         return "CLIO Full Real-Provider Benchmark Report"
     return "CLIO ALCF Demo Benchmark Report"
@@ -1599,6 +1820,7 @@ def run_benchmark(
     require_lane_criteria: bool = False,
     lane: str = "real_orchestrator",
     case_ids: tuple[str, ...] = (),
+    marketplace_source: str = "",
 ) -> int:
     """Run demo cases and write JSONL plus a markdown report."""
     manifest = create_benchmark_data(data_dir)
@@ -1617,7 +1839,15 @@ def run_benchmark(
     with httpx.Client(base_url=base_url, timeout=90.0) as http:
         health = http.get("/v1/health")
         health.raise_for_status()
-        session_ids = _create_sessions(http, cases)
+        workspace_id = ""
+        if any(case.agent_blueprint_id for case in cases):
+            workspace_id = _ensure_benchmark_workspace(http, Path.cwd())
+            _install_marketplace_blueprints(
+                http,
+                marketplace_source,
+                workspace_id=workspace_id,
+            )
+        session_ids = _create_sessions(http, cases, workspace_id=workspace_id)
         with output_jsonl.open("w", encoding="utf-8") as log:
             for index, case in enumerate(cases, start=1):
                 session_id = session_ids[_session_key(case)]
@@ -1670,6 +1900,7 @@ def run_benchmark(
                     child for child in after_children if child.get("id") not in before_children
                 ]
                 session_messages = _chronological_session_messages(http, session_id)
+                agent_blueprint = _session_agent_blueprint(http, session_id)
                 child_session_messages = {
                     str(child["id"]): _chronological_session_messages(http, str(child["id"]))
                     for child in new_children
@@ -1687,6 +1918,7 @@ def run_benchmark(
                     setup_messages=setup_messages,
                     actions=actions,
                     benchmark_lane=lane,
+                    agent_blueprint=agent_blueprint,
                 )
                 results.append(result)
                 log.write(json.dumps(_case_row(result), ensure_ascii=False, default=str) + "\n")
@@ -1915,6 +2147,47 @@ def _provider_lane_audit(results: list[DemoResult], lane: str) -> list[dict[str,
             },
         ]
 
+    if lane == "marketplace_agents":
+        active = {
+            result.active_agent_blueprint_id
+            for result in results
+            if result.active_agent_blueprint_id
+        }
+        missing_blueprint = [
+            result.case.case_id
+            for result in results
+            if result.case.agent_blueprint_id
+            and result.active_agent_blueprint_id != result.case.agent_blueprint_id
+        ]
+        tool_backed = [result for result in results if result.tool_names]
+        return [
+            {
+                "criterion": "all marketplace cases prove the requested active Agent Blueprint",
+                "observed": len(results) - len(missing_blueprint),
+                "required": len(results),
+                "passed": not missing_blueprint,
+                "details": missing_blueprint,
+            },
+            {
+                "criterion": "at least four distinct marketplace Agent Blueprints",
+                "observed": len(active),
+                "required": 4,
+                "passed": len(active) >= 4,
+                "details": sorted(active),
+            },
+            {
+                "criterion": "all marketplace cases call at least one blueprint expert tool",
+                "observed": len(tool_backed),
+                "required": len(results),
+                "passed": len(tool_backed) == len(results),
+                "details": [
+                    f"{result.case.case_id}: tools={result.tool_names}"
+                    for result in results
+                    if not result.tool_names
+                ],
+            },
+        ]
+
     if lane != "claude_code":
         return []
 
@@ -2064,6 +2337,15 @@ def _render_report(results: list[DemoResult], output_jsonl: Path) -> str:
             f"- Child session logs captured: {child_session_logs}",
         ]
     )
+    active_blueprints = sorted(
+        {
+            result.active_agent_blueprint_id
+            for result in results
+            if result.active_agent_blueprint_id
+        }
+    )
+    if active_blueprints:
+        lines.append(f"- Active Agent Blueprints: {', '.join(active_blueprints)}")
     if provider_audit:
         lines.extend(
             [
@@ -2098,8 +2380,8 @@ def _render_report(results: list[DemoResult], output_jsonl: Path) -> str:
             "",
             "## All Cases",
             "",
-            "| Case | Category | Mode | Source | Outcome | Agent | Handoffs | Tools | Children | Elapsed |",
-            "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+            "| Case | Category | Blueprint | Mode | Source | Outcome | Agent | Handoffs | Tools | Children | Elapsed |",
+            "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
         ]
     )
     for result in results:
@@ -2112,6 +2394,7 @@ def _render_report(results: list[DemoResult], output_jsonl: Path) -> str:
                 [
                     result.case.case_id,
                     result.case.category,
+                    result.active_agent_blueprint_id or "-",
                     result.case.routing_mode,
                     str(route_source),
                     result.outcome,
@@ -2150,6 +2433,7 @@ def _render_report(results: list[DemoResult], output_jsonl: Path) -> str:
                 f"Routing mode: `{result.case.routing_mode}`",
                 f"Status: {result.outcome}",
                 f"Selected agent: `{result.selected_agent or '-'}`",
+                f"Active Agent Blueprint: `{result.active_agent_blueprint_id or '-'}`",
                 f"Provider/model: {_provider_model_summary(result.provider)}",
                 f"Provider settings: {_provider_settings_summary(result.provider)}",
                 f"Route graph: {_route_graph_summary(result)}",
@@ -2179,7 +2463,7 @@ def _render_report(results: list[DemoResult], output_jsonl: Path) -> str:
                 "Observed excerpt:",
                 "",
                 "```text",
-                result.text[:900].strip() or "<no assistant text>",
+                result.visible_text[:900].strip() or "<no assistant text>",
                 "```",
                 "",
             ]
@@ -2389,6 +2673,11 @@ def main() -> None:
         action="store_true",
         help="Exit non-zero unless the selected provider lane audit passes.",
     )
+    parser.add_argument(
+        "--marketplace-source",
+        default=os.environ.get("CLIO_MARKETPLACE_SOURCE", ""),
+        help="Path or git URL for marketplace Agent Blueprints used by marketplace lanes.",
+    )
     args = parser.parse_args()
     if args.render_existing_jsonl is not None:
         render_report_from_jsonl(args.render_existing_jsonl.resolve(), args.report.resolve())
@@ -2404,6 +2693,7 @@ def main() -> None:
             require_lane_criteria=args.require_lane_criteria,
             lane=args.lane,
             case_ids=tuple(args.case),
+            marketplace_source=args.marketplace_source,
         )
     )
 
