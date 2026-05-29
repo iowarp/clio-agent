@@ -582,6 +582,69 @@ def _route_metrics(result: DemoResult) -> dict[str, Any]:
     }
 
 
+def _handoff_field(row: dict[str, Any], key: str) -> str:
+    """Return a handoff field, checking row metadata for runtime variants."""
+    value = row.get(key)
+    if value:
+        return str(value)
+    metadata = row.get("metadata") or {}
+    if isinstance(metadata, dict):
+        return str(metadata.get(key) or "")
+    return ""
+
+
+def _sync_delegation_pairs(result: DemoResult) -> list[tuple[str, str]]:
+    """Return parent/child pairs that claim sync delegation provenance."""
+    pairs: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for row in result.expert_handoffs:
+        child_id = str(row.get("agent_id") or "")
+        parent_id = str(row.get("parent_id") or "")
+        if not child_id or not parent_id or child_id == parent_id:
+            continue
+        stage = str(row.get("stage") or "")
+        lifecycle = _handoff_field(row, "delegation_lifecycle")
+        if (
+            stage.endswith("_child")
+            or stage.startswith("delegate.")
+            or lifecycle == "sync"
+            or child_id in result.case.expected_handoff_agents
+        ):
+            pair = (parent_id, child_id)
+            if pair not in seen:
+                seen.add(pair)
+                pairs.append(pair)
+    return pairs
+
+
+def _missing_sync_return_pairs(result: DemoResult) -> list[str]:
+    """Return delegated child pairs missing child-return or parent-resume evidence."""
+    missing: list[str] = []
+    for parent_id, child_id in _sync_delegation_pairs(result):
+        has_child_return = False
+        has_parent_resume = False
+        for row in result.expert_handoffs:
+            stage = str(row.get("stage") or "")
+            agent_id = str(row.get("agent_id") or "")
+            row_parent = str(row.get("parent_id") or "")
+            if (
+                agent_id == child_id
+                and row_parent == parent_id
+                and stage in {"delegate.completed", "delegate.failed"}
+                and _handoff_field(row, "return_to") == parent_id
+            ):
+                has_child_return = True
+            if (
+                agent_id == parent_id
+                and stage == "parent.resumed"
+                and _handoff_field(row, "resumed_from") == child_id
+            ):
+                has_parent_resume = True
+        if not has_child_return or not has_parent_resume:
+            missing.append(f"{parent_id}->{child_id}")
+    return missing
+
+
 def _children(http: httpx.Client, parent_session_id: str) -> list[dict[str, Any]]:
     sessions = http.get("/v1/sessions").json()["sessions"]
     return [row for row in sessions if row.get("parent_session_id") == parent_session_id]
@@ -1252,7 +1315,7 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             title="NDP catalog discovery",
             category="external-catalog",
             session_group="ndp",
-            expected_agent=("data", "ndp_catalog"),
+            expected_agent="data",
             expected_tool_prefixes=("ndp_",),
             expected_handoff_agents=("ndp_catalog",),
             timeout_s=620.0,
@@ -1274,7 +1337,7 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             title="NDP seismic waveform discovery to plot",
             category="hierarchical-science",
             session_group="ndp_seismic",
-            expected_agent=("visualization", "analysis", "data", "ndp_catalog"),
+            expected_agent="data",
             expected_tool_prefixes=("ndp_", "sac_"),
             expected_tool_prefix_groups=(("ndp_", "sac_"), ("ndp_",)),
             expected_handoff_agents=("ndp_catalog", "sac_format"),
@@ -2074,6 +2137,11 @@ def _provider_lane_audit(results: list[DemoResult], lane: str) -> list[dict[str,
                 for row in result.artifact_evidence
             )
         ]
+        missing_sync_return_evidence = [
+            result
+            for result in passing_results
+            if _missing_sync_return_pairs(result)
+        ]
         ndp_waveform = case_result("ndp_seismic_waveform_to_plot")
         ndp_full_chain = bool(
             ndp_waveform
@@ -2117,6 +2185,16 @@ def _provider_lane_audit(results: list[DemoResult], lane: str) -> list[dict[str,
                 "details": [
                     f"{result.case.case_id}: artifact_evidence={result.artifact_evidence}"
                     for result in missing_artifact_evidence
+                ],
+            },
+            {
+                "criterion": "nested expert handoffs include sync return/resume provenance",
+                "observed": len(passing_results) - len(missing_sync_return_evidence),
+                "required": len(passing_results),
+                "passed": not missing_sync_return_evidence,
+                "details": [
+                    f"{result.case.case_id}: missing={_missing_sync_return_pairs(result)}"
+                    for result in missing_sync_return_evidence
                 ],
             },
             {
@@ -2476,8 +2554,7 @@ def _render_report(results: list[DemoResult], output_jsonl: Path) -> str:
             "- GACT compaction originally bypassed transient-provider retry and only updated the GACT transcript; compaction now retries provider throttles, updates ARC memory, and fails with structured errors if memory storage fails.",
             "- Compact summaries could lose exact scientific identifiers at the ARC truncation boundary; compact memory now preserves a labeled exact evidence index for paths, variables, columns, artifacts, and caveats.",
             "- Retained multi-file context could make analysis narrow to the first file or let CSV follow-ups be stolen by broad synthesis; explicit file paths now take precedence and retained multi-source synthesis is limited to true synthesis questions.",
-            "- Visualization-intent follow-ups could route to analysis or a data tool even when the user asked for a chart/dashboard; file-grounded visual artifact requests are promoted to the visualization expert.",
-            "- Direct planner-selected NDP and Parquet/statistical tool actions could flatten expert ownership; NDP catalog work is promoted to the nested `ndp_catalog` expert, and statistical Parquet triage is promoted to `analysis`.",
+            "- Planner-selected tool actions used to make benchmark evidence look flat; reports now preserve parent-owned sync delegation returns such as `data -> ndp_catalog -> data` and audit missing parent-resume evidence.",
             "- Provider throttles during expert dispatch, handoffs, and compaction could surface as brittle partial recoveries; expert paths now use bounded transient-provider retry and still surface structured errors if exhausted.",
             "",
         ]
@@ -2573,33 +2650,32 @@ def _provider_settings_summary(provider: dict[str, Any]) -> str:
 def _route_graph_summary(result: DemoResult) -> str:
     """Return a compact route graph from parent-owned handoffs and children."""
     graph = result.route_graph
-    adjacency: dict[str, list[str]] = {}
+    rendered_paths: list[str] = []
+
+    def append_path(path: str) -> None:
+        if path and path not in rendered_paths:
+            rendered_paths.append(path)
+
     for edge in graph.get("edges", []):
-        if edge.get("kind") not in {"route", "handoff"}:
+        if edge.get("kind") != "route":
             continue
         source = str(edge.get("from") or "")
         target = str(edge.get("to") or "")
-        if not source or not target:
+        if source and target:
+            append_path(f"{source} -> {target}")
+
+    sync_pairs = set(_sync_delegation_pairs(result))
+    for parent_id, child_id in sync_pairs:
+        append_path(f"{parent_id} -> {child_id} -> {parent_id}")
+
+    for edge in graph.get("edges", []):
+        if edge.get("kind") != "handoff":
             continue
-        adjacency.setdefault(source, []).append(target)
+        source = str(edge.get("from") or "")
+        target = str(edge.get("to") or "")
+        if source and target and (source, target) not in sync_pairs:
+            append_path(f"{source} -> {target}")
 
-    def paths_from(node: str) -> list[list[str]]:
-        children = adjacency.get(node, [])
-        if not children:
-            return [[node]]
-        paths: list[list[str]] = []
-        for child in children:
-            for child_path in paths_from(child):
-                paths.append([node, *child_path])
-        return paths
-
-    paths = paths_from("orchestrator") if "orchestrator" in adjacency else []
-    rendered_paths = []
-    for path in paths:
-        if path and path[0] == "orchestrator":
-            path = path[1:]
-        if path:
-            rendered_paths.append(" -> ".join(path))
     if not rendered_paths and result.selected_agent:
         rendered_paths.append(result.selected_agent)
     child_names = [
@@ -2607,10 +2683,10 @@ def _route_graph_summary(result: DemoResult) -> str:
         for child in result.child_sessions
     ]
     child_names = [name for name in child_names if name]
-    graph = "; ".join(rendered_paths) if rendered_paths else "-"
+    graph_text = "; ".join(rendered_paths) if rendered_paths else "-"
     if child_names:
-        graph += " -> [" + ", ".join(child_names) + "]"
-    return graph
+        graph_text += " -> [" + ", ".join(child_names) + "]"
+    return graph_text
 
 
 def main() -> None:

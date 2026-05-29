@@ -109,7 +109,7 @@ Case id: `ndp_seismic_waveform_to_plot`
 
 Category: `hierarchical-science`
 
-Expected route: `visualization -> ndp_catalog -> analysis -> sac_format -> visualization`
+Expected route: `orchestrator -> data -> ndp_catalog -> data -> orchestrator -> analysis -> sac_format -> analysis -> orchestrator -> visualization -> orchestrator`
 
 Expected evidence:
 
@@ -433,7 +433,7 @@ Case id: `ndp_catalog_discovery`
 
 Category: `external-catalog`
 
-Expected route: `data` or `ndp_catalog`
+Expected route: `orchestrator -> data -> ndp_catalog -> data -> orchestrator`
 
 Expected evidence:
 
