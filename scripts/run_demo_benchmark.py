@@ -382,8 +382,6 @@ def _data_file_paths(prompt: str, tools: list[dict[str, Any]]) -> list[str]:
     for candidate in candidates:
         if not candidate:
             continue
-        if candidate.endswith(".png"):
-            continue
         if candidate not in deduped:
             deduped.append(candidate)
     return deduped
