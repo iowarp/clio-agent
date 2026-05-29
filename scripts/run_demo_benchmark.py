@@ -613,10 +613,25 @@ def _route_metrics(result: DemoResult) -> dict[str, Any]:
     """Return aggregate routing/tool metrics for benchmark comparison."""
     graph = _route_graph(result)
     expert_nodes = [row for row in graph["nodes"] if row.get("type") == "expert"]
-    branch_edges = [row for row in graph["edges"] if row.get("kind") == "branch"]
+    child_session_branch_edges = [
+        row for row in graph["edges"] if row.get("kind") == "branch"
+    ]
+    sync_handoff_pairs: set[tuple[str, str]] = set()
+    for row in graph["edges"]:
+        kind = row.get("kind")
+        source = str(row.get("from") or "")
+        target = str(row.get("to") or "")
+        if not source or not target:
+            continue
+        if kind == "handoff":
+            sync_handoff_pairs.add((source, target))
+        elif kind == "return":
+            sync_handoff_pairs.add((target, source))
     return {
         "expert_depth": len(expert_nodes),
-        "branch_count": len(branch_edges),
+        "branch_count": len(child_session_branch_edges) + len(sync_handoff_pairs),
+        "child_session_branch_count": len(child_session_branch_edges),
+        "sync_handoff_count": len(sync_handoff_pairs),
         "unique_experts": len({row.get("id") for row in expert_nodes}),
         "unique_tools": len(set(result.tool_names)),
         "tool_call_count": len(result.tools),
@@ -1032,12 +1047,13 @@ def render_report_from_jsonls(input_jsonls: list[Path], output_jsonl: Path, repo
     rows: list[dict[str, Any]] = []
     for path in input_jsonls:
         rows.extend(_rows_from_jsonl(path))
+    results = [_result_from_case_row(row) for row in rows]
+    normalized_rows = [_case_row(result) for result in results]
     output_jsonl.parent.mkdir(parents=True, exist_ok=True)
     output_jsonl.write_text(
-        "".join(json.dumps(row, sort_keys=True, default=str) + "\n" for row in rows),
+        "".join(json.dumps(row, sort_keys=True, default=str) + "\n" for row in normalized_rows),
         encoding="utf-8",
     )
-    results = [_result_from_case_row(row) for row in rows]
     report_path.write_text(_render_report(results, output_jsonl.resolve()), encoding="utf-8")
 
 
@@ -2673,7 +2689,14 @@ def _render_report(results: list[DemoResult], output_jsonl: Path) -> str:
                 f"Provider/model: {_provider_model_summary(result.provider)}",
                 f"Provider settings: {_provider_settings_summary(result.provider)}",
                 f"Route graph: {_route_graph_summary(result)}",
-                f"Route metrics: depth={result.route_metrics['expert_depth']}, branches={result.route_metrics['branch_count']}, tools={result.route_metrics['tool_call_count']}",
+                (
+                    "Route metrics: "
+                    f"depth={result.route_metrics['expert_depth']}, "
+                    f"branches={result.route_metrics['branch_count']}, "
+                    f"sync_handoffs={result.route_metrics.get('sync_handoff_count', 0)}, "
+                    f"child_sessions={result.route_metrics.get('child_session_branch_count', 0)}, "
+                    f"tools={result.route_metrics['tool_call_count']}"
+                ),
                 f"Expert handoffs: {handoff_text}",
                 f"Tools: {tool_text}",
                 f"Data/input files: {', '.join(result.data_files) or 'none'}",

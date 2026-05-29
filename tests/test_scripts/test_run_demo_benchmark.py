@@ -422,6 +422,77 @@ def test_nested_expert_handoffs_count_for_case_expectations(tmp_path: Path) -> N
     assert result.passed is True
 
 
+def test_route_metrics_count_sync_handoff_edges() -> None:
+    message = _message(text="workflow complete")
+    message["parts"][0]["selected_agent"] = "main"
+    message["metadata"]["expert_handoffs"] = [
+        {"agent_id": "main", "stage": "planner_dispatch"},
+        {
+            "agent_id": "data",
+            "parent_id": "main",
+            "stage": "planner_dispatch_child",
+        },
+        {
+            "agent_id": "data",
+            "parent_id": "main",
+            "stage": "delegate.completed",
+            "metadata": {"return_to": "main"},
+        },
+        {
+            "agent_id": "main",
+            "stage": "parent.resumed",
+            "metadata": {"resumed_from": "data"},
+        },
+        {
+            "agent_id": "ndp_catalog",
+            "parent_id": "data",
+            "stage": "planner_dispatch_child",
+        },
+        {
+            "agent_id": "ndp_catalog",
+            "parent_id": "data",
+            "stage": "delegate.completed",
+            "metadata": {"return_to": "data"},
+        },
+        {
+            "agent_id": "data",
+            "parent_id": "main",
+            "stage": "parent.resumed",
+            "metadata": {"resumed_from": "ndp_catalog"},
+        },
+        {
+            "agent_id": "visualization",
+            "parent_id": "main",
+            "stage": "planner_dispatch_child",
+        },
+        {
+            "agent_id": "visualization",
+            "parent_id": "main",
+            "stage": "delegate.completed",
+            "metadata": {"return_to": "main"},
+        },
+    ]
+    result = bench.DemoResult(
+        case=bench.DemoCase(
+            case_id="sync_handoff_metrics",
+            title="sync",
+            category="test",
+            prompt="prompt",
+            why="why",
+            expected="expected",
+            session_group="test",
+        ),
+        session_id="sess_sync",
+        elapsed_s=1.0,
+        message=message,
+        provider={},
+    )
+
+    assert result.route_metrics["sync_handoff_count"] == 3
+    assert result.route_metrics["child_session_branch_count"] == 0
+    assert result.route_metrics["branch_count"] == 3
+
+
 def test_remote_png_urls_do_not_count_as_local_artifacts(tmp_path: Path) -> None:
     png = tmp_path / "local.png"
     png.write_bytes(b"png")
