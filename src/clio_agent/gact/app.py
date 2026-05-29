@@ -2999,7 +2999,7 @@ async def _run_turn_in_background(
     async def _run_dynamic_agent_sync(agent_def: "AgentDef", prompt: str) -> Any:
         runner = _run_tool_user_agent if agent_def.tools else _run_prompt_user_agent
         loop = asyncio.get_running_loop()
-        with _gact_app_context(app):
+        with _gact_app_context(app), _tool_session_context(sid):
             turn_context = contextvars.copy_context()
         return await _await_turn_work(
             loop.run_in_executor(

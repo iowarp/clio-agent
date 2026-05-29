@@ -809,3 +809,118 @@ Inspect schemas.
     assert assistant["parts"][1]["type"] == "expert_handoff"
     assert assistant["parts"][1]["metadata"]["status"] == "completed"
     assert assistant["parts"][-1]["text"] == "ROOT_FINAL"
+
+
+def test_delegated_child_tool_telemetry_stays_on_active_parent_turn(
+    isolated_env: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from clio_agent.tools.execution import notify_global_tool_observer
+
+    from .conftest import complete_turn
+
+    calls: list[tuple[str, str, str]] = []
+
+    async def fake_stream_unavailable(
+        app: Any,
+        enriched_text: str,
+        sid: str,
+        emit_chunk: Any,
+        **kwargs: Any,
+    ) -> None:
+        del enriched_text, emit_chunk, kwargs
+        from clio_agent.gact.app import _record_stream_fallback
+
+        _record_stream_fallback(app, sid, "dynamic_prompt_stream_unavailable")
+        return None
+
+    def fake_prompt_agent(base_agent: Any, agent_def: Any, question: str, session_id: str) -> Any:
+        del base_agent
+        calls.append((agent_def.id, question, session_id))
+        root_call_count = len([row for row in calls if row[0] == "root_review"])
+        if agent_def.id == "root_review" and root_call_count == 1:
+            return type(
+                "Pred",
+                (),
+                {
+                    "answer": "ROOT_REQUESTED_SCHEMA",
+                    "selected_expert": agent_def.id,
+                    "routing_rationale": "session selected expert-pack agent",
+                    "expert_handoffs": [
+                        {
+                            "delegate_to": "schema_review",
+                            "question": "Inspect the CSV schema",
+                            "status": "requested",
+                        }
+                    ],
+                },
+            )()
+        if agent_def.id == "schema_review":
+            notify_global_tool_observer("csv_schema_inspect", {"path": "data.csv"}, "started", None)
+            notify_global_tool_observer("csv_schema_inspect", {"path": "data.csv"}, "completed", None)
+            return type(
+                "Pred",
+                (),
+                {
+                    "answer": "SCHEMA_OK",
+                    "selected_expert": agent_def.id,
+                    "routing_rationale": "delegated child expert",
+                },
+            )()
+        return type(
+            "Pred",
+            (),
+            {
+                "answer": "ROOT_FINAL",
+                "selected_expert": agent_def.id,
+                "routing_rationale": "parent resumed after child expert",
+                "expert_handoffs": [],
+            },
+        )()
+
+    monkeypatch.setattr("clio_agent.gact.app._try_streamed_forward", fake_stream_unavailable)
+    monkeypatch.setattr("clio_agent.gact.app._run_prompt_user_agent", fake_prompt_agent)
+
+    root = isolated_env / ".clio" / "experts"
+    root.mkdir(parents=True)
+    root.joinpath("root_review.md").write_text(
+        """---
+id: root_review
+title: Root Review Expert
+parent_id: analysis
+tier: 2
+---
+Coordinate data quality review.
+""",
+        encoding="utf-8",
+    )
+    root.joinpath("schema_review.md").write_text(
+        """---
+id: schema_review
+title: Schema Review Expert
+parent_id: root_review
+tier: 3
+---
+Inspect schemas.
+""",
+        encoding="utf-8",
+    )
+
+    app = build_app(sessions_path=tmp_path / "sessions.json", agent=object())
+    with TestClient(app) as client:
+        older_sid = client.post(
+            "/v1/sessions",
+            json={"title": "delegated expert run", "agent": {"id": "root_review"}},
+        ).json()["id"]
+        newer_sid = client.post(
+            "/v1/sessions",
+            json={"title": "newer idle", "agent": {"id": "root_review"}},
+        ).json()["id"]
+        assistant = complete_turn(client, older_sid, "inspect data.csv")
+
+    tools_called = assistant["metadata"]["tools_called"]
+    assert [row["name"] for row in tools_called] == ["csv_schema_inspect"]
+    assert tools_called[0]["args"] == {"path": "data.csv"}
+    assert newer_sid not in app.state.tool_call_ledger
+    assert app.state.bus._history.get(newer_sid, []) == []
