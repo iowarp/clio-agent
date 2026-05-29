@@ -1009,12 +1009,34 @@ def _result_from_case_row(row: dict[str, Any]) -> DemoResult:
     )
 
 
-def render_report_from_jsonl(output_jsonl: Path, report_path: Path) -> None:
-    """Render a markdown report from an existing benchmark JSONL evidence file."""
+def _rows_from_jsonl(path: Path) -> list[dict[str, Any]]:
+    """Load benchmark evidence rows from a JSONL file."""
+
     rows: list[dict[str, Any]] = []
-    for line in output_jsonl.read_text(encoding="utf-8").splitlines():
+    for line in path.read_text(encoding="utf-8").splitlines():
         if line.strip():
             rows.append(json.loads(line))
+    return rows
+
+
+def render_report_from_jsonl(output_jsonl: Path, report_path: Path) -> None:
+    """Render a markdown report from an existing benchmark JSONL evidence file."""
+    rows = _rows_from_jsonl(output_jsonl)
+    results = [_result_from_case_row(row) for row in rows]
+    report_path.write_text(_render_report(results, output_jsonl.resolve()), encoding="utf-8")
+
+
+def render_report_from_jsonls(input_jsonls: list[Path], output_jsonl: Path, report_path: Path) -> None:
+    """Combine existing benchmark JSONL evidence files and render one report."""
+
+    rows: list[dict[str, Any]] = []
+    for path in input_jsonls:
+        rows.extend(_rows_from_jsonl(path))
+    output_jsonl.parent.mkdir(parents=True, exist_ok=True)
+    output_jsonl.write_text(
+        "".join(json.dumps(row, sort_keys=True, default=str) + "\n" for row in rows),
+        encoding="utf-8",
+    )
     results = [_result_from_case_row(row) for row in rows]
     report_path.write_text(_render_report(results, output_jsonl.resolve()), encoding="utf-8")
 
@@ -2854,8 +2876,13 @@ def main() -> None:
     parser.add_argument(
         "--render-existing-jsonl",
         type=Path,
+        action="append",
         default=None,
-        help="Render a report from an existing benchmark JSONL file without running cases.",
+        help=(
+            "Render a report from one or more existing benchmark JSONL files without "
+            "running cases. May be supplied multiple times; combined evidence is "
+            "written to --output-jsonl."
+        ),
     )
     parser.add_argument(
         "--case-delay-s",
@@ -2892,7 +2919,11 @@ def main() -> None:
     )
     args = parser.parse_args()
     if args.render_existing_jsonl is not None:
-        render_report_from_jsonl(args.render_existing_jsonl.resolve(), args.report.resolve())
+        existing = [path.resolve() for path in args.render_existing_jsonl]
+        if len(existing) == 1:
+            render_report_from_jsonl(existing[0], args.report.resolve())
+        else:
+            render_report_from_jsonls(existing, args.output_jsonl.resolve(), args.report.resolve())
         raise SystemExit(0)
     raise SystemExit(
         run_benchmark(
