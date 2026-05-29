@@ -279,6 +279,91 @@ def test_session_agent_overlay_can_export_workspace_blueprint(tmp_path: Path) ->
     assert "genomics-session-a" in {row["id"] for row in listed["agent_blueprints"]}
 
 
+def test_session_agent_overlay_prompt_provenance_reaches_prompts_and_turn_metadata(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    blueprint = tmp_path / "remote-data"
+    _write_data_root_blueprint(blueprint)
+    calls: list[dict[str, str]] = []
+
+    async def no_stream(*args, **kwargs):
+        return None
+
+    def fake_prompt_runner(base_agent, agent_def, question, session_id, cancel_requested=None):
+        del base_agent, cancel_requested
+        calls.append(
+            {
+                "agent_id": agent_def.id,
+                "system_prompt": agent_def.system_prompt,
+                "model": agent_def.default_model,
+                "question": question,
+                "session_id": session_id,
+            }
+        )
+        return SimpleNamespace(
+            answer="overlay provenance ok",
+            selected_expert=agent_def.id,
+            routing_rationale="session overlay",
+            route_source="agent_blueprint",
+            error_info=None,
+        )
+
+    monkeypatch.setattr("clio_agent.gact.app._try_streamed_forward", no_stream)
+    monkeypatch.setattr("clio_agent.gact.app._run_prompt_user_agent", fake_prompt_runner)
+
+    app = build_app(sessions_path=tmp_path / "sessions.json", agent=SimpleNamespace())
+    with TestClient(app) as client:
+        sid = client.post("/v1/sessions", json={"title": "overlay runtime"}).json()["id"]
+        assert client.post(
+            f"/v1/sessions/{sid}/agent-blueprint",
+            json={"path": str(blueprint)},
+        ).status_code == 200
+        saved = client.put(
+            f"/v1/sessions/{sid}/agent-overlay",
+            json={
+                "agents": {
+                    "data": {
+                        "system_prompt": "SESSION OVERLAY PROMPT.",
+                        "default_model": "gpt-5-mini",
+                    }
+                }
+            },
+        )
+        assert saved.status_code == 200, saved.text
+        prompts = client.get("/v1/prompts", params={"session_id": sid}).json()
+        assistant = complete_turn(client, sid, "prove overlay provenance")
+
+    overlay_sources = prompts["agent_overlay"]["agents"]
+    assert overlay_sources == [
+        {
+            "agent_id": "data",
+            "fields": ["default_model", "system_prompt"],
+            "has_system_prompt": True,
+            "prompt_id": "",
+            "prompt_profile": "",
+            "default_provider": "",
+            "default_model": "gpt-5-mini",
+            "source": "session_agent_overlay",
+            "session_id": sid,
+        }
+    ]
+    assert calls == [
+        {
+            "agent_id": "data",
+            "system_prompt": "SESSION OVERLAY PROMPT.",
+            "model": "gpt-5-mini",
+            "question": "prove overlay provenance",
+            "session_id": sid,
+        }
+    ]
+    runtime = assistant["metadata"]["agent_runtime"]
+    assert runtime["agent_blueprint"]["id"] == "remote-data"
+    assert runtime["agent_overlay"]["status"] == "applied"
+    assert runtime["agent_overlay"]["fields"] == ["default_model", "system_prompt"]
+    assert runtime["prompt"]["source"] == "session_agent_overlay"
+
+
 def test_agent_blueprint_install_from_local_marketplace(tmp_path: Path) -> None:
     marketplace = tmp_path / "marketplace"
     _write_blueprint(marketplace / "genomics")
