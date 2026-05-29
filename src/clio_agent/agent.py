@@ -103,6 +103,7 @@ SCIENTIFIC_FILE_SUFFIXES = {
     ".vcf",
     ".cif",
     ".geojson",
+    ".png",
 }
 PLANNER_HIDDEN_TOOL_NAMES = {"fs_read_file", "fs_apply_edit_write"}
 MULTI_FILE_ANALYSIS_TERMS = (
@@ -526,6 +527,36 @@ class ClioAgent(dspy.Module):
                     "file_suffixes": [".geojson"],
                     "guard_coordinator_intents": ["multi_file_analysis"],
                     "coordinated_file_suffixes": [".geojson"],
+                },
+            ),
+        )
+
+        self.registry.register_agent(
+            "imaging",
+            self,
+            AgentCapability(
+                keywords=[
+                    "imaging",
+                    "image",
+                    "microscopy",
+                    "micrograph",
+                    "png",
+                    "intensity",
+                    "foreground",
+                    "segmentation",
+                    "region",
+                    "pixel",
+                ],
+                description=(
+                    "Scientific image expert for PNG microscopy-style fixtures. Uses image "
+                    "dimensions, intensity, foreground, and region inspection before synthesis."
+                ),
+                tools=["imaging_inspect_png"],
+                specialization="imaging",
+                metadata={
+                    "file_suffixes": [".png"],
+                    "guard_coordinator_intents": ["multi_file_analysis"],
+                    "coordinated_file_suffixes": [".png"],
                 },
             ),
         )
@@ -2007,6 +2038,62 @@ class ClioAgent(dspy.Module):
                         analysis=answer,
                         recommendations="Validate CRS assumptions, bounds, and feature properties.",
                         metadata={"expert": "geospatial", "paths": [str(path) for path in paths]},
+                    )
+                    self._record_expert_handoff(
+                        trace,
+                        expert_id=expert_id,
+                        dispatch_target=dispatch_id,
+                        stage="planner_dispatch",
+                        input_summary=expert_question,
+                        result=expert_result,
+                        duration_ms=(time.time() - started) * 1000,
+                    )
+                    return expert_id, answer, expert_result, None
+
+                if dispatch_id == "imaging":
+                    started = time.time()
+                    paths = extract_file_paths(expert_question, expert_context, {".png"})
+                    image_observations: list[str] = []
+                    if paths:
+                        image_result = self._execute_tool_action(
+                            "imaging_inspect_png",
+                            {"filepath": str(paths[0])},
+                            trace,
+                            question=expert_question,
+                            file_context=expert_context,
+                        )
+                        image_observations.append(
+                            "PNG: " + json.dumps(compact_tool_result(image_result, max_text=1000))
+                        )
+                    if not image_observations:
+                        return (
+                            expert_id,
+                            "",
+                            None,
+                            RoutingError(
+                                "The imaging expert needs a PNG file path.",
+                                details=self._recovery_details(
+                                    expert=expert_id,
+                                    next_action=(
+                                        "Provide at least one PNG file under the allowed "
+                                        "workspace roots."
+                                    ),
+                                ),
+                            ).to_dict(),
+                        )
+                    answer = (
+                        "Scientific image review:\n"
+                        + "\n\n".join(image_observations)
+                        + "\n\nRecommendations:\n"
+                        "- Verify acquisition scale and channel meaning before quantitative use.\n"
+                        "- Check foreground segmentation assumptions before downstream analysis."
+                    )
+                    expert_result = dspy.Prediction(
+                        analysis=answer,
+                        recommendations=(
+                            "Validate acquisition metadata, foreground threshold, and region evidence."
+                        ),
+                        metadata={"expert": "imaging", "paths": [str(path) for path in paths]},
                     )
                     self._record_expert_handoff(
                         trace,

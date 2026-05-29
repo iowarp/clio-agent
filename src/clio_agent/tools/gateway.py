@@ -29,6 +29,7 @@ from clio_agent.tools.servers.fs_server import fs_server
 from clio_agent.tools.servers.genomics_server import genomics_server
 from clio_agent.tools.servers.geospatial_server import geospatial_server
 from clio_agent.tools.servers.hdf5_server import hdf5_server
+from clio_agent.tools.servers.imaging_server import imaging_server
 from clio_agent.tools.servers.materials_server import materials_server
 from clio_agent.tools.servers.ndp_server import ndp_server
 from clio_agent.tools.servers.parquet_server import parquet_server
@@ -55,6 +56,7 @@ _mount_with_namespace(gateway, ndp_server, "ndp")
 _mount_with_namespace(gateway, sac_server, "sac")
 _mount_with_namespace(gateway, geospatial_server, "geospatial")
 _mount_with_namespace(gateway, genomics_server, "genomics")
+_mount_with_namespace(gateway, imaging_server, "imaging")
 _mount_with_namespace(gateway, materials_server, "materials")
 _mount_with_namespace(gateway, fs_server, "fs")
 _mount_with_namespace(gateway, shell_server, "shell")
@@ -138,6 +140,8 @@ def _infer_tool_server(tool_name: str) -> str:
         return "geospatial"
     if tool_name.startswith("genomics_"):
         return "genomics"
+    if tool_name.startswith("imaging_"):
+        return "imaging"
     if tool_name.startswith("materials_"):
         return "materials"
     if tool_name.startswith("fs_"):
