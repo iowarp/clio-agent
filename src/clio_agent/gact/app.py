@@ -13477,12 +13477,24 @@ def build_app(
             spec["args"] = list(descriptor.get("args") or [])
         if descriptor.get("url"):
             spec["url"] = descriptor["url"]
+        declared_tools = [
+            {
+                **tool,
+                "status": "enabled_pending_probe",
+                "enabled": False,
+                "server_id": sid,
+                "descriptor_id": descriptor_id,
+                "agent_blueprint_id": blueprint_id,
+            }
+            for tool in descriptor.get("tools") or []
+            if isinstance(tool, Mapping)
+        ]
         app.state.external_mcp_servers[sid] = {
             "id": sid,
             "name": descriptor.get("name") or descriptor_id,
             "status": "enabled_pending_probe",
             "transport": descriptor.get("transport") or "unknown",
-            "tools": [],
+            "tools": declared_tools,
             "spec": spec,
             "source": "agent_blueprint",
             "agent_blueprint_id": blueprint_id,
@@ -13493,8 +13505,8 @@ def build_app(
             "name": descriptor.get("name") or descriptor_id,
             "status": "enabled_pending_probe",
             "transport": descriptor.get("transport") or "unknown",
-            "tools_count": 0,
-            "tools": [],
+            "tools_count": len(declared_tools),
+            "tools": declared_tools,
             "spec": spec,
             "source": "agent_blueprint",
             "agent_blueprint_id": blueprint_id,
@@ -15955,6 +15967,31 @@ def build_app(
             except Exception:  # noqa: BLE001
                 Client = None  # type: ignore
             for sid, info in sorted(installed.items()):
+                for declared in info.get("tools") or []:
+                    if not isinstance(declared, Mapping):
+                        continue
+                    tool_name = str(declared.get("name") or declared.get("id") or "").strip()
+                    if not tool_name:
+                        continue
+                    rows.append(
+                        {
+                            "id": tool_name,
+                            "name": tool_name,
+                            "description": declared.get("description") or "",
+                            "server_id": sid,
+                            "source": "agent_blueprint_mcp_descriptor",
+                            "status": declared.get("status") or info.get("status") or "unknown",
+                            "enabled": bool(declared.get("enabled", False)),
+                            "input_schema": declared.get("input_schema") or {},
+                            "output_schema": declared.get("output_schema") or {},
+                            "permission_default": "ask",
+                            "owner": _tool_owner_for_catalog(tool_name),
+                            "tags": _tool_tags_for_catalog(tool_name),
+                            "visible_to": _tool_visible_to_for_catalog(tool_name),
+                            "agent_blueprint_id": info.get("agent_blueprint_id") or "",
+                            "descriptor_id": info.get("descriptor_id") or "",
+                        }
+                    )
                 spec = info.get("spec", {})
                 if Client is None:
                     continue
@@ -16047,6 +16084,28 @@ def build_app(
             except Exception:
                 Client = None  # type: ignore
             for sid, info in installed.items():
+                for declared in info.get("tools") or []:
+                    if not isinstance(declared, Mapping):
+                        continue
+                    tool_name = str(declared.get("name") or declared.get("id") or "").strip()
+                    if tool_name == tool_id:
+                        return {
+                            "id": tool_id,
+                            "name": tool_id,
+                            "description": declared.get("description") or "",
+                            "server_id": sid,
+                            "source": "agent_blueprint_mcp_descriptor",
+                            "status": declared.get("status") or info.get("status") or "unknown",
+                            "enabled": bool(declared.get("enabled", False)),
+                            "input_schema": declared.get("input_schema") or {},
+                            "output_schema": declared.get("output_schema") or {},
+                            "permission_default": "ask",
+                            "owner": _tool_owner_for_catalog(tool_id),
+                            "tags": _tool_tags_for_catalog(tool_id),
+                            "visible_to": _tool_visible_to_for_catalog(tool_id),
+                            "agent_blueprint_id": info.get("agent_blueprint_id") or "",
+                            "descriptor_id": info.get("descriptor_id") or "",
+                        }
                 if Client is None:
                     break
                 try:
