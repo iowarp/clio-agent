@@ -579,6 +579,7 @@ def _route_graph(result: DemoResult) -> dict[str, Any]:
         if stage.startswith("delegate."):
             if parent_id:
                 add_node(parent_id, "expert")
+                add_edge(parent_id, agent_id, "handoff")
                 add_edge(agent_id, parent_id, "return")
         elif stage == "parent.resumed":
             continue
@@ -1660,9 +1661,9 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             category="marketplace-genomics",
             session_group="marketplace_genomics_reference",
             agent_blueprint_id="genomics-review",
-            turn_agent_id="reference",
-            expected_agent="reference",
+            expected_agent="main",
             expected_tools=("genomics_inspect_fasta",),
+            expected_handoff_agents=("reference",),
             expected_terms=("chrA", "plasmidB"),
             timeout_s=620.0,
             forbidden_route_sources=_REAL_ORCHESTRATOR_FORBIDDEN_SOURCES,
@@ -1674,11 +1675,12 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             ),
             expected=(
                 "CLIO runs the genomics-review marketplace Agent Blueprint in this "
-                "session and uses the reference expert's FASTA tool."
+                "session, routes through the root expert, and uses the reference "
+                "expert's FASTA tool."
             ),
             why=(
                 "Proves a domain agent installed from the marketplace can be activated "
-                "per session and execute its own expert/tool surface."
+                "per session and execute its own hierarchy plus expert/tool surface."
             ),
         ),
         DemoCase(
@@ -1687,9 +1689,9 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             category="marketplace-genomics",
             session_group="marketplace_genomics_variants",
             agent_blueprint_id="genomics-review",
-            turn_agent_id="variants",
-            expected_agent="variants",
+            expected_agent="main",
             expected_tools=("genomics_summarize_vcf",),
+            expected_handoff_agents=("variants",),
             expected_terms=("missense", "frameshift"),
             timeout_s=620.0,
             forbidden_route_sources=_REAL_ORCHESTRATOR_FORBIDDEN_SOURCES,
@@ -1700,11 +1702,12 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             ),
             expected=(
                 "CLIO runs the genomics-review marketplace Agent Blueprint in this "
-                "session and uses the variants expert's VCF tool."
+                "session, routes through the root expert, and uses the variants "
+                "expert's VCF tool."
             ),
             why=(
                 "Exercises a second expert in the same marketplace agent, proving the "
-                "active blueprint changes the available expert surface."
+                "active blueprint changes the available hierarchy and expert surface."
             ),
         ),
         DemoCase(
@@ -1713,9 +1716,9 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             category="marketplace-materials",
             session_group="marketplace_materials",
             agent_blueprint_id="materials-crystal-review",
-            turn_agent_id="crystal_structure",
-            expected_agent="crystal_structure",
+            expected_agent="main",
             expected_tools=("materials_inspect_cif",),
+            expected_handoff_agents=("crystal_structure",),
             expected_terms=("SrTiO3", "P m -3 m"),
             timeout_s=620.0,
             forbidden_route_sources=_REAL_ORCHESTRATOR_FORBIDDEN_SOURCES,
@@ -1726,9 +1729,12 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             ),
             expected=(
                 "CLIO runs the materials-crystal-review marketplace Agent Blueprint "
-                "and uses the crystal_structure expert."
+                "through its root expert and uses the crystal_structure expert."
             ),
-            why="Proves a separate materials marketplace agent can be loaded per session.",
+            why=(
+                "Proves a separate materials marketplace agent can be loaded per "
+                "session and can delegate through its own hierarchy."
+            ),
         ),
         DemoCase(
             case_id="marketplace_geospatial_field_review",
@@ -1736,9 +1742,9 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             category="marketplace-geospatial",
             session_group="marketplace_geospatial",
             agent_blueprint_id="geospatial-field-review",
-            turn_agent_id="spatial_features",
-            expected_agent="spatial_features",
+            expected_agent="main",
             expected_tools=("geospatial_inspect_geojson",),
+            expected_handoff_agents=("spatial_features",),
             expected_terms=("feature", "geometry", "bounds"),
             timeout_s=620.0,
             forbidden_route_sources=_REAL_ORCHESTRATOR_FORBIDDEN_SOURCES,
@@ -1749,9 +1755,12 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             ),
             expected=(
                 "CLIO runs the geospatial-field-review marketplace Agent Blueprint "
-                "and uses the spatial_features expert."
+                "through its root expert and uses the spatial_features expert."
             ),
-            why="Proves a geospatial marketplace agent can be loaded per session.",
+            why=(
+                "Proves a geospatial marketplace agent can be loaded per session "
+                "and can delegate through its own hierarchy."
+            ),
         ),
         DemoCase(
             case_id="marketplace_proteomics_mzml_review",
@@ -1759,9 +1768,9 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             category="marketplace-proteomics",
             session_group="marketplace_proteomics",
             agent_blueprint_id="proteomics-mzml-review",
-            turn_agent_id="mass_spec",
-            expected_agent="mass_spec",
+            expected_agent="main",
             expected_tools=("mass_spec_inspect_mzml",),
+            expected_handoff_agents=("mass_spec",),
             expected_terms=("spectra", "tic"),
             timeout_s=620.0,
             forbidden_route_sources=_REAL_ORCHESTRATOR_FORBIDDEN_SOURCES,
@@ -1772,9 +1781,12 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             ),
             expected=(
                 "CLIO runs the proteomics-mzml-review marketplace Agent Blueprint "
-                "and uses the mass_spec expert."
+                "through its root expert and uses the mass_spec expert."
             ),
-            why="Proves a proteomics marketplace agent can be loaded per session.",
+            why=(
+                "Proves a proteomics marketplace agent can be loaded per session "
+                "and can delegate through its own hierarchy."
+            ),
         ),
         DemoCase(
             case_id="marketplace_seismic_waveform_review",
@@ -2412,6 +2424,17 @@ def _provider_lane_audit(results: list[DemoResult], lane: str) -> list[dict[str,
             and result.active_agent_blueprint_id != result.case.agent_blueprint_id
         ]
         tool_backed = [result for result in results if result.tool_names]
+        missing_root_orchestration = [
+            result
+            for result in results
+            if result.case.agent_blueprint_id
+            and result.case.expected_handoff_agents
+            and (
+                result.selected_agent != "main"
+                or result.case.expected_handoff_agents[0] not in result.handoff_agent_ids
+                or _missing_sync_return_pairs(result)
+            )
+        ]
         return [
             {
                 "criterion": "all marketplace cases prove the requested active Agent Blueprint",
@@ -2436,6 +2459,20 @@ def _provider_lane_audit(results: list[DemoResult], lane: str) -> list[dict[str,
                     f"{result.case.case_id}: tools={result.tool_names}"
                     for result in results
                     if not result.tool_names
+                ],
+            },
+            {
+                "criterion": "marketplace hierarchy cases prove root sync delegation",
+                "observed": len(results) - len(missing_root_orchestration),
+                "required": len(results),
+                "passed": not missing_root_orchestration,
+                "details": [
+                    (
+                        f"{result.case.case_id}: selected={result.selected_agent or '-'} "
+                        f"handoffs={result.handoff_agent_ids} "
+                        f"missing_returns={_missing_sync_return_pairs(result)}"
+                    )
+                    for result in missing_root_orchestration
                 ],
             },
         ]

@@ -307,6 +307,9 @@ def test_route_graph_summary_preserves_sync_delegation_returns() -> None:
     assert "orchestrator -> data" in summary
     assert "data -> ndp_catalog -> data" in summary
     assert "analysis -> sac_format -> analysis" in summary
+    assert {"from": "analysis", "to": "sac_format", "kind": "handoff"} in result.route_graph[
+        "edges"
+    ]
     assert bench._missing_sync_return_pairs(result) == []
 
 
@@ -969,22 +972,107 @@ def test_real_orchestrator_audit_requires_sync_parent_resume() -> None:
     assert sync_row["details"] == ["ndp_seismic_waveform_to_plot: missing=['data->ndp_catalog']"]
 
 
+def test_marketplace_audit_requires_root_sync_delegation() -> None:
+    message = _message(
+        text="reference review complete",
+        route_source="user_agent",
+        tools=[{"name": "genomics_inspect_fasta"}],
+    )
+    message["parts"][0]["selected_agent"] = "reference"
+    message["metadata"]["expert_handoffs"] = [
+        {
+            "agent_id": "reference",
+            "parent_id": "main",
+            "stage": "planner_dispatch_child",
+        }
+    ]
+    result = bench.DemoResult(
+        case=bench.DemoCase(
+            case_id="marketplace_genomics_reference_review",
+            title="marketplace genomics",
+            category="marketplace-test",
+            prompt="prompt",
+            why="why",
+            expected="expected",
+            session_group="marketplace",
+            agent_blueprint_id="genomics-review",
+            expected_agent="main",
+            expected_tools=("genomics_inspect_fasta",),
+            expected_handoff_agents=("reference",),
+        ),
+        session_id="sess_marketplace",
+        elapsed_s=1.0,
+        message=message,
+        provider={"provider": "codex", "model": "gpt-5.5", "api_base": ""},
+        benchmark_lane="marketplace_agents",
+        agent_blueprint={"active_agent_blueprint_id": "genomics-review"},
+    )
+
+    audit = bench._provider_lane_audit([result], "marketplace_agents")
+
+    root_row = next(
+        item
+        for item in audit
+        if item["criterion"] == "marketplace hierarchy cases prove root sync delegation"
+    )
+    assert root_row["passed"] is False
+    assert root_row["observed"] == 0
+    assert root_row["details"] == [
+        "marketplace_genomics_reference_review: selected=reference "
+        "handoffs=['reference'] missing_returns=['main->reference']"
+    ]
+
+
 def test_render_report_from_multiple_jsonls_combines_marketplace_evidence(tmp_path: Path) -> None:
     blueprints = [
         ("marketplace_genomics_reference_review", "genomics-review", "reference", "genomics_inspect_fasta"),
-        ("marketplace_materials_crystal_review", "materials-crystal-review", "crystal_structure", "materials_inspect_cif"),
-        ("marketplace_geospatial_field_review", "geospatial-field-review", "spatial_features", "geospatial_inspect_geojson"),
-        ("marketplace_proteomics_mzml_review", "proteomics-mzml-review", "mass_spec", "mass_spec_inspect_mzml"),
-        ("marketplace_seismic_waveform_review", "seismic-waveform-review", "main", "sac_plot_traces"),
+        (
+            "marketplace_materials_crystal_review",
+            "materials-crystal-review",
+            "crystal_structure",
+            "materials_inspect_cif",
+        ),
+        (
+            "marketplace_geospatial_field_review",
+            "geospatial-field-review",
+            "spatial_features",
+            "geospatial_inspect_geojson",
+        ),
+        (
+            "marketplace_proteomics_mzml_review",
+            "proteomics-mzml-review",
+            "mass_spec",
+            "mass_spec_inspect_mzml",
+        ),
+        ("marketplace_seismic_waveform_review", "seismic-waveform-review", "data", "sac_plot_traces"),
     ]
     rows: list[dict[str, object]] = []
-    for case_id, blueprint_id, selected_agent, tool_name in blueprints:
+    for case_id, blueprint_id, child_agent, tool_name in blueprints:
         message = _message(
             text=f"{blueprint_id} completed",
             route_source="user_agent",
             tools=[{"name": tool_name}],
         )
-        message["parts"][0]["selected_agent"] = selected_agent
+        message["parts"][0]["selected_agent"] = "main"
+        message["metadata"]["expert_handoffs"] = [
+            {"agent_id": "main", "stage": "planner_dispatch"},
+            {
+                "agent_id": child_agent,
+                "parent_id": "main",
+                "stage": "planner_dispatch_child",
+            },
+            {
+                "agent_id": child_agent,
+                "parent_id": "main",
+                "stage": "delegate.completed",
+                "metadata": {"delegation_lifecycle": "sync", "return_to": "main"},
+            },
+            {
+                "agent_id": "main",
+                "stage": "parent.resumed",
+                "metadata": {"delegation_lifecycle": "sync", "resumed_from": child_agent},
+            },
+        ]
         result = bench.DemoResult(
             case=bench.DemoCase(
                 case_id=case_id,
@@ -995,7 +1083,9 @@ def test_render_report_from_multiple_jsonls_combines_marketplace_evidence(tmp_pa
                 expected="expected",
                 session_group="marketplace",
                 agent_blueprint_id=blueprint_id,
+                expected_agent="main",
                 expected_tools=(tool_name,),
+                expected_handoff_agents=(child_agent,),
             ),
             session_id=f"sess_{case_id}",
             elapsed_s=1.0,
