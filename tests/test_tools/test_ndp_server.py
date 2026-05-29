@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from importlib import import_module
 from pathlib import Path
 from typing import Any
@@ -336,6 +337,7 @@ async def test_ndp_stage_resource_creates_explicit_output_dir(
             yield b"hello world"
 
     monkeypatch.setattr(ndp_module, "_dataset_details", fake_details)
+    monkeypatch.setattr(ndp_module.shutil, "which", lambda name: None)
     monkeypatch.setattr(ndp_module.requests, "get", lambda *args, **kwargs: FakeResponse())
     output_dir = tmp_path / "new-stage-dir"
 
@@ -353,6 +355,111 @@ async def test_ndp_stage_resource_creates_explicit_output_dir(
     assert data["staged"] is True
     assert output_dir.exists()
     assert (output_dir / "sample.txt").read_bytes() == b"hello world"
+
+
+@pytest.mark.asyncio
+async def test_ndp_stage_resource_uses_curl_webget_path(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    """HTTP staging should prefer curl/webget semantics when curl is available."""
+
+    async def fake_details(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        return {
+            "id": "ds-http",
+            "name": "http-dataset",
+            "title": "HTTP Dataset",
+            "resources": [
+                {
+                    "name": "sample.txt",
+                    "url": "https://example.test/sample.txt",
+                    "size": 11,
+                }
+            ],
+        }
+
+    calls: list[list[str]] = []
+
+    def fake_run(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        calls.append(command)
+        output_path = Path(command[command.index("--output") + 1])
+        output_path.write_bytes(b"hello world")
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(ndp_module, "_dataset_details", fake_details)
+    monkeypatch.setattr(ndp_module.shutil, "which", lambda name: "/usr/bin/curl")
+    monkeypatch.setattr(ndp_module.subprocess, "run", fake_run)
+    output_dir = tmp_path / "curl-stage-dir"
+
+    async with Client(ndp_server) as client:
+        result = await client.call_tool(
+            "stage_resource",
+            {
+                "dataset_identifier": "ds-http",
+                "server": "global",
+                "output_dir": str(output_dir),
+            },
+        )
+
+    data = _parse_result(result)
+    assert data["staged"] is True
+    assert data["method"] == "curl"
+    assert (output_dir / "sample.txt").read_bytes() == b"hello world"
+    assert calls
+    assert calls[0][:5] == [
+        "/usr/bin/curl",
+        "--location",
+        "--fail",
+        "--show-error",
+        "--silent",
+    ]
+    assert "--max-filesize" in calls[0]
+
+
+@pytest.mark.asyncio
+async def test_ndp_stage_resource_surfaces_curl_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    """curl timeout/failure should be structured and include utility provenance."""
+
+    async def fake_details(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        return {
+            "id": "ds-http",
+            "name": "http-dataset",
+            "title": "HTTP Dataset",
+            "resources": [
+                {
+                    "name": "sample.txt",
+                    "url": "https://example.test/sample.txt",
+                    "size": 11,
+                }
+            ],
+        }
+
+    def fake_run(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        del kwargs
+        return subprocess.CompletedProcess(command, 28, stdout="", stderr="operation timed out")
+
+    monkeypatch.setattr(ndp_module, "_dataset_details", fake_details)
+    monkeypatch.setattr(ndp_module.shutil, "which", lambda name: "/usr/bin/curl")
+    monkeypatch.setattr(ndp_module.subprocess, "run", fake_run)
+
+    async with Client(ndp_server) as client:
+        result = await client.call_tool(
+            "stage_resource",
+            {
+                "dataset_identifier": "ds-http",
+                "server": "global",
+                "output_dir": str(tmp_path),
+            },
+        )
+
+    data = _parse_result(result)
+    assert data["error"]["code"] == "webget_failed"
+    assert data["error"]["details"]["method"] == "curl"
+    assert data["error"]["details"]["returncode"] == 28
+    assert "operation timed out" in data["error"]["details"]["stderr"]
 
 
 def test_list_capabilities_reports_ndp_server():

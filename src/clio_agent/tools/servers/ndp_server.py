@@ -307,6 +307,132 @@ def _stage_http_resource(
     max_bytes: int,
 ) -> dict[str, Any]:
     """Download a small HTTP resource under CLIO file policy."""
+    curl = shutil.which("curl")
+    if curl:
+        return _stage_curl_resource(
+            curl=curl,
+            url=url,
+            output_path=output_path,
+            max_bytes=max_bytes,
+        )
+    return _stage_requests_resource(url=url, output_path=output_path, max_bytes=max_bytes)
+
+
+def _stage_curl_resource(
+    *,
+    curl: str,
+    url: str,
+    output_path: Path,
+    max_bytes: int,
+) -> dict[str, Any]:
+    """Stage an HTTP(S) resource through curl/webget-style semantics."""
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    partial_path = output_path.with_name(f"{output_path.name}.part")
+    partial_path.unlink(missing_ok=True)
+    command = [
+        curl,
+        "--location",
+        "--fail",
+        "--show-error",
+        "--silent",
+        "--connect-timeout",
+        "20",
+        "--max-time",
+        "600",
+        "--retry",
+        "2",
+        "--retry-delay",
+        "2",
+        "--max-filesize",
+        str(max_bytes),
+        "--output",
+        str(partial_path),
+        url,
+    ]
+    try:
+        completed = subprocess.run(
+            command,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=660,
+        )
+    except subprocess.TimeoutExpired:
+        partial_path.unlink(missing_ok=True)
+        return _stage_error(
+            code="webget_timeout",
+            message="curl timed out before the NDP resource could be staged.",
+            next_action="Retry later, select a smaller mirror, or stage the URL manually.",
+            details={
+                "url": url,
+                "method": "curl",
+                "timeout_s": 660,
+                "command": _redacted_command(command),
+            },
+        )
+
+    if completed.returncode != 0:
+        partial_path.unlink(missing_ok=True)
+        stderr = (completed.stderr or completed.stdout or "").strip()
+        return _stage_error(
+            code="webget_failed",
+            message="curl could not stage the selected NDP resource.",
+            next_action="Inspect the URL, retry later, or select another concrete resource.",
+            details={
+                "url": url,
+                "method": "curl",
+                "returncode": completed.returncode,
+                "stderr": stderr[-1200:],
+                "command": _redacted_command(command),
+            },
+        )
+
+    if not partial_path.exists():
+        return _stage_error(
+            code="webget_output_missing",
+            message="curl exited successfully but did not create the staged resource.",
+            next_action="Inspect the output directory and retry the resource staging.",
+            details={"url": url, "method": "curl", "output_path": str(partial_path)},
+        )
+
+    size = partial_path.stat().st_size
+    if size > max_bytes:
+        partial_path.unlink(missing_ok=True)
+        return _stage_error(
+            code="resource_too_large",
+            message=(
+                f"NDP resource is {size} bytes, which exceeds the staging "
+                f"limit of {max_bytes} bytes."
+            ),
+            next_action="Increase max_bytes intentionally or select a smaller resource.",
+            details={"url": url, "method": "curl", "size_bytes": size, "max_bytes": max_bytes},
+        )
+
+    partial_path.replace(output_path)
+    return {
+        "staged": True,
+        "path": str(output_path),
+        "size_bytes": size,
+        "url": url,
+        "method": "curl",
+        "command": _redacted_command(command),
+    }
+
+
+def _redacted_command(command: list[str]) -> list[str]:
+    """Return a non-shell command vector safe for provenance metadata."""
+
+    return [str(part) for part in command]
+
+
+def _stage_requests_resource(
+    *,
+    url: str,
+    output_path: Path,
+    max_bytes: int,
+) -> dict[str, Any]:
+    """Download a small HTTP resource with Python streaming when curl is absent."""
     try:
         with requests.get(url, stream=True, timeout=(10, 60)) as response:
             response.raise_for_status()
@@ -365,6 +491,7 @@ def _stage_http_resource(
         "path": str(output_path),
         "size_bytes": output_path.stat().st_size,
         "url": url,
+        "method": "python_requests",
     }
 
 
