@@ -517,6 +517,16 @@ def _post_turn(
     raise TimeoutError(f"assistant turn for {user_id!r} did not settle in {timeout_s:g}s")
 
 
+def _turn_agent_id_for_lane(case: DemoCase, lane: str) -> str:
+    """Return the per-turn agent override needed for this benchmark lane."""
+
+    if case.turn_agent_id:
+        return case.turn_agent_id
+    if lane == "real_orchestrator":
+        return "main"
+    return ""
+
+
 def _provider(http: httpx.Client) -> dict[str, Any]:
     try:
         return http.get("/v1/providers/lm").json()
@@ -1492,7 +1502,7 @@ def run_benchmark(
                             session_id,
                             setup_prompt,
                             timeout_s=case.timeout_s,
-                            agent_id=case.turn_agent_id,
+                            agent_id=_turn_agent_id_for_lane(case, lane),
                         )
                     )
                     if case_delay_s > 0:
@@ -1521,7 +1531,7 @@ def run_benchmark(
                     case.prompt,
                     timeout_s=case.timeout_s,
                     cancel_after_s=case.cancel_after_s,
-                    agent_id=case.turn_agent_id,
+                    agent_id=_turn_agent_id_for_lane(case, lane),
                 )
                 elapsed_s = time.monotonic() - started
                 after_children = _children(http, session_id)
