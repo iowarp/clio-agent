@@ -13,7 +13,7 @@ from clio_agent.gact.agent_blueprints import (
     load_agent_blueprints,
     validate_agent_blueprint_path,
 )
-from clio_agent.gact.app import build_app
+from clio_agent.gact.app import _builtin_agents, build_app
 from tests.test_gact.conftest import complete_turn
 
 
@@ -93,6 +93,21 @@ def test_builtin_agent_blueprint_is_discoverable() -> None:
     assert blueprints["data-exploration"].root_expert == "main"
     assert {"main", "data", "analysis", "visualization", "ndp_catalog"} <= set(agents)
     assert agents["data"].metadata["agent_blueprint_id"] == "data-exploration"
+
+
+def test_builtin_agents_are_loaded_from_packaged_blueprint() -> None:
+    agents = {row.id: row for row in _builtin_agents()}
+
+    assert {"main", "data", "analysis", "visualization", "ndp_catalog"} <= set(agents)
+    assert agents["main"].metadata["source_blueprint"] == "builtin"
+    assert agents["main"].metadata["definition_path"].endswith(
+        "agent_blueprints/builtin/data-exploration/experts/main.md"
+    )
+    assert agents["main"].system_prompt.startswith("You are CLIO's agent planner.")
+    assert agents["data"].metadata["definition_path"].endswith(
+        "agent_blueprints/builtin/data-exploration/experts/data.md"
+    )
+    assert agents["data"].system_prompt.startswith("You are the CLIO Data Expert")
 
 
 def test_validate_agent_blueprint_markdown_root(tmp_path: Path) -> None:
