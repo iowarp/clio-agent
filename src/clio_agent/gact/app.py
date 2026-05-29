@@ -510,6 +510,13 @@ def _gact_turn_timeout_s() -> float:
         return 300.0
 
 
+def _keyword_user_agent_routing_enabled() -> bool:
+    """Return whether legacy keyword routing into user agents is enabled."""
+
+    raw = os.environ.get("CLIO_ENABLE_KEYWORD_USER_AGENT_ROUTING", "").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
 def _agent_not_available_error(app: "FastAPI", sid: str) -> "ErrorEnvelope":
     """Return a typed error when no executable CLIO agent is ready for a turn."""
 
@@ -3267,7 +3274,8 @@ async def _run_turn_in_background(
         routing_mode = getattr(sess, "routing_mode", "auto") or "auto"
         auto_routed_agent = None
         if (
-            not turn_agent_id
+            _keyword_user_agent_routing_enabled()
+            and not turn_agent_id
             and not active_blueprint_agent_ids
             and active_agent_id in {"", "main", "default"}
             and routing_mode in {"auto", "experts"}
