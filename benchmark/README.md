@@ -69,3 +69,11 @@ uv run python scripts/run_demo_benchmark.py \
 
 New strict benchmark evidence should normally stay under this `benchmark/`
 directory. Historical provider-specific reports can remain under `docs/`.
+
+## Audit
+
+Treat the markdown report as an index, not the proof. The proof is the JSONL
+row for each case, especially `session_log.root_messages` and
+`session_log.child_sessions[].messages`. A human audit should check that the
+natural prompt, selected route, delegated experts, tool calls, surfaced errors
+or recoveries, artifacts, and final answer all agree with each other.
