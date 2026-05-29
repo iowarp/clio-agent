@@ -7670,6 +7670,9 @@ def build_app(
             routing_mode=req.routing_mode,
             model=req.model.model_dump(exclude_none=True) if req.model else None,
             agent=req.agent.model_dump(exclude_none=True) if req.agent else None,
+            # iowarp/gact-tui §audit/E-14: persist pin + archive state.
+            metadata_patch=req.metadata,
+            archived=req.archived,
         )
         if sess is None:
             raise HTTPException(
@@ -7697,9 +7700,17 @@ def build_app(
     async def list_sessions(
         workspace_id: Optional[str] = None,
         include_all_workspaces: bool = False,
+        archived: Optional[bool] = None,
     ) -> ListSessionsResponse:
         effective_workspace_id = workspace_id or (None if include_all_workspaces else "ws_default")
         rows = app.state.sessions.list(workspace_id=effective_workspace_id)
+        # iowarp/gact-tui §audit/E-14: archive partition. ?archived=true
+        # → only archived; ?archived=false (default) → only active. The
+        # desktop toggles this through the SessionsColumn archive view.
+        if archived is None:
+            rows = [r for r in rows if not getattr(r, "archived", False)]
+        else:
+            rows = [r for r in rows if bool(getattr(r, "archived", False)) == bool(archived)]
         return ListSessionsResponse(sessions=[Session(**row.to_wire()) for row in rows])
 
     @app.get("/v1/sessions/{sid}", response_model=Session)

@@ -124,6 +124,12 @@ class Session:
     # historical behaviour.
     routing_mode: str = "auto"
     metadata: dict[str, Any] = field(default_factory=dict)
+    # iowarp/gact-tui §audit/E-14: archive bucket toggle. Sessions with
+    # archived=True drop out of the active list (GET /v1/sessions
+    # defaults to archived=False) but stay browsable via
+    # GET /v1/sessions?archived=true. Pin / fork-lineage / autorename
+    # state lives in `metadata`.
+    archived: bool = False
 
     def to_wire(self) -> dict[str, Any]:
         """JSON-serialisable dict matching SPEC §4.2's optional-
@@ -292,6 +298,7 @@ class SessionStore:
         model: Optional[dict[str, str]] = None,
         agent: Optional[dict[str, str]] = None,
         metadata_patch: Optional[dict[str, Any]] = None,
+        archived: Optional[bool] = None,
     ) -> Optional[Session]:
         """Mutate a session in place.
 
@@ -336,6 +343,8 @@ class SessionStore:
                 sess.agent = dict(agent)
             if metadata_patch is not None:
                 sess.metadata.update(metadata_patch)
+            if archived is not None:
+                sess.archived = bool(archived)
             sess.updated_at = _utcnow_iso()
             self._flush()
             return sess

@@ -383,6 +383,10 @@ class Session(BaseModel):
     edit_mode: Literal["diff", "whole", "patch"] = "diff"
     routing_mode: Literal["auto", "chat", "experts", "reasoning_only"] = "auto"
     metadata: dict[str, Any] = Field(default_factory=dict)
+    # iowarp/gact-tui §audit/E-14: lets the desktop and TUI archive a
+    # session for "hide from the active list, keep around for browse".
+    # Default false so existing sessions stay visible.
+    archived: bool = False
 
 
 class CreateSessionRequest(BaseModel):
@@ -414,6 +418,12 @@ class UpdateSessionRequest(BaseModel):
     # asks the planner to prefer tool/expert reasoning over deterministic
     # shortcuts.
     routing_mode: Optional[Literal["auto", "chat", "experts", "reasoning_only"]] = None
+    # iowarp/gact-tui §audit/E-14: the desktop needs to push pin state
+    # (`metadata.pinned: bool`) and archive state. Without these the
+    # desktop's controls flip the UI optimistically but the changes are
+    # lost on the next refresh.
+    metadata: Optional[dict[str, Any]] = None
+    archived: Optional[bool] = None
 
 
 class ListSessionsResponse(BaseModel):
