@@ -50,7 +50,7 @@ def _component_count(mask: np.ndarray) -> int:
 
 
 @imaging_server.tool()
-def inspect_png(filepath: str, threshold: int = 32) -> dict[str, Any]:
+def inspect_png(filepath: str, threshold: int | None = 32) -> dict[str, Any]:
     """Inspect a PNG image for dimensions, intensity, and foreground regions.
 
     Agent story: Use this when a user asks whether a microscopy or scientific
