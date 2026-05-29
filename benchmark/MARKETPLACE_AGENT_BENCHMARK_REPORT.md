@@ -1,6 +1,6 @@
 # CLIO Marketplace Agent Benchmark Report
 
-Generated: 2026-05-29 05:20:15 CDT
+Generated: 2026-05-29 05:45:42 CDT
 Evidence JSONL: `/home/jcernuda/clio-agent/benchmark/MARKETPLACE_AGENT_BENCHMARK_EVIDENCE.jsonl`
 Benchmark lane: `marketplace_agents`
 

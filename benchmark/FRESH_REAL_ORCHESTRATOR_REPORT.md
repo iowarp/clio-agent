@@ -1,12 +1,12 @@
 # CLIO Real-Orchestrator Benchmark Report
 
-Generated: 2026-05-29 05:28:24 CDT
+Generated: 2026-05-29 05:45:42 CDT
 Evidence JSONL: `/home/jcernuda/clio-agent/benchmark/FRESH_REAL_ORCHESTRATOR_EVIDENCE.jsonl`
 Benchmark lane: `real_orchestrator`
 
 This is a CLIO session-evidence audit. It is produced from real session JSONL rows. Review the embedded `session_log` root and child messages for prompt, route, tool, artifact, error, recovery, and final-answer evidence. Pytest coverage only guards the harness and tools; it is not the benchmark result.
 
-Result: 10/12 clean passes, 0 expected surfaced errors, 0 expected cancellations, 0 partial recoveries, 2 failures.
+Result: 11/12 clean passes, 0 expected surfaced errors, 0 expected cancellations, 0 partial recoveries, 1 failures.
 
 Extended stress coverage: has optional gaps outside the per-lane pass/fail gate.
 
@@ -44,9 +44,9 @@ High-event or long-running cases:
 | Criterion | Observed | Required | Status |
 | --- | ---: | ---: | --- |
 | all selected cases avoid shortcut route sources | 12 | 12 | pass |
-| passing cases include structured route/tool evidence | 10 | 10 | pass |
+| passing cases include structured route/tool evidence | 11 | 11 | pass |
 | artifact-producing cases verify artifacts on disk | 3 | 4 | gap |
-| nested expert handoffs include sync return/resume provenance | 10 | 10 | pass |
+| nested expert handoffs include sync return/resume provenance | 11 | 11 | pass |
 | planner multi-file hierarchy case passes | 1 | 1 | pass |
 | dirty cross-file quality gate passes | 1 | 1 | pass |
 | NDP waveform benchmark reaches verified SAC/PNG artifact | 0 | 1 | gap |
@@ -68,7 +68,7 @@ Provider evidence details:
 | dirty_quality_dashboard_multi_turn | visualization | - | auto | dspy | pass | visualization | visualization | plot_summary | 0 | 32.6s |
 | ndp_catalog_discovery | external-catalog | - | auto | dspy | pass | data | data x2, ndp_catalog x2 | ndp_list_organizations, ndp_search_datasets, ndp_get_dataset_details, ndp_stage_resource | 0 | 27.1s |
 | ndp_seismic_waveform_to_plot | hierarchical-science | - | auto | dspy | fail | data | data x3, ndp_catalog x2 | ndp_list_organizations, ndp_search_datasets, ndp_search_datasets, ndp_search_datasets, ndp_get_dataset_details, ndp_stage_resource, ndp_stage_resource, ndp_stage_resource, ndp_get_dataset_details, ndp_stage_resource, ndp_stage_resource, ndp_get_dataset_details, ndp_stage_resource, ndp_list_organizations, ndp_search_datasets, ndp_search_datasets, ndp_search_datasets, ndp_get_dataset_details, ndp_stage_resource, ndp_stage_resource, ndp_stage_resource, ndp_get_dataset_details, ndp_stage_resource, ndp_stage_resource, ndp_get_dataset_details, ndp_stage_resource | 0 | 210.8s |
-| genomics_reference_variant_review | genomics | - | auto | dspy | fail | genomics | genomics x3 | genomics_inspect_fasta, genomics_summarize_vcf | 0 | 13.1s |
+| genomics_reference_variant_review | genomics | - | auto | dspy | pass | genomics | genomics x3 | genomics_inspect_fasta, genomics_summarize_vcf | 0 | 13.1s |
 | materials_cif_structure_review | materials | - | auto | dspy | pass | materials | materials x2 | materials_inspect_cif | 0 | 13.1s |
 | geospatial_field_site_review | geospatial | - | auto | dspy | pass | geospatial | geospatial x2 | geospatial_inspect_geojson | 0 | 12.1s |
 | microscopy_png_readiness_review | imaging | - | auto | dspy | pass | imaging | imaging x2 | imaging_inspect_png | 0 | 14.1s |
@@ -241,7 +241,7 @@ Found NDP climate candidates including Full Climate Connectivity Network, Climat
 Case: `genomics_reference_variant_review`
 Category: genomics
 Routing mode: `auto`
-Status: fail
+Status: pass
 Selected agent: `genomics`
 Active Agent Blueprint: `-`
 Provider/model: `codex` / `gpt-5.5` via `codex://exec`
@@ -314,6 +314,7 @@ Observed excerpt:
 
 ```text
 Saved to /home/jcernuda/clio-agent/tmp/clio-benchmark-data/sensor_events_status_distribution.png; the plotted field was status.
+/home/jcernuda/clio-agent/tmp/clio-benchmark-data/sensor_events_status_distribution.png
 ```
 
 ### 7. Dirty data dashboard after quality review
@@ -354,6 +355,7 @@ Observed excerpt:
 
 ```text
 Created the compact quality-review dashboard PNG at /tmp/clio-agent-artifacts/charts/summary_facility_measurements_dirty.png.
+/tmp/clio-agent-artifacts/charts/summary_facility_measurements_dirty.png
 ```
 
 ### 8. Microscopy PNG readiness review
@@ -394,6 +396,7 @@ Observed excerpt:
 
 ```text
 The PNG is 128x96 grayscale with intensity 4-245, foreground estimate 1497 pixels (12.18%) at threshold 32, bbox [19,21,100,79], 3 connected regions; verify pixel scale, channel/stain meaning, exposure/gain/bit depth, preprocessing, and segmentation threshold before quantitative analysis.
+/home/jcernuda/clio-agent/tmp/clio-benchmark-data/microscopy_cells.png
 ```
 
 ### 9. Materials CIF structure review
@@ -494,5 +497,3 @@ The mzML run has 4 spectra split evenly between MS1 and MS2, 14 total peaks, obs
 
 - `ndp_seismic_waveform_to_plot`: expected CLIO delegates NDP discovery to ndp_catalog, stages a bounded waveform resource, analyzes SAC traces through sac_format, and creates a PNG plot.
   observed agent=data, tools=ndp_list_organizations, ndp_search_datasets, ndp_search_datasets, ndp_search_datasets, ndp_get_dataset_details, ndp_stage_resource, ndp_stage_resource, ndp_stage_resource, ndp_get_dataset_details, ndp_stage_resource, ndp_stage_resource, ndp_get_dataset_details, ndp_stage_resource, ndp_list_organizations, ndp_search_datasets, ndp_search_datasets, ndp_search_datasets, ndp_get_dataset_details, ndp_stage_resource, ndp_stage_resource, ndp_stage_resource, ndp_get_dataset_details, ndp_stage_resource, ndp_stage_resource, ndp_get_dataset_details, ndp_stage_resource, error=None
-- `genomics_reference_variant_review`: expected CLIO uses FASTA and VCF genomics tools, then grounds a review in sequence composition and variant effect evidence.
-  observed agent=genomics, tools=genomics_inspect_fasta, genomics_summarize_vcf, error=None
