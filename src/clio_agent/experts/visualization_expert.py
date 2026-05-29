@@ -27,6 +27,7 @@ import os
 import threading
 import time
 from collections.abc import Callable, Mapping
+from pathlib import Path
 from typing import Any, Optional
 
 import dspy
@@ -43,6 +44,7 @@ from clio_agent.harness import (
 from clio_agent.signatures.visualization_sig import VisualizationExpertSignature
 from clio_agent.tools.execution import notify_global_tool_observer
 from clio_agent.tools.file_policy import (
+    FileAccessPolicy,
     FilePolicyError,
     validate_non_empty_string,
     validate_positive_int,
@@ -98,9 +100,34 @@ def _load_table(filepath: str):
         raise ValueError(f"Unsupported file format: {filepath}. Use .parquet or .csv")
 
 
-def _resolve_output_path(output_path: str, default_filename: str) -> str:
+def _default_artifact_root(filepath: str) -> Path:
+    """Return the default chart artifact root for a source dataset."""
+    configured = os.environ.get("CLIO_ARTIFACT_DIR", "").strip()
+    if configured:
+        return Path(configured).expanduser()
+
+    if not os.environ.get("CLIO_ALLOWED_ROOTS", "").strip():
+        return Path("/tmp/clio-agent-artifacts")
+
+    policy = FileAccessPolicy.from_env()
+    resolved_file = Path(filepath).expanduser().resolve(strict=False)
+    for root in policy.allowed_roots:
+        try:
+            resolved_file.relative_to(root)
+            return root / ".clio-agent-artifacts"
+        except ValueError:
+            continue
+    return policy.allowed_roots[0] / ".clio-agent-artifacts"
+
+
+def _resolve_output_path(output_path: str, default_filename: str, *, filepath: str) -> str:
     """Validate chart output path and return an absolute path string."""
-    target = output_path or os.path.join(os.getcwd(), default_filename)
+    if output_path:
+        target = output_path
+    else:
+        output_dir = _default_artifact_root(filepath) / "charts"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        target = str(output_dir / default_filename)
     return str(validate_write_path(target).resolve(strict=False))
 
 
@@ -123,7 +150,11 @@ def plot_histogram(filepath: str, column: str, bins: int = 30, output_path: str 
     try:
         validate_non_empty_string(column, field="column")
         validate_positive_int(bins, field="bins", max_value=1000)
-        safe_output_path = _resolve_output_path(output_path, f"histogram_{column}.png")
+        safe_output_path = _resolve_output_path(
+            output_path,
+            f"histogram_{column}.png",
+            filepath=filepath,
+        )
         table = _load_table(filepath)
         if column not in table.column_names:
             return f"Error: Column '{column}' not found. Available: {table.column_names}"
@@ -172,7 +203,11 @@ def plot_bar_chart(filepath: str, column: str, top_n: int = 10, output_path: str
     try:
         validate_non_empty_string(column, field="column")
         validate_positive_int(top_n, field="top_n", max_value=1000)
-        safe_output_path = _resolve_output_path(output_path, f"bar_chart_{column}.png")
+        safe_output_path = _resolve_output_path(
+            output_path,
+            f"bar_chart_{column}.png",
+            filepath=filepath,
+        )
         table = _load_table(filepath)
         if column not in table.column_names:
             return f"Error: Column '{column}' not found. Available: {table.column_names}"
@@ -238,6 +273,7 @@ def plot_scatter(filepath: str, x_column: str, y_column: str, output_path: str =
         safe_output_path = _resolve_output_path(
             output_path,
             f"scatter_{x_column}_vs_{y_column}.png",
+            filepath=filepath,
         )
         table = _load_table(filepath)
         for col in [x_column, y_column]:
@@ -293,10 +329,12 @@ def plot_summary(filepath: str, output_path: str = "") -> str:
     """
     plt = _plt()
     try:
-        if not output_path:
-            base = os.path.splitext(os.path.basename(filepath))[0]
-            output_path = os.path.join(os.getcwd(), f"summary_{base}.png")
-        safe_output_path = _resolve_output_path(output_path, "summary.png")
+        base = os.path.splitext(os.path.basename(filepath))[0]
+        safe_output_path = _resolve_output_path(
+            output_path,
+            f"summary_{base}.png",
+            filepath=filepath,
+        )
         table = _load_table(filepath)
         schema = table.schema
         col_names = table.column_names

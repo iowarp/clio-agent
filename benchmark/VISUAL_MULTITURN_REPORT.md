@@ -1,6 +1,6 @@
 # CLIO Real-Orchestrator Benchmark Report
 
-Generated: 2026-05-28 22:22:02 CDT
+Generated: 2026-05-28 22:29:59 CDT
 Evidence JSONL: `/home/jcernuda/clio-agent/benchmark/VISUAL_MULTITURN_EVIDENCE.jsonl`
 Benchmark lane: `real_orchestrator`
 
@@ -24,11 +24,11 @@ Stress coverage: does not yet meet the documented benchmark standard.
 
 ## Evidence Summary
 
-- Max elapsed case: `dirty_quality_dashboard_multi_turn` (27.1s)
+- Max elapsed case: `csv_status_visual_summary` (33.1s)
 - Max expert depth: `csv_status_visual_summary` (1)
 - Max branch fanout: `csv_status_visual_summary` (0)
 - Unique tools used: plot_bar_chart, plot_summary
-- Data/input files referenced: 3
+- Data/input files referenced: 2
 - Artifacts verified on disk: 2/2
 
 ## Provider Lane Audit
@@ -51,8 +51,8 @@ Provider evidence details:
 
 | Case | Category | Mode | Source | Outcome | Agent | Handoffs | Tools | Children | Elapsed |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| csv_status_visual_summary | visualization | auto | dspy | pass | visualization | visualization | plot_bar_chart | 0 | 18.1s |
-| dirty_quality_dashboard_multi_turn | visualization | auto | dspy | pass | visualization | visualization | plot_summary | 0 | 27.1s |
+| csv_status_visual_summary | visualization | auto | dspy | pass | visualization | visualization | plot_bar_chart | 0 | 33.1s |
+| dirty_quality_dashboard_multi_turn | visualization | auto | dspy | pass | visualization | visualization | plot_summary | 0 | 28.1s |
 
 ## Best 10 Demo Prompts
 
@@ -69,13 +69,13 @@ Route graph: visualization
 Route metrics: depth=1, branches=0, tools=1
 Expert handoffs: visualization
 Tools: plot_bar_chart
-Data/input files: /home/jcernuda/clio-agent/tmp/clio-benchmark-data/sensor_events.csv, /home/jcernuda/clio-agent/tmp/clio-benchmark-data/event_status_distribution.png
+Data/input files: /home/jcernuda/clio-agent/tmp/clio-benchmark-data/sensor_events.csv
 Setup turns: 1
 Actions: none
 Child sessions: none
-Artifacts: /home/jcernuda/clio-agent/tmp/clio-benchmark-data/event_status_distribution.png
-Artifact evidence: /home/jcernuda/clio-agent/tmp/clio-benchmark-data/event_status_distribution.png (ok, 20259 B)
-Elapsed: 18.1s
+Artifacts: /tmp/clio-agent-artifacts/charts/bar_chart_status.png
+Artifact evidence: /tmp/clio-agent-artifacts/charts/bar_chart_status.png (ok, 20259 B)
+Elapsed: 33.1s
 
 Prompt:
 
@@ -90,9 +90,10 @@ Why this is interesting: Exercises a CSV analysis-to-visualization handoff and v
 Observed excerpt:
 
 ```text
-visualization | success | direct_tool
-Saved the PNG bar chart to /home/jcernuda/clio-agent/tmp/clio-benchmark-data/event_status_distribution.png, plotting the event status field `status`.
-/home/jcernuda/clio-agent/tmp/clio-benchmark-data/event_status_distribution.png
+visualization | success | planner_dispatch | Generated a PNG bar chart showing the distribution of values in the `status` field from `/home/jcernuda/clio-agent/tmp/clio-benchmark-data/sensor_events.csv`. A bar chart was chosen because `status` is categorical and the goal was to compare event status frequencies.
+Visualization: Generated a PNG bar chart showing the distribution of values in the `status` field from `/home/jcernuda/clio-agent/tmp/clio-benchmark-data/sensor_events.csv`. A bar chart was chosen because `status` is categorical and the goal was to compare event status frequencies.
+
+File: /tmp/clio-agent-artifacts/charts/bar_chart_status.png
 ```
 
 ### 2. Dirty data dashboard after quality review
@@ -112,9 +113,9 @@ Data/input files: /home/jcernuda/clio-agent/tmp/clio-benchmark-data/facility_mea
 Setup turns: 1
 Actions: none
 Child sessions: none
-Artifacts: /home/jcernuda/clio-agent/summary_facility_measurements_dirty.png
-Artifact evidence: /home/jcernuda/clio-agent/summary_facility_measurements_dirty.png (ok, 125470 B)
-Elapsed: 27.1s
+Artifacts: /tmp/clio-agent-artifacts/charts/summary_facility_measurements_dirty.png
+Artifact evidence: /tmp/clio-agent-artifacts/charts/summary_facility_measurements_dirty.png (ok, 125470 B)
+Elapsed: 28.1s
 
 Prompt:
 
@@ -129,11 +130,10 @@ Why this is interesting: Stresses multi-turn analysis-to-visualization over inte
 Observed excerpt:
 
 ```text
-visualization | success | planner_dispatch | The PNG dashboard summarizes the dataset in a compact multi-panel view: data type composition, null counts, numeric distributions, and correlation structure. This chart type was chosen to support quality review by making schema shape, missingness, distribution anomalies, and relationships between numeric fields visible in one artifact.
-Visualization: The PNG dashboard summarizes the dataset in a compact multi-panel view: data type composition, null counts, numeric distributions, and correlation structure. This chart type was chosen to support quality review by making schema shape, missingness, distribution anomalies, and relationships between numeric fields visible in one artifact.
+visualization | success | planner_dispatch | The generated PNG is a compact dataset summary dashboard showing data type composition, null counts, numeric distributions, and numeric correlation structure. This chart type was chosen because it provides a quick visual overview of schema shape and quality issues in the dirty Parquet export.
+Visualization: The generated PNG is a compact dataset summary dashboard showing data type composition, null counts, numeric distributions, and numeric correlation structure. This chart type was chosen because it provides a quick visual overview of schema shape and quality issues in the dirty Parquet export.
 
-File: /home/jcernuda/clio-agent/summary_facility_measurements_dirty.png
-/home/jcernuda/clio-agent/summary_facility_measurements_dirty.png
+File: /tmp/clio-agent-artifacts/charts/summary_facility_measurements_dirty.png
 ```
 
 ## Failures Fixed During This Campaign
