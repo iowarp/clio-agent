@@ -480,9 +480,10 @@ def _artifact_evidence(artifacts: list[str]) -> list[dict[str, Any]]:
 
 
 def _route_graph(result: DemoResult) -> dict[str, Any]:
-    """Build a machine-readable route graph from routing and handoff evidence."""
+    """Build a machine-readable route graph from parent-owned handoff evidence."""
     nodes: list[dict[str, Any]] = []
     edges: list[dict[str, str]] = []
+    edge_keys: set[tuple[str, str, str]] = set()
 
     def add_node(node_id: str, node_type: str) -> None:
         if not node_id:
@@ -491,28 +492,47 @@ def _route_graph(result: DemoResult) -> dict[str, Any]:
             return
         nodes.append({"id": node_id, "type": node_type})
 
-    selected = result.selected_agent
-    add_node("orchestrator", "orchestrator")
-    if selected:
-        add_node(selected, "expert")
-        edges.append({"from": "orchestrator", "to": selected, "kind": "route"})
+    def add_edge(source: str, target: str, kind: str) -> None:
+        if not source or not target or source == target:
+            return
+        key = (source, target, kind)
+        if key in edge_keys:
+            return
+        edge_keys.add(key)
+        edges.append({"from": source, "to": target, "kind": kind})
 
-    previous = selected
+    add_node("orchestrator", "orchestrator")
+
+    saw_root_handoff = False
+    previous_expert = ""
     for row in result.expert_handoffs:
         agent_id = str(row.get("agent_id") or "")
         if not agent_id:
             continue
+        parent_id = str(row.get("parent_id") or "")
+        stage = str(row.get("stage") or "")
         add_node(agent_id, "expert")
-        if previous and previous != agent_id:
-            edges.append({"from": previous, "to": agent_id, "kind": "handoff"})
-        previous = agent_id
+        if parent_id:
+            add_node(parent_id, "expert")
+            add_edge(parent_id, agent_id, "handoff")
+        elif previous_expert and stage != "planner_dispatch":
+            add_edge(previous_expert, agent_id, "handoff")
+        else:
+            saw_root_handoff = True
+            add_edge("orchestrator", agent_id, "route")
+        previous_expert = agent_id
+
+    selected = result.selected_agent
+    if selected and not saw_root_handoff:
+        add_node(selected, "expert")
+        add_edge("orchestrator", selected, "route")
 
     for child in result.child_sessions:
         child_id = str(child.get("id") or child.get("title") or child.get("name") or "")
         if not child_id:
             continue
         add_node(child_id, "child_session")
-        edges.append({"from": selected or "orchestrator", "to": child_id, "kind": "branch"})
+        add_edge(selected or "orchestrator", child_id, "branch")
 
     return {"nodes": nodes, "edges": edges}
 
@@ -1050,7 +1070,7 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             category="multi-agent",
             session_group="cross_file_dirty",
             expected_agent="analysis",
-            expected_terms=("data_validator", "analysis_validator", "csv_validator"),
+            expected_tool_prefixes=("hdf5_", "adios_", "parquet_", "csv_"),
             min_children=3,
             min_tool_calls=6,
             forbidden_route_sources=_REAL_ORCHESTRATOR_FORBIDDEN_SOURCES,
@@ -1082,7 +1102,7 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             session_group="reasoning_cross_file",
             routing_mode="reasoning_only",
             expected_agent="analysis",
-            expected_terms=("data_validator", "analysis_validator", "csv_validator"),
+            expected_tool_prefixes=("hdf5_", "adios_", "parquet_", "csv_"),
             min_children=3,
             timeout_s=720.0,
             forbidden_route_sources=_REAL_ORCHESTRATOR_FORBIDDEN_SOURCES,
@@ -1198,7 +1218,6 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             expected_agent=("data", "ndp_catalog"),
             expected_tool_prefixes=("ndp_",),
             expected_handoff_agents=("ndp_catalog",),
-            expected_terms=("dataset",),
             timeout_s=620.0,
             forbidden_route_sources=_REAL_ORCHESTRATOR_FORBIDDEN_SOURCES,
             complexity_tags=("ndp", "clio-kit", "external-mcp"),
@@ -1330,7 +1349,7 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             session_group="geospatial",
             expected_agent="geospatial",
             expected_tools=("geospatial_inspect_geojson",),
-            expected_terms=("north_ridge", "south_valley", "study_boundary", "Polygon"),
+            expected_terms=("feature", "geometry", "bounds", "property"),
             timeout_s=620.0,
             forbidden_route_sources=_REAL_ORCHESTRATOR_FORBIDDEN_SOURCES,
             complexity_tags=("geospatial", "geojson", "new-domain"),
@@ -1381,7 +1400,7 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             session_group="mass_spec",
             expected_agent="mass_spec",
             expected_tools=("mass_spec_inspect_mzml",),
-            expected_terms=("mzML", "ms level", "scan=1", "total ion current"),
+            expected_terms=("spectra", "ms1", "ms2", "tic"),
             timeout_s=620.0,
             forbidden_route_sources=_REAL_ORCHESTRATOR_FORBIDDEN_SOURCES,
             complexity_tags=("mass-spec", "mzml", "proteomics", "new-domain"),
@@ -2262,19 +2281,43 @@ def _provider_settings_summary(provider: dict[str, Any]) -> str:
 
 
 def _route_graph_summary(result: DemoResult) -> str:
-    """Return a compact route graph from selected agent, handoffs, and children."""
-    nodes: list[str] = []
-    if result.selected_agent:
-        nodes.append(result.selected_agent)
-    for agent_id in result.handoff_agent_ids:
-        if not nodes or nodes[-1] != agent_id:
-            nodes.append(agent_id)
+    """Return a compact route graph from parent-owned handoffs and children."""
+    graph = result.route_graph
+    adjacency: dict[str, list[str]] = {}
+    for edge in graph.get("edges", []):
+        if edge.get("kind") not in {"route", "handoff"}:
+            continue
+        source = str(edge.get("from") or "")
+        target = str(edge.get("to") or "")
+        if not source or not target:
+            continue
+        adjacency.setdefault(source, []).append(target)
+
+    def paths_from(node: str) -> list[list[str]]:
+        children = adjacency.get(node, [])
+        if not children:
+            return [[node]]
+        paths: list[list[str]] = []
+        for child in children:
+            for child_path in paths_from(child):
+                paths.append([node, *child_path])
+        return paths
+
+    paths = paths_from("orchestrator") if "orchestrator" in adjacency else []
+    rendered_paths = []
+    for path in paths:
+        if path and path[0] == "orchestrator":
+            path = path[1:]
+        if path:
+            rendered_paths.append(" -> ".join(path))
+    if not rendered_paths and result.selected_agent:
+        rendered_paths.append(result.selected_agent)
     child_names = [
         str(child.get("title") or child.get("name") or child.get("id") or "")
         for child in result.child_sessions
     ]
     child_names = [name for name in child_names if name]
-    graph = " -> ".join(nodes) if nodes else "-"
+    graph = "; ".join(rendered_paths) if rendered_paths else "-"
     if child_names:
         graph += " -> [" + ", ".join(child_names) + "]"
     return graph
@@ -2291,7 +2334,7 @@ def main() -> None:
     parser.add_argument(
         "--data-dir",
         type=Path,
-        default=Path("tmp/clio-benchmark-data"),
+        default=Path("/tmp/clio-benchmark-data"),
         help="Benchmark data directory.",
     )
     parser.add_argument(

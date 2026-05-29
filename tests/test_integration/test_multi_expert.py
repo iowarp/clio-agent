@@ -32,7 +32,7 @@ class TestPlannerActionContract:
     def test_planner_doc_lists_experts(self):
         """Planner expert action should be constrained to capability-listed ids."""
         assert '"expert":"<expert id from capabilities>"' in AgentActionSignature.instructions
-        assert "Choose only tools and experts present in capabilities." in (
+        assert "Choose only root tools and root experts present in capabilities." in (
             AgentActionSignature.instructions
         )
 
@@ -66,10 +66,15 @@ class TestClioAgentExperts:
 
 
 def _make_mock_planner(selected_expert: str):
-    """Create a mock planner returning the requested one-pass action."""
+    """Create a mock planner returning the requested expert and then a final answer."""
     mock_planner = MagicMock()
     if selected_expert in {"data", "analysis", "visualization"}:
         action = {"action": "expert", "expert": selected_expert, "question": "test query"}
+        mock_planner.side_effect = [
+            MagicMock(action_json=json.dumps(action)),
+            MagicMock(action_json=json.dumps({"action": "answer", "answer": ""})),
+        ]
+        return mock_planner
     elif selected_expert == "none":
         action = {
             "action": "none",
@@ -314,6 +319,11 @@ class TestGateway:
                 "parquet",
                 "sac",
                 "shell",
+                "genomics",
+                "geospatial",
+                "imaging",
+                "mass_spec",
+                "materials",
                 "unknown",
             )
 

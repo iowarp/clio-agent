@@ -130,10 +130,15 @@ class TestEndToEnd:
 
 
 def _make_mock_planner(selected_expert: str):
-    """Create a mock planner returning a specified expert action."""
+    """Create a mock planner returning a specified expert action and final answer."""
     mock_planner = MagicMock()
     if selected_expert in {"data", "analysis", "visualization"}:
         action = {"action": "expert", "expert": selected_expert, "question": "test query"}
+        mock_planner.side_effect = [
+            MagicMock(action_json=json.dumps(action)),
+            MagicMock(action_json=json.dumps({"action": "answer", "answer": ""})),
+        ]
+        return mock_planner
     elif selected_expert == "none":
         action = {"action": "none", "answer": "No suitable CLIO action."}
     else:

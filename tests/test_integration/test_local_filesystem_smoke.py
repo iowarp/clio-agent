@@ -21,7 +21,12 @@ pytestmark = pytest.mark.integration
 
 def _planner_actions(*actions: dict[str, object]) -> MagicMock:
     """Return a mocked planner with deterministic JSON actions."""
-    return MagicMock(side_effect=[MagicMock(action_json=json.dumps(action)) for action in actions])
+    expanded: list[dict[str, object]] = []
+    for action in actions:
+        expanded.append(action)
+        if action.get("action") == "expert":
+            expanded.append({"action": "answer", "answer": "", "reason": "expert observed"})
+    return MagicMock(side_effect=[MagicMock(action_json=json.dumps(action)) for action in expanded])
 
 
 def _expert_action(expert: str) -> dict[str, object]:

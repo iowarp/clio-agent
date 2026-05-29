@@ -432,10 +432,27 @@ class AnalysisExpert(dspy.Module):
         question_parquet_paths = extract_file_paths(request.question, "", {".parquet"})
         question_csv_paths = extract_file_paths(request.question, "", {".csv"})
         question_seismic_paths = extract_file_paths(request.question, "", SAC_SUFFIXES)
+        context_parquet_paths = extract_file_paths("", request.file_context, {".parquet"})
+        context_csv_paths = extract_file_paths("", request.file_context, {".csv"})
+        context_seismic_paths = extract_file_paths("", request.file_context, SAC_SUFFIXES)
         explicit_families = sum(
             bool(paths)
-            for paths in (question_parquet_paths, question_csv_paths, question_seismic_paths)
+            for paths in (
+                question_parquet_paths,
+                question_csv_paths,
+                question_seismic_paths,
+            )
         )
+        current_turn_context = "[current turn observations]" in request.file_context.lower()
+        if current_turn_context:
+            explicit_families += sum(
+                bool(paths)
+                for paths in (
+                    context_parquet_paths,
+                    context_csv_paths,
+                    context_seismic_paths,
+                )
+            )
         if explicit_families == 0 and self._should_synthesize_multi_source_evidence(request):
             return self._synthesize_without_tools(request, include_retained_evidence_anchors=True)
 
@@ -446,17 +463,14 @@ class AnalysisExpert(dspy.Module):
         if question_seismic_paths:
             return self.sac_format_expert.compute_trace_statistics(str(question_seismic_paths[0]))
 
-        parquet_paths = extract_file_paths("", request.file_context, {".parquet"})
-        if parquet_paths:
-            return self._inspect_parquet_file(request, str(parquet_paths[0]))
+        if context_parquet_paths:
+            return self._inspect_parquet_file(request, str(context_parquet_paths[0]))
 
-        csv_paths = extract_file_paths("", request.file_context, {".csv"})
-        if csv_paths:
-            return self._inspect_csv_file(str(csv_paths[0]))
+        if context_csv_paths:
+            return self._inspect_csv_file(str(context_csv_paths[0]))
 
-        seismic_paths = extract_file_paths("", request.file_context, SAC_SUFFIXES)
-        if seismic_paths:
-            return self.sac_format_expert.compute_trace_statistics(str(seismic_paths[0]))
+        if context_seismic_paths:
+            return self.sac_format_expert.compute_trace_statistics(str(context_seismic_paths[0]))
 
         return self._synthesize_without_tools(request)
 
