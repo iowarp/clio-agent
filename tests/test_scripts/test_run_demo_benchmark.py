@@ -396,6 +396,95 @@ def test_forbidden_route_source_fails_real_orchestrator_case() -> None:
     assert row["forbidden_route_sources"] == ["guard", "user_agent_keyword", "recovery"]
 
 
+def test_case_row_includes_full_session_logs() -> None:
+    case = bench.DemoCase(
+        case_id="session_log_case",
+        title="session log",
+        category="test",
+        prompt="prompt",
+        why="why",
+        expected="expected",
+        session_group="test",
+    )
+    result = bench.DemoResult(
+        case=case,
+        session_id="sess_root",
+        elapsed_s=1.0,
+        message=_message(),
+        provider={"provider": "codex", "model": "gpt-5.5", "api_base": ""},
+        child_sessions=[{"id": "sess_child", "title": "child"}],
+        session_messages=[
+            {"id": "msg_user", "role": "user", "parts": [{"type": "text", "text": "prompt"}]},
+            {"id": "msg_asst", "role": "assistant", "parts": [{"type": "text", "text": "ok"}]},
+        ],
+        child_session_messages={
+            "sess_child": [
+                {"id": "msg_child_user", "role": "user"},
+                {"id": "msg_child_asst", "role": "assistant"},
+            ]
+        },
+    )
+
+    row = bench._case_row(result)
+
+    assert row["session_log"]["root_session_id"] == "sess_root"
+    assert [message["id"] for message in row["session_log"]["root_messages"]] == [
+        "msg_user",
+        "msg_asst",
+    ]
+    assert row["session_log"]["child_sessions"] == [
+        {
+            "session_id": "sess_child",
+            "session": {"id": "sess_child", "title": "child"},
+            "messages": [
+                {"id": "msg_child_user", "role": "user"},
+                {"id": "msg_child_asst", "role": "assistant"},
+            ],
+        }
+    ]
+
+
+def test_chronological_session_messages_sorts_api_response() -> None:
+    class Response:
+        @staticmethod
+        def json() -> dict[str, object]:
+            return {
+                "messages": [
+                    {"id": "msg_asst", "created_at": "2026-05-29T00:00:02+00:00"},
+                    {"id": "msg_user", "created_at": "2026-05-29T00:00:01+00:00"},
+                ]
+            }
+
+    class Client:
+        @staticmethod
+        def get(path: str) -> Response:
+            assert path == "/v1/sessions/sess/messages"
+            return Response()
+
+    messages = bench._chronological_session_messages(Client(), "sess")
+
+    assert [message["id"] for message in messages] == ["msg_user", "msg_asst"]
+
+
+def test_render_existing_jsonl_tolerates_missing_session_log() -> None:
+    result = bench._result_from_case_row(
+        {
+            "case": "old_case",
+            "title": "old case",
+            "category": "test",
+            "prompt": "prompt",
+            "expected": "expected",
+            "why": "why",
+            "session_id": "sess_old",
+            "elapsed_s": 1.0,
+            "provider": {"provider": "codex", "model": "gpt-5.5"},
+        }
+    )
+
+    assert result.session_messages == []
+    assert result.child_session_messages == {}
+
+
 def test_real_orchestrator_lane_audit_requires_no_shortcuts() -> None:
     good = bench.DemoResult(
         case=bench.DemoCase(

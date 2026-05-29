@@ -95,6 +95,8 @@ class DemoResult:
     message: dict[str, Any]
     provider: dict[str, Any]
     child_sessions: list[dict[str, Any]] = field(default_factory=list)
+    session_messages: list[dict[str, Any]] = field(default_factory=list)
+    child_session_messages: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
     setup_messages: list[dict[str, Any]] = field(default_factory=list)
     actions: list[dict[str, Any]] = field(default_factory=list)
     benchmark_lane: str = "default"
@@ -535,6 +537,19 @@ def _children(http: httpx.Client, parent_session_id: str) -> list[dict[str, Any]
     return [row for row in sessions if row.get("parent_session_id") == parent_session_id]
 
 
+def _session_messages(http: httpx.Client, session_id: str) -> list[dict[str, Any]]:
+    """Return the full persisted GACT message log for a session."""
+
+    return http.get(f"/v1/sessions/{session_id}/messages").json()["messages"]
+
+
+def _chronological_session_messages(http: httpx.Client, session_id: str) -> list[dict[str, Any]]:
+    """Return session messages sorted oldest-first for human audit logs."""
+
+    messages = _session_messages(http, session_id)
+    return sorted(messages, key=lambda message: str(message.get("created_at") or ""))
+
+
 def _post_turn(
     http: httpx.Client,
     session_id: str,
@@ -560,7 +575,7 @@ def _post_turn(
 
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
-        messages = http.get(f"/v1/sessions/{session_id}/messages").json()["messages"]
+        messages = _session_messages(http, session_id)
         for index, message in enumerate(messages):
             if message.get("id") == user_id:
                 if index > 0 and messages[index - 1].get("role") == "assistant":
@@ -707,6 +722,25 @@ def _case_row(result: DemoResult) -> dict[str, Any]:
         "handoff_event_count": result.handoff_event_count,
         "visible_event_count": result.visible_event_count,
         "child_sessions": result.child_sessions,
+        "session_log": {
+            "root_session_id": result.session_id,
+            "root_messages": result.session_messages,
+            "child_sessions": [
+                {
+                    "session_id": session_id,
+                    "session": next(
+                        (
+                            child
+                            for child in result.child_sessions
+                            if str(child.get("id") or "") == session_id
+                        ),
+                        {},
+                    ),
+                    "messages": messages,
+                }
+                for session_id, messages in result.child_session_messages.items()
+            ],
+        },
         "setup_turn_count": len(result.setup_messages),
         "setup_message_ids": [row.get("id") for row in result.setup_messages],
         "actions": result.actions,
@@ -766,6 +800,14 @@ def _result_from_case_row(row: dict[str, Any]) -> DemoResult:
         "stop_reason": row.get("stop_reason"),
     }
     setup_messages = [{"id": message_id} for message_id in row.get("setup_message_ids", []) or []]
+    session_log = row.get("session_log") if isinstance(row.get("session_log"), dict) else {}
+    child_logs = {}
+    for child in session_log.get("child_sessions", []) if isinstance(session_log, dict) else []:
+        if not isinstance(child, dict):
+            continue
+        session_id = str(child.get("session_id") or "")
+        if session_id:
+            child_logs[session_id] = list(child.get("messages") or [])
     return DemoResult(
         case=case,
         session_id=str(row.get("session_id") or ""),
@@ -773,6 +815,10 @@ def _result_from_case_row(row: dict[str, Any]) -> DemoResult:
         message=message,
         provider=dict(row.get("provider") or {}),
         child_sessions=list(row.get("child_sessions") or []),
+        session_messages=list(session_log.get("root_messages") or [])
+        if isinstance(session_log, dict)
+        else [],
+        child_session_messages=child_logs,
         setup_messages=setup_messages,
         actions=list(row.get("actions") or []),
         benchmark_lane=str(row.get("benchmark_lane") or "recorded"),
@@ -1598,6 +1644,12 @@ def run_benchmark(
                 new_children = [
                     child for child in after_children if child.get("id") not in before_children
                 ]
+                session_messages = _chronological_session_messages(http, session_id)
+                child_session_messages = {
+                    str(child["id"]): _chronological_session_messages(http, str(child["id"]))
+                    for child in new_children
+                    if child.get("id")
+                }
                 result = DemoResult(
                     case=case,
                     session_id=session_id,
@@ -1605,6 +1657,8 @@ def run_benchmark(
                     message=message,
                     provider=provider,
                     child_sessions=new_children,
+                    session_messages=session_messages,
+                    child_session_messages=child_session_messages,
                     setup_messages=setup_messages,
                     actions=actions,
                     benchmark_lane=lane,
@@ -1917,6 +1971,8 @@ def _render_report(results: list[DemoResult], output_jsonl: Path) -> str:
         row for result in results for row in result.artifact_evidence if row.get("path")
     ]
     verified_artifacts = [row for row in artifact_rows if row.get("exists") and row.get("size_bytes", 0) > 0]
+    session_logs = [result for result in results if result.session_messages]
+    child_session_logs = sum(len(result.child_session_messages) for result in results)
     lines = [
         f"# {_lane_title(lane)}",
         "",
@@ -1926,9 +1982,10 @@ def _render_report(results: list[DemoResult], output_jsonl: Path) -> str:
         "",
         (
             "This is a CLIO session-evidence audit. It is produced from real "
-            "session JSONL rows and should be reviewed as prompt, route, tool, "
-            "artifact, error, and final-answer evidence. Pytest coverage only "
-            "guards the harness and tools; it is not the benchmark result."
+            "session JSONL rows. Review the embedded `session_log` root and child "
+            "messages for prompt, route, tool, artifact, error, recovery, and "
+            "final-answer evidence. Pytest coverage only guards the harness and "
+            "tools; it is not the benchmark result."
         ),
         "",
         (
@@ -1978,6 +2035,8 @@ def _render_report(results: list[DemoResult], output_jsonl: Path) -> str:
             f"- Unique tools used: {', '.join(all_tools) if all_tools else 'none'}",
             f"- Data/input files referenced: {len(all_files)}",
             f"- Artifacts verified on disk: {len(verified_artifacts)}/{len(artifact_rows)}",
+            f"- Root session logs captured: {len(session_logs)}/{len(results)}",
+            f"- Child session logs captured: {child_session_logs}",
         ]
     )
     if provider_audit:
@@ -2074,6 +2133,8 @@ def _render_report(results: list[DemoResult], output_jsonl: Path) -> str:
                 f"Tools: {tool_text}",
                 f"Data/input files: {', '.join(result.data_files) or 'none'}",
                 f"Setup turns: {len(result.setup_messages)}",
+                f"Root session messages: {len(result.session_messages)}",
+                f"Child session logs: {len(result.child_session_messages)}",
                 f"Actions: {action_text or 'none'}",
                 f"Child sessions: {child_text or 'none'}",
                 f"Artifacts: {artifact_text}",
