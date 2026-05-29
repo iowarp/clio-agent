@@ -367,6 +367,8 @@ def test_render_report_includes_provider_lane_audit(tmp_path) -> None:
     assert "Benchmark lane: `claude_code`" in report
     assert "## Evidence Summary" in report
     assert "## Provider Lane Audit" in report
+    assert "## Extended Stress Coverage Audit" in report
+    assert "documented benchmark standard" not in report
 
 
 def test_forbidden_route_source_fails_real_orchestrator_case() -> None:
