@@ -410,6 +410,74 @@ def test_expected_terms_can_match_tool_and_handoff_evidence() -> None:
     assert result.passed is True
 
 
+def test_rehydrated_ndp_waveform_case_preserves_artifact_requirement() -> None:
+    message = _message(
+        text="SAC statistics were computed and a .png path was mentioned, but no artifact exists.",
+        tools=[{"name": "ndp_stage_resource"}, {"name": "sac_compute_trace_statistics"}],
+    )
+    message["parts"][0]["selected_agent"] = "data"
+    message["metadata"]["expert_handoffs"] = [
+        {"agent_id": "ndp_catalog"},
+        {"agent_id": "sac_format"},
+    ]
+    recorded = bench.DemoResult(
+        case=bench.DemoCase(
+            case_id="ndp_seismic_waveform_to_plot",
+            title="ndp waveform",
+            category="test",
+            prompt="prompt",
+            why="why",
+            expected="expected",
+            session_group="test",
+        ),
+        session_id="sess_test",
+        elapsed_s=1.0,
+        message=message,
+        provider={},
+    )
+
+    rehydrated = bench._result_from_case_row(bench._case_row(recorded))
+
+    assert rehydrated.case.min_artifacts == 1
+    assert rehydrated.passed is False
+
+
+def test_rehydrated_genomics_case_preserves_tool_evidence_term_matching() -> None:
+    message = _message(
+        text="Reference and variant review completed.",
+        tools=[
+            {
+                "name": "genomics_inspect_fasta",
+                "result": {"records": [{"id": "chrA"}, {"id": "plasmidB"}]},
+            },
+            {
+                "name": "genomics_summarize_vcf",
+                "result": {"effects": ["missense", "frameshift"]},
+            },
+        ],
+    )
+    message["parts"][0]["selected_agent"] = "genomics"
+    recorded = bench.DemoResult(
+        case=bench.DemoCase(
+            case_id="genomics_reference_variant_review",
+            title="genomics",
+            category="test",
+            prompt="prompt",
+            why="why",
+            expected="expected",
+            session_group="test",
+        ),
+        session_id="sess_test",
+        elapsed_s=1.0,
+        message=message,
+        provider={},
+    )
+
+    rehydrated = bench._result_from_case_row(bench._case_row(recorded))
+
+    assert rehydrated.passed is True
+
+
 def test_case_alternate_criteria_keep_strict_failures() -> None:
     message = _message(text="NDP catalog only", tools=[{"name": "ndp_search_datasets"}])
     message["metadata"]["expert_handoffs"] = [{"agent_id": "ndp_catalog"}]
