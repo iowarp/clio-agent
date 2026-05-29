@@ -6512,6 +6512,7 @@ from clio_agent.gact.agent_blueprints import (
     load_agent_blueprint_path,
     load_agent_blueprints,
     load_mcp_descriptors,
+    read_install_metadata,
     uninstall_agent_blueprint,
     update_installed_agent_blueprint,
     validate_agent_blueprint_path,
@@ -12719,6 +12720,28 @@ def build_app(
         raw = str(metadata.get("active_agent_blueprint_path") or "").strip()
         return Path(raw).expanduser() if raw else None
 
+    def _agent_blueprint_activation_metadata(
+        *,
+        blueprint_wire: Mapping[str, Any],
+        install_root: Path | None,
+        scope: str,
+    ) -> dict[str, str]:
+        install = read_install_metadata(install_root) if install_root is not None else {}
+        return {
+            "active_agent_blueprint_id": str(blueprint_wire.get("id") or ""),
+            "active_agent_blueprint_version": str(blueprint_wire.get("version") or ""),
+            "active_agent_blueprint_scope": scope,
+            "active_agent_blueprint_definition_path": str(
+                blueprint_wire.get("definition_path") or ""
+            ),
+            "active_agent_blueprint_source": str(install.get("source") or ""),
+            "active_agent_blueprint_source_kind": str(install.get("source_kind") or ""),
+            "active_agent_blueprint_ref": str(install.get("ref") or ""),
+            "active_agent_blueprint_commit": str(install.get("commit") or ""),
+            "active_agent_blueprint_checksum": str(install.get("checksum") or ""),
+            "active_agent_blueprint_installed_at": str(install.get("installed_at") or ""),
+        }
+
     def _session_agent_overlay(session_id: str = "") -> dict[str, Any]:
         if not session_id:
             return {}
@@ -13186,6 +13209,11 @@ def build_app(
             "active_agent_blueprint_path": str(blueprint_path) if blueprint_path is not None else "",
             "agent_blueprint": blueprint_wire,
             "agent_overlay": _session_agent_overlay(sid),
+            "activation": {
+                key: str(value)
+                for key, value in (getattr(sess, "metadata", {}) or {}).items()
+                if str(key).startswith("active_agent_blueprint_")
+            },
         }
 
     @app.post("/v1/sessions/{sid}/agent-blueprint")
@@ -13224,15 +13252,18 @@ def build_app(
                     ).model_dump(exclude_none=True),
                 )
             blueprint_wire = validation["agent_blueprint"]
+            install_root = Path(
+                str(blueprint_wire.get("root") or blueprint_path)
+            ).expanduser()
+            activation_metadata = _agent_blueprint_activation_metadata(
+                blueprint_wire=blueprint_wire,
+                install_root=install_root,
+                scope="session",
+            )
             updated = app.state.sessions.update(
                 sid,
                 metadata_patch={
-                    "active_agent_blueprint_id": str(blueprint_wire.get("id") or ""),
-                    "active_agent_blueprint_version": str(blueprint_wire.get("version") or ""),
-                    "active_agent_blueprint_scope": "session",
-                    "active_agent_blueprint_definition_path": str(
-                        blueprint_wire.get("definition_path") or ""
-                    ),
+                    **activation_metadata,
                     "active_agent_blueprint_path": str(Path(blueprint_path).expanduser()),
                     "active_expert_pack_id": "",
                     "active_expert_pack_path": "",
@@ -13264,13 +13295,15 @@ def build_app(
                     ).model_dump(exclude_none=True),
                 )
             blueprint_wire = blueprint.to_wire()
+            activation_metadata = _agent_blueprint_activation_metadata(
+                blueprint_wire=blueprint_wire,
+                install_root=blueprint.root,
+                scope=blueprint.scope,
+            )
             updated = app.state.sessions.update(
                 sid,
                 metadata_patch={
-                    "active_agent_blueprint_id": blueprint.id,
-                    "active_agent_blueprint_version": blueprint.version,
-                    "active_agent_blueprint_scope": blueprint.scope,
-                    "active_agent_blueprint_definition_path": str(blueprint.root_path),
+                    **activation_metadata,
                     "active_agent_blueprint_path": "",
                     "active_expert_pack_id": "",
                     "active_expert_pack_path": "",
