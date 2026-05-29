@@ -25,6 +25,7 @@ current run:
 - `{vcf}` - synthetic pathogen VCF variant calls.
 - `{cif}` - synthetic strontium titanate CIF structure.
 - `{geojson}` - synthetic field-site GeoJSON features.
+- `{png}` - synthetic microscopy-style PNG image.
 
 ## Primary Prompt Set
 
@@ -229,6 +230,32 @@ Why this matters:
 
 This adds a non-NDP geospatial domain with coordinate and geometry semantics,
 not just generic JSON inspection.
+
+### 5e. Microscopy PNG Readiness Review
+
+Case id: `microscopy_png_readiness_review`
+
+Category: `imaging`
+
+Expected route: `imaging`
+
+Expected evidence:
+
+- PNG inspection through `imaging_inspect_png`.
+- Dimensions, mode/channel, intensity, and foreground-region summary.
+- Grounded collaborator handoff checks around acquisition metadata and
+  segmentation assumptions.
+
+Prompt:
+
+```text
+Review this microscopy-style PNG for collaborator handoff: {png}. Summarize the image dimensions, intensity range, foreground estimate, region evidence, and what acquisition metadata should be verified before quantitative analysis.
+```
+
+Why this matters:
+
+This adds a binary scientific image domain with pixel-level evidence, not generic
+file text inspection or chart-generation behavior.
 
 ### 6. Provider Swap Preserves Session Context
 

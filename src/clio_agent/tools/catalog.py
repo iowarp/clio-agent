@@ -133,6 +133,11 @@ TOOL_CATALOG: dict[str, ToolCatalogEntry] = {
         "geospatial",
         {"geospatial", "geojson", "spatial", "geometry", "inspect"},
     ),
+    "imaging_inspect_png": _entry(
+        "imaging_inspect_png",
+        "imaging",
+        {"imaging", "microscopy", "png", "image", "inspect"},
+    ),
     "plot_histogram": _entry(
         "plot_histogram", "visualization", {"visualization", "plot", "histogram"}
     ),

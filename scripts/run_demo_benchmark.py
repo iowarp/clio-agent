@@ -583,6 +583,7 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
     vcf = manifest["genomics"]["vcf_path"]
     cif = manifest["materials"]["cif_path"]
     geojson = manifest["geospatial"]["geojson_path"]
+    png = manifest["imaging"]["png_path"]
     missing = str(Path(h5).with_name("missing_fusion_run.h5"))
 
     return [
@@ -1081,6 +1082,32 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             ),
         ),
         DemoCase(
+            case_id="microscopy_png_readiness_review",
+            title="Microscopy PNG readiness review",
+            category="imaging",
+            session_group="imaging",
+            expected_agent="imaging",
+            expected_tools=("imaging_inspect_png",),
+            expected_terms=("PNG", "foreground", "intensity", "connected"),
+            timeout_s=620.0,
+            forbidden_route_sources=_REAL_ORCHESTRATOR_FORBIDDEN_SOURCES,
+            complexity_tags=("imaging", "png", "microscopy", "new-domain"),
+            prompt=(
+                f"Review this microscopy-style PNG for collaborator handoff: {png}. "
+                "Summarize the image dimensions, intensity range, foreground estimate, "
+                "region evidence, and what acquisition metadata should be verified before "
+                "quantitative analysis."
+            ),
+            expected=(
+                "CLIO uses PNG imaging tools and grounds the review in dimensions, "
+                "intensity, foreground, and region evidence."
+            ),
+            why=(
+                "Adds a binary scientific image domain with pixel and region semantics, "
+                "not generic file text or chart-generation behavior."
+            ),
+        ),
+        DemoCase(
             case_id="missing_hdf5_error",
             title="Missing file error surfacing",
             category="hardening",
@@ -1194,6 +1221,7 @@ _BENCHMARK_LANES: dict[str, tuple[str, ...]] = {
         "genomics_reference_variant_review",
         "materials_cif_structure_review",
         "geospatial_field_site_review",
+        "microscopy_png_readiness_review",
         "ndp_catalog_discovery",
         "ndp_seismic_waveform_to_plot",
         "reasoning_adios_bp5_container",

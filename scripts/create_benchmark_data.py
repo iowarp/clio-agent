@@ -21,6 +21,7 @@ import h5py
 import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
+from PIL import Image
 
 
 def create_hdf5(filepath: Path) -> dict[str, Any]:
@@ -362,6 +363,36 @@ def create_geospatial(output_dir: Path) -> dict[str, Any]:
     }
 
 
+def create_imaging(output_dir: Path) -> dict[str, Any]:
+    """Create a PNG microscopy-style fixture for scientific image workflows."""
+    png_path = output_dir / "microscopy_cells.png"
+    height = 96
+    width = 128
+    yy, xx = np.mgrid[:height, :width]
+    image = np.zeros((height, width), dtype=np.uint8)
+    image += np.linspace(4, 16, width, dtype=np.uint8)[None, :]
+
+    cells = [
+        ("cell_alpha", 34, 31, 15, 10, 168),
+        ("cell_beta", 82, 42, 18, 12, 214),
+        ("cell_gamma", 56, 70, 13, 9, 188),
+    ]
+    for _name, cx, cy, rx, ry, intensity in cells:
+        mask = ((xx - cx) / rx) ** 2 + ((yy - cy) / ry) ** 2 <= 1.0
+        image[mask] = np.maximum(image[mask], intensity)
+        core = ((xx - cx) / max(rx // 3, 1)) ** 2 + ((yy - cy) / max(ry // 3, 1)) ** 2 <= 1.0
+        image[core] = 245
+
+    Image.fromarray(image, mode="L").save(png_path)
+    return {
+        "png_path": str(png_path),
+        "width": width,
+        "height": height,
+        "objects": len(cells),
+        "expected_terms": ["cell_alpha", "cell_beta", "cell_gamma", "foreground", "intensity"],
+    }
+
+
 def create_adios_bp5(output_dir: Path) -> dict[str, Any]:
     """Copy a real BP5 sample when present, otherwise create a BP-like container."""
     destination = output_dir / "gray scott noise 0.01 data.bp5"
@@ -418,6 +449,7 @@ def create_benchmark_data(output_dir: Path) -> dict[str, Any]:
     genomics = create_genomics(output_dir)
     materials = create_materials(output_dir)
     geospatial = create_geospatial(output_dir)
+    imaging = create_imaging(output_dir)
     adios = create_adios_bp5(output_dir)
 
     manifest: dict[str, Any] = {
@@ -429,6 +461,7 @@ def create_benchmark_data(output_dir: Path) -> dict[str, Any]:
         "genomics": genomics,
         "materials": materials,
         "geospatial": geospatial,
+        "imaging": imaging,
         "adios": adios,
     }
     manifest_path = output_dir / "manifest.json"

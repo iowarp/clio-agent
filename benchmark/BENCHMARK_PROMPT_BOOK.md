@@ -24,6 +24,7 @@ Use these paths when replacing placeholders:
 - `{vcf}`: `tmp/clio-benchmark-data/pathogen_sample_variants.vcf`
 - `{cif}`: `tmp/clio-benchmark-data/strontium_titanate.cif`
 - `{geojson}`: `tmp/clio-benchmark-data/field_sites.geojson`
+- `{png}`: `tmp/clio-benchmark-data/microscopy_cells.png`
 
 For an automated evidence run, use:
 
@@ -224,6 +225,28 @@ Worked because you saw:
 - `geospatial_inspect_geojson` evidence.
 - Feature types such as `Point`, `LineString`, or `Polygon`.
 - A bounding box and property keys such as `site_id`, `kind`, or `status`.
+
+## 9. Microscopy PNG Readiness Review
+
+Agent: Data Exploration/Search Agent
+
+Prompt:
+
+```text
+Review this microscopy-style PNG for collaborator handoff: {png}. Summarize the image dimensions, intensity range, foreground estimate, region evidence, and what acquisition metadata should be verified before quantitative analysis.
+```
+
+Why this exists:
+
+This adds a binary scientific imaging domain with pixel, intensity, and
+foreground-region semantics. It should not pass by treating a PNG as text or by
+only generating a chart.
+
+Worked because you saw:
+
+- `imaging_inspect_png` evidence.
+- Dimensions, mode/channel, and intensity statistics.
+- Foreground pixel or region evidence plus acquisition metadata caveats.
 
 ## Notes For Manual TUI Runs
 
