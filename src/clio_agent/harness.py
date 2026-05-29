@@ -353,6 +353,10 @@ def normalize_tool_error(
             value = error.get(key)
             if value is not None:
                 normalized[key] = str(value)
+        if error.get("handled") is not None:
+            normalized["handled"] = bool(error.get("handled"))
+        if error.get("handled_reason") is not None:
+            normalized["handled_reason"] = str(error.get("handled_reason"))
         if error.get("details") is not None:
             normalized["details"] = _json_safe(error["details"])
     else:

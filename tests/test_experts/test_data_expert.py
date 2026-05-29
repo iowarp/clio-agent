@@ -788,6 +788,7 @@ class TestDataExpert:
         ]
         assert [row.params["dataset_identifier"] for row in detail_calls] == ["wave"]
         assert [row.params["dataset_identifier"] for row in stage_calls] == ["wave"]
+        assert stage_calls[0].result["error"]["handled"] is True
         expert.close()
 
 
