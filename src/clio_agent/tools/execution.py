@@ -147,11 +147,28 @@ class SyncToolExecutor(Protocol):
 
 ToolExecutor = SyncToolExecutor
 
+DEFAULT_TOOL_TIMEOUTS: dict[str, float] = {
+    "ndp_stage_resource": 720.0,
+}
+
+
+def _clean_tool_timeouts(tool_timeouts: Mapping[str, float] | None) -> dict[str, float]:
+    """Return validated per-tool timeouts merged with built-in long-tool defaults."""
+
+    cleaned = dict(DEFAULT_TOOL_TIMEOUTS)
+    if tool_timeouts:
+        cleaned.update({str(name): float(timeout) for name, timeout in tool_timeouts.items()})
+    invalid = {name: timeout for name, timeout in cleaned.items() if timeout <= 0}
+    if invalid:
+        raise ValueError(f"tool timeouts must be positive: {sorted(invalid)}")
+    return cleaned
+
 
 def create_async_tool_executor(
     server: Any,
     *,
     timeout: float = 30.0,
+    tool_timeouts: Mapping[str, float] | None = None,
     client_factory: ClientFactory | None = None,
 ) -> "AsyncMCPToolExecutor":
     """Create an async FastMCP-backed tool executor.
@@ -164,6 +181,7 @@ def create_async_tool_executor(
     return AsyncMCPToolExecutor(
         server,
         timeout=timeout,
+        tool_timeouts=tool_timeouts,
         client_factory=client_factory,
     )
 
@@ -173,6 +191,7 @@ def create_sync_tool_executor(
     *,
     timeout: float = 30.0,
     setup_timeout: float = 10.0,
+    tool_timeouts: Mapping[str, float] | None = None,
     client_factory: ClientFactory | None = None,
 ) -> SyncToolExecutor:
     """Create a sync executor for CLI and deterministic expert call sites."""
@@ -180,6 +199,7 @@ def create_sync_tool_executor(
         server,
         timeout=timeout,
         setup_timeout=setup_timeout,
+        tool_timeouts=tool_timeouts,
         client_factory=client_factory,
     )
 
@@ -195,13 +215,16 @@ class AsyncMCPToolExecutor:
         self,
         server: Any,
         timeout: float = 30.0,
+        tool_timeouts: Mapping[str, float] | None = None,
         client_factory: ClientFactory | None = None,
     ) -> None:
         if timeout <= 0:
             raise ValueError("timeout must be positive")
+        cleaned_tool_timeouts = _clean_tool_timeouts(tool_timeouts)
 
         self._server = server
         self._timeout = timeout
+        self._tool_timeouts = cleaned_tool_timeouts
         self._client_factory = client_factory or Client
         self._client_ctx: MCPClientProtocol | None = None
         self._client: MCPClientProtocol | None = None
@@ -259,14 +282,20 @@ class AsyncMCPToolExecutor:
             raise RuntimeError("AsyncMCPToolExecutor is not started")
 
         async with self._call_lock:
+            timeout = self._timeout_for_tool(name)
             try:
                 result = await asyncio.wait_for(
                     self._client.call_tool(name, dict(args)),
-                    timeout=self._timeout,
+                    timeout=timeout,
                 )
             except TimeoutError as exc:
-                raise TimeoutError(f"MCP tool {name!r} timed out after {self._timeout:g}s") from exc
+                raise TimeoutError(f"MCP tool {name!r} timed out after {timeout:g}s") from exc
         return _result_to_text(result)
+
+    def _timeout_for_tool(self, name: str) -> float:
+        """Return the effective timeout for a single tool invocation."""
+
+        return self._tool_timeouts.get(name, self._timeout)
 
     def get_tool_names(self) -> list[str]:
         """Return names of all discovered tools."""
@@ -310,6 +339,7 @@ class SyncMCPToolExecutor:
         server: Any,
         timeout: float = 30.0,
         setup_timeout: float = 10.0,
+        tool_timeouts: Mapping[str, float] | None = None,
         client_factory: ClientFactory | None = None,
         permission_gate: Optional[Callable[[str, Mapping[str, Any]], str]] = None,
         tool_observer: Optional[
@@ -320,12 +350,15 @@ class SyncMCPToolExecutor:
             raise ValueError("timeout must be positive")
         if setup_timeout <= 0:
             raise ValueError("setup_timeout must be positive")
+        cleaned_tool_timeouts = _clean_tool_timeouts(tool_timeouts)
 
         self._timeout = timeout
         self._setup_timeout = setup_timeout
+        self._tool_timeouts = cleaned_tool_timeouts
         self._async_executor = AsyncMCPToolExecutor(
             server,
             timeout=timeout,
+            tool_timeouts=cleaned_tool_timeouts,
             client_factory=client_factory,
         )
         # iowarp/clio-agent#7: optional gate called BEFORE every
@@ -445,9 +478,10 @@ class SyncMCPToolExecutor:
         notify_tool_observer(tool_observer, name, args, "started", None)
 
         try:
+            timeout = self._timeout_for_tool(name)
             result = self._run_coroutine(
                 self._async_executor.call_tool(name, args),
-                timeout=self._timeout,
+                timeout=timeout,
                 action=f"MCP tool {name!r}",
             )
             raise_if_cancelled("tool_call_after")
@@ -457,6 +491,11 @@ class SyncMCPToolExecutor:
         notify_tool_observer(tool_observer, name, args, "completed", None)
 
         return result
+
+    def _timeout_for_tool(self, name: str) -> float:
+        """Return the effective timeout for a single tool invocation."""
+
+        return self._tool_timeouts.get(name, self._timeout)
 
     def get_tool_names(self) -> list[str]:
         """Return names of all available tools."""
