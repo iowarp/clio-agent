@@ -65,6 +65,10 @@ _ACTIVE_TOOL_SESSION_ID: contextvars.ContextVar[str] = contextvars.ContextVar(
     "clio_gact_active_tool_session_id",
     default="",
 )
+_ACTIVE_GACT_APP: contextvars.ContextVar[Any | None] = contextvars.ContextVar(
+    "clio_gact_active_app",
+    default=None,
+)
 
 
 @contextmanager
@@ -75,6 +79,16 @@ def _tool_session_context(sid: str) -> Iterator[None]:
         yield
     finally:
         _ACTIVE_TOOL_SESSION_ID.reset(token)
+
+
+@contextmanager
+def _gact_app_context(app: Any) -> Iterator[None]:
+    """Bind app state for dynamic agent tool wrappers."""
+    token = _ACTIVE_GACT_APP.set(app)
+    try:
+        yield
+    finally:
+        _ACTIVE_GACT_APP.reset(token)
 
 
 def _resolve_tool_session(app: "FastAPI") -> tuple[str, Any | None]:
@@ -2000,6 +2014,152 @@ def _tool_user_agent_signature() -> Any:
     return ToolUserAgentSignature
 
 
+async def _call_enabled_external_mcp_tool(
+    app: Any,
+    server_id: str,
+    info: Mapping[str, Any],
+    tool_name: str,
+    tool_args: Mapping[str, Any],
+) -> str:
+    """Call an explicitly enabled external MCP tool for a dynamic agent."""
+
+    observer_name = f"{info.get('name', 'ext')}.{tool_name}"
+    gate = getattr(app.state, "pending_permission_gate", None) or _make_permission_gate(app)
+    decision = gate(observer_name, dict(tool_args))
+    if decision != "allow":
+        raise PermissionError(f"tool call {observer_name!r} denied by permission gate")
+
+    try:
+        from fastmcp import Client  # noqa: PLC0415
+        from fastmcp.client.transports import (  # noqa: PLC0415
+            StdioTransport,
+            StreamableHttpTransport,
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError(f"fastmcp Client unavailable: {exc!r}") from exc
+
+    spec = info.get("spec", {})
+    if spec.get("transport") == "stdio":
+        transport = StdioTransport(
+            command=spec["command"],
+            args=spec.get("args") or [],
+        )
+    elif spec.get("transport") in {"http", "streamable-http"}:
+        transport = StreamableHttpTransport(url=spec["url"])  # type: ignore[assignment]
+    else:
+        raise RuntimeError(f"unknown stored MCP transport for {server_id}: {spec!r}")
+
+    tool_observer = getattr(app.state, "pending_tool_observer", None)
+    if tool_observer is None:
+        tool_observer = _make_tool_observer(app)
+    if tool_observer is not None:
+        try:
+            tool_observer(observer_name, dict(tool_args), "started", None)
+        except Exception:
+            pass
+    try:
+        async with Client(transport) as client:
+            result = await client.call_tool(tool_name, dict(tool_args))
+    except Exception as exc:  # noqa: BLE001
+        if tool_observer is not None:
+            try:
+                tool_observer(observer_name, dict(tool_args), "completed", repr(exc))
+            except Exception:
+                pass
+        raise
+    if tool_observer is not None:
+        try:
+            tool_observer(observer_name, dict(tool_args), "completed", None)
+        except Exception:
+            pass
+
+    content = getattr(result, "content", None) or []
+    if content:
+        return "\n".join(str(getattr(part, "text", part)) for part in content)
+    data = getattr(result, "data", None)
+    if data is not None:
+        return json.dumps(data, default=str) if isinstance(data, Mapping) else str(data)
+    return str(result)
+
+
+def _run_external_mcp_tool_sync(
+    app: Any,
+    server_id: str,
+    info: Mapping[str, Any],
+    tool_name: str,
+    tool_args: Mapping[str, Any],
+) -> str:
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(
+            _call_enabled_external_mcp_tool(app, server_id, info, tool_name, tool_args)
+        )
+
+    result: dict[str, Any] = {}
+
+    def _runner() -> None:
+        try:
+            result["value"] = asyncio.run(
+                _call_enabled_external_mcp_tool(app, server_id, info, tool_name, tool_args)
+            )
+        except BaseException as exc:  # noqa: BLE001
+            result["error"] = exc
+
+    thread = threading.Thread(target=_runner, daemon=True)
+    thread.start()
+    thread.join()
+    if "error" in result:
+        raise result["error"]
+    return str(result.get("value", ""))
+
+
+def _enabled_external_mcp_dspy_tools(app: Any, requested_tools: list[str]) -> dict[str, Any]:
+    """Return DSPy Tool wrappers for enabled Agent Blueprint MCP tools."""
+
+    import dspy  # noqa: PLC0415
+
+    requested = set(requested_tools)
+    available: dict[str, Any] = {}
+    installed = getattr(app.state, "external_mcp_servers", {}) or {}
+    for server_id, info in installed.items():
+        if not isinstance(info, Mapping):
+            continue
+        if str(info.get("status") or "") != "ready":
+            continue
+        for tool_row in info.get("tools") or []:
+            if not isinstance(tool_row, Mapping):
+                continue
+            tool_name = str(tool_row.get("name") or tool_row.get("id") or "").strip()
+            if not tool_name or tool_name not in requested or not bool(tool_row.get("enabled")):
+                continue
+            if str(tool_row.get("status") or "") != "ready":
+                continue
+            description = str(tool_row.get("description") or tool_name)
+            schema = tool_row.get("input_schema") or {}
+            properties = schema.get("properties", {}) if isinstance(schema, Mapping) else {}
+            if not isinstance(properties, dict):
+                properties = {}
+
+            def tool_fn(
+                _tool_name: str = tool_name,
+                _server_id: str = str(server_id),
+                _info: Mapping[str, Any] = info,
+                **kwargs: Any,
+            ) -> str:
+                return _run_external_mcp_tool_sync(app, _server_id, _info, _tool_name, kwargs)
+
+            tool_fn.__name__ = tool_name
+            tool_fn.__doc__ = description
+            available[tool_name] = dspy.Tool(
+                func=tool_fn,
+                name=tool_name,
+                desc=description,
+                args=properties,
+            )
+    return available
+
+
 def _dynamic_agent_tools(base_agent: Any, agent_def: "AgentDef") -> list[Any]:
     """Resolve the exact DSPy tools a tool-declaring dynamic agent may use."""
     requested_tools = [str(t).strip() for t in agent_def.tools if str(t).strip()]
@@ -2016,6 +2176,9 @@ def _dynamic_agent_tools(base_agent: Any, agent_def: "AgentDef") -> list[Any]:
         for tool in list(tool_executor.to_dspy_tools())
         if getattr(tool, "name", "")
     }
+    app = _ACTIVE_GACT_APP.get()
+    if app is not None:
+        available_tools.update(_enabled_external_mcp_dspy_tools(app, requested_tools))
     missing_tools = [name for name in requested_tools if name not in available_tools]
     if missing_tools:
         raise _UnsupportedSessionAgent(
@@ -2545,7 +2708,8 @@ async def _run_turn_in_background(
     async def _run_dynamic_agent_sync(agent_def: "AgentDef", prompt: str) -> Any:
         runner = _run_tool_user_agent if agent_def.tools else _run_prompt_user_agent
         loop = asyncio.get_running_loop()
-        turn_context = contextvars.copy_context()
+        with _gact_app_context(app):
+            turn_context = contextvars.copy_context()
         return await _await_turn_work(
             loop.run_in_executor(
                 None,
@@ -2784,11 +2948,12 @@ async def _run_turn_in_background(
                 dynamic_agent,
                 execution_mode=execution_mode,
             )
-            module = (
-                _build_tool_user_agent_module(app.state.agent, dynamic_agent)
-                if dynamic_agent.tools
-                else _build_prompt_user_agent_module(app.state.agent, dynamic_agent)
-            )
+            with _gact_app_context(app):
+                module = (
+                    _build_tool_user_agent_module(app.state.agent, dynamic_agent)
+                    if dynamic_agent.tools
+                    else _build_prompt_user_agent_module(app.state.agent, dynamic_agent)
+                )
             with _cancellation_checker(cancel_requested), _tool_session_context(sid):
                 pred = await _await_turn_work(
                     _try_streamed_forward_compat(
@@ -9417,10 +9582,11 @@ def build_app(
                 cmd_id=cmd_id,
                 agent_id=agent_id,
             )
-            if agent_def.tools:
-                pred = _run_tool_user_agent(app.state.agent, agent_def, question, sid)
-            else:
-                pred = _run_prompt_user_agent(app.state.agent, agent_def, question, sid)
+            with _gact_app_context(app):
+                if agent_def.tools:
+                    pred = _run_tool_user_agent(app.state.agent, agent_def, question, sid)
+                else:
+                    pred = _run_prompt_user_agent(app.state.agent, agent_def, question, sid)
             agent_body_text = str(getattr(pred, "answer", "") or "").strip()
             if not agent_body_text:
                 agent_body_text = f"user command {cmd_id} completed with no answer"
@@ -13118,6 +13284,160 @@ def build_app(
                 encoding="utf-8",
             )
 
+    def _enabled_agent_blueprint_mcp_tool_names(blueprint_id: str = "") -> set[str]:
+        names: set[str] = set()
+        for server in (getattr(app.state, "external_mcp_servers", {}) or {}).values():
+            if not isinstance(server, Mapping):
+                continue
+            if str(server.get("status") or "") != "ready":
+                continue
+            if blueprint_id and str(server.get("agent_blueprint_id") or "") != blueprint_id:
+                continue
+            for tool in server.get("tools") or []:
+                if not isinstance(tool, Mapping):
+                    continue
+                if not bool(tool.get("enabled")) or str(tool.get("status") or "") != "ready":
+                    continue
+                tool_name = str(tool.get("name") or tool.get("id") or "").strip()
+                if tool_name:
+                    names.add(tool_name)
+        return names
+
+    def _agent_blueprint_descriptor_tools(rows: list[AgentDef]) -> dict[str, str]:
+        descriptors_by_tool: dict[str, str] = {}
+        roots: dict[str, tuple[str, str]] = {}
+        for row in rows:
+            root_file = str(row.metadata.get("agent_blueprint_definition_path") or "").strip()
+            if not root_file:
+                continue
+            roots[root_file] = (
+                str(row.metadata.get("agent_blueprint_scope") or "session"),
+                str(row.metadata.get("agent_blueprint_id") or ""),
+            )
+        for root_file, (scope, blueprint_id) in sorted(roots.items()):
+            root = Path(root_file).expanduser().parent
+            try:
+                descriptors = load_mcp_descriptors(
+                    root,
+                    scope=scope,
+                    blueprint_id=blueprint_id,
+                )
+            except Exception:
+                continue
+            for descriptor in descriptors:
+                descriptor_id = str(descriptor.get("id") or "")
+                for tool in descriptor.get("tools") or []:
+                    if not isinstance(tool, Mapping):
+                        continue
+                    tool_name = str(tool.get("name") or tool.get("id") or "").strip()
+                    if tool_name:
+                        descriptors_by_tool[tool_name] = descriptor_id
+        return descriptors_by_tool
+
+    def _apply_agent_blueprint_mcp_descriptor_validation(rows: list[AgentDef]) -> list[AgentDef]:
+        descriptor_tools = _agent_blueprint_descriptor_tools(rows)
+        if not descriptor_tools:
+            return rows
+        out: list[AgentDef] = []
+        for row in rows:
+            enabled_tools = _enabled_agent_blueprint_mcp_tool_names(
+                str(row.metadata.get("agent_blueprint_id") or "").strip()
+            )
+            errors = list(row.validation_errors)
+            diagnostics = list(row.metadata.get("tool_diagnostics", []))
+            for tool_name in row.tools:
+                if tool_name not in descriptor_tools or tool_name in enabled_tools:
+                    continue
+                descriptor_id = descriptor_tools[tool_name]
+                message = (
+                    f"MCP tool requires explicit enablement: {tool_name}"
+                    + (f" (descriptor: {descriptor_id})" if descriptor_id else "")
+                )
+                if message not in errors:
+                    errors.append(message)
+                if not any(
+                    isinstance(diag, Mapping)
+                    and str(diag.get("tool") or "") == tool_name
+                    and str(diag.get("source") or "") == "agent_blueprint_mcp_descriptor"
+                    for diag in diagnostics
+                ):
+                    diagnostics.append(
+                        {
+                            "tool": tool_name,
+                            "status": "disabled",
+                            "source": "agent_blueprint_mcp_descriptor",
+                            "descriptor_id": descriptor_id,
+                        }
+                    )
+            metadata = dict(row.metadata)
+            if diagnostics:
+                metadata["tool_diagnostics"] = diagnostics
+            if errors != list(row.validation_errors):
+                metadata["mcp_descriptor_validation_disabled"] = True
+            out.append(
+                row.model_copy(
+                    update={
+                        "enabled": row.enabled and not errors,
+                        "validation_errors": errors,
+                        "metadata": metadata,
+                    }
+                )
+            )
+        return out
+
+    def _apply_enabled_agent_blueprint_mcp_tools(rows: list[AgentDef]) -> list[AgentDef]:
+        out: list[AgentDef] = []
+        cache: dict[str, set[str]] = {}
+        for row in rows:
+            blueprint_id = str(row.metadata.get("agent_blueprint_id") or "").strip()
+            enabled_tools = cache.setdefault(
+                blueprint_id,
+                _enabled_agent_blueprint_mcp_tool_names(blueprint_id),
+            )
+            if not enabled_tools:
+                out.append(row)
+                continue
+            row_tools = {str(tool).strip() for tool in row.tools if str(tool).strip()}
+            resolved_tools = row_tools & enabled_tools
+            if not resolved_tools:
+                out.append(row)
+                continue
+            errors = [
+                error
+                for error in row.validation_errors
+                if not any(
+                    error.startswith(f"MCP tool requires explicit enablement: {tool}")
+                    for tool in resolved_tools
+                )
+            ]
+            diagnostics = [
+                diag
+                for diag in row.metadata.get("tool_diagnostics", [])
+                if not (
+                    isinstance(diag, Mapping)
+                    and str(diag.get("source") or "") == "agent_blueprint_mcp_descriptor"
+                    and str(diag.get("tool") or "") in resolved_tools
+                )
+            ]
+            metadata = dict(row.metadata)
+            if diagnostics:
+                metadata["tool_diagnostics"] = diagnostics
+            else:
+                metadata.pop("tool_diagnostics", None)
+            disabled_by_mcp_validation = bool(
+                metadata.pop("mcp_descriptor_validation_disabled", False)
+            )
+            out.append(
+                row.model_copy(
+                    update={
+                        "enabled": row.enabled or (disabled_by_mcp_validation and not errors),
+                        "validation_errors": errors,
+                        "metadata": metadata,
+                    }
+                )
+            )
+        return out
+
     def _active_session_agent_blueprint_rows(
         session_id: str = "",
         workspace_id: str = "",
@@ -13131,13 +13451,16 @@ def build_app(
                 session_id=session_id,
                 workspace_id=workspace_id,
             )
+            rows = validate_agent_hierarchy(_merge_agent_def_rows(rows))
+            rows = _apply_agent_blueprint_mcp_descriptor_validation(rows)
+            rows = _apply_enabled_agent_blueprint_mcp_tools(rows)
             return [
                 _apply_prompt_registry_to_agent(
                     app,
                     _agent_with_capability_refs(row),
                     prompt_registry=prompt_registry,
                 )
-                for row in validate_agent_hierarchy(_merge_agent_def_rows(rows))
+                for row in rows
             ]
         return []
 
