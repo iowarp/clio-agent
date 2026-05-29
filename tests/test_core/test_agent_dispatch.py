@@ -27,6 +27,14 @@ def _plan_action(action: dict[str, object]) -> dspy.Prediction:
 
 
 def _set_planner(agent: ClioAgent, action: dict[str, object]) -> None:
+    if action.get("action") == "expert":
+        agent.action_planner = MagicMock(
+            side_effect=[
+                _plan_action(action),
+                _plan_action({"action": "answer", "answer": "", "reason": "expert observed"}),
+            ]
+        )
+        return
     agent.action_planner = MagicMock(return_value=_plan_action(action))
 
 
@@ -67,6 +75,7 @@ class TestForwardDispatch:
                         "reason": "compatible expert choice",
                     }
                 ),
+                _plan_action({"action": "answer", "answer": "", "reason": "expert observed"}),
             ]
         )
         agent.analysis_expert = MagicMock(
@@ -194,17 +203,40 @@ class TestForwardDispatch:
         agent.analysis_expert.assert_called_once()
         agent.sac_format_expert.assert_not_called()
 
-    def test_data_handoff_continues_to_analysis_and_visualization(self, agent, tmp_path):
-        """Staged data should continue to downstream experts when the prompt asks."""
-        staged = tmp_path / "waveforms.tar"
+    def test_orchestrator_plans_analysis_and_visualization_after_data_observation(
+        self, agent, tmp_path
+    ):
+        """Downstream branches require planner actions after data returns an observation."""
+        staged = tmp_path / "waveforms.sac"
         staged.write_bytes(b"placeholder")
-        self._set_planner(
-            agent,
-            {
-                "action": "expert",
-                "expert": "data",
-                "question": "find seismic data, analyze it, and plot traces",
-            },
+        agent.action_planner = MagicMock(
+            side_effect=[
+                _plan_action(
+                    {
+                        "action": "expert",
+                        "expert": "data",
+                        "question": "find seismic data, analyze it, and plot traces",
+                        "reason": "first collect the data evidence",
+                    }
+                ),
+                _plan_action(
+                    {
+                        "action": "expert",
+                        "expert": "analysis",
+                        "question": f"analyze staged data at {staged}",
+                        "reason": "data returned a staged artifact",
+                    }
+                ),
+                _plan_action(
+                    {
+                        "action": "expert",
+                        "expert": "visualization",
+                        "question": f"plot analyzed traces from {staged}",
+                        "reason": "analysis returned trace statistics",
+                    }
+                ),
+                _plan_action({"action": "answer", "answer": "", "reason": "workflow complete"}),
+            ]
         )
         data_result = dspy.Prediction(
             analysis="staged waveform archive",
@@ -257,9 +289,9 @@ class TestForwardDispatch:
         )
 
         assert result.selected_expert == "visualization"
-        assert "Data stage:" in result.answer
-        assert "Analysis stage:" in result.answer
-        assert "Visualization stage:" in result.answer
+        assert "data expert returned:" in result.answer
+        assert "analysis expert returned:" in result.answer
+        assert "visualization expert returned:" in result.answer
         assert [tool.tool for tool in result.tools_called] == [
             "ndp_stage_resource",
             "sac_compute_trace_statistics",
@@ -276,6 +308,46 @@ class TestForwardDispatch:
         assert result.expert_handoffs[3]["parent_id"] == "analysis"
         agent.analysis_expert.assert_called_once()
         agent.visualization_expert.assert_called_once()
+
+    def test_data_observation_does_not_auto_continue_downstream(self, agent, tmp_path):
+        """A staged data result alone must not trigger hardcoded downstream branches."""
+        staged = tmp_path / "waveforms.sac"
+        staged.write_bytes(b"placeholder")
+        self._set_planner(
+            agent,
+            {
+                "action": "expert",
+                "expert": "data",
+                "question": "find seismic data, analyze it, and plot traces",
+            },
+        )
+        data_result = dspy.Prediction(
+            analysis="staged waveform archive",
+            recommendations="pass downstream",
+            metadata={"expert": "ndp_catalog", "parent_expert": "data"},
+            tool_provenance=[
+                ToolObservation(
+                    tool="ndp_stage_resource",
+                    params={},
+                    result={"staged": True, "path": str(staged)},
+                    duration_ms=1.0,
+                    ok=True,
+                )
+            ],
+        )
+        agent.data_expert = MagicMock(return_value=data_result)
+        agent.analysis_expert = MagicMock()
+        agent.visualization_expert = MagicMock()
+
+        result = agent.forward(
+            question="Find seismic data, analyze representative traces, and produce a plot.",
+            session_id="no-auto-handoff-session",
+        )
+
+        assert result.selected_expert == "data"
+        assert "staged waveform archive" in result.answer
+        agent.analysis_expert.assert_not_called()
+        agent.visualization_expert.assert_not_called()
 
     def test_dispatch_analysis_expert(self, agent):
         """Test routing to analysis expert."""
@@ -335,6 +407,66 @@ class TestForwardDispatch:
         assert expert_invocations[0].nanoagents_spawned[0].nanoagent_id == "analysis_validator"
         main_invocations = agent.arc.get_session_invocations("test_session")
         assert any(inv.nanoagents_spawned for inv in main_invocations)
+
+    def test_dispatch_accumulates_nanoagent_spawns_across_planner_steps(self, agent):
+        """Earlier expert nanoagent spawns must survive later planner observations."""
+        agent.action_planner = MagicMock(
+            side_effect=[
+                _plan_action(
+                    {
+                        "action": "expert",
+                        "expert": "analysis",
+                        "question": "Validate all files in parallel",
+                    }
+                ),
+                _plan_action(
+                    {
+                        "action": "expert",
+                        "expert": "analysis",
+                        "question": "Check the CSV status field",
+                    }
+                ),
+                _plan_action({"action": "answer", "answer": "", "reason": "expert observed"}),
+            ]
+        )
+        spawns = [
+            {
+                "agent_id": "data_validator",
+                "input": {"question": "Validate HDF5"},
+                "answer": "hdf5 ok",
+                "duration_ms": 10.0,
+            },
+            {
+                "agent_id": "csv_validator",
+                "input": {"question": "Validate CSV"},
+                "answer": "csv ok",
+                "duration_ms": 8.0,
+            },
+        ]
+        agent.analysis_expert = MagicMock(
+            side_effect=[
+                dspy.Prediction(
+                    analysis="Parallel validation complete",
+                    recommendations="Continue with CSV review",
+                    nanoagents_spawned=spawns,
+                ),
+                dspy.Prediction(
+                    analysis="CSV status field checked",
+                    recommendations="No further checks",
+                ),
+            ]
+        )
+
+        result = agent.forward(question="Build a cross-file quality gate", session_id="test_session")
+
+        assert result.selected_expert == "analysis"
+        assert result.nanoagents_spawned == spawns
+        main_invocations = agent.arc.get_session_invocations("test_session")
+        assert any(
+            {spawn.nanoagent_id for spawn in invocation.nanoagents_spawned}
+            == {"data_validator", "csv_validator"}
+            for invocation in main_invocations
+        )
 
     def test_dispatch_visualization_expert(self, agent):
         """Test routing to visualization expert."""
@@ -463,7 +595,7 @@ class TestForwardDispatch:
 
         assert result.selected_expert == "data"
         assert result.route_source == "dspy"
-        assert "planner" in result.route_reason.lower()
+        assert result.route_reason == "expert observed"
         call = agent.data_expert.call_args.kwargs
         assert str(hdf5_path) in call["question"]
         assert str(hdf5_path) in call["file_context"]
@@ -494,7 +626,7 @@ class TestForwardDispatch:
 
         assert result.selected_expert == "analysis"
         assert result.route_source == "dspy"
-        assert "planner" in result.route_reason.lower()
+        assert result.route_reason == "expert observed"
         call = agent.analysis_expert.call_args.kwargs
         assert str(parquet_path) in call["question"]
         assert str(parquet_path) in call["file_context"]
@@ -594,9 +726,10 @@ class TestForwardDispatch:
             f"Inspected HDF5 file {hdf5_path}.",
             "test_session",
         )
-        self._set_planner(
-            agent,
-            {"action": "expert", "expert": "analysis", "question": "analyze it"},
+        agent.action_planner = MagicMock(
+            return_value=_plan_action(
+                {"action": "tool", "tool": "definitely_not_a_tool", "args": {}}
+            )
         )
 
         result = agent.forward(question="Test query", session_id="test_session")
@@ -605,7 +738,7 @@ class TestForwardDispatch:
         assert result.answer == ""
         assert result.error_info is not None
         assert result.error_info["error"] == "routing_error"
-        assert "without producing a valid action" in result.error_info["message"]
+        assert "unknown tool" in result.error_info["message"]
         assert result.error_info["details"]["recovery_actions"] == [
             "retry",
             "reconfigure_provider",

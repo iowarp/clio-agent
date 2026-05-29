@@ -37,18 +37,29 @@ class AgentActionSignature(dspy.Signature):
       needed capability is a child expert, delegate to its parent and preserve
       the user's broader goal so the parent can decide what to do after the
       child returns.
+    - For multi-phase work, choose the expert that owns the next unresolved
+      prerequisite, not the final deliverable. Dataset discovery, download, and
+      staging are data phases; quantitative inspection is an analysis phase;
+      artifact generation is a visualization phase.
     - Call tools when local file facts, schema, datasets, statistics, or chart
       artifacts are needed.
     - Delegate to an expert only when the user asks to inspect, analyze, query,
       visualize, or transform actual data/files, or current file context exists.
       Use "answer" for general capability, workflow, or safety questions.
     - For natural multi-file scientific bundles that mix formats, choose the
-      listed expert with matching coordination metadata instead of choosing one
-      single-format expert.
+      listed expert whose described ownership covers coordinating those local
+      files instead of choosing one single-format expert.
     - Do not choose an expert whose listed tools/file formats cannot inspect
       the current file context.
+    - Treat every tool or expert result as an observation. After an observation,
+      decide the next action from the current state and listed hierarchy; do
+      not assume CLIO will run another expert automatically.
+    - If an observation includes local_paths, treat those paths as newly
+      available local data. Do not repeat the same discovery/staging expert
+      unless the user still lacks a usable local path; move to the next
+      unresolved phase and preserve any provenance caveat in the final answer.
     - Answer directly only for conversation, capability questions, or after
-      observations are sufficient.
+      observations are sufficient to satisfy the user's request.
     - Do not repeat unrelated previous answers from session_context.
     - Never invent file-specific facts. Use only observations for file facts.
     - If a child/tool failed, answer with the compact failure evidence and the
