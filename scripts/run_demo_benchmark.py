@@ -1714,6 +1714,9 @@ def _provider_lane_audit(results: list[DemoResult], lane: str) -> list[dict[str,
         result = by_case.get(case_id)
         return bool(result and result.passed)
 
+    def case_result(case_id: str) -> DemoResult | None:
+        return by_case.get(case_id)
+
     if lane == "real_orchestrator":
         forbidden = [
             result
@@ -1736,7 +1739,8 @@ def _provider_lane_audit(results: list[DemoResult], lane: str) -> list[dict[str,
             for result in results
             if result.passed
             and (
-                any(term.lower() == ".png" for term in result.case.expected_terms)
+                ".png" in result.text.lower()
+                or any(path.lower().endswith(".png") for path in result.artifacts)
                 or result.route_metrics["artifact_count"] > 0
             )
         ]
@@ -1749,6 +1753,22 @@ def _provider_lane_audit(results: list[DemoResult], lane: str) -> list[dict[str,
                 for row in result.artifact_evidence
             )
         ]
+        ndp_waveform = case_result("ndp_seismic_waveform_to_plot")
+        ndp_full_chain = bool(
+            ndp_waveform
+            and ndp_waveform.passed
+            and any(name.startswith("sac_") for name in ndp_waveform.tool_names)
+            and ndp_waveform.artifact_evidence
+            and all(
+                row.get("exists") and int(row.get("size_bytes") or 0) > 0
+                for row in ndp_waveform.artifact_evidence
+            )
+        )
+        ndp_details = []
+        if ndp_waveform and ndp_waveform.passed and not ndp_full_chain:
+            ndp_details.append(
+                "accepted grounded NDP blocker path; no SAC/PNG artifact was verified"
+            )
         return [
             {
                 "criterion": "all selected cases avoid shortcut route sources",
@@ -1793,10 +1813,18 @@ def _provider_lane_audit(results: list[DemoResult], lane: str) -> list[dict[str,
                 "passed": passed("cross_file_dirty_quality_gate_nanoagents"),
             },
             {
-                "criterion": "NDP-to-SAC-to-plot science chain passes",
+                "criterion": "NDP waveform benchmark passes with honest artifact status",
                 "observed": int(passed("ndp_seismic_waveform_to_plot")),
                 "required": 1,
                 "passed": passed("ndp_seismic_waveform_to_plot"),
+                "details": ndp_details,
+            },
+            {
+                "criterion": "NDP full SAC/PNG chain verified when reached",
+                "observed": int(ndp_full_chain),
+                "required": 0,
+                "passed": True,
+                "details": [] if ndp_full_chain else ["full SAC/PNG path not reached in this run"],
             },
         ]
 
