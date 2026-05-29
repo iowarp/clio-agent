@@ -297,15 +297,27 @@ class TestForwardDispatch:
             "sac_compute_trace_statistics",
             "sac_plot_traces",
         ]
-        assert [handoff["agent_id"] for handoff in result.expert_handoffs] == [
-            "data",
-            "ndp_catalog",
-            "analysis",
-            "sac_format",
-            "visualization",
+        handoff_pairs = [
+            (handoff["agent_id"], handoff.get("stage", ""))
+            for handoff in result.expert_handoffs
         ]
-        assert result.expert_handoffs[1]["parent_id"] == "data"
-        assert result.expert_handoffs[3]["parent_id"] == "analysis"
+        assert handoff_pairs == [
+            ("data", "planner_dispatch"),
+            ("ndp_catalog", "planner_dispatch_child"),
+            ("ndp_catalog", "delegate.completed"),
+            ("data", "parent.resumed"),
+            ("analysis", "planner_dispatch"),
+            ("sac_format", "planner_dispatch_child"),
+            ("sac_format", "delegate.completed"),
+            ("analysis", "parent.resumed"),
+            ("visualization", "planner_dispatch"),
+        ]
+        assert result.expert_handoffs[2]["parent_id"] == "data"
+        assert result.expert_handoffs[2]["metadata"]["return_to"] == "data"
+        assert result.expert_handoffs[3]["metadata"]["resumed_from"] == "ndp_catalog"
+        assert result.expert_handoffs[6]["parent_id"] == "analysis"
+        assert result.expert_handoffs[6]["metadata"]["return_to"] == "analysis"
+        assert result.expert_handoffs[7]["metadata"]["resumed_from"] == "sac_format"
         agent.analysis_expert.assert_called_once()
         agent.visualization_expert.assert_called_once()
 

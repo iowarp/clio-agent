@@ -2645,23 +2645,40 @@ async def _run_turn_in_background(
                     depth=depth + 1,
                     seen={*seen, target.id},
                 )
+                completed_row = {
+                    **row,
+                    "agent_id": target.id,
+                    "parent_id": parent_agent.id,
+                    "pack_id": str(target.metadata.get("pack_id") or ""),
+                    "pack_version": str(target.metadata.get("pack_version") or ""),
+                    "provider_id": target.default_provider,
+                    "model_id": target.default_model,
+                    "fallback_warnings": list(target.validation_errors),
+                    "status": "completed",
+                    "stage": "delegate.completed",
+                    "delegation_lifecycle": "sync",
+                    "return_to": parent_agent.id,
+                    "return_payload": "compact_result",
+                    "depth": depth,
+                    "duration_ms": duration_ms,
+                    "execution_mode": execution_mode,
+                    "input": prompt,
+                    "output_summary": output[:500],
+                    "children": nested,
+                }
+                executed.append(completed_row)
                 executed.append(
                     {
-                        **row,
-                        "agent_id": target.id,
-                        "parent_id": parent_agent.id,
-                        "pack_id": str(target.metadata.get("pack_id") or ""),
-                        "pack_version": str(target.metadata.get("pack_version") or ""),
-                        "provider_id": target.default_provider,
-                        "model_id": target.default_model,
-                        "fallback_warnings": list(target.validation_errors),
+                        "agent_id": parent_agent.id,
+                        "parent_id": parent_agent.parent_id,
+                        "dispatch_target": parent_agent.id,
                         "status": "completed",
+                        "stage": "parent.resumed",
+                        "delegation_lifecycle": "sync",
+                        "resumed_from": target.id,
+                        "return_payload": "compact_result",
                         "depth": depth,
-                        "duration_ms": duration_ms,
-                        "execution_mode": execution_mode,
-                        "input": prompt,
                         "output_summary": output[:500],
-                        "children": nested,
                     }
                 )
             except (_TurnCancelled, _TurnTimedOut):

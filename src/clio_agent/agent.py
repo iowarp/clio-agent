@@ -3574,9 +3574,17 @@ class ClioAgent(dspy.Module):
         if reported_expert in {row.agent_id for row in trace.expert_handoffs}:
             return
         reported_parent = self._coerce_text(metadata.get("parent_expert")).strip().lower()
+        child_parent_id = reported_parent or expert_id
+        lifecycle_metadata = {
+            **metadata,
+            "observed_through": expert_id,
+            "delegation_lifecycle": "sync",
+            "delegate_parent_id": child_parent_id,
+            "delegate_child_id": reported_expert,
+        }
         trace.record_expert_handoff(
             agent_id=reported_expert,
-            parent_id=reported_parent or expert_id,
+            parent_id=child_parent_id,
             dispatch_target=reported_expert,
             stage=f"{stage}_child",
             status=status,
@@ -3584,9 +3592,39 @@ class ClioAgent(dspy.Module):
             output_summary=output_summary,
             duration_ms=duration_ms,
             error=error,
+            metadata=lifecycle_metadata,
+        )
+        trace.record_expert_handoff(
+            agent_id=reported_expert,
+            parent_id=child_parent_id,
+            dispatch_target=reported_expert,
+            stage="delegate.completed" if status == "success" else "delegate.failed",
+            status=status,
+            input_summary=self._compact_handoff_text(input_summary),
+            output_summary=output_summary,
+            duration_ms=duration_ms,
+            error=error,
             metadata={
-                **metadata,
-                "observed_through": expert_id,
+                **lifecycle_metadata,
+                "return_to": child_parent_id,
+                "return_payload": "compact_result",
+            },
+        )
+        trace.record_expert_handoff(
+            agent_id=expert_id,
+            parent_id=self._registered_parent_id(expert_id),
+            dispatch_target=expert_id,
+            stage="parent.resumed",
+            status=status,
+            input_summary=self._compact_handoff_text(input_summary),
+            output_summary=output_summary,
+            duration_ms=0.0,
+            error=error,
+            metadata={
+                "delegation_lifecycle": "sync",
+                "resumed_from": reported_expert,
+                "child_parent_id": child_parent_id,
+                "return_payload": "compact_result",
             },
         )
 
