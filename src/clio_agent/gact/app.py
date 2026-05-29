@@ -1774,6 +1774,20 @@ def _dynamic_agent_runtime_provenance(
             "fallback_to_global": not (agent_def.default_provider and agent_def.default_model),
         },
     }
+    blueprint_id = str(agent_def.metadata.get("agent_blueprint_id") or "").strip()
+    if blueprint_id:
+        payload["agent_blueprint"] = {
+            "id": blueprint_id,
+            "version": str(agent_def.metadata.get("agent_blueprint_version") or ""),
+            "scope": str(agent_def.metadata.get("agent_blueprint_scope") or ""),
+            "definition_path": str(agent_def.metadata.get("agent_blueprint_definition_path") or ""),
+        }
+    overlay = agent_def.metadata.get("agent_blueprint_overlay")
+    if isinstance(overlay, Mapping):
+        payload["agent_overlay"] = dict(overlay)
+        fields = set(overlay.get("fields") or []) if isinstance(overlay.get("fields"), list) else set()
+        if "system_prompt" in fields:
+            payload["prompt"]["source"] = "session_agent_overlay"
     if agent_def.source == "expert_pack":
         payload.update(
             {
@@ -7393,6 +7407,46 @@ def build_app(
 
     app.state.prompt_registry_for_request = _prompt_registry_for_request
 
+    def _prompt_agent_overlay_for_request(session_id: str = "") -> dict[str, Any]:
+        if not session_id:
+            return {}
+        overlay = _session_agent_overlay(session_id)
+        agents = overlay.get("agents") if isinstance(overlay, Mapping) else None
+        if not isinstance(agents, Mapping):
+            return {}
+        rows: list[dict[str, Any]] = []
+        prompt_fields = {
+            "system_prompt",
+            "prompt_id",
+            "prompt_profile",
+            "default_provider",
+            "default_model",
+        }
+        for agent_id, raw_patch in sorted(agents.items(), key=lambda item: str(item[0])):
+            if not isinstance(raw_patch, Mapping):
+                continue
+            fields = sorted(str(key) for key in raw_patch if str(key) in prompt_fields)
+            if not fields:
+                continue
+            rows.append(
+                {
+                    "agent_id": str(agent_id),
+                    "fields": fields,
+                    "has_system_prompt": bool(str(raw_patch.get("system_prompt") or "").strip()),
+                    "prompt_id": str(raw_patch.get("prompt_id") or "").strip(),
+                    "prompt_profile": str(raw_patch.get("prompt_profile") or "").strip(),
+                    "default_provider": str(raw_patch.get("default_provider") or "").strip(),
+                    "default_model": str(raw_patch.get("default_model") or "").strip(),
+                    "source": "session_agent_overlay",
+                    "session_id": session_id,
+                }
+            )
+        return {
+            "session_id": session_id,
+            "source": "session_agent_overlay",
+            "agents": rows,
+        }
+
     def _prompt_render_context_for_request(
         *,
         session_id: str = "",
@@ -7464,10 +7518,14 @@ def build_app(
             workspace_id=workspace_id or "",
         )
         rows = registry.list()
-        return {
+        payload: dict[str, Any] = {
             "prompts": [asdict(row) for row in rows],
             "sources": [{"scope": source.scope, "root": str(source.root)} for source in registry.sources],
         }
+        overlay_prompt_sources = _prompt_agent_overlay_for_request(session_id or "")
+        if overlay_prompt_sources:
+            payload["agent_overlay"] = overlay_prompt_sources
+        return payload
 
     @app.get("/v1/prompts/{prompt_id:path}")
     async def get_prompt(
