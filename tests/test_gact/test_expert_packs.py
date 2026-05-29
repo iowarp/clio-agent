@@ -780,12 +780,19 @@ Inspect schemas.
         ("root_review", "inspect data.csv", sid),
         ("schema_review", "Inspect the CSV schema", sid),
     ]
-    handoff = assistant["metadata"]["expert_handoffs"][0]
+    handoffs = assistant["metadata"]["expert_handoffs"]
+    handoff = next(row for row in handoffs if row["agent_id"] == "schema_review")
     assert handoff["agent_id"] == "schema_review"
     assert handoff["parent_id"] == "root_review"
     assert handoff["status"] == "completed"
+    assert handoff["stage"] == "delegate.completed"
+    assert handoff["delegation_lifecycle"] == "sync"
+    assert handoff["return_to"] == "root_review"
     assert handoff["execution_mode"] == "prompt_agent"
     assert handoff["output_summary"] == "SCHEMA_OK"
+    resumed = next(row for row in handoffs if row.get("stage") == "parent.resumed")
+    assert resumed["agent_id"] == "root_review"
+    assert resumed["resumed_from"] == "schema_review"
     assert assistant["parts"][1]["type"] == "expert_handoff"
     assert assistant["parts"][1]["metadata"]["status"] == "completed"
-    assert assistant["parts"][2]["text"] == "ROOT_OK"
+    assert assistant["parts"][-1]["text"] == "ROOT_OK"

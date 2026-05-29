@@ -512,7 +512,13 @@ def _route_graph(result: DemoResult) -> dict[str, Any]:
         parent_id = str(row.get("parent_id") or "")
         stage = str(row.get("stage") or "")
         add_node(agent_id, "expert")
-        if parent_id:
+        if stage.startswith("delegate."):
+            if parent_id:
+                add_node(parent_id, "expert")
+                add_edge(agent_id, parent_id, "return")
+        elif stage == "parent.resumed":
+            continue
+        elif parent_id:
             add_node(parent_id, "expert")
             add_edge(parent_id, agent_id, "handoff")
         elif previous_expert and stage != "planner_dispatch":
