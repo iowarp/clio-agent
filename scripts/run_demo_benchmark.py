@@ -578,9 +578,7 @@ def _turn_agent_id_for_lane(case: DemoCase, lane: str) -> str:
 
     if case.turn_agent_id:
         return case.turn_agent_id
-    if lane == "real_orchestrator":
-        return "main"
-    return ""
+    return "main"
 
 
 def _provider(http: httpx.Client) -> dict[str, Any]:
@@ -1467,6 +1465,8 @@ _BENCHMARK_LANES: dict[str, tuple[str, ...]] = {
     "real_orchestrator": (
         "reasoning_cross_file_triage_nanoagents",
         "cross_file_dirty_quality_gate_nanoagents",
+        "csv_status_visual_summary",
+        "dirty_quality_dashboard_multi_turn",
         "genomics_reference_variant_review",
         "materials_cif_structure_review",
         "geospatial_field_site_review",
@@ -2117,13 +2117,19 @@ def _render_report(results: list[DemoResult], output_jsonl: Path) -> str:
         [
             "## Remaining Caveats",
             "",
-            "- This report is evidence for the recorded ALCF run, not a guarantee that ALCF availability, model latency, or token freshness will be identical later.",
+            "- This report is evidence for the recorded provider/session run, not a guarantee that provider availability, model latency, token freshness, or external data services will be identical later.",
             "- Several high-event cases are intentionally fast because child/nanoagent workers use deterministic local tools after routing; elapsed time alone should not be treated as benchmark depth.",
-            "- Two cases are deliberate surfaced-error checks. They are counted as successful hardening cases only because they returned structured errors without normal-looking fake assistant text.",
             "- The benchmark now covers the hierarchy and handoff classes listed here, but future providers, file formats, and per-expert model assignments still need their own evidence runs.",
             "",
         ]
     )
+    if expected_errors or expected_cancelled:
+        lines.extend(
+            [
+                "Deliberate failure/cancellation cases are counted as successful hardening cases only when they return structured errors without normal-looking fake assistant text.",
+                "",
+            ]
+        )
 
     partial_results = [result for result in results if result.outcome == "partial"]
     if partial_results:
