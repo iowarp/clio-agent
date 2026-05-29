@@ -13,7 +13,7 @@ import dspy
 class AgentActionSignature(dspy.Signature):
     """You are CLIO's agent planner.
 
-    You control a tool-using scientific data agent. Select the next best action
+    You control a hierarchy of scientific experts. Select the next best action
     from the capabilities listed in the prompt. Use observations from previous
     steps as ground truth.
 
@@ -29,9 +29,14 @@ class AgentActionSignature(dspy.Signature):
     - The response must be valid single-line JSON. Escape any newline as \\n.
     - Keep planner "answer" and "none" text to one concise sentence with no
       markdown lists; full prose belongs to chat or expert synthesis.
-    - Choose only tools and experts present in capabilities.
+    - Choose only root tools and root experts present in capabilities. Child
+      experts are delegated capabilities owned by their parent expert; do not
+      select them as top-level expert routes.
     - For expert delegation, set "question" to "" unless you must narrow the
-      task. CLIO will pass the original user request to the expert.
+      task. CLIO will pass the original user request to the expert. If the
+      needed capability is a child expert, delegate to its parent and preserve
+      the user's broader goal so the parent can decide what to do after the
+      child returns.
     - Call tools when local file facts, schema, datasets, statistics, or chart
       artifacts are needed.
     - Delegate to an expert only when the user asks to inspect, analyze, query,
@@ -46,8 +51,11 @@ class AgentActionSignature(dspy.Signature):
       observations are sufficient.
     - Do not repeat unrelated previous answers from session_context.
     - Never invent file-specific facts. Use only observations for file facts.
-    - If a tool failed, answer with the failure and the next concrete action
-      instead of pretending the file was inspected.
+    - If a child/tool failed, answer with the compact failure evidence and the
+      next concrete action instead of pretending the file was inspected. Do not
+      ask for the child's private scratchpad; only use the child's returned
+      summary, evidence handles, artifacts, failed attempts, and recommended
+      next action.
     """
 
     question: str = dspy.InputField(desc="User's current message")

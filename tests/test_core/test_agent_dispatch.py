@@ -103,8 +103,8 @@ class TestForwardDispatch:
         assert "HDF5 analysis result" in result.answer
         assert "gzip compression" in result.answer
 
-    def test_dispatch_ndp_catalog_child_expert(self, agent):
-        """NDP routes should execute the nested catalog expert, not DataExpert internals."""
+    def test_dispatch_ndp_catalog_child_expert_routes_through_data_parent(self, agent):
+        """Planner-selected NDP child routes should execute through the data parent."""
         self._set_planner(
             agent,
             {
@@ -119,16 +119,17 @@ class TestForwardDispatch:
             metadata={"expert": "ndp_catalog", "parent_expert": "data"},
         )
         agent.ndp_catalog_expert = MagicMock(return_value=expert_result)
-        agent.data_expert = MagicMock()
+        agent.data_expert = MagicMock(return_value=expert_result)
 
         result = agent.forward(question="Find EarthScope waveform datasets", session_id="ndp")
 
-        assert result.selected_expert == "ndp_catalog"
+        assert result.selected_expert == "data"
         assert "NDP catalog results" in result.answer
-        assert result.expert_handoffs[0]["agent_id"] == "ndp_catalog"
-        assert result.expert_handoffs[0]["parent_id"] == "data"
-        agent.ndp_catalog_expert.assert_called_once()
-        agent.data_expert.assert_not_called()
+        assert result.expert_handoffs[0]["agent_id"] == "data"
+        assert result.expert_handoffs[1]["agent_id"] == "ndp_catalog"
+        assert result.expert_handoffs[1]["parent_id"] == "data"
+        agent.data_expert.assert_called_once()
+        agent.ndp_catalog_expert.assert_not_called()
 
     def test_nested_expert_tool_errors_surface(self, agent):
         """Nested expert routes must not bypass normal tool-error surfacing."""
@@ -155,17 +156,18 @@ class TestForwardDispatch:
             ],
         )
         agent.ndp_catalog_expert = MagicMock(return_value=expert_result)
+        agent.data_expert = MagicMock(return_value=expert_result)
 
         result = agent.forward(question="Find unavailable NDP data", session_id="ndp-error")
 
-        assert result.selected_expert == "ndp_catalog"
+        assert result.selected_expert == "data"
         assert result.answer == ""
         assert result.error_info is not None
         assert result.error_info["error"] == "tool_error"
         assert result.error_info["details"]["tool"] == "ndp_search_datasets"
 
-    def test_dispatch_sac_format_child_expert(self, agent):
-        """SAC routes should execute the nested format expert."""
+    def test_dispatch_sac_format_child_expert_routes_through_analysis_parent(self, agent):
+        """Planner-selected SAC child routes should execute through the analysis parent."""
         self._set_planner(
             agent,
             {
@@ -180,16 +182,17 @@ class TestForwardDispatch:
             metadata={"expert": "sac_format", "parent_expert": "analysis"},
         )
         agent.sac_format_expert = MagicMock(return_value=expert_result)
-        agent.analysis_expert = MagicMock()
+        agent.analysis_expert = MagicMock(return_value=expert_result)
 
         result = agent.forward(question="Analyze staged SAC traces", session_id="sac")
 
-        assert result.selected_expert == "sac_format"
+        assert result.selected_expert == "analysis"
         assert "SAC trace statistics" in result.answer
-        assert result.expert_handoffs[0]["agent_id"] == "sac_format"
-        assert result.expert_handoffs[0]["parent_id"] == "analysis"
-        agent.sac_format_expert.assert_called_once()
-        agent.analysis_expert.assert_not_called()
+        assert result.expert_handoffs[0]["agent_id"] == "analysis"
+        assert result.expert_handoffs[1]["agent_id"] == "sac_format"
+        assert result.expert_handoffs[1]["parent_id"] == "analysis"
+        agent.analysis_expert.assert_called_once()
+        agent.sac_format_expert.assert_not_called()
 
     def test_data_handoff_continues_to_analysis_and_visualization(self, agent, tmp_path):
         """Staged data should continue to downstream experts when the prompt asks."""
