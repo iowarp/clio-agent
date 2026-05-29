@@ -353,7 +353,10 @@ class NDPExpert(dspy.Module):
         ):
             return ""
 
-        candidates = NDPExpert._staging_candidates(rows)
+        candidates = NDPExpert._staging_candidates(
+            rows,
+            waveform_only=NDPExpert._requires_waveform_resource(question),
+        )
         if not candidates:
             return (
                 "Staging note: no dataset candidate was available, so CLIO did not "
@@ -443,14 +446,57 @@ class NDPExpert(dspy.Module):
         )
 
     @staticmethod
-    def _staging_candidates(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def _staging_candidates(
+        rows: list[dict[str, Any]],
+        *,
+        waveform_only: bool = False,
+    ) -> list[dict[str, Any]]:
         """Return bounded NDP dataset candidates in recovery order."""
 
         unique: dict[str, dict[str, Any]] = {}
         for row in sorted(rows, key=NDPExpert._dataset_priority, reverse=True):
+            if waveform_only and not NDPExpert._row_is_waveform_candidate(row):
+                continue
             key = str(row.get("id") or row.get("name") or len(unique))
             unique.setdefault(key, row)
         return list(unique.values())[:5]
+
+    @staticmethod
+    def _requires_waveform_resource(question: str) -> bool:
+        """Return whether staging must stay scoped to waveform-compatible rows."""
+
+        q_lower = question.lower()
+        return any(
+            term in q_lower
+            for term in (
+                "sac",
+                "miniseed",
+                "waveform",
+                "trace statistics",
+                "representative trace",
+                "three-axis",
+                "three axes",
+            )
+        )
+
+    @staticmethod
+    def _row_is_waveform_candidate(row: dict[str, Any]) -> bool:
+        """Return whether an NDP row advertises waveform-compatible content."""
+
+        haystack = " ".join(
+            str(value)
+            for value in (
+                row.get("title"),
+                row.get("name"),
+                row.get("notes"),
+                " ".join(str(name) for name in row.get("resource_names", [])),
+                " ".join(str(fmt) for fmt in row.get("resource_formats", [])),
+            )
+            if value
+        ).lower()
+        if any(term in haystack for term in ("waveform", "miniseed", "mseed", ".sac", " sac ")):
+            return True
+        return any(str(url).lower().endswith((".sac", ".mseed", ".miniseed")) for url in row.get("resource_urls", []))
 
     @staticmethod
     def _resource_attempt_count(candidate: dict[str, Any], details: Any) -> int:
