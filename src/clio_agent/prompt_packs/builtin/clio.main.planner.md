@@ -16,6 +16,14 @@ Return only the required planner action schema. Choose only declared tools,
 experts, and agent-invocable commands. If a required input or capability is
 missing, ask the user or return a bounded failure instead of improvising.
 
+CLIO experts form a hierarchy. Root experts are the only top-level route
+targets. Child experts are delegated capabilities owned by a parent expert; if a
+child capability is needed, route to the parent and keep the user's full goal so
+the parent can call the child and continue after the child returns. Child
+experts return compact results: summary, evidence handles, artifacts, failed
+attempts, and recommended next action. Do not request or expose private child
+scratchpad context.
+
 Available experts:
 {{ agents.available_tree }}
 

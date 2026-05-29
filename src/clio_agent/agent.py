@@ -919,7 +919,8 @@ class ClioAgent(dspy.Module):
 
             if kind == "tool":
                 tool_name = self._coerce_text(action.get("tool")).strip()
-                selected = self._selected_expert_for_tool(tool_name)
+                owning_expert = self._selected_expert_for_tool(tool_name)
+                selected = self._parent_route_for_child(owning_expert) or owning_expert
                 if selected != "visualization" and self._question_requests_visualization(
                     question,
                     file_context,
@@ -963,6 +964,7 @@ class ClioAgent(dspy.Module):
                 if self._should_promote_tool_action_to_expert(
                     tool_name,
                     selected=selected,
+                    owning_expert=owning_expert,
                     observations=observations,
                     question=question,
                     file_context=file_context,
@@ -975,6 +977,7 @@ class ClioAgent(dspy.Module):
                         session_context=session_context,
                         trace=trace,
                     )
+                    selected = self._parent_route_for_child(selected) or selected
                     self._raise_if_cancelled("expert_after")
                     route = self._route_for_selected(
                         selected,
@@ -1029,6 +1032,13 @@ class ClioAgent(dspy.Module):
                     source_question=question,
                     file_context=file_context,
                 )
+                child_parent = self._parent_route_for_child(expert_id)
+                if child_parent:
+                    reason = (
+                        reason
+                        or f"Planner selected child expert {expert_id}; routing through parent."
+                    )
+                    expert_id = child_parent
                 if expert_id != "visualization" and self._question_requests_visualization(
                     question,
                     file_context,
@@ -1076,6 +1086,7 @@ class ClioAgent(dspy.Module):
                     session_context=session_context,
                     trace=trace,
                 )
+                selected = self._parent_route_for_child(selected) or selected
                 self._raise_if_cancelled("expert_after")
                 route = self._route_for_selected(
                     selected,
@@ -1308,19 +1319,20 @@ class ClioAgent(dspy.Module):
         tool_name: str,
         *,
         selected: str,
+        owning_expert: str,
         observations: list[dict[str, Any]],
         question: str,
         file_context: str,
     ) -> bool:
         """Return whether a planner tool action should become expert delegation.
 
-        Nested expert tools should execute through the owning child expert on
-        the first planner step. Letting the tier-1 planner iterate directly
-        over provider/format tools makes the orchestrator behave like a flat
-        tool-using expert and loses handoff boundaries.
+        Child expert tools should execute through the parent-owned delegation
+        boundary on the first planner step. Letting the tier-1 planner iterate
+        directly over provider/format tools makes the orchestrator behave like
+        a flat tool-using expert and loses handoff boundaries.
         """
 
-        caps = self.registry.get_capabilities(selected)
+        caps = self.registry.get_capabilities(owning_expert)
         if caps is not None and caps.parent_id and not observations:
             return True
         if (
@@ -2970,22 +2982,21 @@ class ClioAgent(dspy.Module):
             tool.name: tool for tool in sorted(self._available_dspy_tools(), key=lambda t: t.name)
         }
         lines = ["Experts:"]
-        for agent_id in self.registry.list_agents():
+        for agent_id in self.registry.list_root_agents(planner_visible_only=True):
             caps = self.registry.get_capabilities(agent_id)
             if caps is None:
                 continue
-            hierarchy = f"child of {caps.parent_id}; " if caps.parent_id else ""
             tools = ", ".join(caps.tools) if caps.tools else "no direct tools"
             metadata_notes = self._planner_capability_metadata_notes(caps.metadata)
             metadata_text = f"; {metadata_notes}" if metadata_notes else ""
-            lines.append(
-                f"- {agent_id}: {hierarchy}{caps.description}{metadata_text}; tools: {tools}"
-            )
+            lines.append(f"- {agent_id}: {caps.description}{metadata_text}; tools: {tools}")
+            child_lines = self._planner_child_capability_lines(agent_id)
+            lines.extend(f"  {line}" for line in child_lines)
 
         lines.append("Scoped tools:")
-        for agent_id in self.registry.list_agents():
+        for agent_id in self.registry.list_root_agents(planner_visible_only=True):
             caps = self.registry.get_capabilities(agent_id)
-            if caps is None or not caps.tools:
+            if caps is None:
                 continue
             scoped_lines = [
                 self._planner_tool_line(tool_name, available_tools)
@@ -2993,10 +3004,12 @@ class ClioAgent(dspy.Module):
                 if tool_visible_to(tool_name, agent_id)
             ]
             scoped_lines = [line for line in scoped_lines if line]
-            if not scoped_lines:
+            child_scoped_lines = self._planner_child_tool_lines(agent_id, available_tools)
+            if not scoped_lines and not child_scoped_lines:
                 continue
             lines.append(f"- {agent_id}:")
             lines.extend(f"  {line}" for line in scoped_lines)
+            lines.extend(f"  {line}" for line in child_scoped_lines)
 
         chat_utility_lines = [
             self._planner_tool_line(tool_name, available_tools)
@@ -3018,6 +3031,11 @@ class ClioAgent(dspy.Module):
             "to the owning expert. Chat may only use tools listed under Chat utility tools."
         )
         lines.append(
+            "- Child experts are not root route targets. When a child capability is needed, "
+            "delegate to its parent expert and let the parent synchronously call the child "
+            "with the same task context."
+        )
+        lines.append(
             "Routing strategy: for natural requests that compare, triage, review, "
             "or summarize multiple scientific files, delegate to expert:analysis. "
             "The analysis expert coordinates independent HDF5, Parquet, and CSV "
@@ -3035,6 +3053,44 @@ class ClioAgent(dspy.Module):
                 "tool/expert reasoning path over deterministic shortcuts."
             )
         return "\n".join(lines)
+
+    def _planner_child_capability_lines(self, parent_id: str) -> list[str]:
+        """Return planner-facing child summaries nested under a parent expert."""
+        lines: list[str] = []
+        for child_id in self.registry.list_child_agents(parent_id):
+            caps = self.registry.get_capabilities(child_id)
+            if caps is None or not caps.planner_visible:
+                continue
+            tools = ", ".join(caps.tools) if caps.tools else "no direct tools"
+            metadata_notes = self._planner_capability_metadata_notes(caps.metadata)
+            metadata_text = f"; {metadata_notes}" if metadata_notes else ""
+            lines.append(
+                f"delegated child {child_id}: {caps.description}{metadata_text}; tools: {tools}"
+            )
+        return lines
+
+    def _planner_child_tool_lines(
+        self,
+        parent_id: str,
+        available_tools: Mapping[str, dspy.Tool],
+    ) -> list[str]:
+        """Return child tool descriptions nested under their parent expert."""
+        lines: list[str] = []
+        for child_id in self.registry.list_child_agents(parent_id):
+            caps = self.registry.get_capabilities(child_id)
+            if caps is None or not caps.planner_visible:
+                continue
+            scoped_lines = [
+                self._planner_tool_line(tool_name, available_tools)
+                for tool_name in caps.tools
+                if tool_visible_to(tool_name, child_id)
+            ]
+            scoped_lines = [line for line in scoped_lines if line]
+            if not scoped_lines:
+                continue
+            lines.append(f"delegated child {child_id}:")
+            lines.extend(f"  {line}" for line in scoped_lines)
+        return lines
 
     def _planner_tool_line(self, tool_name: str, available_tools: Mapping[str, dspy.Tool]) -> str:
         """Return one planner-facing tool signature line if the tool is callable."""
@@ -3133,7 +3189,7 @@ class ClioAgent(dspy.Module):
         for observation in reversed(trace.tools):
             selected = self._selected_expert_for_tool(observation.tool)
             if selected != "chat":
-                return selected
+                return self._parent_route_for_child(selected) or selected
         return "chat"
 
     def _expert_file_compatibility_error(
@@ -3234,14 +3290,21 @@ class ClioAgent(dspy.Module):
         )
 
     def _valid_route_targets(self) -> set[str]:
-        """Return route targets from the live agent registry plus special routes."""
+        """Return root route targets from the live agent registry plus special routes."""
         targets = {
             str(agent_id).strip().lower()
-            for agent_id in self.registry.list_agents()
+            for agent_id in self.registry.list_root_agents(planner_visible_only=True)
             if str(agent_id).strip()
         }
         targets.update(SPECIAL_ROUTE_TARGETS)
         return targets
+
+    def _parent_route_for_child(self, expert_id: str) -> str | None:
+        """Return the public parent route for a child expert, if registered."""
+        caps = self.registry.get_capabilities(expert_id)
+        if caps is None or not caps.parent_id:
+            return None
+        return caps.parent_id
 
     @staticmethod
     def _normalize_tool_args(raw_args: Any) -> dict[str, Any]:

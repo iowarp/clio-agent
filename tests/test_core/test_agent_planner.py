@@ -477,32 +477,32 @@ class TestBuildCapabilitiesContext:
 
         analysis_block = block("analysis")
         data_block = block("data")
-        ndp_block = block("ndp_catalog")
-        sac_block = block("sac_format")
         utility_block = block("utility")
         visualization_block = block("visualization")
 
         assert "hdf5_analyze_file(" in data_block
-        assert "ndp_search_datasets(" not in data_block
+        assert "delegated child ndp_catalog:" in data_block
+        assert "ndp_search_datasets(" in data_block
         assert "parquet_analyze_schema(" not in data_block
         assert "parquet_analyze_schema(" in analysis_block
         assert "hdf5_analyze_file(" not in analysis_block
         assert "ndp_search_datasets(" not in analysis_block
-        assert "ndp_search_datasets(" in ndp_block
-        assert "sac_compute_trace_statistics(" in sac_block
-        assert "sac_plot_traces(" in sac_block
+        assert "delegated child sac_format:" in analysis_block
+        assert "sac_compute_trace_statistics(" in analysis_block
+        assert "sac_plot_traces(" in analysis_block
         assert "plot_summary(" in visualization_block
         assert "shell_bash(" in utility_block
         assert "fs_propose_edit(" in utility_block
 
-    def test_nested_experts_are_visible_to_planner(self, agent):
+    def test_nested_experts_are_visible_as_parent_delegates(self, agent):
         ctx = agent._build_capabilities_context()
-        ndp_line = next(line for line in ctx.splitlines() if line.startswith("- ndp_catalog:"))
-        sac_line = next(line for line in ctx.splitlines() if line.startswith("- sac_format:"))
+        expert_lines = ctx.split("Scoped tools:", 1)[0].splitlines()
+        ndp_line = next(line for line in expert_lines if "delegated child ndp_catalog:" in line)
+        sac_line = next(line for line in expert_lines if "delegated child sac_format:" in line)
 
-        assert "child of data" in ndp_line
+        assert not any(line.startswith("- ndp_catalog:") for line in expert_lines)
+        assert not any(line.startswith("- sac_format:") for line in expert_lines)
         assert "National Data Platform" in ndp_line
-        assert "child of analysis" in sac_line
         assert "SAC waveform" in sac_line
 
     def test_chat_utility_tools_are_explicitly_scoped(self, agent):
@@ -764,7 +764,7 @@ class TestRunAgentLoop:
         assert expert_result is None
         agent._execute_tool_action.assert_called_once()
 
-    def test_ndp_tool_action_is_promoted_to_nested_catalog_expert(self, agent):
+    def test_ndp_tool_action_is_promoted_to_parent_data_expert(self, agent):
         agent._plan_next_action = MagicMock(
             return_value={
                 "action": "tool",
@@ -786,12 +786,13 @@ class TestRunAgentLoop:
             trace=_trace(),
         )
 
-        assert selected == "ndp_catalog"
+        assert selected == "data"
         assert answer == "NDP results\n\nstage data"
         assert result is expert_result
         assert error_info is None
-        assert route.target == "ndp_catalog"
+        assert route.target == "data"
         agent._dispatch_expert_action.assert_called_once()
+        assert agent._dispatch_expert_action.call_args.kwargs["expert_id"] == "data"
         agent._execute_tool_action.assert_not_called()
 
     def test_parquet_schema_tool_promotes_to_analysis_for_statistical_triage(self, agent):
