@@ -680,7 +680,42 @@ def test_post_message_agent_id_override_reports_structured_error_without_mutatin
     }
 
 
-def test_post_message_auto_routes_to_user_agent_by_keyword(
+def test_post_message_does_not_keyword_route_to_user_agent_by_default(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from .conftest import complete_turn
+
+    def fail_prompt_agent(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("keyword user-agent routing should be opt-in")
+
+    monkeypatch.delenv("CLIO_ENABLE_KEYWORD_USER_AGENT_ROUTING", raising=False)
+    monkeypatch.setattr("clio_agent.gact.app._run_prompt_user_agent", fail_prompt_agent)
+
+    agent = FakeClioAgent(answer="MAIN_OK", selected_expert="")
+    app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
+    with TestClient(app) as c:
+        assert (
+            c.post(
+                "/v1/agents",
+                json={
+                    "id": "reviewer",
+                    "title": "Reviewer",
+                    "system_prompt": "Review code carefully.",
+                    "keywords": ["code review", "reviewer"],
+                },
+            ).status_code
+            == 201
+        )
+        sid = c.post("/v1/sessions", json={"title": "x"}).json()["id"]
+        assistant = complete_turn(c, sid, "please do a code review of this patch")
+
+    assert agent.calls == [("please do a code review of this patch", sid)]
+    assert [part["type"] for part in assistant["parts"]] == ["text"]
+    assert assistant["parts"][0]["text"] == "MAIN_OK"
+
+
+def test_post_message_can_opt_in_to_keyword_user_agent_routing(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -712,6 +747,7 @@ def test_post_message_auto_routes_to_user_agent_by_keyword(
 
     monkeypatch.setattr("clio_agent.gact.app._try_streamed_forward", fake_stream_unavailable)
     monkeypatch.setattr("clio_agent.gact.app._run_prompt_user_agent", fake_prompt_agent)
+    monkeypatch.setenv("CLIO_ENABLE_KEYWORD_USER_AGENT_ROUTING", "1")
 
     agent = FakeClioAgent(answer="main should not run")
     app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
