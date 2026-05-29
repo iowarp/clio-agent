@@ -545,8 +545,8 @@ class TestDataExpert:
         ]
         expert.close()
 
-    def test_data_expert_recovers_ndp_staging_blocker_with_earthscope_sac(self):
-        """Natural analyze/plot requests should recover from unavailable NDP bytes."""
+    def test_data_expert_surfaces_ndp_staging_blocker_to_parent(self):
+        """NDP child failures should return evidence, not fetch unrelated SAC data."""
 
         class FakeExecutor:
             closed = False
@@ -572,18 +572,6 @@ class TestDataExpert:
                         func=fake_tool,
                         name="ndp_stage_resource",
                         desc="Stage NDP resources.",
-                        args={},
-                    ),
-                    dspy.Tool(
-                        func=fake_tool,
-                        name="sac_fetch_earthscope_waveform",
-                        desc="Fetch bounded EarthScope SAC waveforms.",
-                        args={},
-                    ),
-                    dspy.Tool(
-                        func=fake_tool,
-                        name="sac_inspect_archive",
-                        desc="Inspect SAC archives.",
                         args={},
                     ),
                 ]
@@ -615,13 +603,7 @@ class TestDataExpert:
                         '"next_action":"Use Pelican to stage this resource.",'
                         '"details":{"transport":"osdf"}}}'
                     )
-                if name == "sac_fetch_earthscope_waveform":
-                    return (
-                        '{"staged":true,"path":"/tmp/earthscope.sac",'
-                        '"source":"earthscope_irisws_timeseries"}'
-                    )
-                assert name == "sac_inspect_archive"
-                return '{"sac_trace_count":1,"sample_members":["earthscope.sac"]}'
+                raise AssertionError(f"unexpected child recovery tool call: {name}")
 
             def close(self):
                 self.closed = True
@@ -639,8 +621,17 @@ class TestDataExpert:
         assert result.synthesis_source == "deterministic"
         assert "Staging note" in result.analysis
         assert "unsupported_resource_transport" in result.analysis
-        assert "EarthScope SAC waveform" in result.analysis
-        assert "/tmp/earthscope.sac" in result.analysis
+        assert "Parent recovery should decide" in result.analysis
+        assert "EarthScope SAC waveform" not in result.analysis
+        assert "/tmp/earthscope.sac" not in result.analysis
+        assert result.metadata["staging"]["status"] == "blocked"
+        assert result.metadata["staging"]["reason"] == "staging_failed"
+        assert result.metadata["staging"]["attempts"][0]["error"]["code"] == (
+            "unsupported_resource_transport"
+        )
+        assert "delegate_to_utility_download" in result.metadata["staging"][
+            "recommended_parent_actions"
+        ]
         assert [row.tool for row in result.tool_provenance] == [
             "ndp_list_organizations",
             "ndp_search_datasets",
@@ -648,8 +639,6 @@ class TestDataExpert:
             "ndp_search_datasets",
             "ndp_get_dataset_details",
             "ndp_stage_resource",
-            "sac_fetch_earthscope_waveform",
-            "sac_inspect_archive",
         ]
         expert.close()
 
@@ -680,18 +669,6 @@ class TestDataExpert:
                         func=fake_tool,
                         name="ndp_stage_resource",
                         desc="Stage NDP resources.",
-                        args={},
-                    ),
-                    dspy.Tool(
-                        func=fake_tool,
-                        name="sac_fetch_earthscope_waveform",
-                        desc="Fetch bounded EarthScope SAC waveforms.",
-                        args={},
-                    ),
-                    dspy.Tool(
-                        func=fake_tool,
-                        name="sac_inspect_archive",
-                        desc="Inspect SAC archives.",
                         args={},
                     ),
                 ]
@@ -745,7 +722,7 @@ class TestDataExpert:
         expert.close()
 
     def test_ndp_waveform_staging_does_not_fall_back_to_lidar_geojson(self):
-        """Waveform requests should not recover to unrelated seismic lidar metadata."""
+        """Waveform requests should not recover to unrelated datasets or SAC fallbacks."""
 
         class FakeExecutor:
             closed = False
@@ -803,13 +780,7 @@ class TestDataExpert:
                         '{"error":{"type":"tool_error","code":"webget_failed",'
                         '"message":"curl failed","next_action":"try another waveform mirror"}}'
                     )
-                if name == "sac_fetch_earthscope_waveform":
-                    return (
-                        '{"staged":true,"path":"/tmp/earthscope.sac",'
-                        '"source":"earthscope_irisws_timeseries"}'
-                    )
-                assert name == "sac_inspect_archive"
-                return '{"sac_trace_count":1,"sample_members":["earthscope.sac"]}'
+                raise AssertionError(f"unexpected child recovery tool call: {name}")
 
             def close(self):
                 self.closed = True
@@ -823,8 +794,12 @@ class TestDataExpert:
             )
         )
 
-        assert "NDP bytes were unavailable" in result.analysis
-        assert "EarthScope SAC waveform" in result.analysis
+        assert "none could be staged by the NDP Catalog Expert" in result.analysis
+        assert "Parent recovery should decide" in result.analysis
+        assert "EarthScope SAC waveform" not in result.analysis
+        assert result.metadata["staging"]["status"] == "blocked"
+        assert result.metadata["staging"]["attempts"][0]["dataset_identifier"] == "wave"
+        assert result.metadata["staging"]["attempts"][0]["error"]["code"] == "webget_failed"
         stage_calls = [row for row in result.tool_provenance if row.tool == "ndp_stage_resource"]
         detail_calls = [
             row for row in result.tool_provenance if row.tool == "ndp_get_dataset_details"
@@ -834,7 +809,7 @@ class TestDataExpert:
         ]
         assert [row.params["dataset_identifier"] for row in detail_calls] == ["wave"]
         assert [row.params["dataset_identifier"] for row in stage_calls] == ["wave"]
-        assert len(fallback_calls) == 1
+        assert fallback_calls == []
         assert stage_calls[0].result["error"]["handled"] is True
         expert.close()
 

@@ -136,6 +136,7 @@ class NDPExpert(dspy.Module):
                 f"Organizations matched: {organizations.get('count', 0)}"
                 + (("\n- " + "\n- ".join(org_rows)) if org_rows else "")
             )
+        staging_metadata: dict[str, Any] | None = None
         if datasets is not None:
             dataset_rows = [
                 row for row in datasets.get("datasets", [])[:5] if isinstance(row, dict)
@@ -148,25 +149,31 @@ class NDPExpert(dspy.Module):
             contextual = self._contextual_analysis(request.question, dataset_rows)
             if contextual:
                 analysis_lines.append(contextual)
-            staging_note = self._staging_attempt(request.question, dataset_rows, runner)
+            staging_note, staging_metadata = self._staging_attempt(
+                request.question,
+                dataset_rows,
+                runner,
+            )
             if staging_note:
                 analysis_lines.append(staging_note)
-
         recommendations = self._recommendations(
             request.question,
             datasets.get("datasets", []) if datasets else [],
         )
+        metadata: dict[str, Any] = {
+            "expert": "ndp_catalog",
+            "parent_expert": "data",
+            "format": "ndp",
+            "source": "clio-kit",
+        }
+        if staging_metadata:
+            metadata["staging"] = staging_metadata
         return ExpertResult(
             analysis="\n\n".join(analysis_lines),
             recommendations=recommendations,
             source="deterministic",
             tools=runner.observations,
-            metadata={
-                "expert": "ndp_catalog",
-                "parent_expert": "data",
-                "format": "ndp",
-                "source": "clio-kit",
-            },
+            metadata=metadata,
         )
 
     def _search_datasets(
@@ -335,7 +342,7 @@ class NDPExpert(dspy.Module):
         question: str,
         rows: list[dict[str, Any]],
         runner: NativeToolRunner,
-    ) -> str:
+    ) -> tuple[str, dict[str, Any] | None]:
         """Attempt data-stage resource staging when the prompt asks beyond discovery."""
         q_lower = question.lower()
         if not any(
@@ -351,7 +358,7 @@ class NDPExpert(dspy.Module):
                 "three axes",
             )
         ):
-            return ""
+            return "", None
 
         candidates = NDPExpert._staging_candidates(
             rows,
@@ -361,17 +368,34 @@ class NDPExpert(dspy.Module):
             return (
                 "Staging note: no dataset candidate was available, so CLIO did not "
                 "attempt resource staging."
-            )
+            ), {
+                "status": "blocked",
+                "reason": "no_candidate",
+                "attempts": [],
+                "recommended_parent_actions": [
+                    "broaden_catalog_search",
+                    "ask_user_for_dataset_hint",
+                    "try_another_provider",
+                ],
+            }
 
         failed_attempts: list[str] = []
+        structured_attempts: list[dict[str, Any]] = []
         for candidate in candidates:
             identifier = str(candidate.get("id") or candidate.get("name") or "").strip()
+            title = str(candidate.get("title") or candidate.get("name") or identifier)
             if not identifier:
                 failed_attempts.append("candidate without dataset id/name")
+                structured_attempts.append(
+                    {
+                        "status": "failed",
+                        "reason": "missing_dataset_identifier",
+                        "title": title,
+                    }
+                )
                 continue
 
             identifier_type = "id" if candidate.get("id") else "name"
-            title = str(candidate.get("title") or candidate.get("name") or identifier)
             details = runner.call(
                 "ndp_get_dataset_details",
                 {
@@ -383,6 +407,16 @@ class NDPExpert(dspy.Module):
             if isinstance(details, dict) and details.get("error"):
                 failed_attempts.append(
                     f"{title}: detail lookup failed: {format_tool_error(details['error'])}"
+                )
+                structured_attempts.append(
+                    {
+                        "status": "failed",
+                        "stage": "details",
+                        "dataset_identifier": identifier,
+                        "identifier_type": identifier_type,
+                        "title": title,
+                        "error": details["error"],
+                    }
                 )
                 runner.mark_error_handled(
                     "ndp_get_dataset_details",
@@ -402,6 +436,19 @@ class NDPExpert(dspy.Module):
                 )
                 if isinstance(staged, dict) and staged.get("staged"):
                     staged_path = str(staged.get("path") or "")
+                    structured_attempts.append(
+                        {
+                            "status": "staged",
+                            "stage": "stage_resource",
+                            "dataset_identifier": identifier,
+                            "identifier_type": identifier_type,
+                            "resource_index": resource_index,
+                            "title": title,
+                            "path": staged_path,
+                            "url": staged.get("url"),
+                            "size_bytes": staged.get("size_bytes"),
+                        }
+                    )
                     inspection_note = ""
                     if staged_path.lower().endswith((".sac", ".tar", ".tgz", ".gz")):
                         inspected = runner.call(
@@ -434,7 +481,14 @@ class NDPExpert(dspy.Module):
                         "Staging note: CLIO staged the selected NDP resource at "
                         f"{staged_path}{attempted}. Analysis and visualization can now use that "
                         f"local file if the format is supported.{inspection_note}"
-                    )
+                    ), {
+                        "status": "staged",
+                        "path": staged_path,
+                        "dataset_identifier": identifier,
+                        "identifier_type": identifier_type,
+                        "resource_index": resource_index,
+                        "attempts": structured_attempts,
+                    }
                 if isinstance(staged, dict) and staged.get("error"):
                     code = (
                         staged["error"].get("code")
@@ -442,85 +496,69 @@ class NDPExpert(dspy.Module):
                         else "tool_error"
                     )
                     failed_attempts.append(f"{title} resource {resource_index}: {code}")
+                    structured_attempts.append(
+                        {
+                            "status": "failed",
+                            "stage": "stage_resource",
+                            "dataset_identifier": identifier,
+                            "identifier_type": identifier_type,
+                            "resource_index": resource_index,
+                            "title": title,
+                            "error": staged["error"],
+                        }
+                    )
                     runner.mark_error_handled(
                         "ndp_stage_resource",
-                        reason="NDP staging recovery summarized the failed resource attempt.",
+                        reason=(
+                            "NDP catalog child captured the failure for the parent "
+                            "to decide recovery."
+                        ),
                     )
                     continue
                 failed_attempts.append(f"{title} resource {resource_index}: unexpected result")
+                structured_attempts.append(
+                    {
+                        "status": "failed",
+                        "stage": "stage_resource",
+                        "dataset_identifier": identifier,
+                        "identifier_type": identifier_type,
+                        "resource_index": resource_index,
+                        "title": title,
+                        "reason": "unexpected_result_shape",
+                        "result": staged,
+                    }
+                )
 
         if failed_attempts:
-            fallback_note = NDPExpert._earthscope_waveform_fallback(question, runner)
-            if fallback_note:
-                return (
-                    "Staging note: CLIO attempted bounded NDP staging across candidate "
-                    "resources, but NDP bytes were unavailable. Attempts: "
-                    + "; ".join(failed_attempts[:6])
-                    + " "
-                    + fallback_note
-                )
             return (
                 "Staging note: CLIO attempted bounded NDP staging across candidate "
-                "resources, but none could be staged. Attempts: "
+                "resources, but none could be staged by the NDP Catalog Expert. "
+                "Attempts: "
                 + "; ".join(failed_attempts[:6])
-            )
+                + " Parent recovery should decide whether to broaden the search, use "
+                "another provider or utility download path, ask the user, or stop "
+                "without inventing downstream analysis."
+            ), {
+                "status": "blocked",
+                "reason": "staging_failed",
+                "attempts": structured_attempts,
+                "recommended_parent_actions": [
+                    "broaden_catalog_search",
+                    "try_another_provider",
+                    "delegate_to_utility_download",
+                    "ask_user_for_dataset_hint",
+                    "stop_without_downstream_analysis",
+                ],
+            }
         return (
             "Staging note: CLIO attempted resource staging but received an unexpected "
             "result shape, so downstream analysis remains blocked."
-        )
-
-    @staticmethod
-    def _earthscope_waveform_fallback(question: str, runner: NativeToolRunner) -> str:
-        """Stage a bounded public EarthScope waveform when NDP archives are unavailable."""
-        if not NDPExpert._requires_waveform_resource(question):
-            return ""
-        fetched = runner.call(
-            "sac_fetch_earthscope_waveform",
-            {
-                "network": "IU",
-                "station": "ANMO",
-                "location": "00",
-                "channel": "BHZ",
-                "starttime": "2010-02-27T06:30:00",
-                "duration": 60,
-            },
-        )
-        if isinstance(fetched, dict) and fetched.get("staged"):
-            staged_path = str(fetched.get("path") or "")
-            inspected = runner.call(
-                "sac_inspect_archive",
-                {"filepath": staged_path, "max_members": 4},
-            )
-            inspection_note = ""
-            if isinstance(inspected, dict) and not inspected.get("error"):
-                inspection_note = (
-                    f" Data-stage inspection found {inspected.get('sac_trace_count')} "
-                    "SAC trace(s) in the fallback waveform."
-                )
-            elif isinstance(inspected, dict) and inspected.get("error"):
-                runner.mark_error_handled(
-                    "sac_inspect_archive",
-                    reason="EarthScope fallback staged data but inspection failure was surfaced.",
-                )
-                inspection_note = (
-                    " Fallback waveform staged, but inspection failed visibly: "
-                    f"{format_tool_error(inspected['error'])}"
-                )
-            return (
-                "CLIO recovered by staging a bounded public EarthScope SAC waveform at "
-                f"{staged_path}. Analysis and visualization can now use that local file."
-                f"{inspection_note}"
-            )
-        if isinstance(fetched, dict) and fetched.get("error"):
-            runner.mark_error_handled(
-                "sac_fetch_earthscope_waveform",
-                reason="NDP staging recovery surfaced EarthScope fallback failure.",
-            )
-            return (
-                "EarthScope fallback also failed: "
-                f"{format_tool_error(fetched['error'])}"
-            )
-        return "EarthScope fallback returned an unexpected result shape."
+        ), {
+            "status": "blocked",
+            "reason": "unexpected_result_shape",
+            "attempts": structured_attempts,
+            "recommended_parent_actions": ["inspect_tool_result", "retry_or_stop"],
+        }
 
     @staticmethod
     def _staging_candidates(
