@@ -145,6 +145,8 @@ def inspect_mzml(filepath: str, max_spectra: int = 12) -> dict[str, Any]:
             "mz_range": [] if mz_min is None or mz_max is None else [mz_min, mz_max],
             "tic_total": float(round(sum(tic_values), 3)),
             "tic_max": float(round(max(tic_values), 3)) if tic_values else 0.0,
+            "total_ion_current_total": float(round(sum(tic_values), 3)),
+            "total_ion_current_max": float(round(max(tic_values), 3)) if tic_values else 0.0,
             "representative_spectra": summaries,
             "spectra_truncated": len(spectra) > max_spectra,
             "warnings": warnings,
