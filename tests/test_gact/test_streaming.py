@@ -13,6 +13,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from clio_agent.gact.app import (
+    _build_prompt_user_agent_module,
     _build_stream_listeners,
     _pop_stream_fallback,
     _record_stream_fallback,
@@ -21,6 +22,7 @@ from clio_agent.gact.app import (
     _try_streamed_forward,
     build_app,
 )
+from clio_agent.gact.types import AgentDef
 
 
 @dataclass
@@ -274,6 +276,52 @@ async def test_argonne_provider_skips_streamify(
 
     assert result is None
     assert agent.calls == []
+    fallback = _pop_stream_fallback(app, "sid")
+    assert fallback["reason"] == "provider_streaming_unsupported"
+
+
+@pytest.mark.asyncio
+async def test_dynamic_agent_module_carries_non_streaming_provider_config(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    def fail_streamify(*args: Any, **kwargs: Any) -> Any:
+        del args, kwargs
+        raise AssertionError("streamify should not be called for Codex dynamic agents")
+
+    streamify_module = importlib.import_module("dspy.streaming.streamify")
+    monkeypatch.setattr(streamify_module, "streamify", fail_streamify)
+    from clio_agent.config import LMProviderConfig
+
+    base_agent = SimpleNamespace(
+        _provider_config=LMProviderConfig(
+            provider="codex",
+            api_base="codex://exec",
+            model="gpt-5.5",
+            api_key="x",
+            codex_transport="exec",
+        )
+    )
+    module = _build_prompt_user_agent_module(
+        base_agent,
+        AgentDef(
+            id="reference",
+            source="expert_pack",
+            title="Reference Expert",
+            system_prompt="Review reference evidence.",
+        ),
+    )
+    app = build_app(sessions_path=tmp_path / "s.json", agent=base_agent)
+
+    result = await _try_streamed_forward(
+        app,
+        "review the file",
+        "sid",
+        lambda text: None,
+        agent_override=module,
+    )
+
+    assert result is None
     fallback = _pop_stream_fallback(app, "sid")
     assert fallback["reason"] == "provider_streaming_unsupported"
 

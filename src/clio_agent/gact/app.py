@@ -1916,6 +1916,7 @@ def _build_prompt_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> A
             super().__init__()
             self.agent_def = agent_def
             self.config = _dynamic_agent_lm_config(base_agent, agent_def)
+            self._provider_config = self.config
             runtime = PromptRegistry().resolve("clio.runtime.prompt_user_agent")
             runtime_text = str(getattr(runtime, "text", "") or "").strip()
             agent_prompt = agent_def.system_prompt.strip() or agent_def.description
@@ -2032,6 +2033,7 @@ def _build_tool_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> Any
             super().__init__()
             self.agent_def = agent_def
             self.config = _dynamic_agent_lm_config(base_agent, agent_def)
+            self._provider_config = self.config
             self.tools = _dynamic_agent_tools(base_agent, agent_def)
             runtime = PromptRegistry().resolve("clio.runtime.tool_user_agent")
             runtime_text = str(getattr(runtime, "text", "") or "").strip()
@@ -4569,6 +4571,33 @@ def _make_cancellation_checker(app: "FastAPI"):
     return check
 
 
+def _install_tool_runtime_hooks(app: "FastAPI") -> None:
+    """Install permission, cancellation, and telemetry hooks for tool calls."""
+
+    from clio_agent.tools.execution import (  # noqa: PLC0415
+        set_global_cancellation_checker,
+        set_global_permission_gate,
+        set_global_tool_observer,
+    )
+
+    checker = getattr(app.state, "pending_cancellation_checker", None)
+    if checker is None:
+        checker = _make_cancellation_checker(app)
+    gate = getattr(app.state, "pending_permission_gate", None)
+    if gate is None:
+        gate = _make_permission_gate(app)
+    observer = getattr(app.state, "pending_tool_observer", None)
+    if observer is None:
+        observer = _make_tool_observer(app)
+    set_global_cancellation_checker(checker)
+    set_global_permission_gate(gate)
+    set_global_tool_observer(observer)
+    app.state.pending_cancellation_checker = checker
+    app.state.pending_permission_gate = gate
+    app.state.pending_tool_observer = observer
+    app.state.tool_hooks_installed = True
+
+
 def _make_tool_observer(app: "FastAPI"):
     """Build a callable suitable for MCPToolBridge.tool_observer.
 
@@ -6709,22 +6738,7 @@ async def _construct_agent_async(app: "FastAPI") -> None:
     # know an agent exists to gate. See build_app for why these aren't
     # installed at construction time.
     try:
-        from clio_agent.tools.execution import (  # noqa: PLC0415
-            set_global_cancellation_checker,
-            set_global_permission_gate,
-            set_global_tool_observer,
-        )
-
-        checker = getattr(app.state, "pending_cancellation_checker", None)
-        gate = getattr(app.state, "pending_permission_gate", None)
-        observer = getattr(app.state, "pending_tool_observer", None)
-        if checker is not None:
-            set_global_cancellation_checker(checker)
-        if gate is not None:
-            set_global_permission_gate(gate)
-        if observer is not None:
-            set_global_tool_observer(observer)
-        app.state.tool_hooks_installed = True
+        _install_tool_runtime_hooks(app)
     except Exception:  # pragma: no cover - defensive
         pass
 
@@ -6958,16 +6972,7 @@ def build_app(
     # to stay cheap enough for gact-tui's 3-second deploy probe.
     if agent is not None:
         try:
-            from clio_agent.tools.execution import (
-                set_global_cancellation_checker,
-                set_global_permission_gate,
-                set_global_tool_observer,
-            )
-
-            set_global_cancellation_checker(_make_cancellation_checker(app))
-            set_global_permission_gate(_make_permission_gate(app))
-            set_global_tool_observer(_make_tool_observer(app))
-            app.state.tool_hooks_installed = True
+            _install_tool_runtime_hooks(app)
         except Exception:  # pragma: no cover - defensive
             pass
     else:
@@ -15096,6 +15101,7 @@ def build_app(
         _stamp_process_env(cfg, resolved_api_key or "x")
         app.state.agent = agent
         app.state.arc = agent.arc
+        _install_tool_runtime_hooks(app)
         app.state.lm_config = {
             "provider": req.provider,
             "api_base": req.api_base,
