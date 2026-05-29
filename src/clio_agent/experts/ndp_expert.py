@@ -384,6 +384,10 @@ class NDPExpert(dspy.Module):
                 failed_attempts.append(
                     f"{title}: detail lookup failed: {format_tool_error(details['error'])}"
                 )
+                runner.mark_error_handled(
+                    "ndp_get_dataset_details",
+                    reason="NDP staging recovery tried the next candidate.",
+                )
                 continue
 
             for resource_index in range(NDPExpert._resource_attempt_count(candidate, details)):
@@ -414,6 +418,13 @@ class NDPExpert(dspy.Module):
                                 " Data-stage seismic inspection failed visibly: "
                                 f"{format_tool_error(inspected['error'])}"
                             )
+                            runner.mark_error_handled(
+                                "sac_inspect_archive",
+                                reason=(
+                                    "NDP staged the resource and surfaced the inspection "
+                                    "failure in the staging note."
+                                ),
+                            )
                     attempted = (
                         f" after {len(failed_attempts)} failed attempt(s)"
                         if failed_attempts
@@ -431,6 +442,10 @@ class NDPExpert(dspy.Module):
                         else "tool_error"
                     )
                     failed_attempts.append(f"{title} resource {resource_index}: {code}")
+                    runner.mark_error_handled(
+                        "ndp_stage_resource",
+                        reason="NDP staging recovery summarized the failed resource attempt.",
+                    )
                     continue
                 failed_attempts.append(f"{title} resource {resource_index}: unexpected result")
 

@@ -127,6 +127,33 @@ def test_unrecovered_tool_failure_still_surfaces_partial_error() -> None:
     assert error_info["details"]["tool"] == "ndp_stage_resource"
 
 
+def test_handled_tool_failure_does_not_surface_partial_error() -> None:
+    trace = _trace()
+    trace.record_tool(
+        tool="ndp_search_datasets",
+        params={},
+        result={"datasets": []},
+        duration_ms=10.0,
+        ok=True,
+    )
+    trace.record_tool(
+        tool="ndp_stage_resource",
+        params={"resource_index": 0},
+        result={
+            "error": {
+                "message": "download timed out",
+                "code": "resource_download_failed",
+                "handled": True,
+                "handled_reason": "summarized in expert answer",
+            }
+        },
+        duration_ms=10.0,
+        ok=False,
+    )
+
+    assert ClioAgent._tool_error_info_from_trace("data", trace) is None
+
+
 class TestParseActionJson:
     def test_dict_input(self):
         assert (

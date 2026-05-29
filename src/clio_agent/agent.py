@@ -67,6 +67,7 @@ from clio_agent.harness import (
     SPECIAL_ROUTE_TARGETS,
     RouteDecision,
     RunTrace,
+    ToolObservation,
     compact_tool_result,
     extract_file_paths,
     normalize_tool_error,
@@ -4014,6 +4015,8 @@ class ClioAgent(dspy.Module):
         for observation in trace.tools[last_success_index + 1 :]:
             if observation.ok:
                 continue
+            if cls._tool_error_observation_handled(observation):
+                continue
             error = cls._tool_error_from_result(observation.tool, observation.result)
             info = cls._tool_error_info(
                 selected=selected,
@@ -4025,6 +4028,15 @@ class ClioAgent(dspy.Module):
                 info["details"]["successful_tools"] = successful_tools
             return info
         return None
+
+    @staticmethod
+    def _tool_error_observation_handled(observation: ToolObservation) -> bool:
+        """Return whether an expert explicitly recovered this failed observation."""
+        normalized = normalize_tool_result(observation.result, tool=observation.tool)
+        if not isinstance(normalized, dict) or "error" not in normalized:
+            return False
+        error = normalize_tool_error(normalized["error"], tool=observation.tool)
+        return bool(error.get("handled"))
 
     @staticmethod
     def _tool_error_from_result(tool: str, result: Any) -> dict[str, Any]:

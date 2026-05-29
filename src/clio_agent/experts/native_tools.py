@@ -56,6 +56,20 @@ class NativeToolRunner:
                 observation.ok = False
                 return
 
+    def mark_error_handled(self, name: str, *, reason: str) -> None:
+        """Mark the latest failed observation as intentionally handled by an expert."""
+        for observation in reversed(self._tools):
+            if observation.tool != name or observation.ok:
+                continue
+            result = normalize_tool_result(observation.result, tool=name)
+            if not isinstance(result, dict) or "error" not in result:
+                return
+            error = normalize_tool_error(result["error"], tool=name)
+            error["handled"] = True
+            error["handled_reason"] = reason
+            observation.result = {"error": error}
+            return
+
     @staticmethod
     def _decode_result(raw_result: Any) -> Any:
         if isinstance(raw_result, str):
