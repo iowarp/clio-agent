@@ -6,8 +6,8 @@ is not just a pass-count table. The intended workflow is:
 
 1. Run natural prompts through a normal CLIO session with a real provider.
 2. Read the recorded JSONL row for each case.
-3. Confirm the route, tool calls, child sessions, artifacts, errors, and final
-   answer all agree.
+3. Confirm the route, tool calls, root/child session logs, artifacts, errors,
+   and final answer all agree.
 
 Generated reports and raw JSONL evidence are the source of truth and are kept
 alongside this summary:
@@ -27,27 +27,26 @@ alongside this summary:
 
 ## Evidence Runs
 
-- Date: 2026-05-28
-- Backend: live `clio-agent-gact`
+- Date: 2026-05-29
+- Backend: fresh isolated live `clio-agent-gact`
 - Provider: `codex` / `gpt-5.5`
 - Lane: `real_orchestrator`
-- Result metadata: the recorded workflows listed below passed their case
-  expectations in the JSONL evidence.
-- Route source: selected cases used `dspy`, not guard or keyword shortcuts,
-  unless a report explicitly says otherwise.
+- Result metadata: the refreshed fresh-lane replay passed 12/12 selected cases,
+  captured root session logs for every case, captured eight child-session logs,
+  and verified four on-disk artifacts.
+- Route source: selected cases used `dspy`, not guard or keyword shortcuts.
+- Hierarchy check: no refreshed case selected child experts such as
+  `ndp_catalog` or `sac_format` as the public top-level route.
 
 Command:
 
 ```bash
 uv run python scripts/run_demo_benchmark.py \
-  --base-url http://127.0.0.1:17960 \
-  --case genomics_reference_variant_review \
-  --case materials_cif_structure_review \
-  --case geospatial_field_site_review \
-  --case microscopy_png_readiness_review \
-  --case mass_spec_mzml_qc_review \
-  --output-jsonl benchmark/LIVE_CROSS_DOMAIN_EVIDENCE.jsonl \
-  --report benchmark/LIVE_CROSS_DOMAIN_REPORT.md
+  --require-lane-criteria \
+  --base-url http://127.0.0.1:17966 \
+  --data-dir tmp/fresh-session-log-benchmark-data \
+  --output-jsonl benchmark/FRESH_REAL_ORCHESTRATOR_EVIDENCE.jsonl \
+  --report benchmark/FRESH_REAL_ORCHESTRATOR_REPORT.md
 ```
 
 ## Review Standard
@@ -59,7 +58,8 @@ summary. A workflow is only a real benchmark pass when the log shows:
 - a non-shortcut route source for real-orchestrator cases;
 - tool calls with grounded arguments, results, errors, durations, and artifact
   paths when relevant;
-- child-session or handoff provenance for multi-branch cases;
+- root session logs and child-session or handoff provenance for multi-branch
+  cases;
 - final assistant text that cites the same evidence present in the log;
 - any failure recorded as an explicit failure point, followed by a tracked fix
   or an honest remaining gap.
@@ -71,14 +71,14 @@ tools are not broken. It does not prove that the benchmark worked.
 
 | Requirement | Status | Evidence |
 | --- | --- | --- |
-| 5-10 completed workflows | Met | Ten committed JSONL rows across `LIVE_CROSS_DOMAIN_EVIDENCE.jsonl`, `NDP_WAVEFORM_EVIDENCE.jsonl`, `VISUAL_MULTITURN_EVIDENCE.jsonl`, `CROSS_FILE_DIRTY_EVIDENCE.jsonl`, and `CROSS_FILE_TRIAGE_EVIDENCE.jsonl`. |
+| 5-10 completed workflows | Met | `FRESH_REAL_ORCHESTRATOR_EVIDENCE.jsonl` records 12 selected real-orchestrator cases, all passing. The human prompt book still treats ten as the core stretch set; the replay includes two extra lane guards. |
 | At least four distinct domains | Met | Genomics, materials, geospatial, imaging, mass spectrometry, seismic/NDP/SAC, CSV/Parquet/HDF5, and ADIOS/BP5 all have recorded evidence rows. |
-| Real orchestrator/provider/tools/data | Met for recorded rows | Each JSONL row records `provider=codex`, `model=gpt-5.5`, `route_source=dspy`, selected agent, tool calls, input files, elapsed time, and outcome. |
+| Real orchestrator/provider/tools/data | Met for recorded rows | Each fresh JSONL row records `provider=codex`, `model=gpt-5.5`, `route_source=dspy`, selected agent, tool calls, input files, elapsed time, outcome, and full root session log. |
 | At least two multi-hop or fanout workflows | Met | `ndp_seismic_waveform_to_plot` records a five-expert path. `cross_file_dirty_quality_gate_nanoagents` and `reasoning_cross_file_triage_nanoagents` each record four child sessions and six tool calls. |
 | At least two real visual artifacts | Met | `ndp_seismic_waveform_to_plot`, `csv_status_visual_summary`, and `dirty_quality_dashboard_multi_turn` each record verified PNG artifacts with nonzero byte sizes. |
 | At least two workflows needed new or materially improved tool support | Met | The NDP waveform workflow required SAC/EarthScope tooling and handoffs fixed in #439/#443. Cross-domain workflows required new genomics, materials, geospatial, imaging, and mass-spec tool servers (#397, #399, #401, #403, #405) plus mzML/PNG fixes (#410/#412). Visualization artifact placement was corrected in #447. |
-| Per-workflow provenance fields | Met for recorded rows | JSONL rows include route graph/metrics, route source, experts/handoffs, branch count, tool calls, elapsed time, files, artifacts, provider/model, and pass/fail outcome. |
-| Fresh-machine runnable evidence | Met | `FRESH_REAL_ORCHESTRATOR_EVIDENCE.jsonl` records a clean replay from isolated XDG config, isolated ARC working directory, fresh generated data, and a clean artifact root. The replay passed 12/12 selected real-orchestrator cases. |
+| Per-workflow provenance fields | Met for recorded rows | JSONL rows include route graph/metrics, route source, experts/handoffs, branch count, tool calls, elapsed time, files, artifacts, provider/model, pass/fail outcome, root session logs, and child-session logs when spawned. |
+| Fresh-machine runnable evidence | Met | `FRESH_REAL_ORCHESTRATOR_EVIDENCE.jsonl` records a clean replay from isolated XDG config, isolated ARC working directory, fresh generated data, and a clean artifact root. The replay passed 12/12 selected real-orchestrator cases, captured 12/12 root logs and eight child-session logs, and verified four artifacts. |
 | Honest final report | Met with caveats | This summary lists fixes made and remaining weaknesses. Current remaining weakness: broader non-seismic NDP breadth if that becomes a release gate. |
 
 ## Passing Workflows

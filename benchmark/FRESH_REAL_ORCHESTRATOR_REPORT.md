@@ -1,10 +1,10 @@
 # CLIO Real-Orchestrator Benchmark Report
 
-Generated: 2026-05-28 23:01:00 CDT
+Generated: 2026-05-28 23:21:35 CDT
 Evidence JSONL: `/home/jcernuda/clio-agent/benchmark/FRESH_REAL_ORCHESTRATOR_EVIDENCE.jsonl`
 Benchmark lane: `real_orchestrator`
 
-This is a CLIO session-evidence audit. It is produced from real session JSONL rows and should be reviewed as prompt, route, tool, artifact, error, and final-answer evidence. Pytest coverage only guards the harness and tools; it is not the benchmark result.
+This is a CLIO session-evidence audit. It is produced from real session JSONL rows. Review the embedded `session_log` root and child messages for prompt, route, tool, artifact, error, recovery, and final-answer evidence. Pytest coverage only guards the harness and tools; it is not the benchmark result.
 
 Result: 12/12 clean passes, 0 expected surfaced errors, 0 expected cancellations, 0 partial recoveries, 0 failures.
 
@@ -24,18 +24,20 @@ Extended stress coverage: has optional gaps outside the per-lane pass/fail gate.
 
 High-event or long-running cases:
 
-- cross_file_dirty_quality_gate_nanoagents (6.0s, 11 events)
-- reasoning_cross_file_triage_nanoagents (6.5s, 11 events)
-- ndp_seismic_waveform_to_plot (92.8s, 22 events)
+- cross_file_dirty_quality_gate_nanoagents (7.0s, 11 events)
+- reasoning_cross_file_triage_nanoagents (6.0s, 11 events)
+- ndp_seismic_waveform_to_plot (94.9s, 22 events)
 
 ## Evidence Summary
 
-- Max elapsed case: `ndp_seismic_waveform_to_plot` (92.8s)
+- Max elapsed case: `ndp_seismic_waveform_to_plot` (94.9s)
 - Max expert depth: `ndp_seismic_waveform_to_plot` (5)
 - Max branch fanout: `cross_file_dirty_quality_gate_nanoagents` (4)
 - Unique tools used: adios_inspect_file, csv_read_table, genomics_inspect_fasta, genomics_summarize_vcf, geospatial_inspect_geojson, hdf5_analyze_file, hdf5_list_datasets, imaging_inspect_png, mass_spec_inspect_mzml, materials_inspect_cif, ndp_get_dataset_details, ndp_list_organizations, ndp_search_datasets, ndp_stage_resource, parquet_analyze_schema, parquet_compute_statistics, plot_bar_chart, plot_summary, sac_compute_trace_statistics, sac_fetch_earthscope_waveform, sac_inspect_archive, sac_plot_traces
-- Data/input files referenced: 12
+- Data/input files referenced: 11
 - Artifacts verified on disk: 4/4
+- Root session logs captured: 12/12
+- Child session logs captured: 8
 
 ## Provider Lane Audit
 
@@ -54,17 +56,17 @@ High-event or long-running cases:
 | Case | Category | Mode | Source | Outcome | Agent | Handoffs | Tools | Children | Elapsed |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | csv_status_visual_summary | visualization | auto | dspy | pass | visualization | visualization | plot_bar_chart | 0 | 27.6s |
-| cross_file_dirty_quality_gate_nanoagents | multi-agent | auto | dspy | pass | analysis | analysis | hdf5_analyze_file, hdf5_list_datasets, adios_inspect_file, parquet_analyze_schema, parquet_compute_statistics, csv_read_table | 4 | 6.0s |
-| reasoning_cross_file_triage_nanoagents | planner-hardening | reasoning_only | dspy | pass | analysis | analysis | hdf5_analyze_file, hdf5_list_datasets, adios_inspect_file, parquet_analyze_schema, parquet_compute_statistics, csv_read_table | 4 | 6.5s |
-| reasoning_adios_bp5_container | planner-hardening | reasoning_only | dspy | pass | data | data | adios_inspect_file | 0 | 6.0s |
-| dirty_quality_dashboard_multi_turn | visualization | auto | dspy | pass | visualization | visualization | plot_summary | 0 | 28.1s |
-| ndp_catalog_discovery | external-catalog | auto | dspy | pass | data | data, ndp_catalog | ndp_list_organizations, ndp_search_datasets, ndp_get_dataset_details, ndp_stage_resource | 0 | 10.0s |
-| ndp_seismic_waveform_to_plot | hierarchical-science | auto | dspy | pass | visualization | data, ndp_catalog, analysis, sac_format, visualization | ndp_list_organizations, ndp_search_datasets, ndp_search_datasets, ndp_search_datasets, ndp_get_dataset_details, ndp_stage_resource, ndp_stage_resource, ndp_stage_resource, ndp_get_dataset_details, ndp_stage_resource, ndp_stage_resource, ndp_get_dataset_details, ndp_stage_resource, sac_fetch_earthscope_waveform, sac_inspect_archive, sac_compute_trace_statistics, sac_plot_traces | 0 | 92.8s |
-| genomics_reference_variant_review | genomics | auto | dspy | pass | genomics | genomics x3 | genomics_inspect_fasta, genomics_summarize_vcf | 0 | 7.0s |
-| materials_cif_structure_review | materials | auto | dspy | pass | materials | materials x2 | materials_inspect_cif | 0 | 7.0s |
-| geospatial_field_site_review | geospatial | auto | dspy | pass | geospatial | geospatial x2 | geospatial_inspect_geojson | 0 | 7.5s |
-| microscopy_png_readiness_review | imaging | auto | dspy | pass | imaging | imaging x2 | imaging_inspect_png | 0 | 6.0s |
-| mass_spec_mzml_qc_review | mass_spec | auto | dspy | pass | mass_spec | mass_spec x2 | mass_spec_inspect_mzml | 0 | 8.0s |
+| cross_file_dirty_quality_gate_nanoagents | multi-agent | auto | dspy | pass | analysis | analysis | hdf5_analyze_file, hdf5_list_datasets, adios_inspect_file, parquet_analyze_schema, parquet_compute_statistics, csv_read_table | 4 | 7.0s |
+| reasoning_cross_file_triage_nanoagents | planner-hardening | reasoning_only | dspy | pass | analysis | analysis | hdf5_analyze_file, hdf5_list_datasets, adios_inspect_file, parquet_analyze_schema, parquet_compute_statistics, csv_read_table | 4 | 6.0s |
+| reasoning_adios_bp5_container | planner-hardening | reasoning_only | dspy | pass | data | data | adios_inspect_file | 0 | 7.0s |
+| dirty_quality_dashboard_multi_turn | visualization | auto | dspy | pass | visualization | visualization | plot_summary | 0 | 33.2s |
+| ndp_catalog_discovery | external-catalog | auto | dspy | pass | data | data, ndp_catalog | ndp_list_organizations, ndp_search_datasets, ndp_get_dataset_details, ndp_stage_resource | 0 | 10.5s |
+| ndp_seismic_waveform_to_plot | hierarchical-science | auto | dspy | pass | visualization | data, ndp_catalog, analysis, sac_format, visualization | ndp_list_organizations, ndp_search_datasets, ndp_search_datasets, ndp_search_datasets, ndp_get_dataset_details, ndp_stage_resource, ndp_stage_resource, ndp_stage_resource, ndp_get_dataset_details, ndp_stage_resource, ndp_stage_resource, ndp_get_dataset_details, ndp_stage_resource, sac_fetch_earthscope_waveform, sac_inspect_archive, sac_compute_trace_statistics, sac_plot_traces | 0 | 94.9s |
+| genomics_reference_variant_review | genomics | auto | dspy | pass | genomics | genomics x3 | genomics_inspect_fasta, genomics_summarize_vcf | 0 | 6.0s |
+| materials_cif_structure_review | materials | auto | dspy | pass | materials | materials x2 | materials_inspect_cif | 0 | 8.5s |
+| geospatial_field_site_review | geospatial | auto | dspy | pass | geospatial | geospatial x2 | geospatial_inspect_geojson | 0 | 6.5s |
+| microscopy_png_readiness_review | imaging | auto | dspy | pass | imaging | imaging x2 | imaging_inspect_png | 0 | 5.5s |
+| mass_spec_mzml_qc_review | mass_spec | auto | dspy | pass | mass_spec | mass_spec x2 | mass_spec_inspect_mzml | 0 | 6.0s |
 
 ## Best 10 Demo Prompts
 
@@ -81,13 +83,15 @@ Route graph: visualization -> data -> ndp_catalog -> analysis -> sac_format -> v
 Route metrics: depth=5, branches=0, tools=17
 Expert handoffs: data, ndp_catalog, analysis, sac_format, visualization
 Tools: ndp_list_organizations, ndp_search_datasets, ndp_search_datasets, ndp_search_datasets, ndp_get_dataset_details, ndp_stage_resource, ndp_stage_resource, ndp_stage_resource, ndp_get_dataset_details, ndp_stage_resource, ndp_stage_resource, ndp_get_dataset_details, ndp_stage_resource, sac_fetch_earthscope_waveform, sac_inspect_archive, sac_compute_trace_statistics, sac_plot_traces
-Data/input files: /home/jcernuda/clio-agent/tmp/fresh-server-workdir-pass/tmp/clio-seismic-staging/earthscope_IU_ANMO_00_BHZ_2010-02-27T063000.sac
+Data/input files: /home/jcernuda/clio-agent/tmp/fresh-session-log-workdir/tmp/clio-seismic-staging/earthscope_IU_ANMO_00_BHZ_2010-02-27T063000.sac
 Setup turns: 0
+Root session messages: 2
+Child session logs: 0
 Actions: none
 Child sessions: none
-Artifacts: /home/jcernuda/clio-agent/tmp/fresh-server-workdir-pass/.clio-agent-artifacts/charts/sac_traces_earthscope_IU_ANMO_00_BHZ_2010-02-27T063000.png
-Artifact evidence: /home/jcernuda/clio-agent/tmp/fresh-server-workdir-pass/.clio-agent-artifacts/charts/sac_traces_earthscope_IU_ANMO_00_BHZ_2010-02-27T063000.png (ok, 96135 B)
-Elapsed: 92.8s
+Artifacts: /home/jcernuda/clio-agent/tmp/fresh-session-log-workdir/.clio-agent-artifacts/charts/sac_traces_earthscope_IU_ANMO_00_BHZ_2010-02-27T063000.png
+Artifact evidence: /home/jcernuda/clio-agent/tmp/fresh-session-log-workdir/.clio-agent-artifacts/charts/sac_traces_earthscope_IU_ANMO_00_BHZ_2010-02-27T063000.png (ok, 96135 B)
+Elapsed: 94.9s
 
 Prompt:
 
@@ -103,7 +107,7 @@ Observed excerpt:
 
 ```text
 data | success | planner_dispatch | Queried the National Data Platform catalog through clio-kit MCP. Organizations matched: 0 Datasets matched: 11 - Data for: Improved Characterization of Ultralow-velocity Zones through Advances in Bayesian Inversion of ScP Waveforms (d8534abe-3c46-440a-ab1e-d594c7b6189f; PDF, TAR, TXT; resources: Pachhai_etal_2023_ScP_data.tar) - Data for: A Compositional Component to the Samoa Ultralow-velocity Zone Revealed through 2- and 3-D Waveform Modeling of SKS and SKKS Differential Travel-...[truncated]
-data -> ndp_catalog | success | planner_dispatch_child | Queried the National Data Platform catalog through clio-kit MCP. Organizations matched: 0 Datasets matched: 11 - Data for: Improved Characterization of Ultralow-velocity Zones through Advances in Bayesian Inversion of ScP Waveforms (d8534abe-3c46-440a-ab1e-d594c7b6189f; PDF, TAR, TXT; resources: Pachhai_
+data -> ndp_catalog | success | planner_dispatch_child | Queried the National Data Platform catalog through clio-kit MCP. Organizations matched: 0 Datasets matched: 11 - Data for: Improved Characterization of Ultralow-velocity Zones through Advances in Bayesian Inversion of ScP Waveforms (d8534abe-3c46-440a-ab1e-d594c7b6189f; PDF, TAR, TXT; resources: Pachhai_e
 ```
 
 ### 2. Dirty cross-file quality gate
@@ -119,18 +123,20 @@ Route graph: analysis -> [csv_validator subagent, analysis_validator subagent, a
 Route metrics: depth=1, branches=4, tools=6
 Expert handoffs: analysis
 Tools: hdf5_analyze_file, hdf5_list_datasets, adios_inspect_file, parquet_analyze_schema, parquet_compute_statistics, csv_read_table
-Data/input files: /home/jcernuda/clio-agent/tmp/fresh-benchmark-replay-pass/data/fusion_run.h5, /home/jcernuda/clio-agent/tmp/fresh-benchmark-replay-pass/data/facility_measurements_dirty.parquet, /home/jcernuda/clio-agent/tmp/fresh-benchmark-replay-pass/data/sensor_events.csv
+Data/input files: /home/jcernuda/clio-agent/tmp/fresh-session-log-benchmark-data/fusion_run.h5, /home/jcernuda/clio-agent/tmp/fresh-session-log-benchmark-data/facility_measurements_dirty.parquet, /home/jcernuda/clio-agent/tmp/fresh-session-log-benchmark-data/sensor_events.csv
 Setup turns: 0
+Root session messages: 2
+Child session logs: 4
 Actions: none
 Child sessions: csv_validator subagent, analysis_validator subagent, adios_validator subagent, data_validator subagent
 Artifacts: none
 Artifact evidence: none
-Elapsed: 6.0s
+Elapsed: 7.0s
 
 Prompt:
 
 ```text
-Before I share this run, build a quality gate across /home/jcernuda/clio-agent/tmp/fresh-benchmark-replay-pass/data/fusion_run.h5, /home/jcernuda/clio-agent/tmp/fresh-benchmark-replay-pass/data/facility_measurements_dirty.parquet, /home/jcernuda/clio-agent/tmp/fresh-benchmark-replay-pass/data/sensor_events.csv, and "/home/jcernuda/clio-agent/tmp/fresh-benchmark-replay-pass/data/gray scott noise 0.01 data.bp5". I need to know what each file proves, where the dirty tabular export is risky, and which checks block collaborator handoff.
+Before I share this run, build a quality gate across /home/jcernuda/clio-agent/tmp/fresh-session-log-benchmark-data/fusion_run.h5, /home/jcernuda/clio-agent/tmp/fresh-session-log-benchmark-data/facility_measurements_dirty.parquet, /home/jcernuda/clio-agent/tmp/fresh-session-log-benchmark-data/sensor_events.csv, and "/home/jcernuda/clio-agent/tmp/fresh-session-log-benchmark-data/gray scott noise 0.01 data.bp5". I need to know what each file proves, where the dirty tabular export is risky, and which checks block collaborator handoff.
 ```
 
 What to see: Analysis coordinates tool-backed child workers over HDF5, dirty Parquet, CSV, and BP5 evidence.
@@ -140,14 +146,14 @@ Why this is interesting: Adds a harder cross-file case where one source is inten
 Observed excerpt:
 
 ```text
-analysis | success | planner_dispatch | Parallel validation completed with tool-backed nanoagents. data_validator: Inspected HDF5 file /home/jcernuda/clio-agent/tmp/fresh-benchmark-replay-pass/data/fusion_run.h5. It contains 7 datasets and 4 groups. - axes/diagnostic_channel: shape=[12], dtype=int32, size=48 B - axes/radius_norm: shape=[64], dtype=float64, size=512 B - axes/time_hours: shape=[96], dtype=float64, size=768 B - diagnostics/heat_flux: shape=[96, 12], dtype=float32, size=4.5 KiB, units=MW/m^2 - plasma/densit...[truncated]
+analysis | success | planner_dispatch | Parallel validation completed with tool-backed nanoagents. data_validator: Inspected HDF5 file /home/jcernuda/clio-agent/tmp/fresh-session-log-benchmark-data/fusion_run.h5. It contains 7 datasets and 4 groups. - axes/diagnostic_channel: shape=[12], dtype=int32, size=48 B - axes/radius_norm: shape=[64], dtype=float64, size=512 B - axes/time_hours: shape=[96], dtype=float64, size=768 B - diagnostics/heat_flux: shape=[96, 12], dtype=float32, size=4.5 KiB, units=MW/m^2 - plasma/densit...[truncated]
 Parallel validation completed with tool-backed nanoagents.
 
 data_validator:
-Inspected HDF5 file /home/jcernuda/clio-agent/tmp/fresh-benchmark-replay-pass/data/fusion_run.h5. It contains 7 datasets and 4 groups.
+Inspected HDF5 file /home/jcernuda/clio-agent/tmp/fresh-session-log-benchmark-data/fusion_run.h5. It contains 7 datasets and 4 groups.
 - axes/diagnostic_channel: shape=[12], dtype=int32, size=48 B
 - axes/radius_norm: shape=[64], dtype=float64, size=512 B
-- axes/time_hours: shape=[9
+- axes/time_hours: shape=[96
 ```
 
 ### 3. No-guard cross-file triage
@@ -163,18 +169,20 @@ Route graph: analysis -> [csv_validator subagent, analysis_validator subagent, a
 Route metrics: depth=1, branches=4, tools=6
 Expert handoffs: analysis
 Tools: hdf5_analyze_file, hdf5_list_datasets, adios_inspect_file, parquet_analyze_schema, parquet_compute_statistics, csv_read_table
-Data/input files: /home/jcernuda/clio-agent/tmp/fresh-benchmark-replay-pass/data/fusion_run.h5, /home/jcernuda/clio-agent/tmp/fresh-benchmark-replay-pass/data/facility_measurements.parquet, /home/jcernuda/clio-agent/tmp/fresh-benchmark-replay-pass/data/sensor_events.csv
+Data/input files: /home/jcernuda/clio-agent/tmp/fresh-session-log-benchmark-data/fusion_run.h5, /home/jcernuda/clio-agent/tmp/fresh-session-log-benchmark-data/facility_measurements.parquet, /home/jcernuda/clio-agent/tmp/fresh-session-log-benchmark-data/sensor_events.csv
 Setup turns: 0
+Root session messages: 2
+Child session logs: 4
 Actions: none
 Child sessions: csv_validator subagent, analysis_validator subagent, adios_validator subagent, data_validator subagent
 Artifacts: none
 Artifact evidence: none
-Elapsed: 6.5s
+Elapsed: 6.0s
 
 Prompt:
 
 ```text
-I have four related files from the same experiment: /home/jcernuda/clio-agent/tmp/fresh-benchmark-replay-pass/data/fusion_run.h5, /home/jcernuda/clio-agent/tmp/fresh-benchmark-replay-pass/data/facility_measurements.parquet, /home/jcernuda/clio-agent/tmp/fresh-benchmark-replay-pass/data/sensor_events.csv, and "/home/jcernuda/clio-agent/tmp/fresh-benchmark-replay-pass/data/gray scott noise 0.01 data.bp5". Give me a cross-file triage summary: what is in each file, whether the measurements look ready for downstream analysis, and what I should check next.
+I have four related files from the same experiment: /home/jcernuda/clio-agent/tmp/fresh-session-log-benchmark-data/fusion_run.h5, /home/jcernuda/clio-agent/tmp/fresh-session-log-benchmark-data/facility_measurements.parquet, /home/jcernuda/clio-agent/tmp/fresh-session-log-benchmark-data/sensor_events.csv, and "/home/jcernuda/clio-agent/tmp/fresh-session-log-benchmark-data/gray scott noise 0.01 data.bp5". Give me a cross-file triage summary: what is in each file, whether the measurements look ready for downstream analysis, and what I should check next.
 ```
 
 What to see: With routing guards disabled for the session, the planner still reaches analysis and tool-backed child workers.
@@ -184,14 +192,14 @@ Why this is interesting: Separates planner capability from the production regist
 Observed excerpt:
 
 ```text
-analysis | success | planner_dispatch | Parallel validation completed with tool-backed nanoagents. data_validator: Inspected HDF5 file /home/jcernuda/clio-agent/tmp/fresh-benchmark-replay-pass/data/fusion_run.h5. It contains 7 datasets and 4 groups. - axes/diagnostic_channel: shape=[12], dtype=int32, size=48 B - axes/radius_norm: shape=[64], dtype=float64, size=512 B - axes/time_hours: shape=[96], dtype=float64, size=768 B - diagnostics/heat_flux: shape=[96, 12], dtype=float32, size=4.5 KiB, units=MW/m^2 - plasma/densit...[truncated]
+analysis | success | planner_dispatch | Parallel validation completed with tool-backed nanoagents. data_validator: Inspected HDF5 file /home/jcernuda/clio-agent/tmp/fresh-session-log-benchmark-data/fusion_run.h5. It contains 7 datasets and 4 groups. - axes/diagnostic_channel: shape=[12], dtype=int32, size=48 B - axes/radius_norm: shape=[64], dtype=float64, size=512 B - axes/time_hours: shape=[96], dtype=float64, size=768 B - diagnostics/heat_flux: shape=[96, 12], dtype=float32, size=4.5 KiB, units=MW/m^2 - plasma/densit...[truncated]
 Parallel validation completed with tool-backed nanoagents.
 
 data_validator:
-Inspected HDF5 file /home/jcernuda/clio-agent/tmp/fresh-benchmark-replay-pass/data/fusion_run.h5. It contains 7 datasets and 4 groups.
+Inspected HDF5 file /home/jcernuda/clio-agent/tmp/fresh-session-log-benchmark-data/fusion_run.h5. It contains 7 datasets and 4 groups.
 - axes/diagnostic_channel: shape=[12], dtype=int32, size=48 B
 - axes/radius_norm: shape=[64], dtype=float64, size=512 B
-- axes/time_hours: shape=[9
+- axes/time_hours: shape=[96
 ```
 
 ### 4. NDP catalog discovery
@@ -209,11 +217,13 @@ Expert handoffs: data, ndp_catalog
 Tools: ndp_list_organizations, ndp_search_datasets, ndp_get_dataset_details, ndp_stage_resource
 Data/input files: none
 Setup turns: 0
+Root session messages: 2
+Child session logs: 0
 Actions: none
 Child sessions: none
 Artifacts: none
 Artifact evidence: none
-Elapsed: 10.0s
+Elapsed: 10.5s
 
 Prompt:
 
@@ -229,7 +239,7 @@ Observed excerpt:
 
 ```text
 data | success | planner_dispatch | Queried the National Data Platform catalog through clio-kit MCP. Organizations matched: 3 - {'id': 'fa8088e2-bbc2-4501-8979-27c65052bd9b', 'name': 'noaa-global-systems-laboratory', 'title': 'NOAA Global Systems Laboratory', 'package_count': 1} - {'id': 'fd6c2c9f-94cf-4337-b647-5a26d07ea5d9', 'name': 'noaa-national-centers-for-environmental-information-ncei', 'title': 'NOAA National Centers for Environmental Information (NCEI)', 'package_count': 1} - {'id': '5e32bd49-b527-446f-b9b2...[truncated]
-data -> ndp_catalog | success | planner_dispatch_child | Queried the National Data Platform catalog through clio-kit MCP. Organizations matched: 3 - {'id': 'fa8088e2-bbc2-4501-8979-27c65052bd9b', 'name': 'noaa-global-systems-laboratory', 'title': 'NOAA Global Systems Laboratory', 'package_count': 1} - {'id': 'fd6c2c9f-94cf-4337-b647-5a26d07ea5d9', 'name': 'noa
+data -> ndp_catalog | success | planner_dispatch_child | Queried the National Data Platform catalog through clio-kit MCP. Organizations matched: 3 - {'id': 'fa8088e2-bbc2-4501-8979-27c65052bd9b', 'name': 'noaa-global-systems-laboratory', 'title': 'NOAA Global Systems Laboratory', 'package_count': 1} - {'id': 'fd6c2c9f-94cf-4337-b647-5a26d07ea5d9', 'name': 'noaa
 ```
 
 ### 5. Genomics reference and variant review
@@ -245,18 +255,20 @@ Route graph: genomics
 Route metrics: depth=1, branches=0, tools=2
 Expert handoffs: genomics x3
 Tools: genomics_inspect_fasta, genomics_summarize_vcf
-Data/input files: /home/jcernuda/clio-agent/tmp/fresh-benchmark-replay-pass/data/pathogen_reference.fasta, /home/jcernuda/clio-agent/tmp/fresh-benchmark-replay-pass/data/pathogen_sample_variants.vcf
+Data/input files: /home/jcernuda/clio-agent/tmp/fresh-session-log-benchmark-data/pathogen_reference.fasta, /home/jcernuda/clio-agent/tmp/fresh-session-log-benchmark-data/pathogen_sample_variants.vcf
 Setup turns: 0
+Root session messages: 2
+Child session logs: 0
 Actions: none
 Child sessions: none
 Artifacts: none
 Artifact evidence: none
-Elapsed: 7.0s
+Elapsed: 6.0s
 
 Prompt:
 
 ```text
-Review this synthetic pathogen reference FASTA and variant call file: /home/jcernuda/clio-agent/tmp/fresh-benchmark-replay-pass/data/pathogen_reference.fasta and /home/jcernuda/clio-agent/tmp/fresh-benchmark-replay-pass/data/pathogen_sample_variants.vcf. Summarize the reference composition, the variant types and effects, and what a collaborator should verify before treating the sample as analysis-ready.
+Review this synthetic pathogen reference FASTA and variant call file: /home/jcernuda/clio-agent/tmp/fresh-session-log-benchmark-data/pathogen_reference.fasta and /home/jcernuda/clio-agent/tmp/fresh-session-log-benchmark-data/pathogen_sample_variants.vcf. Summarize the reference composition, the variant types and effects, and what a collaborator should verify before treating the sample as analysis-ready.
 ```
 
 What to see: CLIO uses FASTA and VCF genomics tools, then grounds a review in sequence composition and variant effect evidence.
@@ -268,9 +280,9 @@ Observed excerpt:
 ```text
 genomics | success | direct_tool
 genomics | success | direct_tool
-genomics | success | planner_dispatch | Genomics review: FASTA: {"filepath": "/home/jcernuda/clio-agent/tmp/fresh-benchmark-replay-pass/data/pathogen_reference.fasta", "record_count": 2, "total_bases": 6050, "gc_fraction": 0.537851, "base_counts": {"A": 1406, "C": 1673, "G": 1581, "T": 1390, "N": 0}, "longest_record": {"id": "chrA", "length": 4800, "gc_fraction": 0.585833}, "records": {"count": 2, "items": [{"id": "chrA", "description": "synthetic pathogen benchmark reference", "length": 4800, "gc_fraction": 0.585833, "...[truncated]
+genomics | success | planner_dispatch | Genomics review: FASTA: {"filepath": "/home/jcernuda/clio-agent/tmp/fresh-session-log-benchmark-data/pathogen_reference.fasta", "record_count": 2, "total_bases": 6050, "gc_fraction": 0.537851, "base_counts": {"A": 1406, "C": 1673, "G": 1581, "T": 1390, "N": 0}, "longest_record": {"id": "chrA", "length": 4800, "gc_fraction": 0.585833}, "records": {"count": 2, "items": [{"id": "chrA", "description": "synthetic pathogen benchmark reference", "length": 4800, "gc_fraction": 0.585833, "...[truncated]
 Genomics review:
-FASTA: {"filepath": "/home/jcernuda/clio-agent/tmp/fresh-benchmark-replay-pass/data/pathogen_reference.fasta", "record_count": 2, "total_bases": 6050, "gc_fraction": 0.537851, "base_counts": {"A": 1406, "C": 1673, "G": 1581, "T": 1390, "N": 0}, "longest_record": {"id": "chrA
+FASTA: {"filepath": "/home/jcernuda/clio-agent/tmp/fresh-session-log-benchmark-data/pathogen_reference.fasta", "record_count": 2, "total_bases": 6050, "gc_fraction": 0.537851, "base_counts": {"A": 1406, "C": 1673, "G": 1581, "T": 1390, "N": 0}, "longest_record": {"id": "chrA"
 ```
 
 ### 6. CSV status distribution chart
@@ -286,12 +298,14 @@ Route graph: visualization
 Route metrics: depth=1, branches=0, tools=1
 Expert handoffs: visualization
 Tools: plot_bar_chart
-Data/input files: /home/jcernuda/clio-agent/tmp/fresh-benchmark-replay-pass/data/sensor_events.csv, /home/jcernuda/clio-agent/tmp/fresh-benchmark-replay-pass/data/event_status_distribution.png
+Data/input files: /home/jcernuda/clio-agent/tmp/fresh-session-log-benchmark-data/sensor_events.csv
 Setup turns: 1
+Root session messages: 4
+Child session logs: 0
 Actions: none
 Child sessions: none
-Artifacts: /home/jcernuda/clio-agent/tmp/fresh-benchmark-replay-pass/data/event_status_distribution.png
-Artifact evidence: /home/jcernuda/clio-agent/tmp/fresh-benchmark-replay-pass/data/event_status_distribution.png (ok, 20259 B)
+Artifacts: /home/jcernuda/clio-agent/tmp/fresh-session-log-artifacts/charts/bar_chart_status.png
+Artifact evidence: /home/jcernuda/clio-agent/tmp/fresh-session-log-artifacts/charts/bar_chart_status.png (ok, 20259 B)
 Elapsed: 27.6s
 
 Prompt:
@@ -307,9 +321,10 @@ Why this is interesting: Exercises a CSV analysis-to-visualization handoff and v
 Observed excerpt:
 
 ```text
-visualization | success | direct_tool
-Saved the PNG bar chart to /home/jcernuda/clio-agent/tmp/fresh-benchmark-replay-pass/data/event_status_distribution.png, plotting value counts for the status field.
-/home/jcernuda/clio-agent/tmp/fresh-benchmark-replay-pass/data/event_status_distribution.png
+visualization | success | planner_dispatch | Generated a PNG bar chart showing the distribution of event statuses. The plotted field was `status`, with bars representing the count/frequency of each status category.
+Visualization: Generated a PNG bar chart showing the distribution of event statuses. The plotted field was `status`, with bars representing the count/frequency of each status category.
+
+File: /home/jcernuda/clio-agent/tmp/fresh-session-log-artifacts/charts/bar_chart_status.png
 ```
 
 ### 7. Dirty data dashboard after quality review
@@ -325,13 +340,15 @@ Route graph: visualization
 Route metrics: depth=1, branches=0, tools=1
 Expert handoffs: visualization
 Tools: plot_summary
-Data/input files: /home/jcernuda/clio-agent/tmp/fresh-benchmark-replay-pass/data/facility_measurements_dirty.parquet
+Data/input files: /home/jcernuda/clio-agent/tmp/fresh-session-log-benchmark-data/facility_measurements_dirty.parquet
 Setup turns: 1
+Root session messages: 4
+Child session logs: 0
 Actions: none
 Child sessions: none
-Artifacts: /home/jcernuda/clio-agent/tmp/fresh-artifacts-pass/charts/summary_facility_measurements_dirty.png
-Artifact evidence: /home/jcernuda/clio-agent/tmp/fresh-artifacts-pass/charts/summary_facility_measurements_dirty.png (ok, 125470 B)
-Elapsed: 28.1s
+Artifacts: /home/jcernuda/clio-agent/tmp/fresh-session-log-artifacts/charts/summary_facility_measurements_dirty.png
+Artifact evidence: /home/jcernuda/clio-agent/tmp/fresh-session-log-artifacts/charts/summary_facility_measurements_dirty.png (ok, 125470 B)
+Elapsed: 33.2s
 
 Prompt:
 
@@ -346,11 +363,10 @@ Why this is interesting: Stresses multi-turn analysis-to-visualization over inte
 Observed excerpt:
 
 ```text
-visualization | success | planner_dispatch | Generated a compact dataset summary dashboard for `facility_measurements_dirty.parquet`. The dashboard supports quality review by showing column type composition, missing-value counts, numeric distributions for measurement fields, and correlations among numeric columns in a single overview.
-Visualization: Generated a compact dataset summary dashboard for `facility_measurements_dirty.parquet`. The dashboard supports quality review by showing column type composition, missing-value counts, numeric distributions for measurement fields, and correlations among numeric columns in a single overview.
+visualization | success | planner_dispatch | Generated a summary dashboard PNG for `facility_measurements_dirty.parquet`. The dashboard is intended to support quality review by showing column type composition, null counts, numeric-column distributions, and numeric correlation structure in a compact multi-panel layout.
+Visualization: Generated a summary dashboard PNG for `facility_measurements_dirty.parquet`. The dashboard is intended to support quality review by showing column type composition, null counts, numeric-column distributions, and numeric correlation structure in a compact multi-panel layout.
 
-File: /home/jcernuda/clio-agent/tmp/fresh-artifacts-pass/charts/summary_facility_measurements_dirty.png
-/home/jcernuda/clio-agent/tmp/fresh-artifacts-pass/charts/summary_facility_measurements_dirty.png
+File: /home/jcernuda/clio-agent/tmp/fresh-session-log-artifacts/charts/summary_facility_measurements_dirty.png
 ```
 
 ### 8. Microscopy PNG readiness review
@@ -366,18 +382,20 @@ Route graph: imaging
 Route metrics: depth=1, branches=0, tools=1
 Expert handoffs: imaging x2
 Tools: imaging_inspect_png
-Data/input files: /home/jcernuda/clio-agent/tmp/fresh-benchmark-replay-pass/data/microscopy_cells.png
+Data/input files: /home/jcernuda/clio-agent/tmp/fresh-session-log-benchmark-data/microscopy_cells.png
 Setup turns: 0
+Root session messages: 2
+Child session logs: 0
 Actions: none
 Child sessions: none
-Artifacts: /home/jcernuda/clio-agent/tmp/fresh-benchmark-replay-pass/data/microscopy_cells.png
-Artifact evidence: /home/jcernuda/clio-agent/tmp/fresh-benchmark-replay-pass/data/microscopy_cells.png (ok, 614 B)
-Elapsed: 6.0s
+Artifacts: /home/jcernuda/clio-agent/tmp/fresh-session-log-benchmark-data/microscopy_cells.png
+Artifact evidence: /home/jcernuda/clio-agent/tmp/fresh-session-log-benchmark-data/microscopy_cells.png (ok, 614 B)
+Elapsed: 5.5s
 
 Prompt:
 
 ```text
-Review this microscopy-style PNG for collaborator handoff: /home/jcernuda/clio-agent/tmp/fresh-benchmark-replay-pass/data/microscopy_cells.png. Summarize the image dimensions, intensity range, foreground estimate, region evidence, and what acquisition metadata should be verified before quantitative analysis.
+Review this microscopy-style PNG for collaborator handoff: /home/jcernuda/clio-agent/tmp/fresh-session-log-benchmark-data/microscopy_cells.png. Summarize the image dimensions, intensity range, foreground estimate, region evidence, and what acquisition metadata should be verified before quantitative analysis.
 ```
 
 What to see: CLIO uses PNG imaging tools and grounds the review in dimensions, intensity, foreground, and region evidence.
@@ -388,9 +406,9 @@ Observed excerpt:
 
 ```text
 imaging | success | direct_tool
-imaging | success | planner_dispatch | Scientific image review: PNG: {"filepath": "/home/jcernuda/clio-agent/tmp/fresh-benchmark-replay-pass/data/microscopy_cells.png", "format": "PNG", "mode": "L", "width": 128, "height": 96, "channels": 1, "threshold": 32, "intensity": {"min": 4, "max": 245, "mean": 32.568, "std": 62.502}, "foreground_pixels": 1497, "foreground_fraction": 0.121826, "foreground_bbox": {"count": 4, "items": [19, 21, 100, 79]}, "connected_regions": 3, "ok": true} Recommendations: - Verify acquisition sc...[truncated]
+imaging | success | planner_dispatch | Scientific image review: PNG: {"filepath": "/home/jcernuda/clio-agent/tmp/fresh-session-log-benchmark-data/microscopy_cells.png", "format": "PNG", "mode": "L", "width": 128, "height": 96, "channels": 1, "threshold": 32, "intensity": {"min": 4, "max": 245, "mean": 32.568, "std": 62.502}, "foreground_pixels": 1497, "foreground_fraction": 0.121826, "foreground_bbox": {"count": 4, "items": [19, 21, 100, 79]}, "connected_regions": 3, "ok": true} Recommendations: - Verify acquisition sc...[truncated]
 Scientific image review:
-PNG: {"filepath": "/home/jcernuda/clio-agent/tmp/fresh-benchmark-replay-pass/data/microscopy_cells.png", "format": "PNG", "mode": "L", "width": 128, "height": 96, "channels": 1, "threshold": 32, "intensity": {"min": 4, "max": 245, "mean": 32.568, "std": 62.502}, "foreground_pixels": 1497, "foreground_
+PNG: {"filepath": "/home/jcernuda/clio-agent/tmp/fresh-session-log-benchmark-data/microscopy_cells.png", "format": "PNG", "mode": "L", "width": 128, "height": 96, "channels": 1, "threshold": 32, "intensity": {"min": 4, "max": 245, "mean": 32.568, "std": 62.502}, "foreground_pixels": 1497, "foreground_f
 ```
 
 ### 9. Materials CIF structure review
@@ -406,18 +424,20 @@ Route graph: materials
 Route metrics: depth=1, branches=0, tools=1
 Expert handoffs: materials x2
 Tools: materials_inspect_cif
-Data/input files: /home/jcernuda/clio-agent/tmp/fresh-benchmark-replay-pass/data/strontium_titanate.cif
+Data/input files: /home/jcernuda/clio-agent/tmp/fresh-session-log-benchmark-data/strontium_titanate.cif
 Setup turns: 0
+Root session messages: 2
+Child session logs: 0
 Actions: none
 Child sessions: none
 Artifacts: none
 Artifact evidence: none
-Elapsed: 7.0s
+Elapsed: 8.5s
 
 Prompt:
 
 ```text
-Review this crystal structure file for collaborator handoff: /home/jcernuda/clio-agent/tmp/fresh-benchmark-replay-pass/data/strontium_titanate.cif. Summarize the unit cell, symmetry, atom species, and any density or occupancy checks that should be verified before simulation setup.
+Review this crystal structure file for collaborator handoff: /home/jcernuda/clio-agent/tmp/fresh-session-log-benchmark-data/strontium_titanate.cif. Summarize the unit cell, symmetry, atom species, and any density or occupancy checks that should be verified before simulation setup.
 ```
 
 What to see: CLIO uses CIF materials tools and grounds the review in unit-cell, space-group, species, and atom-site evidence.
@@ -428,9 +448,9 @@ Observed excerpt:
 
 ```text
 materials | success | direct_tool
-materials | success | planner_dispatch | Materials structure review: CIF: {"filepath": "/home/jcernuda/clio-agent/tmp/fresh-benchmark-replay-pass/data/strontium_titanate.cif", "data_block": "data_SrTiO3_benchmark", "formula_sum": "Sr1 Ti1 O3", "formula_structural": "SrTiO3", "space_group": "P m -3 m", "cell": {"a": 3.905, "b": 3.905, "c": 3.905, "alpha": 90.0, "beta": 90.0, "gamma": 90.0}, "cell_volume_angstrom3": 59.547443, "atom_site_count": 5, "species_counts": {"Sr": 1, "Ti": 1, "O": 3}, "occupancy_weighted_species_c...[truncated]
+materials | success | planner_dispatch | Materials structure review: CIF: {"filepath": "/home/jcernuda/clio-agent/tmp/fresh-session-log-benchmark-data/strontium_titanate.cif", "data_block": "data_SrTiO3_benchmark", "formula_sum": "Sr1 Ti1 O3", "formula_structural": "SrTiO3", "space_group": "P m -3 m", "cell": {"a": 3.905, "b": 3.905, "c": 3.905, "alpha": 90.0, "beta": 90.0, "gamma": 90.0}, "cell_volume_angstrom3": 59.547443, "atom_site_count": 5, "species_counts": {"Sr": 1, "Ti": 1, "O": 3}, "occupancy_weighted_species_c...[truncated]
 Materials structure review:
-CIF: {"filepath": "/home/jcernuda/clio-agent/tmp/fresh-benchmark-replay-pass/data/strontium_titanate.cif", "data_block": "data_SrTiO3_benchmark", "formula_sum": "Sr1 Ti1 O3", "formula_structural": "SrTiO3", "space_group": "P m -3 m", "cell": {"a": 3.905, "b": 3.905, "c": 3.905, "alpha": 90.0, "
+CIF: {"filepath": "/home/jcernuda/clio-agent/tmp/fresh-session-log-benchmark-data/strontium_titanate.cif", "data_block": "data_SrTiO3_benchmark", "formula_sum": "Sr1 Ti1 O3", "formula_structural": "SrTiO3", "space_group": "P m -3 m", "cell": {"a": 3.905, "b": 3.905, "c": 3.905, "alpha": 90.0, "b
 ```
 
 ### 10. Mass spectrometry mzML QC review
@@ -446,18 +466,20 @@ Route graph: mass_spec
 Route metrics: depth=1, branches=0, tools=1
 Expert handoffs: mass_spec x2
 Tools: mass_spec_inspect_mzml
-Data/input files: /home/jcernuda/clio-agent/tmp/fresh-benchmark-replay-pass/data/proteomics_qc.mzML
+Data/input files: /home/jcernuda/clio-agent/tmp/fresh-session-log-benchmark-data/proteomics_qc.mzML
 Setup turns: 0
+Root session messages: 2
+Child session logs: 0
 Actions: none
 Child sessions: none
 Artifacts: none
 Artifact evidence: none
-Elapsed: 8.0s
+Elapsed: 6.0s
 
 Prompt:
 
 ```text
-Review this proteomics mzML run for collaborator handoff: /home/jcernuda/clio-agent/tmp/fresh-benchmark-replay-pass/data/proteomics_qc.mzML. Summarize the spectra, MS-level balance, m/z coverage, intensity/TIC evidence, and what acquisition metadata should be verified before peptide-search analysis.
+Review this proteomics mzML run for collaborator handoff: /home/jcernuda/clio-agent/tmp/fresh-session-log-benchmark-data/proteomics_qc.mzML. Summarize the spectra, MS-level balance, m/z coverage, intensity/TIC evidence, and what acquisition metadata should be verified before peptide-search analysis.
 ```
 
 What to see: CLIO uses mzML mass spectrometry tools and grounds the review in spectra, MS levels, m/z range, peak counts, and TIC evidence.
@@ -468,9 +490,9 @@ Observed excerpt:
 
 ```text
 mass_spec | success | direct_tool
-mass_spec | success | planner_dispatch | Mass spectrometry data review: mzML: {"filepath": "/home/jcernuda/clio-agent/tmp/fresh-benchmark-replay-pass/data/proteomics_qc.mzML", "format": "mzML", "spectrum_count": 4, "ms_levels": {"1": 2, "2": 2}, "total_peak_count": 14, "mz_range": {"count": 2, "items": [399.8, 933.5]}, "tic_total": 25140.0, "tic_max": 9500.0, "total_ion_current_total": 25140.0, "total_ion_current_max": 9500.0, "representative_spectra": {"count": 4, "items": [{"id": "scan=1", "ms_level": "1", "scan_start_...[truncated]
+mass_spec | success | planner_dispatch | Mass spectrometry data review: mzML: {"filepath": "/home/jcernuda/clio-agent/tmp/fresh-session-log-benchmark-data/proteomics_qc.mzML", "format": "mzML", "spectrum_count": 4, "ms_levels": {"1": 2, "2": 2}, "total_peak_count": 14, "mz_range": {"count": 2, "items": [399.8, 933.5]}, "tic_total": 25140.0, "tic_max": 9500.0, "total_ion_current_total": 25140.0, "total_ion_current_max": 9500.0, "representative_spectra": {"count": 4, "items": [{"id": "scan=1", "ms_level": "1", "scan_start_...[truncated]
 Mass spectrometry data review:
-mzML: {"filepath": "/home/jcernuda/clio-agent/tmp/fresh-benchmark-replay-pass/data/proteomics_qc.mzML", "format": "mzML", "spectrum_count": 4, "ms_levels": {"1": 2, "2": 2}, "total_peak_count": 14, "mz_range": {"count": 2, "items": [399.8, 933.5]}, "tic_total": 25140.0, "tic_max": 9500.0, "t
+mzML: {"filepath": "/home/jcernuda/clio-agent/tmp/fresh-session-log-benchmark-data/proteomics_qc.mzML", "format": "mzML", "spectrum_count": 4, "ms_levels": {"1": 2, "2": 2}, "total_peak_count": 14, "mz_range": {"count": 2, "items": [399.8, 933.5]}, "tic_total": 25140.0, "tic_max": 9500.0, "to
 ```
 
 ## Failures Fixed During This Campaign
