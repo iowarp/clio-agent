@@ -1,5 +1,12 @@
 # CLIO Real-Orchestrator Benchmark Report
 
+> Historical/superseded evidence: this report is retained as an isolated
+> real-orchestrator replay from before the marketplace seismic recovery path was
+> validated. It still shows the NDP seismic waveform case failing to reach the
+> SAC/PNG artifact. For current marketplace hierarchy and seismic SAC/PNG
+> evidence, use `benchmark/CURRENT_STATUS.md` and
+> `benchmark/MARKETPLACE_UNIFIED_REPORT.md`.
+
 Generated: 2026-05-29 05:45:42 CDT
 Evidence JSONL: `/home/jcernuda/clio-agent/benchmark/FRESH_REAL_ORCHESTRATOR_EVIDENCE.jsonl`
 Benchmark lane: `real_orchestrator`

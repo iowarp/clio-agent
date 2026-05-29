@@ -10,13 +10,19 @@ semantics, and surfaced-error behavior.
 
 ## Files
 
+- `CURRENT_STATUS.md` - current human-facing benchmark status: what failed,
+  what was fixed, what now works, and which stress gaps remain future work.
 - `REAL_PROVIDER_PROMPTS.md` - collaborator-grade prompts and expected behavior.
 - `BENCHMARK_PROMPT_BOOK.md` - concise manual TUI prompt book and pass criteria.
 - `CROSS_DOMAIN_DEMO_RESULTS.md` - human-facing evidence index and acceptance
   matrix.
 - `FRESH_REAL_ORCHESTRATOR_REPORT.md` /
-  `FRESH_REAL_ORCHESTRATOR_EVIDENCE.jsonl` - clean isolated replay evidence for
-  the documented real-orchestrator lane.
+  `FRESH_REAL_ORCHESTRATOR_EVIDENCE.jsonl` - historical isolated replay
+  evidence retained for debugging; this report is superseded for current
+  NDP/seismic status by `MARKETPLACE_UNIFIED_REPORT.md`.
+- `MARKETPLACE_UNIFIED_REPORT.md` /
+  `MARKETPLACE_UNIFIED_EVIDENCE.jsonl` - current passing evidence for
+  marketplace Agent Blueprint hierarchy semantics across five domains.
 - `scripts/run_demo_benchmark.py` - executable runner that materializes these
   cases against a live GACT backend.
 - `scripts/create_benchmark_data.py` - deterministic local data generator.
