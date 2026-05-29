@@ -273,6 +273,44 @@ def create_genomics(output_dir: Path) -> dict[str, Any]:
     }
 
 
+def create_materials(output_dir: Path) -> dict[str, Any]:
+    """Create a small CIF file for materials/crystallography benchmark workflows."""
+    cif_path = output_dir / "strontium_titanate.cif"
+    cif_path.write_text(
+        "data_SrTiO3_benchmark\n"
+        "_chemical_formula_sum 'Sr1 Ti1 O3'\n"
+        "_chemical_formula_structural 'SrTiO3'\n"
+        "_symmetry_space_group_name_H-M 'P m -3 m'\n"
+        "_cell_length_a 3.905\n"
+        "_cell_length_b 3.905\n"
+        "_cell_length_c 3.905\n"
+        "_cell_angle_alpha 90\n"
+        "_cell_angle_beta 90\n"
+        "_cell_angle_gamma 90\n"
+        "\n"
+        "loop_\n"
+        "_atom_site_label\n"
+        "_atom_site_type_symbol\n"
+        "_atom_site_fract_x\n"
+        "_atom_site_fract_y\n"
+        "_atom_site_fract_z\n"
+        "_atom_site_occupancy\n"
+        "Sr1 Sr 0.000 0.000 0.000 1.0\n"
+        "Ti1 Ti 0.500 0.500 0.500 1.0\n"
+        "O1 O 0.500 0.500 0.000 1.0\n"
+        "O2 O 0.500 0.000 0.500 1.0\n"
+        "O3 O 0.000 0.500 0.500 1.0\n",
+        encoding="utf-8",
+    )
+    return {
+        "cif_path": str(cif_path),
+        "formula": "SrTiO3",
+        "space_group": "P m -3 m",
+        "atom_sites": 5,
+        "expected_terms": ["SrTiO3", "P m -3 m", "Sr", "Ti", "O"],
+    }
+
+
 def create_adios_bp5(output_dir: Path) -> dict[str, Any]:
     """Copy a real BP5 sample when present, otherwise create a BP-like container."""
     destination = output_dir / "gray scott noise 0.01 data.bp5"
@@ -327,6 +365,7 @@ def create_benchmark_data(output_dir: Path) -> dict[str, Any]:
     )
     csv_info = create_csv(output_dir / "sensor_events.csv")
     genomics = create_genomics(output_dir)
+    materials = create_materials(output_dir)
     adios = create_adios_bp5(output_dir)
 
     manifest: dict[str, Any] = {
@@ -336,6 +375,7 @@ def create_benchmark_data(output_dir: Path) -> dict[str, Any]:
         "parquet": parquet,
         "csv": csv_info,
         "genomics": genomics,
+        "materials": materials,
         "adios": adios,
     }
     manifest_path = output_dir / "manifest.json"

@@ -22,6 +22,7 @@ Use these paths when replacing placeholders:
 - `{adios}`: `tmp/clio-benchmark-data/gray scott noise 0.01 data.bp5`
 - `{fasta}`: `tmp/clio-benchmark-data/pathogen_reference.fasta`
 - `{vcf}`: `tmp/clio-benchmark-data/pathogen_sample_variants.vcf`
+- `{cif}`: `tmp/clio-benchmark-data/strontium_titanate.cif`
 
 For an automated evidence run, use:
 
@@ -178,6 +179,29 @@ Worked because you saw:
 - `genomics_summarize_vcf` evidence.
 - Reference composition and variant effects such as `missense`, `frameshift`,
   or `stop_gained` in the final review.
+
+## 7. Materials CIF Structure Review
+
+Agent: Data Exploration/Search Agent
+
+Prompt:
+
+```text
+Review this crystal structure file for collaborator handoff: {cif}. Summarize the unit cell, symmetry, atom species, and any density or occupancy checks that should be verified before simulation setup.
+```
+
+Why this exists:
+
+This adds a materials/crystallography domain with a different scientific file
+format and a different correctness surface from sequence, table, waveform, or
+catalog data.
+
+Worked because you saw:
+
+- `materials_inspect_cif` evidence.
+- Unit-cell and space-group details such as `P m -3 m`.
+- Species/atom-site evidence for `Sr`, `Ti`, and `O` and a collaborator handoff
+  check around occupancies or provenance.
 
 ## Notes For Manual TUI Runs
 

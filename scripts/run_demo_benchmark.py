@@ -581,6 +581,7 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
     adios = manifest["adios"]["path"]
     fasta = manifest["genomics"]["fasta_path"]
     vcf = manifest["genomics"]["vcf_path"]
+    cif = manifest["materials"]["cif_path"]
     missing = str(Path(h5).with_name("missing_fusion_run.h5"))
 
     return [
@@ -1029,6 +1030,31 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             ),
         ),
         DemoCase(
+            case_id="materials_cif_structure_review",
+            title="Materials CIF structure review",
+            category="materials",
+            session_group="materials",
+            expected_agent="materials",
+            expected_tools=("materials_inspect_cif",),
+            expected_terms=("SrTiO3", "P m -3 m", "Sr", "Ti", "O"),
+            timeout_s=620.0,
+            forbidden_route_sources=_REAL_ORCHESTRATOR_FORBIDDEN_SOURCES,
+            complexity_tags=("materials", "crystallography", "cif", "new-domain"),
+            prompt=(
+                f"Review this crystal structure file for collaborator handoff: {cif}. "
+                "Summarize the unit cell, symmetry, atom species, and any density or "
+                "occupancy checks that should be verified before simulation setup."
+            ),
+            expected=(
+                "CLIO uses CIF materials tools and grounds the review in unit-cell, "
+                "space-group, species, and atom-site evidence."
+            ),
+            why=(
+                "Adds a non-NDP materials science domain that requires a new file parser, "
+                "tool, and expert route instead of generic text inspection."
+            ),
+        ),
+        DemoCase(
             case_id="missing_hdf5_error",
             title="Missing file error surfacing",
             category="hardening",
@@ -1140,6 +1166,7 @@ _BENCHMARK_LANES: dict[str, tuple[str, ...]] = {
         "reasoning_cross_file_triage_nanoagents",
         "cross_file_dirty_quality_gate_nanoagents",
         "genomics_reference_variant_review",
+        "materials_cif_structure_review",
         "ndp_catalog_discovery",
         "ndp_seismic_waveform_to_plot",
         "reasoning_adios_bp5_container",

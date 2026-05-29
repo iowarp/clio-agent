@@ -23,6 +23,7 @@ current run:
 - `{adios}` - ADIOS/BP5 Gray-Scott output.
 - `{fasta}` - synthetic pathogen FASTA reference.
 - `{vcf}` - synthetic pathogen VCF variant calls.
+- `{cif}` - synthetic strontium titanate CIF structure.
 
 ## Primary Prompt Set
 
@@ -177,6 +178,31 @@ Why this matters:
 This is the first genomics benchmark case. It adds a non-NDP domain and proves
 that CLIO can grow new tool-backed expert boundaries beyond existing
 HDF5/Parquet/ADIOS/NDP/SAC paths.
+
+### 5c. Materials CIF Structure Review
+
+Case id: `materials_cif_structure_review`
+
+Category: `materials`
+
+Expected route: `materials`
+
+Expected evidence:
+
+- CIF structure inspection through `materials_inspect_cif`.
+- Unit-cell, space-group, and atom-site/species summary.
+- Grounded collaborator handoff checks around occupancy, provenance, or density.
+
+Prompt:
+
+```text
+Review this crystal structure file for collaborator handoff: {cif}. Summarize the unit cell, symmetry, atom species, and any density or occupancy checks that should be verified before simulation setup.
+```
+
+Why this matters:
+
+This adds a non-NDP materials science domain with a distinct scientific file
+format and a new tool-backed expert boundary.
 
 ### 6. Provider Swap Preserves Session Context
 
