@@ -14305,6 +14305,49 @@ def build_app(
             )
         return Workspace(**ws.to_wire())
 
+    @app.patch("/v1/workspaces/{wid}", response_model=Workspace)
+    async def patch_workspace(wid: str, request: Request) -> Workspace:
+        """iowarp/gact-tui §audit/E-18: the desktop's Rename action
+        on the Workspaces page posts PATCH /v1/workspaces/{wid} with
+        {name?, metadata?, root_path?}. Without this endpoint clio
+        returned 405 and the user saw 'Method Not Allowed' in a toast.
+        Accept partial updates of any of those fields.
+        """
+
+        ws = app.state.workspaces.get(wid)
+        if ws is None:
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="internal_error",
+                        message=f"workspace not found: {wid}",
+                        details={"workspace_id": wid},
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        if not isinstance(body, dict):
+            body = {}
+        name = body.get("name")
+        root_path = body.get("root_path")
+        metadata = body.get("metadata")
+        # The desktop sends `config` as an alias for metadata.
+        if metadata is None and isinstance(body.get("config"), dict):
+            metadata = body.get("config")
+        if isinstance(name, str) and name.strip():
+            ws.name = name.strip()
+        if isinstance(root_path, str) and root_path.strip():
+            ws.root_path = root_path.strip()
+        if isinstance(metadata, dict):
+            ws.metadata.update(metadata)
+        app.state.workspaces._flush()
+        return Workspace(**ws.to_wire())
+
     @app.delete("/v1/workspaces/{wid}")
     async def delete_workspace(wid: str) -> Response:
         """Refuses to delete ws_default — every CLIO install needs
