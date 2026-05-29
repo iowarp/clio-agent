@@ -129,6 +129,32 @@ def test_real_orchestrator_is_run_benchmark_default_lane() -> None:
     assert bench.run_benchmark.__kwdefaults__["lane"] == "real_orchestrator"
 
 
+def test_real_orchestrator_turns_pin_root_agent() -> None:
+    case = bench.DemoCase(
+        case_id="ndp_catalog_discovery",
+        title="ndp",
+        category="test",
+        prompt="Find datasets",
+        why="why",
+        expected="expected",
+        session_group="test",
+    )
+    explicit = bench.DemoCase(
+        case_id="direct_data_case",
+        title="data",
+        category="test",
+        prompt="Inspect file",
+        why="why",
+        expected="expected",
+        session_group="test",
+        turn_agent_id="data",
+    )
+
+    assert bench._turn_agent_id_for_lane(case, "real_orchestrator") == "main"
+    assert bench._turn_agent_id_for_lane(case, "all") == ""
+    assert bench._turn_agent_id_for_lane(explicit, "real_orchestrator") == "data"
+
+
 def test_all_lane_keeps_unfiltered_campaign() -> None:
     cases = [
         bench.DemoCase(
