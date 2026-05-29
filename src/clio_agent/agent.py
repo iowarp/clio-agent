@@ -104,6 +104,7 @@ SCIENTIFIC_FILE_SUFFIXES = {
     ".cif",
     ".geojson",
     ".png",
+    ".mzml",
 }
 PLANNER_HIDDEN_TOOL_NAMES = {"fs_read_file", "fs_apply_edit_write"}
 MULTI_FILE_ANALYSIS_TERMS = (
@@ -557,6 +558,36 @@ class ClioAgent(dspy.Module):
                     "file_suffixes": [".png"],
                     "guard_coordinator_intents": ["multi_file_analysis"],
                     "coordinated_file_suffixes": [".png"],
+                },
+            ),
+        )
+
+        self.registry.register_agent(
+            "mass_spec",
+            self,
+            AgentCapability(
+                keywords=[
+                    "mass spectrometry",
+                    "mass-spec",
+                    "mzml",
+                    "proteomics",
+                    "spectra",
+                    "spectrum",
+                    "ms level",
+                    "peptide",
+                    "m/z",
+                    "ion current",
+                ],
+                description=(
+                    "Mass spectrometry expert for mzML spectra files. Uses spectrum counts, "
+                    "MS levels, m/z ranges, peak counts, and ion-current inspection before synthesis."
+                ),
+                tools=["mass_spec_inspect_mzml"],
+                specialization="mass_spectrometry",
+                metadata={
+                    "file_suffixes": [".mzml"],
+                    "guard_coordinator_intents": ["multi_file_analysis"],
+                    "coordinated_file_suffixes": [".mzml"],
                 },
             ),
         )
@@ -2094,6 +2125,62 @@ class ClioAgent(dspy.Module):
                             "Validate acquisition metadata, foreground threshold, and region evidence."
                         ),
                         metadata={"expert": "imaging", "paths": [str(path) for path in paths]},
+                    )
+                    self._record_expert_handoff(
+                        trace,
+                        expert_id=expert_id,
+                        dispatch_target=dispatch_id,
+                        stage="planner_dispatch",
+                        input_summary=expert_question,
+                        result=expert_result,
+                        duration_ms=(time.time() - started) * 1000,
+                    )
+                    return expert_id, answer, expert_result, None
+
+                if dispatch_id == "mass_spec":
+                    started = time.time()
+                    paths = extract_file_paths(expert_question, expert_context, {".mzml"})
+                    mzml_observations: list[str] = []
+                    if paths:
+                        mzml_result = self._execute_tool_action(
+                            "mass_spec_inspect_mzml",
+                            {"filepath": str(paths[0])},
+                            trace,
+                            question=expert_question,
+                            file_context=expert_context,
+                        )
+                        mzml_observations.append(
+                            "mzML: " + json.dumps(compact_tool_result(mzml_result, max_text=1000))
+                        )
+                    if not mzml_observations:
+                        return (
+                            expert_id,
+                            "",
+                            None,
+                            RoutingError(
+                                "The mass spectrometry expert needs an mzML file path.",
+                                details=self._recovery_details(
+                                    expert=expert_id,
+                                    next_action=(
+                                        "Provide at least one mzML file under the allowed "
+                                        "workspace roots."
+                                    ),
+                                ),
+                            ).to_dict(),
+                        )
+                    answer = (
+                        "Mass spectrometry data review:\n"
+                        + "\n\n".join(mzml_observations)
+                        + "\n\nRecommendations:\n"
+                        "- Verify instrument/acquisition metadata before peptide search.\n"
+                        "- Check MS-level balance, peak counts, and TIC consistency before handoff."
+                    )
+                    expert_result = dspy.Prediction(
+                        analysis=answer,
+                        recommendations=(
+                            "Validate acquisition metadata, MS levels, m/z coverage, and TIC evidence."
+                        ),
+                        metadata={"expert": "mass_spec", "paths": [str(path) for path in paths]},
                     )
                     self._record_expert_handoff(
                         trace,

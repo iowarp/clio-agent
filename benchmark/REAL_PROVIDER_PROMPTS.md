@@ -26,6 +26,7 @@ current run:
 - `{cif}` - synthetic strontium titanate CIF structure.
 - `{geojson}` - synthetic field-site GeoJSON features.
 - `{png}` - synthetic microscopy-style PNG image.
+- `{mzml}` - synthetic proteomics mzML spectra file.
 
 ## Primary Prompt Set
 
@@ -256,6 +257,32 @@ Why this matters:
 
 This adds a binary scientific image domain with pixel-level evidence, not generic
 file text inspection or chart-generation behavior.
+
+### 5f. Mass Spectrometry mzML QC Review
+
+Case id: `mass_spec_mzml_qc_review`
+
+Category: `mass_spec`
+
+Expected route: `mass_spec`
+
+Expected evidence:
+
+- mzML inspection through `mass_spec_inspect_mzml`.
+- Spectrum count, MS-level distribution, m/z range, peak count, and TIC summary.
+- Grounded collaborator handoff checks around acquisition metadata and peptide
+  search readiness.
+
+Prompt:
+
+```text
+Review this proteomics mzML run for collaborator handoff: {mzml}. Summarize the spectra, MS-level balance, m/z coverage, intensity/TIC evidence, and what acquisition metadata should be verified before peptide-search analysis.
+```
+
+Why this matters:
+
+This adds a scientific instrument-data domain with spectra and ion-current
+semantics, not generic XML inspection.
 
 ### 6. Provider Swap Preserves Session Context
 

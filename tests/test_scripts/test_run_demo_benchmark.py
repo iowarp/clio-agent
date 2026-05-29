@@ -109,6 +109,7 @@ def test_select_real_orchestrator_lane_cases() -> None:
             "materials_cif_structure_review",
             "geospatial_field_site_review",
             "microscopy_png_readiness_review",
+            "mass_spec_mzml_qc_review",
             "ndp_catalog_discovery",
             "ndp_seismic_waveform_to_plot",
             "reasoning_adios_bp5_container",
