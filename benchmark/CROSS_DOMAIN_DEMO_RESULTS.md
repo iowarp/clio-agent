@@ -1,8 +1,16 @@
 # CLIO Cross-Domain Demo Results
 
-This document is the short human-facing record for the current real
-cross-domain CLIO demo evidence. Generated reports and raw JSONL evidence are
-kept alongside this summary:
+This document is the short human-facing index for the current real
+cross-domain CLIO demo evidence. The benchmark itself is not a pytest suite and
+is not just a pass-count table. The intended workflow is:
+
+1. Run natural prompts through a normal CLIO session with a real provider.
+2. Read the recorded JSONL row for each case.
+3. Confirm the route, tool calls, child sessions, artifacts, errors, and final
+   answer all agree.
+
+Generated reports and raw JSONL evidence are the source of truth and are kept
+alongside this summary:
 
 - `benchmark/LIVE_CROSS_DOMAIN_REPORT.md` /
   `benchmark/LIVE_CROSS_DOMAIN_EVIDENCE.jsonl`
@@ -13,14 +21,16 @@ kept alongside this summary:
 - `benchmark/CROSS_FILE_DIRTY_REPORT.md` /
   `benchmark/CROSS_FILE_DIRTY_EVIDENCE.jsonl`
 
-## Run
+## Evidence Runs
 
 - Date: 2026-05-28
 - Backend: live `clio-agent-gact`
 - Provider: `codex` / `gpt-5.5`
 - Lane: `real_orchestrator`
-- Result: 5/5 selected workflows passed
-- Route source: all selected cases used `dspy`, not guard or keyword shortcuts
+- Result metadata: the recorded workflows listed below passed their case
+  expectations in the JSONL evidence.
+- Route source: selected cases used `dspy`, not guard or keyword shortcuts,
+  unless a report explicitly says otherwise.
 
 Command:
 
@@ -35,6 +45,23 @@ uv run python scripts/run_demo_benchmark.py \
   --output-jsonl benchmark/LIVE_CROSS_DOMAIN_EVIDENCE.jsonl \
   --report benchmark/LIVE_CROSS_DOMAIN_REPORT.md
 ```
+
+## Review Standard
+
+For each workflow, inspect the matching JSONL row before trusting the prose
+summary. A workflow is only a real benchmark pass when the log shows:
+
+- a natural prompt sent through the normal CLIO session path;
+- a non-shortcut route source for real-orchestrator cases;
+- tool calls with grounded arguments, results, errors, durations, and artifact
+  paths when relevant;
+- child-session or handoff provenance for multi-branch cases;
+- final assistant text that cites the same evidence present in the log;
+- any failure recorded as an explicit failure point, followed by a tracked fix
+  or an honest remaining gap.
+
+Pytest output can prove that the runner, fixture generator, and individual
+tools are not broken. It does not prove that the benchmark worked.
 
 ## Passing Workflows
 
@@ -187,17 +214,28 @@ answer synthesized each file's evidence into a collaborator handoff gate.
   accidental execution through a non-executable dynamic session agent.
 - #447 fixed visualization default output paths so tool-loop charts land under
   the CLIO artifact root instead of the repo root.
+- #450 recorded real-session evidence for the dirty cross-file nanoagent
+  fanout case.
+- #452 clarified that the benchmark summary is an index over JSONL session
+  evidence, not a pytest-style result.
 
 ## Remaining Gaps
 
 Current committed evidence proves five single-expert cross-domain workflows, one
 deep NDP/SAC/visualization workflow, two multi-turn visualization artifact
-workflows, and one cross-file nanoagent fanout workflow. It does not yet
-complete the full umbrella benchmark target. Still needed:
+workflows, and one cross-file nanoagent fanout workflow. It proves at least two
+multi-hop or fanout paths through recorded session evidence:
 
-- at least one more multi-branch workflow with child sessions or tier-3 expert
-  handoffs;
-- more NDP-backed workflows outside the seismic happy path;
-- more visualization artifacts from analyzed data if the final target is ten
-  workflows rather than the minimum five;
-- a full fresh-machine run using the documented commands.
+- `ndp_seismic_waveform_to_plot`: multi-expert path through NDP catalog, SAC
+  analysis, and visualization.
+- `cross_file_dirty_quality_gate_nanoagents`: four child sessions and six
+  file/tool inspections.
+
+Still needed before treating this as a release-quality benchmark package:
+
+- one fresh-machine run using the documented commands and a clean artifact
+  directory;
+- more NDP-backed workflows outside the seismic happy path if NDP breadth is a
+  release criterion;
+- one more recorded workflow if the final target is ten committed workflows
+  rather than the current nine.
