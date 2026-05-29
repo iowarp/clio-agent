@@ -46,6 +46,7 @@ from typing import Any, AsyncIterator, Iterator, Literal, Optional
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
@@ -6805,6 +6806,31 @@ def build_app(
         title="CLIO GACT v0.2",
         version=GACT_BACKEND_VERSION,
         lifespan=_lifespan,
+    )
+
+    # CORS: the pure-web CLIO Desktop release (clio-web-v*.zip) runs as
+    # a separate origin from clio (e.g. http://localhost:4173 →
+    # http://127.0.0.1:17800), and the Tauri shell loads
+    # tauri://localhost. Without CORS-allow on /v1/*, the browser
+    # blocks every capability + SSE fetch and the pure-web build is
+    # completely unusable against a localhost clio. Defaults are
+    # permissive on localhost; operators can override via
+    # CLIO_GACT_CORS_ORIGINS (comma-separated origins or "*").
+    cors_origins_env = os.environ.get("CLIO_GACT_CORS_ORIGINS", "").strip()
+    if cors_origins_env:
+        allow_origins: list[str] = (
+            ["*"] if cors_origins_env == "*"
+            else [o.strip() for o in cors_origins_env.split(",") if o.strip()]
+        )
+    else:
+        allow_origins = ["*"]
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=allow_origins,
+        allow_credentials=False,
+        allow_methods=["*"],
+        allow_headers=["*"],
+        expose_headers=["*"],
     )
     # Initialise state eagerly in case the caller skips the lifespan
     # context (TestClient normally runs it, but older FastAPI + some
