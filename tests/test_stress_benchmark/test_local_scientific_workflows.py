@@ -617,7 +617,7 @@ def test_local_ndp_catalog_discovery_is_visible_to_core_expert_path(
     )
     _assert_tool_answer(
         answer,
-        expected_agent=("data", "ndp_catalog"),
+        expected_agent="data",
         expected_tool_prefix="ndp_",
         expected_terms=("National Data Platform", "noaa", "dataset"),
     )

@@ -158,7 +158,7 @@ distribution, m/z range, peak count, scan IDs, and total ion current summary.
 
 ### NDP Seismic Waveform To Plot
 
-Agent path: `visualization -> data -> ndp_catalog -> analysis -> sac_format -> visualization`
+Agent path: `orchestrator -> data -> ndp_catalog -> data -> orchestrator -> analysis -> sac_format -> analysis -> orchestrator -> visualization -> orchestrator`
 
 Prompt:
 

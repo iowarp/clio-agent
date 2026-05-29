@@ -244,6 +244,70 @@ def test_case_row_records_route_file_and_artifact_evidence(tmp_path) -> None:
     ]
 
 
+def test_route_graph_summary_preserves_sync_delegation_returns() -> None:
+    message = _message(route_source="dspy")
+    message["metadata"]["expert_handoffs"] = [
+        {"agent_id": "data", "stage": "planner_dispatch"},
+        {
+            "agent_id": "ndp_catalog",
+            "parent_id": "data",
+            "stage": "planner_dispatch_child",
+        },
+        {
+            "agent_id": "ndp_catalog",
+            "parent_id": "data",
+            "stage": "delegate.completed",
+            "metadata": {
+                "delegation_lifecycle": "sync",
+                "return_to": "data",
+            },
+        },
+        {
+            "agent_id": "data",
+            "stage": "parent.resumed",
+            "metadata": {
+                "delegation_lifecycle": "sync",
+                "resumed_from": "ndp_catalog",
+            },
+        },
+        {"agent_id": "analysis", "stage": "planner_dispatch"},
+        {
+            "agent_id": "sac_format",
+            "parent_id": "analysis",
+            "stage": "delegate.completed",
+            "return_to": "analysis",
+        },
+        {
+            "agent_id": "analysis",
+            "stage": "parent.resumed",
+            "resumed_from": "sac_format",
+        },
+    ]
+    result = bench.DemoResult(
+        case=bench.DemoCase(
+            case_id="ndp_seismic_waveform_to_plot",
+            title="ndp",
+            category="test",
+            prompt="prompt",
+            why="why",
+            expected="expected",
+            session_group="test",
+            expected_handoff_agents=("ndp_catalog", "sac_format"),
+        ),
+        session_id="sess_test",
+        elapsed_s=1.0,
+        message=message,
+        provider={},
+    )
+
+    summary = bench._route_graph_summary(result)
+
+    assert "orchestrator -> data" in summary
+    assert "data -> ndp_catalog -> data" in summary
+    assert "analysis -> sac_format -> analysis" in summary
+    assert bench._missing_sync_return_pairs(result) == []
+
+
 def test_data_file_paths_ignore_scientific_slash_terms(tmp_path) -> None:
     mzml = tmp_path / "proteomics_qc.mzML"
     prompt = f"Review {mzml}. Include m/z coverage and intensity/TIC evidence."
@@ -288,7 +352,7 @@ def test_ndp_waveform_case_requires_sac_and_png_path() -> None:
             why="why",
             expected="expected",
             session_group="test",
-            expected_agent=("analysis", "data", "ndp_catalog"),
+            expected_agent="data",
             expected_tool_prefixes=("ndp_", "sac_"),
             expected_handoff_agents=("ndp_catalog", "sac_format"),
             expected_terms=("SAC", ".png"),
@@ -315,7 +379,7 @@ def test_case_alternate_criteria_keep_strict_failures() -> None:
             why="why",
             expected="expected",
             session_group="test",
-            expected_agent=("analysis", "data", "ndp_catalog"),
+            expected_agent="data",
             expected_tool_prefixes=("ndp_", "sac_"),
             expected_handoff_agents=("ndp_catalog", "sac_format"),
             expected_terms=("SAC", ".png"),
@@ -574,7 +638,7 @@ def test_real_orchestrator_ndp_blocker_audit_requires_sac_plot() -> None:
             why="why",
             expected="expected",
             session_group="test",
-            expected_agent=("analysis", "data", "ndp_catalog"),
+            expected_agent="data",
             expected_tool_prefixes=("ndp_", "sac_"),
             expected_handoff_agents=("ndp_catalog", "sac_format"),
             expected_terms=("SAC", ".png"),
@@ -606,3 +670,42 @@ def test_real_orchestrator_ndp_blocker_audit_requires_sac_plot() -> None:
     assert ndp_row["details"] == []
     assert full_chain_row["passed"] is False
     assert full_chain_row["observed"] == 0
+
+
+def test_real_orchestrator_audit_requires_sync_parent_resume() -> None:
+    message = _message(text="SAC plot saved at /tmp/plot.png", route_source="dspy")
+    message["metadata"]["expert_handoffs"] = [
+        {"agent_id": "data", "stage": "planner_dispatch"},
+        {
+            "agent_id": "ndp_catalog",
+            "parent_id": "data",
+            "stage": "planner_dispatch_child",
+        },
+    ]
+    result = bench.DemoResult(
+        case=bench.DemoCase(
+            case_id="ndp_seismic_waveform_to_plot",
+            title="ndp waveform",
+            category="test",
+            prompt="prompt",
+            why="why",
+            expected="expected",
+            session_group="test",
+            expected_handoff_agents=("ndp_catalog",),
+        ),
+        session_id="sess_ndp",
+        elapsed_s=1.0,
+        message=message,
+        provider={"provider": "codex", "model": "gpt-5.5", "api_base": ""},
+        benchmark_lane="real_orchestrator",
+    )
+
+    audit = bench._provider_lane_audit([result], "real_orchestrator")
+
+    sync_row = next(
+        item
+        for item in audit
+        if item["criterion"] == "nested expert handoffs include sync return/resume provenance"
+    )
+    assert sync_row["passed"] is False
+    assert sync_row["details"] == ["ndp_seismic_waveform_to_plot: missing=['data->ndp_catalog']"]
