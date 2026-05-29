@@ -197,6 +197,29 @@ class DemoResult:
         return str(self.agent_blueprint.get("active_agent_blueprint_id") or "")
 
     @property
+    def expected_evidence_text(self) -> str:
+        """Return text searched for expected benchmark evidence terms."""
+        chunks: list[str] = [self.text, *self.artifacts]
+        for tool in self.tools:
+            chunks.append(str(tool.get("name") or tool.get("tool") or ""))
+            for key in ("result", "args", "arguments", "params"):
+                value = tool.get(key)
+                if value is not None:
+                    chunks.append(json.dumps(value, sort_keys=True, default=str))
+        for handoff in self.expert_handoffs:
+            for key in (
+                "agent_id",
+                "dispatch_target",
+                "input_summary",
+                "output_summary",
+                "metadata",
+            ):
+                value = handoff.get(key)
+                if value is not None:
+                    chunks.append(json.dumps(value, sort_keys=True, default=str))
+        return "\n".join(chunks)
+
+    @property
     def passed(self) -> bool:
         """Return whether this case satisfied its declared expectations."""
         if self.case.expects_cancelled:
@@ -244,7 +267,7 @@ class DemoResult:
             self.case.expected_tool_prefix_groups,
         ):
             return False
-        lowered = "\n".join([self.text, *self.artifacts]).lower()
+        lowered = self.expected_evidence_text.lower()
         if not self._matches_any_text_group(
             lowered,
             self.case.expected_terms,

@@ -367,6 +367,49 @@ def test_ndp_waveform_case_requires_sac_and_png_path() -> None:
     assert result.passed is False
 
 
+def test_expected_terms_can_match_tool_and_handoff_evidence() -> None:
+    message = _message(
+        text="Reference has two contigs and expected variant consequences.",
+        tools=[
+            {
+                "name": "genomics_inspect_fasta",
+                "result": {"records": [{"id": "chrA"}, {"id": "plasmidB"}]},
+            },
+            {
+                "name": "genomics_summarize_vcf",
+                "result": {"effects": ["missense", "frameshift"]},
+            },
+        ],
+    )
+    message["parts"][0]["selected_agent"] = "genomics"
+    message["metadata"]["expert_handoffs"] = [
+        {
+            "agent_id": "genomics",
+            "output_summary": "FASTA and VCF tool evidence returned.",
+        }
+    ]
+    result = bench.DemoResult(
+        case=bench.DemoCase(
+            case_id="genomics_reference_variant_review",
+            title="genomics",
+            category="test",
+            prompt="prompt",
+            why="why",
+            expected="expected",
+            session_group="test",
+            expected_agent="genomics",
+            expected_tools=("genomics_inspect_fasta", "genomics_summarize_vcf"),
+            expected_terms=("chrA", "plasmidB", "missense", "frameshift"),
+        ),
+        session_id="sess_test",
+        elapsed_s=1.0,
+        message=message,
+        provider={},
+    )
+
+    assert result.passed is True
+
+
 def test_case_alternate_criteria_keep_strict_failures() -> None:
     message = _message(text="NDP catalog only", tools=[{"name": "ndp_search_datasets"}])
     message["metadata"]["expert_handoffs"] = [{"agent_id": "ndp_catalog"}]
