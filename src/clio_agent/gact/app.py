@@ -987,7 +987,9 @@ def _memory_search_response(
         metadata={
             "scope": "cross_session" if include_cross_session else "session",
             "workspace_id": active_workspace_id,
-            "workspace_scope": "global" if active_workspace_id == GLOBAL_WORKSPACE_ID else "workspace",
+            "workspace_scope": "global"
+            if active_workspace_id == GLOBAL_WORKSPACE_ID
+            else "workspace",
             "limit": limit,
         },
     )
@@ -1043,7 +1045,13 @@ def _memory_tool_audit(
     if not hasattr(app.state, "memory_tool_audit"):
         app.state.memory_tool_audit = []
     app.state.memory_tool_audit.append(row)
-    app.state.bus.publish(Event(type=f"{tool_name}.{'denied' if status == 'denied' else 'completed'}", session_id=session_id, payload=row))
+    app.state.bus.publish(
+        Event(
+            type=f"{tool_name}.{'denied' if status == 'denied' else 'completed'}",
+            session_id=session_id,
+            payload=row,
+        )
+    )
     return row
 
 
@@ -1476,9 +1484,7 @@ def _merge_agent_def_rows(rows: list["AgentDef"]) -> list["AgentDef"]:
                 {
                     "source": prior.source,
                     "scope": str(
-                        prior.metadata.get("expert_scope")
-                        or prior.metadata.get("pack_scope")
-                        or ""
+                        prior.metadata.get("expert_scope") or prior.metadata.get("pack_scope") or ""
                     ),
                     "pack_id": str(prior.metadata.get("pack_id") or ""),
                     "definition_path": str(
@@ -1490,9 +1496,7 @@ def _merge_agent_def_rows(rows: list["AgentDef"]) -> list["AgentDef"]:
             )
         current = {
             "source": row.source,
-            "scope": str(
-                row.metadata.get("expert_scope") or row.metadata.get("pack_scope") or ""
-            ),
+            "scope": str(row.metadata.get("expert_scope") or row.metadata.get("pack_scope") or ""),
             "pack_id": str(row.metadata.get("pack_id") or ""),
             "definition_path": str(
                 row.metadata.get("definition_path") or row.metadata.get("expert_path") or ""
@@ -1536,7 +1540,9 @@ def _agent_definition_is_agent_blueprint(agent_def: "AgentDef") -> bool:
     """Return whether an AgentDef came from an Agent Blueprint graph."""
 
     metadata = agent_def.metadata if isinstance(agent_def.metadata, Mapping) else {}
-    return bool(metadata.get("agent_blueprint_id") or metadata.get("definition_kind") == "agent_blueprint")
+    return bool(
+        metadata.get("agent_blueprint_id") or metadata.get("definition_kind") == "agent_blueprint"
+    )
 
 
 def _runtime_workspace_catalog_cwd(
@@ -2148,9 +2154,7 @@ def _dynamic_agent_runtime_provenance(
         "model": {
             "provider_id": provider_id,
             "model_id": model_id,
-            "provider_source": (
-                "agent_default" if agent_def.default_provider else "global_active"
-            ),
+            "provider_source": ("agent_default" if agent_def.default_provider else "global_active"),
             "model_source": "agent_default" if agent_def.default_model else "global_active",
             "fallback_to_global": not (agent_def.default_provider and agent_def.default_model),
         },
@@ -3645,7 +3649,10 @@ async def _run_turn_in_background(
 
         _refresh_argonne_lm_token(app.state.agent)
 
-        if active_agent_id not in _EXECUTABLE_SESSION_AGENT_IDS or active_agent_id in active_blueprint_agent_ids:
+        if (
+            active_agent_id not in _EXECUTABLE_SESSION_AGENT_IDS
+            or active_agent_id in active_blueprint_agent_ids
+        ):
             prompt_registry_factory = getattr(app.state, "prompt_registry_for_request", None)
             prompt_registry = (
                 prompt_registry_factory(session_id=sid)
@@ -3942,7 +3949,11 @@ async def _run_turn_in_background(
             kind_raw = str(ask_user_action.get("kind") or "").strip()
             kind = kind_raw if kind_raw in {"freeform", "choice", "confirmation"} else ""
             if not kind:
-                kind = "choice" if options and not ask_user_action.get("allow_freeform") else "freeform"
+                kind = (
+                    "choice"
+                    if options and not ask_user_action.get("allow_freeform")
+                    else "freeform"
+                )
             question = UserQuestion(
                 id=_new_question_id(),
                 session_id=sid,
@@ -5025,9 +5036,7 @@ def _finalize_context_frame(
             frame.setdefault("metadata", {})["turn_error"] = error_info.model_dump(
                 exclude_none=True
             )
-        app.state.bus.publish(
-            Event(type="context.frame.completed", session_id=sid, payload=frame)
-        )
+        app.state.bus.publish(Event(type="context.frame.completed", session_id=sid, payload=frame))
         break
 
 
@@ -6881,7 +6890,11 @@ def _enrich_with_context_files(app: "FastAPI", sid: str, user_text: str) -> str:
         display_path = row.get("display_path") or row.get("path") or path_str
         if not path_str:
             continue
-        for marker in {f"@{display_path}", f"@{row.get('path') or ''}", f"@{Path(display_path).name}"}:
+        for marker in {
+            f"@{display_path}",
+            f"@{row.get('path') or ''}",
+            f"@{Path(display_path).name}",
+        }:
             if marker != "@":
                 user_text = user_text.replace(marker, display_path)
         mode = row.get("mode") or "read"
@@ -6902,7 +6915,9 @@ def _enrich_with_context_files(app: "FastAPI", sid: str, user_text: str) -> str:
         # in _apply_edit_to_disk, plus mode=plan/architect) still
         # protect against unintended writes.
         if mode == "edit" and not p.exists():
-            blocks.append(f"### Context file: {display_path} (mode=edit, target does not exist yet)")
+            blocks.append(
+                f"### Context file: {display_path} (mode=edit, target does not exist yet)"
+            )
             continue
         if not p.exists():
             raise _context_file_access_error(
@@ -6981,7 +6996,9 @@ def _enrich_with_context_files(app: "FastAPI", sid: str, user_text: str) -> str:
     )
 
 
-def _memory_search_request_from_message(message: "Message", user_text: str) -> dict[str, Any] | None:
+def _memory_search_request_from_message(
+    message: "Message", user_text: str
+) -> dict[str, Any] | None:
     raw = message.metadata.get("memory_search") if isinstance(message.metadata, Mapping) else None
     if raw is None and isinstance(message.metadata, Mapping):
         if not message.metadata.get("include_cross_session_memory"):
@@ -7672,8 +7689,7 @@ def _load_command_files_from_disk(
                 "status": status,
                 "enabled": enabled,
                 "error": str(
-                    meta.get("error")
-                    or ("not_supported" if status == "unsupported" else "")
+                    meta.get("error") or ("not_supported" if status == "unsupported" else "")
                 ),
                 "disabled_reason": disabled_reason,
                 "agent_id": agent_id,
@@ -7696,9 +7712,7 @@ def _load_command_files_from_disk(
                     meta.get("agent-invocable", meta.get("agent_invocable")),
                     False,
                 ),
-                "argument_hint": str(
-                    meta.get("argument-hint") or meta.get("argument_hint") or ""
-                ),
+                "argument_hint": str(meta.get("argument-hint") or meta.get("argument_hint") or ""),
                 "arguments": meta.get("arguments") or [],
                 "prompt_template": body,
                 "prompt_profile": str(
@@ -8233,7 +8247,8 @@ def build_app(
     cors_origins_env = os.environ.get("CLIO_GACT_CORS_ORIGINS", "").strip()
     if cors_origins_env:
         allow_origins: list[str] = (
-            ["*"] if cors_origins_env == "*"
+            ["*"]
+            if cors_origins_env == "*"
             else [o.strip() for o in cors_origins_env.split(",") if o.strip()]
         )
     else:
@@ -8656,6 +8671,7 @@ def build_app(
                 permissions=True,  # BBB23 — /v1/permissions + permission.* events
                 subagents=True,  # BBB25 — nanoagent subsessions + subagent.* events
                 session_export=True,  # #16 — /v1/sessions/{sid}/export + import
+                session_summary=True,  # POST /v1/sessions/{sid}/summarize — user-facing TLDR
                 mcp=True,  # #13 — /v1/mcp/servers exposes the gateway namespaces
                 providers=True,  # #15 — /v1/providers catalogs the LM presets
                 commands=True,  # #14 — /v1/commands + dispatch
@@ -8775,17 +8791,25 @@ def build_app(
             active_blueprint_root = active_blueprint_path
             if active_blueprint_root is None and active_blueprint_id:
                 active = next(
-                    (row for row in discover_agent_blueprints(cwd=cwd) if row.id == active_blueprint_id),
+                    (
+                        row
+                        for row in discover_agent_blueprints(cwd=cwd)
+                        if row.id == active_blueprint_id
+                    ),
                     None,
                 )
                 active_blueprint_root = active.root if active is not None else None
             if active_blueprint_root is not None and (active_blueprint_root / "prompts").is_dir():
-                sources.append(PromptSource("session_agent_blueprint", active_blueprint_root / "prompts"))
+                sources.append(
+                    PromptSource("session_agent_blueprint", active_blueprint_root / "prompts")
+                )
         active_pack_path = _active_prompt_pack_path(session_id)
         if active_pack_path is not None and (active_pack_path / "prompts").is_dir():
             sources.append(PromptSource("session_pack", active_pack_path / "prompts"))
         if session_id:
-            sources.append(PromptSource("session", prompt_write_root.parent / "session-prompts" / session_id))
+            sources.append(
+                PromptSource("session", prompt_write_root.parent / "session-prompts" / session_id)
+            )
         return sources
 
     def _prompt_write_root_for_request(
@@ -8872,24 +8896,36 @@ def build_app(
         context = _prompt_render_context(app)
         if session_id or workspace_id:
             try:
-                agents = [row for row in _agent_rows(session_id=session_id, workspace_id=workspace_id) if row.enabled]
+                agents = [
+                    row
+                    for row in _agent_rows(session_id=session_id, workspace_id=workspace_id)
+                    if row.enabled
+                ]
                 by_parent: dict[str, list[AgentDef]] = {}
                 for agent in agents:
                     by_parent.setdefault(agent.parent_id or "", []).append(agent)
 
                 def render_tree(parent_id: str = "", depth: int = 0) -> list[str]:
                     lines: list[str] = []
-                    for agent in sorted(by_parent.get(parent_id, []), key=lambda row: (row.tier, row.id)):
+                    for agent in sorted(
+                        by_parent.get(parent_id, []), key=lambda row: (row.tier, row.id)
+                    ):
                         indent = "  " * depth
                         detail = f" - {agent.description}" if agent.description else ""
                         lines.append(f"{indent}- {agent.id}: {agent.title}{detail}")
                         lines.extend(render_tree(agent.id, depth + 1))
                     return lines
 
-                context["agents.available_tree"] = "\n".join(render_tree()) or "(no enabled experts)"
-                context["agents.available_flat"] = "\n".join(
-                    f"- {agent.id}: {agent.title}" for agent in sorted(agents, key=lambda row: row.id)
-                ) or "(no enabled experts)"
+                context["agents.available_tree"] = (
+                    "\n".join(render_tree()) or "(no enabled experts)"
+                )
+                context["agents.available_flat"] = (
+                    "\n".join(
+                        f"- {agent.id}: {agent.title}"
+                        for agent in sorted(agents, key=lambda row: row.id)
+                    )
+                    or "(no enabled experts)"
+                )
             except Exception:
                 pass
             if session_id:
@@ -8904,7 +8940,9 @@ def build_app(
                         pack_id = str(metadata.get("active_expert_pack_id") or "").strip()
                         blueprint_id = str(metadata.get("active_agent_blueprint_id") or "").strip()
                 context["session.active_pack"] = pack_id or "(no active expert pack)"
-                context["session.active_agent_blueprint"] = blueprint_id or "(no active agent blueprint)"
+                context["session.active_agent_blueprint"] = (
+                    blueprint_id or "(no active agent blueprint)"
+                )
                 try:
                     commands = [
                         f"- {row.get('id')}: {row.get('description') or row.get('title')}"
@@ -8913,7 +8951,9 @@ def build_app(
                             cwd=_command_cwd_for_request(session_id),
                         )
                     ]
-                    context["commands.agent_invocable"] = "\n".join(commands) or "(no agent-invocable commands)"
+                    context["commands.agent_invocable"] = (
+                        "\n".join(commands) or "(no agent-invocable commands)"
+                    )
                 except Exception:
                     pass
         return context
@@ -8937,7 +8977,9 @@ def build_app(
         rows = registry.list()
         payload: dict[str, Any] = {
             "prompts": [asdict(row) for row in rows],
-            "sources": [{"scope": source.scope, "root": str(source.root)} for source in registry.sources],
+            "sources": [
+                {"scope": source.scope, "root": str(source.root)} for source in registry.sources
+            ],
         }
         overlay_prompt_sources = _prompt_agent_overlay_for_request(session_id or "")
         if overlay_prompt_sources:
@@ -10718,7 +10760,9 @@ def build_app(
             "status": status,
             "result": result_text,
             "error": error,
-            "command_source": str(command_meta.get("command_source") or command_meta.get("source") or ""),
+            "command_source": str(
+                command_meta.get("command_source") or command_meta.get("source") or ""
+            ),
             "command_path": str(command_meta.get("command_path") or ""),
             "created_at": datetime.now(timezone.utc).isoformat(),
         }
@@ -10775,9 +10819,7 @@ def build_app(
 
         # Accept "clear" or "/clear"; the TUI sends both shapes.
         cmd_id = cmd if cmd.startswith("/") else "/" + cmd
-        commands_by_id = {
-            c["id"]: c for c in _all_command_rows(cwd=_command_cwd_for_request(sid))
-        }
+        commands_by_id = {c["id"]: c for c in _all_command_rows(cwd=_command_cwd_for_request(sid))}
         command_meta = commands_by_id.get(cmd_id)
         if command_meta is None:
             raise HTTPException(
@@ -12638,6 +12680,227 @@ def build_app(
             "summary": summary,
         }
 
+    @app.post("/v1/sessions/{sid}/summarize")
+    async def summarize_session(sid: str, request: Request) -> dict[str, Any]:
+        # Produce a user-facing TLDR of the session for a human catching
+        # up — DISTINCT from /compact. Compaction is context-window
+        # management: it REPLACES the archived transcript with an
+        # evidence-preserving memory. Summarize is informational and
+        # NON-DESTRUCTIVE: it appends a synthetic summary message and
+        # leaves the full transcript intact. The TUI/desktop offers this
+        # as a "summarize session" action gated on the ``session_summary``
+        # capability flag.
+        sess = app.state.sessions.get(sid)
+        if sess is None:
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="not_found",
+                        message=f"session not found: {sid}",
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        ledger = app.state.messages.get(sid, [])
+        if not ledger:
+            return {
+                "session_id": sid,
+                "summarized": False,
+                "reason": "session has no messages to summarize",
+            }
+
+        # Same defensive transcript walk as /compact: attribute access
+        # with a dict fallback for legacy rows, bounded per-part and
+        # overall so pathological tool output can't blow the prompt.
+        def _attr(o, name, default=None):
+            if hasattr(o, name):
+                return getattr(o, name)
+            if isinstance(o, dict):
+                return o.get(name, default)
+            return default
+
+        per_part_limit = 6000
+        transcript_limit = 60000
+        chunks: list[str] = []
+        transcript_chars = 0
+        for m in ledger[-50:]:
+            role = (_attr(m, "role", "user") or "user").upper()
+            for p in _attr(m, "parts", []) or []:
+                txt = _attr(p, "text", "") or ""
+                if len(txt) > per_part_limit:
+                    head_limit = per_part_limit // 2
+                    tail_limit = per_part_limit - head_limit
+                    txt = (
+                        txt[:head_limit]
+                        + "\n[...part truncated for summary...]\n"
+                        + txt[-tail_limit:]
+                    )
+                txt = txt.strip()
+                if not txt:
+                    continue
+                chunk = f"{role}: {txt}"
+                remaining = transcript_limit - transcript_chars
+                if remaining <= 0:
+                    break
+                if len(chunk) > remaining:
+                    chunk = chunk[:remaining] + "\n[...transcript truncated for summary...]"
+                chunks.append(chunk)
+                transcript_chars += len(chunk)
+            if transcript_chars >= transcript_limit:
+                break
+        transcript = "\n".join(chunks)
+        if not transcript.strip():
+            return {
+                "session_id": sid,
+                "summarized": False,
+                "reason": "transcript is empty after part filtering",
+            }
+
+        agent = app.state.agent
+        if agent is None:
+            raise HTTPException(
+                status_code=503,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="agent_unavailable",
+                        message="no LM agent wired; configure one via PUT /v1/providers/lm",
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+
+        # Optional custom instructions (the desktop's "summarize · custom"
+        # action). ``focus`` is accepted as a fallback alias for parity
+        # with /compact. ``auto`` distinguishes the one-click action from
+        # an instructed one and is recorded for provenance.
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        instructions = (body.get("instructions") or body.get("focus") or "").strip()
+        auto = bool(body.get("auto", False))
+
+        prompt = (
+            "Write a concise, user-facing summary (a TLDR) of the following CLIO "
+            "conversation for a human who wants to catch up quickly. This summary is "
+            "informational only and does NOT replace the transcript.\n\n"
+            "Rules:\n"
+            "- Open with a 1-2 sentence high-level TLDR of what the session is about "
+            "and what it accomplished.\n"
+            "- Then give short bullets for the key points, decisions, and any concrete "
+            "results or artifacts (file paths, dataset names, metrics) that appear.\n"
+            "- Note unresolved questions or next steps if the transcript has them.\n"
+            "- Be faithful to the transcript; do not invent details that are not present.\n"
+            "- Keep it readable and compact; prefer bullets over long prose."
+        )
+        if instructions:
+            prompt += f"\n\nFollow these specific instructions for the summary: {instructions}"
+        prompt += f"\n\n--- transcript ---\n{transcript}\n--- end ---"
+
+        def _summarize_with_provider_retries() -> str:
+            def summarize() -> str:
+                return agent._run_chat_agent(prompt, "")
+
+            retry_call = getattr(agent, "_call_with_transient_provider_retries", None)
+            if callable(retry_call):
+                return retry_call("session_summary", summarize)
+            return summarize()
+
+        try:
+            summary = await asyncio.get_running_loop().run_in_executor(
+                None,
+                _summarize_with_provider_retries,
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(
+                status_code=502,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="upstream_error",
+                        message=f"session summarisation failed: {exc!r}",
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            ) from exc
+
+        from clio_agent.gact.types import Message, Part, Tokens  # noqa: PLC0415
+
+        event_id = _new_memory_event_id()
+        summarized_at = datetime.now(timezone.utc).isoformat()
+        summary_message = Message(
+            id=f"msg_summary_{uuid.uuid4().hex[:10]}",
+            session_id=sid,
+            role="assistant",
+            created_at=summarized_at,
+            updated_at=summarized_at,
+            parts=[
+                Part(
+                    id=f"part_summary_{uuid.uuid4().hex[:10]}",
+                    type="text",
+                    metadata={
+                        "synthetic": "session_summary",
+                        "memory_event_id": event_id,
+                    },
+                    text="[session summary]\n" + (summary or "").strip(),
+                )
+            ],
+            tokens=Tokens(input=0, output=0, cache_read=0, cache_write=0),
+            cost_usd=0.0,
+            stop_reason="end_turn",
+            metadata={
+                "synthetic": "session_summary",
+                "memory_event_id": event_id,
+            },
+        )
+        # Non-destructive: APPEND the summary; /compact REPLACES, we do not.
+        _replace_session_messages(app, sid, list(ledger) + [summary_message])
+
+        memory_event = {
+            "id": event_id,
+            "version": 1,
+            "type": "session_summary",
+            "session_id": sid,
+            "created_at": summarized_at,
+            "updated_at": summarized_at,
+            "summary_message_id": summary_message.id,
+            "message_count": len(ledger),
+            "summary_chars": len((summary or "")),
+            "transcript_chars": len(transcript),
+            "transcript_limit": transcript_limit,
+            "per_part_limit": per_part_limit,
+            "instructions": instructions,
+            "auto": auto,
+            "metadata": {
+                "source": "gact_summarize",
+                "synthetic": "session_summary",
+            },
+        }
+        app.state.memory_events.setdefault(sid, []).append(memory_event)
+
+        # Publish so any open SSE stream surfaces the summary.
+        app.state.bus.publish(
+            Event(
+                type="session.summarized",
+                session_id=sid,
+                payload={
+                    "event_id": event_id,
+                    "session_id": sid,
+                    "summary_message_id": summary_message.id,
+                    "summary_chars": len((summary or "")),
+                    "message_count": len(ledger),
+                    "version": 1,
+                },
+            )
+        )
+        return {
+            "session_id": sid,
+            "summarized": True,
+            "event_id": event_id,
+            "summary_message_id": summary_message.id,
+            "summary": summary,
+        }
+
     @app.get("/v1/sessions/{sid}/memory/events")
     async def list_session_memory_events(sid: str, limit: int = 50) -> dict[str, Any]:
         sess = app.state.sessions.get(sid)
@@ -13178,9 +13441,7 @@ def build_app(
             "session": Session(**sess.to_wire()).model_dump(exclude_none=True),
             "workspace": (Workspace(**ws.to_wire()).model_dump(exclude_none=True) if ws else None),
             "messages": [m.model_dump(exclude_none=True) for m in msgs],
-            "context_files": [
-                dict(row) for row in app.state.context_files.get(sid, {}).values()
-            ],
+            "context_files": [dict(row) for row in app.state.context_files.get(sid, {}).values()],
         }
 
     @app.post("/v1/sessions/import", response_model=Session)
@@ -14149,11 +14410,7 @@ def build_app(
                         description=row.get("description", ""),
                         source=row.get("source", "builtin"),
                         status=status,
-                        metadata=(
-                            {"error": row["error"]}
-                            if row.get("error")
-                            else {}
-                        ),
+                        metadata=({"error": row["error"]} if row.get("error") else {}),
                     )
                 )
                 command_ids.add(command_id)
@@ -14209,7 +14466,9 @@ def build_app(
         metadata = getattr(sess, "metadata", {}) or {}
         if not isinstance(metadata, Mapping):
             return ""
-        return str(metadata.get("active_expert_pack_id") or metadata.get("expert_pack_id") or "").strip()
+        return str(
+            metadata.get("active_expert_pack_id") or metadata.get("expert_pack_id") or ""
+        ).strip()
 
     def _active_session_expert_pack_path(session_id: str = "") -> Path | None:
         if not session_id:
@@ -14948,7 +15207,10 @@ def build_app(
                 error=ErrorInfo(
                     error="not_found",
                     message=f"agent blueprint not found: {blueprint_id}",
-                    details={"agent_blueprint_id": blueprint_id, "workspace_id": workspace_id or ""},
+                    details={
+                        "agent_blueprint_id": blueprint_id,
+                        "workspace_id": workspace_id or "",
+                    },
                     recoverable=False,
                 )
             ).model_dump(exclude_none=True),
@@ -15304,7 +15566,9 @@ def build_app(
             (row for row in discover_agent_blueprints(cwd=cwd) if row.id == blueprint_id),
             None,
         )
-        blueprint_wire: dict[str, Any] | None = blueprint.to_wire() if blueprint is not None else None
+        blueprint_wire: dict[str, Any] | None = (
+            blueprint.to_wire() if blueprint is not None else None
+        )
         if blueprint is None and blueprint_path is not None:
             validation = validate_agent_blueprint_path(blueprint_path, scope="session")
             raw_blueprint = validation.get("agent_blueprint")
@@ -15313,7 +15577,9 @@ def build_app(
             "session_id": sid,
             "workspace_id": getattr(sess, "workspace_id", ""),
             "active_agent_blueprint_id": blueprint_id,
-            "active_agent_blueprint_path": str(blueprint_path) if blueprint_path is not None else "",
+            "active_agent_blueprint_path": str(blueprint_path)
+            if blueprint_path is not None
+            else "",
             "agent_blueprint": blueprint_wire,
             "agent_overlay": _session_agent_overlay(sid),
             "activation": {
@@ -15388,7 +15654,9 @@ def build_app(
                         )
                     ).model_dump(exclude_none=True),
                 )
-            blueprint = next((row for row in discover_agent_blueprints(cwd=cwd) if row.id == blueprint_id), None)
+            blueprint = next(
+                (row for row in discover_agent_blueprints(cwd=cwd) if row.id == blueprint_id), None
+            )
             if blueprint is None:
                 raise HTTPException(
                     status_code=404,
@@ -15423,7 +15691,9 @@ def build_app(
             "active_agent_blueprint_id": str(blueprint_wire.get("id") or ""),
             "active_agent_blueprint_path": str(blueprint_path),
             "agent_blueprint": blueprint_wire,
-            "session": Session(**updated.to_wire()).model_dump(exclude_none=True) if updated else None,
+            "session": Session(**updated.to_wire()).model_dump(exclude_none=True)
+            if updated
+            else None,
         }
 
     @app.get("/v1/sessions/{sid}/agent-overlay")
@@ -15502,7 +15772,9 @@ def build_app(
             "session_id": sid,
             "agent_overlay": dict(overlay),
             "validation": validation,
-            "session": Session(**updated.to_wire()).model_dump(exclude_none=True) if updated else None,
+            "session": Session(**updated.to_wire()).model_dump(exclude_none=True)
+            if updated
+            else None,
         }
 
     @app.post("/v1/sessions/{sid}/agent-overlay/export", status_code=201)
@@ -15765,7 +16037,9 @@ def build_app(
                     "active_expert_pack_id": str(pack_wire.get("id") or ""),
                     "active_expert_pack_version": str(pack_wire.get("version") or ""),
                     "active_expert_pack_scope": "session",
-                    "active_expert_pack_definition_path": str(pack_wire.get("definition_path") or ""),
+                    "active_expert_pack_definition_path": str(
+                        pack_wire.get("definition_path") or ""
+                    ),
                     "active_expert_pack_path": str(Path(pack_path).expanduser()),
                 },
             )
@@ -15776,7 +16050,9 @@ def build_app(
                 "active_expert_pack_id": str(pack_wire.get("id") or ""),
                 "active_expert_pack_path": str(Path(pack_path).expanduser()),
                 "expert_pack": pack_wire,
-                "session": Session(**updated.to_wire()).model_dump(exclude_none=True) if updated else None,
+                "session": Session(**updated.to_wire()).model_dump(exclude_none=True)
+                if updated
+                else None,
             }
         if not pack_id:
             raise HTTPException(
@@ -15818,7 +16094,9 @@ def build_app(
             "workspace_id": getattr(sess, "workspace_id", ""),
             "active_expert_pack_id": pack.id,
             "expert_pack": pack.to_wire(),
-            "session": Session(**updated.to_wire()).model_dump(exclude_none=True) if updated else None,
+            "session": Session(**updated.to_wire()).model_dump(exclude_none=True)
+            if updated
+            else None,
         }
 
     @app.get("/v1/agents", response_model=ListAgentsResponse)
@@ -16070,7 +16348,9 @@ def build_app(
                     mode = str(row.get("mode") or "read")
                     context_files_by_mode[mode] = context_files_by_mode.get(mode, 0) + 1
                 transcript_tokens = sum(_estimate_message_context_tokens(m) for m in messages)
-                context_file_tokens = sum(_estimate_context_file_tokens(row) for row in context_files)
+                context_file_tokens = sum(
+                    _estimate_context_file_tokens(row) for row in context_files
+                )
                 tokens_retained = transcript_tokens + context_file_tokens
                 tokens_budget = 4000
                 pressure, threshold_state, compact_recommended = _context_pressure_state(

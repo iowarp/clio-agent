@@ -71,6 +71,9 @@ class CapabilityFlags(BaseModel):
     session_branching: bool = False
     session_sharing: bool = False
     session_export: bool = False
+    session_summary: bool = (
+        False  # POST /sessions/{id}/summarize — user-facing TLDR (distinct from compact)
+    )
     cost_tracking: bool = False
     thinking_blocks: bool = False
     edit_modes: bool = False
