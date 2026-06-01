@@ -13030,6 +13030,138 @@ def build_app(
         installed.pop(sid, None)
         return None
 
+    @app.post("/v1/mcp/servers/{sid}/reconnect")
+    async def reconnect_mcp_server(sid: str) -> dict[str, Any]:
+        """Re-probe a previously-installed external MCP server.
+
+        fastmcp.Client connections are ephemeral (re-created per
+        dispatch), so there is no persistent socket to tear down —
+        reconnect simply re-opens the stored transport spec, re-lists the
+        tools, and updates the registry row in place. Non-destructive, so
+        (unlike DELETE) no permission guard. Bundled in-process servers
+        (mcp_fs/mcp_hdf5/mcp_parquet) are not in the external registry, so
+        they 404 here (they cannot be reconnected)."""
+
+        installed = getattr(app.state, "external_mcp_servers", {}) or {}
+        info = installed.get(sid)
+        if info is None:
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="not_found",
+                        message=f"no externally-installed MCP server: {sid}",
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+
+        try:
+            from fastmcp import Client
+            from fastmcp.client.transports import (
+                StdioTransport,
+                StreamableHttpTransport,
+            )
+        except Exception as exc:
+            raise HTTPException(
+                status_code=503,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="dependency_missing",
+                        message=f"fastmcp Client unavailable: {exc!r}",
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
+            ) from exc
+
+        spec = info.get("spec", {})
+        if spec.get("transport") == "stdio":
+            transport = StdioTransport(
+                command=spec["command"],
+                args=spec.get("args") or [],
+            )
+        elif spec.get("transport") == "http":
+            transport = StreamableHttpTransport(url=spec["url"])  # type: ignore[assignment]
+        else:
+            raise HTTPException(
+                status_code=422,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="bad_request",
+                        message=f"server {sid} has no reconnectable transport spec",
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+
+        # Re-probe identically to install: open, list tools, close.
+        tool_names: list[str] = []
+        connect_error: Optional[str] = None
+        try:
+            async with Client(transport) as client:
+                tools = await client.list_tools()
+                tool_names = [t.name for t in tools]
+        except Exception as exc:  # noqa: BLE001
+            connect_error = repr(exc)
+
+        # Update the registry row in place.
+        info["status"] = "ready" if connect_error is None else "error"
+        info["tools"] = tool_names
+        if connect_error:
+            info["error"] = connect_error
+        else:
+            info.pop("error", None)
+        installed[sid] = info
+
+        if connect_error is not None:
+            # Global status event (session_id="" like lm.provider.*).
+            app.state.bus.publish(
+                Event(
+                    type="mcp.server.error",
+                    session_id="",
+                    payload={
+                        "server_id": sid,
+                        "name": info.get("name", ""),
+                        "status": "error",
+                        "error": connect_error,
+                    },
+                )
+            )
+            raise HTTPException(
+                status_code=502,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="upstream_unavailable",
+                        message=f"MCP server reconnect failed: {connect_error}",
+                        details={"id": sid, "spec": spec},
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+
+        app.state.bus.publish(
+            Event(
+                type="mcp.server.reconnected",
+                session_id="",
+                payload={
+                    "server_id": sid,
+                    "name": info.get("name", ""),
+                    "status": "ready",
+                    "transport": info.get("transport", ""),
+                    "tools": tool_names,
+                },
+            )
+        )
+        return {
+            "id": sid,
+            "name": info.get("name", ""),
+            "status": "ready",
+            "transport": info.get("transport", ""),
+            "tools_count": len(tool_names),
+            "tools": tool_names,
+            "spec": spec,
+        }
+
     @app.get("/v1/mcp/servers/{sid}")
     async def get_mcp_server(sid: str) -> dict[str, Any]:
         """SPEC §6.7 detail endpoint for one MCP server row."""
