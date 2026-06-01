@@ -139,6 +139,14 @@ class EventBus:
 
         q: asyncio.Queue[Event] = asyncio.Queue(maxsize=self._capacity)
         self._subs[session_id].append(q)
+        # Global events are published with session_id="" (e.g.
+        # lm.provider.changed/failed, mcp.server.reconnected). A per-session
+        # subscriber must also receive those, so fan the SAME queue into the
+        # global ("") bucket too — otherwise a session SSE stream never sees
+        # any global event and e.g. provider-change toasts never fire.
+        global_bucket = session_id != ""
+        if global_bucket:
+            self._subs[""].append(q)
         try:
             # Replay the buffered tail first. This matters for the
             # happy path too: the TUI creates a session, immediately
@@ -147,7 +155,12 @@ class EventBus:
             # turn that just fired. We snapshot the history up-front
             # so events published DURING replay come via the queue
             # only (not also via the snapshot), avoiding duplicates.
+            # Merge the global tail in too, ordered by the monotonic
+            # event id so session + global events interleave correctly.
             snapshot = list(self._history.get(session_id, []))
+            if global_bucket:
+                snapshot.extend(self._history.get("", []))
+                snapshot.sort(key=lambda e: e.id)
             replayed_max = last_event_id
             for ev in snapshot:
                 if ev.id > last_event_id:
@@ -166,6 +179,13 @@ class EventBus:
                 pass
             if not self._subs[session_id]:
                 del self._subs[session_id]
+            if global_bucket:
+                try:
+                    self._subs[""].remove(q)
+                except ValueError:
+                    pass
+                if "" in self._subs and not self._subs[""]:
+                    del self._subs[""]
 
     def subscriber_count(self, session_id: str) -> int:
         """How many SSE clients are currently attached to ``session_id``.
