@@ -8712,6 +8712,7 @@ def build_app(
                 subagents=True,  # BBB25 — nanoagent subsessions + subagent.* events
                 session_export=True,  # #16 — /v1/sessions/{sid}/export + import
                 session_summary=True,  # POST /v1/sessions/{sid}/summarize — user-facing TLDR
+                attachments_upload=True,  # POST /v1/sessions/{sid}/attachments — base64 byte upload
                 mcp=True,  # #13 — /v1/mcp/servers exposes the gateway namespaces
                 providers=True,  # #15 — /v1/providers catalogs the LM presets
                 commands=True,  # #14 — /v1/commands + dispatch
@@ -10241,6 +10242,206 @@ def build_app(
             "last_modified": body.get("last_modified") or "",
             "size": int(body.get("size") or 0),
             "language": body.get("language") or "",
+        }
+        bucket = app.state.context_files.setdefault(sid, {})
+        bucket[row["path"]] = row
+        _flush_context_files(app)
+        app.state.bus.publish(
+            Event(
+                type="context.file.added",
+                session_id=sid,
+                payload={"session_id": sid, "file": row},
+            )
+        )
+        return row
+
+    @app.post("/v1/sessions/{sid}/attachments")
+    async def upload_attachment(sid: str, request: Request) -> dict[str, Any]:
+        """Upload a file's BYTES into the session workspace and register
+        it as a context file so the agent reads it next turn.
+
+        Body (JSON, base64 — NOT multipart): ``{file: <base64>, filename,
+        mime_type?, mode?}``. base64-in-JSON is deliberate: the CLIO
+        Desktop transports HTTP through a Tauri/ureq bridge that only
+        forwards UTF-8 string bodies (FormData is stringified to
+        "[object FormData]"), and over an SSH tunnel the body must survive
+        that bridge — so multipart cannot work in the shipped desktop.
+
+        Bytes are written under ``{workspace_root}/.clio/attachments/{sid}/``
+        (sandboxed) and registered through the SAME context-file ledger +
+        ``context.file.added`` event as POST /context/files, so the
+        existing read path (_enrich_with_context_files) consumes them with
+        no agent-layer change. This is the only way to get a local file to
+        a REMOTE (ssh) agent — the bytes ride the tunnel and land in the
+        remote workspace."""
+
+        import base64  # noqa: PLC0415
+
+        from clio_agent.gact.workspace_scope import (  # noqa: PLC0415
+            default_workspace_storage_root,
+        )
+
+        sess = app.state.sessions.get(sid)
+        if sess is None:
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="not_found",
+                        message=f"session not found: {sid}",
+                        details={"session_id": sid},
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        if not isinstance(body, dict):
+            body = {}
+
+        mode = body.get("mode") or "read"
+        if mode not in {"read", "pin"}:
+            raise HTTPException(
+                status_code=422,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="bad_request",
+                        message=f"invalid upload mode: {mode!r}; expected read or pin",
+                        details={"field": "mode", "allowed": ["read", "pin"]},
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+
+        # --- decode bytes (size-capped) ---
+        max_bytes = 25 * 1024 * 1024  # 25 MiB
+        encoded = body.get("file")
+        if not isinstance(encoded, str) or not encoded:
+            raise HTTPException(
+                status_code=422,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="bad_request",
+                        message="missing required field: file (base64 string)",
+                        details={"field": "file"},
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        try:
+            data = base64.b64decode(encoded, validate=True)
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(
+                status_code=422,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="bad_request",
+                        message=f"file is not valid base64: {type(exc).__name__}",
+                        details={"field": "file"},
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            ) from exc
+        if len(data) > max_bytes:
+            raise HTTPException(
+                status_code=413,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="payload_too_large",
+                        message=f"attachment exceeds {max_bytes} bytes",
+                        details={"max_bytes": max_bytes, "size": len(data)},
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+
+        # --- sanitize the filename (THE security boundary) ---
+        # Reduce to a bare basename under BOTH posix and windows separator
+        # semantics so a remote (linux) or local (windows) clio is equally
+        # safe; reject anything that survives as a traversal token.
+        raw_name = str(body.get("filename") or "").strip()
+        candidate = raw_name.replace("\\", "/").rsplit("/", 1)[-1].strip()
+        if "\x00" in candidate or candidate in {"", ".", ".."}:
+            raise HTTPException(
+                status_code=422,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="bad_request",
+                        message=f"invalid attachment filename: {raw_name!r}",
+                        details={"field": "filename"},
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        safe_name = candidate
+
+        # --- resolve the sandboxed destination dir ---
+        workspace_id = getattr(sess, "workspace_id", "") or "ws_default"
+        ws = app.state.workspaces.get(workspace_id)
+        if ws is None:
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="not_found",
+                        message=f"workspace not found: {workspace_id}",
+                        details={"workspace_id": workspace_id},
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        root = Path(ws.root_path or os.getcwd()).expanduser().resolve()
+        base = (default_workspace_storage_root(str(root)) / "attachments" / sid).resolve()
+
+        # Collision-safe destination; never overwrite an existing upload.
+        stem, suffix = Path(safe_name).stem, Path(safe_name).suffix
+        dest = base / safe_name
+        counter = 2
+        while dest.exists():
+            dest = base / f"{stem} ({counter}){suffix}"
+            counter += 1
+
+        # Defense-in-depth: confine the write to `base` even though the
+        # filename is already sanitized (the register step re-checks vs root).
+        try:
+            dest.resolve(strict=False).relative_to(base)
+        except ValueError:
+            raise HTTPException(
+                status_code=403,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="path_outside_workspace",
+                        message="attachment path escapes the attachments dir",
+                        details={"filename": raw_name},
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
+            ) from None
+
+        # --- write bytes atomically ---
+        base.mkdir(parents=True, exist_ok=True)
+        tmp = dest.parent / (dest.name + ".tmp")
+        tmp.write_bytes(data)
+        tmp.replace(dest)
+
+        # --- register through the existing context-file ledger ---
+        rel = dest.resolve().relative_to(root)
+        resolved_info = _resolve_context_attachment_path(
+            sess=sess,
+            raw_path=str(rel),
+            requested_workspace_id=workspace_id,
+        )
+        row = {
+            **resolved_info,
+            "mode": mode,
+            "added_at": datetime.now(timezone.utc).isoformat(),
+            "last_modified": "",
+            "size": dest.stat().st_size,
+            "language": "",
+            "uploaded": True,
         }
         bucket = app.state.context_files.setdefault(sid, {})
         bucket[row["path"]] = row

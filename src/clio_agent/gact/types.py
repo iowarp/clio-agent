@@ -74,6 +74,7 @@ class CapabilityFlags(BaseModel):
     session_summary: bool = (
         False  # POST /sessions/{id}/summarize — user-facing TLDR (distinct from compact)
     )
+    attachments_upload: bool = False  # POST /sessions/{id}/attachments — base64 byte upload
     cost_tracking: bool = False
     thinking_blocks: bool = False
     edit_modes: bool = False
