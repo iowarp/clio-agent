@@ -153,6 +153,11 @@ matching scope metadata. Message hooks currently provide session, workspace, and
 active Blueprint ids. `semantic_event` hooks infer session/workspace scope from
 the event payload.
 
+Agent Blueprints may package Python hooks as `hooks/<event>.py`. They are
+reported as disabled descriptors and require an explicit enable/trust call before
+CLIO copies them into `blueprints/<blueprint_id>/` and reloads the local Python
+runtime hook registry. See [Agent Blueprint Packaged Hooks](AGENT_BLUEPRINT_PACKAGED_HOOKS.md).
+
 `/v1/capabilities` reports `x_clio_hook_backend` and
 `x_clio_hook_events` so clients can see the configured backend and handler
 counts.

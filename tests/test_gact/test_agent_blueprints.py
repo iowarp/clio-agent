@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import subprocess
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -24,6 +25,7 @@ from clio_agent.gact.app import (
     build_app,
 )
 from clio_agent.gact.types import AgentDef
+from clio_agent.runtime.hooks import install_global_registry
 from tests.test_gact.conftest import complete_turn
 
 
@@ -1304,6 +1306,162 @@ EarthScope descriptor.
     assert denied.json()["error"]["error"] == "mcp_untrusted"
     assert allowed.status_code == 200, allowed.text
     assert allowed.json()["trust"]["source"] == "request"
+
+
+def test_agent_blueprint_packaged_hook_validation_reports_unknown_event(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "genomics"
+    _write_blueprint(root)
+    (root / "hooks").mkdir()
+    root.joinpath("hooks", "not_a_hook_event.py").write_text(
+        "def not_a_hook_event():\n    return None\n",
+        encoding="utf-8",
+    )
+
+    body = validate_agent_blueprint_path(root)
+
+    assert body["enabled"] is False
+    assert body["hook_descriptors"][0]["id"] == "not_a_hook_event"
+    assert body["hook_descriptors"][0]["validation_errors"] == [
+        "unsupported hook event: not_a_hook_event"
+    ]
+    assert "not_a_hook_event: unsupported hook event: not_a_hook_event" in body[
+        "validation_errors"
+    ]
+
+
+def test_agent_blueprint_packaged_hook_requires_enablement_and_blueprint_scope(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeAgent:
+        def forward(self, question: str, session_id: str = "default") -> Any:
+            return SimpleNamespace(answer=f"default handled {question}", error_info=None)
+
+    async def no_stream(*args: Any, **kwargs: Any) -> None:
+        return None
+
+    def fake_prompt_runner(
+        base_agent: Any,
+        agent_def: AgentDef,
+        question: str,
+        session_id: str,
+        cancel_requested: Any = None,
+    ) -> Any:
+        del base_agent, agent_def, session_id, cancel_requested
+        return SimpleNamespace(
+            answer=f"blueprint handled {question}",
+            selected_expert="root",
+            routing_rationale="session blueprint",
+            route_source="agent_blueprint",
+            error_info=None,
+        )
+
+    monkeypatch.setattr("clio_agent.gact.app._try_streamed_forward", no_stream)
+    monkeypatch.setattr("clio_agent.gact.app._run_prompt_user_agent", fake_prompt_runner)
+    monkeypatch.setenv("CLIO_HOOKS_BACKEND", "local_python")
+    monkeypatch.setenv("CLIO_HOOKS_DIR", str(tmp_path / "runtime-hooks"))
+    monkeypatch.setenv("CLIO_GACT_HOOK_TRUST_ALWAYS", "false")
+    install_global_registry(None)
+
+    workspace = tmp_path / "workspace"
+    root = workspace / ".clio" / "agent-blueprints" / "genomics"
+    _write_blueprint(root)
+    (root / "hooks").mkdir()
+    root.joinpath("hooks", "pre_message.py").write_text(
+        """
+def pre_message(session_id, text):
+    if "BLOCK_ME" in text:
+        raise PermissionError("blocked by packaged blueprint hook")
+""",
+        encoding="utf-8",
+    )
+
+    try:
+        app = build_app(sessions_path=tmp_path / "sessions.json", agent=FakeAgent())
+        with TestClient(app) as client:
+            wid = client.post(
+                "/v1/workspaces",
+                json={
+                    "name": "Workspace",
+                    "root_path": str(workspace),
+                    "storage_root": str(workspace / ".clio"),
+                },
+            ).json()["id"]
+            sid_blueprint = client.post(
+                "/v1/sessions",
+                json={"title": "blueprint", "workspace_id": wid},
+            ).json()["id"]
+            sid_default = client.post(
+                "/v1/sessions",
+                json={"title": "default", "workspace_id": wid},
+            ).json()["id"]
+            assert client.post(
+                f"/v1/sessions/{sid_blueprint}/agent-blueprint",
+                json={"blueprint_id": "genomics"},
+            ).status_code == 200
+
+            detail = client.get(
+                "/v1/agent-blueprints/genomics",
+                params={"workspace_id": wid},
+            ).json()
+            denied = client.post(
+                "/v1/agent-blueprints/genomics/hooks/pre_message/enable",
+                json={"workspace_id": wid},
+            )
+            before_enable = complete_turn(client, sid_blueprint, "BLOCK_ME before enable")
+            enabled = client.post(
+                "/v1/agent-blueprints/genomics/hooks/pre_message/enable",
+                json={"workspace_id": wid, "trust": True},
+            )
+            capabilities = client.get("/v1/capabilities").json()["capabilities"]
+            default_after_enable = complete_turn(client, sid_default, "BLOCK_ME default")
+            blocked_ack = client.post(
+                f"/v1/sessions/{sid_blueprint}/messages",
+                json={"parts": [{"type": "text", "text": "BLOCK_ME after enable"}]},
+            )
+            assert blocked_ack.status_code == 200, blocked_ack.text
+            blocked_user_message_id = blocked_ack.json()["message_id"]
+            deadline = time.monotonic() + 5.0
+            blocked_session: dict[str, Any] = {}
+            while time.monotonic() < deadline:
+                blocked_session = client.get(f"/v1/sessions/{sid_blueprint}").json()
+                if blocked_session["status"] == "error":
+                    break
+                time.sleep(0.05)
+            messages_after_block = client.get(
+                f"/v1/sessions/{sid_blueprint}/messages"
+            ).json()["messages"]
+
+    finally:
+        install_global_registry(None)
+
+    assert detail["hook_descriptors"][0]["id"] == "pre_message"
+    assert detail["hook_descriptors"][0]["enabled"] is False
+    assert denied.status_code == 403
+    assert denied.json()["error"]["error"] == "hook_untrusted"
+    assert before_enable["role"] == "assistant"
+    assert before_enable.get("error_info") is None
+    assert enabled.status_code == 200, enabled.text
+    enabled_body = enabled.json()
+    assert enabled_body["status"] == "enabled"
+    assert enabled_body["trust"] == {
+        "policy": "explicit",
+        "trusted": True,
+        "source": "request",
+    }
+    assert enabled_body["installed_path"].endswith("blueprints/genomics/pre_message.py")
+    assert capabilities["x_clio_hook_events"]["pre_message"] == 1
+    assert default_after_enable["role"] == "assistant"
+    assert default_after_enable.get("error_info") is None
+    assert blocked_session["status"] == "error"
+    blocked_index = next(
+        index
+        for index, row in enumerate(messages_after_block)
+        if row["id"] == blocked_user_message_id
+    )
+    assert blocked_index == 0 or messages_after_block[blocked_index - 1]["role"] != "assistant"
 
 
 def test_enabled_agent_blueprint_mcp_descriptor_exposes_declared_tools(tmp_path: Path) -> None:

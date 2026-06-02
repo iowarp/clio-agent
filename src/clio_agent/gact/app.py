@@ -672,6 +672,13 @@ def _mcp_trust_always_enabled() -> bool:
     return raw not in {"0", "false", "no", "off", "disabled"}
 
 
+def _hook_trust_always_enabled() -> bool:
+    """Return whether packaged Blueprint hooks may be trusted by default."""
+
+    raw = os.environ.get("CLIO_GACT_HOOK_TRUST_ALWAYS", "true").strip().lower()
+    return raw not in {"0", "false", "no", "off", "disabled"}
+
+
 def _keyword_user_agent_routing_enabled() -> bool:
     """Return whether legacy keyword routing into user agents is enabled."""
 
@@ -8377,6 +8384,7 @@ from clio_agent.gact.agent_blueprints import (
     install_agent_blueprint,
     load_agent_blueprint_path,
     load_agent_blueprints,
+    load_hook_descriptors,
     load_mcp_descriptors,
     read_install_metadata,
     uninstall_agent_blueprint,
@@ -16410,6 +16418,36 @@ def build_app(
             )
         return out
 
+    def _runtime_hook_dir_for_packaged_hooks() -> Path:
+        metadata = getattr(app.state, "runtime_hook_registry_metadata", {}) or {}
+        backend = str(metadata.get("backend") or "")
+        hooks_dir = str(metadata.get("hooks_dir") or "").strip()
+        if backend != "local_python" or not hooks_dir:
+            raise HTTPException(
+                status_code=409,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="hook_backend_unsupported",
+                        message=(
+                            "Agent Blueprint packaged hooks require the local_python "
+                            "runtime hook backend"
+                        ),
+                        details={"backend": backend},
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        return Path(hooks_dir).expanduser()
+
+    def _reload_runtime_hook_registry(hooks_dir: Path) -> dict[str, Any]:
+        from clio_agent.runtime.hooks import HookRegistry, install_global_registry  # noqa: PLC0415
+
+        registry = HookRegistry(hooks_dir=hooks_dir)
+        install_global_registry(registry)
+        metadata = registry.metadata() if hasattr(registry, "metadata") else {}
+        app.state.runtime_hook_registry_metadata = metadata
+        return metadata
+
     def _active_session_agent_blueprint_rows(
         session_id: str = "",
         workspace_id: str = "",
@@ -16539,6 +16577,11 @@ def build_app(
                     "agent_blueprint": blueprint.to_wire(),
                     "agents": [row.model_dump(exclude_none=True) for row in agents],
                     "mcp_descriptors": load_mcp_descriptors(
+                        blueprint.root,
+                        scope=blueprint.scope,
+                        blueprint_id=blueprint.id,
+                    ),
+                    "hook_descriptors": load_hook_descriptors(
                         blueprint.root,
                         scope=blueprint.scope,
                         blueprint_id=blueprint.id,
@@ -16705,6 +16748,146 @@ def build_app(
                     )
                 ).model_dump(exclude_none=True),
             ) from exc
+
+    @app.post("/v1/agent-blueprints/{blueprint_id:path}/hooks/{hook_id}/enable")
+    async def enable_agent_blueprint_hook(
+        blueprint_id: str,
+        hook_id: str,
+        req: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        body = req or {}
+        cwd = _workspace_catalog_cwd(workspace_id=str(body.get("workspace_id") or ""))
+        blueprint = next(
+            (row for row in discover_agent_blueprints(cwd=cwd) if row.id == blueprint_id),
+            None,
+        )
+        if blueprint is None:
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="not_found",
+                        message=f"agent blueprint not found: {blueprint_id}",
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        descriptors = load_hook_descriptors(
+            blueprint.root,
+            scope=blueprint.scope,
+            blueprint_id=blueprint.id,
+        )
+        descriptor = next((row for row in descriptors if row["id"] == hook_id), None)
+        if descriptor is None:
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="not_found",
+                        message=f"hook descriptor not found: {hook_id}",
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        if descriptor.get("validation_errors"):
+            raise HTTPException(
+                status_code=400,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="validation_error",
+                        message="hook descriptor is invalid",
+                        details={"validation_errors": descriptor.get("validation_errors", [])},
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+
+        raw_trust_metadata = descriptor.get("trust")
+        trust_metadata: Mapping[str, Any] = (
+            raw_trust_metadata if isinstance(raw_trust_metadata, Mapping) else {}
+        )
+        trust_policy = str(trust_metadata.get("policy") or "explicit")
+        trust_requested = body.get("trust", body.get("trusted", body.get("trust_always")))
+        explicit_trust = bool(trust_requested)
+        trusted = (
+            explicit_trust
+            or trust_policy in {"trust_always", "always", "trusted"}
+            or _hook_trust_always_enabled()
+        )
+        if not trusted:
+            raise HTTPException(
+                status_code=403,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="hook_untrusted",
+                        message="Packaged hook requires explicit trust before enablement",
+                        details={
+                            "agent_blueprint_id": blueprint_id,
+                            "hook_id": hook_id,
+                            "trust_policy": trust_policy,
+                        },
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+
+        source = Path(str(descriptor.get("definition_path") or "")).expanduser()
+        hooks_dir = _runtime_hook_dir_for_packaged_hooks()
+        target_dir = hooks_dir / "blueprints" / blueprint_id
+        target_dir.mkdir(parents=True, exist_ok=True)
+        target = target_dir / f"{hook_id}.py"
+        try:
+            source_resolved = source.resolve(strict=True)
+            blueprint_root = blueprint.root.resolve(strict=True)
+            source_resolved.relative_to(blueprint_root)
+            shutil.copy2(source_resolved, target)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="validation_error",
+                        message="hook file must be inside the Agent Blueprint root",
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            ) from exc
+        except OSError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="validation_error",
+                        message=f"failed to install packaged hook: {exc}",
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            ) from exc
+
+        registry_metadata = _reload_runtime_hook_registry(hooks_dir)
+        trust = {
+            "policy": trust_policy,
+            "trusted": trusted,
+            "source": (
+                "request"
+                if explicit_trust
+                else ("descriptor" if trust_policy in {"trust_always", "always", "trusted"} else "config")
+            ),
+        }
+        return {
+            "id": f"agent_blueprint_hook_{blueprint_id}_{hook_id}",
+            "hook_id": hook_id,
+            "event": descriptor.get("event") or hook_id,
+            "status": "enabled",
+            "enabled": True,
+            "source": "agent_blueprint",
+            "agent_blueprint_id": blueprint_id,
+            "definition_path": descriptor.get("definition_path") or "",
+            "installed_path": str(target),
+            "checksum": descriptor.get("checksum") or "",
+            "trust": trust,
+            "registry": registry_metadata,
+        }
 
     @app.post("/v1/agent-blueprints/{blueprint_id:path}/mcp/{descriptor_id}/enable")
     async def enable_agent_blueprint_mcp_descriptor(
