@@ -474,6 +474,119 @@ Work with datasets.
     assert {row["id"] for row in planner} == {"/summarize-dataset"}
 
 
+def test_agent_blueprint_packaged_command_discovery_dispatch_and_allowlist(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, str, str]] = []
+
+    def fake_prompt_agent(base_agent: Any, agent_def: Any, question: str, session_id: str) -> Any:
+        del base_agent
+        calls.append((agent_def.id, question, session_id))
+        return _Pred(answer="VALIDATION_OK", selected_expert=agent_def.id)
+
+    monkeypatch.setattr("clio_agent.gact.app._run_prompt_user_agent", fake_prompt_agent)
+    monkeypatch.chdir(tmp_path)
+    workspace = tmp_path / "workspace"
+    blueprint_root = workspace / ".clio" / "agent-blueprints" / "qc-agent"
+    (blueprint_root / "experts").mkdir(parents=True)
+    (blueprint_root / "commands").mkdir()
+    (blueprint_root / "AGENT.md").write_text(
+        """---
+id: qc-agent
+version: 0.1.0
+title: QC Agent
+root_expert: root
+blueprint:
+  format: agent-blueprint-v1
+---
+Quality-control agent.
+""",
+        encoding="utf-8",
+    )
+    (blueprint_root / "experts" / "root.md").write_text(
+        """---
+id: root
+title: QC Root
+tier: 1
+commands:
+  - validate-dataset
+---
+Coordinate dataset checks.
+""",
+        encoding="utf-8",
+    )
+    (blueprint_root / "commands" / "validate-dataset.md").write_text(
+        """---
+name: validate-dataset
+title: Validate Dataset
+description: Validate a dataset before analysis
+agent: root
+agent-invocable: true
+arguments:
+  - path
+---
+Validate {{args.path}} for this QC workflow.
+""",
+        encoding="utf-8",
+    )
+
+    c = TestClient(build_app(sessions_path=tmp_path / "s.json", agent=_Agent()))
+    wid = c.post(
+        "/v1/workspaces",
+        json={
+            "name": "Workspace",
+            "root_path": str(workspace),
+            "storage_root": str(workspace / ".clio"),
+        },
+    ).json()["id"]
+    sid = c.post("/v1/sessions", json={"title": "t", "workspace_id": wid}).json()["id"]
+    assert c.post(
+        f"/v1/sessions/{sid}/agent-blueprint",
+        json={"blueprint_id": "qc-agent"},
+    ).status_code == 200
+
+    workspace_commands = c.get("/v1/commands", params={"workspace_id": wid}).json()["commands"]
+    assert "/validate-dataset" not in {row["id"] for row in workspace_commands}
+
+    session_commands = c.get("/v1/commands", params={"session_id": sid}).json()["commands"]
+    packaged = next(row for row in session_commands if row["id"] == "/validate-dataset")
+    assert packaged["command_source"] == "agent_blueprint"
+    assert packaged["agent_blueprint_id"] == "qc-agent"
+    assert packaged["command_scope"] == "agent_blueprint"
+    assert packaged["command_path"].endswith("commands/validate-dataset.md")
+
+    planner_commands = c.get(
+        "/v1/commands",
+        params={"session_id": sid, "planner": "true", "agent_id": "root"},
+    ).json()["commands"]
+    assert {row["id"] for row in planner_commands} == {"/validate-dataset"}
+
+    denied = c.post(
+        f"/v1/sessions/{sid}/commands/validate-dataset",
+        json={
+            "caller": {"type": "agent", "agent_id": "missing"},
+            "args": {"path": "data.csv"},
+        },
+    )
+    assert denied.status_code == 403
+    assert denied.json()["error"]["details"]["audit"]["status"] == "denied"
+
+    resp = c.post(
+        f"/v1/sessions/{sid}/commands/validate-dataset",
+        json={
+            "caller": {"type": "agent", "agent_id": "root"},
+            "args": {"path": "data.csv"},
+        },
+    ).json()
+
+    assert resp["result"]["text"] == "VALIDATION_OK"
+    assert resp["result"]["audit"]["caller_type"] == "agent"
+    assert resp["result"]["audit"]["caller_agent_id"] == "root"
+    assert resp["result"]["audit"]["command_source"] == "agent_blueprint"
+    assert calls == [("root", "Validate data.csv for this QC workflow.", sid)]
+
+
 def test_workspace_commands_do_not_leak_between_workspace_requests(tmp_path: Path) -> None:
     ws_a = tmp_path / "workspace-a"
     ws_b = tmp_path / "workspace-b"
