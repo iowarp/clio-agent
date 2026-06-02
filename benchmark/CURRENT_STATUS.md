@@ -10,11 +10,12 @@ current release evidence.
 
 Use `MARKETPLACE_UNIFIED_REPORT.md` and
 `MARKETPLACE_UNIFIED_EVIDENCE.jsonl` as the current proof for the
-marketplace-based hierarchy work.
+marketplace-based smoke/load work and the current seismic complex hierarchy
+case. Do not cite it as broad marketplace hierarchy coverage yet.
 
 Current result:
 
-- `6/6` marketplace cases pass.
+- `6/6` marketplace cases pass under their case-specific smoke/tool criteria.
 - Five Agent Blueprints are loaded from `clio-agent-marketplace`:
   `genomics-review`, `geospatial-field-review`,
   `materials-crystal-review`, `proteomics-mzml-review`, and
@@ -28,6 +29,10 @@ Current result:
   -> sac_format -> analysis -> main -> visualization -> main`.
 - The seismic case creates and verifies a PNG artifact:
   `.clio-agent-artifacts/charts/sac_traces_earthscope_IU_ANMO_00_BHZ_2010-02-27T063000.png`.
+- Strict marketplace lane criteria now require at least three complex
+  marketplace hierarchy cases before the lane can be cited as broad hierarchy
+  coverage. Complex means depth >= 3, branch count >= 2, sync handoff count >=
+  2, and complete parent-return provenance.
 
 ## What Failed And Was Fixed
 
@@ -58,10 +63,11 @@ The current replacement evidence for that capability is
 
 ## Remaining Future Stress Gaps
 
-The current marketplace lane intentionally proves Agent Blueprint semantics and
-representative domain tools. It is not yet a full stress campaign. Remaining
-future benchmark expansion items are:
+The current marketplace lane intentionally proves Agent Blueprint activation,
+root-owned delegation, and representative domain tools. It is not yet broad
+complex hierarchy evidence. Remaining benchmark expansion items are:
 
+- at least three complex marketplace Agent Blueprint cases, not only seismic,
 - at least ten complex collaborator-grade demos,
 - at least five long or high-event stress cases,
 - at least three tier-3 or nanoagent cases,

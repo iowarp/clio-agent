@@ -25,6 +25,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from scripts.create_benchmark_data import create_benchmark_data
 
 _REAL_ORCHESTRATOR_FORBIDDEN_SOURCES = ("guard", "user_agent_keyword", "recovery")
+_MARKETPLACE_COMPLEX_MIN_EXPERT_DEPTH = 3
+_MARKETPLACE_COMPLEX_MIN_BRANCH_COUNT = 2
+_MARKETPLACE_COMPLEX_REQUIRED_CASES = 3
 _DATA_FILE_SUFFIXES = {
     ".bp",
     ".bp4",
@@ -86,6 +89,8 @@ class DemoCase:
     forbidden_route_sources: tuple[str, ...] = ()
     min_artifacts: int = 0
     agent_blueprint_id: str = ""
+    min_expert_depth: int = 0
+    min_branch_count: int = 0
 
 
 @dataclass
@@ -285,6 +290,14 @@ class DemoResult:
             if len(verified_artifacts) < self.case.min_artifacts:
                 return False
         if len(self.child_sessions) < self.case.min_children:
+            return False
+        if self.case.min_expert_depth and (
+            self.route_metrics["expert_depth"] < self.case.min_expert_depth
+        ):
+            return False
+        if self.case.min_branch_count and (
+            self.route_metrics["branch_count"] < self.case.min_branch_count
+        ):
             return False
         for expected_action in self.case.expected_actions:
             if not any(
@@ -746,6 +759,24 @@ def _missing_sync_return_pairs(result: DemoResult) -> list[str]:
     return missing
 
 
+def _meets_complex_hierarchy_threshold(
+    result: DemoResult,
+    *,
+    min_expert_depth: int = _MARKETPLACE_COMPLEX_MIN_EXPERT_DEPTH,
+    min_branch_count: int = _MARKETPLACE_COMPLEX_MIN_BRANCH_COUNT,
+) -> bool:
+    """Return whether a benchmark row proves a non-shallow hierarchy."""
+
+    metrics = result.route_metrics
+    return (
+        result.passed
+        and metrics["expert_depth"] >= min_expert_depth
+        and metrics["branch_count"] >= min_branch_count
+        and metrics["sync_handoff_count"] >= min_branch_count
+        and not _missing_sync_return_pairs(result)
+    )
+
+
 def _children(http: httpx.Client, parent_session_id: str) -> list[dict[str, Any]]:
     sessions = http.get("/v1/sessions").json()["sessions"]
     return [row for row in sessions if row.get("parent_session_id") == parent_session_id]
@@ -1017,6 +1048,8 @@ def _case_row(result: DemoResult) -> dict[str, Any]:
         "stream_fallback": result.stream_fallback,
         "routing_mode": result.case.routing_mode,
         "forbidden_route_sources": list(result.case.forbidden_route_sources),
+        "min_expert_depth": result.case.min_expert_depth,
+        "min_branch_count": result.case.min_branch_count,
         "benchmark_lane": result.benchmark_lane,
         "complexity_score": result.complexity_score,
         "answer_excerpt": result.visible_text[:1200],
@@ -1038,6 +1071,8 @@ def _result_from_case_row(row: dict[str, Any]) -> DemoResult:
             expected=str(row.get("expected") or canonical_case.expected),
             why=str(row.get("why") or canonical_case.why),
             routing_mode=str(row.get("routing_mode") or canonical_case.routing_mode),
+            min_expert_depth=int(row.get("min_expert_depth") or canonical_case.min_expert_depth),
+            min_branch_count=int(row.get("min_branch_count") or canonical_case.min_branch_count),
         )
     else:
         case = DemoCase(
@@ -1060,6 +1095,8 @@ def _result_from_case_row(row: dict[str, Any]) -> DemoResult:
                 if isinstance(row.get("agent_blueprint"), dict)
                 else ""
             ),
+            min_expert_depth=int(row.get("min_expert_depth") or 0),
+            min_branch_count=int(row.get("min_branch_count") or 0),
         )
     routing = dict(row.get("routing_decision") or {})
     if routing and routing.get("type") != "routing_decision":
@@ -1563,6 +1600,8 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             expected_terms=("SAC", ".png"),
             expected_term_groups=(),
             min_artifacts=1,
+            min_expert_depth=3,
+            min_branch_count=2,
             timeout_s=900.0,
             forbidden_route_sources=_REAL_ORCHESTRATOR_FORBIDDEN_SOURCES,
             complexity_tags=(
@@ -1882,6 +1921,8 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             expected_handoff_agents=("ndp_catalog", "sac_format"),
             expected_terms=("SAC", ".png"),
             min_artifacts=1,
+            min_expert_depth=_MARKETPLACE_COMPLEX_MIN_EXPERT_DEPTH,
+            min_branch_count=_MARKETPLACE_COMPLEX_MIN_BRANCH_COUNT,
             timeout_s=900.0,
             forbidden_route_sources=_REAL_ORCHESTRATOR_FORBIDDEN_SOURCES,
             complexity_tags=(
@@ -2523,6 +2564,16 @@ def _provider_lane_audit(results: list[DemoResult], lane: str) -> list[dict[str,
                 or _missing_sync_return_pairs(result)
             )
         ]
+        complex_hierarchy = [
+            result for result in results if _meets_complex_hierarchy_threshold(result)
+        ]
+        shallow_hierarchy = [
+            result
+            for result in results
+            if result.case.agent_blueprint_id
+            and result.passed
+            and not _meets_complex_hierarchy_threshold(result)
+        ]
         return [
             {
                 "criterion": "all marketplace cases prove the requested active Agent Blueprint",
@@ -2561,6 +2612,34 @@ def _provider_lane_audit(results: list[DemoResult], lane: str) -> list[dict[str,
                         f"missing_returns={_missing_sync_return_pairs(result)}"
                     )
                     for result in missing_root_orchestration
+                ],
+            },
+            {
+                "criterion": "at least three marketplace cases prove complex hierarchy depth",
+                "observed": len(complex_hierarchy),
+                "required": _MARKETPLACE_COMPLEX_REQUIRED_CASES,
+                "passed": len(complex_hierarchy) >= _MARKETPLACE_COMPLEX_REQUIRED_CASES,
+                "details": [
+                    (
+                        f"{result.case.case_id}: depth={result.route_metrics['expert_depth']} "
+                        f"branches={result.route_metrics['branch_count']} "
+                        f"sync_handoffs={result.route_metrics['sync_handoff_count']}"
+                    )
+                    for result in complex_hierarchy
+                ],
+            },
+            {
+                "criterion": "marketplace shallow cases are reported as smoke coverage",
+                "observed": len(shallow_hierarchy),
+                "required": "reported",
+                "passed": True,
+                "details": [
+                    (
+                        f"{result.case.case_id}: depth={result.route_metrics['expert_depth']} "
+                        f"branches={result.route_metrics['branch_count']} "
+                        "counts as load/tool smoke, not complex hierarchy proof"
+                    )
+                    for result in shallow_hierarchy
                 ],
             },
         ]

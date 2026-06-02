@@ -28,7 +28,10 @@ semantics, and surfaced-error behavior.
   NDP/seismic status by `MARKETPLACE_UNIFIED_REPORT.md`.
 - `MARKETPLACE_UNIFIED_REPORT.md` /
   `MARKETPLACE_UNIFIED_EVIDENCE.jsonl` - current passing evidence for
-  marketplace Agent Blueprint hierarchy semantics across five domains.
+  marketplace Agent Blueprint loading, root-owned delegation, and one complex
+  seismic hierarchy. The strict marketplace lane gate now requires at least
+  three complex marketplace hierarchy cases before the report can be used as
+  broad hierarchy coverage.
 - `scripts/run_demo_benchmark.py` - executable runner that materializes these
   cases against a live GACT backend.
 - `scripts/create_benchmark_data.py` - deterministic local data generator.
@@ -81,6 +84,12 @@ uv run python scripts/run_demo_benchmark.py \
 
 New strict benchmark evidence should normally stay under this `benchmark/`
 directory. Historical provider-specific reports can remain under `docs/`.
+
+The `marketplace_agents` lane separates smoke coverage from complex hierarchy
+coverage. Pack loading, root delegation, and tool use are necessary but not
+enough: `--require-lane-criteria` now also requires at least three marketplace
+cases with depth >= 3, branch count >= 2, sync handoff count >= 2, and complete
+parent-return provenance.
 
 ## Audit
 

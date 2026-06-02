@@ -1063,6 +1063,155 @@ def test_marketplace_audit_requires_root_sync_delegation() -> None:
     ]
 
 
+def test_case_minimum_hierarchy_thresholds_affect_pass_status() -> None:
+    message = _message(
+        text="SAC plot saved at /tmp/plot.png",
+        tools=[{"name": "sac_fetch_earthscope_waveform"}],
+    )
+    message["parts"][0]["selected_agent"] = "main"
+    message["metadata"]["expert_handoffs"] = [
+        {"agent_id": "main", "stage": "planner_dispatch"},
+        {
+            "agent_id": "ndp_catalog",
+            "parent_id": "main",
+            "stage": "planner_dispatch_child",
+        },
+        {
+            "agent_id": "ndp_catalog",
+            "parent_id": "main",
+            "stage": "delegate.completed",
+            "metadata": {"delegation_lifecycle": "sync", "return_to": "main"},
+        },
+        {
+            "agent_id": "main",
+            "stage": "parent.resumed",
+            "metadata": {"delegation_lifecycle": "sync", "resumed_from": "ndp_catalog"},
+        },
+    ]
+    result = bench.DemoResult(
+        case=bench.DemoCase(
+            case_id="hierarchy_threshold",
+            title="threshold",
+            category="test",
+            prompt="prompt",
+            why="why",
+            expected="expected",
+            session_group="test",
+            expected_agent="main",
+            expected_tools=("sac_fetch_earthscope_waveform",),
+            expected_handoff_agents=("ndp_catalog",),
+            min_expert_depth=3,
+            min_branch_count=2,
+        ),
+        session_id="sess_threshold",
+        elapsed_s=1.0,
+        message=message,
+        provider={"provider": "codex", "model": "gpt-5.5", "api_base": ""},
+        benchmark_lane="marketplace_agents",
+    )
+
+    assert result.route_metrics["expert_depth"] == 2
+    assert result.route_metrics["branch_count"] == 1
+    assert result.passed is False
+    row = bench._case_row(result)
+    assert row["min_expert_depth"] == 3
+    assert row["min_branch_count"] == 2
+
+
+def test_marketplace_audit_distinguishes_complex_hierarchy_from_smoke() -> None:
+    def marketplace_result(
+        case_id: str,
+        blueprint_id: str,
+        handoffs: list[dict[str, object]],
+        *,
+        tools: list[str],
+    ) -> bench.DemoResult:
+        message = _message(
+            text=f"{case_id} complete",
+            route_source="dspy",
+            tools=[{"name": tool} for tool in tools],
+        )
+        message["parts"][0]["selected_agent"] = "main"
+        message["metadata"]["expert_handoffs"] = handoffs
+        return bench.DemoResult(
+            case=bench.DemoCase(
+                case_id=case_id,
+                title=case_id,
+                category="marketplace-test",
+                prompt="prompt",
+                why="why",
+                expected="expected",
+                session_group="marketplace",
+                agent_blueprint_id=blueprint_id,
+                expected_agent="main",
+                expected_tools=(tools[0],),
+                expected_handoff_agents=tuple(
+                    str(row["agent_id"]) for row in handoffs if row.get("parent_id") == "main"
+                ),
+            ),
+            session_id=f"sess_{case_id}",
+            elapsed_s=1.0,
+            message=message,
+            provider={"provider": "codex", "model": "gpt-5.5", "api_base": ""},
+            benchmark_lane="marketplace_agents",
+            agent_blueprint={"active_agent_blueprint_id": blueprint_id},
+        )
+
+    def sync_rows(parent: str, child: str) -> list[dict[str, object]]:
+        return [
+            {"agent_id": child, "parent_id": parent, "stage": "planner_dispatch_child"},
+            {
+                "agent_id": child,
+                "parent_id": parent,
+                "stage": "delegate.completed",
+                "metadata": {"delegation_lifecycle": "sync", "return_to": parent},
+            },
+            {
+                "agent_id": parent,
+                "stage": "parent.resumed",
+                "metadata": {"delegation_lifecycle": "sync", "resumed_from": child},
+            },
+        ]
+
+    shallow = marketplace_result(
+        "marketplace_shallow",
+        "shallow-pack",
+        [{"agent_id": "main", "stage": "planner_dispatch"}, *sync_rows("main", "reference")],
+        tools=["genomics_inspect_fasta"],
+    )
+    complex_cases = [
+        marketplace_result(
+            f"marketplace_complex_{index}",
+            f"complex-pack-{index}",
+            [
+                {"agent_id": "main", "stage": "planner_dispatch"},
+                *sync_rows("main", "data"),
+                *sync_rows("data", "catalog"),
+            ],
+            tools=["ndp_search_datasets"],
+        )
+        for index in range(3)
+    ]
+
+    audit = bench._provider_lane_audit([shallow, *complex_cases], "marketplace_agents")
+
+    complex_row = next(
+        item
+        for item in audit
+        if item["criterion"] == "at least three marketplace cases prove complex hierarchy depth"
+    )
+    smoke_row = next(
+        item
+        for item in audit
+        if item["criterion"] == "marketplace shallow cases are reported as smoke coverage"
+    )
+    assert complex_row["passed"] is True
+    assert complex_row["observed"] == 3
+    assert smoke_row["passed"] is True
+    assert smoke_row["observed"] == 1
+    assert "marketplace_shallow" in smoke_row["details"][0]
+
+
 def test_render_report_from_multiple_jsonls_combines_marketplace_evidence(tmp_path: Path) -> None:
     blueprints = [
         ("marketplace_genomics_reference_review", "genomics-review", "reference", "genomics_inspect_fasta"),
