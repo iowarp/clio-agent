@@ -178,3 +178,88 @@ def test_summarize_empty_session_returns_summarized_false(client: TestClient) ->
 def test_capabilities_advertise_session_summary(client: TestClient) -> None:
     caps = client.get("/v1/capabilities").json()["capabilities"]
     assert caps["session_summary"] is True
+
+
+# --- prompt-registry integration (reviewer fix for PR #522) ---------------
+#
+# The summary instruction prose is no longer hardcoded in the route: it is
+# registered as a packaged built-in prompt (id ``session_summarize``) and
+# fetched from CLIO's prompt registry at request time, with the in-code text
+# kept only as a fallback for when the registry has no usable entry.
+
+
+def test_session_summarize_prompt_registered_by_default(client: TestClient) -> None:
+    """(c) The default registry advertises a ``session_summarize`` prompt."""
+    body = client.get("/v1/prompts").json()
+    by_id = {row["id"]: row for row in body["prompts"]}
+    assert "session_summarize" in by_id, sorted(by_id)
+    row = by_id["session_summarize"]
+    assert row["enabled"] is True
+    assert not row["validation_errors"]
+    # Profile-aware: the built-in profiles are available for the prompt.
+    assert "default" in row["profiles"]
+
+
+def test_summarize_uses_registry_prompt_when_present(tmp_path: Path) -> None:
+    """(a) An on-disk registry override drives the prompt the route sends."""
+    agent = _SummaryAgent()
+    client = _client_with_agent(tmp_path, agent)
+    sid = _create_session(client)
+    _seed_turn(client, sid)
+
+    # The global prompt write-root is <sessions_path>.parent / "prompts".
+    # A profile file there overrides the built-in ``session_summarize`` body.
+    sentinel = "SUMMARIZE-VIA-REGISTRY-OVERRIDE-XYZ"
+    prompt_dir = tmp_path / "prompts"
+    prompt_dir.mkdir(parents=True, exist_ok=True)
+    (prompt_dir / "session_summarize--default.md").write_text(
+        "---\nid: session_summarize\nprofile: default\n---\n" + sentinel + "\n",
+        encoding="utf-8",
+    )
+
+    resp = client.post(f"/v1/sessions/{sid}/summarize", json={"auto": True})
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["prompt_id"] == "session_summarize"
+    # The override is a workspace/global on-disk source, not the in-code fallback.
+    assert body["prompt_source"] != "fallback"
+    assert body["prompt_profile"] == "default"
+    assert agent.prompts, "agent was never called"
+    assert sentinel in agent.prompts[0]
+    # The transcript is still appended by the route.
+    assert "--- transcript ---" in agent.prompts[0]
+    # Provenance is recorded on the memory event for observability.
+    event = client.app.state.memory_events[sid][-1]
+    assert event["prompt_id"] == "session_summarize"
+    assert event["prompt_source"] != "fallback"
+
+
+def test_summarize_falls_back_when_registry_entry_absent(tmp_path: Path) -> None:
+    """(b) A missing registry entry uses the in-code fallback, never 500s."""
+    from clio_agent.gact import app as gact_app
+
+    agent = _SummaryAgent()
+    client = _client_with_agent(tmp_path, agent)
+    sid = _create_session(client)
+    _seed_turn(client, sid)
+
+    # Swap in a registry factory whose registry has NO session_summarize entry
+    # (empty built-ins, no on-disk override) to exercise the fallback path.
+    from clio_agent.prompts import PromptRegistry
+
+    def _empty_registry(*, session_id: str = "", workspace_id: str = "") -> PromptRegistry:
+        return PromptRegistry(sources=[], builtins={})
+
+    client.app.state.prompt_registry_for_request = _empty_registry
+
+    resp = client.post(f"/v1/sessions/{sid}/summarize", json={"auto": True})
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["summarized"] is True
+    assert body["prompt_source"] == "fallback"
+    assert agent.prompts, "agent was never called"
+    # The in-code fallback prose drives the prompt when the registry is empty.
+    assert gact_app._SESSION_SUMMARIZE_FALLBACK_PROMPT.split("\n", 1)[0] in agent.prompts[0]
+    assert "--- transcript ---" in agent.prompts[0]
