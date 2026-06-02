@@ -8815,13 +8815,10 @@ def build_app(
         lifespan=_lifespan,
     )
 
-    # CORS: the pure-web CLIO Desktop release (clio-web-v*.zip) runs as
-    # a separate origin from clio (e.g. http://localhost:4173 →
-    # http://127.0.0.1:17800), and the Tauri shell loads
-    # tauri://localhost. Without CORS-allow on /v1/*, the browser
-    # blocks every capability + SSE fetch and the pure-web build is
-    # completely unusable against a localhost clio. Defaults are
-    # permissive on localhost; operators can override via
+    # CORS: browser/WebView frontends must opt in with explicit origins.
+    # CLIO's default auth scheme is trust_socket, which is safe for local
+    # non-browser clients but must not grant arbitrary browser origins access
+    # to a localhost agent. Operators can enable trusted web origins with
     # CLIO_GACT_CORS_ORIGINS (comma-separated origins or "*").
     cors_origins_env = os.environ.get("CLIO_GACT_CORS_ORIGINS", "").strip()
     if cors_origins_env:
@@ -8831,7 +8828,7 @@ def build_app(
             else [o.strip() for o in cors_origins_env.split(",") if o.strip()]
         )
     else:
-        allow_origins = ["*"]
+        allow_origins = []
     app.add_middleware(
         CORSMiddleware,
         allow_origins=allow_origins,
