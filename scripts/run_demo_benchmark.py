@@ -28,6 +28,16 @@ _REAL_ORCHESTRATOR_FORBIDDEN_SOURCES = ("guard", "user_agent_keyword", "recovery
 _MARKETPLACE_COMPLEX_MIN_EXPERT_DEPTH = 3
 _MARKETPLACE_COMPLEX_MIN_BRANCH_COUNT = 2
 _MARKETPLACE_COMPLEX_REQUIRED_CASES = 3
+_SEMANTIC_REGRESSION_REQUIRED_PROOFS = {
+    "no_shortcuts": "no deterministic or keyword-forced route sources",
+    "root_delegation": "root Agent delegates through declared experts",
+    "nested_tier3": "nested tier-3 or child-worker execution is observed",
+    "sync_parent_return": "sync child delegation returns control to the parent",
+    "failure_recovery": "failure/recovery behavior reaches downstream evidence",
+    "workspace_memory_scope": "workspace/global memory scope policy is observed",
+    "marketplace_pack": "marketplace Agent Blueprint activation is observed",
+    "command_mcp_skill_scope": "command, MCP, or skill capability scoping is observed",
+}
 _DATA_FILE_SUFFIXES = {
     ".bp",
     ".bp4",
@@ -91,6 +101,7 @@ class DemoCase:
     agent_blueprint_id: str = ""
     min_expert_depth: int = 0
     min_branch_count: int = 0
+    semantic_proofs: tuple[str, ...] = ()
 
 
 @dataclass
@@ -777,6 +788,62 @@ def _meets_complex_hierarchy_threshold(
     )
 
 
+def _case_observed_semantic_proofs(result: DemoResult) -> tuple[str, ...]:
+    """Return declared semantic proofs supported by observed result evidence."""
+
+    if not result.case.semantic_proofs:
+        return ()
+    observed: list[str] = []
+    evidence = result.expected_evidence_text.lower()
+    route_ok = result.route_source not in result.case.forbidden_route_sources
+    for proof in result.case.semantic_proofs:
+        proof_observed = False
+        if proof == "no_shortcuts":
+            proof_observed = route_ok
+        elif not result.passed:
+            proof_observed = False
+        elif proof == "root_delegation":
+            proof_observed = route_ok and result.route_metrics["expert_depth"] > 0
+        elif proof == "nested_tier3":
+            proof_observed = bool(result.child_sessions) or result.route_metrics[
+                "expert_depth"
+            ] >= 3
+        elif proof == "sync_parent_return":
+            proof_observed = (
+                result.route_metrics["sync_handoff_count"] > 0
+                and not _missing_sync_return_pairs(result)
+            )
+        elif proof == "failure_recovery":
+            proof_observed = (
+                any(name.startswith("ndp_") for name in result.tool_names)
+                and any(name.startswith("sac_") for name in result.tool_names)
+                and bool(result.artifact_evidence)
+                and all(
+                    row.get("exists") and int(row.get("size_bytes") or 0) > 0
+                    for row in result.artifact_evidence
+                )
+            )
+        elif proof == "workspace_memory_scope":
+            proof_observed = (
+                "workspace_scope" in evidence
+                or "policy_decision" in evidence
+                or "memory_scope" in evidence
+            )
+        elif proof == "marketplace_pack":
+            proof_observed = (
+                bool(result.case.agent_blueprint_id)
+                and result.active_agent_blueprint_id == result.case.agent_blueprint_id
+                and bool(result.tool_names or result.handoff_agent_ids)
+            )
+        elif proof == "command_mcp_skill_scope":
+            proof_observed = any(
+                marker in evidence for marker in ("command", "mcp", "skill")
+            )
+        if proof_observed:
+            observed.append(proof)
+    return tuple(observed)
+
+
 def _children(http: httpx.Client, parent_session_id: str) -> list[dict[str, Any]]:
     sessions = http.get("/v1/sessions").json()["sessions"]
     return [row for row in sessions if row.get("parent_session_id") == parent_session_id]
@@ -1050,6 +1117,8 @@ def _case_row(result: DemoResult) -> dict[str, Any]:
         "forbidden_route_sources": list(result.case.forbidden_route_sources),
         "min_expert_depth": result.case.min_expert_depth,
         "min_branch_count": result.case.min_branch_count,
+        "semantic_proofs": list(result.case.semantic_proofs),
+        "observed_semantic_proofs": list(_case_observed_semantic_proofs(result)),
         "benchmark_lane": result.benchmark_lane,
         "complexity_score": result.complexity_score,
         "answer_excerpt": result.visible_text[:1200],
@@ -1073,6 +1142,9 @@ def _result_from_case_row(row: dict[str, Any]) -> DemoResult:
             routing_mode=str(row.get("routing_mode") or canonical_case.routing_mode),
             min_expert_depth=int(row.get("min_expert_depth") or canonical_case.min_expert_depth),
             min_branch_count=int(row.get("min_branch_count") or canonical_case.min_branch_count),
+            semantic_proofs=tuple(
+                str(proof) for proof in row.get("semantic_proofs") or canonical_case.semantic_proofs
+            ),
         )
     else:
         case = DemoCase(
@@ -1097,6 +1169,7 @@ def _result_from_case_row(row: dict[str, Any]) -> DemoResult:
             ),
             min_expert_depth=int(row.get("min_expert_depth") or 0),
             min_branch_count=int(row.get("min_branch_count") or 0),
+            semantic_proofs=tuple(str(proof) for proof in row.get("semantic_proofs", []) or []),
         )
     routing = dict(row.get("routing_decision") or {})
     if routing and routing.get("type") != "routing_decision":
@@ -1461,6 +1534,7 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             timeout_s=720.0,
             forbidden_route_sources=_REAL_ORCHESTRATOR_FORBIDDEN_SOURCES,
             complexity_tags=("no-guard", "planner", "nanoagents", "tier-3", "multi-file"),
+            semantic_proofs=("no_shortcuts", "root_delegation", "nested_tier3"),
             prompt=(
                 f"I have four related files from the same experiment: {h5}, {parquet}, "
                 f'{csv_path}, and "{adios}". Give me a cross-file triage summary: what is '
@@ -1604,6 +1678,13 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             min_branch_count=2,
             timeout_s=900.0,
             forbidden_route_sources=_REAL_ORCHESTRATOR_FORBIDDEN_SOURCES,
+            semantic_proofs=(
+                "no_shortcuts",
+                "root_delegation",
+                "nested_tier3",
+                "sync_parent_return",
+                "failure_recovery",
+            ),
             complexity_tags=(
                 "ndp",
                 "earthscience",
@@ -1923,6 +2004,13 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             min_artifacts=1,
             min_expert_depth=_MARKETPLACE_COMPLEX_MIN_EXPERT_DEPTH,
             min_branch_count=_MARKETPLACE_COMPLEX_MIN_BRANCH_COUNT,
+            semantic_proofs=(
+                "marketplace_pack",
+                "root_delegation",
+                "nested_tier3",
+                "sync_parent_return",
+                "failure_recovery",
+            ),
             timeout_s=900.0,
             forbidden_route_sources=_REAL_ORCHESTRATOR_FORBIDDEN_SOURCES,
             complexity_tags=(
@@ -2010,6 +2098,7 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             expected_actions=("provider_swap",),
             expected_tool_prefixes=("parquet_",),
             expected_terms=("temperature", "pressure"),
+            semantic_proofs=("workspace_memory_scope",),
             provider_swap_preset_id="argonne_sophia",
             provider_swap_model="meta-llama/Meta-Llama-3.1-8B-Instruct",
             setup_prompts=(
@@ -2138,6 +2227,12 @@ _BENCHMARK_LANES: dict[str, tuple[str, ...]] = {
         "marketplace_proteomics_mzml_review",
         "marketplace_seismic_waveform_review",
     ),
+    "semantic_regression": (
+        "reasoning_cross_file_triage_nanoagents",
+        "ndp_seismic_waveform_to_plot",
+        "marketplace_seismic_waveform_review",
+        "provider_swap_memory_followup",
+    ),
     "claude_code": (
         "workflow_hdf5_overview",
         "workflow_parquet_profile",
@@ -2155,6 +2250,8 @@ def _lane_title(lane: str) -> str:
         return "CLIO Real-Orchestrator Benchmark Report"
     if lane == "marketplace_agents":
         return "CLIO Marketplace Agent Benchmark Report"
+    if lane == "semantic_regression":
+        return "CLIO 1.0 Semantic Regression Benchmark Report"
     if lane == "all":
         return "CLIO Full Real-Provider Benchmark Report"
     return "CLIO ALCF Demo Benchmark Report"
@@ -2401,6 +2498,112 @@ def _stress_audit(results: list[DemoResult]) -> list[dict[str, Any]]:
     ]
 
 
+def _semantic_regression_audit(results: list[DemoResult]) -> list[dict[str, Any]]:
+    """Evaluate the 1.0 semantic-regression evidence contract."""
+
+    declared = sorted({proof for result in results for proof in result.case.semantic_proofs})
+    observed_by_proof: dict[str, list[str]] = {
+        proof: [] for proof in _SEMANTIC_REGRESSION_REQUIRED_PROOFS
+    }
+    missing_case_proofs: list[str] = []
+    for result in results:
+        observed = set(_case_observed_semantic_proofs(result))
+        for proof in observed:
+            observed_by_proof.setdefault(proof, []).append(result.case.case_id)
+        for proof in result.case.semantic_proofs:
+            if proof not in observed:
+                missing_case_proofs.append(
+                    f"{result.case.case_id}: {proof} declared but not observed"
+                )
+
+    missing_declared = sorted(set(_SEMANTIC_REGRESSION_REQUIRED_PROOFS) - set(declared))
+    missing_observed = sorted(
+        proof
+        for proof in _SEMANTIC_REGRESSION_REQUIRED_PROOFS
+        if not observed_by_proof.get(proof)
+    )
+    passing_results = [result for result in results if result.passed]
+    missing_route_evidence = [
+        result
+        for result in passing_results
+        if not result.route_graph["nodes"] or result.route_metrics["expert_depth"] <= 0
+    ]
+    missing_sync_return_evidence = [
+        result for result in passing_results if _missing_sync_return_pairs(result)
+    ]
+    forbidden = [
+        result for result in results if result.route_source in result.case.forbidden_route_sources
+    ]
+    return [
+        {
+            "criterion": "semantic-regression lane declares required proof classes",
+            "observed": len(_SEMANTIC_REGRESSION_REQUIRED_PROOFS) - len(missing_declared),
+            "required": len(_SEMANTIC_REGRESSION_REQUIRED_PROOFS),
+            "passed": not missing_declared,
+            "details": [
+                f"{proof}: {_SEMANTIC_REGRESSION_REQUIRED_PROOFS[proof]}"
+                for proof in missing_declared
+            ],
+        },
+        {
+            "criterion": "semantic-regression passing evidence covers required proof classes",
+            "observed": len(_SEMANTIC_REGRESSION_REQUIRED_PROOFS) - len(missing_observed),
+            "required": len(_SEMANTIC_REGRESSION_REQUIRED_PROOFS),
+            "passed": not missing_observed,
+            "details": [
+                f"{proof}: {_SEMANTIC_REGRESSION_REQUIRED_PROOFS[proof]}"
+                for proof in missing_observed
+            ],
+        },
+        {
+            "criterion": "each declared case proof is observed in session evidence",
+            "observed": sum(len(proofs) for proofs in observed_by_proof.values()),
+            "required": sum(len(result.case.semantic_proofs) for result in results),
+            "passed": not missing_case_proofs,
+            "details": missing_case_proofs,
+        },
+        {
+            "criterion": "semantic-regression cases avoid shortcut route sources",
+            "observed": len(results) - len(forbidden),
+            "required": len(results),
+            "passed": not forbidden,
+            "details": [
+                f"{result.case.case_id}: route_source={result.route_source}"
+                for result in forbidden
+            ],
+        },
+        {
+            "criterion": "passing semantic-regression cases include route evidence",
+            "observed": len(passing_results) - len(missing_route_evidence),
+            "required": len(passing_results),
+            "passed": not missing_route_evidence,
+            "details": [
+                f"{result.case.case_id}: route_metrics={result.route_metrics}"
+                for result in missing_route_evidence
+            ],
+        },
+        {
+            "criterion": "nested semantic-regression delegations include sync return/resume",
+            "observed": len(passing_results) - len(missing_sync_return_evidence),
+            "required": len(passing_results),
+            "passed": not missing_sync_return_evidence,
+            "details": [
+                f"{result.case.case_id}: missing={_missing_sync_return_pairs(result)}"
+                for result in missing_sync_return_evidence
+            ],
+        },
+        {
+            "criterion": "observed semantic proof coverage by case",
+            "observed": ", ".join(
+                f"{proof}={observed_by_proof.get(proof) or []}"
+                for proof in sorted(_SEMANTIC_REGRESSION_REQUIRED_PROOFS)
+            ),
+            "required": "reported",
+            "passed": True,
+        },
+    ]
+
+
 def _provider_lane_audit(results: list[DemoResult], lane: str) -> list[dict[str, Any]]:
     """Evaluate provider-specific evidence requirements."""
 
@@ -2412,6 +2615,9 @@ def _provider_lane_audit(results: list[DemoResult], lane: str) -> list[dict[str,
 
     def case_result(case_id: str) -> DemoResult | None:
         return by_case.get(case_id)
+
+    if lane == "semantic_regression":
+        return _semantic_regression_audit(results)
 
     if lane == "real_orchestrator":
         forbidden = [
@@ -2743,6 +2949,12 @@ def _render_report(results: list[DemoResult], output_jsonl: Path) -> str:
             for event_type in result.semantic_trace_summary["unique_event_types"]
         }
     )
+    declared_semantic_proofs = sorted(
+        {proof for result in results for proof in result.case.semantic_proofs}
+    )
+    observed_semantic_proofs = sorted(
+        {proof for result in results for proof in _case_observed_semantic_proofs(result)}
+    )
     lines = [
         f"# {_lane_title(lane)}",
         "",
@@ -2816,6 +3028,14 @@ def _render_report(results: list[DemoResult], output_jsonl: Path) -> str:
                 "- Semantic event types: "
                 f"{', '.join(semantic_event_types) if semantic_event_types else 'none'}"
             ),
+            (
+                "- Declared semantic proofs: "
+                f"{', '.join(declared_semantic_proofs) if declared_semantic_proofs else 'none'}"
+            ),
+            (
+                "- Observed semantic proofs: "
+                f"{', '.join(observed_semantic_proofs) if observed_semantic_proofs else 'none'}"
+            ),
         ]
     )
     active_blueprints = sorted(
@@ -2855,7 +3075,29 @@ def _render_report(results: list[DemoResult], output_jsonl: Path) -> str:
         ]
         if provider_details:
             lines.extend(["", "Provider evidence details:", ""])
-            lines.extend(f"- {detail}" for detail in provider_details)
+        lines.extend(f"- {detail}" for detail in provider_details)
+    if declared_semantic_proofs:
+        lines.extend(
+            [
+                "",
+                "## Semantic Proof Declarations",
+                "",
+                "| Case | Declared | Observed |",
+                "| --- | --- | --- |",
+            ]
+        )
+        for result in results:
+            lines.append(
+                "| "
+                + " | ".join(
+                    [
+                        result.case.case_id,
+                        ", ".join(result.case.semantic_proofs) or "-",
+                        ", ".join(_case_observed_semantic_proofs(result)) or "-",
+                    ]
+                )
+                + " |"
+            )
     lines.extend(
         [
             "",

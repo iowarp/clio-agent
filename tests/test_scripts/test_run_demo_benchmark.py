@@ -129,6 +129,33 @@ def test_select_real_orchestrator_lane_cases() -> None:
     )
 
 
+def test_select_semantic_regression_lane_cases() -> None:
+    cases = [
+        bench.DemoCase(
+            case_id=case_id,
+            title=case_id,
+            category="test",
+            prompt="prompt",
+            why="why",
+            expected="expected",
+            session_group="test",
+        )
+        for case_id in (
+            "reasoning_cross_file_triage_nanoagents",
+            "ndp_seismic_waveform_to_plot",
+            "marketplace_seismic_waveform_review",
+            "provider_swap_memory_followup",
+        )
+    ]
+
+    selected, missing = bench._select_cases(cases, lane="semantic_regression", case_ids=())
+
+    assert missing == []
+    assert [case.case_id for case in selected] == list(
+        bench._BENCHMARK_LANES["semantic_regression"]
+    )
+
+
 def test_real_orchestrator_is_run_benchmark_default_lane() -> None:
     assert bench.run_benchmark.__kwdefaults__["lane"] == "real_orchestrator"
 
@@ -267,6 +294,34 @@ def test_case_row_records_route_file_and_artifact_evidence(tmp_path) -> None:
         "turn_ids": ["msg_user_1"],
         "has_live_trace": True,
     }
+
+
+def test_case_row_records_semantic_proof_declarations() -> None:
+    result = bench.DemoResult(
+        case=bench.DemoCase(
+            case_id="semantic_case",
+            title="semantic",
+            category="test",
+            prompt="prompt",
+            why="why",
+            expected="expected",
+            session_group="test",
+            forbidden_route_sources=("guard",),
+            semantic_proofs=("no_shortcuts", "root_delegation"),
+        ),
+        session_id="sess_semantic",
+        elapsed_s=1.0,
+        message=_message(route_source="dspy"),
+        provider={"provider": "codex", "model": "gpt-5.5", "api_base": ""},
+        benchmark_lane="semantic_regression",
+    )
+
+    row = bench._case_row(result)
+    rehydrated = bench._result_from_case_row(row)
+
+    assert row["semantic_proofs"] == ["no_shortcuts", "root_delegation"]
+    assert row["observed_semantic_proofs"] == ["no_shortcuts", "root_delegation"]
+    assert rehydrated.case.semantic_proofs == ("no_shortcuts", "root_delegation")
 
 
 def test_route_graph_summary_preserves_sync_delegation_returns() -> None:
@@ -1010,6 +1065,72 @@ def test_real_orchestrator_audit_requires_sync_parent_resume() -> None:
     )
     assert sync_row["passed"] is False
     assert sync_row["details"] == ["ndp_seismic_waveform_to_plot: missing=['data->ndp_catalog']"]
+
+
+def test_semantic_regression_audit_reports_missing_proof_evidence() -> None:
+    hierarchy = bench.DemoResult(
+        case=bench.DemoCase(
+            case_id="hierarchy",
+            title="hierarchy",
+            category="test",
+            prompt="prompt",
+            why="why",
+            expected="expected",
+            session_group="test",
+            forbidden_route_sources=("guard",),
+            semantic_proofs=("no_shortcuts", "root_delegation", "nested_tier3"),
+        ),
+        session_id="sess_hierarchy",
+        elapsed_s=1.0,
+        message=_message(route_source="dspy"),
+        provider={"provider": "codex", "model": "gpt-5.5", "api_base": ""},
+        child_sessions=[{"id": "child_1"}],
+        benchmark_lane="semantic_regression",
+    )
+    memory_without_policy_evidence = bench.DemoResult(
+        case=bench.DemoCase(
+            case_id="memory",
+            title="memory",
+            category="test",
+            prompt="prompt",
+            why="why",
+            expected="expected",
+            session_group="test",
+            semantic_proofs=("workspace_memory_scope",),
+        ),
+        session_id="sess_memory",
+        elapsed_s=1.0,
+        message=_message(text="continued from prior session context"),
+        provider={"provider": "codex", "model": "gpt-5.5", "api_base": ""},
+        benchmark_lane="semantic_regression",
+    )
+
+    audit = bench._provider_lane_audit(
+        [hierarchy, memory_without_policy_evidence],
+        "semantic_regression",
+    )
+
+    declared_row = next(
+        item
+        for item in audit
+        if item["criterion"] == "semantic-regression lane declares required proof classes"
+    )
+    observed_row = next(
+        item
+        for item in audit
+        if item["criterion"] == "semantic-regression passing evidence covers required proof classes"
+    )
+    case_row = next(
+        item for item in audit if item["criterion"] == "each declared case proof is observed in session evidence"
+    )
+    assert declared_row["passed"] is False
+    assert "command_mcp_skill_scope" in "\n".join(declared_row["details"])
+    assert observed_row["passed"] is False
+    assert "workspace_memory_scope" in "\n".join(observed_row["details"])
+    assert case_row["passed"] is False
+    assert case_row["details"] == [
+        "memory: workspace_memory_scope declared but not observed"
+    ]
 
 
 def test_marketplace_audit_requires_root_sync_delegation() -> None:

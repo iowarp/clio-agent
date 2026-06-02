@@ -113,6 +113,23 @@ uv run python scripts/run_demo_benchmark.py \
   --report benchmark/ALCF_MARKETPLACE_AGENT_REPORT.md
 ```
 
+- Run the 1.0 semantic regression gate. This lane records declared and observed
+  proof tags per case and fails `--require-lane-criteria` when a required proof
+  class is not supported by session evidence:
+
+```bash
+CLIO_SEMANTIC_TRACE_BACKEND=file \
+CLIO_SEMANTIC_TRACE_DETAIL=semantic \
+uv run python scripts/run_demo_benchmark.py \
+  --require-lane-criteria \
+  --lane semantic_regression \
+  --marketplace-source /path/to/clio-agent-marketplace \
+  --base-url http://127.0.0.1:17960 \
+  --data-dir tmp/clio-benchmark-data \
+  --output-jsonl benchmark/SEMANTIC_REGRESSION_EVIDENCE.jsonl \
+  --report benchmark/SEMANTIC_REGRESSION_REPORT.md
+```
+
 - Inspect JSONL proof, not only Markdown reports. At minimum verify:
   - active Agent Blueprint id/scope/path,
   - selected root expert and child delegation rows,
