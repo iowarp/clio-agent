@@ -98,6 +98,17 @@ Before declaring the benchmark campaign ready to cite for 1.0:
 - Run configured CLIO gates on `develop`.
 - Confirm no open CLIO PRs.
 - Confirm marketplace repo is clean and pushed.
+- Run the static Agent Blueprint marketplace preflight before the real-provider
+  marketplace lane:
+
+```bash
+uv run python scripts/validate_marketplace_blueprints.py \
+  /path/to/clio-agent-marketplace \
+  --require-complex-count 3 \
+  --exclude-complex-id seismic-waveform-review \
+  --output benchmark/MARKETPLACE_PREFLIGHT_REPORT.md
+```
+
 - Run the ALCF/Argonne real-provider benchmark lane with semantic tracing
   enabled at least at `semantic` detail:
 

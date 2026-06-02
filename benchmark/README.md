@@ -91,6 +91,19 @@ enough: `--require-lane-criteria` now also requires at least three marketplace
 cases with depth >= 3, branch count >= 2, sync handoff count >= 2, and complete
 parent-return provenance.
 
+Before running the expensive marketplace lane, run the static preflight against
+the marketplace source. This uses CLIO's Agent Blueprint validator for every
+pack and fails if fewer than the requested number of non-seismic packs have a
+real nested hierarchy:
+
+```bash
+uv run python scripts/validate_marketplace_blueprints.py \
+  /path/to/clio-agent-marketplace \
+  --require-complex-count 3 \
+  --exclude-complex-id seismic-waveform-review \
+  --output benchmark/MARKETPLACE_PREFLIGHT_REPORT.md
+```
+
 The `semantic_regression` lane is the 1.0 readiness gate for the semantics that
 were easy to overclaim during deterministic-routing removal. Each case declares
 semantic proof tags, the JSONL row records which tags were actually observed,

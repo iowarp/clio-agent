@@ -1,0 +1,129 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+from scripts.validate_marketplace_blueprints import (
+    MarketplaceValidationOptions,
+    validate_marketplace_source,
+)
+
+
+def _write_pack(
+    root: Path,
+    *,
+    pack_id: str,
+    nested: bool,
+    unknown_tool: bool = False,
+) -> None:
+    pack = root / pack_id
+    experts = pack / "experts"
+    experts.mkdir(parents=True)
+    pack.joinpath("AGENT.md").write_text(
+        f"""---
+id: {pack_id}
+version: 1.0.0
+title: {pack_id}
+description: Test pack
+blueprint:
+  format: agent-blueprint-v1
+root_expert: main
+---
+Root prompt.
+""",
+        encoding="utf-8",
+    )
+    pack.joinpath("experts", "main.md").write_text(
+        """---
+id: main
+title: Main
+tier: 1
+children:
+  - data
+---
+Main prompt.
+""",
+        encoding="utf-8",
+    )
+    data_tool = "missing_tool" if unknown_tool else "hdf5_list_datasets"
+    children = "\nchildren:\n  - format" if nested else ""
+    experts.joinpath("data.md").write_text(
+        f"""---
+id: data
+title: Data
+tier: 2
+parent_id: main{children}
+tools:
+  - {data_tool}
+---
+Data prompt.
+""",
+        encoding="utf-8",
+    )
+    if nested:
+        experts.joinpath("format.md").write_text(
+            """---
+id: format
+title: Format
+tier: 3
+parent_id: data
+tools:
+  - hdf5_analyze_dataset
+---
+Format prompt.
+""",
+            encoding="utf-8",
+        )
+
+
+def test_marketplace_preflight_fails_when_complex_count_is_too_low(tmp_path: Path) -> None:
+    _write_pack(tmp_path, pack_id="shallow", nested=False)
+    _write_pack(tmp_path, pack_id="complex", nested=True)
+
+    result = validate_marketplace_source(
+        tmp_path,
+        options=MarketplaceValidationOptions(require_complex_count=2),
+    )
+
+    assert result["ok"] is False
+    assert result["blueprint_count"] == 2
+    assert result["complex_blueprints"] == ["complex"]
+    assert result["complex_blueprint_count"] == 1
+    assert result["validation_errors"] == [
+        "complex blueprint count below requirement: 1/2"
+    ]
+
+
+def test_marketplace_preflight_reports_pack_validation_errors(tmp_path: Path) -> None:
+    _write_pack(tmp_path, pack_id="broken", nested=True, unknown_tool=True)
+
+    result = validate_marketplace_source(tmp_path)
+
+    assert result["ok"] is False
+    assert result["blueprint_count"] == 1
+    assert result["complex_blueprints"] == []
+    assert any(
+        "broken: data: unknown tool reference: missing_tool" == error
+        for error in result["validation_errors"]
+    )
+    broken = result["blueprints"][0]
+    assert broken["enabled"] is False
+    assert broken["metrics"]["expert_count"] == 3
+
+
+def test_marketplace_preflight_can_exclude_seismic_from_complex_count(
+    tmp_path: Path,
+) -> None:
+    _write_pack(tmp_path, pack_id="seismic-waveform-review", nested=True)
+    _write_pack(tmp_path, pack_id="domain-a", nested=True)
+    _write_pack(tmp_path, pack_id="domain-b", nested=True)
+
+    result = validate_marketplace_source(
+        tmp_path,
+        options=MarketplaceValidationOptions(
+            require_complex_count=2,
+            exclude_complex_ids=("seismic-waveform-review",),
+        ),
+    )
+
+    assert result["ok"] is True
+    assert result["complex_blueprints"] == ["domain-a", "domain-b"]
