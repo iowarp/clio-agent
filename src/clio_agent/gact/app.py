@@ -10276,6 +10276,7 @@ def build_app(
         remote workspace."""
 
         import base64  # noqa: PLC0415
+        import tempfile  # noqa: PLC0415
 
         from clio_agent.gact.workspace_scope import (  # noqa: PLC0415
             default_workspace_storage_root,
@@ -10331,6 +10332,30 @@ def build_app(
                     )
                 ).model_dump(exclude_none=True),
             )
+        # Reject obviously-oversized payloads on the ENCODED length BEFORE
+        # decoding, so a huge base64 string can never allocate ~25 MiB+ of
+        # decoded bytes just to be thrown away. base64 expands 3 bytes -> 4
+        # chars, so the smallest possible decoded size for an encoded string
+        # of length L (allowing up to 2 padding "=") is (L // 4) * 3 - 2.
+        # If even that minimum already exceeds the cap, the payload cannot
+        # possibly fit — reject without touching base64.b64decode.
+        min_decoded = (len(encoded) // 4) * 3 - 2
+        if min_decoded > max_bytes:
+            raise HTTPException(
+                status_code=413,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="payload_too_large",
+                        message=f"attachment exceeds {max_bytes} bytes",
+                        details={
+                            "max_bytes": max_bytes,
+                            "encoded_length": len(encoded),
+                            "min_decoded_size": min_decoded,
+                        },
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            )
         try:
             data = base64.b64decode(encoded, validate=True)
         except Exception as exc:  # noqa: BLE001
@@ -10345,6 +10370,8 @@ def build_app(
                     )
                 ).model_dump(exclude_none=True),
             ) from exc
+        # Safety net: even with the pre-decode guard above, re-check the
+        # actual decoded length (the estimate is a lower bound, not exact).
         if len(data) > max_bytes:
             raise HTTPException(
                 status_code=413,
@@ -10396,18 +10423,17 @@ def build_app(
         root = Path(ws.root_path or os.getcwd()).expanduser().resolve()
         base = (default_workspace_storage_root(str(root)) / "attachments" / sid).resolve()
 
-        # Collision-safe destination; never overwrite an existing upload.
+        base.mkdir(parents=True, exist_ok=True)
         stem, suffix = Path(safe_name).stem, Path(safe_name).suffix
-        dest = base / safe_name
-        counter = 2
-        while dest.exists():
-            dest = base / f"{stem} ({counter}){suffix}"
-            counter += 1
 
-        # Defense-in-depth: confine the write to `base` even though the
+        # Defense-in-depth: confine the destination to `base` even though the
         # filename is already sanitized (the register step re-checks vs root).
+        # CRITICAL: this confinement check MUST complete BEFORE any byte (even
+        # a temp byte) is written to disk — do not move the write block above
+        # this guard. We validate the un-numbered candidate; the collision
+        # suffix below only appends " (N)" within the same already-confined dir.
         try:
-            dest.resolve(strict=False).relative_to(base)
+            (base / safe_name).resolve(strict=False).relative_to(base)
         except ValueError:
             raise HTTPException(
                 status_code=403,
@@ -10421,14 +10447,58 @@ def build_app(
                 ).model_dump(exclude_none=True),
             ) from None
 
-        # --- write bytes atomically ---
-        base.mkdir(parents=True, exist_ok=True)
-        tmp = dest.parent / (dest.name + ".tmp")
-        tmp.write_bytes(data)
-        tmp.replace(dest)
+        # --- claim a collision-free destination ATOMICALLY ---
+        # Two concurrent uploads of the same filename must not both pick the
+        # same name (a non-atomic `while dest.exists()` probe would TOCTOU-race
+        # and let one overwrite the other). Claim the name by creating it with
+        # O_CREAT|O_EXCL; on EEXIST, advance the " (N)" suffix and retry. The
+        # winner owns an empty placeholder that the atomic replace then fills.
+        counter = 2
+        dest_candidate = base / safe_name
+        while True:
+            try:
+                claim_fd = os.open(
+                    str(dest_candidate), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600
+                )
+            except FileExistsError:
+                dest_candidate = base / f"{stem} ({counter}){suffix}"
+                counter += 1
+                continue
+            os.close(claim_fd)
+            dest = dest_candidate
+            break
+
+        # --- write bytes atomically (only now, after confinement passed) ---
+        # Write to a UNIQUE temp file in the SAME directory so two concurrent
+        # uploads can never share a deterministic ".tmp" name and clobber each
+        # other's bytes mid-write; os.replace then atomically swaps the temp
+        # over the placeholder we claimed above. The temp file is unlinked on
+        # every error path so a failed write never leaks a stray ".tmp".
+        tmp_fd, tmp_name = tempfile.mkstemp(
+            dir=str(base), prefix=f".{stem}.", suffix=f"{suffix}.tmp"
+        )
+        tmp_path = Path(tmp_name)
+        try:
+            with os.fdopen(tmp_fd, "wb") as fh:
+                fh.write(data)
+                fh.flush()
+                os.fsync(fh.fileno())
+            os.replace(tmp_path, dest)
+        except BaseException:
+            for stray in (tmp_path, dest):
+                try:
+                    stray.unlink()
+                except FileNotFoundError:
+                    pass
+            raise
 
         # --- register through the existing context-file ledger ---
-        rel = dest.resolve().relative_to(root)
+        # Use os.path.relpath rather than Path.relative_to: on Windows a deep
+        # path makes Path.resolve() emit the "\\?\" extended-length prefix on
+        # one side but not the other, so relative_to() spuriously raises. Both
+        # dest and root point inside the same already-confined tree, so a plain
+        # string-level relpath is correct and prefix-agnostic.
+        rel = os.path.relpath(str(dest), str(root))
         resolved_info = _resolve_context_attachment_path(
             sess=sess,
             raw_path=str(rel),
