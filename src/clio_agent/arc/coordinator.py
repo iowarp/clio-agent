@@ -1,7 +1,8 @@
-"""Multi-agent coordination for complex queries
+"""Legacy multi-agent coordination for complex queries.
 
-This module provides the MultiAgentCoordinator class which manages coordination
-between multiple agents for complex queries. It handles:
+This module provides the MultiAgentCoordinator class, an older ARC-era
+coordinator that manages coordination between multiple agents for complex
+queries. It handles:
     - Query analysis to determine multi-agent needs
     - Coordination plan creation
     - Sequential and parallel execution
@@ -13,7 +14,12 @@ Performance Targets:
     - Parallel execution support (future)
     - Full coordination trace in ARC
 
-See docs/CLIO_AGENT_ARCHITECTURE.md for architecture details.
+The active CLIO runtime no longer uses this class for benchmark or GACT
+orchestration. The class is retained for compatibility and ARC tests, but its
+keyword planner is explicit opt-in so it cannot be confused with CLIO's
+model-driven Agent Blueprint semantics.
+
+See docs/CLIO_AGENT_ARCHITECTURE.md for historical architecture details.
 """
 
 import time
@@ -176,26 +182,42 @@ class MultiAgentCoordinator:
     - Parallel execution (placeholder for v0.4.0+)
     - Full trace storage in ARC Memory
 
+    This is legacy infrastructure. CLIO's current runtime uses the model-driven
+    Agent Blueprint planner in :mod:`clio_agent.agent`; this coordinator's
+    keyword planner must be enabled explicitly for compatibility tests or
+    historical callers.
+
     Args:
         memory: ARC Memory instance for trace storage
+        allow_legacy_keyword_planning: Enable the old deterministic keyword
+            planning path. Defaults to ``False`` to keep benchmark/runtime
+            semantic proof paths from accidentally using it.
 
     Examples:
         >>> from clio_agent.arc.memory import ARCMemory
         >>> arc = ARCMemory()
-        >>> coordinator = MultiAgentCoordinator(arc)
+        >>> coordinator = MultiAgentCoordinator(arc, allow_legacy_keyword_planning=True)
         >>> agents = {"DataExpert": data_expert, "HPCExpert": hpc_expert}
         >>> plan = coordinator.create_plan("Optimize HDF5 on cluster", agents)
         >>> result = coordinator.execute_plan(plan, agents, "session-123")
         >>> print(f"Success: {result.success}, Duration: {result.total_duration_ms}ms")
     """
 
-    def __init__(self, memory: ARCMemory):
+    def __init__(
+        self,
+        memory: ARCMemory,
+        *,
+        allow_legacy_keyword_planning: bool = False,
+    ):
         """Initialize multi-agent coordinator.
 
         Args:
             memory: ARC Memory instance for persistence
+            allow_legacy_keyword_planning: Whether to enable the retained
+                deterministic keyword planner.
         """
         self.memory = memory
+        self.allow_legacy_keyword_planning = allow_legacy_keyword_planning
 
     def _select_agent_for_task(self, task_text: str, available_agents: Dict[str, Any]) -> str:
         """Select an available expert for a task segment using explicit keywords."""
@@ -229,11 +251,16 @@ class MultiAgentCoordinator:
         Analyzes query to determine if multi-agent coordination is needed
         and creates an execution plan with agent tasks.
 
-        Algorithm (v0.2.0 - simple keyword-based):
+        Legacy algorithm (v0.2.0 - simple keyword-based):
         1. Check for coordination keywords ("and", "then", "also")
         2. Extract sub-tasks from query
         3. Map tasks to agents based on keywords
         4. Create sequential plan (parallel in v0.4.0+)
+
+        The legacy algorithm is disabled by default. Use
+        ``allow_legacy_keyword_planning=True`` only for compatibility or tests;
+        benchmark semantic-proof lanes must use CLIO's model-driven Agent
+        Blueprint planner.
 
         Args:
             query: User query to analyze
@@ -251,6 +278,15 @@ class MultiAgentCoordinator:
             >>> print(plan.tasks)
             [AgentTask(agent=DataExpert, ...), AgentTask(agent=HPCExpert, ...)]
         """
+        if not self.allow_legacy_keyword_planning:
+            raise RuntimeError(
+                "MultiAgentCoordinator.create_plan uses legacy deterministic "
+                "keyword planning and is disabled by default. Use CLIO's "
+                "model-driven Agent Blueprint planner for runtime orchestration, "
+                "or construct MultiAgentCoordinator(..., "
+                "allow_legacy_keyword_planning=True) for compatibility tests."
+            )
+
         plan_id = f"plan-{uuid.uuid4()}"
         tasks: List[AgentTask] = []
 
