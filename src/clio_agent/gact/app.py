@@ -647,6 +647,24 @@ def _gact_turn_timeout_s() -> float:
         return 300.0
 
 
+def _mcp_reconnect_timeout_s() -> float:
+    """Return the MCP reconnect/probe timeout in seconds.
+
+    Bounds the connect + ``list_tools`` round-trip in
+    ``POST /v1/mcp/servers/{sid}/reconnect`` so a hung MCP server cannot
+    block the route indefinitely. Defaults to 15s (a sensible ceiling for
+    a stdio spawn + first tool listing) and is overridable via
+    ``CLIO_GACT_MCP_RECONNECT_TIMEOUT_S``. A non-positive or unparseable
+    value falls back to the 15s default rather than disabling the guard."""
+
+    raw = os.environ.get("CLIO_GACT_MCP_RECONNECT_TIMEOUT_S", "15").strip()
+    try:
+        value = float(raw)
+    except ValueError:
+        return 15.0
+    return value if value > 0 else 15.0
+
+
 def _keyword_user_agent_routing_enabled() -> bool:
     """Return whether legacy keyword routing into user agents is enabled."""
 
@@ -13029,6 +13047,219 @@ def build_app(
         )
         installed.pop(sid, None)
         return None
+
+    @app.post("/v1/mcp/servers/{sid}/reconnect")
+    async def reconnect_mcp_server(sid: str) -> dict[str, Any]:
+        """Re-probe a previously-installed external MCP server.
+
+        fastmcp.Client connections are ephemeral (re-created per
+        dispatch), so there is no persistent socket to tear down —
+        reconnect simply re-opens the stored transport spec, re-lists the
+        tools, and updates the registry row in place. Non-destructive, so
+        (unlike DELETE) no permission guard. Bundled in-process servers
+        (mcp_fs/mcp_hdf5/mcp_parquet) are not in the external registry, so
+        they 404 here (they cannot be reconnected)."""
+
+        installed = getattr(app.state, "external_mcp_servers", {}) or {}
+        info = installed.get(sid)
+        if info is None:
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="not_found",
+                        message=f"no externally-installed MCP server: {sid}",
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+
+        try:
+            from fastmcp import Client
+            from fastmcp.client.transports import (
+                StdioTransport,
+                StreamableHttpTransport,
+            )
+        except Exception as exc:
+            raise HTTPException(
+                status_code=503,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="dependency_missing",
+                        message=f"fastmcp Client unavailable: {exc!r}",
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
+            ) from exc
+
+        # REVIEW FIX (gap-523): validate the stored transport spec BEFORE
+        # touching the registry row or attempting any connection. A
+        # malformed spec — stdio without a command, http/sse without a url,
+        # or an unknown transport — is a client-actionable 4xx
+        # (mcp_spec_invalid), not an unhandled internal exception. We
+        # short-circuit here so the registry row is never left half-updated
+        # by a spec we could never have reconnected anyway.
+        spec = info.get("spec") or {}
+        transport_kind = str(spec.get("transport") or "").lower()
+
+        def _spec_invalid(message: str) -> HTTPException:
+            return HTTPException(
+                status_code=422,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="mcp_spec_invalid",
+                        message=message,
+                        details={"id": sid, "transport": transport_kind, "spec": spec},
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+
+        if transport_kind == "stdio":
+            command = spec.get("command")
+            if not (isinstance(command, str) and command.strip()):
+                raise _spec_invalid(
+                    f"MCP server {sid} has a stdio transport spec with no "
+                    "'command'; cannot reconnect"
+                )
+            transport = StdioTransport(
+                command=command,
+                args=spec.get("args") or [],
+            )
+        elif transport_kind in {"http", "streamable-http", "sse"}:
+            url = spec.get("url")
+            if not (isinstance(url, str) and url.strip()):
+                raise _spec_invalid(
+                    f"MCP server {sid} has an {transport_kind} transport spec "
+                    "with no 'url'; cannot reconnect"
+                )
+            transport = StreamableHttpTransport(url=url)  # type: ignore[assignment]
+        else:
+            raise _spec_invalid(
+                f"MCP server {sid} has no reconnectable transport spec "
+                f"(transport={transport_kind or 'missing'!r}); expected "
+                "stdio or http"
+            )
+
+        # Re-probe identically to install: open, list tools, close. The
+        # whole connect + list-tools round-trip is bounded by a timeout
+        # (gap-523) so a hung MCP server cannot hang the route.
+        reconnect_timeout = _mcp_reconnect_timeout_s()
+        tool_names: list[str] = []
+        connect_error: Optional[str] = None
+        timed_out = False
+
+        async def _probe() -> list[str]:
+            async with Client(transport) as client:
+                tools = await client.list_tools()
+                return [t.name for t in tools]
+
+        try:
+            tool_names = await asyncio.wait_for(_probe(), timeout=reconnect_timeout)
+        except (asyncio.TimeoutError, TimeoutError):
+            timed_out = True
+        except Exception as exc:  # noqa: BLE001
+            connect_error = repr(exc)
+
+        # REVIEW FIX (gap-523): on timeout, leave the registry row in a
+        # coherent error state — never half-updated. We mark status="error"
+        # with a timeout error message but preserve the previously-known
+        # tool list (a hung probe tells us nothing new about the tools, and
+        # blanking them would discard good data), then surface the timeout
+        # to SSE clients and return a structured 504.
+        if timed_out:
+            timeout_msg = (
+                f"MCP server reconnect timed out after {reconnect_timeout:g}s"
+            )
+            info["status"] = "error"
+            info["error"] = timeout_msg
+            installed[sid] = info  # tools untouched: registry stays consistent
+
+            app.state.bus.publish(
+                Event(
+                    type="mcp.server.error",
+                    session_id="",
+                    payload={
+                        "server_id": sid,
+                        "name": info.get("name", ""),
+                        "status": "error",
+                        "error": timeout_msg,
+                    },
+                )
+            )
+            raise HTTPException(
+                status_code=504,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="mcp_reconnect_timeout",
+                        message=timeout_msg,
+                        details={
+                            "id": sid,
+                            "spec": spec,
+                            "timeout_s": reconnect_timeout,
+                        },
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+
+        # Update the registry row in place.
+        info["status"] = "ready" if connect_error is None else "error"
+        info["tools"] = tool_names
+        if connect_error:
+            info["error"] = connect_error
+        else:
+            info.pop("error", None)
+        installed[sid] = info
+
+        if connect_error is not None:
+            # Global status event (session_id="" like lm.provider.*).
+            app.state.bus.publish(
+                Event(
+                    type="mcp.server.error",
+                    session_id="",
+                    payload={
+                        "server_id": sid,
+                        "name": info.get("name", ""),
+                        "status": "error",
+                        "error": connect_error,
+                    },
+                )
+            )
+            raise HTTPException(
+                status_code=502,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="upstream_unavailable",
+                        message=f"MCP server reconnect failed: {connect_error}",
+                        details={"id": sid, "spec": spec},
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+
+        app.state.bus.publish(
+            Event(
+                type="mcp.server.reconnected",
+                session_id="",
+                payload={
+                    "server_id": sid,
+                    "name": info.get("name", ""),
+                    "status": "ready",
+                    "transport": info.get("transport", ""),
+                    "tools": tool_names,
+                },
+            )
+        )
+        return {
+            "id": sid,
+            "name": info.get("name", ""),
+            "status": "ready",
+            "transport": info.get("transport", ""),
+            "tools_count": len(tool_names),
+            "tools": tool_names,
+            "spec": spec,
+        }
 
     @app.get("/v1/mcp/servers/{sid}")
     async def get_mcp_server(sid: str) -> dict[str, Any]:
