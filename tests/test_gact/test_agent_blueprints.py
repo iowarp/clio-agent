@@ -98,6 +98,71 @@ REMOTE BLUEPRINT ORCHESTRATOR MARKER.
     )
 
 
+def _write_provider_profile_blueprint(root: Path) -> None:
+    (root / "experts").mkdir(parents=True)
+    (root / "prompts").mkdir()
+    root.joinpath("AGENT.md").write_text(
+        """---
+id: provider-profile-agent
+version: 0.1.0
+title: Provider Profile Agent
+root_expert: root
+blueprint:
+  format: agent-blueprint-v1
+---
+Provider/profile provenance test agent.
+""",
+        encoding="utf-8",
+    )
+    root.joinpath("experts", "root.md").write_text(
+        """---
+id: root
+title: Root Expert
+tier: 1
+prompt_id: profile.root
+prompt_profile: heavy
+---
+Inline root prompt should be replaced.
+""",
+        encoding="utf-8",
+    )
+    root.joinpath("experts", "analysis.md").write_text(
+        """---
+id: analysis
+title: Analysis Expert
+parent_id: root
+tier: 2
+prompt_id: profile.analysis
+prompt_profile: light
+---
+Inline analysis prompt should be replaced.
+""",
+        encoding="utf-8",
+    )
+    root.joinpath("prompts", "profile.root.md").write_text(
+        """---
+id: profile.root
+profile: heavy
+provider: openai
+model: gpt-5.1
+---
+Root prompt from blueprint profile.
+""",
+        encoding="utf-8",
+    )
+    root.joinpath("prompts", "profile.analysis.md").write_text(
+        """---
+id: profile.analysis
+profile: light
+provider: anthropic
+model: claude-sonnet-4-20250514
+---
+Analysis prompt from blueprint profile.
+""",
+        encoding="utf-8",
+    )
+
+
 def test_builtin_agent_blueprint_is_discoverable() -> None:
     blueprints = {row.id: row for row in discover_agent_blueprints()}
     agents = {row.id: row for row in load_agent_blueprints(blueprint_id="data-exploration")}
@@ -652,6 +717,107 @@ def test_session_agent_overlay_prompt_provenance_reaches_prompts_and_turn_metada
     assert runtime["agent_overlay"]["status"] == "applied"
     assert runtime["agent_overlay"]["fields"] == ["default_model", "system_prompt"]
     assert runtime["prompt"]["source"] == "session_agent_overlay"
+
+
+def test_agent_blueprint_prompt_profile_provider_runtime_provenance(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    blueprint = tmp_path / "provider-profile-agent"
+    _write_provider_profile_blueprint(blueprint)
+    seen: list[dict[str, Any]] = []
+
+    async def no_stream(*args: Any, **kwargs: Any) -> None:
+        return None
+
+    def fake_prompt_runner(
+        base_agent: Any,
+        agent_def: Any,
+        question: str,
+        session_id: str,
+        cancel_requested: Any | None = None,
+    ) -> Any:
+        del base_agent, cancel_requested
+        seen.append(
+            {
+                "agent_id": agent_def.id,
+                "prompt": agent_def.system_prompt,
+                "provider": agent_def.default_provider,
+                "model": agent_def.default_model,
+                "question": question,
+                "session_id": session_id,
+            }
+        )
+        handoffs = (
+            json.dumps(
+                [
+                    {
+                        "delegate_to": "analysis",
+                        "question": "Use the analysis profile.",
+                    }
+                ]
+            )
+            if agent_def.id == "root"
+            else "[]"
+        )
+        return SimpleNamespace(
+            answer=f"{agent_def.id} done",
+            selected_expert=agent_def.id,
+            expert_handoffs=handoffs,
+            routing_rationale="profile provenance",
+            route_source="agent_blueprint",
+            error_info=None,
+        )
+
+    monkeypatch.setattr("clio_agent.gact.app._try_streamed_forward", no_stream)
+    monkeypatch.setattr("clio_agent.gact.app._run_prompt_user_agent", fake_prompt_runner)
+
+    app = build_app(sessions_path=tmp_path / "sessions.json", agent=SimpleNamespace())
+    with TestClient(app) as client:
+        sid = client.post("/v1/sessions", json={"title": "provider profile"}).json()["id"]
+        activated = client.post(
+            f"/v1/sessions/{sid}/agent-blueprint",
+            json={"path": str(blueprint)},
+        )
+        assert activated.status_code == 200, activated.text
+        assistant = complete_turn(client, sid, "prove profile provenance")
+
+    root_call = next(row for row in seen if row["agent_id"] == "root")
+    analysis_call = next(row for row in seen if row["agent_id"] == "analysis")
+    assert root_call["prompt"] == "Root prompt from blueprint profile."
+    assert root_call["provider"] == "openai"
+    assert root_call["model"] == "gpt-5.1"
+    assert analysis_call["prompt"] == "Analysis prompt from blueprint profile."
+    assert analysis_call["provider"] == "anthropic"
+    assert analysis_call["model"] == "claude-sonnet-4-20250514"
+
+    root_runtime = assistant["metadata"]["agent_runtime"]
+    assert root_runtime["prompt"]["id"] == "profile.root"
+    assert root_runtime["prompt"]["profile"] == "heavy"
+    assert root_runtime["prompt"]["resolution"]["scope"] == "session_agent_blueprint"
+    assert root_runtime["model"] == {
+        "provider_id": "openai",
+        "model_id": "gpt-5.1",
+        "provider_source": "prompt_resolution",
+        "model_source": "prompt_resolution",
+        "fallback_to_global": False,
+    }
+
+    handoffs = assistant["metadata"]["expert_handoffs"]
+    completed = next(row for row in handoffs if row.get("stage") == "delegate.completed")
+    assert completed["agent_id"] == "analysis"
+    assert completed["prompt_resolution"]["id"] == "profile.analysis"
+    assert completed["prompt_resolution"]["profile"] == "light"
+    assert completed["prompt_resolution"]["scope"] == "session_agent_blueprint"
+    assert completed["provider"] == {
+        "provider_id": "anthropic",
+        "model_id": "claude-sonnet-4-20250514",
+        "provider_source": "prompt_resolution",
+        "model_source": "prompt_resolution",
+        "fallback_to_global": False,
+    }
+    assert completed["agent_runtime"]["prompt"]["profile"] == "light"
+    assert completed["agent_runtime"]["model"]["provider_source"] == "prompt_resolution"
 
 
 def test_agent_blueprint_install_from_local_marketplace(tmp_path: Path) -> None:

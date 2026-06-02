@@ -1773,6 +1773,13 @@ def _resolve_runtime_dynamic_agent(
     workspace_id: str = "",
     prompt_registry: PromptRegistry | None = None,
 ) -> "AgentDef | None":
+    if prompt_registry is None and session_id:
+        prompt_registry_factory = getattr(app.state, "prompt_registry_for_request", None)
+        prompt_registry = (
+            prompt_registry_factory(session_id=session_id, workspace_id=workspace_id)
+            if callable(prompt_registry_factory)
+            else None
+        )
     if session_id:
         for row in _runtime_active_agent_blueprint_rows(
             app,
@@ -2233,8 +2240,38 @@ def _dynamic_agent_runtime_provenance(
     """Return non-secret provenance for the dynamic agent used this turn."""
 
     active_model = _active_lm_model_ref(app)
+    prompt_id, prompt_profile = _agent_prompt_request(agent_def)
+    prompt_resolution = (
+        dict(agent_def.metadata.get("prompt_resolution") or {})
+        if isinstance(agent_def.metadata, Mapping)
+        else {}
+    )
     provider_id = agent_def.default_provider or active_model.get("provider_id", "")
     model_id = agent_def.default_model or active_model.get("model_id", "")
+    provider_source = "global_active"
+    if agent_def.default_provider:
+        provider_source = (
+            "prompt_resolution"
+            if prompt_resolution.get("provider") == agent_def.default_provider
+            else "agent_default"
+        )
+    model_source = "global_active"
+    if agent_def.default_model:
+        model_source = (
+            "prompt_resolution"
+            if prompt_resolution.get("model") == agent_def.default_model
+            else "agent_default"
+        )
+    prompt_payload: dict[str, Any] = {
+        "source": "agent_definition",
+        "has_system_prompt": bool(agent_def.system_prompt.strip()),
+    }
+    if prompt_id:
+        prompt_payload["id"] = prompt_id
+    if prompt_profile:
+        prompt_payload["profile"] = prompt_profile
+    if prompt_resolution:
+        prompt_payload["resolution"] = prompt_resolution
     payload: dict[str, Any] = {
         "kind": "dynamic_agent",
         "agent_id": agent_def.id,
@@ -2242,15 +2279,12 @@ def _dynamic_agent_runtime_provenance(
         "title": agent_def.title,
         "execution_mode": execution_mode,
         "tools": list(agent_def.tools),
-        "prompt": {
-            "source": "agent_definition",
-            "has_system_prompt": bool(agent_def.system_prompt.strip()),
-        },
+        "prompt": prompt_payload,
         "model": {
             "provider_id": provider_id,
             "model_id": model_id,
-            "provider_source": ("agent_default" if agent_def.default_provider else "global_active"),
-            "model_source": "agent_default" if agent_def.default_model else "global_active",
+            "provider_source": provider_source,
+            "model_source": model_source,
             "fallback_to_global": not (agent_def.default_provider and agent_def.default_model),
         },
     }
@@ -3651,6 +3685,15 @@ async def _run_turn_in_background(
 
             prompt = _delegated_expert_prompt(row, source_text)
             execution_mode = "tool_agent" if target.tools else "prompt_agent"
+            child_runtime = _dynamic_agent_runtime_provenance(
+                app,
+                target,
+                execution_mode=execution_mode,
+            )
+            child_prompt_resolution = dict(
+                child_runtime.get("prompt", {}).get("resolution") or {}
+            )
+            child_provider = dict(child_runtime.get("model") or {})
             started_at = time.perf_counter()
             started_row = {
                 **row,
@@ -3663,6 +3706,9 @@ async def _run_turn_in_background(
                 "delegation_lifecycle": "sync",
                 "depth": depth,
                 "execution_mode": execution_mode,
+                "provider": child_provider,
+                "prompt_resolution": child_prompt_resolution,
+                "agent_runtime": child_runtime,
             }
             _emit_semantic_event(
                 app,
@@ -3679,8 +3725,10 @@ async def _run_turn_in_background(
                     "pack_version": str(target.metadata.get("pack_version") or ""),
                 },
                 provider={
-                    "provider_id": target.default_provider,
-                    "model_id": target.default_model,
+                    "provider_id": child_provider.get("provider_id", ""),
+                    "model_id": child_provider.get("model_id", ""),
+                    "provider_source": child_provider.get("provider_source", ""),
+                    "model_source": child_provider.get("model_source", ""),
                 },
                 payload=started_row,
             )
@@ -3723,8 +3771,11 @@ async def _run_turn_in_background(
                     "parent_id": parent_agent.id,
                     "pack_id": str(target.metadata.get("pack_id") or ""),
                     "pack_version": str(target.metadata.get("pack_version") or ""),
-                    "provider_id": target.default_provider,
-                    "model_id": target.default_model,
+                    "provider_id": child_provider.get("provider_id", ""),
+                    "model_id": child_provider.get("model_id", ""),
+                    "provider": child_provider,
+                    "prompt_resolution": child_prompt_resolution,
+                    "agent_runtime": child_runtime,
                     "fallback_warnings": list(target.validation_errors),
                     "status": "completed",
                     "stage": "delegate.completed",
@@ -3751,12 +3802,14 @@ async def _run_turn_in_background(
                         "pack_id": str(target.metadata.get("pack_id") or ""),
                         "pack_version": str(target.metadata.get("pack_version") or ""),
                     },
-                    provider={
-                        "provider_id": target.default_provider,
-                        "model_id": target.default_model,
-                    },
-                    payload=completed_row,
-                )
+                provider={
+                    "provider_id": child_provider.get("provider_id", ""),
+                    "model_id": child_provider.get("model_id", ""),
+                    "provider_source": child_provider.get("provider_source", ""),
+                    "model_source": child_provider.get("model_source", ""),
+                },
+                payload=completed_row,
+            )
                 _append_live_assistant_part(
                     app,
                     sid,
@@ -3811,8 +3864,11 @@ async def _run_turn_in_background(
                         "parent_id": parent_agent.id,
                         "pack_id": str(target.metadata.get("pack_id") or ""),
                         "pack_version": str(target.metadata.get("pack_version") or ""),
-                        "provider_id": target.default_provider,
-                        "model_id": target.default_model,
+                        "provider_id": child_provider.get("provider_id", ""),
+                        "model_id": child_provider.get("model_id", ""),
+                        "provider": child_provider,
+                        "prompt_resolution": child_prompt_resolution,
+                        "agent_runtime": child_runtime,
                         "fallback_warnings": list(target.validation_errors),
                         "status": "failed",
                         "depth": depth,
@@ -3835,12 +3891,14 @@ async def _run_turn_in_background(
                         "pack_id": str(target.metadata.get("pack_id") or ""),
                         "pack_version": str(target.metadata.get("pack_version") or ""),
                     },
-                    provider={
-                        "provider_id": target.default_provider,
-                        "model_id": target.default_model,
-                    },
-                    payload=failed_row,
-                )
+                provider={
+                    "provider_id": child_provider.get("provider_id", ""),
+                    "model_id": child_provider.get("model_id", ""),
+                    "provider_source": child_provider.get("provider_source", ""),
+                    "model_source": child_provider.get("model_source", ""),
+                },
+                payload=failed_row,
+            )
                 _append_live_assistant_part(
                     app,
                     sid,
