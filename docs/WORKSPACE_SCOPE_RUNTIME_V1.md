@@ -1,7 +1,5 @@
 # Workspace Scope Runtime V1
 
-Proposed new issue.
-
 ## Goal
 
 Define workspace/local/global boundaries so the major runtime features have a
@@ -76,3 +74,19 @@ Global stores should include:
 - Tests cover default `.clio`, storage override, catalog precedence, and memory
   isolation.
 
+## Pre-Benchmark Proof
+
+`tests/test_gact/test_workspace_scope_prebenchmark.py` exercises the combined
+scope contract that the final benchmark depends on:
+
+- two distinct workspace roots,
+- overlapping local Agent Blueprint IDs,
+- overlapping local command IDs,
+- session-local Agent Blueprint activation,
+- per-workspace command file resolution,
+- same-workspace cross-session memory search with explicit intent,
+- denied other-workspace memory search.
+
+This is backend/API proof. The final real-provider benchmark still needs to show
+the same policy decisions in session logs and runtime provenance when an agent
+uses the memory and workspace surfaces during a real task.
