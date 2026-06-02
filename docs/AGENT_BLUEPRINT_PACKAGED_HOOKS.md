@@ -57,7 +57,9 @@ The endpoint:
 4. Verifies the hook file is inside the Blueprint root.
 5. Copies the file into the configured local Python runtime hook directory at
    `blueprints/<blueprint_id>/<hook_id>.py`.
-6. Rebuilds and installs the process runtime hook registry.
+6. Writes a sidecar metadata file next to the installed hook with source
+   Blueprint id, original definition path, checksum, event, trust, and scope.
+7. Rebuilds and installs the process runtime hook registry.
 
 The installed path uses the existing runtime hook scope layout, so the hook fires
 only when dispatch scope includes the same `blueprint_id`.
@@ -91,6 +93,25 @@ Packaged Blueprint hooks install into `hooks/blueprints/<blueprint_id>/`, so the
 existing runtime hook matcher enforces Blueprint scope. A packaged hook enabled
 for one Blueprint does not fire for default sessions or other Blueprints.
 
+## Semantic Trace Provenance
+
+Runtime hook invocation events include handler provenance when hooks match the
+current dispatch scope. For packaged Blueprint hooks, `hook.invocation.started`,
+`hook.invocation.completed`, and blocked pre-message events include:
+
+- source: `agent_blueprint`,
+- `agent_blueprint_id`,
+- original `definition_path`,
+- runtime `installed_path`,
+- hook checksum,
+- trust metadata,
+- runtime scope,
+- invocation status and error when blocked or failed.
+
+This lets benchmark/session trace review distinguish "a hook event happened"
+from "this exact packaged hook from this Blueprint ran and produced this
+result."
+
 ## Current Limits
 
 - Only the `local_python` runtime hook backend supports packaged hook enablement.
@@ -100,5 +121,8 @@ for one Blueprint does not fire for default sessions or other Blueprints.
   separate packaged-hook registry database yet.
 - Session-specific packaged hook enablement is not implemented; the current
   scope is Blueprint id.
+- The current packaged-hook provenance proof covers message-hook dispatch. Tool
+  hook provenance should be reviewed when a benchmark pack uses packaged
+  `pre_tool` or `post_tool` hooks.
 - Real-provider benchmark proof is still required to show packaged hook events
-  in a full semantic trace before claiming final 1.0 readiness.
+  inside a marketplace task before claiming final 1.0 readiness.

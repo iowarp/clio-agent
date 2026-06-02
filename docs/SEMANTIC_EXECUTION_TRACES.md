@@ -118,7 +118,10 @@ pre-event hooks such as `pre_tool` or `pre_message`.
 
 CLIO also emits `hook.invocation.*` semantic events around `pre_message` and
 `post_message` dispatch so trace consumers can see hook activity in the run
-timeline.
+timeline. Matched handlers are included in the event payload with hook source,
+scope, checksum, installed path, and invocation status. A blocked `pre_message`
+hook records the same handler provenance on `hook.pre_message.blocked` and
+`turn.failed`.
 
 Runtime hook loading is configured through a small backend factory:
 
@@ -156,7 +159,9 @@ the event payload.
 Agent Blueprints may package Python hooks as `hooks/<event>.py`. They are
 reported as disabled descriptors and require an explicit enable/trust call before
 CLIO copies them into `blueprints/<blueprint_id>/` and reloads the local Python
-runtime hook registry. See [Agent Blueprint Packaged Hooks](AGENT_BLUEPRINT_PACKAGED_HOOKS.md).
+runtime hook registry. The enablement path also writes sidecar metadata so
+semantic traces can attribute a runtime hook invocation back to the source
+Blueprint file. See [Agent Blueprint Packaged Hooks](AGENT_BLUEPRINT_PACKAGED_HOOKS.md).
 
 `/v1/capabilities` reports `x_clio_hook_backend` and
 `x_clio_hook_events` so clients can see the configured backend and handler

@@ -3329,7 +3329,21 @@ async def _run_turn_in_background(
     # error_info; the caller sees the hook's reason.
     if context_file_error is None:
         try:
-            from clio_agent.runtime.hooks import fire as _fire_hook
+            from clio_agent.runtime.hooks import (
+                HookInvocationError,
+            )
+            from clio_agent.runtime.hooks import (
+                fire_with_records as _fire_hook_with_records,
+            )
+            from clio_agent.runtime.hooks import (
+                matching_handlers as _matching_hook_handlers,
+            )
+
+            hook_scope = {
+                "session_id": sid,
+                "workspace_id": getattr(sess, "workspace_id", ""),
+                "blueprint_id": _runtime_active_agent_blueprint_id(app, sid),
+            }
 
             _emit_semantic_event(
                 app,
@@ -3341,14 +3355,21 @@ async def _run_turn_in_background(
                 summary="pre_message hook dispatch started.",
                 actor={"hook": "pre_message"},
                 subject={"message_id": user_msg.id},
-                payload={"input": enriched_text},
+                payload={
+                    "input": enriched_text,
+                    "handlers": _matching_hook_handlers(
+                        "pre_message",
+                        hook_scope=hook_scope,
+                        args=(sid, enriched_text),
+                    ),
+                },
             )
-            hook_scope = {
-                "session_id": sid,
-                "workspace_id": getattr(sess, "workspace_id", ""),
-                "blueprint_id": _runtime_active_agent_blueprint_id(app, sid),
-            }
-            _fire_hook("pre_message", sid, enriched_text, hook_scope=hook_scope)
+            hook_result = _fire_hook_with_records(
+                "pre_message",
+                sid,
+                enriched_text,
+                hook_scope=hook_scope,
+            )
             _emit_semantic_event(
                 app,
                 sid,
@@ -3358,9 +3379,10 @@ async def _run_turn_in_background(
                 summary="pre_message hook dispatch completed.",
                 actor={"hook": "pre_message"},
                 subject={"message_id": user_msg.id},
-                payload={},
+                payload={"handlers": hook_result.get("handlers", [])},
             )
-        except PermissionError as exc:
+        except (HookInvocationError, PermissionError) as exc:
+            hook_records = getattr(exc, "records", [])
             _emit_semantic_event(
                 app,
                 sid,
@@ -3371,7 +3393,7 @@ async def _run_turn_in_background(
                 summary="pre_message hook blocked the turn.",
                 actor={"hook": "pre_message"},
                 subject={"message_id": user_msg.id},
-                payload={"error": str(exc)},
+                payload={"error": str(exc), "handlers": hook_records},
             )
             _emit_semantic_event(
                 app,
@@ -3383,7 +3405,7 @@ async def _run_turn_in_background(
                 summary="CLIO turn was blocked by pre_message hook.",
                 actor={"hook": "pre_message"},
                 subject={"message_id": user_msg.id},
-                payload={"error": str(exc)},
+                payload={"error": str(exc), "handlers": hook_records},
             )
             bus.publish(
                 Event(
@@ -5154,7 +5176,18 @@ async def _run_turn_in_background(
     # so user audit code sees the settled assistant + can ship to
     # external systems. Errors are swallowed (post_* contract).
     try:
-        from clio_agent.runtime.hooks import fire as _fire_hook
+        from clio_agent.runtime.hooks import (
+            fire_with_records as _fire_hook_with_records,
+        )
+        from clio_agent.runtime.hooks import (
+            matching_handlers as _matching_hook_handlers,
+        )
+
+        hook_scope = {
+            "session_id": sid,
+            "workspace_id": getattr(sess, "workspace_id", ""),
+            "blueprint_id": _runtime_active_agent_blueprint_id(app, sid),
+        }
 
         _emit_semantic_event(
             app,
@@ -5166,17 +5199,20 @@ async def _run_turn_in_background(
             summary="post_message hook dispatch started.",
             actor={"hook": "post_message"},
             subject={"message_id": assistant_msg.id},
-            payload={"assistant": assistant_msg.model_dump(exclude_none=True)},
+            payload={
+                "assistant": assistant_msg.model_dump(exclude_none=True),
+                "handlers": _matching_hook_handlers(
+                    "post_message",
+                    hook_scope=hook_scope,
+                    args=(sid, assistant_msg.model_dump(exclude_none=True)),
+                ),
+            },
         )
-        _fire_hook(
+        hook_result = _fire_hook_with_records(
             "post_message",
             sid,
             assistant_msg.model_dump(exclude_none=True),
-            hook_scope={
-                "session_id": sid,
-                "workspace_id": getattr(sess, "workspace_id", ""),
-                "blueprint_id": _runtime_active_agent_blueprint_id(app, sid),
-            },
+            hook_scope=hook_scope,
         )
         _emit_semantic_event(
             app,
@@ -5187,7 +5223,7 @@ async def _run_turn_in_background(
             summary="post_message hook dispatch completed.",
             actor={"hook": "post_message"},
             subject={"message_id": assistant_msg.id},
-            payload={},
+            payload={"handlers": hook_result.get("handlers", [])},
         )
     except Exception:  # noqa: BLE001
         _emit_semantic_event(
@@ -16864,7 +16900,6 @@ def build_app(
                 ).model_dump(exclude_none=True),
             ) from exc
 
-        registry_metadata = _reload_runtime_hook_registry(hooks_dir)
         trust = {
             "policy": trust_policy,
             "trusted": trusted,
@@ -16874,6 +16909,34 @@ def build_app(
                 else ("descriptor" if trust_policy in {"trust_always", "always", "trusted"} else "config")
             ),
         }
+        hook_metadata = {
+            "source": "agent_blueprint",
+            "agent_blueprint_id": blueprint_id,
+            "definition_path": descriptor.get("definition_path") or "",
+            "installed_path": str(target),
+            "checksum": descriptor.get("checksum") or "",
+            "event": descriptor.get("event") or hook_id,
+            "trust": trust,
+            "scope": {"blueprint_id": blueprint_id},
+        }
+        try:
+            target.with_name(f"{target.name}.json").write_text(
+                json.dumps(hook_metadata, sort_keys=True),
+                encoding="utf-8",
+            )
+        except OSError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="validation_error",
+                        message=f"failed to install packaged hook metadata: {exc}",
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            ) from exc
+
+        registry_metadata = _reload_runtime_hook_registry(hooks_dir)
         return {
             "id": f"agent_blueprint_hook_{blueprint_id}_{hook_id}",
             "hook_id": hook_id,

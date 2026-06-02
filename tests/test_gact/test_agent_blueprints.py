@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import subprocess
 import time
 from pathlib import Path
@@ -1363,6 +1364,8 @@ def test_agent_blueprint_packaged_hook_requires_enablement_and_blueprint_scope(
     monkeypatch.setenv("CLIO_HOOKS_BACKEND", "local_python")
     monkeypatch.setenv("CLIO_HOOKS_DIR", str(tmp_path / "runtime-hooks"))
     monkeypatch.setenv("CLIO_GACT_HOOK_TRUST_ALWAYS", "false")
+    monkeypatch.setenv("CLIO_SEMANTIC_TRACE_BACKEND", "file")
+    monkeypatch.setenv("CLIO_SEMANTIC_TRACE_PATH", str(tmp_path / "semantic-traces"))
     install_global_registry(None)
 
     workspace = tmp_path / "workspace"
@@ -1417,6 +1420,7 @@ def pre_message(session_id, text):
             )
             capabilities = client.get("/v1/capabilities").json()["capabilities"]
             default_after_enable = complete_turn(client, sid_default, "BLOCK_ME default")
+            blueprint_after_enable = complete_turn(client, sid_blueprint, "allowed after enable")
             blocked_ack = client.post(
                 f"/v1/sessions/{sid_blueprint}/messages",
                 json={"parts": [{"type": "text", "text": "BLOCK_ME after enable"}]},
@@ -1433,6 +1437,11 @@ def pre_message(session_id, text):
             messages_after_block = client.get(
                 f"/v1/sessions/{sid_blueprint}/messages"
             ).json()["messages"]
+            trace_path = tmp_path / "semantic-traces" / f"{sid_blueprint}.semantic.jsonl"
+            trace_rows = [
+                json.loads(line)
+                for line in trace_path.read_text(encoding="utf-8").splitlines()
+            ]
 
     finally:
         install_global_registry(None)
@@ -1452,9 +1461,19 @@ def pre_message(session_id, text):
         "source": "request",
     }
     assert enabled_body["installed_path"].endswith("blueprints/genomics/pre_message.py")
+    installed_path = Path(enabled_body["installed_path"])
+    sidecar = json.loads(
+        installed_path.with_name(f"{installed_path.name}.json").read_text(encoding="utf-8")
+    )
+    assert sidecar["source"] == "agent_blueprint"
+    assert sidecar["agent_blueprint_id"] == "genomics"
+    assert sidecar["definition_path"].endswith("hooks/pre_message.py")
+    assert sidecar["checksum"] == enabled_body["checksum"]
     assert capabilities["x_clio_hook_events"]["pre_message"] == 1
     assert default_after_enable["role"] == "assistant"
     assert default_after_enable.get("error_info") is None
+    assert blueprint_after_enable["role"] == "assistant"
+    assert blueprint_after_enable.get("error_info") is None
     assert blocked_session["status"] == "error"
     blocked_index = next(
         index
@@ -1462,6 +1481,31 @@ def pre_message(session_id, text):
         if row["id"] == blocked_user_message_id
     )
     assert blocked_index == 0 or messages_after_block[blocked_index - 1]["role"] != "assistant"
+
+    completed_dispatch = next(
+        row
+        for row in trace_rows
+        if row["event_type"] == "hook.invocation.completed"
+        and row["actor"].get("hook") == "pre_message"
+        and row["payload"].get("handlers")
+    )
+    completed_handler = completed_dispatch["payload"]["handlers"][0]
+    assert completed_handler["source"] == "agent_blueprint"
+    assert completed_handler["agent_blueprint_id"] == "genomics"
+    assert completed_handler["definition_path"].endswith("hooks/pre_message.py")
+    assert completed_handler["installed_path"].endswith("blueprints/genomics/pre_message.py")
+    assert completed_handler["checksum"] == enabled_body["checksum"]
+    assert completed_handler["status"] == "completed"
+    blocked_dispatch = next(
+        row
+        for row in trace_rows
+        if row["event_type"] == "hook.pre_message.blocked"
+        and row["payload"].get("handlers")
+    )
+    blocked_handler = blocked_dispatch["payload"]["handlers"][0]
+    assert blocked_handler["source"] == "agent_blueprint"
+    assert blocked_handler["status"] == "blocked"
+    assert blocked_handler["error"] == "blocked by packaged blueprint hook"
 
 
 def test_enabled_agent_blueprint_mcp_descriptor_exposes_declared_tools(tmp_path: Path) -> None:
