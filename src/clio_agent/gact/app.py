@@ -574,6 +574,28 @@ _EXECUTABLE_SESSION_AGENT_IDS = {
     "visualization",
 }
 
+# Prompt-registry id for the user-facing session summary (TLDR). The default
+# entry is registered as a packaged built-in prompt
+# (``clio_agent/prompt_packs/builtin/session_summarize.md``) so it is editable
+# and profile-aware through CLIO's prompt registry / external prompt-pack
+# system. POST /v1/sessions/{sid}/summarize resolves it at request time and
+# only uses ``_SESSION_SUMMARIZE_FALLBACK_PROMPT`` below when the registry has
+# no usable entry, so a missing/broken prompt never 500s the route.
+_SESSION_SUMMARIZE_PROMPT_ID = "session_summarize"
+_SESSION_SUMMARIZE_FALLBACK_PROMPT = (
+    "Write a concise, user-facing summary (a TLDR) of the following CLIO "
+    "conversation for a human who wants to catch up quickly. This summary is "
+    "informational only and does NOT replace the transcript.\n\n"
+    "Rules:\n"
+    "- Open with a 1-2 sentence high-level TLDR of what the session is about "
+    "and what it accomplished.\n"
+    "- Then give short bullets for the key points, decisions, and any concrete "
+    "results or artifacts (file paths, dataset names, metrics) that appear.\n"
+    "- Note unresolved questions or next steps if the transcript has them.\n"
+    "- Be faithful to the transcript; do not invent details that are not present.\n"
+    "- Keep it readable and compact; prefer bullets over long prose."
+)
+
 
 class _UnsupportedSessionAgent(RuntimeError):
     """Raised when a session selects an agent CLIO cannot execute yet."""
@@ -12780,20 +12802,38 @@ def build_app(
             body = {}
         instructions = (body.get("instructions") or body.get("focus") or "").strip()
         auto = bool(body.get("auto", False))
+        # ``profile`` lets callers pick a registered behaviour profile for the
+        # summary prompt (the registry is profile-aware); empty selects the
+        # prompt's default profile.
+        profile = str(body.get("profile") or "").strip()
 
-        prompt = (
-            "Write a concise, user-facing summary (a TLDR) of the following CLIO "
-            "conversation for a human who wants to catch up quickly. This summary is "
-            "informational only and does NOT replace the transcript.\n\n"
-            "Rules:\n"
-            "- Open with a 1-2 sentence high-level TLDR of what the session is about "
-            "and what it accomplished.\n"
-            "- Then give short bullets for the key points, decisions, and any concrete "
-            "results or artifacts (file paths, dataset names, metrics) that appear.\n"
-            "- Note unresolved questions or next steps if the transcript has them.\n"
-            "- Be faithful to the transcript; do not invent details that are not present.\n"
-            "- Keep it readable and compact; prefer bullets over long prose."
-        )
+        # Resolve the summary instruction text through CLIO's prompt registry
+        # so it is editable and profile-aware (workspace/session overrides,
+        # external prompt packs). The transcript and any per-request
+        # ``instructions`` are still appended by this route. The hardcoded
+        # ``_SESSION_SUMMARIZE_FALLBACK_PROMPT`` is used ONLY when the registry
+        # has no usable entry, so the route never 500s on a missing prompt.
+        prompt_base = _SESSION_SUMMARIZE_FALLBACK_PROMPT
+        prompt_source = "fallback"
+        prompt_profile = ""
+        try:
+            registry_factory = getattr(
+                app.state, "prompt_registry_for_request", _prompt_registry_for_request
+            )
+            registry = registry_factory(session_id=sid)
+            resolved = registry.resolve(_SESSION_SUMMARIZE_PROMPT_ID, profile=profile)
+            if resolved is not None and (resolved.text or "").strip():
+                prompt_base = resolved.text.strip()
+                prompt_source = resolved.scope or "registry"
+                prompt_profile = resolved.profile
+        except Exception:
+            # Any registry failure (bad on-disk override, IO error) falls back
+            # to the in-code prompt rather than failing the summarize request.
+            prompt_base = _SESSION_SUMMARIZE_FALLBACK_PROMPT
+            prompt_source = "fallback"
+            prompt_profile = ""
+
+        prompt = prompt_base
         if instructions:
             prompt += f"\n\nFollow these specific instructions for the summary: {instructions}"
         prompt += f"\n\n--- transcript ---\n{transcript}\n--- end ---"
@@ -12871,9 +12911,15 @@ def build_app(
             "per_part_limit": per_part_limit,
             "instructions": instructions,
             "auto": auto,
+            "prompt_id": _SESSION_SUMMARIZE_PROMPT_ID,
+            "prompt_source": prompt_source,
+            "prompt_profile": prompt_profile,
             "metadata": {
                 "source": "gact_summarize",
                 "synthetic": "session_summary",
+                "prompt_id": _SESSION_SUMMARIZE_PROMPT_ID,
+                "prompt_source": prompt_source,
+                "prompt_profile": prompt_profile,
             },
         }
         app.state.memory_events.setdefault(sid, []).append(memory_event)
@@ -12899,6 +12945,9 @@ def build_app(
             "event_id": event_id,
             "summary_message_id": summary_message.id,
             "summary": summary,
+            "prompt_id": _SESSION_SUMMARIZE_PROMPT_ID,
+            "prompt_source": prompt_source,
+            "prompt_profile": prompt_profile,
         }
 
     @app.get("/v1/sessions/{sid}/memory/events")
