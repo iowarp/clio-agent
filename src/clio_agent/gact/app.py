@@ -10714,8 +10714,18 @@ def build_app(
         # Re-validate confinement at read time. The row's resolved_path was
         # confined when it was added, but re-check vs the (possibly changed)
         # workspace root so a re-pointed workspace or a doctored ledger can't
-        # be used to read outside the root. Absolute-path context files
-        # (registered with no workspace boundary) are served as-is.
+        # be used to read outside the root.
+        #
+        # Confinement invariant (review of GACT desktop 1.0 file previews):
+        # if the row carries a workspace_id at all, the resolved path MUST sit
+        # inside that workspace's root — EVEN IF the registered/display path is
+        # absolute. An absolute registered path with a workspace boundary is no
+        # excuse to escape the root (a re-pointed workspace or a doctored ledger
+        # could otherwise point an absolute path anywhere). Only rows with NO
+        # workspace_id — i.e. no boundary to enforce — may be served from an
+        # absolute registered path as-is. Both ledger lookup keys (path match
+        # and display_path match) funnel through this single check, so neither
+        # can bypass it.
         try:
             resolved = Path(resolved_path).resolve(strict=False)
         except (OSError, ValueError, RuntimeError):
@@ -10744,8 +10754,29 @@ def build_app(
                 ).model_dump(exclude_none=True),
             )
 
-        ws = app.state.workspaces.get(workspace_id) if workspace_id else None
-        if ws is not None and not Path(display_path).is_absolute():
+        if workspace_id:
+            # The row claims a workspace boundary: confine to that root,
+            # regardless of whether the registered/display path is absolute.
+            ws = app.state.workspaces.get(workspace_id)
+            if ws is None:
+                # A workspace boundary we cannot resolve a root for — we have
+                # nothing to confine against, so refuse rather than fall back
+                # to serving an arbitrary absolute path.
+                raise HTTPException(
+                    status_code=403,
+                    detail=ErrorEnvelope(
+                        error=ErrorInfo(
+                            error="path_outside_workspace",
+                            message=f"context path escapes workspace: {raw_path}",
+                            details={
+                                "session_id": sid,
+                                "path": raw_path,
+                                "workspace_id": workspace_id,
+                            },
+                            recoverable=False,
+                        )
+                    ).model_dump(exclude_none=True),
+                )
             try:
                 root = Path(ws.root_path or os.getcwd()).expanduser().resolve()
                 resolved.relative_to(root)

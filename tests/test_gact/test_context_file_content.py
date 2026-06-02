@@ -258,6 +258,101 @@ def test_lookup_by_display_and_resolved_path(setup) -> None:
         assert resp.json()["file"]["media_type"] == "text/markdown; charset=utf-8"
 
 
+def test_workspace_row_absolute_path_outside_root_is_403(setup) -> None:
+    """Review fix: a row WITH a workspace_id must be confined to that
+    workspace root even when the registered path is ABSOLUTE.
+
+    An absolute path that resolves outside ws_default's root is registered
+    (the registration route stamps every row with the session's workspace_id,
+    here ws_default). At read time the resolved path is outside the root, so
+    the confinement re-check must reject it — an absolute display path is no
+    longer a free pass past the workspace boundary.
+    """
+
+    app, c, tmp_path = setup
+    sid = _sid(c)
+    # A real file that lives OUTSIDE ws_default's root (tmp_path). Its parent
+    # is, by construction, not under tmp_path.
+    outside = tmp_path.parent / f"outside_{tmp_path.name}.txt"
+    outside.write_text("secret outside the workspace\n")
+    try:
+        # Register by ABSOLUTE path. The route resolves it as-is and stamps it
+        # with workspace_id=ws_default (the session's workspace).
+        row = c.post(
+            f"/v1/sessions/{sid}/context/files",
+            json={"path": str(outside), "mode": "read"},
+        ).json()
+        assert row["workspace_id"] == "ws_default"
+        assert Path(row["display_path"]).is_absolute()
+
+        resp = c.get(
+            f"/v1/sessions/{sid}/context/files/content", params={"path": row["path"]}
+        )
+        assert resp.status_code == 403, resp.text
+        body = resp.json()
+        assert body["error"]["error"] == "path_outside_workspace"
+        assert body["error"]["details"]["workspace_id"] == "ws_default"
+    finally:
+        outside.unlink(missing_ok=True)
+
+
+def test_workspace_row_absolute_path_inside_root_is_200(setup) -> None:
+    """Review fix companion: a row WITH a workspace_id whose absolute path
+    resolves INSIDE the workspace root is still served (200)."""
+
+    app, c, tmp_path = setup
+    sid = _sid(c)
+    inside = tmp_path / "report.txt"
+    inside.write_text("inside the workspace\n")
+    # Register by ABSOLUTE path pointing under ws_default's root.
+    row = c.post(
+        f"/v1/sessions/{sid}/context/files",
+        json={"path": str(inside), "mode": "read"},
+    ).json()
+    assert row["workspace_id"] == "ws_default"
+    assert Path(row["display_path"]).is_absolute()
+
+    resp = c.get(f"/v1/sessions/{sid}/context/files/content", params={"path": row["path"]})
+    assert resp.status_code == 200, resp.text
+    assert base64.b64decode(resp.json()["file"]["data"]) == inside.read_bytes()
+
+
+def test_no_workspace_row_absolute_path_served_as_is_200(setup) -> None:
+    """Review fix companion: a row with NO workspace_id has no boundary to
+    enforce, so an absolute registered path is served as-is (200), even when
+    it sits outside any workspace root.
+
+    The registration route always stamps a workspace_id, so this legacy /
+    boundary-less shape is injected directly into the context-file ledger —
+    exactly the row the endpoint must honor without confinement.
+    """
+
+    app, c, tmp_path = setup
+    sid = _sid(c)
+    # A real file outside any workspace root, registered with NO workspace_id.
+    outside = tmp_path.parent / f"boundaryless_{tmp_path.name}.txt"
+    outside.write_text("no workspace boundary\n")
+    resolved = str(Path(outside).resolve())
+    try:
+        bucket = app.state.context_files.setdefault(sid, {})
+        bucket[resolved] = {
+            "path": resolved,
+            "display_path": resolved,
+            "resolved_path": resolved,
+            "workspace_id": "",  # no boundary
+            "source": "api",
+            "mode": "read",
+        }
+
+        resp = c.get(
+            f"/v1/sessions/{sid}/context/files/content", params={"path": resolved}
+        )
+        assert resp.status_code == 200, resp.text
+        assert base64.b64decode(resp.json()["file"]["data"]) == outside.read_bytes()
+    finally:
+        outside.unlink(missing_ok=True)
+
+
 def test_capabilities_advertise_files_content(setup) -> None:
     _app, c, _tmp = setup
     caps = c.get("/v1/capabilities").json()["capabilities"]
