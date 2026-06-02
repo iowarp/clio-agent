@@ -19,7 +19,9 @@ Required top-level fields:
 - `blueprint`: active Agent Blueprint id, version, scope, and definition path
   when a blueprint is active.
 - `provider`: provider/model ids and whether they came from expert defaults or
-  global active configuration.
+  global active configuration. `provider_source` and `model_source` may be
+  `prompt_resolution` when a prompt profile supplied the effective runtime
+  provider/model.
 - `prompt`: prompt id/profile/source plus resolved prompt registry provenance.
 - `tools`: declared tools, observed tool calls, full call metadata, and MCP
   descriptor/server provenance for MCP-backed declared tools.
@@ -50,6 +52,11 @@ The provenance contract records this as `delegation.events` rows with:
 - `depth`: nesting depth.
 - `execution_mode`: `prompt_agent` or `tool_agent`.
 - `duration_ms`: child execution duration when known.
+- `provider`: child expert provider/model ids plus source fields.
+- `prompt_resolution`: child expert prompt id/profile/source/checksum
+  resolution when available.
+- `agent_runtime`: compact child runtime provenance, including prompt,
+  model, tools, skills, commands, pack, and Blueprint fields.
 
 The live semantic event stream also emits `delegation.started`,
 `delegation.completed`, and `delegation.parent_resumed` events. Benchmark proof
