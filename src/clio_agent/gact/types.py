@@ -109,6 +109,9 @@ class CapabilityFlags(BaseModel):
     x_clio_semantic_trace_detail: str = ""
     x_clio_hook_backend: str = ""
     x_clio_hook_events: dict[str, Any] = Field(default_factory=dict)
+    x_clio_files_content: bool = (
+        False  # GET /sessions/{id}/context/files/content — base64-JSON byte previews
+    )
     x_clio_capability_gaps: dict[str, dict[str, Any]] = Field(default_factory=dict)
 
 
