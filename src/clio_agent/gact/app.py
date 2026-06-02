@@ -665,6 +665,13 @@ def _mcp_reconnect_timeout_s() -> float:
     return value if value > 0 else 15.0
 
 
+def _mcp_trust_always_enabled() -> bool:
+    """Return whether local dev MCP descriptors may be trusted by default."""
+
+    raw = os.environ.get("CLIO_GACT_MCP_TRUST_ALWAYS", "true").strip().lower()
+    return raw not in {"0", "false", "no", "off", "disabled"}
+
+
 def _keyword_user_agent_routing_enabled() -> bool:
     """Return whether legacy keyword routing into user agents is enabled."""
 
@@ -12892,6 +12899,11 @@ def build_app(
                     "tools_count": len(info.get("tools") or []),
                     "tools": list(info.get("tools") or []),
                     "spec": info.get("spec", {}),
+                    "trust": info.get("trust", {}),
+                    "install": info.get("install", {}),
+                    "runtime": info.get("runtime", {}),
+                    "env_policy": info.get("env_policy", {}),
+                    "verification": info.get("verification", {}),
                 }
             )
         try:
@@ -16530,6 +16542,36 @@ def build_app(
                     )
                 ).model_dump(exclude_none=True),
             )
+        raw_trust_metadata = descriptor.get("trust")
+        trust_metadata: Mapping[str, Any] = (
+            raw_trust_metadata if isinstance(raw_trust_metadata, Mapping) else {}
+        )
+        trust_policy = str(trust_metadata.get("policy") or "explicit")
+        trust_requested = body.get("trust", body.get("trusted", body.get("trust_always")))
+        explicit_trust = bool(trust_requested)
+        trusted = (
+            explicit_trust
+            or trust_policy in {"trust_always", "always", "trusted"}
+            or _mcp_trust_always_enabled()
+        )
+        if not trusted:
+            raise HTTPException(
+                status_code=403,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="mcp_untrusted",
+                        message=(
+                            "MCP descriptor requires explicit trust before enablement"
+                        ),
+                        details={
+                            "agent_blueprint_id": blueprint_id,
+                            "descriptor_id": descriptor_id,
+                            "trust_policy": trust_policy,
+                        },
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            )
         sid = f"agent_blueprint_mcp_{blueprint_id}_{descriptor_id}"
         if not hasattr(app.state, "external_mcp_servers"):
             app.state.external_mcp_servers = {}
@@ -16540,6 +16582,18 @@ def build_app(
             spec["args"] = list(descriptor.get("args") or [])
         if descriptor.get("url"):
             spec["url"] = descriptor["url"]
+        for key in ("install", "runtime", "env_policy", "verification"):
+            if descriptor.get(key):
+                spec[key] = descriptor[key]
+        spec["trust"] = {
+            "policy": trust_policy,
+            "trusted": trusted,
+            "source": (
+                "request"
+                if explicit_trust
+                else ("descriptor" if trust_policy in {"trust_always", "always", "trusted"} else "config")
+            ),
+        }
         declared_tools: list[dict[str, Any]] = [
             {
                 **tool,
@@ -16642,6 +16696,11 @@ def build_app(
             "source": "agent_blueprint",
             "agent_blueprint_id": blueprint_id,
             "descriptor_id": descriptor_id,
+            "trust": spec["trust"],
+            "install": descriptor.get("install") or {},
+            "runtime": descriptor.get("runtime") or {},
+            "env_policy": descriptor.get("env_policy") or {},
+            "verification": descriptor.get("verification") or {},
         }
         if connect_error:
             app.state.external_mcp_servers[sid]["error"] = connect_error
@@ -16656,6 +16715,11 @@ def build_app(
             "source": "agent_blueprint",
             "agent_blueprint_id": blueprint_id,
             "descriptor_id": descriptor_id,
+            "trust": spec["trust"],
+            "install": descriptor.get("install") or {},
+            "runtime": descriptor.get("runtime") or {},
+            "env_policy": descriptor.get("env_policy") or {},
+            "verification": descriptor.get("verification") or {},
             **({"error": connect_error} if connect_error else {}),
         }
 

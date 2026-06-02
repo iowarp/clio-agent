@@ -87,17 +87,39 @@ declare transport-specific connection data:
 ---
 id: calculator
 transport: stdio
-command: uvx
-args:
-  - clio-calculator-mcp
+install:
+  method: uvx
+  package: clio-calculator-mcp
+runtime:
+  args:
+    - serve
 tools:
   - calculator_add
+trust:
+  policy: explicit
+env_policy:
+  secrets: none
+verification:
+  probe: list_tools
 ---
 ```
 
 `stdio` descriptors require `command`; `http` and `streamable-http` descriptors
-require `url`. Installation, trust, verification, and container isolation
-semantics are tracked by #513.
+require `url`. For self-contained marketplace descriptors, `stdio` launch data
+may also be derived from:
+
+- `install.method: uvx` plus `install.package`;
+- `install.method: npx` plus `install.package`;
+- `install.method: binary` plus `install.package` or `install.binary`;
+- `install.method: pack-local` plus `install.path`, launched with `python`.
+
+Descriptor enablement records `install`, `runtime`, `env_policy`,
+`verification`, and `trust` metadata in the MCP server registry and returned
+wire payload. `trust.policy: explicit` is the default. For local development,
+`CLIO_GACT_MCP_TRUST_ALWAYS=true` permits enablement without a per-request trust
+flag; setting it to `false` requires the caller to pass explicit trust during
+enablement. Non-trusting/containerized MCP execution remains future hardening,
+but untrusted descriptors no longer silently enable.
 
 ## Diagnostics
 

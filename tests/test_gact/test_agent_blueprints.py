@@ -961,6 +961,80 @@ EarthScope descriptor.
     assert any("disabled until explicitly enabled" in warning for warning in descriptor["validation_warnings"])
 
 
+def test_agent_blueprint_mcp_descriptor_derives_uvx_install_command(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "marketplace" / "calc"
+    _write_blueprint(root, blueprint_id="calc")
+    (root / "tools").mkdir()
+    root.joinpath("tools", "calculator.md").write_text(
+        """---
+id: calculator
+name: Calculator MCP
+transport: stdio
+install:
+  method: uvx
+  package: clio-calculator-mcp
+runtime:
+  args:
+    - serve
+tools:
+  - calculator_add
+trust:
+  policy: explicit
+env_policy:
+  secrets: none
+verification:
+  probe: list_tools
+---
+Calculator descriptor.
+""",
+        encoding="utf-8",
+    )
+
+    body = validate_agent_blueprint_path(root)
+
+    descriptor = body["mcp_descriptors"][0]
+    assert descriptor["validation_errors"] == []
+    assert descriptor["command"] == "uvx"
+    assert descriptor["args"] == ["clio-calculator-mcp", "serve"]
+    assert descriptor["install"] == {"method": "uvx", "package": "clio-calculator-mcp"}
+    assert descriptor["runtime"] == {"args": ["serve"]}
+    assert descriptor["trust"]["policy"] == "explicit"
+    assert descriptor["env_policy"] == {"secrets": "none"}
+    assert descriptor["verification"] == {"probe": "list_tools"}
+
+
+def test_agent_blueprint_mcp_descriptor_derives_pack_local_launch(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "marketplace" / "local-calc"
+    _write_blueprint(root, blueprint_id="local-calc")
+    (root / "tools").mkdir()
+    root.joinpath("tools", "calculator.md").write_text(
+        """---
+id: calculator
+name: Local Calculator MCP
+transport: stdio
+install:
+  method: pack-local
+  path: mcp/calculator_server.py
+tools:
+  - calculator_add
+---
+Calculator descriptor.
+""",
+        encoding="utf-8",
+    )
+
+    body = validate_agent_blueprint_path(root)
+
+    descriptor = body["mcp_descriptors"][0]
+    assert descriptor["validation_errors"] == []
+    assert descriptor["command"] == "python"
+    assert descriptor["args"] == [str(root / "mcp" / "calculator_server.py")]
+
+
 def test_agent_blueprint_mcp_descriptor_validates_transport_requirements(
     tmp_path: Path,
 ) -> None:
@@ -1104,6 +1178,111 @@ EarthScope descriptor.
     )
     assert enabled.json()["status"] == "enabled_pending_probe"
     assert any(row["id"] == "agent_blueprint_mcp_earth_earthscope" for row in rows_after)
+
+
+def test_agent_blueprint_mcp_enable_records_install_and_trust_metadata(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    root = workspace / ".clio" / "agent-blueprints" / "calc"
+    _write_blueprint(root, blueprint_id="calc")
+    (root / "tools").mkdir()
+    root.joinpath("tools", "calculator.md").write_text(
+        """---
+id: calculator
+name: Calculator MCP
+transport: stdio
+install:
+  method: uvx
+  package: clio-calculator-mcp
+runtime:
+  args:
+    - serve
+tools:
+  - calculator_add
+trust:
+  policy: explicit
+verification:
+  probe: list_tools
+---
+Calculator descriptor.
+""",
+        encoding="utf-8",
+    )
+
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    with TestClient(app) as client:
+        wid = client.post(
+            "/v1/workspaces",
+            json={
+                "name": "Workspace",
+                "root_path": str(workspace),
+                "storage_root": str(workspace / ".clio"),
+            },
+        ).json()["id"]
+        enabled = client.post(
+            "/v1/agent-blueprints/calc/mcp/calculator/enable",
+            json={"workspace_id": wid, "probe": False, "trust": True},
+        )
+        rows = client.get("/v1/mcp/servers", params={"workspace_id": wid}).json()["servers"]
+
+    assert enabled.status_code == 200, enabled.text
+    body = enabled.json()
+    assert body["spec"]["command"] == "uvx"
+    assert body["spec"]["args"] == ["clio-calculator-mcp", "serve"]
+    assert body["trust"] == {"policy": "explicit", "trusted": True, "source": "request"}
+    assert body["install"] == {"method": "uvx", "package": "clio-calculator-mcp"}
+    assert body["runtime"] == {"args": ["serve"]}
+    assert body["verification"] == {"probe": "list_tools"}
+    listed = next(row for row in rows if row["id"] == "agent_blueprint_mcp_calc_calculator")
+    assert listed["trust"]["trusted"] is True
+    assert listed["install"]["method"] == "uvx"
+
+
+def test_agent_blueprint_mcp_enable_requires_trust_when_config_disables_trust_always(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CLIO_GACT_MCP_TRUST_ALWAYS", "false")
+    workspace = tmp_path / "workspace"
+    root = workspace / ".clio" / "agent-blueprints" / "earth"
+    _write_blueprint(root, blueprint_id="earth")
+    (root / "tools").mkdir()
+    root.joinpath("tools", "earthscope.md").write_text(
+        """---
+id: earthscope
+name: EarthScope MCP
+transport: stdio
+command: earthscope-mcp
+---
+EarthScope descriptor.
+""",
+        encoding="utf-8",
+    )
+
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    with TestClient(app) as client:
+        wid = client.post(
+            "/v1/workspaces",
+            json={
+                "name": "Workspace",
+                "root_path": str(workspace),
+                "storage_root": str(workspace / ".clio"),
+            },
+        ).json()["id"]
+        denied = client.post(
+            "/v1/agent-blueprints/earth/mcp/earthscope/enable",
+            json={"workspace_id": wid, "probe": False},
+        )
+        allowed = client.post(
+            "/v1/agent-blueprints/earth/mcp/earthscope/enable",
+            json={"workspace_id": wid, "probe": False, "trust": True},
+        )
+
+    assert denied.status_code == 403
+    assert denied.json()["error"]["error"] == "mcp_untrusted"
+    assert allowed.status_code == 200, allowed.text
+    assert allowed.json()["trust"]["source"] == "request"
 
 
 def test_enabled_agent_blueprint_mcp_descriptor_exposes_declared_tools(tmp_path: Path) -> None:

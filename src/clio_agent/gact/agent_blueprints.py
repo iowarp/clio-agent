@@ -396,6 +396,61 @@ _MEMORY_TOOL_NAMES = {
 }
 
 
+def _mapping_field(meta: dict[str, Any], *keys: str) -> dict[str, Any]:
+    for key in keys:
+        value = meta.get(key)
+        if isinstance(value, dict):
+            return {str(k): v for k, v in value.items()}
+    return {}
+
+
+def _mcp_stdio_spec_from_metadata(
+    meta: dict[str, Any],
+    *,
+    root: Path,
+) -> tuple[str, list[str], list[str]]:
+    """Build a stdio command from direct or self-contained install metadata."""
+
+    warnings: list[str] = []
+    runtime = _mapping_field(meta, "runtime", "run")
+    install = _mapping_field(meta, "install", "deployment")
+    command = str(meta.get("command") or runtime.get("command") or "").strip()
+    args = _list_field(meta, "args") or _list_field(runtime, "args")
+    if command:
+        return command, args, warnings
+
+    method = str(
+        install.get("method")
+        or install.get("type")
+        or install.get("manager")
+        or ""
+    ).strip()
+    package = str(
+        install.get("package")
+        or install.get("name")
+        or install.get("binary")
+        or ""
+    ).strip()
+    if method in {"uvx", "npx"} and package:
+        return method, [package, *args], warnings
+    if method in {"binary", "command"} and package:
+        return package, args, warnings
+    if method in {"local", "pack-local", "python"}:
+        script = str(
+            install.get("path")
+            or install.get("script")
+            or runtime.get("path")
+            or runtime.get("script")
+            or ""
+        ).strip()
+        if script:
+            resolved = root / script
+            return "python", [str(resolved), *args], warnings
+    if method:
+        warnings.append(f"unsupported MCP install method for stdio launch derivation: {method}")
+    return "", args, warnings
+
+
 def _validate_agent_tool_references(
     rows: list[AgentDef],
     *,
@@ -492,15 +547,22 @@ def load_mcp_descriptors(
             errors.append("missing required MCP descriptor field: transport")
         if transport not in {"", "stdio", "http", "streamable-http"}:
             errors.append(f"unsupported MCP descriptor transport: {transport}")
-        if transport == "stdio" and not str(meta.get("command") or "").strip():
+        command, args, install_warnings = _mcp_stdio_spec_from_metadata(meta, root=root)
+        if transport == "stdio" and not command:
             errors.append("stdio MCP descriptors require command")
         if transport in {"http", "streamable-http"} and not str(meta.get("url") or "").strip():
             errors.append(f"{transport} MCP descriptors require url")
         warnings: list[str] = []
+        warnings.extend(install_warnings)
         if transport:
             warnings.append(
-                "MCP descriptors are disabled until explicitly enabled and trusted; install/trust semantics are tracked by #513"
+                "MCP descriptors are disabled until explicitly enabled and trusted"
             )
+        install_metadata = _mapping_field(meta, "install", "deployment")
+        runtime_metadata = _mapping_field(meta, "runtime", "run")
+        trust_metadata = _mapping_field(meta, "trust")
+        env_policy = _mapping_field(meta, "env_policy", "env-policy", "environment")
+        verification = _mapping_field(meta, "verification", "verify", "probe")
         rows.append(
             {
                 "id": descriptor_id,
@@ -508,8 +570,17 @@ def load_mcp_descriptors(
                 "title": str(meta.get("title") or descriptor_id),
                 "description": str(meta.get("description") or body.strip()),
                 "transport": transport,
-                "command": str(meta.get("command") or ""),
-                "args": _list_field(meta, "args"),
+                "command": command,
+                "args": args,
+                "install": install_metadata,
+                "runtime": runtime_metadata,
+                "trust": {
+                    "policy": str(trust_metadata.get("policy") or "explicit"),
+                    "trusted": False,
+                    **trust_metadata,
+                },
+                "env_policy": env_policy,
+                "verification": verification,
                 "tools": [
                     {
                         "id": tool_name,
