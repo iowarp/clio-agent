@@ -91,6 +91,24 @@ enough: `--require-lane-criteria` now also requires at least three marketplace
 cases with depth >= 3, branch count >= 2, sync handoff count >= 2, and complete
 parent-return provenance.
 
+The `semantic_regression` lane is the 1.0 readiness gate for the semantics that
+were easy to overclaim during deterministic-routing removal. Each case declares
+semantic proof tags, the JSONL row records which tags were actually observed,
+and `--require-lane-criteria` fails if any required proof class is missing.
+
+```bash
+CLIO_SEMANTIC_TRACE_BACKEND=file \
+CLIO_SEMANTIC_TRACE_DETAIL=semantic \
+uv run python scripts/run_demo_benchmark.py \
+  --require-lane-criteria \
+  --lane semantic_regression \
+  --marketplace-source /path/to/clio-agent-marketplace \
+  --base-url http://127.0.0.1:17960 \
+  --data-dir tmp/clio-benchmark-data \
+  --output-jsonl benchmark/SEMANTIC_REGRESSION_EVIDENCE.jsonl \
+  --report benchmark/SEMANTIC_REGRESSION_REPORT.md
+```
+
 ## Audit
 
 Treat the markdown report as an index, not the proof. The proof is the JSONL
