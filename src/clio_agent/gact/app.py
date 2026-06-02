@@ -8148,12 +8148,18 @@ def _load_command_files_from_disk(
     *,
     home: Path | None = None,
     cwd: Path | None = None,
+    extra_roots: list[tuple[Path, str, dict[str, Any]]] | None = None,
 ) -> list[dict[str, Any]]:
     """Discover CLIO/Claude-compatible Markdown command recipe files."""
     import os
 
     rows: dict[str, dict[str, Any]] = {}
-    for root, source in _command_search_roots(home or Path.home(), cwd or Path(os.getcwd())):
+    search_roots = list(extra_roots or [])
+    search_roots.extend(
+        (root, source, {})
+        for root, source in _command_search_roots(home or Path.home(), cwd or Path(os.getcwd()))
+    )
+    for root, source, extra_metadata in search_roots:
         if not root.exists() or not root.is_dir():
             continue
         for md in sorted(root.glob("*.md"), key=lambda path: str(path).lower()):
@@ -8232,6 +8238,7 @@ def _load_command_files_from_disk(
                     meta.get("prompt-profile") or meta.get("prompt_profile") or ""
                 ),
             }
+            command.update(extra_metadata)
             rows.setdefault(command_id, command)
     return list(rows.values())
 
@@ -11752,9 +11759,52 @@ def build_app(
         root_path = str(getattr(ws, "root_path", "") or "")
         return Path(root_path).expanduser() if root_path else None
 
-    def _user_command_rows(cwd: Path | None = None) -> list[dict[str, Any]]:
+    def _active_blueprint_command_roots(
+        session_id: str = "",
+    ) -> list[tuple[Path, str, dict[str, Any]]]:
+        if not session_id:
+            return []
+        blueprint_id = _runtime_active_agent_blueprint_id(app, session_id)
+        blueprint_path = _runtime_active_agent_blueprint_path(app, session_id)
+        if blueprint_path is None:
+            sess = app.state.sessions.get(session_id)
+            metadata = getattr(sess, "metadata", {}) if sess is not None else {}
+            if isinstance(metadata, Mapping):
+                raw_definition = str(
+                    metadata.get("active_agent_blueprint_definition_path") or ""
+                ).strip()
+                if raw_definition:
+                    blueprint_path = Path(raw_definition).expanduser()
+        if not blueprint_id or blueprint_path is None:
+            return []
+        blueprint_root = blueprint_path.parent if blueprint_path.is_file() else blueprint_path
+        return [
+            (
+                blueprint_root / "commands",
+                "agent_blueprint",
+                {
+                    "agent_blueprint_id": blueprint_id,
+                    "agent_blueprint_root": str(blueprint_root),
+                    "command_scope": "agent_blueprint",
+                },
+            )
+        ]
+
+    def _command_context_for_request(
+        session_id: str = "",
+        workspace_id: str = "",
+    ) -> tuple[Path | None, list[tuple[Path, str, dict[str, Any]]]]:
+        return (
+            _command_cwd_for_request(session_id, workspace_id),
+            _active_blueprint_command_roots(session_id),
+        )
+
+    def _user_command_rows(
+        cwd: Path | None = None,
+        extra_roots: list[tuple[Path, str, dict[str, Any]]] | None = None,
+    ) -> list[dict[str, Any]]:
         rows: dict[str, dict[str, Any]] = {}
-        for command in _load_command_files_from_disk(cwd=cwd):
+        for command in _load_command_files_from_disk(cwd=cwd, extra_roots=extra_roots):
             rows.setdefault(command["id"], command)
         agents = [AgentDef(**row.to_wire()) for row in app.state.user_agents.list()]
         agents.extend(_load_skills_from_disk())
@@ -11763,9 +11813,12 @@ def build_app(
                 rows.setdefault(command["id"], command)
         return sorted(rows.values(), key=lambda row: row["id"])
 
-    def _all_command_rows(cwd: Path | None = None) -> list[dict[str, Any]]:
+    def _all_command_rows(
+        cwd: Path | None = None,
+        extra_roots: list[tuple[Path, str, dict[str, Any]]] | None = None,
+    ) -> list[dict[str, Any]]:
         rows = {command["id"]: dict(command) for command in _BACKEND_COMMANDS}
-        for command in _user_command_rows(cwd=cwd):
+        for command in _user_command_rows(cwd=cwd, extra_roots=extra_roots):
             rows.setdefault(command["id"], command)
         return list(rows.values())
 
@@ -11859,13 +11912,18 @@ def build_app(
         ids.discard("")
         return ids
 
-    def _planner_command_rows(agent_id: str = "", cwd: Path | None = None) -> list[dict[str, Any]]:
+    def _planner_command_rows(
+        agent_id: str = "",
+        cwd: Path | None = None,
+        extra_roots: list[tuple[Path, str, dict[str, Any]]] | None = None,
+        session_id: str = "",
+    ) -> list[dict[str, Any]]:
         allowed: set[str] | None = None
         if agent_id:
-            agent_def = _resolve_dynamic_agent(app, agent_id)
+            agent_def = _resolve_runtime_dynamic_agent(agent_id, session_id=session_id)
             allowed = _agent_allowed_command_ids(agent_def) if agent_def is not None else set()
         rows: list[dict[str, Any]] = []
-        for command in _all_command_rows(cwd=cwd):
+        for command in _all_command_rows(cwd=cwd, extra_roots=extra_roots):
             command_id = str(command.get("id") or "")
             planner_visible = (
                 command.get("enabled") is not False
@@ -11935,10 +11993,17 @@ def build_app(
     ) -> dict[str, Any]:
         """SPEC §6.13 — backend-provided slash commands."""
 
-        cwd = _command_cwd_for_request(session_id or "", workspace_id or "")
+        cwd, extra_roots = _command_context_for_request(session_id or "", workspace_id or "")
         if planner:
-            return {"commands": _planner_command_rows(agent_id=agent_id or "", cwd=cwd)}
-        return {"commands": _all_command_rows(cwd=cwd)}
+            return {
+                "commands": _planner_command_rows(
+                    agent_id=agent_id or "",
+                    cwd=cwd,
+                    extra_roots=extra_roots,
+                    session_id=session_id or "",
+                )
+            }
+        return {"commands": _all_command_rows(cwd=cwd, extra_roots=extra_roots)}
 
     @app.post("/v1/sessions/{sid}/commands/{cmd}")
     async def dispatch_command(sid: str, cmd: str, request: Request) -> dict[str, Any]:
@@ -11961,7 +12026,10 @@ def build_app(
 
         # Accept "clear" or "/clear"; the TUI sends both shapes.
         cmd_id = cmd if cmd.startswith("/") else "/" + cmd
-        commands_by_id = {c["id"]: c for c in _all_command_rows(cwd=_command_cwd_for_request(sid))}
+        cwd, extra_roots = _command_context_for_request(sid)
+        commands_by_id = {
+            c["id"]: c for c in _all_command_rows(cwd=cwd, extra_roots=extra_roots)
+        }
         command_meta = commands_by_id.get(cmd_id)
         if command_meta is None:
             raise HTTPException(
@@ -12016,7 +12084,10 @@ def build_app(
             or ""
         ).strip()
         if caller_type == "agent":
-            caller_agent = _resolve_dynamic_agent(app, caller_agent_id)
+            caller_agent = _resolve_runtime_dynamic_agent(
+                caller_agent_id,
+                session_id=sid,
+            )
             allowed_ids = _agent_allowed_command_ids(caller_agent) if caller_agent else set()
             deny_reason = ""
             if command_meta.get("agent_invocable") is not True:
@@ -12055,7 +12126,7 @@ def build_app(
 
         if command_meta.get("source") == "user":
             agent_id = str(command_meta.get("agent_id") or "")
-            agent_def = _resolve_dynamic_agent(app, agent_id)
+            agent_def = _resolve_runtime_dynamic_agent(agent_id, session_id=sid)
             if agent_def is None:
                 raise HTTPException(
                     status_code=404,

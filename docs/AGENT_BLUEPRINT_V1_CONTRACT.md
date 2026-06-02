@@ -78,6 +78,46 @@ Resolved skill bodies are appended to the expert runtime prompt and recorded in
 turn provenance under `skill_resolution` and `resolved_skills`. Missing declared
 skills produce runtime validation warnings instead of being silently ignored.
 
+## Commands
+
+Agent Blueprints may package command recipe files under `commands/*.md`.
+These use the same Markdown frontmatter/body shape as workspace and user command
+files:
+
+```yaml
+---
+name: validate-dataset
+title: Validate Dataset
+description: Validate a dataset before analysis
+agent: root
+agent-invocable: true
+arguments:
+  - path
+---
+Validate {{args.path}} for this workflow.
+```
+
+Packaged commands are scoped to sessions that have the Blueprint active. A
+workspace-level command listing does not expose commands from every installed
+Blueprint; clients should request `/v1/commands?session_id=<sid>` for the
+active-session command surface.
+
+Experts declare which packaged commands they may invoke with `commands:` in the
+expert frontmatter. Planner-mode command listings only include commands that
+are:
+
+- available and enabled,
+- marked `agent-invocable: true`,
+- declared in the calling expert's command allowlist,
+- visible through the active session's Blueprint command root.
+
+Command rows include provenance fields such as `command_source:
+agent_blueprint`, `agent_blueprint_id`, `agent_blueprint_root`,
+`command_scope`, and `command_path`. Dispatch resolves both the calling expert
+and the target command agent through the active session's runtime Blueprint
+graph, so packaged commands can target Blueprint experts without needing global
+agent ids.
+
 ## MCP Descriptors
 
 MCP descriptors live under `tools/*.md`. They are disabled by default and must

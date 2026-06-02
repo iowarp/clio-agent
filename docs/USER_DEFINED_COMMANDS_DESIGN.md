@@ -47,15 +47,28 @@ Relevant existing pieces:
   - `.agents/skills`
 - Prompt-only and tool-backed dynamic agents already execute through DSPy.
 
-Missing pieces:
+Implemented backend pieces:
 
-- Skill files are visible as agents, but not as slash commands.
-- `/v1/commands` only returns backend built-ins today.
-- `POST /v1/sessions/{sid}/commands/{cmd}` does not dispatch user-defined
-  agent actions.
-- There is no command argument parsing/substitution.
-- There is no agent-auto-use control for user-defined commands.
-- There is no CLIO-native command file root.
+- Skill files can surface slash-command metadata.
+- `/v1/commands` returns backend built-ins, user-agent commands, skill
+  commands, workspace/global command files, compatible Claude command files,
+  and active Agent Blueprint packaged commands.
+- `POST /v1/sessions/{sid}/commands/{cmd}` dispatches prompt-backed
+  user-defined commands through the dynamic-agent path.
+- Command argument validation and template substitution are implemented for
+  declared arguments and `$ARGUMENTS`/`{{args.*}}` placeholders.
+- Agent-invocable commands are gated by command metadata and per-agent/expert
+  command allowlists.
+- CLIO-native command roots exist at workspace/global scope, and Agent
+  Blueprints may package session-scoped commands under `commands/*.md`.
+
+Remaining pieces:
+
+- MCP prompt exposure as slash commands is still future work.
+- TUI affordances should keep improving around provenance, argument entry,
+  disabled command rendering, and agent-auto-use settings.
+- Real-provider marketplace benchmark evidence should include at least one
+  packaged command invocation from an Agent Blueprint session.
 
 ## Core Model
 
