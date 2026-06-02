@@ -65,9 +65,18 @@ Tool references are validated against CLIO built-ins, memory tools, and declared
 MCP descriptor tools. MCP-backed tools remain disabled until the descriptor is
 explicitly enabled and trusted. Unknown tools are validation errors.
 
-`skills:` are parsed and exposed as declarations. Full runtime loading of skill
-bodies is tracked separately by #512; until that lands, validators warn rather
-than pretending the skill body is active.
+`skills:` are runtime-loaded instruction bodies. CLIO resolves declared skill ids
+in this order:
+
+1. pack-local `skills/` inside the active Agent Blueprint;
+2. workspace-local `.clio/skills`, `.claude/skills`, `.codex/skills`, and
+   `.agents/skills`;
+3. global `~/.config/clio-agent/skills`, `~/.claude/skills`, `~/.codex/skills`,
+   and `~/.agents/skills`.
+
+Resolved skill bodies are appended to the expert runtime prompt and recorded in
+turn provenance under `skill_resolution` and `resolved_skills`. Missing declared
+skills produce runtime validation warnings instead of being silently ignored.
 
 ## MCP Descriptors
 

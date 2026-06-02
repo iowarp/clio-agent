@@ -1767,8 +1767,21 @@ def _resolve_runtime_dynamic_agent(
             prompt_registry=prompt_registry,
         ):
             if row.id == agent_id and row.enabled:
-                return row
-    return _resolve_dynamic_agent(app, agent_id, prompt_registry=prompt_registry)
+                return _apply_declared_skill_resolution(
+                    app,
+                    row,
+                    session_id=session_id,
+                    workspace_id=workspace_id,
+                )
+    resolved = _resolve_dynamic_agent(app, agent_id, prompt_registry=prompt_registry)
+    if resolved is None:
+        return None
+    return _apply_declared_skill_resolution(
+        app,
+        resolved,
+        session_id=session_id,
+        workspace_id=workspace_id,
+    )
 
 
 def _agent_prompt_request(agent_def: "AgentDef") -> tuple[str, str]:
@@ -2037,6 +2050,34 @@ def _runtime_dynamic_agent_children_context(
     return "\n".join(lines)
 
 
+def _declared_skill_prompt_context(agent_def: "AgentDef") -> str:
+    """Render resolved expert-declared skill bodies for runtime prompts."""
+
+    metadata = agent_def.metadata if isinstance(agent_def.metadata, Mapping) else {}
+    resolved = metadata.get("resolved_skills")
+    if not isinstance(resolved, list):
+        return ""
+    parts: list[str] = []
+    for row in resolved:
+        if not isinstance(row, Mapping):
+            continue
+        body = str(row.get("body") or row.get("system_prompt") or "").strip()
+        if not body:
+            continue
+        skill_id = str(row.get("id") or "").strip()
+        title = str(row.get("title") or skill_id).strip()
+        source_path = str(row.get("source_path") or "").strip()
+        heading = f"Skill: {title or skill_id}"
+        if skill_id and title != skill_id:
+            heading += f" ({skill_id})"
+        if source_path:
+            heading += f"\nSource: {source_path}"
+        parts.append(f"{heading}\n{body}")
+    if not parts:
+        return ""
+    return "Expert-declared skills loaded for this turn:\n\n" + "\n\n".join(parts)
+
+
 def _dynamic_parent_resume_prompt(
     original_request: str,
     parent_agent: "AgentDef",
@@ -2199,6 +2240,9 @@ def _dynamic_agent_runtime_provenance(
             "fallback_to_global": not (agent_def.default_provider and agent_def.default_model),
         },
     }
+    skill_resolution = agent_def.metadata.get("skill_resolution")
+    if isinstance(skill_resolution, Mapping):
+        payload["skill_resolution"] = dict(skill_resolution)
     blueprint_id = str(agent_def.metadata.get("agent_blueprint_id") or "").strip()
     if blueprint_id:
         payload["agent_blueprint"] = {
@@ -2218,6 +2262,15 @@ def _dynamic_agent_runtime_provenance(
             {
                 "parent_id": agent_def.parent_id,
                 "skills": list(agent_def.skills),
+                "resolved_skills": [
+                    {
+                        "id": str(row.get("id") or ""),
+                        "scope": str(row.get("scope") or ""),
+                        "source_path": str(row.get("source_path") or ""),
+                    }
+                    for row in agent_def.metadata.get("resolved_skills", [])
+                    if isinstance(row, Mapping)
+                ],
                 "commands": list(agent_def.commands),
                 "pack": {
                     "id": str(agent_def.metadata.get("pack_id") or ""),
@@ -2376,8 +2429,11 @@ def _build_prompt_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> A
                 if app is not None
                 else ""
             )
+            skill_context = _declared_skill_prompt_context(agent_def)
             self.system_prompt = "\n\n".join(
-                part for part in (runtime_text, agent_prompt, child_context) if part
+                part
+                for part in (runtime_text, agent_prompt, skill_context, child_context)
+                if part
             )
             self.answer_synthesizer = dspy.Predict(_prompt_user_agent_signature())
 
@@ -2664,8 +2720,11 @@ def _build_tool_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> Any
                 if app is not None
                 else ""
             )
+            skill_context = _declared_skill_prompt_context(agent_def)
             self.system_prompt = "\n\n".join(
-                part for part in (runtime_text, agent_prompt, child_context) if part
+                part
+                for part in (runtime_text, agent_prompt, skill_context, child_context)
+                if part
             )
             self.react_agent = dspy.ReAct(
                 _tool_user_agent_signature(),
@@ -7669,6 +7728,154 @@ def _load_skills_from_disk() -> list[AgentDef]:
                 metadata=metadata,
             )
     return list(rows.values())
+
+
+def _skill_row_from_file(path: Path, *, root: Path, scope: str, source: str) -> dict[str, Any] | None:
+    """Load one skill definition as runtime instruction material."""
+
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    meta, body = _parse_skill_frontmatter(text)
+    skill_id = str(meta.get("name") or meta.get("id") or _default_skill_id(path)).strip()
+    if not skill_id:
+        return None
+    description = str(meta.get("description") or "").strip()
+    if not description:
+        for line in body.splitlines():
+            line = line.strip()
+            if line:
+                description = line[:240]
+                break
+    return {
+        "id": skill_id,
+        "title": str(meta.get("title") or skill_id).strip(),
+        "description": description,
+        "body": body.strip(),
+        "scope": scope,
+        "source": source,
+        "root": str(root),
+        "source_path": str(path),
+        "layout": "skill_md" if path.name.upper() == "SKILL.MD" else "flat_md",
+    }
+
+
+def _find_skill_in_root(
+    skill_id: str,
+    root: Path,
+    *,
+    scope: str,
+    source: str,
+) -> dict[str, Any] | None:
+    if not root.exists() or not root.is_dir():
+        return None
+    for path in _skill_markdown_files(root):
+        row = _skill_row_from_file(path, root=root, scope=scope, source=source)
+        if row is not None and row["id"] == skill_id:
+            return row
+    return None
+
+
+def _declared_skill_search_roots(
+    *,
+    home: Path,
+    cwd: Path,
+    pack_root: Path | None = None,
+) -> list[tuple[Path, str, str]]:
+    """Return skill roots in runtime resolution precedence order."""
+
+    roots: list[tuple[Path, str, str]] = []
+    if pack_root is not None:
+        roots.append((pack_root / "skills", "pack", "agent_blueprint"))
+    roots.extend(
+        [
+            (cwd / ".clio" / "skills", "workspace", "clio"),
+            (cwd / ".claude" / "skills", "workspace", "claude"),
+            (cwd / ".codex" / "skills", "workspace", "codex"),
+            (cwd / ".agents" / "skills", "workspace", "agents"),
+            (home / ".config" / "clio-agent" / "skills", "global", "clio"),
+            (home / ".claude" / "skills", "global", "claude"),
+            (home / ".codex" / "skills", "global", "codex"),
+            (home / ".agents" / "skills", "global", "agents"),
+        ]
+    )
+    return roots
+
+
+def _resolve_declared_skill_rows(
+    agent_def: AgentDef,
+    *,
+    home: Path | None = None,
+    cwd: Path | None = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
+    """Resolve an expert's declared skill ids to instruction bodies."""
+
+    requested = [str(item).strip() for item in agent_def.skills if str(item).strip()]
+    if not requested:
+        return [], []
+    metadata = agent_def.metadata if isinstance(agent_def.metadata, Mapping) else {}
+    pack_root_raw = (
+        metadata.get("agent_blueprint_root")
+        or metadata.get("pack_root")
+        or metadata.get("root")
+        or ""
+    )
+    pack_root = Path(str(pack_root_raw)).expanduser() if str(pack_root_raw).strip() else None
+    search_roots = _declared_skill_search_roots(
+        home=home or Path.home(),
+        cwd=cwd or Path(os.getcwd()),
+        pack_root=pack_root,
+    )
+    resolved: list[dict[str, Any]] = []
+    missing: list[dict[str, str]] = []
+    for skill_id in requested:
+        found: dict[str, Any] | None = None
+        for root, scope, source in search_roots:
+            found = _find_skill_in_root(skill_id, root, scope=scope, source=source)
+            if found is not None:
+                break
+        if found is None:
+            missing.append({"id": skill_id, "status": "missing"})
+        else:
+            resolved.append(found)
+    return resolved, missing
+
+
+def _apply_declared_skill_resolution(
+    app: "FastAPI",
+    agent_def: AgentDef,
+    *,
+    session_id: str = "",
+    workspace_id: str = "",
+) -> AgentDef:
+    """Attach expert-declared skill bodies and diagnostics to an agent."""
+
+    if not agent_def.skills:
+        return agent_def
+    cwd = _runtime_workspace_catalog_cwd(app, workspace_id=workspace_id, session_id=session_id)
+    resolved, missing = _resolve_declared_skill_rows(agent_def, cwd=cwd)
+    metadata = dict(agent_def.metadata)
+    metadata["resolved_skills"] = resolved
+    metadata["skill_resolution"] = {
+        "requested": list(agent_def.skills),
+        "resolved": [
+            {
+                "id": str(row.get("id") or ""),
+                "scope": str(row.get("scope") or ""),
+                "source": str(row.get("source") or ""),
+                "source_path": str(row.get("source_path") or ""),
+            }
+            for row in resolved
+        ],
+        "missing": missing,
+    }
+    warnings = list(metadata.get("validation_warnings", []))
+    for row in missing:
+        warnings.append(f"declared skill not found at runtime: {row['id']}")
+    if warnings:
+        metadata["validation_warnings"] = warnings
+    return agent_def.model_copy(update={"metadata": metadata})
 
 
 def _load_command_files_from_disk(

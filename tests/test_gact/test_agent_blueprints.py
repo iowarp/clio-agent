@@ -14,9 +14,12 @@ from clio_agent.gact.agent_blueprints import (
     validate_agent_blueprint_path,
 )
 from clio_agent.gact.app import (
+    _build_prompt_user_agent_module,
     _builtin_agents,
+    _dynamic_agent_runtime_provenance,
     _dynamic_agent_tools,
     _gact_app_context,
+    _resolve_runtime_dynamic_agent,
     _runtime_dynamic_agent_children_context,
     build_app,
 )
@@ -207,7 +210,7 @@ Coordinate work.
     warnings = "\n".join(body["validation_warnings"])
     assert "unknown blueprint field ignored: surprise" in warnings
     assert "root: unknown expert field ignored: unexpected_field" in warnings
-    assert "root: skills are parsed as declarations" in warnings
+    assert "root: skills are resolved at runtime" in warnings
     rows = {row["id"]: row for row in body["agents"]}
     assert "validation_warnings" in rows["root"]["metadata"]
 
@@ -294,6 +297,135 @@ Coordinate genomics work.
     assert "expert_handoffs JSON array" in context
     assert "{{" not in root.system_prompt
     assert "- variant: Variant Expert" in root.system_prompt
+
+
+def test_agent_blueprint_declared_pack_skill_loads_into_runtime_prompt(
+    tmp_path: Path,
+) -> None:
+    from clio_agent.config import LMProviderConfig
+
+    workspace = tmp_path / "workspace"
+    blueprint = workspace / ".clio" / "agent-blueprints" / "genomics"
+    _write_blueprint(blueprint)
+    blueprint.joinpath("experts", "root.md").write_text(
+        """---
+id: root
+title: Genomics Root
+tier: 1
+skills:
+  - variant_pathogenicity_triage
+---
+Coordinate genomics work.
+""",
+        encoding="utf-8",
+    )
+    skill_dir = blueprint / "skills" / "variant_pathogenicity_triage"
+    skill_dir.mkdir(parents=True)
+    skill_dir.joinpath("SKILL.md").write_text(
+        """---
+name: variant_pathogenicity_triage
+title: Variant Pathogenicity Triage
+---
+Apply ACMG-style evidence buckets before making any variant interpretation.
+""",
+        encoding="utf-8",
+    )
+    base_agent = SimpleNamespace(
+        _provider_config=LMProviderConfig(
+            provider="openai",
+            model="gpt-test",
+            api_key="test",
+        )
+    )
+    app = build_app(sessions_path=tmp_path / "sessions.json", agent=base_agent)
+
+    with TestClient(app) as client:
+        wid = client.post(
+            "/v1/workspaces",
+            json={
+                "name": "Workspace",
+                "root_path": str(workspace),
+                "storage_root": str(workspace / ".clio"),
+            },
+        ).json()["id"]
+        sid = client.post(
+            "/v1/sessions",
+            json={"title": "genomics", "workspace_id": wid},
+        ).json()["id"]
+        assert client.post(
+            f"/v1/sessions/{sid}/agent-blueprint",
+            json={"blueprint_id": "genomics"},
+        ).status_code == 200
+
+    resolved = _resolve_runtime_dynamic_agent(app, "root", session_id=sid, workspace_id=wid)
+
+    assert resolved is not None
+    skill_resolution = resolved.metadata["skill_resolution"]
+    assert skill_resolution["missing"] == []
+    assert skill_resolution["resolved"][0]["scope"] == "pack"
+    assert skill_resolution["resolved"][0]["id"] == "variant_pathogenicity_triage"
+
+    module = _build_prompt_user_agent_module(base_agent, resolved)
+
+    assert "Expert-declared skills loaded for this turn" in module.system_prompt
+    assert "Apply ACMG-style evidence buckets" in module.system_prompt
+    provenance = _dynamic_agent_runtime_provenance(
+        app,
+        resolved,
+        execution_mode="prompt_agent",
+    )
+    assert provenance["skill_resolution"]["resolved"][0]["scope"] == "pack"
+    assert provenance["resolved_skills"][0]["id"] == "variant_pathogenicity_triage"
+
+
+def test_agent_blueprint_missing_declared_skill_is_runtime_diagnostic(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    blueprint = workspace / ".clio" / "agent-blueprints" / "genomics"
+    _write_blueprint(blueprint)
+    blueprint.joinpath("experts", "root.md").write_text(
+        """---
+id: root
+title: Genomics Root
+tier: 1
+skills:
+  - missing_domain_skill
+---
+Coordinate genomics work.
+""",
+        encoding="utf-8",
+    )
+    app = build_app(sessions_path=tmp_path / "sessions.json", agent=SimpleNamespace())
+
+    with TestClient(app) as client:
+        wid = client.post(
+            "/v1/workspaces",
+            json={
+                "name": "Workspace",
+                "root_path": str(workspace),
+                "storage_root": str(workspace / ".clio"),
+            },
+        ).json()["id"]
+        sid = client.post(
+            "/v1/sessions",
+            json={"title": "genomics", "workspace_id": wid},
+        ).json()["id"]
+        assert client.post(
+            f"/v1/sessions/{sid}/agent-blueprint",
+            json={"blueprint_id": "genomics"},
+        ).status_code == 200
+
+    resolved = _resolve_runtime_dynamic_agent(app, "root", session_id=sid, workspace_id=wid)
+
+    assert resolved is not None
+    assert resolved.metadata["skill_resolution"]["resolved"] == []
+    assert resolved.metadata["skill_resolution"]["missing"] == [
+        {"id": "missing_domain_skill", "status": "missing"}
+    ]
+    assert "declared skill not found at runtime: missing_domain_skill" in resolved.metadata[
+        "validation_warnings"
+    ]
 
 
 def test_session_agent_overlay_is_session_local(tmp_path: Path) -> None:

@@ -373,7 +373,7 @@ def _validate_blueprint_v1_agents(
                 continue
             warnings.append(f"unknown expert field ignored: {field_name}")
         if row.skills:
-            warnings.append("skills are parsed as declarations; runtime skill body loading is tracked by #512")
+            warnings.append("skills are resolved at runtime from pack, workspace, and global skill roots")
         metadata = dict(row.metadata)
         if warnings:
             metadata["validation_warnings"] = warnings
@@ -724,6 +724,7 @@ def _load_blueprint_agents(blueprint: AgentBlueprintDefinition) -> list[AgentDef
             "agent_blueprint_version": blueprint.version,
             "agent_blueprint_title": blueprint.title,
             "agent_blueprint_scope": blueprint.scope,
+            "agent_blueprint_root": str(blueprint.root),
             "agent_blueprint_root_expert": blueprint.root_expert,
             "agent_blueprint_definition_path": str(blueprint.root_path),
             "definition_kind": "agent_blueprint",
