@@ -176,6 +176,9 @@ Evidence Summary and lists per-case semantic event types in the demo details.
 This lets benchmark review cite trace evidence directly instead of relying on
 final-answer string heuristics.
 
+For the per-turn summary schema recorded on assistant messages, see
+[CLIO Runtime Provenance Contract](RUNTIME_PROVENANCE_CONTRACT.md).
+
 ## TUI Consumption
 
 The TUI can subscribe to `/v1/sessions/{sid}/events` and render every event with

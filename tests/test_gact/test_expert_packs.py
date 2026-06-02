@@ -827,6 +827,37 @@ Inspect schemas.
     assert resumed_event["actor"]["agent_id"] == "root_review"
     assert resumed_event["subject"]["agent_id"] == "schema_review"
     assert resumed_event["payload"]["resumed_from"] == "schema_review"
+    turn_completed = next(event for event in semantic if event["event_type"] == "turn.completed")
+    provenance = assistant["metadata"]["runtime_provenance"]
+    assert provenance["schema_version"] == "clio.runtime_provenance.v1"
+    assert provenance["turn"]["trace_id"].startswith("trace_msg_user_")
+    assert provenance["turn"]["assistant_message_id"] == assistant["id"]
+    assert provenance["workspace"]["scope"] == "workspace"
+    assert provenance["agent"]["selected_agent"] == "root_review"
+    assert provenance["agent"]["runtime"]["agent_id"] == "root_review"
+    assert provenance["agent"]["expert"]["tier"] == 2
+    assert provenance["agent"]["expert"]["parent_id"] == "analysis"
+    assert provenance["prompt"]["source"] == "agent_definition"
+    assert provenance["tools"]["declared"] == []
+    assert provenance["tools"]["observed"] == []
+    assert provenance["skills"]["declared"] == []
+    assert provenance["commands"]["declared"] == []
+    assert provenance["delegation"]["lifecycle"] == "sync"
+    completed_event = next(
+        row
+        for row in provenance["delegation"]["events"]
+        if row["stage"] == "delegate.completed"
+    )
+    assert completed_event["agent_id"] == "schema_review"
+    assert completed_event["parent_id"] == "root_review"
+    assert completed_event["return_to"] == "root_review"
+    assert completed_event["delegation_lifecycle"] == "sync"
+    assert provenance["memory"]["policy"]["default_scope"] == "session"
+    assert provenance["errors"] == []
+    assert (
+        turn_completed["payload"]["metadata"]["runtime_provenance"]["schema_version"]
+        == "clio.runtime_provenance.v1"
+    )
     assert assistant["parts"][1]["type"] == "expert_handoff"
     assert assistant["parts"][1]["metadata"]["status"] == "completed"
     assert assistant["parts"][-1]["text"] == "ROOT_FINAL"
