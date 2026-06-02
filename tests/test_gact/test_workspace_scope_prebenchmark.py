@@ -253,6 +253,7 @@ def test_workspace_local_global_blueprints_commands_and_memory_do_not_leak(
                 "limit": 10,
             },
         )
+        memory_tool_audit = list(client.app.state.memory_tool_audit)
 
     agents_a = {row["id"]: row for row in prompts_a}
     agents_b = {row["id"]: row for row in prompts_b}
@@ -301,3 +302,14 @@ def test_workspace_local_global_blueprints_commands_and_memory_do_not_leak(
     assert global_body["metadata"]["policy_decision"] == "allow_global_user_intent"
     assert global_body["searched_sessions"] == [sid_global]
     assert {hit["session_id"] for hit in global_body["hits"]} == {sid_global}
+
+    global_audit = next(
+        row
+        for row in memory_tool_audit
+        if row.get("id") == global_body["metadata"]["audit_id"]
+    )
+    assert global_audit["tool_name"] == "memory_search_sessions"
+    assert global_audit["status"] == "completed"
+    assert global_audit["policy_decision"] == "allow_global_user_intent"
+    assert global_audit["scope"] == "global"
+    assert global_audit["session_id"] == sid_a
