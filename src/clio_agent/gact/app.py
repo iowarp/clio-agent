@@ -50,6 +50,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from clio_agent.gact.semantic_events import (
+    DEFAULT_DETAIL_LEVEL,
+    SemanticEvent,
+    SemanticEventSink,
+    build_trace_backend,
+)
 from clio_agent.gact.workspace_scope import (
     GLOBAL_WORKSPACE_ID,
     resolve_workspace_storage_root,
@@ -71,6 +77,14 @@ _ACTIVE_GACT_APP: contextvars.ContextVar[Any | None] = contextvars.ContextVar(
 )
 _ACTIVE_GACT_SESSION_ID: contextvars.ContextVar[str] = contextvars.ContextVar(
     "clio_gact_active_session_id",
+    default="",
+)
+_ACTIVE_GACT_TURN_ID: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "clio_gact_active_turn_id",
+    default="",
+)
+_ACTIVE_GACT_TRACE_ID: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "clio_gact_active_trace_id",
     default="",
 )
 
@@ -155,6 +169,107 @@ def _new_context_frame_id() -> str:
 
 def _new_memory_event_id() -> str:
     return f"mem_{uuid.uuid4().hex[:12]}"
+
+
+def _jsonish(value: Any) -> Any:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, Mapping):
+        return {str(k): _jsonish(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_jsonish(v) for v in value]
+    if isinstance(value, set):
+        return sorted(_jsonish(v) for v in value)
+    model_dump = getattr(value, "model_dump", None)
+    if callable(model_dump):
+        try:
+            return _jsonish(model_dump(exclude_none=True))
+        except TypeError:
+            return _jsonish(model_dump())
+    return str(value)
+
+
+def _semantic_trace_id(turn_id: str) -> str:
+    return f"trace_{turn_id}" if turn_id else f"trace_{uuid.uuid4().hex[:12]}"
+
+
+def _active_semantic_turn_id() -> str:
+    return _ACTIVE_GACT_TURN_ID.get()
+
+
+def _active_semantic_trace_id() -> str:
+    return _ACTIVE_GACT_TRACE_ID.get()
+
+
+def _emit_semantic_event(
+    app: "FastAPI",
+    sid: str,
+    event_type: str,
+    *,
+    turn_id: str = "",
+    trace_id: str = "",
+    parent_span_id: str = "",
+    status: str = "completed",
+    summary: str = "",
+    actor: Optional[dict[str, Any]] = None,
+    subject: Optional[dict[str, Any]] = None,
+    blueprint: Optional[dict[str, Any]] = None,
+    provider: Optional[dict[str, Any]] = None,
+    payload: Optional[dict[str, Any]] = None,
+    live_observed: bool = True,
+) -> dict[str, Any]:
+    """Emit one semantic event if the app has the semantic sink wired."""
+
+    sink = getattr(app.state, "semantic_event_sink", None)
+    if sink is None:
+        return {}
+    sess = app.state.sessions.get(sid) if hasattr(app.state, "sessions") else None
+    workspace_id = str(getattr(sess, "workspace_id", "") or "")
+    event = SemanticEvent(
+        event_type=event_type,
+        session_id=sid,
+        workspace_id=workspace_id,
+        trace_id=trace_id or _semantic_trace_id(turn_id),
+        turn_id=turn_id,
+        parent_span_id=parent_span_id,
+        status=status,
+        summary=summary,
+        actor=actor or {},
+        subject=subject or {},
+        blueprint=blueprint or {},
+        provider=provider or {},
+        payload=payload or {},
+        live_observed=live_observed,
+        detail_level=getattr(app.state, "semantic_trace_detail_level", DEFAULT_DETAIL_LEVEL),
+    )
+    return sink.emit(event)
+
+
+def _llm_provider_payload(app: "FastAPI", agent_id: str = "") -> dict[str, Any]:
+    cfg = _effective_lm_config(app)
+    return {
+        "provider_id": str(cfg.get("provider") or ""),
+        "model_id": str(cfg.get("model") or ""),
+        "api_base": str(cfg.get("api_base") or ""),
+        "temperature": cfg.get("temperature"),
+        "max_tokens": cfg.get("max_tokens"),
+        "agent_id": agent_id,
+    }
+
+
+def _prediction_summary(pred: Any) -> dict[str, Any]:
+    return {
+        "selected_expert": str(getattr(pred, "selected_expert", "") or ""),
+        "route_source": str(getattr(pred, "route_source", "") or ""),
+        "route_reason": str(
+            getattr(pred, "route_reason", "") or getattr(pred, "routing_rationale", "") or ""
+        ),
+        "answer": str(getattr(pred, "answer", "") or ""),
+        "expert_handoffs": _jsonish(getattr(pred, "expert_handoffs", None) or []),
+        "tools_called": _jsonish(getattr(pred, "tools_called", None) or []),
+        "file_diffs": _jsonish(getattr(pred, "file_diffs", None) or []),
+        "error_info": _jsonish(getattr(pred, "error_info", None)),
+    }
 
 
 def _coerce_ask_user_action(pred: Any) -> dict[str, Any]:
@@ -1960,6 +2075,17 @@ def _compact_dynamic_delegation_output(output: str, *, limit: int = 2200) -> str
     return "\n\n".join(pieces)
 
 
+def _tool_result_preview(result: Any) -> str:
+    if result is None:
+        return "completed"
+    if isinstance(result, str):
+        return result
+    try:
+        return json.dumps(result, ensure_ascii=False, sort_keys=True, default=str)
+    except Exception:  # noqa: BLE001
+        return str(result)
+
+
 def _dynamic_answer_has_pending_child_work(answer: str) -> bool:
     """Return true when a resumed parent answer appears to leave child work pending."""
 
@@ -2786,6 +2912,10 @@ async def _run_turn_in_background(
     retry_attempt_id = ""
     if isinstance(user_msg.metadata, dict):
         retry_attempt_id = str(user_msg.metadata.get("retry_attempt_id") or "")
+    turn_id = user_msg.id
+    trace_id = _semantic_trace_id(turn_id)
+    _ACTIVE_GACT_TURN_ID.set(turn_id)
+    _ACTIVE_GACT_TRACE_ID.set(trace_id)
     turn_tokens: dict[str, int] = {
         "input": 0,
         "output": 0,
@@ -2828,6 +2958,18 @@ async def _run_turn_in_background(
             "running",
             metadata_patch={"executed_user_message_id": user_msg.id},
         )
+    _emit_semantic_event(
+        app,
+        sid,
+        "turn.started",
+        turn_id=turn_id,
+        trace_id=trace_id,
+        status="running",
+        summary="User turn accepted and CLIO runtime started.",
+        actor={"role": "user"},
+        subject={"message_id": user_msg.id},
+        payload={"text": user_text, "retry_attempt_id": retry_attempt_id},
+    )
 
     # iowarp/clio-agent#5: prepend any attached context files to the
     # user's text so the agent's forward() sees them as primed input.
@@ -2857,6 +2999,18 @@ async def _run_turn_in_background(
         enriched_text=enriched_text,
         context_error=context_file_error,
     )
+    if memory_search_metadata:
+        _emit_semantic_event(
+            app,
+            sid,
+            "memory.search.completed",
+            turn_id=turn_id,
+            trace_id=trace_id,
+            summary="Requested memory search was injected into turn context.",
+            actor={"role": "runtime", "component": "memory"},
+            subject={"message_id": user_msg.id},
+            payload=memory_search_metadata,
+        )
     # iowarp/clio-agent#20: pre_message hook can transform the
     # input or veto the turn. PermissionError → cancelled-style
     # error_info; the caller sees the hook's reason.
@@ -2864,8 +3018,60 @@ async def _run_turn_in_background(
         try:
             from clio_agent.runtime.hooks import fire as _fire_hook
 
-            _fire_hook("pre_message", sid, enriched_text)
+            _emit_semantic_event(
+                app,
+                sid,
+                "hook.invocation.started",
+                turn_id=turn_id,
+                trace_id=trace_id,
+                status="running",
+                summary="pre_message hook dispatch started.",
+                actor={"hook": "pre_message"},
+                subject={"message_id": user_msg.id},
+                payload={"input": enriched_text},
+            )
+            hook_scope = {
+                "session_id": sid,
+                "workspace_id": getattr(sess, "workspace_id", ""),
+                "blueprint_id": _runtime_active_agent_blueprint_id(app, sid),
+            }
+            _fire_hook("pre_message", sid, enriched_text, hook_scope=hook_scope)
+            _emit_semantic_event(
+                app,
+                sid,
+                "hook.invocation.completed",
+                turn_id=turn_id,
+                trace_id=trace_id,
+                summary="pre_message hook dispatch completed.",
+                actor={"hook": "pre_message"},
+                subject={"message_id": user_msg.id},
+                payload={},
+            )
         except PermissionError as exc:
+            _emit_semantic_event(
+                app,
+                sid,
+                "hook.pre_message.blocked",
+                turn_id=turn_id,
+                trace_id=trace_id,
+                status="blocked",
+                summary="pre_message hook blocked the turn.",
+                actor={"hook": "pre_message"},
+                subject={"message_id": user_msg.id},
+                payload={"error": str(exc)},
+            )
+            _emit_semantic_event(
+                app,
+                sid,
+                "turn.failed",
+                turn_id=turn_id,
+                trace_id=trace_id,
+                status="blocked",
+                summary="CLIO turn was blocked by pre_message hook.",
+                actor={"hook": "pre_message"},
+                subject={"message_id": user_msg.id},
+                payload={"error": str(exc)},
+            )
             bus.publish(
                 Event(
                     type="message.completed",
@@ -2917,34 +3123,47 @@ async def _run_turn_in_background(
         if streamed_assistant_msg_id is None:
             # Lazily invent ids the moment the first chunk arrives;
             # the final assistant message will reuse them.
-            streamed_assistant_msg_id = _new_message_id("asst")
+            live_ids = getattr(app.state, "live_assistant_message_ids", {}) or {}
+            streamed_assistant_msg_id = str(live_ids.get(sid) or "")
+            created_live_msg = bool(streamed_assistant_msg_id)
+            if not streamed_assistant_msg_id:
+                streamed_assistant_msg_id = _new_message_id("asst")
+                live_ids[sid] = streamed_assistant_msg_id
+                app.state.live_assistant_message_ids = live_ids
             streamed_assistant_part_id = _new_part_id()
-            bus.publish(
-                Event(
-                    type="message.created",
-                    session_id=sid,
-                    payload=Message(
-                        id=streamed_assistant_msg_id,
+            if not created_live_msg:
+                bus.publish(
+                    Event(
+                        type="message.created",
                         session_id=sid,
-                        role="assistant",
-                        created_at=_iso_from_epoch(time.time()),
-                        updated_at=_iso_from_epoch(time.time()),
-                        parts=[],
-                    ).model_dump(exclude_none=True),
+                        payload=Message(
+                            id=streamed_assistant_msg_id,
+                            session_id=sid,
+                            role="assistant",
+                            created_at=_iso_from_epoch(time.time()),
+                            updated_at=_iso_from_epoch(time.time()),
+                            parts=[],
+                        ).model_dump(exclude_none=True),
+                    )
                 )
+            text_part = Part(
+                id=streamed_assistant_part_id,
+                type="text",
+                text="",
+                metadata={"stream_source": "live"},
             )
+            live_parts = getattr(app.state, "live_assistant_parts", None)
+            if live_parts is None:
+                live_parts = {}
+                app.state.live_assistant_parts = live_parts
+            live_parts.setdefault(sid, []).append(text_part)
             bus.publish(
                 Event(
                     type="message.part.added",
                     session_id=sid,
                     payload={
                         "message_id": streamed_assistant_msg_id,
-                        "part": Part(
-                            id=streamed_assistant_part_id,
-                            type="text",
-                            text="",
-                            metadata={"stream_source": "live"},
-                        ).model_dump(exclude_none=True),
+                        "part": text_part.model_dump(exclude_none=True),
                     },
                 )
             )
@@ -3098,6 +3317,48 @@ async def _run_turn_in_background(
             prompt = _delegated_expert_prompt(row, source_text)
             execution_mode = "tool_agent" if target.tools else "prompt_agent"
             started_at = time.perf_counter()
+            started_row = {
+                **row,
+                "agent_id": target.id,
+                "parent_id": parent_agent.id,
+                "pack_id": str(target.metadata.get("pack_id") or ""),
+                "pack_version": str(target.metadata.get("pack_version") or ""),
+                "status": "running",
+                "stage": "delegate.started",
+                "delegation_lifecycle": "sync",
+                "depth": depth,
+                "execution_mode": execution_mode,
+            }
+            _emit_semantic_event(
+                app,
+                sid,
+                "delegation.started",
+                turn_id=turn_id,
+                trace_id=trace_id,
+                status="running",
+                summary=f"{parent_agent.id} delegated sync work to {target.id}.",
+                actor={"agent_id": parent_agent.id, "role": "parent_expert"},
+                subject={"agent_id": target.id, "role": "child_expert"},
+                blueprint={
+                    "pack_id": str(target.metadata.get("pack_id") or ""),
+                    "pack_version": str(target.metadata.get("pack_version") or ""),
+                },
+                provider={
+                    "provider_id": target.default_provider,
+                    "model_id": target.default_model,
+                },
+                payload=started_row,
+            )
+            _append_live_assistant_part(
+                app,
+                sid,
+                Part(
+                    id=f"live_handoff_{uuid.uuid4().hex[:12]}",
+                    type="expert_handoff",
+                    text=_expert_handoff_summary(started_row),
+                    metadata={**started_row, "stream_source": "live"},
+                ),
+            )
             try:
                 pred_child = await _run_dynamic_agent_sync(target, prompt)
                 duration_ms = int((time.perf_counter() - started_at) * 1000)
@@ -3142,9 +3403,37 @@ async def _run_turn_in_background(
                     "output_summary": output_summary,
                     "children": nested,
                 }
+                _emit_semantic_event(
+                    app,
+                    sid,
+                    "delegation.completed",
+                    turn_id=turn_id,
+                    trace_id=trace_id,
+                    summary=f"{target.id} returned a compact result to {parent_agent.id}.",
+                    actor={"agent_id": target.id, "role": "child_expert"},
+                    subject={"agent_id": parent_agent.id, "role": "parent_expert"},
+                    blueprint={
+                        "pack_id": str(target.metadata.get("pack_id") or ""),
+                        "pack_version": str(target.metadata.get("pack_version") or ""),
+                    },
+                    provider={
+                        "provider_id": target.default_provider,
+                        "model_id": target.default_model,
+                    },
+                    payload=completed_row,
+                )
+                _append_live_assistant_part(
+                    app,
+                    sid,
+                    Part(
+                        id=f"live_handoff_{uuid.uuid4().hex[:12]}",
+                        type="expert_handoff",
+                        text=_expert_handoff_summary(completed_row),
+                        metadata={**completed_row, "stream_source": "live"},
+                    ),
+                )
                 executed.append(completed_row)
-                executed.append(
-                    {
+                resumed_row = {
                         "agent_id": parent_agent.id,
                         "parent_id": parent_agent.parent_id,
                         "dispatch_target": parent_agent.id,
@@ -3156,12 +3445,32 @@ async def _run_turn_in_background(
                         "depth": depth,
                         "output_summary": output_summary,
                     }
+                _emit_semantic_event(
+                    app,
+                    sid,
+                    "delegation.parent_resumed",
+                    turn_id=turn_id,
+                    trace_id=trace_id,
+                    summary=f"{parent_agent.id} resumed after {target.id}.",
+                    actor={"agent_id": parent_agent.id, "role": "parent_expert"},
+                    subject={"agent_id": target.id, "role": "child_expert"},
+                    payload=resumed_row,
                 )
+                _append_live_assistant_part(
+                    app,
+                    sid,
+                    Part(
+                        id=f"live_handoff_{uuid.uuid4().hex[:12]}",
+                        type="expert_handoff",
+                        text=_expert_handoff_summary(resumed_row),
+                        metadata={**resumed_row, "stream_source": "live"},
+                    ),
+                )
+                executed.append(resumed_row)
             except (_TurnCancelled, _TurnTimedOut):
                 raise
             except Exception as exc:  # noqa: BLE001
-                executed.append(
-                    {
+                failed_row = {
                         **row,
                         "agent_id": target.id,
                         "parent_id": parent_agent.id,
@@ -3177,7 +3486,37 @@ async def _run_turn_in_background(
                         "error": type(exc).__name__,
                         "message": str(exc),
                     }
+                _emit_semantic_event(
+                    app,
+                    sid,
+                    "delegation.failed",
+                    turn_id=turn_id,
+                    trace_id=trace_id,
+                    status="failed",
+                    summary=f"{target.id} failed during sync delegation.",
+                    actor={"agent_id": target.id, "role": "child_expert"},
+                    subject={"agent_id": parent_agent.id, "role": "parent_expert"},
+                    blueprint={
+                        "pack_id": str(target.metadata.get("pack_id") or ""),
+                        "pack_version": str(target.metadata.get("pack_version") or ""),
+                    },
+                    provider={
+                        "provider_id": target.default_provider,
+                        "model_id": target.default_model,
+                    },
+                    payload=failed_row,
                 )
+                _append_live_assistant_part(
+                    app,
+                    sid,
+                    Part(
+                        id=f"live_handoff_{uuid.uuid4().hex[:12]}",
+                        type="expert_handoff",
+                        text=_expert_handoff_summary(failed_row),
+                        metadata={**failed_row, "stream_source": "live"},
+                    ),
+                )
+                executed.append(failed_row)
         return executed
 
     async def _settle_dynamic_agent_delegations(
@@ -3283,6 +3622,25 @@ async def _run_turn_in_background(
             auto_routed_agent = _keyword_routed_user_agent(app, user_text)
             if auto_routed_agent is not None:
                 active_agent_id = auto_routed_agent.id
+        invocation_agent_id = active_agent_id or "orchestrator"
+        _emit_semantic_event(
+            app,
+            sid,
+            "agent.invocation.started",
+            turn_id=turn_id,
+            trace_id=trace_id,
+            status="running",
+            summary=f"Invoking {invocation_agent_id}.",
+            actor={"agent_id": invocation_agent_id},
+            subject={"message_id": user_msg.id},
+            payload={
+                "routing_mode": routing_mode,
+                "session_agent_id": session_agent_id,
+                "turn_agent_id": turn_agent_id,
+                "active_blueprint_root_id": active_blueprint_root_id,
+                "active_blueprint_agent_ids": active_blueprint_agent_ids,
+            },
+        )
         from clio_agent.agent import cancellation_checker as _cancellation_checker  # noqa: PLC0415
 
         _refresh_argonne_lm_token(app.state.agent)
@@ -3321,6 +3679,36 @@ async def _run_turn_in_background(
                     )
                 finally:
                     _ACTIVE_GACT_SESSION_ID.reset(session_token)
+            llm_actor = {
+                "agent_id": dynamic_agent.id,
+                "agent_title": dynamic_agent.title,
+                "source": dynamic_agent.source,
+                "execution_mode": execution_mode,
+            }
+            llm_subject = {
+                "prompt_id": dynamic_agent.prompt_id,
+                "prompt_profile": dynamic_agent.prompt_profile,
+                "message_id": user_msg.id,
+            }
+            _emit_semantic_event(
+                app,
+                sid,
+                "llm.request.started",
+                turn_id=turn_id,
+                trace_id=trace_id,
+                status="running",
+                summary=f"LLM request started for {dynamic_agent.id}.",
+                actor=llm_actor,
+                subject=llm_subject,
+                blueprint=dict(agent_runtime.get("agent_blueprint") or {}),
+                provider=_llm_provider_payload(app, dynamic_agent.id),
+                payload={
+                    "request_mode": "streamed",
+                    "input": enriched_text,
+                    "prompt_resolution": prompt_resolution,
+                    "agent_runtime": agent_runtime,
+                },
+            )
             with _cancellation_checker(cancel_requested), _tool_session_context(sid):
                 pred = await _await_turn_work(
                     _try_streamed_forward_compat(
@@ -3334,7 +3722,40 @@ async def _run_turn_in_background(
                         cancel_requested=cancel_requested,
                     )
                 )
+            if pred is not None:
+                _emit_semantic_event(
+                    app,
+                    sid,
+                    "llm.response.completed",
+                    turn_id=turn_id,
+                    trace_id=trace_id,
+                    summary=f"LLM response completed for {dynamic_agent.id}.",
+                    actor=llm_actor,
+                    subject=llm_subject,
+                    blueprint=dict(agent_runtime.get("agent_blueprint") or {}),
+                    provider=_llm_provider_payload(app, dynamic_agent.id),
+                    payload=_prediction_summary(pred),
+                )
             if pred is None:
+                _emit_semantic_event(
+                    app,
+                    sid,
+                    "llm.request.started",
+                    turn_id=turn_id,
+                    trace_id=trace_id,
+                    status="running",
+                    summary=f"Synchronous LLM request started for {dynamic_agent.id}.",
+                    actor=llm_actor,
+                    subject=llm_subject,
+                    blueprint=dict(agent_runtime.get("agent_blueprint") or {}),
+                    provider=_llm_provider_payload(app, dynamic_agent.id),
+                    payload={
+                        "request_mode": "sync",
+                        "input": enriched_text,
+                        "prompt_resolution": prompt_resolution,
+                        "agent_runtime": agent_runtime,
+                    },
+                )
                 with _cancellation_checker(cancel_requested), _tool_session_context(sid):
                     loop = asyncio.get_running_loop()
                     turn_context = contextvars.copy_context()
@@ -3352,6 +3773,19 @@ async def _run_turn_in_background(
                             ),
                         ),
                     )
+                _emit_semantic_event(
+                    app,
+                    sid,
+                    "llm.response.completed",
+                    turn_id=turn_id,
+                    trace_id=trace_id,
+                    summary=f"Synchronous LLM response completed for {dynamic_agent.id}.",
+                    actor=llm_actor,
+                    subject=llm_subject,
+                    blueprint=dict(agent_runtime.get("agent_blueprint") or {}),
+                    provider=_llm_provider_payload(app, dynamic_agent.id),
+                    payload=_prediction_summary(pred),
+                )
         else:
             # Honour the session's routing override. routing_mode "chat"
             # forces the chat path (no /chat prefix needed); "experts"
@@ -3363,6 +3797,31 @@ async def _run_turn_in_background(
 
             with _routing_override(routing_override), _cancellation_checker(cancel_requested):
                 with _tool_session_context(sid):
+                    llm_actor = {
+                        "agent_id": active_agent_id or "orchestrator",
+                        "source": "builtin",
+                        "execution_mode": "clio_agent_forward",
+                    }
+                    llm_subject = {"message_id": user_msg.id}
+                    _emit_semantic_event(
+                        app,
+                        sid,
+                        "llm.request.started",
+                        turn_id=turn_id,
+                        trace_id=trace_id,
+                        status="running",
+                        summary="LLM request started for CLIO orchestrator.",
+                        actor=llm_actor,
+                        subject=llm_subject,
+                        provider=_llm_provider_payload(app, active_agent_id or "orchestrator"),
+                        payload={
+                            "request_mode": "streamed",
+                            "routing_mode": routing_override,
+                            "session_mode": getattr(sess, "mode", "chat"),
+                            "edit_mode": getattr(sess, "edit_mode", "diff"),
+                            "input": enriched_text,
+                        },
+                    )
                     pred = await _await_turn_work(
                         _try_streamed_forward_compat(
                             app,
@@ -3374,7 +3833,39 @@ async def _run_turn_in_background(
                             cancel_requested=cancel_requested,
                         )
                     )
+                    if pred is not None:
+                        _emit_semantic_event(
+                            app,
+                            sid,
+                            "llm.response.completed",
+                            turn_id=turn_id,
+                            trace_id=trace_id,
+                            summary="LLM response completed for CLIO orchestrator.",
+                            actor=llm_actor,
+                            subject=llm_subject,
+                            provider=_llm_provider_payload(app, active_agent_id or "orchestrator"),
+                            payload=_prediction_summary(pred),
+                        )
                     if pred is None:
+                        _emit_semantic_event(
+                            app,
+                            sid,
+                            "llm.request.started",
+                            turn_id=turn_id,
+                            trace_id=trace_id,
+                            status="running",
+                            summary="Synchronous LLM request started for CLIO orchestrator.",
+                            actor=llm_actor,
+                            subject=llm_subject,
+                            provider=_llm_provider_payload(app, active_agent_id or "orchestrator"),
+                            payload={
+                                "request_mode": "sync",
+                                "routing_mode": routing_override,
+                                "session_mode": getattr(sess, "mode", "chat"),
+                                "edit_mode": getattr(sess, "edit_mode", "diff"),
+                                "input": enriched_text,
+                            },
+                        )
                         loop = asyncio.get_running_loop()
                         turn_context = contextvars.copy_context()
                         pred = await _await_turn_work(
@@ -3391,12 +3882,40 @@ async def _run_turn_in_background(
                                 ),
                             ),
                         )
+                        _emit_semantic_event(
+                            app,
+                            sid,
+                            "llm.response.completed",
+                            turn_id=turn_id,
+                            trace_id=trace_id,
+                            summary="Synchronous LLM response completed for CLIO orchestrator.",
+                            actor=llm_actor,
+                            subject=llm_subject,
+                            provider=_llm_provider_payload(app, active_agent_id or "orchestrator"),
+                            payload=_prediction_summary(pred),
+                        )
         if dynamic_agent_used is not None and dynamic_agent_used.source == "expert_pack":
             pred, expert_handoffs = await _settle_dynamic_agent_delegations(
                 dynamic_agent_used,
                 pred,
                 source_text=enriched_text,
             )
+        _emit_semantic_event(
+            app,
+            sid,
+            "agent.invocation.completed",
+            turn_id=turn_id,
+            trace_id=trace_id,
+            summary=f"{invocation_agent_id} returned a prediction.",
+            actor={"agent_id": invocation_agent_id},
+            subject={"message_id": user_msg.id},
+            payload={
+                "selected_expert": getattr(pred, "selected_expert", "") or "",
+                "route_source": getattr(pred, "route_source", "") or "",
+                "has_answer": bool(getattr(pred, "answer", "") or ""),
+                "has_error_info": bool(getattr(pred, "error_info", None)),
+            },
+        )
 
         answer_text = getattr(pred, "answer", "")
         selected_agent = getattr(pred, "selected_expert", "") or ""
@@ -3449,6 +3968,18 @@ async def _run_turn_in_background(
                 },
             )
             app.state.user_questions[question.id] = question
+            _emit_semantic_event(
+                app,
+                sid,
+                "user_question.created",
+                turn_id=turn_id,
+                trace_id=trace_id,
+                status="waiting_user",
+                summary="Agent requested user input before continuing.",
+                actor={"agent_id": selected_agent or invocation_agent_id},
+                subject={"question_id": question.id},
+                payload=question.model_dump(exclude_none=True),
+            )
             updated = app.state.sessions.update(
                 sid,
                 status="waiting_user",
@@ -3613,6 +4144,18 @@ async def _run_turn_in_background(
                 "status": "pending",
             }
             app.state.permissions[pid] = row
+            _emit_semantic_event(
+                app,
+                sid,
+                "permission.requested",
+                turn_id=turn_id,
+                trace_id=trace_id,
+                status="pending",
+                summary="Tool execution requested user permission.",
+                actor={"agent_id": selected_agent or invocation_agent_id},
+                subject={"permission_id": pid},
+                payload=row,
+            )
             bus.publish(
                 Event(
                     type="permission.requested",
@@ -3737,8 +4280,46 @@ async def _run_turn_in_background(
             recoverable=True,
         )
 
+    live_parts_by_session = getattr(app.state, "live_assistant_parts", {}) or {}
+    live_assistant_parts = list(live_parts_by_session.get(sid, []))
+    final_live_parts = [part for part in live_assistant_parts if part.type == "text"]
+    live_routing_agents = {
+        p.selected_agent
+        for p in final_live_parts
+        if p.type == "routing_decision" and p.selected_agent
+    }
+    live_has_expert_handoff = any(p.type == "expert_handoff" for p in final_live_parts)
+    live_tool_calls = {
+        p.call_id: p
+        for p in live_assistant_parts
+        if p.type == "tool_call" and p.call_id
+    }
+    enriched_live_part_ids: set[str] = set()
+    for part in live_assistant_parts:
+        if part.type != "tool_result" or not part.call_id:
+            continue
+        call_part = live_tool_calls.get(part.call_id)
+        if call_part is None:
+            continue
+        for row in tools_called:
+            if str(row.get("name") or "") != call_part.tool_name:
+                continue
+            if row.get("args") != call_part.input:
+                continue
+            if "result" not in row:
+                continue
+            part.content = [
+                Part(
+                    id=f"{part.id}_final_text",
+                    type="text",
+                    text=_tool_result_preview(row.get("result")),
+                )
+            ]
+            enriched_live_part_ids.add(part.id)
+            break
+
     assistant_parts: list[Part] = []
-    if selected_agent:
+    if selected_agent and selected_agent not in live_routing_agents:
         assistant_parts.append(
             Part(
                 id=_new_part_id(),
@@ -3758,7 +4339,7 @@ async def _run_turn_in_background(
                 execution_path=execution_path,
             )
         )
-    for handoff in expert_handoffs:
+    for handoff in ([] if live_has_expert_handoff else expert_handoffs):
         assistant_parts.append(
             Part(
                 id=_new_part_id(),
@@ -3772,7 +4353,8 @@ async def _run_turn_in_background(
         # thinking Part so the TUI can collapse + render it
         # gated on capabilities.thinking_blocks.
         assistant_parts.append(Part(id=_new_part_id(), type="thinking", text=thinking_text))
-    if answer_text:
+    assistant_parts.extend(final_live_parts)
+    if answer_text and streamed_assistant_part_id is None:
         assistant_parts.append(Part(id=_new_part_id(), type="text", text=answer_text))
     for row in proposed_diffs:
         if isinstance(row, dict):
@@ -3795,18 +4377,35 @@ async def _run_turn_in_background(
         # so the Part lands instead of being dropped.
         if not udiff and not new_content:
             continue
-        assistant_parts.append(
-            Part(
-                id=_new_part_id(),
-                type="file_diff",
-                path=path,
-                unified_diff=udiff,
-                new_content=new_content,
-                status="pending",
-                edit_mode=edit_mode,
-                lines_added=lines_added,
-                lines_removed=lines_removed,
-            )
+        diff_part = Part(
+            id=_new_part_id(),
+            type="file_diff",
+            path=path,
+            unified_diff=udiff,
+            new_content=new_content,
+            status="pending",
+            edit_mode=edit_mode,
+            lines_added=lines_added,
+            lines_removed=lines_removed,
+        )
+        assistant_parts.append(diff_part)
+        _emit_semantic_event(
+            app,
+            sid,
+            "artifact.proposed",
+            turn_id=turn_id,
+            trace_id=trace_id,
+            summary=f"Agent proposed a file diff for {path}.",
+            actor={"agent_id": selected_agent or invocation_agent_id},
+            subject={"path": path, "part_id": diff_part.id, "artifact_type": "file_diff"},
+            payload={
+                "path": path,
+                "unified_diff": udiff,
+                "new_content": new_content,
+                "edit_mode": edit_mode,
+                "lines_added": lines_added,
+                "lines_removed": lines_removed,
+            },
         )
 
     error_info = _enrich_cancellation_error_info(app, sid, error_info)
@@ -3863,7 +4462,9 @@ async def _run_turn_in_background(
     # iowarp/clio-agent#6: when streaming actually emitted chunks,
     # reuse its message_id + part_id so the deltas + final
     # message line up. Otherwise mint a fresh id (existing path).
-    asst_id = streamed_assistant_msg_id or _new_message_id("asst")
+    live_ids = getattr(app.state, "live_assistant_message_ids", {}) or {}
+    live_assistant_msg_id = str(live_ids.get(sid) or "")
+    asst_id = streamed_assistant_msg_id or live_assistant_msg_id or _new_message_id("asst")
     if streamed_assistant_part_id is not None and answer_text:
         # Replace the routing/text/diff parts list's text part
         # with a stub carrying the streamed part_id, so the final
@@ -3975,6 +4576,23 @@ async def _run_turn_in_background(
         )
         _extend_session_messages(app, subsess.id, [sub_user, sub_asst])
         app.state.sessions.update(subsess.id, message_count=2, status="idle")
+        _emit_semantic_event(
+            app,
+            sid,
+            "subagent.started",
+            turn_id=turn_id,
+            trace_id=trace_id,
+            status="running",
+            summary=f"Spawned subagent {agent_id}.",
+            actor={"agent_id": selected_agent or "orchestrator"},
+            subject={"agent_id": str(agent_id), "session_id": subsess.id},
+            payload={
+                "parent_session_id": sid,
+                "child_session_id": subsess.id,
+                "agent_id": agent_id,
+                "spawned_by_message_id": assistant_msg.id,
+            },
+        )
         bus.publish(
             Event(
                 type="subagent.started",
@@ -3986,6 +4604,24 @@ async def _run_turn_in_background(
                     "spawned_by_message_id": assistant_msg.id,
                 },
             )
+        )
+        _emit_semantic_event(
+            app,
+            sid,
+            "subagent.completed",
+            turn_id=turn_id,
+            trace_id=trace_id,
+            summary=f"Subagent {agent_id} completed.",
+            actor={"agent_id": str(agent_id), "session_id": subsess.id},
+            subject={"session_id": sid},
+            payload={
+                "parent_session_id": sid,
+                "child_session_id": subsess.id,
+                "agent_id": agent_id,
+                "duration_ms": float(get("duration_ms", 0.0) or 0.0),
+                "tokens": get("tokens") or {},
+                "cost_usd": float(get("cost_usd", 0.0) or 0.0),
+            },
         )
         bus.publish(
             Event(
@@ -4007,7 +4643,7 @@ async def _run_turn_in_background(
     # When real streaming already fired the message.created +
     # message.part.added + N deltas (#6), skip re-issuing them so we
     # don't duplicate.
-    if streamed_assistant_msg_id is None:
+    if streamed_assistant_msg_id is None and not live_assistant_msg_id:
         bus.publish(
             Event(
                 type="message.created",
@@ -4027,6 +4663,12 @@ async def _run_turn_in_background(
     # of chunking it into synthetic deltas that could be mistaken for live
     # provider tokens.
     for part in assistant_parts:
+        if (
+            part.metadata.get("stream_source") == "live"
+            and part.id not in enriched_live_part_ids
+            and part.type != "text"
+        ):
+            continue
         if part.type == "text" and part.text:
             if part.id == streamed_assistant_part_id:
                 # Real streaming already pumped deltas — but those
@@ -4102,6 +4744,22 @@ async def _run_turn_in_background(
         completed_payload["error_info"] = error_info.model_dump(exclude_none=True)
     if assistant_metadata:
         completed_payload["metadata"] = assistant_metadata
+    _emit_semantic_event(
+        app,
+        sid,
+        "turn.completed" if error_info is None else "turn.failed",
+        turn_id=turn_id,
+        trace_id=trace_id,
+        status="completed" if error_info is None else "failed",
+        summary=(
+            "CLIO turn completed."
+            if error_info is None
+            else f"CLIO turn failed: {error_info.error}."
+        ),
+        actor={"agent_id": selected_agent or "orchestrator"},
+        subject={"message_id": assistant_msg.id},
+        payload=completed_payload,
+    )
     bus.publish(
         Event(
             type="message.completed",
@@ -4114,6 +4772,9 @@ async def _run_turn_in_background(
     final_status = "cancelled" if cancelled_turn else ("error" if error_info else "idle")
     retry_status = "cancelled" if cancelled_turn else ("failed" if error_info else "completed")
     _append_session_message(app, sid, assistant_msg)
+    getattr(app.state, "live_assistant_message_ids", {}).pop(sid, None)
+    getattr(app.state, "live_assistant_parts", {}).pop(sid, None)
+    getattr(app.state, "live_assistant_part_keys", {}).pop(sid, None)
     _update_retry_attempt(
         retry_status,
         metadata_patch={
@@ -4155,12 +4816,52 @@ async def _run_turn_in_background(
     try:
         from clio_agent.runtime.hooks import fire as _fire_hook
 
+        _emit_semantic_event(
+            app,
+            sid,
+            "hook.invocation.started",
+            turn_id=turn_id,
+            trace_id=trace_id,
+            status="running",
+            summary="post_message hook dispatch started.",
+            actor={"hook": "post_message"},
+            subject={"message_id": assistant_msg.id},
+            payload={"assistant": assistant_msg.model_dump(exclude_none=True)},
+        )
         _fire_hook(
             "post_message",
             sid,
             assistant_msg.model_dump(exclude_none=True),
+            hook_scope={
+                "session_id": sid,
+                "workspace_id": getattr(sess, "workspace_id", ""),
+                "blueprint_id": _runtime_active_agent_blueprint_id(app, sid),
+            },
+        )
+        _emit_semantic_event(
+            app,
+            sid,
+            "hook.invocation.completed",
+            turn_id=turn_id,
+            trace_id=trace_id,
+            summary="post_message hook dispatch completed.",
+            actor={"hook": "post_message"},
+            subject={"message_id": assistant_msg.id},
+            payload={},
         )
     except Exception:  # noqa: BLE001
+        _emit_semantic_event(
+            app,
+            sid,
+            "hook.invocation.failed",
+            turn_id=turn_id,
+            trace_id=trace_id,
+            status="failed",
+            summary="post_message hook dispatch failed and was swallowed by policy.",
+            actor={"hook": "post_message"},
+            subject={"message_id": assistant_msg.id},
+            payload={},
+        )
         pass
     if not (
         cancelled_turn
@@ -5142,6 +5843,153 @@ def _install_tool_runtime_hooks(app: "FastAPI") -> None:
     app.state.tool_hooks_installed = True
 
 
+def _ensure_live_assistant_message(app: "FastAPI", sid: str) -> str:
+    """Return the in-flight assistant message id, creating it if needed."""
+
+    live_ids = getattr(app.state, "live_assistant_message_ids", None)
+    if live_ids is None:
+        live_ids = {}
+        app.state.live_assistant_message_ids = live_ids
+    msg_id = str(live_ids.get(sid) or "")
+    if msg_id:
+        return msg_id
+    msg_id = _new_message_id("asst")
+    live_ids[sid] = msg_id
+    now = _iso_from_epoch(time.time())
+    app.state.bus.publish(
+        Event(
+            type="message.created",
+            session_id=sid,
+            payload=Message(
+                id=msg_id,
+                session_id=sid,
+                role="assistant",
+                created_at=now,
+                updated_at=now,
+                parts=[],
+            ).model_dump(exclude_none=True),
+        )
+    )
+    return msg_id
+
+
+def _append_live_assistant_part(app: "FastAPI", sid: str, part: Part) -> None:
+    """Publish and remember a real runtime part for the active assistant turn."""
+
+    msg_id = _ensure_live_assistant_message(app, sid)
+    live_parts = getattr(app.state, "live_assistant_parts", None)
+    if live_parts is None:
+        live_parts = {}
+        app.state.live_assistant_parts = live_parts
+    live_parts.setdefault(sid, []).append(part)
+    app.state.bus.publish(
+        Event(
+            type="message.part.added",
+            session_id=sid,
+            payload={"message_id": msg_id, "part": part.model_dump(exclude_none=True)},
+        )
+    )
+
+
+def _append_live_assistant_part_once(
+    app: "FastAPI",
+    sid: str,
+    key: str,
+    part: Part,
+) -> bool:
+    """Publish a live part once per in-flight turn.
+
+    Tool observers can fire many times for the same routed expert. The
+    transcript should show the route decision once, then the concrete tool
+    calls/results under it, not repeat the same route banner for every call.
+    """
+
+    live_keys = getattr(app.state, "live_assistant_part_keys", None)
+    if live_keys is None:
+        live_keys = {}
+        app.state.live_assistant_part_keys = live_keys
+    session_keys = live_keys.setdefault(sid, set())
+    if key in session_keys:
+        return False
+    session_keys.add(key)
+    _append_live_assistant_part(app, sid, part)
+    return True
+
+
+def _agent_tool_owner(app: "FastAPI", tool_name: str) -> tuple[str, str]:
+    """Return (public_parent, owner) for a tool if CLIO can resolve it."""
+
+    agent = getattr(app.state, "agent", None)
+    if agent is None:
+        return "", ""
+    candidates = [tool_name]
+    if "." in tool_name:
+        candidates.append(tool_name.rsplit(".", 1)[-1])
+    for candidate in candidates:
+        try:
+            owner = str(agent._selected_expert_for_tool(candidate) or "")  # noqa: SLF001
+        except Exception:  # noqa: BLE001
+            continue
+        if not owner:
+            continue
+        try:
+            parent = str(agent._parent_route_for_child(owner) or "")  # noqa: SLF001
+        except Exception:  # noqa: BLE001
+            parent = ""
+        return parent or owner, owner
+    return "", ""
+
+
+def _emit_live_tool_route_context(app: "FastAPI", sid: str, tool_name: str) -> None:
+    """Emit route/handoff context immediately before a live tool call."""
+
+    public_agent, owner = _agent_tool_owner(app, tool_name)
+    if not public_agent or public_agent in {"chat", "none"}:
+        return
+    _append_live_assistant_part_once(
+        app,
+        sid,
+        f"route:{public_agent}",
+        Part(
+            id=f"live_route_{public_agent}",
+            type="routing_decision",
+            selected_agent=public_agent,
+            rationale=f"Agent planner selected {public_agent} for tool {tool_name}.",
+            confidence=0.0,
+            heuristic=False,
+            metadata={
+                "route_source": "live_tool_observer",
+                "route_reason": f"Resolved from live tool owner {owner}.",
+                "stream_source": "live",
+            },
+            execution_path=f"orchestrator -> {public_agent}",
+        ),
+    )
+    if owner and owner != public_agent:
+        row = {
+            "agent_id": owner,
+            "parent_id": public_agent,
+            "dispatch_target": owner,
+            "status": "running",
+            "stage": "tool.started",
+            "delegation_lifecycle": "sync",
+            "execution_mode": "tool",
+            "depth": 1,
+            "output_summary": f"Preparing {tool_name}.",
+        }
+        _append_live_assistant_part_once(
+            app,
+            sid,
+            f"handoff:{public_agent}:{owner}",
+            Part(
+                id=f"live_handoff_{public_agent}_{owner}",
+                type="expert_handoff",
+                text=_expert_handoff_summary(row),
+                metadata={**row, "stream_source": "live", "route_source": "live_tool_observer"},
+            ),
+        )
+
+
 def _make_tool_observer(app: "FastAPI"):
     """Build a callable suitable for MCPToolBridge.tool_observer.
 
@@ -5172,6 +6020,24 @@ def _make_tool_observer(app: "FastAPI"):
             _OBSERVER_CALL_IDS.value = call_id
             # Stamp the start time so completion can compute duration.
             _OBSERVER_CALL_T0.value = time.time()
+            _emit_live_tool_route_context(app, sid, name)
+            _emit_semantic_event(
+                app,
+                sid,
+                "tool.call.started",
+                turn_id=_ACTIVE_GACT_TURN_ID.get(),
+                trace_id=_ACTIVE_GACT_TRACE_ID.get(),
+                status="running",
+                summary=f"Tool {name} started.",
+                actor={"tool": name},
+                subject={"call_id": call_id},
+                payload={
+                    "call_id": call_id,
+                    "tool": name,
+                    "args": dict(args),
+                    "telemetry_source": "live_observer",
+                },
+            )
             app.state.bus.publish(
                 Event(
                     type="tool.call.started",
@@ -5183,6 +6049,18 @@ def _make_tool_observer(app: "FastAPI"):
                         "telemetry_source": "live_observer",
                     },
                 )
+            )
+            _append_live_assistant_part(
+                app,
+                sid,
+                Part(
+                    id=f"live_{call_id}_call",
+                    type="tool_call",
+                    call_id=call_id,
+                    tool_name=name,
+                    input=dict(args),
+                    metadata={"stream_source": "live", "telemetry_source": "live_observer"},
+                ),
             )
         elif phase == "completed":
             call_id = getattr(_OBSERVER_CALL_IDS, "value", "") or ""
@@ -5213,12 +6091,50 @@ def _make_tool_observer(app: "FastAPI"):
                 **({"error": completion_error} if completion_error else {}),
                 **cancellation_metadata,
             }
+            _emit_semantic_event(
+                app,
+                sid,
+                "tool.call.completed",
+                turn_id=_ACTIVE_GACT_TURN_ID.get(),
+                trace_id=_ACTIVE_GACT_TRACE_ID.get(),
+                status="completed" if ok else "failed",
+                summary=f"Tool {name} {'completed' if ok else 'failed'}.",
+                actor={"tool": name},
+                subject={"call_id": call_id},
+                payload=payload,
+            )
             app.state.bus.publish(
                 Event(
                     type="tool.call.completed",
                     session_id=sid,
                     payload=payload,
                 )
+            )
+            result_text = completion_error or "completed"
+            _append_live_assistant_part(
+                app,
+                sid,
+                Part(
+                    id=f"live_{call_id}_result",
+                    type="tool_result",
+                    call_id=call_id,
+                    tool_name=name,
+                    is_error=not ok,
+                    duration_ms=duration_ms,
+                    cached=False,
+                    content=[
+                        Part(
+                            id=f"live_{call_id}_result_text",
+                            type="text",
+                            text=result_text,
+                        )
+                    ],
+                    metadata={
+                        "stream_source": "live",
+                        "telemetry_source": "live_observer",
+                        **cancellation_metadata,
+                    },
+                ),
             )
             # Append to the per-session ledger so the turn handler
             # finds it post-forward and attaches to the assistant
@@ -7351,6 +8267,18 @@ def build_app(
     # CLIO-BBBBBBBBBB13: per-session pub/sub. POST /messages
     # publishes; /v1/sessions/{sid}/events subscribers consume.
     app.state.bus = EventBus()
+    app.state.semantic_trace_detail_level = os.environ.get(
+        "CLIO_SEMANTIC_TRACE_DETAIL",
+        DEFAULT_DETAIL_LEVEL,
+    ).strip() or DEFAULT_DETAIL_LEVEL
+    app.state.semantic_trace_backend = build_trace_backend(
+        session_store_path.parent / "semantic_traces"
+    )
+    app.state.semantic_event_sink = SemanticEventSink(
+        bus=app.state.bus,
+        trace_backend=app.state.semantic_trace_backend,
+        detail_level=app.state.semantic_trace_detail_level,
+    )
     # CLIO-BBBBBBBBBB14: message log keyed by session_id. Populated by
     # POST /messages, read by GET /messages, and backed by per-session
     # JSON ledgers so adapter deletion/redeploy preserves transcripts.
@@ -7424,6 +8352,12 @@ def build_app(
     # tools_called metadata even when the underlying expert
     # didn't populate ``pred.tools_called`` itself.
     app.state.tool_call_ledger = {}
+    # In-flight assistant message/parts emitted from real runtime
+    # boundaries before the final assistant message is persisted. This
+    # lets SSE clients show tool calls and delegations as they happen.
+    app.state.live_assistant_message_ids = {}
+    app.state.live_assistant_parts = {}
+    app.state.live_assistant_part_keys = {}
 
     # iowarp/clio-agent#7 + #2: install process-global hooks on the
     # MCPToolBridge so EVERY expert's tool call routes through our
@@ -7455,16 +8389,31 @@ def build_app(
     # nothing's currently wired so the test-side hook stays.
     try:
         from clio_agent.runtime.hooks import (
-            HookRegistry,
-            install_global_registry,
+            _registry as _current_registry,
         )
         from clio_agent.runtime.hooks import (
-            _registry as _current_registry,
+            build_hook_registry,
+            install_global_registry,
         )
 
         if _current_registry is None:
-            install_global_registry(HookRegistry())
+            registry = build_hook_registry()
+            install_global_registry(registry)
+            app.state.runtime_hook_registry_metadata = (
+                registry.metadata() if hasattr(registry, "metadata") else {}
+            )
+        else:
+            app.state.runtime_hook_registry_metadata = (
+                _current_registry.metadata()
+                if hasattr(_current_registry, "metadata")
+                else {}
+            )
     except Exception:  # pragma: no cover - defensive
+        app.state.runtime_hook_registry_metadata = {
+            "backend": "unavailable",
+            "enabled": False,
+            "error": "failed_to_initialize",
+        }
         pass
 
     # CLIO-BBBBBBBBBB-D: live LM config — what the TUI configured
@@ -7739,6 +8688,23 @@ def build_app(
                 x_clio_user_questions=True,
                 x_clio_retry_attempts=True,
                 x_clio_context_frames=True,
+                x_clio_semantic_events=True,
+                x_clio_semantic_trace_backend=getattr(
+                    app.state.semantic_trace_backend,
+                    "name",
+                    "",
+                ),
+                x_clio_semantic_trace_detail=app.state.semantic_trace_detail_level,
+                x_clio_hook_backend=str(
+                    (getattr(app.state, "runtime_hook_registry_metadata", {}) or {}).get(
+                        "backend", ""
+                    )
+                ),
+                x_clio_hook_events=dict(
+                    (getattr(app.state, "runtime_hook_registry_metadata", {}) or {}).get(
+                        "handler_counts", {}
+                    )
+                ),
                 x_clio_capability_gaps=_capability_gap_metadata(),
             ),
             transports=TransportFlags(events_sse=True, events_websocket=False),
@@ -9757,6 +10723,21 @@ def build_app(
             "created_at": datetime.now(timezone.utc).isoformat(),
         }
         app.state.command_audit.append(row)
+        event_status = status if status in {"completed", "failed", "denied"} else "completed"
+        _emit_semantic_event(
+            app,
+            sid,
+            f"command.invocation.{event_status}",
+            status=event_status,
+            summary=f"Command {cmd_id} {event_status}.",
+            actor={"caller_type": caller_type, "caller_agent_id": caller_agent_id},
+            subject={
+                "command": cmd_id,
+                "command_audit_id": row["id"],
+                "command_source": row["command_source"],
+            },
+            payload=row,
+        )
         return row
 
     @app.get("/v1/commands")
@@ -10121,6 +11102,20 @@ def build_app(
             cost_usd=0.0,
             stop_reason="end_turn",
             metadata={"synthetic": "command_result", "command": cmd_id},
+        )
+        _emit_semantic_event(
+            app,
+            sid,
+            "command.invocation.completed",
+            status="completed",
+            summary=f"Built-in command {cmd_id} completed.",
+            actor={"caller_type": "user"},
+            subject={"command": cmd_id, "message_id": sys_msg.id},
+            payload={
+                "command": cmd_id,
+                "result": body_text,
+                "command_source": str(command_meta.get("source") or ""),
+            },
         )
         _append_session_message(app, sid, sys_msg)
         app.state.bus.publish(
@@ -11609,6 +12604,17 @@ def build_app(
             },
         }
         app.state.memory_events.setdefault(sid, []).append(memory_event)
+        _emit_semantic_event(
+            app,
+            sid,
+            "memory.compacted",
+            turn_id=_ACTIVE_GACT_TURN_ID.get(),
+            trace_id=_ACTIVE_GACT_TRACE_ID.get(),
+            summary="Session transcript was compacted into memory.",
+            actor={"role": "runtime", "component": "memory"},
+            subject={"memory_event_id": event_id},
+            payload=memory_event,
+        )
 
         # Publish so any open SSE stream redraws.
         app.state.bus.publish(

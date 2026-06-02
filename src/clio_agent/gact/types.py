@@ -100,6 +100,11 @@ class CapabilityFlags(BaseModel):
     x_clio_user_questions: bool = False
     x_clio_retry_attempts: bool = False
     x_clio_context_frames: bool = False
+    x_clio_semantic_events: bool = False
+    x_clio_semantic_trace_backend: str = ""
+    x_clio_semantic_trace_detail: str = ""
+    x_clio_hook_backend: str = ""
+    x_clio_hook_events: dict[str, Any] = Field(default_factory=dict)
     x_clio_capability_gaps: dict[str, dict[str, Any]] = Field(default_factory=dict)
 
 
@@ -468,6 +473,17 @@ class Part(BaseModel):
     # are user-neutral per CLAUDE.md Rule 3 (no DSPy terms in user-
     # facing payload).
     execution_path: str = ""
+
+    # tool_call / tool_result. CLIO emits these as live SSE parts when
+    # MCP tools start/finish so clients can show progress before the
+    # final assistant message metadata is attached.
+    call_id: str = ""
+    tool_name: str = ""
+    input: dict[str, Any] = Field(default_factory=dict)
+    content: list["Part"] = Field(default_factory=list)
+    is_error: bool = False
+    cached: bool = False
+    duration_ms: float = 0.0
 
     # file_diff (BBB21 + #4): a proposed edit awaiting apply/reject.
     # ``new_content`` (when present) is what the apply path writes

@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from clio_agent.gact.app import build_app
+from clio_agent.gact.app import _make_tool_observer, build_app
 
 
 @dataclass
@@ -65,6 +65,16 @@ class _LiveObservedWithPosthocTraceAgent:
                 }
             ]
         )
+
+
+class _ToolRoutingAgent:
+    def _selected_expert_for_tool(self, tool_name: str) -> str:
+        assert tool_name == "NdpSearchDatasets"
+        return "ndp_catalog"
+
+    def _parent_route_for_child(self, expert_id: str) -> str:
+        assert expert_id == "ndp_catalog"
+        return "data"
 
 
 @pytest.fixture()
@@ -148,3 +158,29 @@ def test_live_observer_upgrades_matching_posthoc_trace_metadata(tmp_path: Path) 
     assert tools_called[0]["telemetry_source"] == "live_observer"
     assert tools_called[0]["duration_ms"] != 999.0
     assert tools_called[0]["cached"] is False
+
+
+def test_live_tool_observer_emits_route_context_before_tool_part(tmp_path: Path) -> None:
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_ToolRoutingAgent())
+    client = TestClient(app)
+    sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
+    observer = _make_tool_observer(app)
+
+    observer("NdpSearchDatasets", {"search_terms": "seismic"}, "started", None)
+
+    history = app.state.bus._history.get(sid, [])
+    added_parts = [
+        e.payload["part"]
+        for e in history
+        if e.type == "message.part.added"
+    ]
+    assert [p["type"] for p in added_parts] == [
+        "routing_decision",
+        "expert_handoff",
+        "tool_call",
+    ]
+    assert added_parts[0]["selected_agent"] == "data"
+    assert added_parts[0]["execution_path"] == "orchestrator -> data"
+    assert added_parts[1]["metadata"]["agent_id"] == "ndp_catalog"
+    assert added_parts[1]["metadata"]["parent_id"] == "data"
+    assert added_parts[2]["tool_name"] == "NdpSearchDatasets"

@@ -539,6 +539,16 @@ def test_turn_can_opt_into_cross_session_memory_context(tmp_path: Path) -> None:
     assert assistant["metadata"]["memory_search"]["hits"][0]["cross_session"] is True
     events = client.app.state.bus._history.get(sid_current, [])
     assert "memory.search.completed" in [event.type for event in events]
+    semantic = [
+        event.payload
+        for event in events
+        if event.type == "semantic.event"
+        and event.payload["event_type"] == "memory.search.completed"
+    ]
+    assert semantic
+    assert semantic[-1]["payload"]["include_cross_session"] is True
+    assert semantic[-1]["payload"]["hit_count"] == 1
+    assert semantic[-1]["payload"]["hits"][0]["cross_session"] is True
 
 
 def test_memory_tool_search_same_workspace_requires_and_records_user_intent(

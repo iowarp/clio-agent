@@ -9,7 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from clio_agent.gact.app import build_app
-from clio_agent.runtime.hooks import HookRegistry, install_global_registry
+from clio_agent.runtime.hooks import HookRegistry, build_hook_registry, install_global_registry
 
 
 @dataclass
@@ -143,8 +143,110 @@ def test_no_hooks_dir_is_no_op(tmp_path: Path) -> None:
     assert reg.fire("pre_tool", "x", {}) == []
 
 
+def test_hook_registry_factory_uses_configured_local_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    marker = tmp_path / "configured_hook.txt"
+    hooks_dir = _hook_dir(
+        tmp_path,
+        post_tool=f"""
+def post_tool(name, args, result=None, error=None):
+    open({str(marker)!r}, "w", encoding="utf-8").write(name)
+""",
+    )
+    monkeypatch.setenv("CLIO_HOOKS_BACKEND", "local_python")
+    monkeypatch.setenv("CLIO_HOOKS_DIR", str(hooks_dir))
+
+    reg = build_hook_registry()
+    reg.fire("post_tool", "fs_read_file", {}, result={"ok": True})
+
+    assert marker.read_text(encoding="utf-8") == "fs_read_file"
+    assert reg.metadata()["backend"] == "local_python"
+    assert reg.metadata()["handler_counts"]["post_tool"] == 1
+
+
+def test_hook_registry_factory_can_disable_hooks(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CLIO_HOOKS_BACKEND", "none")
+
+    reg = build_hook_registry()
+
+    assert reg.fire("pre_tool", "fs_read_file", {}) == []
+    assert reg.metadata()["backend"] == "none"
+    assert reg.metadata()["enabled"] is False
+
+
+def test_scoped_hooks_only_fire_for_matching_scope(tmp_path: Path) -> None:
+    marker = tmp_path / "workspace_hook.txt"
+    scoped = tmp_path / "hooks" / "workspaces" / "ws_science"
+    scoped.mkdir(parents=True)
+    (scoped / "pre_message.py").write_text(
+        f"""
+def pre_message(session_id, text):
+    open({str(marker)!r}, "w", encoding="utf-8").write(session_id + ":" + text)
+""",
+        encoding="utf-8",
+    )
+    reg = HookRegistry(hooks_dir=tmp_path / "hooks")
+
+    reg.fire(
+        "pre_message",
+        "sess_other",
+        "ignored",
+        hook_scope={"workspace_id": "ws_other", "session_id": "sess_other"},
+    )
+    assert not marker.exists()
+
+    reg.fire(
+        "pre_message",
+        "sess_science",
+        "accepted",
+        hook_scope={"workspace_id": "ws_science", "session_id": "sess_science"},
+    )
+    assert marker.read_text(encoding="utf-8") == "sess_science:accepted"
+    assert reg.metadata()["scoped_handler_counts"]["workspace_id:ws_science"] == 1
+
+
+def test_pre_hook_timeout_fails_closed(tmp_path: Path) -> None:
+    hooks_dir = _hook_dir(
+        tmp_path,
+        pre_tool="""
+import time
+
+def pre_tool(name, args):
+    time.sleep(0.2)
+""",
+    )
+    reg = HookRegistry(hooks_dir=hooks_dir, timeout_s=0.01)
+
+    with pytest.raises(PermissionError, match="exceeded timeout"):
+        reg.fire("pre_tool", "fs_read_file", {})
+
+
 def test_capability_advertised(tmp_path: Path) -> None:
     app = build_app(sessions_path=tmp_path / "s.json")
     with TestClient(app) as c:
         body = c.get("/v1/capabilities").json()
         assert body["capabilities"]["hooks"] is True
+
+
+def test_capability_reports_runtime_hook_backend(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    hooks_dir = _hook_dir(
+        tmp_path,
+        pre_tool="""
+def pre_tool(name, args):
+    return None
+""",
+    )
+    monkeypatch.setenv("CLIO_HOOKS_BACKEND", "local_python")
+    monkeypatch.setenv("CLIO_HOOKS_DIR", str(hooks_dir))
+    install_global_registry(None)
+    try:
+        app = build_app(sessions_path=tmp_path / "s.json")
+        with TestClient(app) as c:
+            body = c.get("/v1/capabilities").json()
+            assert body["capabilities"]["x_clio_hook_backend"] == "local_python"
+            assert body["capabilities"]["x_clio_hook_events"]["pre_tool"] == 1
+    finally:
+        install_global_registry(None)

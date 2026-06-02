@@ -230,6 +230,20 @@ def test_case_row_records_route_file_and_artifact_evidence(tmp_path) -> None:
         elapsed_s=2.0,
         message=message,
         provider={"provider": "claude_code", "model": "sonnet", "api_base": ""},
+        semantic_events=[
+            {
+                "event_type": "turn.started",
+                "trace_id": "trace_msg_user_1",
+                "turn_id": "msg_user_1",
+                "live_observed": True,
+            },
+            {
+                "event_type": "tool.call.completed",
+                "trace_id": "trace_msg_user_1",
+                "turn_id": "msg_user_1",
+                "live_observed": True,
+            },
+        ],
     )
 
     row = bench._case_row(result)
@@ -244,6 +258,15 @@ def test_case_row_records_route_file_and_artifact_evidence(tmp_path) -> None:
         {"from": "orchestrator", "to": "analysis", "kind": "route"},
         {"from": "analysis", "to": "visualization", "kind": "handoff"},
     ]
+    assert row["semantic_trace"] == {
+        "event_count": 2,
+        "live_event_count": 2,
+        "event_types": ["turn.started", "tool.call.completed"],
+        "unique_event_types": ["tool.call.completed", "turn.started"],
+        "trace_ids": ["trace_msg_user_1"],
+        "turn_ids": ["msg_user_1"],
+        "has_live_trace": True,
+    }
 
 
 def test_route_graph_summary_preserves_sync_delegation_returns() -> None:
@@ -685,6 +708,20 @@ def test_render_report_includes_provider_lane_audit(tmp_path) -> None:
         _result("missing_hdf5_error"),
         _result("claude_cancellation_surface"),
     ]
+    results[0].semantic_events = [
+        {
+            "event_type": "turn.started",
+            "trace_id": "trace_msg_user_1",
+            "turn_id": "msg_user_1",
+            "live_observed": True,
+        },
+        {
+            "event_type": "llm.request.started",
+            "trace_id": "trace_msg_user_1",
+            "turn_id": "msg_user_1",
+            "live_observed": True,
+        },
+    ]
 
     report = bench._render_report(results, tmp_path / "evidence.jsonl")
 
@@ -693,6 +730,9 @@ def test_render_report_includes_provider_lane_audit(tmp_path) -> None:
     assert "## Evidence Summary" in report
     assert "## Provider Lane Audit" in report
     assert "## Extended Stress Coverage Audit" in report
+    assert "Semantic trace events captured: 2 events across 1/5 cases (2 live-observed)" in report
+    assert "Semantic event types: llm.request.started, turn.started" in report
+    assert "Semantic trace: 2 events, 2 live, types=llm.request.started, turn.started" in report
     assert "documented benchmark standard" not in report
 
 

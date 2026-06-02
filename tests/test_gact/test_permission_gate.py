@@ -750,7 +750,11 @@ def test_external_mcp_call_uses_explicit_session_for_policy_and_telemetry(
 
         older_history = app.state.bus._history.get(older_sid, [])
         newer_history = app.state.bus._history.get(newer_sid, [])
-        assert [e.type for e in older_history] == [
+        assert [
+            e.type
+            for e in older_history
+            if e.type == "permission.resolved" or e.type.startswith("tool.call.")
+        ] == [
             "permission.resolved",
             "tool.call.started",
             "tool.call.completed",
@@ -796,7 +800,7 @@ def test_observer_uses_active_turn_session_over_recency(tmp_path: Path) -> None:
 
         assert app.state.bus._history.get(newer_sid, []) == []
         older_history = app.state.bus._history.get(older_sid, [])
-        assert [e.type for e in older_history] == [
+        assert [e.type for e in older_history if e.type.startswith("tool.call.")] == [
             "tool.call.started",
             "tool.call.completed",
         ]

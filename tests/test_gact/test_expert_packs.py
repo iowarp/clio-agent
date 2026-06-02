@@ -806,6 +806,27 @@ Inspect schemas.
     resumed = next(row for row in handoffs if row.get("stage") == "parent.resumed")
     assert resumed["agent_id"] == "root_review"
     assert resumed["resumed_from"] == "schema_review"
+    semantic = [
+        event.payload
+        for event in app.state.bus._history.get(sid, [])
+        if event.type == "semantic.event"
+    ]
+    semantic_types = [event["event_type"] for event in semantic]
+    assert "delegation.started" in semantic_types
+    assert "delegation.completed" in semantic_types
+    assert "delegation.parent_resumed" in semantic_types
+    completed = next(
+        event for event in semantic if event["event_type"] == "delegation.completed"
+    )
+    resumed_event = next(
+        event for event in semantic if event["event_type"] == "delegation.parent_resumed"
+    )
+    assert completed["actor"]["agent_id"] == "schema_review"
+    assert completed["subject"]["agent_id"] == "root_review"
+    assert completed["payload"]["parent_id"] == "root_review"
+    assert resumed_event["actor"]["agent_id"] == "root_review"
+    assert resumed_event["subject"]["agent_id"] == "schema_review"
+    assert resumed_event["payload"]["resumed_from"] == "schema_review"
     assert assistant["parts"][1]["type"] == "expert_handoff"
     assert assistant["parts"][1]["metadata"]["status"] == "completed"
     assert assistant["parts"][-1]["text"] == "ROOT_FINAL"

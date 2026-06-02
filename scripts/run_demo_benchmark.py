@@ -104,6 +104,7 @@ class DemoResult:
     actions: list[dict[str, Any]] = field(default_factory=list)
     benchmark_lane: str = "default"
     agent_blueprint: dict[str, Any] = field(default_factory=dict)
+    semantic_events: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def selected_agent(self) -> str:
@@ -372,6 +373,40 @@ class DemoResult:
     def route_metrics(self) -> dict[str, Any]:
         """Return route depth/fanout/tool metrics used by the report."""
         return _route_metrics(self)
+
+    @property
+    def semantic_event_types(self) -> list[str]:
+        """Return semantic event types observed for this benchmark case."""
+        return [str(row.get("event_type") or "") for row in self.semantic_events]
+
+    @property
+    def semantic_trace_summary(self) -> dict[str, Any]:
+        """Return compact semantic trace proof for machine-readable evidence rows."""
+        event_types = [event_type for event_type in self.semantic_event_types if event_type]
+        trace_ids = sorted(
+            {
+                str(row.get("trace_id") or "")
+                for row in self.semantic_events
+                if row.get("trace_id")
+            }
+        )
+        turn_ids = sorted(
+            {
+                str(row.get("turn_id") or "")
+                for row in self.semantic_events
+                if row.get("turn_id")
+            }
+        )
+        live_count = sum(1 for row in self.semantic_events if row.get("live_observed") is True)
+        return {
+            "event_count": len(self.semantic_events),
+            "live_event_count": live_count,
+            "event_types": event_types,
+            "unique_event_types": sorted(set(event_types)),
+            "trace_ids": trace_ids,
+            "turn_ids": turn_ids,
+            "has_live_trace": bool(self.semantic_events) and live_count == len(self.semantic_events),
+        }
 
 
 def _message_text(message: dict[str, Any]) -> str:
@@ -767,6 +802,50 @@ def _post_turn(
     raise TimeoutError(f"assistant turn for {user_id!r} did not settle in {timeout_s:g}s")
 
 
+def _semantic_events_for_completed_message(
+    http: httpx.Client,
+    session_id: str,
+    assistant_message_id: str,
+    *,
+    timeout_s: float = 20.0,
+) -> list[dict[str, Any]]:
+    """Replay SSE history and return semantic events for one completed turn."""
+
+    if not assistant_message_id:
+        return []
+    current_turn_events: list[dict[str, Any]] = []
+    try:
+        with httpx.stream(
+            "GET",
+            f"{http.base_url}/v1/sessions/{session_id}/events",
+            timeout=timeout_s,
+        ) as resp:
+            resp.raise_for_status()
+            for line in resp.iter_lines():
+                if not line.startswith("data: "):
+                    continue
+                try:
+                    env = json.loads(line[len("data: ") :])
+                except json.JSONDecodeError:
+                    continue
+                event_type = str(env.get("type") or "")
+                payload = env.get("payload")
+                if not isinstance(payload, dict):
+                    continue
+                if event_type == "semantic.event":
+                    current_turn_events.append(payload)
+                    continue
+                if event_type != "message.completed":
+                    continue
+                if str(payload.get("message_id") or "") == assistant_message_id:
+                    return current_turn_events
+                # This completed an older replayed turn. Keep only events after it.
+                current_turn_events = []
+    except Exception:
+        return []
+    return []
+
+
 def _turn_agent_id_for_lane(case: DemoCase, lane: str) -> str:
     """Return the per-turn agent override needed for this benchmark lane."""
 
@@ -932,6 +1011,8 @@ def _case_row(result: DemoResult) -> dict[str, Any]:
         "stop_reason": result.message.get("stop_reason"),
         "provider": result.provider,
         "agent_blueprint": result.agent_blueprint,
+        "semantic_trace": result.semantic_trace_summary,
+        "semantic_events": result.semantic_events,
         "stream_source": result.stream_source,
         "stream_fallback": result.stream_fallback,
         "routing_mode": result.case.routing_mode,
@@ -1022,6 +1103,7 @@ def _result_from_case_row(row: dict[str, Any]) -> DemoResult:
         actions=list(row.get("actions") or []),
         benchmark_lane=str(row.get("benchmark_lane") or "recorded"),
         agent_blueprint=dict(row.get("agent_blueprint") or {}),
+        semantic_events=list(row.get("semantic_events") or []),
     )
 
 
@@ -2144,6 +2226,11 @@ def run_benchmark(
                     agent_id=_turn_agent_id_for_lane(case, lane),
                 )
                 elapsed_s = time.monotonic() - started
+                semantic_events = _semantic_events_for_completed_message(
+                    http,
+                    session_id,
+                    str(message.get("id") or ""),
+                )
                 after_children = _children(http, session_id)
                 new_children = [
                     child for child in after_children if child.get("id") not in before_children
@@ -2168,6 +2255,7 @@ def run_benchmark(
                     actions=actions,
                     benchmark_lane=lane,
                     agent_blueprint=agent_blueprint,
+                    semantic_events=semantic_events,
                 )
                 results.append(result)
                 log.write(json.dumps(_case_row(result), ensure_ascii=False, default=str) + "\n")
@@ -2560,6 +2648,22 @@ def _render_report(results: list[DemoResult], output_jsonl: Path) -> str:
     verified_artifacts = [row for row in artifact_rows if row.get("exists") and row.get("size_bytes", 0) > 0]
     session_logs = [result for result in results if result.session_messages]
     child_session_logs = sum(len(result.child_session_messages) for result in results)
+    semantic_traced = [
+        result for result in results if result.semantic_trace_summary["event_count"] > 0
+    ]
+    semantic_event_count = sum(
+        int(result.semantic_trace_summary["event_count"]) for result in results
+    )
+    semantic_live_count = sum(
+        int(result.semantic_trace_summary["live_event_count"]) for result in results
+    )
+    semantic_event_types = sorted(
+        {
+            event_type
+            for result in results
+            for event_type in result.semantic_trace_summary["unique_event_types"]
+        }
+    )
     lines = [
         f"# {_lane_title(lane)}",
         "",
@@ -2624,6 +2728,15 @@ def _render_report(results: list[DemoResult], output_jsonl: Path) -> str:
             f"- Artifacts verified on disk: {len(verified_artifacts)}/{len(artifact_rows)}",
             f"- Root session logs captured: {len(session_logs)}/{len(results)}",
             f"- Child session logs captured: {child_session_logs}",
+            (
+                "- Semantic trace events captured: "
+                f"{semantic_event_count} events across {len(semantic_traced)}/{len(results)} cases "
+                f"({semantic_live_count} live-observed)"
+            ),
+            (
+                "- Semantic event types: "
+                f"{', '.join(semantic_event_types) if semantic_event_types else 'none'}"
+            ),
         ]
     )
     active_blueprints = sorted(
@@ -2733,6 +2846,12 @@ def _render_report(results: list[DemoResult], output_jsonl: Path) -> str:
                     f"sync_handoffs={result.route_metrics.get('sync_handoff_count', 0)}, "
                     f"child_sessions={result.route_metrics.get('child_session_branch_count', 0)}, "
                     f"tools={result.route_metrics['tool_call_count']}"
+                ),
+                (
+                    "Semantic trace: "
+                    f"{result.semantic_trace_summary['event_count']} events, "
+                    f"{result.semantic_trace_summary['live_event_count']} live, "
+                    f"types={', '.join(result.semantic_trace_summary['unique_event_types']) or 'none'}"
                 ),
                 f"Expert handoffs: {handoff_text}",
                 f"Tools: {tool_text}",
