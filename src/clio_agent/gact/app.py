@@ -8712,6 +8712,7 @@ def build_app(
                 subagents=True,  # BBB25 — nanoagent subsessions + subagent.* events
                 session_export=True,  # #16 — /v1/sessions/{sid}/export + import
                 session_summary=True,  # POST /v1/sessions/{sid}/summarize — user-facing TLDR
+                attachments_upload=True,  # POST /v1/sessions/{sid}/attachments — base64 byte upload
                 mcp=True,  # #13 — /v1/mcp/servers exposes the gateway namespaces
                 providers=True,  # #15 — /v1/providers catalogs the LM presets
                 commands=True,  # #14 — /v1/commands + dispatch
@@ -10241,6 +10242,276 @@ def build_app(
             "last_modified": body.get("last_modified") or "",
             "size": int(body.get("size") or 0),
             "language": body.get("language") or "",
+        }
+        bucket = app.state.context_files.setdefault(sid, {})
+        bucket[row["path"]] = row
+        _flush_context_files(app)
+        app.state.bus.publish(
+            Event(
+                type="context.file.added",
+                session_id=sid,
+                payload={"session_id": sid, "file": row},
+            )
+        )
+        return row
+
+    @app.post("/v1/sessions/{sid}/attachments")
+    async def upload_attachment(sid: str, request: Request) -> dict[str, Any]:
+        """Upload a file's BYTES into the session workspace and register
+        it as a context file so the agent reads it next turn.
+
+        Body (JSON, base64 — NOT multipart): ``{file: <base64>, filename,
+        mime_type?, mode?}``. base64-in-JSON is deliberate: the CLIO
+        Desktop transports HTTP through a Tauri/ureq bridge that only
+        forwards UTF-8 string bodies (FormData is stringified to
+        "[object FormData]"), and over an SSH tunnel the body must survive
+        that bridge — so multipart cannot work in the shipped desktop.
+
+        Bytes are written under ``{workspace_root}/.clio/attachments/{sid}/``
+        (sandboxed) and registered through the SAME context-file ledger +
+        ``context.file.added`` event as POST /context/files, so the
+        existing read path (_enrich_with_context_files) consumes them with
+        no agent-layer change. This is the only way to get a local file to
+        a REMOTE (ssh) agent — the bytes ride the tunnel and land in the
+        remote workspace."""
+
+        import base64  # noqa: PLC0415
+        import tempfile  # noqa: PLC0415
+
+        from clio_agent.gact.workspace_scope import (  # noqa: PLC0415
+            default_workspace_storage_root,
+        )
+
+        sess = app.state.sessions.get(sid)
+        if sess is None:
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="not_found",
+                        message=f"session not found: {sid}",
+                        details={"session_id": sid},
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        if not isinstance(body, dict):
+            body = {}
+
+        mode = body.get("mode") or "read"
+        if mode not in {"read", "pin"}:
+            raise HTTPException(
+                status_code=422,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="bad_request",
+                        message=f"invalid upload mode: {mode!r}; expected read or pin",
+                        details={"field": "mode", "allowed": ["read", "pin"]},
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+
+        # --- decode bytes (size-capped) ---
+        max_bytes = 25 * 1024 * 1024  # 25 MiB
+        encoded = body.get("file")
+        if not isinstance(encoded, str) or not encoded:
+            raise HTTPException(
+                status_code=422,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="bad_request",
+                        message="missing required field: file (base64 string)",
+                        details={"field": "file"},
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        # Reject obviously-oversized payloads on the ENCODED length BEFORE
+        # decoding, so a huge base64 string can never allocate ~25 MiB+ of
+        # decoded bytes just to be thrown away. base64 expands 3 bytes -> 4
+        # chars, so the smallest possible decoded size for an encoded string
+        # of length L (allowing up to 2 padding "=") is (L // 4) * 3 - 2.
+        # If even that minimum already exceeds the cap, the payload cannot
+        # possibly fit — reject without touching base64.b64decode.
+        min_decoded = (len(encoded) // 4) * 3 - 2
+        if min_decoded > max_bytes:
+            raise HTTPException(
+                status_code=413,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="payload_too_large",
+                        message=f"attachment exceeds {max_bytes} bytes",
+                        details={
+                            "max_bytes": max_bytes,
+                            "encoded_length": len(encoded),
+                            "min_decoded_size": min_decoded,
+                        },
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        try:
+            data = base64.b64decode(encoded, validate=True)
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(
+                status_code=422,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="bad_request",
+                        message=f"file is not valid base64: {type(exc).__name__}",
+                        details={"field": "file"},
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            ) from exc
+        # Safety net: even with the pre-decode guard above, re-check the
+        # actual decoded length (the estimate is a lower bound, not exact).
+        if len(data) > max_bytes:
+            raise HTTPException(
+                status_code=413,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="payload_too_large",
+                        message=f"attachment exceeds {max_bytes} bytes",
+                        details={"max_bytes": max_bytes, "size": len(data)},
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+
+        # --- sanitize the filename (THE security boundary) ---
+        # Reduce to a bare basename under BOTH posix and windows separator
+        # semantics so a remote (linux) or local (windows) clio is equally
+        # safe; reject anything that survives as a traversal token.
+        raw_name = str(body.get("filename") or "").strip()
+        candidate = raw_name.replace("\\", "/").rsplit("/", 1)[-1].strip()
+        if "\x00" in candidate or candidate in {"", ".", ".."}:
+            raise HTTPException(
+                status_code=422,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="bad_request",
+                        message=f"invalid attachment filename: {raw_name!r}",
+                        details={"field": "filename"},
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        safe_name = candidate
+
+        # --- resolve the sandboxed destination dir ---
+        workspace_id = getattr(sess, "workspace_id", "") or "ws_default"
+        ws = app.state.workspaces.get(workspace_id)
+        if ws is None:
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="not_found",
+                        message=f"workspace not found: {workspace_id}",
+                        details={"workspace_id": workspace_id},
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        root = Path(ws.root_path or os.getcwd()).expanduser().resolve()
+        base = (default_workspace_storage_root(str(root)) / "attachments" / sid).resolve()
+
+        base.mkdir(parents=True, exist_ok=True)
+        stem, suffix = Path(safe_name).stem, Path(safe_name).suffix
+
+        # Defense-in-depth: confine the destination to `base` even though the
+        # filename is already sanitized (the register step re-checks vs root).
+        # CRITICAL: this confinement check MUST complete BEFORE any byte (even
+        # a temp byte) is written to disk — do not move the write block above
+        # this guard. We validate the un-numbered candidate; the collision
+        # suffix below only appends " (N)" within the same already-confined dir.
+        try:
+            (base / safe_name).resolve(strict=False).relative_to(base)
+        except ValueError:
+            raise HTTPException(
+                status_code=403,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="path_outside_workspace",
+                        message="attachment path escapes the attachments dir",
+                        details={"filename": raw_name},
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
+            ) from None
+
+        # --- claim a collision-free destination ATOMICALLY ---
+        # Two concurrent uploads of the same filename must not both pick the
+        # same name (a non-atomic `while dest.exists()` probe would TOCTOU-race
+        # and let one overwrite the other). Claim the name by creating it with
+        # O_CREAT|O_EXCL; on EEXIST, advance the " (N)" suffix and retry. The
+        # winner owns an empty placeholder that the atomic replace then fills.
+        counter = 2
+        dest_candidate = base / safe_name
+        while True:
+            try:
+                claim_fd = os.open(
+                    str(dest_candidate), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600
+                )
+            except FileExistsError:
+                dest_candidate = base / f"{stem} ({counter}){suffix}"
+                counter += 1
+                continue
+            os.close(claim_fd)
+            dest = dest_candidate
+            break
+
+        # --- write bytes atomically (only now, after confinement passed) ---
+        # Write to a UNIQUE temp file in the SAME directory so two concurrent
+        # uploads can never share a deterministic ".tmp" name and clobber each
+        # other's bytes mid-write; os.replace then atomically swaps the temp
+        # over the placeholder we claimed above. The temp file is unlinked on
+        # every error path so a failed write never leaks a stray ".tmp".
+        tmp_fd, tmp_name = tempfile.mkstemp(
+            dir=str(base), prefix=f".{stem}.", suffix=f"{suffix}.tmp"
+        )
+        tmp_path = Path(tmp_name)
+        try:
+            with os.fdopen(tmp_fd, "wb") as fh:
+                fh.write(data)
+                fh.flush()
+                os.fsync(fh.fileno())
+            os.replace(tmp_path, dest)
+        except BaseException:
+            for stray in (tmp_path, dest):
+                try:
+                    stray.unlink()
+                except FileNotFoundError:
+                    pass
+            raise
+
+        # --- register through the existing context-file ledger ---
+        # Use os.path.relpath rather than Path.relative_to: on Windows a deep
+        # path makes Path.resolve() emit the "\\?\" extended-length prefix on
+        # one side but not the other, so relative_to() spuriously raises. Both
+        # dest and root point inside the same already-confined tree, so a plain
+        # string-level relpath is correct and prefix-agnostic.
+        rel = os.path.relpath(str(dest), str(root))
+        resolved_info = _resolve_context_attachment_path(
+            sess=sess,
+            raw_path=str(rel),
+            requested_workspace_id=workspace_id,
+        )
+        row = {
+            **resolved_info,
+            "mode": mode,
+            "added_at": datetime.now(timezone.utc).isoformat(),
+            "last_modified": "",
+            "size": dest.stat().st_size,
+            "language": "",
+            "uploaded": True,
         }
         bucket = app.state.context_files.setdefault(sid, {})
         bucket[row["path"]] = row
