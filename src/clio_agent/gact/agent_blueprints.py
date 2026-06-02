@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -31,6 +32,56 @@ from clio_agent.tools.catalog import TOOL_CATALOG
 
 _BLUEPRINT_ROOT_NAME = "AGENT.md"
 _BLUEPRINT_ID_RE = r"^[A-Za-z0-9_.-]+$"
+_BLUEPRINT_FORMAT_V1 = "agent-blueprint-v1"
+_SUPPORTED_BLUEPRINT_FIELDS = {
+    "id",
+    "name",
+    "version",
+    "title",
+    "description",
+    "root_expert",
+    "root",
+    "default_expert",
+    "default_root_expert",
+    "blueprint",
+    "defaults",
+    "requires",
+    "compatibility",
+    "install",
+}
+_SUPPORTED_EXPERT_FIELDS = {
+    "id",
+    "name",
+    "title",
+    "description",
+    "parent_id",
+    "parent",
+    "tier",
+    "specialization",
+    "keywords",
+    "tags",
+    "tools",
+    "allowed_tools",
+    "allowed-tools",
+    "skills",
+    "commands",
+    "capability_refs",
+    "capabilities",
+    "prompt_id",
+    "prompt_profile",
+    "profile",
+    "provider",
+    "default_provider",
+    "model",
+    "default_model",
+    "parameters",
+    "enabled",
+    "fallback_tier",
+    "model_fallback",
+    "delegation_policy",
+    "metadata_route_type",
+    "metadata_future_model_boundary",
+}
 
 
 @dataclass
@@ -45,6 +96,7 @@ class AgentBlueprintDefinition:
     root_expert: str = ""
     enabled: bool = True
     validation_errors: list[str] = field(default_factory=list)
+    validation_warnings: list[str] = field(default_factory=list)
     defaults: dict[str, Any] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
 
@@ -125,11 +177,40 @@ def parse_agent_blueprint_root(root: Path, *, scope: str) -> AgentBlueprintDefin
     if not blueprint_id:
         blueprint_id = _fallback_expert_id(root)
         errors.append("missing required blueprint field: id")
-    elif not __import__("re").fullmatch(_BLUEPRINT_ID_RE, blueprint_id):
+    elif not re.fullmatch(_BLUEPRINT_ID_RE, blueprint_id):
         errors.append("invalid blueprint id; use letters, numbers, dots, underscores, and hyphens")
+    warnings: list[str] = []
+    raw_blueprint = meta.get("blueprint")
+    blueprint_meta = raw_blueprint if isinstance(raw_blueprint, dict) else {}
+    declared_format = str(blueprint_meta.get("format") or meta.get("format") or "").strip()
+    strict_v1 = declared_format == _BLUEPRINT_FORMAT_V1
+    if raw_blueprint is not None and not isinstance(raw_blueprint, dict):
+        errors.append("blueprint field must be a mapping")
+    if declared_format and declared_format != _BLUEPRINT_FORMAT_V1:
+        errors.append(f"unsupported blueprint format: {declared_format}")
+    if not declared_format:
+        warnings.append("compatibility mode: declare blueprint.format: agent-blueprint-v1 for the 1.0 contract")
+    if strict_v1 and not str(meta.get("version") or "").strip():
+        errors.append("missing required blueprint field: version")
+    elif not str(meta.get("version") or "").strip():
+        warnings.append("missing recommended blueprint field: version")
+    if strict_v1 and not str(meta.get("title") or "").strip():
+        errors.append("missing required blueprint field: title")
+    if strict_v1 and not str(meta.get("root_expert") or meta.get("root") or meta.get("default_expert") or meta.get("default_root_expert") or "").strip():
+        errors.append("missing required blueprint field: root_expert")
+    if "root" in meta or "default_expert" in meta or "default_root_expert" in meta:
+        warnings.append("legacy root expert alias used; prefer root_expert")
     raw_defaults = meta.get("defaults")
+    if raw_defaults is not None and not isinstance(raw_defaults, dict):
+        errors.append("defaults field must be a mapping")
     defaults = raw_defaults if isinstance(raw_defaults, dict) else {}
-    requirements = meta.get("requires") if isinstance(meta.get("requires"), dict) else {}
+    raw_requires = meta.get("requires")
+    if raw_requires is not None and not isinstance(raw_requires, dict):
+        errors.append("requires field must be a mapping")
+    requirements = raw_requires if isinstance(raw_requires, dict) else {}
+    for field_name in sorted(set(meta) - _SUPPORTED_BLUEPRINT_FIELDS):
+        if not field_name.startswith("x_"):
+            warnings.append(f"unknown blueprint field ignored: {field_name}")
     install_metadata = read_install_metadata(path.parent)
     return AgentBlueprintDefinition(
         id=blueprint_id,
@@ -148,13 +229,16 @@ def parse_agent_blueprint_root(root: Path, *, scope: str) -> AgentBlueprintDefin
         ).strip(),
         enabled=not errors,
         validation_errors=errors,
+        validation_warnings=warnings,
         defaults={str(k): v for k, v in defaults.items()},
         metadata={
             "layout": "agent_blueprint",
             "body": body.strip(),
+            "format": declared_format or "compatibility",
+            "strict_v1": strict_v1,
             "compatibility": meta.get("compatibility") if isinstance(meta.get("compatibility"), dict) else {},
             "requires": requirements,
-            "blueprint": meta.get("blueprint") if isinstance(meta.get("blueprint"), dict) else {},
+            "blueprint": blueprint_meta,
             "install": install_metadata
             or (meta.get("install") if isinstance(meta.get("install"), dict) else {}),
         },
@@ -184,20 +268,35 @@ def validate_agent_blueprint_path(path: Path, *, scope: str = "session") -> dict
     blueprint = parse_agent_blueprint_root(path, scope=scope)
     mcp_descriptors = load_mcp_descriptors(blueprint.root, scope=scope, blueprint_id=blueprint.id)
     rows = _validate_agent_tool_references(
-        validate_agent_hierarchy(_load_blueprint_agents(blueprint), blueprint=blueprint),
+        _validate_blueprint_v1_agents(
+            validate_agent_hierarchy(_load_blueprint_agents(blueprint), blueprint=blueprint),
+            blueprint=blueprint,
+        ),
         mcp_descriptors=mcp_descriptors,
     )
     errors = list(blueprint.validation_errors)
+    warnings = list(blueprint.validation_warnings)
     for row in rows:
         errors.extend(f"{row.id}: {error}" for error in row.validation_errors)
+        warnings.extend(
+            f"{row.id}: {warning}"
+            for warning in row.metadata.get("validation_warnings", [])
+            if isinstance(warning, str)
+        )
     for descriptor in mcp_descriptors:
         errors.extend(f"{descriptor.get('id', 'mcp')}: {error}" for error in descriptor.get("validation_errors", []))
+        warnings.extend(
+            f"{descriptor.get('id', 'mcp')}: {warning}"
+            for warning in descriptor.get("validation_warnings", [])
+            if isinstance(warning, str)
+        )
     return {
         "agent_blueprint": blueprint.to_wire(),
         "agents": [row.model_dump(exclude_none=True) for row in rows],
         "mcp_descriptors": mcp_descriptors,
         "enabled": blueprint.enabled and not errors,
         "validation_errors": errors,
+        "validation_warnings": warnings,
     }
 
 
@@ -237,6 +336,54 @@ def validate_agent_hierarchy(
                     "agent_blueprint_scope": blueprint.scope,
                     "definition_path": str(blueprint.root_path),
                 },
+            )
+        )
+    return out
+
+
+def _validate_blueprint_v1_agents(
+    rows: list[AgentDef],
+    *,
+    blueprint: AgentBlueprintDefinition,
+) -> list[AgentDef]:
+    strict_v1 = bool(blueprint.metadata.get("strict_v1"))
+    out: list[AgentDef] = []
+    for row in rows:
+        errors = list(row.validation_errors)
+        warnings: list[str] = []
+        path_raw = str(row.metadata.get("definition_path") or row.metadata.get("expert_path") or "")
+        meta: dict[str, Any] = {}
+        if path_raw:
+            try:
+                meta, _ = _parse_frontmatter(Path(path_raw).read_text(encoding="utf-8"))
+            except OSError:
+                meta = {}
+        if strict_v1 and not str(meta.get("title") or "").strip():
+            errors.append("missing required expert field: title")
+        if strict_v1 and "tier" not in meta:
+            errors.append("missing required expert field: tier")
+        if strict_v1 and row.tier > 1 and not str(meta.get("parent_id") or meta.get("parent") or "").strip():
+            errors.append("tier > 1 experts must declare parent_id")
+        if not str(meta.get("description") or "").strip():
+            warnings.append("missing recommended expert field: description")
+        if "parent" in meta:
+            warnings.append("legacy parent alias used; prefer parent_id")
+        for field_name in sorted(set(meta) - _SUPPORTED_EXPERT_FIELDS):
+            if field_name.startswith("param_") or field_name.startswith("metadata_") or field_name.startswith("x_"):
+                continue
+            warnings.append(f"unknown expert field ignored: {field_name}")
+        if row.skills:
+            warnings.append("skills are parsed as declarations; runtime skill body loading is tracked by #512")
+        metadata = dict(row.metadata)
+        if warnings:
+            metadata["validation_warnings"] = warnings
+        out.append(
+            row.model_copy(
+                update={
+                    "metadata": metadata,
+                    "enabled": row.enabled and not errors,
+                    "validation_errors": errors,
+                }
             )
         )
     return out
@@ -345,6 +492,15 @@ def load_mcp_descriptors(
             errors.append("missing required MCP descriptor field: transport")
         if transport not in {"", "stdio", "http", "streamable-http"}:
             errors.append(f"unsupported MCP descriptor transport: {transport}")
+        if transport == "stdio" and not str(meta.get("command") or "").strip():
+            errors.append("stdio MCP descriptors require command")
+        if transport in {"http", "streamable-http"} and not str(meta.get("url") or "").strip():
+            errors.append(f"{transport} MCP descriptors require url")
+        warnings: list[str] = []
+        if transport:
+            warnings.append(
+                "MCP descriptors are disabled until explicitly enabled and trusted; install/trust semantics are tracked by #513"
+            )
         rows.append(
             {
                 "id": descriptor_id,
@@ -372,6 +528,7 @@ def load_mcp_descriptors(
                 "agent_blueprint_id": blueprint_id,
                 "definition_path": str(path),
                 "validation_errors": errors,
+                "validation_warnings": warnings,
             }
         )
     return rows
