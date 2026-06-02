@@ -8762,6 +8762,7 @@ def build_app(
                         "handler_counts", {}
                     )
                 ),
+                x_clio_files_content=True,  # GET /v1/sessions/{sid}/context/files/content
                 x_clio_capability_gaps=_capability_gap_metadata(),
             ),
             transports=TransportFlags(events_sse=True, events_websocket=False),
@@ -10524,6 +10525,331 @@ def build_app(
             )
         )
         return row
+
+    # ---- GET /v1/sessions/{sid}/context/files/content -----------------
+    # Serve the BYTES of a registered context file (or uploaded
+    # attachment) back to the client, base64-in-JSON. This is the read
+    # counterpart of POST /attachments: the CLIO Desktop transports HTTP
+    # through a Tauri/ureq bridge (and, remotely, an SSH tunnel) that only
+    # forwards UTF-8 string bodies, so raw binary cannot survive the
+    # round-trip — the bytes must ride back as base64 the same way they
+    # were uploaded. /workspaces/{wid}/files/read is text/plain-only and
+    # mangles binary; the desktop needs exact bytes for inline image/PDF
+    # previews. See gap: GACT desktop 1.0 file-content previews.
+
+    # Preview cap: keep an inline preview from streaming an unbounded
+    # blob through base64 (which inflates ~33%) into the desktop. Bounded
+    # by the file policy cap when that is stricter than the 10 MiB default.
+    _FILES_CONTENT_PREVIEW_CAP_BYTES = 10 * 1024 * 1024  # 10 MiB
+
+    # Extension → media type for the common previewable kinds. Anything
+    # not listed falls back to magic-byte sniffing, then to a text-vs-binary
+    # decode probe. Kept deliberately small and explicit (no mimetypes
+    # guessing) so the desktop sees stable, known types.
+    _FILES_CONTENT_EXT_MEDIA_TYPES: dict[str, str] = {
+        # images
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".gif": "image/gif",
+        ".webp": "image/webp",
+        ".bmp": "image/bmp",
+        ".svg": "image/svg+xml",
+        ".ico": "image/x-icon",
+        # documents
+        ".pdf": "application/pdf",
+        # text / code
+        ".txt": "text/plain; charset=utf-8",
+        ".md": "text/markdown; charset=utf-8",
+        ".markdown": "text/markdown; charset=utf-8",
+        ".rst": "text/plain; charset=utf-8",
+        ".log": "text/plain; charset=utf-8",
+        ".csv": "text/csv; charset=utf-8",
+        ".tsv": "text/tab-separated-values; charset=utf-8",
+        ".json": "application/json; charset=utf-8",
+        ".yaml": "application/yaml; charset=utf-8",
+        ".yml": "application/yaml; charset=utf-8",
+        ".toml": "application/toml; charset=utf-8",
+        ".xml": "application/xml; charset=utf-8",
+        ".html": "text/html; charset=utf-8",
+        ".htm": "text/html; charset=utf-8",
+        ".css": "text/css; charset=utf-8",
+        ".py": "text/x-python; charset=utf-8",
+        ".js": "text/javascript; charset=utf-8",
+        ".mjs": "text/javascript; charset=utf-8",
+        ".ts": "text/x-typescript; charset=utf-8",
+        ".tsx": "text/x-typescript; charset=utf-8",
+        ".jsx": "text/javascript; charset=utf-8",
+        ".go": "text/x-go; charset=utf-8",
+        ".rs": "text/x-rust; charset=utf-8",
+        ".c": "text/x-c; charset=utf-8",
+        ".h": "text/x-c; charset=utf-8",
+        ".cpp": "text/x-c++; charset=utf-8",
+        ".sh": "text/x-shellscript; charset=utf-8",
+        ".sql": "text/x-sql; charset=utf-8",
+    }
+
+    def _sniff_media_type(*, name: str, data: bytes) -> str:
+        """Best-effort media type for a context file's bytes.
+
+        Magic-byte sniffing wins for the few binary kinds we care about
+        (so a renamed ``.png`` is still served as ``image/png``), then the
+        extension map, then a UTF-8 decode probe (decodable → text/plain,
+        otherwise application/octet-stream). Magic bytes take precedence so
+        a mislabeled extension can't trick a preview into rendering binary
+        as text or vice versa.
+        """
+
+        # Magic bytes for the binary kinds the desktop previews.
+        if data[:8] == b"\x89PNG\r\n\x1a\n":
+            return "image/png"
+        if data[:3] == b"\xff\xd8\xff":
+            return "image/jpeg"
+        if data[:6] in (b"GIF87a", b"GIF89a"):
+            return "image/gif"
+        if data[:4] == b"%PDF":
+            return "application/pdf"
+        if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+            return "image/webp"
+
+        ext = Path(name).suffix.lower()
+        mapped = _FILES_CONTENT_EXT_MEDIA_TYPES.get(ext)
+        if mapped is not None:
+            return mapped
+
+        # No extension hint and no magic match: probe for decodable text.
+        try:
+            data.decode("utf-8")
+        except UnicodeDecodeError:
+            return "application/octet-stream"
+        return "text/plain; charset=utf-8"
+
+    @app.get("/v1/sessions/{sid}/context/files/content")
+    async def get_context_file_content(sid: str, path: str) -> dict[str, Any]:
+        """Return the bytes of a registered context file as base64-in-JSON.
+
+        ``path`` is the file's registered path / display_path / resolved_path
+        (whatever GET /context/files reported). The file MUST already be in
+        the session's context-file ledger — this route does not read
+        arbitrary workspace files (use /workspaces/{wid}/files/read for
+        that). Uploaded attachments are registered context files, so they
+        are served here too.
+
+        Response::
+
+            {"file": {"path", "display_path", "size", "media_type",
+                      "encoding": "base64", "data": "<base64>"}}
+
+        Always base64, symmetric with POST /attachments and safe across the
+        desktop's string-only transport bridge. Errors are the structured
+        envelope: 404 (session/file unknown or gone from disk), 403 (path
+        escapes the workspace), 413 (over the preview cap).
+        """
+
+        import base64  # noqa: PLC0415
+
+        sess = app.state.sessions.get(sid)
+        if sess is None:
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="not_found",
+                        message=f"session not found: {sid}",
+                        details={"session_id": sid},
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+
+        raw_path = (path or "").strip()
+        lookup = raw_path[1:].strip() if raw_path.startswith("@") else raw_path
+        if not lookup:
+            raise HTTPException(
+                status_code=422,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="bad_request",
+                        message="missing required query parameter: path",
+                        details={"field": "path"},
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+
+        # Look the file up in the session's context-file ledger by any of
+        # its registered keys/paths. We only ever serve registered files.
+        bucket = app.state.context_files.get(sid, {})
+        row: dict[str, Any] | None = None
+        normalized = lookup.replace("\\", "/")
+        for key, candidate in bucket.items():
+            candidate_paths = {
+                str(key),
+                str(candidate.get("path") or ""),
+                str(candidate.get("display_path") or ""),
+                str(candidate.get("resolved_path") or ""),
+            }
+            candidate_paths |= {p.replace("\\", "/") for p in candidate_paths}
+            if lookup in candidate_paths or normalized in candidate_paths:
+                row = candidate
+                break
+        if row is None:
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="not_found",
+                        message=f"context file not registered: {raw_path}",
+                        details={"session_id": sid, "path": raw_path},
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+
+        resolved_path = str(row.get("resolved_path") or "")
+        display_path = str(row.get("display_path") or row.get("path") or raw_path)
+        registered_path = str(row.get("path") or display_path)
+        workspace_id = str(row.get("workspace_id") or "")
+
+        # Re-validate confinement at read time. The row's resolved_path was
+        # confined when it was added, but re-check vs the (possibly changed)
+        # workspace root so a re-pointed workspace or a doctored ledger can't
+        # be used to read outside the root. Absolute-path context files
+        # (registered with no workspace boundary) are served as-is.
+        try:
+            resolved = Path(resolved_path).resolve(strict=False)
+        except (OSError, ValueError, RuntimeError):
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="not_found",
+                        message=f"context file not found: {raw_path}",
+                        details={"session_id": sid, "path": raw_path},
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
+            ) from None
+
+        if "\x00" in resolved_path:
+            raise HTTPException(
+                status_code=403,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="path_outside_workspace",
+                        message=f"context path is not readable: {raw_path}",
+                        details={"session_id": sid, "path": raw_path},
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+
+        ws = app.state.workspaces.get(workspace_id) if workspace_id else None
+        if ws is not None and not Path(display_path).is_absolute():
+            try:
+                root = Path(ws.root_path or os.getcwd()).expanduser().resolve()
+                resolved.relative_to(root)
+            except ValueError:
+                raise HTTPException(
+                    status_code=403,
+                    detail=ErrorEnvelope(
+                        error=ErrorInfo(
+                            error="path_outside_workspace",
+                            message=f"context path escapes workspace: {raw_path}",
+                            details={
+                                "session_id": sid,
+                                "path": raw_path,
+                                "workspace_id": workspace_id,
+                            },
+                            recoverable=False,
+                        )
+                    ).model_dump(exclude_none=True),
+                ) from None
+            except (OSError, RuntimeError):
+                raise HTTPException(
+                    status_code=404,
+                    detail=ErrorEnvelope(
+                        error=ErrorInfo(
+                            error="not_found",
+                            message=f"context file not found: {raw_path}",
+                            details={"session_id": sid, "path": raw_path},
+                            recoverable=False,
+                        )
+                    ).model_dump(exclude_none=True),
+                ) from None
+
+        if not resolved.is_file():
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="not_found",
+                        message=f"context file not found on disk: {raw_path}",
+                        details={
+                            "session_id": sid,
+                            "path": raw_path,
+                            "resolved_path": str(resolved),
+                        },
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+
+        # Size cap: take the stricter of the preview cap and the file policy.
+        max_bytes = _FILES_CONTENT_PREVIEW_CAP_BYTES
+        try:
+            from clio_agent.tools.file_policy import FileAccessPolicy  # noqa: PLC0415
+
+            policy_cap = FileAccessPolicy.from_mapping(os.environ).max_file_size_bytes
+            if policy_cap > 0:
+                max_bytes = min(max_bytes, policy_cap)
+        except Exception:  # noqa: BLE001
+            pass
+        size = resolved.stat().st_size
+        if size > max_bytes:
+            raise HTTPException(
+                status_code=413,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="payload_too_large",
+                        message=(f"context file exceeds preview cap ({size} > {max_bytes} bytes)"),
+                        details={
+                            "session_id": sid,
+                            "path": raw_path,
+                            "size": size,
+                            "max_bytes": max_bytes,
+                        },
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+
+        try:
+            data = resolved.read_bytes()
+        except OSError as exc:
+            raise HTTPException(
+                status_code=500,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="internal_error",
+                        message=f"could not read context file: {type(exc).__name__}",
+                        details={"session_id": sid, "path": raw_path},
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            ) from exc
+
+        media_type = _sniff_media_type(name=registered_path, data=data)
+        return {
+            "file": {
+                "path": registered_path,
+                "display_path": display_path,
+                "size": len(data),
+                "media_type": media_type,
+                "encoding": "base64",
+                "data": base64.b64encode(data).decode("ascii"),
+            }
+        }
 
     @app.delete("/v1/sessions/{sid}/context/files")
     async def remove_context_file(sid: str, request: Request) -> Response:
