@@ -32,7 +32,7 @@ def arc(tmp_path):
 
 @pytest.fixture
 def coordinator(arc):
-    return MultiAgentCoordinator(arc)
+    return MultiAgentCoordinator(arc, allow_legacy_keyword_planning=True)
 
 
 class TestAgentTask:
@@ -102,6 +102,14 @@ class TestCoordinationResult:
 
 class TestCreatePlan:
     """Test MultiAgentCoordinator.create_plan."""
+
+    def test_legacy_keyword_planning_disabled_by_default(self, arc):
+        """Default coordinator construction must not enable keyword planning."""
+        coordinator = MultiAgentCoordinator(arc)
+        agents = {"DataExpert": MagicMock()}
+
+        with pytest.raises(RuntimeError, match="legacy deterministic keyword planning"):
+            coordinator.create_plan("analyze HDF5 file", agents)
 
     def test_single_agent_no_coordination(self, coordinator):
         """Query without coordination keywords -> single task."""
