@@ -29,7 +29,9 @@ the XDG path automatically.
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
+import json
 import logging
 import os
 import sys
@@ -66,6 +68,22 @@ class _HookHandler:
     fn: Callable[..., Any]
     path: Path
     scope: dict[str, str] = field(default_factory=dict)
+    provenance: dict[str, Any] = field(default_factory=dict)
+
+
+class HookInvocationError(PermissionError):
+    """Permission-style hook failure that preserves invocation records."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        records: list[dict[str, Any]],
+        original: BaseException | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.records = records
+        self.original = original
 
 
 def _default_hooks_dir() -> Path:
@@ -125,8 +143,57 @@ class HookRegistry:
                 fn = getattr(module, event, None)
                 if callable(fn):
                     self._hooks[event].append(
-                        _HookHandler(fn=fn, path=path, scope=dict(scope))
+                        _HookHandler(
+                            fn=fn,
+                            path=path,
+                            scope=dict(scope),
+                            provenance=self._provenance_for_path(path, event=event, scope=scope),
+                        )
                     )
+
+    @staticmethod
+    def _checksum(path: Path) -> str:
+        try:
+            return hashlib.sha256(path.read_bytes()).hexdigest()
+        except OSError:
+            return ""
+
+    @staticmethod
+    def _metadata_sidecar(path: Path) -> Path:
+        return path.with_name(f"{path.name}.json")
+
+    def _provenance_for_path(
+        self,
+        path: Path,
+        *,
+        event: str,
+        scope: dict[str, str],
+    ) -> dict[str, Any]:
+        sidecar = self._metadata_sidecar(path)
+        metadata: dict[str, Any] = {}
+        if sidecar.is_file():
+            try:
+                raw = json.loads(sidecar.read_text(encoding="utf-8"))
+                if isinstance(raw, dict):
+                    metadata = {str(key): value for key, value in raw.items()}
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("[clio-hooks] failed to read hook metadata %s: %r", sidecar, exc)
+        provenance = {
+            "backend": self.backend_name,
+            "event": event,
+            "hook_path": str(path),
+            "installed_path": str(path),
+            "checksum": self._checksum(path),
+            "scope": dict(scope),
+        }
+        provenance.update(metadata)
+        provenance["backend"] = self.backend_name
+        provenance["event"] = event
+        provenance["hook_path"] = str(path)
+        provenance["installed_path"] = str(path)
+        provenance["checksum"] = self._checksum(path)
+        provenance["scope"] = dict(scope)
+        return provenance
 
     @staticmethod
     def _import_path(path: Path) -> Any:
@@ -154,35 +221,75 @@ class HookRegistry:
         a turn).
         """
 
+        return self.fire_with_records(event, *args, **kwargs)["results"]
+
+    def matching_handlers(
+        self,
+        event: str,
+        *,
+        hook_scope: Optional[dict[str, Any]] = None,
+        args: tuple[Any, ...] = (),
+    ) -> list[dict[str, Any]]:
+        with self._lock:
+            handlers = list(self._hooks.get(event, ()))
+        resolved_scope = dict(hook_scope or self._infer_scope(event, args))
+        return [
+            dict(handler.provenance)
+            for handler in handlers
+            if self._scope_matches(handler.scope, resolved_scope)
+        ]
+
+    def fire_with_records(self, event: str, /, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        """Invoke hooks and return structured provenance/result records."""
+
         with self._lock:
             handlers = list(self._hooks.get(event, ()))
         hook_scope = dict(kwargs.pop("hook_scope", None) or self._infer_scope(event, args))
         handlers = [
-            handler
-            for handler in handlers
-            if self._scope_matches(handler.scope, hook_scope)
+            handler for handler in handlers if self._scope_matches(handler.scope, hook_scope)
         ]
         results: list[Any] = []
+        records: list[dict[str, Any]] = []
         for handler in handlers:
+            record = {
+                **dict(handler.provenance),
+                "status": "running",
+            }
             try:
-                results.append(self._call_with_timeout(handler.fn, *args, **kwargs))
-            except PermissionError:
+                result = self._call_with_timeout(handler.fn, *args, **kwargs)
+                results.append(result)
+                record["status"] = "completed"
+                record["result_type"] = type(result).__name__
+            except PermissionError as exc:
+                record["status"] = "blocked"
+                record["error"] = str(exc)
+                records.append(record)
                 if event.startswith("post_") or event in {"on_error", "semantic_event"}:
                     logger.warning("[clio-hooks] post-event hook raised; swallowing")
                     continue
-                raise
+                raise HookInvocationError(
+                    str(exc),
+                    records=records,
+                    original=exc,
+                ) from exc
             except Exception as exc:  # noqa: BLE001
+                record["status"] = "failed"
+                record["error"] = repr(exc)
+                records.append(record)
                 if event.startswith("post_") or event in {"on_error", "semantic_event"}:
                     logger.warning(
                         "[clio-hooks] post-event hook raised %r; swallowing",
                         exc,
                     )
                     continue
-                raise PermissionError(
+                raise HookInvocationError(
                     f"hook {handler.fn.__name__!r} for {event!r} raised: "
-                    f"{exc!r}\n{traceback.format_exc(limit=3)}"
+                    f"{exc!r}\n{traceback.format_exc(limit=3)}",
+                    records=records,
+                    original=exc,
                 ) from exc
-        return results
+            records.append(record)
+        return {"results": results, "handlers": records}
 
     def _call_with_timeout(self, fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
         if self._timeout_s <= 0:
@@ -343,3 +450,30 @@ def fire(event: str, /, *args: Any, **kwargs: Any) -> list[Any]:
     if _registry is None:
         return []
     return _registry.fire(event, *args, **kwargs)
+
+
+def fire_with_records(event: str, /, *args: Any, **kwargs: Any) -> dict[str, Any]:
+    """Dispatch hooks and return provenance records for semantic traces."""
+
+    if _registry is None:
+        return {"results": [], "handlers": []}
+    dispatch = getattr(_registry, "fire_with_records", None)
+    if callable(dispatch):
+        return dispatch(event, *args, **kwargs)
+    return {"results": _registry.fire(event, *args, **kwargs), "handlers": []}
+
+
+def matching_handlers(
+    event: str,
+    *,
+    hook_scope: Optional[dict[str, Any]] = None,
+    args: tuple[Any, ...] = (),
+) -> list[dict[str, Any]]:
+    """Return handler provenance for hooks that would run for this scope."""
+
+    if _registry is None:
+        return []
+    describe = getattr(_registry, "matching_handlers", None)
+    if callable(describe):
+        return describe(event, hook_scope=hook_scope, args=args)
+    return []
