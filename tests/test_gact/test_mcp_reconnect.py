@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -37,6 +38,31 @@ def _make_fake_client(tool_names: list[str], *, fail: bool = False):
             return [_Tool(n) for n in tool_names]
 
     return _FakeClient
+
+
+def _make_hanging_client():
+    """Build a fake ``fastmcp.Client`` whose ``list_tools`` never returns.
+
+    Simulates a hung MCP server: the connection opens fine but the first
+    ``list_tools`` round-trip blocks forever, exercising the reconnect
+    route's ``asyncio.wait_for`` timeout guard (gap-523).
+    """
+
+    class _HangingClient:
+        def __init__(self, transport: object) -> None:
+            self._transport = transport
+
+        async def __aenter__(self) -> "_HangingClient":
+            return self
+
+        async def __aexit__(self, *exc: object) -> bool:
+            return False
+
+        async def list_tools(self) -> list[object]:
+            await asyncio.Event().wait()  # blocks until cancelled
+            raise AssertionError("unreachable")  # pragma: no cover
+
+    return _HangingClient
 
 
 @pytest.fixture()
@@ -138,3 +164,109 @@ def test_reconnect_http_transport(client: TestClient, monkeypatch: pytest.Monkey
     assert resp.status_code == 200, resp.text
     assert resp.json()["transport"] == "http"
     assert resp.json()["tools"] == ["remote_tool"]
+
+
+def _seed_server_with_spec(
+    client: TestClient,
+    spec: dict[str, object],
+    sid: str = "mcp_ext_test01",
+    *,
+    transport: str = "stdio",
+) -> str:
+    """Seed a registry row with an arbitrary (possibly malformed) spec."""
+
+    client.app.state.external_mcp_servers = {
+        sid: {
+            "id": sid,
+            "name": "everything",
+            "status": "error",
+            "transport": transport,
+            "tools": ["stale"],
+            "spec": spec,
+            "error": "previous failure",
+        }
+    }
+    return sid
+
+
+# --- gap-523 hardening: spec validation -----------------------------------
+
+
+def test_reconnect_stdio_spec_missing_command_returns_422(client: TestClient) -> None:
+    """A stored stdio spec with no command is a structured 4xx, not a 500."""
+
+    sid = _seed_server_with_spec(
+        client, {"transport": "stdio", "args": []}, transport="stdio"
+    )
+
+    resp = client.post(f"/v1/mcp/servers/{sid}/reconnect")
+
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["error"]["error"] == "mcp_spec_invalid"
+    assert "command" in resp.json()["error"]["message"]
+
+
+def test_reconnect_stdio_spec_blank_command_returns_422(client: TestClient) -> None:
+    """A whitespace-only command is treated as missing (still 4xx)."""
+
+    sid = _seed_server_with_spec(
+        client, {"transport": "stdio", "command": "   ", "args": []}, transport="stdio"
+    )
+
+    resp = client.post(f"/v1/mcp/servers/{sid}/reconnect")
+
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["error"]["error"] == "mcp_spec_invalid"
+
+
+def test_reconnect_http_spec_missing_url_returns_422(client: TestClient) -> None:
+    """A stored http spec with no url is a structured 4xx, not a 500."""
+
+    sid = _seed_server_with_spec(client, {"transport": "http"}, transport="http")
+
+    resp = client.post(f"/v1/mcp/servers/{sid}/reconnect")
+
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["error"]["error"] == "mcp_spec_invalid"
+    assert "url" in resp.json()["error"]["message"]
+
+
+# --- gap-523 hardening: reconnect timeout ----------------------------------
+
+
+def test_reconnect_timeout_returns_504_and_keeps_registry_intact(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A hung probe must not hang the route: it times out into a structured
+    504 (mcp_reconnect_timeout), emits mcp.server.error, and leaves the
+    registry row in a coherent error state (previous tools preserved, not
+    blanked)."""
+
+    sid = _seed_server(client, tools=["known_tool"])
+    # Tiny timeout so the hanging probe is cut short immediately.
+    monkeypatch.setenv("CLIO_GACT_MCP_RECONNECT_TIMEOUT_S", "0.2")
+    monkeypatch.setattr("fastmcp.Client", _make_hanging_client())
+
+    resp = client.post(f"/v1/mcp/servers/{sid}/reconnect")
+
+    assert resp.status_code == 504, resp.text
+    body = resp.json()
+    assert body["error"]["error"] == "mcp_reconnect_timeout"
+    assert body["error"]["details"]["timeout_s"] == pytest.approx(0.2)
+
+    # Registry row left in a coherent error state — NOT half-updated.
+    row = client.app.state.external_mcp_servers[sid]
+    assert row["status"] == "error"
+    assert "timed out" in row["error"]
+    # The previously-known tool list is preserved, not blanked by the
+    # failed probe.
+    assert row["tools"] == ["known_tool"]
+
+    # SSE clients learn about the failure via a global status event.
+    history = client.app.state.bus._history.get("", [])
+    errors = [e for e in history if e.type == "mcp.server.error"]
+    assert len(errors) == 1
+    assert errors[0].payload["server_id"] == sid
+    assert errors[0].payload["status"] == "error"
+    # No success event was emitted on the timeout path.
+    assert not any(e.type == "mcp.server.reconnected" for e in history)
