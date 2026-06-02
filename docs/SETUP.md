@@ -102,6 +102,10 @@ uv run clio-agent-gact --port 17800
 GACT_BACKEND=http://127.0.0.1:17800 ./gact
 ```
 
+Native local clients do not need browser CORS. Browser/WebView clients must
+explicitly opt in trusted origins with `CLIO_GACT_CORS_ORIGINS`; see
+`docs/GACT_BROWSER_ORIGIN_SECURITY.md`.
+
 If CLIO has no LM, the modal pops automatically:
 1. **Pick a preset** with `←/→` (OpenAI is at the top of the list).
 2. **Tab to Model** — defaults are sensible (`gpt-4o-mini`, `claude-haiku-4-5-20251001`).
