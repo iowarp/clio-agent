@@ -931,6 +931,27 @@ def test_active_agent_blueprint_drives_turn_runtime_and_overrides_builtin_ids(
     assert assistant["metadata"]["agent_runtime"]["agent_id"] == "data"
     assert assistant["metadata"]["agent_runtime"]["source"] == "expert_pack"
     assert assistant["metadata"]["agent_runtime"]["pack"]["id"] == "remote-data"
+    provenance = assistant["metadata"]["runtime_provenance"]
+    assert provenance["schema_version"] == "clio.runtime_provenance.v1"
+    assert provenance["turn"]["user_message_id"].startswith("msg_user_")
+    assert provenance["turn"]["assistant_message_id"] == assistant["id"]
+    assert provenance["workspace"]["workspace_id"] == wid
+    assert provenance["workspace"]["root_path"] == str(workspace)
+    assert provenance["blueprint"]["id"] == "remote-data"
+    assert provenance["agent"]["runtime"]["agent_id"] == "data"
+    assert provenance["agent"]["expert"]["id"] == "data"
+    assert provenance["agent"]["expert"]["tier"] == 1
+    assert set(provenance["provider"]) >= {
+        "provider_id",
+        "model_id",
+        "provider_source",
+        "model_source",
+        "fallback_to_global",
+    }
+    assert provenance["prompt"]["source"] == "agent_definition"
+    assert provenance["tools"]["declared"] == []
+    assert provenance["delegation"]["events"] == []
+    assert provenance["memory"]["policy"]["default_scope"] == "session"
 
 
 def test_agent_blueprint_mcp_descriptor_installs_disabled(tmp_path: Path) -> None:

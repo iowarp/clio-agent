@@ -2299,6 +2299,201 @@ def _dynamic_agent_runtime_provenance(
     return payload
 
 
+def _runtime_workspace_provenance(app: "FastAPI", sess: Any) -> dict[str, Any]:
+    """Return non-secret workspace/storage scope provenance for one turn."""
+
+    workspace_id = str(getattr(sess, "workspace_id", "") or "")
+    ws = app.state.workspaces.get(workspace_id) if workspace_id else None
+    storage_root = resolve_workspace_storage_root(ws) if ws is not None else None
+    return {
+        "workspace_id": workspace_id,
+        "root_path": str(getattr(ws, "root_path", "") or ""),
+        "storage_root": str(storage_root or ""),
+        "scope": "global" if workspace_id == GLOBAL_WORKSPACE_ID else "workspace",
+    }
+
+
+def _mcp_tool_runtime_provenance(
+    app: "FastAPI",
+    declared_tools: list[str],
+) -> list[dict[str, Any]]:
+    """Return enabled MCP provenance for declared tools used by a dynamic expert."""
+
+    requested = {str(tool).strip() for tool in declared_tools if str(tool).strip()}
+    if not requested:
+        return []
+    rows: list[dict[str, Any]] = []
+    for server_id, info in (getattr(app.state, "external_mcp_servers", {}) or {}).items():
+        if not isinstance(info, Mapping):
+            continue
+        matched = []
+        for tool in info.get("tools") or []:
+            if not isinstance(tool, Mapping):
+                continue
+            name = str(tool.get("name") or tool.get("id") or "").strip()
+            if name in requested:
+                matched.append(
+                    {
+                        "id": str(tool.get("id") or name),
+                        "name": name,
+                        "status": str(tool.get("status") or ""),
+                        "enabled": bool(tool.get("enabled")),
+                    }
+                )
+        if not matched:
+            continue
+        rows.append(
+            {
+                "server_id": str(server_id),
+                "descriptor_id": str(info.get("descriptor_id") or ""),
+                "agent_blueprint_id": str(info.get("agent_blueprint_id") or ""),
+                "status": str(info.get("status") or ""),
+                "transport": str(info.get("transport") or ""),
+                "tools": matched,
+                "trust": dict(info.get("trust") or {}),
+                "install": dict(info.get("install") or {}),
+                "runtime": dict(info.get("runtime") or {}),
+                "env_policy": dict(info.get("env_policy") or {}),
+                "verification": dict(info.get("verification") or {}),
+            }
+        )
+    return rows
+
+
+def _turn_runtime_provenance(
+    app: "FastAPI",
+    sess: Any,
+    *,
+    turn_id: str,
+    trace_id: str,
+    user_message_id: str,
+    assistant_message_id: str,
+    selected_agent: str,
+    route_source: str,
+    route_reason: str,
+    agent_runtime: Mapping[str, Any],
+    active_agent_def: "AgentDef | None",
+    prompt_resolution: Mapping[str, Any],
+    expert_handoffs: list[dict[str, Any]],
+    tools_called: list[dict[str, Any]],
+    context_file_provenance: Mapping[str, Any],
+    memory_search_metadata: Mapping[str, Any],
+    error_info: Optional[ErrorInfo],
+) -> dict[str, Any]:
+    """Assemble the benchmark-facing provenance contract for one assistant turn."""
+
+    declared_tools_source = (
+        active_agent_def.tools
+        if active_agent_def is not None
+        else agent_runtime.get("tools", [])
+    )
+    declared_tools = [str(tool) for tool in declared_tools_source if str(tool).strip()]
+    declared_skills = (
+        list(active_agent_def.skills)
+        if active_agent_def is not None
+        else list(agent_runtime.get("skills", []))
+    )
+    declared_commands = (
+        list(active_agent_def.commands)
+        if active_agent_def is not None
+        else list(agent_runtime.get("commands", []))
+    )
+    prompt_payload = dict(agent_runtime.get("prompt") or {})
+    if active_agent_def is not None:
+        prompt_payload.setdefault("id", active_agent_def.prompt_id)
+        prompt_payload.setdefault("profile", active_agent_def.prompt_profile)
+    expert_payload = {
+        "id": str(getattr(active_agent_def, "id", "") or agent_runtime.get("agent_id") or selected_agent),
+        "source": str(getattr(active_agent_def, "source", "") or agent_runtime.get("source") or ""),
+        "title": str(getattr(active_agent_def, "title", "") or agent_runtime.get("title") or ""),
+        "tier": getattr(active_agent_def, "tier", 0) if active_agent_def is not None else 0,
+        "parent_id": str(getattr(active_agent_def, "parent_id", "") or agent_runtime.get("parent_id") or ""),
+        "execution_mode": str(agent_runtime.get("execution_mode") or ""),
+    }
+    observed_tool_names = [
+        str(row.get("name") or row.get("tool") or "")
+        for row in tools_called
+        if isinstance(row, Mapping) and str(row.get("name") or row.get("tool") or "").strip()
+    ]
+    delegation_events = [
+        {
+            "stage": str(row.get("stage") or ""),
+            "status": str(row.get("status") or ""),
+            "agent_id": str(row.get("agent_id") or row.get("delegate_to") or ""),
+            "parent_id": str(row.get("parent_id") or ""),
+            "return_to": str(row.get("return_to") or ""),
+            "delegation_lifecycle": str(row.get("delegation_lifecycle") or ""),
+            "depth": int(row.get("depth") or 0),
+            "execution_mode": str(row.get("execution_mode") or ""),
+            "duration_ms": row.get("duration_ms", 0),
+        }
+        for row in expert_handoffs
+        if isinstance(row, Mapping)
+    ]
+    memory_policy = {
+        "default_scope": "session",
+        "workspace_policy": "same_workspace_requires_explicit_intent",
+        "global_policy": "global_requires_explicit_scope",
+        "search_performed": bool(memory_search_metadata),
+    }
+    payload: dict[str, Any] = {
+        "schema_version": "clio.runtime_provenance.v1",
+        "turn": {
+            "turn_id": turn_id,
+            "trace_id": trace_id,
+            "user_message_id": user_message_id,
+            "assistant_message_id": assistant_message_id,
+        },
+        "workspace": _runtime_workspace_provenance(app, sess),
+        "agent": {
+            "selected_agent": selected_agent,
+            "route_source": route_source,
+            "route_reason": route_reason,
+            "expert": expert_payload,
+            "runtime": dict(agent_runtime),
+        },
+        "blueprint": dict(agent_runtime.get("agent_blueprint") or {}),
+        "provider": dict(agent_runtime.get("model") or {}),
+        "prompt": {
+            **prompt_payload,
+            "resolution": dict(prompt_resolution),
+        },
+        "tools": {
+            "declared": declared_tools,
+            "observed": observed_tool_names,
+            "calls": list(tools_called),
+            "mcp": _mcp_tool_runtime_provenance(app, declared_tools),
+        },
+        "commands": {
+            "declared": declared_commands,
+            "observed": [],
+        },
+        "skills": {
+            "declared": declared_skills,
+            "resolved": list(agent_runtime.get("resolved_skills", [])),
+            "resolution": dict(agent_runtime.get("skill_resolution") or {}),
+        },
+        "delegation": {
+            "lifecycle": "sync" if delegation_events else "",
+            "events": delegation_events,
+        },
+        "memory": {
+            "policy": memory_policy,
+            "search": dict(memory_search_metadata),
+        },
+        "context": {
+            "files": dict(context_file_provenance),
+        },
+        "artifacts": [],
+        "errors": (
+            [error_info.model_dump(exclude_none=True)]
+            if error_info is not None
+            else []
+        ),
+    }
+    return payload
+
+
 def _delegated_expert_agent_id(row: Mapping[str, Any]) -> str:
     """Return the requested delegated expert id from a handoff row."""
 
@@ -3009,6 +3204,7 @@ async def _run_turn_in_background(
     rationale = ""
     route_source = ""
     route_reason = ""
+    invocation_agent_id = "orchestrator"
     auto_routed_agent: "AgentDef | None" = None
     agent_runtime: dict[str, Any] = {}
     dynamic_agent_used: "AgentDef | None" = None
@@ -4582,6 +4778,26 @@ async def _run_turn_in_background(
     live_ids = getattr(app.state, "live_assistant_message_ids", {}) or {}
     live_assistant_msg_id = str(live_ids.get(sid) or "")
     asst_id = streamed_assistant_msg_id or live_assistant_msg_id or _new_message_id("asst")
+    runtime_provenance = _turn_runtime_provenance(
+        app,
+        sess,
+        turn_id=turn_id,
+        trace_id=trace_id,
+        user_message_id=user_msg.id,
+        assistant_message_id=asst_id,
+        selected_agent=selected_agent or invocation_agent_id,
+        route_source=route_source,
+        route_reason=route_reason,
+        agent_runtime=agent_runtime,
+        active_agent_def=dynamic_agent_used,
+        prompt_resolution=prompt_resolution,
+        expert_handoffs=expert_handoffs,
+        tools_called=tools_called,
+        context_file_provenance=context_file_provenance,
+        memory_search_metadata=memory_search_metadata,
+        error_info=error_info,
+    )
+    assistant_metadata["runtime_provenance"] = runtime_provenance
     if streamed_assistant_part_id is not None and answer_text:
         # Replace the routing/text/diff parts list's text part
         # with a stub carrying the streamed part_id, so the final
