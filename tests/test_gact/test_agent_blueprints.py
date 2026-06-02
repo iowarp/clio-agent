@@ -129,6 +129,87 @@ def test_validate_agent_blueprint_markdown_root(tmp_path: Path) -> None:
     assert rows["root"]["tier"] == 1
     assert rows["variant"]["parent_id"] == "root"
     assert rows["variant"]["tools"] == ["memory_search_sessions"]
+    assert any("compatibility mode" in warning for warning in body["validation_warnings"])
+
+
+def test_agent_blueprint_v1_contract_rejects_missing_required_manifest_fields(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "broken"
+    (root / "experts").mkdir(parents=True)
+    root.joinpath("AGENT.md").write_text(
+        """---
+id: broken
+blueprint:
+  format: agent-blueprint-v1
+---
+Broken v1 agent.
+""",
+        encoding="utf-8",
+    )
+    root.joinpath("experts", "root.md").write_text(
+        """---
+id: root
+tier: 1
+---
+Coordinate work.
+""",
+        encoding="utf-8",
+    )
+
+    body = validate_agent_blueprint_path(root)
+
+    assert body["enabled"] is False
+    errors = "\n".join(body["validation_errors"])
+    assert "missing required blueprint field: version" in errors
+    assert "missing required blueprint field: title" in errors
+    assert "missing required blueprint field: root_expert" in errors
+    assert "root: missing required expert field: title" in errors
+
+
+def test_agent_blueprint_v1_contract_reports_unknown_fields_and_skill_gap(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "agent"
+    (root / "experts").mkdir(parents=True)
+    root.joinpath("AGENT.md").write_text(
+        """---
+id: agent
+version: 1.0.0
+title: Contract Agent
+root_expert: root
+blueprint:
+  format: agent-blueprint-v1
+surprise: ignored
+---
+Contract agent.
+""",
+        encoding="utf-8",
+    )
+    root.joinpath("experts", "root.md").write_text(
+        """---
+id: root
+title: Root
+description: Root expert.
+tier: 1
+skills:
+  - pack.local.skill
+unexpected_field: ignored
+---
+Coordinate work.
+""",
+        encoding="utf-8",
+    )
+
+    body = validate_agent_blueprint_path(root)
+
+    assert body["enabled"] is True
+    warnings = "\n".join(body["validation_warnings"])
+    assert "unknown blueprint field ignored: surprise" in warnings
+    assert "root: unknown expert field ignored: unexpected_field" in warnings
+    assert "root: skills are parsed as declarations" in warnings
+    rows = {row["id"]: row for row in body["agents"]}
+    assert "validation_warnings" in rows["root"]["metadata"]
 
 
 def test_agent_blueprint_activation_replaces_default_agent_graph(tmp_path: Path) -> None:
@@ -745,6 +826,39 @@ EarthScope descriptor.
     assert descriptor["enabled"] is False
     assert descriptor["status"] == "disabled"
     assert descriptor["transport"] == "stdio"
+    assert any("disabled until explicitly enabled" in warning for warning in descriptor["validation_warnings"])
+
+
+def test_agent_blueprint_mcp_descriptor_validates_transport_requirements(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "marketplace" / "earth"
+    _write_blueprint(root, blueprint_id="earth")
+    (root / "tools").mkdir()
+    root.joinpath("tools", "stdio.md").write_text(
+        """---
+id: local
+transport: stdio
+---
+Missing command.
+""",
+        encoding="utf-8",
+    )
+    root.joinpath("tools", "http.md").write_text(
+        """---
+id: remote
+transport: streamable-http
+---
+Missing URL.
+""",
+        encoding="utf-8",
+    )
+
+    body = validate_agent_blueprint_path(root)
+
+    errors = "\n".join(body["validation_errors"])
+    assert "local: stdio MCP descriptors require command" in errors
+    assert "remote: streamable-http MCP descriptors require url" in errors
 
 
 def test_agent_blueprint_mcp_tool_references_require_enablement(tmp_path: Path) -> None:
