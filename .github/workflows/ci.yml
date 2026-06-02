@@ -15,7 +15,7 @@ jobs:
         with:
           version: "latest"
       - run: uv sync --extra dev --extra optimizers
-      - run: uv run ruff check src/ tests/ scripts/create_demo_data.py
+      - run: uv run ruff check src/ tests/ scripts/create_demo_data.py scripts/validate_marketplace_blueprints.py
       - run: bash -n scripts/homelab-env.sh
       - run: uv run mypy src/
       # Coverage floor lowered to 70 as the v0.5 merge brought in
