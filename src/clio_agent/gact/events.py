@@ -146,6 +146,18 @@ class EventBus:
         # any global event and e.g. provider-change toasts never fire.
         global_bucket = session_id != ""
         if global_bucket:
+            # NOTE: this fan-in inflates len(self._subs[""]) by the number of
+            # live per-session streams, i.e. subscriber_count("") no longer
+            # counts *only* clients that subscribed to the global stream
+            # directly. That is deliberate and verified safe: no production
+            # path reads the global subscriber count. The only reader of
+            # subscriber_count() is tests/test_gact/test_sse.py (real session
+            # ids, never ""); /v1/health (app.py health()) and /v1/metrics
+            # (app.py metrics()) never touch the bus; and publish() reads a
+            # bucket only to fan events out, which is exactly the behaviour we
+            # want here. If a real "directly-subscribed global clients" gauge
+            # is ever needed, track those separately rather than reusing this
+            # bucket's length.
             self._subs[""].append(q)
         try:
             # Replay the buffered tail first. This matters for the
@@ -188,8 +200,15 @@ class EventBus:
                     del self._subs[""]
 
     def subscriber_count(self, session_id: str) -> int:
-        """How many SSE clients are currently attached to ``session_id``.
-        Useful for /v1/health diagnostics + tests."""
+        """How many subscriber queues are currently attached to ``session_id``.
+
+        Used by tests today; no production endpoint calls it. Beware: for
+        ``session_id == ""`` this returns real-global subscribers PLUS every
+        per-session stream (which fan their queue into the global bucket so
+        they receive global events — see ``subscribe``). So it is a fan-out
+        cardinality, not a "global clients" count. Pass a concrete session id
+        for an accurate per-session client count.
+        """
 
         return len(self._subs.get(session_id, []))
 
