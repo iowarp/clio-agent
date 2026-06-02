@@ -23,6 +23,15 @@ class _FakeARC:
 
 def _write_workspace_pack(root: Path, *, pack_id: str, marker: str) -> None:
     pack = root / ".clio" / "agent-blueprints" / pack_id
+    _write_pack_at(pack, pack_id=pack_id, marker=marker)
+
+
+def _write_global_pack(config_root: Path, *, pack_id: str, marker: str) -> None:
+    pack = config_root / "agent-blueprints" / pack_id
+    _write_pack_at(pack, pack_id=pack_id, marker=marker)
+
+
+def _write_pack_at(pack: Path, *, pack_id: str, marker: str) -> None:
     (pack / "experts").mkdir(parents=True)
     pack.joinpath("AGENT.md").write_text(
         f"""---
@@ -64,6 +73,15 @@ tools:
 
 def _write_workspace_command(root: Path, *, name: str, marker: str) -> None:
     command_dir = root / ".clio" / "commands"
+    _write_command_at(command_dir, name=name, marker=marker)
+
+
+def _write_global_command(config_root: Path, *, name: str, marker: str) -> None:
+    command_dir = config_root / "commands"
+    _write_command_at(command_dir, name=name, marker=marker)
+
+
+def _write_command_at(command_dir: Path, *, name: str, marker: str) -> None:
     command_dir.mkdir(parents=True)
     command_dir.joinpath(f"{name}.md").write_text(
         f"""---
@@ -101,19 +119,28 @@ def _add_text_message(
     )
 
 
-def test_workspace_local_blueprints_commands_and_memory_do_not_leak(
+def test_workspace_local_global_blueprints_commands_and_memory_do_not_leak(
     tmp_path: Path,
+    monkeypatch: Any,
 ) -> None:
     """Pre-benchmark proof for local/global workspace scoping semantics."""
+
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(home / ".config"))
 
     ws_a_root = tmp_path / "workspace-a"
     ws_b_root = tmp_path / "workspace-b"
     ws_a_root.mkdir()
     ws_b_root.mkdir()
+    global_root = home / ".config" / "clio-agent"
     _write_workspace_pack(ws_a_root, pack_id="shared-agent", marker="WORKSPACE_A")
     _write_workspace_pack(ws_b_root, pack_id="shared-agent", marker="WORKSPACE_B")
+    _write_global_pack(global_root, pack_id="global-agent", marker="GLOBAL")
     _write_workspace_command(ws_a_root, name="shared-command", marker="WORKSPACE_A")
     _write_workspace_command(ws_b_root, name="shared-command", marker="WORKSPACE_B")
+    _write_global_command(global_root, name="global-command", marker="GLOBAL")
 
     app = build_app(sessions_path=tmp_path / "sessions.json", arc=_FakeARC())
     with TestClient(app) as client:
@@ -145,6 +172,10 @@ def test_workspace_local_blueprints_commands_and_memory_do_not_leak(
             "/v1/sessions",
             json={"title": "B current", "workspace_id": ws_b},
         ).json()["id"]
+        sid_global = client.app.state.sessions.create(
+            title="Global reference",
+            workspace_id="ws_global",
+        ).id
 
         assert client.post(
             f"/v1/sessions/{sid_a}/agent-blueprint",
@@ -163,12 +194,16 @@ def test_workspace_local_blueprints_commands_and_memory_do_not_leak(
         commands_b = client.get("/v1/commands", params={"workspace_id": ws_b}).json()[
             "commands"
         ]
+        commands_default = client.get("/v1/commands", params={"workspace_id": ws_a}).json()[
+            "commands"
+        ]
         listed_a = client.get("/v1/agent-blueprints", params={"workspace_id": ws_a}).json()[
             "agent_blueprints"
         ]
         listed_b = client.get("/v1/agent-blueprints", params={"workspace_id": ws_b}).json()[
             "agent_blueprints"
         ]
+        listed_global = client.get("/v1/agent-blueprints").json()["agent_blueprints"]
 
         _add_text_message(
             client,
@@ -183,6 +218,13 @@ def test_workspace_local_blueprints_commands_and_memory_do_not_leak(
             message_id="msg_b",
             text="Workspace B pressure dataset beta must not leak into workspace A.",
             created_at="2026-05-26T12:00:00+00:00",
+        )
+        _add_text_message(
+            client,
+            sid_global,
+            message_id="msg_global",
+            text="Global pressure dataset gamma requires explicit global scope.",
+            created_at="2026-05-27T12:00:00+00:00",
         )
         memory_a = client.get(
             "/v1/memory/search",
@@ -203,6 +245,14 @@ def test_workspace_local_blueprints_commands_and_memory_do_not_leak(
                 "include_cross_session": "true",
             },
         )
+        global_with_intent = client.post(
+            f"/v1/sessions/{sid_a}/memory/tools/search-sessions",
+            json={
+                "query": "pressure dataset",
+                "scope": "global",
+                "limit": 10,
+            },
+        )
 
     agents_a = {row["id"]: row for row in prompts_a}
     agents_b = {row["id"]: row for row in prompts_b}
@@ -213,16 +263,25 @@ def test_workspace_local_blueprints_commands_and_memory_do_not_leak(
 
     blueprint_a = next(row for row in listed_a if row["id"] == "shared-agent")
     blueprint_b = next(row for row in listed_b if row["id"] == "shared-agent")
+    global_blueprint_a = next(row for row in listed_a if row["id"] == "global-agent")
+    global_blueprint_b = next(row for row in listed_b if row["id"] == "global-agent")
+    global_blueprint_default = next(row for row in listed_global if row["id"] == "global-agent")
     assert blueprint_a["definition_path"].startswith(str(ws_a_root))
     assert blueprint_b["definition_path"].startswith(str(ws_b_root))
+    assert global_blueprint_a["scope"] == "global"
+    assert global_blueprint_b["scope"] == "global"
+    assert global_blueprint_default["definition_path"].startswith(str(global_root))
 
     command_a = next(row for row in commands_a if row["id"] == "/shared-command")
     command_b = next(row for row in commands_b if row["id"] == "/shared-command")
+    global_command_a = next(row for row in commands_default if row["id"] == "/global-command")
     assert command_a["source"] == "user"
     assert command_b["source"] == "user"
     assert command_a["command_path"].startswith(str(ws_a_root))
     assert command_b["command_path"].startswith(str(ws_b_root))
     assert command_a["command_path"] != command_b["command_path"]
+    assert global_command_a["command_path"].startswith(str(global_root))
+    assert global_command_a["command_source"] == "clio_user"
 
     assert memory_a.status_code == 200, memory_a.text
     memory_body = memory_a.json()
@@ -235,3 +294,10 @@ def test_workspace_local_blueprints_commands_and_memory_do_not_leak(
     denied = denied_b_from_a.json()["error"]
     assert denied["error"] == "permission_error"
     assert denied["details"]["scope"] == "other_workspace"
+
+    assert global_with_intent.status_code == 200, global_with_intent.text
+    global_body = global_with_intent.json()
+    assert global_body["metadata"]["workspace_scope"] == "global"
+    assert global_body["metadata"]["policy_decision"] == "allow_global_user_intent"
+    assert global_body["searched_sessions"] == [sid_global]
+    assert {hit["session_id"] for hit in global_body["hits"]} == {sid_global}

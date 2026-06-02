@@ -81,11 +81,14 @@ scope contract that the final benchmark depends on:
 
 - two distinct workspace roots,
 - overlapping local Agent Blueprint IDs,
+- global Agent Blueprint visibility alongside workspace-local overrides,
 - overlapping local command IDs,
+- global command visibility alongside workspace-local command files,
 - session-local Agent Blueprint activation,
 - per-workspace command file resolution,
 - same-workspace cross-session memory search with explicit intent,
-- denied other-workspace memory search.
+- denied other-workspace memory search,
+- explicit global memory search through the agent-facing memory tool.
 
 This is backend/API proof. The final real-provider benchmark still needs to show
 the same policy decisions in session logs and runtime provenance when an agent
