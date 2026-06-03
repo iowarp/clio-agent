@@ -13,8 +13,10 @@ import json
 import os
 import re
 import sys
+import threading
 import time
 from dataclasses import dataclass, field, replace
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -942,6 +944,143 @@ def _semantic_events_for_completed_message(
     except Exception:
         return []
     return []
+
+
+def _parse_event_time(value: object) -> datetime | None:
+    """Parse a GACT event timestamp, returning None for malformed rows."""
+
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _compact_event_agent(payload: dict[str, Any]) -> str:
+    """Return the most useful agent/expert label in a semantic payload."""
+
+    actor = payload.get("actor") if isinstance(payload.get("actor"), dict) else {}
+    subject = payload.get("subject") if isinstance(payload.get("subject"), dict) else {}
+    for row in (actor, subject, payload):
+        for key in ("agent_id", "agent", "expert_id", "tool", "message_id"):
+            value = row.get(key) if isinstance(row, dict) else None
+            if isinstance(value, str) and value:
+                return value
+    return ""
+
+
+def _format_live_event_line(envelope: dict[str, Any]) -> str:
+    """Format one SSE envelope as compact operator-facing benchmark output."""
+
+    event_type = str(envelope.get("type") or "")
+    payload = envelope.get("payload")
+    payload = payload if isinstance(payload, dict) else {}
+    if event_type in {"server.connected", "server.heartbeat"}:
+        return ""
+    if event_type == "semantic.event":
+        semantic_type = str(payload.get("event_type") or "semantic.event")
+        status = str(payload.get("status") or "").strip()
+        summary = str(payload.get("summary") or "").strip()
+        agent = _compact_event_agent(payload)
+        bits = [f"semantic {semantic_type}"]
+        if agent:
+            bits.append(f"agent={agent}")
+        if status and status != "completed":
+            bits.append(f"status={status}")
+        if summary:
+            bits.append(summary)
+        return " | ".join(bits)
+    if event_type.startswith("message."):
+        message_id = str(payload.get("message_id") or payload.get("id") or "")
+        status = str(payload.get("status") or payload.get("stop_reason") or "")
+        bits = [event_type]
+        if message_id:
+            bits.append(f"message={message_id}")
+        if status:
+            bits.append(f"status={status}")
+        return " | ".join(bits)
+    if event_type.startswith("tool.call."):
+        tool = str(payload.get("tool") or payload.get("name") or "")
+        ok = payload.get("ok")
+        bits = [event_type]
+        if tool:
+            bits.append(f"tool={tool}")
+        if ok is not None:
+            bits.append(f"ok={bool(ok)}")
+        return " | ".join(bits)
+    if event_type.startswith(("lm.provider.", "mcp.server.", "session.")):
+        summary = str(payload.get("message") or payload.get("status") or "").strip()
+        return f"{event_type}{' | ' + summary if summary else ''}"
+    if event_type.endswith(".failed") or event_type.endswith(".error"):
+        message = str(payload.get("message") or payload.get("error") or "").strip()
+        return f"{event_type}{' | ' + message if message else ''}"
+    return ""
+
+
+class _LiveEventWatch:
+    """Background SSE watcher used only for manual benchmark operation."""
+
+    def __init__(
+        self,
+        base_url: str,
+        session_id: str,
+        *,
+        enabled: bool,
+        prefix: str = "    live",
+    ) -> None:
+        self.base_url = base_url.rstrip("/")
+        self.session_id = session_id
+        self.enabled = enabled
+        self.prefix = prefix
+        self.started_at = datetime.now(timezone.utc)
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def __enter__(self) -> "_LiveEventWatch":
+        if not self.enabled:
+            return self
+        self._thread = threading.Thread(target=self._run, name="clio-benchmark-sse-watch")
+        self._thread.daemon = True
+        self._thread.start()
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=2.0)
+
+    def _run(self) -> None:
+        try:
+            with httpx.stream(
+                "GET",
+                f"{self.base_url}/v1/sessions/{self.session_id}/events",
+                timeout=None,
+            ) as resp:
+                resp.raise_for_status()
+                for line in resp.iter_lines():
+                    if self._stop.is_set():
+                        return
+                    if not line.startswith("data: "):
+                        continue
+                    try:
+                        envelope = json.loads(line[len("data: ") :])
+                    except json.JSONDecodeError:
+                        continue
+                    event_time = _parse_event_time(envelope.get("occurred_at"))
+                    if event_time is not None and event_time < self.started_at:
+                        continue
+                    formatted = _format_live_event_line(envelope)
+                    if formatted:
+                        print(f"{self.prefix} {formatted}", flush=True)
+                    if str(envelope.get("type") or "") == "message.completed":
+                        return
+        except Exception as exc:  # noqa: BLE001
+            if not self._stop.is_set():
+                print(f"{self.prefix} watch_error | {type(exc).__name__}: {exc}", flush=True)
 
 
 def _turn_agent_id_for_lane(case: DemoCase, lane: str) -> str:
@@ -2346,6 +2485,7 @@ def run_benchmark(
     lane: str = "real_orchestrator",
     case_ids: tuple[str, ...] = (),
     marketplace_source: str = "",
+    watch_events: bool = False,
 ) -> int:
     """Run demo cases and write JSONL plus a markdown report."""
     manifest = create_benchmark_data(data_dir)
@@ -2411,14 +2551,15 @@ def run_benchmark(
                     )
                 provider = _provider(http)
                 started = time.monotonic()
-                message = _post_turn(
-                    http,
-                    session_id,
-                    case.prompt,
-                    timeout_s=case.timeout_s,
-                    cancel_after_s=case.cancel_after_s,
-                    agent_id=_turn_agent_id_for_lane(case, lane),
-                )
+                with _LiveEventWatch(base_url, session_id, enabled=watch_events):
+                    message = _post_turn(
+                        http,
+                        session_id,
+                        case.prompt,
+                        timeout_s=case.timeout_s,
+                        cancel_after_s=case.cancel_after_s,
+                        agent_id=_turn_agent_id_for_lane(case, lane),
+                    )
                 elapsed_s = time.monotonic() - started
                 semantic_events = _semantic_events_for_completed_message(
                     http,
@@ -3473,6 +3614,14 @@ def main() -> None:
         default=os.environ.get("CLIO_MARKETPLACE_SOURCE", ""),
         help="Path or git URL for marketplace Agent Blueprints used by marketplace lanes.",
     )
+    parser.add_argument(
+        "--watch-events",
+        action="store_true",
+        help=(
+            "Print a compact live SSE trace while each benchmark turn is running. "
+            "Intended for manual/demo-readiness operation, not CI."
+        ),
+    )
     args = parser.parse_args()
     if args.render_existing_jsonl is not None:
         existing = [path.resolve() for path in args.render_existing_jsonl]
@@ -3509,6 +3658,7 @@ def main() -> None:
             lane=args.lane,
             case_ids=tuple(args.case),
             marketplace_source=args.marketplace_source,
+            watch_events=args.watch_events,
         )
     )
 
