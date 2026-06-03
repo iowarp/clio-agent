@@ -1632,6 +1632,91 @@ def test_tool_agent_empty_answer_without_observation_still_fails(
         module.forward(question="inspect source", session_id="sess_test")
 
 
+def test_tool_agent_invalid_tool_selection_emits_semantic_event(
+    monkeypatch: pytest.MonkeyPatch,
+    isolated_env: Path,
+) -> None:
+    import dspy
+
+    from clio_agent.gact.app import (
+        _ACTIVE_GACT_APP,
+        _ACTIVE_GACT_SESSION_ID,
+        _ACTIVE_GACT_TRACE_ID,
+        _ACTIVE_GACT_TURN_ID,
+        _build_tool_user_agent_module,
+    )
+
+    class FakeReact:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            self.extract = SimpleNamespace(predict=lambda *a, **k: None)
+
+        def __call__(self, *args: Any, **kwargs: Any) -> Any:
+            raise ValueError(
+                "Failed to parse field next_tool_name with value shell_bash. "
+                "'shell_bash' is not one of ('genomics_summarize_vcf', 'finish')"
+            )
+
+    monkeypatch.setattr(dspy, "ReAct", FakeReact)
+    monkeypatch.setattr(dspy, "context", lambda **kwargs: nullcontext())
+    monkeypatch.setattr("clio_agent.config.create_lm", lambda config: object())
+    monkeypatch.setattr("clio_agent.config.create_chat_adapter", lambda config: object())
+
+    app = build_app()
+    base_agent = SimpleNamespace(
+        tool_executor=SimpleNamespace(
+            to_dspy_tools=lambda: [SimpleNamespace(name="genomics_summarize_vcf")]
+        )
+    )
+    agent_def = AgentDef(
+        id="variant_impact",
+        source="expert_pack",
+        title="Variant Impact",
+        parent_id="genomics",
+        tier=3,
+        tools=["genomics_summarize_vcf"],
+        default_provider="alcf",
+        default_model="metis",
+    )
+
+    app_token = _ACTIVE_GACT_APP.set(app)
+    session_token = _ACTIVE_GACT_SESSION_ID.set("sess_invalid_tool")
+    turn_token = _ACTIVE_GACT_TURN_ID.set("msg_invalid_tool")
+    trace_token = _ACTIVE_GACT_TRACE_ID.set("trace_msg_invalid_tool")
+    try:
+        module = _build_tool_user_agent_module(base_agent, agent_def)
+        with pytest.raises(ValueError, match="shell_bash"):
+            module.forward(question="summarize variants", session_id="sess_invalid_tool")
+    finally:
+        _ACTIVE_GACT_TRACE_ID.reset(trace_token)
+        _ACTIVE_GACT_TURN_ID.reset(turn_token)
+        _ACTIVE_GACT_SESSION_ID.reset(session_token)
+        _ACTIVE_GACT_APP.reset(app_token)
+
+    history = app.state.bus._history["sess_invalid_tool"]
+    direct = [event for event in history if event.type == "tool.selection.invalid"]
+    semantic = [
+        event
+        for event in history
+        if event.type == "semantic.event"
+        and event.payload.get("event_type") == "tool.selection.invalid"
+    ]
+
+    assert len(direct) == 1
+    assert len(semantic) == 1
+    assert direct[0].payload["agent_id"] == "variant_impact"
+    assert direct[0].payload["requested_tool"] == "shell_bash"
+    assert direct[0].payload["allowed_tools"] == ["genomics_summarize_vcf"]
+    assert direct[0].payload["tool_executed"] is False
+    assert direct[0].payload["trace_id"] == "trace_msg_invalid_tool"
+
+    assert semantic[0].payload["status"] == "failed"
+    assert semantic[0].payload["trace_id"] == "trace_msg_invalid_tool"
+    assert semantic[0].payload["actor"]["agent_id"] == "variant_impact"
+    assert semantic[0].payload["payload"]["requested_tool"] == "shell_bash"
+    assert semantic[0].payload["payload"]["tool_executed"] is False
+    assert not any(event.type == "tool.call.started" for event in history)
+
+
 def test_current_expert_continuation_policy_executes_declared_child(
     isolated_env: Path,
     tmp_path: Path,

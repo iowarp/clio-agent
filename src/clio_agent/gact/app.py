@@ -3519,6 +3519,102 @@ def _dynamic_agent_tools(base_agent: Any, agent_def: "AgentDef") -> list[Any]:
     return [available_tools[name] for name in requested_tools]
 
 
+def _tool_names(tools: Iterable[Any]) -> list[str]:
+    """Return stable tool names from DSPy tool-like objects."""
+    names: list[str] = []
+    for tool in tools:
+        name = str(getattr(tool, "name", "") or "").strip()
+        if name:
+            names.append(name)
+    return names
+
+
+def _invalid_tool_selection_from_exception(
+    exc: BaseException,
+    *,
+    allowed_tools: Iterable[str],
+) -> str:
+    """Extract a rejected tool name from DSPy parser/validation errors."""
+    allowed = {str(name).strip() for name in allowed_tools if str(name).strip()}
+    message = str(exc)
+    candidates: list[str] = []
+    for pattern in (
+        r"next_tool_name\s+with\s+value\s+[`'\"]?([^`'\"\s,\)]+)",
+        r"tool_name\s+with\s+value\s+[`'\"]?([^`'\"\s,\)]+)",
+        r"[`'\"]([^`'\"]+)[`'\"]\s+is\s+not\s+one\s+of\s+\(",
+        r"invalid\s+tool\s+[`'\"]?([^`'\"\s,\)]+)",
+    ):
+        candidates.extend(
+            match.group(1).strip() for match in re.finditer(pattern, message, re.I)
+        )
+    for candidate in candidates:
+        candidate = candidate.rstrip(".,;:")
+        if candidate and candidate not in allowed:
+            return candidate
+    return ""
+
+
+def _emit_invalid_tool_selection_event(
+    app: Any,
+    sid: str,
+    agent_def: "AgentDef",
+    *,
+    requested_tool: str,
+    allowed_tools: Iterable[str],
+    exc: BaseException,
+) -> None:
+    """Publish blocked invalid-tool selection evidence for live and durable traces."""
+    allowed = sorted({str(name).strip() for name in allowed_tools if str(name).strip()})
+    payload = {
+        "agent_id": agent_def.id,
+        "agent_title": agent_def.title,
+        "requested_tool": requested_tool,
+        "allowed_tools": allowed,
+        "tool_executed": False,
+        "recovery_status": "failed",
+        "error_type": type(exc).__name__,
+        "error_message": str(exc)[:1000],
+    }
+    summary = (
+        f"Expert {agent_def.id!r} selected unavailable tool {requested_tool!r}; "
+        "CLIO blocked execution."
+    )
+    if hasattr(getattr(app, "state", None), "bus"):
+        app.state.bus.publish(
+            Event(
+                type="tool.selection.invalid",
+                session_id=sid,
+                payload={
+                    **payload,
+                    "turn_id": _active_semantic_turn_id(),
+                    "trace_id": _active_semantic_trace_id(),
+                },
+            )
+        )
+    _emit_semantic_event(
+        app,
+        sid,
+        "tool.selection.invalid",
+        turn_id=_active_semantic_turn_id(),
+        trace_id=_active_semantic_trace_id(),
+        status="failed",
+        summary=summary,
+        actor={"agent_id": agent_def.id, "role": "expert"},
+        subject={"requested_tool": requested_tool},
+        blueprint={
+            "source": agent_def.source,
+            "agent_id": agent_def.id,
+            "parent_id": agent_def.parent_id,
+            "tier": agent_def.tier,
+        },
+        provider={
+            "default_provider": agent_def.default_provider,
+            "default_model": agent_def.default_model,
+        },
+        payload=payload,
+    )
+
+
 def _tool_user_agent_max_iters(agent_def: "AgentDef") -> int:
     max_iters = _user_agent_int_param(agent_def, "max_iters", 5)
     if max_iters <= 0:
@@ -3586,14 +3682,32 @@ def _build_tool_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> Any
                         executor_work_may_continue=False,
                     )
                 )
-            with dspy.context(
-                lm=create_lm(self.config),
-                adapter=create_chat_adapter(self.config),
-            ):
-                result = self.react_agent(
-                    system_prompt=self.system_prompt,
-                    question=question,
+            try:
+                with dspy.context(
+                    lm=create_lm(self.config),
+                    adapter=create_chat_adapter(self.config),
+                ):
+                    result = self.react_agent(
+                        system_prompt=self.system_prompt,
+                        question=question,
+                    )
+            except Exception as exc:
+                app = _ACTIVE_GACT_APP.get()
+                allowed_tools = _tool_names(self.tools)
+                requested_tool = _invalid_tool_selection_from_exception(
+                    exc,
+                    allowed_tools=allowed_tools,
                 )
+                if app is not None and requested_tool:
+                    _emit_invalid_tool_selection_event(
+                        app,
+                        session_id,
+                        self.agent_def,
+                        requested_tool=requested_tool,
+                        allowed_tools=allowed_tools,
+                        exc=exc,
+                    )
+                raise
             if cancel_requested is not None and cancel_requested():
                 raise _TurnCancelled(
                     _cancelled_error_info(

@@ -319,6 +319,7 @@ def test_case_row_records_route_file_and_artifact_evidence(tmp_path) -> None:
         "trace_ids": ["trace_msg_user_1"],
         "turn_ids": ["msg_user_1"],
         "has_live_trace": True,
+        "invalid_tool_selection_count": 0,
     }
 
 
@@ -1090,6 +1091,18 @@ def test_render_report_includes_provider_lane_audit(tmp_path) -> None:
             "turn_id": "msg_user_1",
             "live_observed": True,
         },
+        {
+            "event_type": "tool.selection.invalid",
+            "trace_id": "trace_msg_user_1",
+            "turn_id": "msg_user_1",
+            "live_observed": True,
+            "payload": {
+                "agent_id": "variant_impact",
+                "requested_tool": "shell_bash",
+                "allowed_tools": ["genomics_summarize_vcf"],
+                "tool_executed": False,
+            },
+        },
     ]
 
     report = bench._render_report(results, tmp_path / "evidence.jsonl")
@@ -1099,9 +1112,16 @@ def test_render_report_includes_provider_lane_audit(tmp_path) -> None:
     assert "## Evidence Summary" in report
     assert "## Provider Lane Audit" in report
     assert "## Extended Stress Coverage Audit" in report
-    assert "Semantic trace events captured: 2 events across 1/5 cases (2 live-observed)" in report
-    assert "Semantic event types: llm.request.started, turn.started" in report
-    assert "Semantic trace: 2 events, 2 live, types=llm.request.started, turn.started" in report
+    assert "Semantic trace events captured: 3 events across 1/5 cases (3 live-observed)" in report
+    assert "Semantic event types: llm.request.started, tool.selection.invalid, turn.started" in report
+    assert (
+        "Invalid tool selections blocked: 1 "
+        "(workflow_hdf5_overview:variant_impact->shell_bash)"
+    ) in report
+    assert (
+        "Semantic trace: 3 events, 3 live, "
+        "types=llm.request.started, tool.selection.invalid, turn.started"
+    ) in report
     assert "documented benchmark standard" not in report
 
 
