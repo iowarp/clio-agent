@@ -244,7 +244,7 @@ tier: 2
 prompt_id: science.root
 prompt_profile: heavy
 ---
-Inline prompt should be replaced.
+Inline prompt should be composed.
 """,
         encoding="utf-8",
     )
@@ -263,7 +263,13 @@ Inline prompt should be replaced.
             json={"session_id": sid},
         ).json()["prompt"]
 
-    assert agent["system_prompt"] == "Use the science pack root prompt."
+    assert agent["system_prompt"] == "\n\n".join(
+        (
+            "Use the science pack root prompt.",
+            "Agent-specific instructions from this definition:",
+            "Inline prompt should be composed.",
+        )
+    )
     assert agent["default_provider"] == "openai"
     assert agent["default_model"] == "gpt-5.1"
     assert agent["metadata"]["prompt_resolution"]["scope"] == "session_pack"
@@ -340,7 +346,7 @@ def test_user_agent_runtime_uses_resolved_prompt_profile(
             json={
                 "id": "reviewer",
                 "title": "Reviewer",
-                "system_prompt": "This inline prompt should be overridden.",
+                "system_prompt": "This inline prompt should be composed.",
                 "metadata": {
                     "prompt_id": "clio.reviewer",
                     "prompt_profile": "light",
@@ -358,13 +364,25 @@ def test_user_agent_runtime_uses_resolved_prompt_profile(
         ).json()["id"]
         assistant = complete_turn(c, sid, "review this")
 
-    assert catalog_agent["system_prompt"] == "Use the external reviewer prompt."
+    assert catalog_agent["system_prompt"] == "\n\n".join(
+        (
+            "Use the external reviewer prompt.",
+            "Agent-specific instructions from this definition:",
+            "This inline prompt should be composed.",
+        )
+    )
     assert catalog_agent["default_provider"] == "openai"
     assert catalog_agent["default_model"] == "gpt-5-mini"
     assert catalog_agent["metadata"]["prompt_resolution"]["status"] == "resolved"
     assert listed_agents["reviewer"]["metadata"]["prompt_resolution"]["id"] == "clio.reviewer"
     assert seen["question"] == "review this"
-    assert seen["system_prompt"] == "Use the external reviewer prompt."
+    assert seen["system_prompt"] == "\n\n".join(
+        (
+            "Use the external reviewer prompt.",
+            "Agent-specific instructions from this definition:",
+            "This inline prompt should be composed.",
+        )
+    )
     assert seen["provider"] == "openai"
     assert seen["model"] == "gpt-5-mini"
     resolution = seen["metadata"]["prompt_resolution"]
