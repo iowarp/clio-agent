@@ -160,6 +160,28 @@ def test_select_semantic_regression_lane_cases() -> None:
     )
 
 
+def test_select_marketplace_agents_lane_cases() -> None:
+    cases = [
+        bench.DemoCase(
+            case_id=case_id,
+            title=case_id,
+            category="test",
+            prompt="prompt",
+            why="why",
+            expected="expected",
+            session_group="test",
+        )
+        for case_id in bench._BENCHMARK_LANES["marketplace_agents"]
+    ]
+
+    selected, missing = bench._select_cases(cases, lane="marketplace_agents", case_ids=())
+
+    assert missing == []
+    assert [case.case_id for case in selected] == list(
+        bench._BENCHMARK_LANES["marketplace_agents"]
+    )
+
+
 def test_real_orchestrator_is_run_benchmark_default_lane() -> None:
     assert bench.run_benchmark.__kwdefaults__["lane"] == "real_orchestrator"
 
@@ -1774,6 +1796,9 @@ def test_marketplace_canonical_cases_require_nonseismic_complex_hierarchy() -> N
     }
     materials = cases["marketplace_materials_crystal_review"]
     proteomics = cases["marketplace_proteomics_mzml_review"]
+    hpc = cases["marketplace_hpc_io_regression"]
+    format_bridge = cases["marketplace_format_bridge_integrity"]
+    terrain = cases["marketplace_terrain_pointcloud_suitability"]
 
     assert materials.min_expert_depth == bench._MARKETPLACE_COMPLEX_MIN_EXPERT_DEPTH
     assert materials.min_branch_count == bench._MARKETPLACE_COMPLEX_MIN_BRANCH_COUNT
@@ -1786,6 +1811,23 @@ def test_marketplace_canonical_cases_require_nonseismic_complex_hierarchy() -> N
     assert proteomics.expected_handoff_agents == (
         "mass_spec",
         "spectra_quality",
+    )
+    assert hpc.min_expert_depth == bench._MARKETPLACE_COMPLEX_MIN_EXPERT_DEPTH
+    assert hpc.min_branch_count == bench._MARKETPLACE_COMPLEX_MIN_BRANCH_COUNT
+    assert hpc.expected_handoff_agents == ("trace_ingest", "regression_diff")
+    assert format_bridge.min_expert_depth == bench._MARKETPLACE_COMPLEX_MIN_EXPERT_DEPTH
+    assert format_bridge.min_branch_count == bench._MARKETPLACE_COMPLEX_MIN_BRANCH_COUNT
+    assert format_bridge.expected_handoff_agents == (
+        "source_inspect",
+        "conversion_policy",
+        "integrity",
+    )
+    assert terrain.min_expert_depth == bench._MARKETPLACE_COMPLEX_MIN_EXPERT_DEPTH
+    assert terrain.min_branch_count == bench._MARKETPLACE_COMPLEX_MIN_BRANCH_COUNT
+    assert terrain.expected_handoff_agents == (
+        "terrain_derivation",
+        "gridding",
+        "suitability",
     )
 
 

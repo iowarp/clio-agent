@@ -439,6 +439,142 @@ def create_mass_spec(output_dir: Path) -> dict[str, Any]:
     }
 
 
+def create_lfq(output_dir: Path) -> dict[str, Any]:
+    """Create a compact LFQ intensity matrix with known condition shifts."""
+    lfq_path = output_dir / "proteinGroups_lfq_benchmark.tsv"
+    rows = [
+        ("spike_UP_A", "SPIKEUP", "", "", 8200, 7900, 8400, 32100, 33700, 31950),
+        ("spike_UP_B", "SPIKEUPB", "", "", 6100, 6400, 6200, 24600, 25100, 23800),
+        ("stable_CTRL", "CTRL", "", "", 12000, 11800, 12150, 11950, 12250, 12050),
+        ("missing_case", "MISS", "", "", 9000, "", 8800, 14000, "", 15000),
+        ("down_shift", "DOWN", "", "", 22000, 21800, 22500, 6100, 6400, 5900),
+        ("CON__keratin", "KRT", "+", "", 40000, 41000, 40500, 39900, 40200, 40100),
+        ("REV__decoy", "DECOY", "", "+", 7000, 7100, 6900, 7100, 7200, 7050),
+    ]
+    columns = [
+        "Protein IDs",
+        "Gene names",
+        "Potential contaminant",
+        "Reverse",
+        "LFQ intensity Control_1",
+        "LFQ intensity Control_2",
+        "LFQ intensity Control_3",
+        "LFQ intensity Treatment_1",
+        "LFQ intensity Treatment_2",
+        "LFQ intensity Treatment_3",
+    ]
+    with lfq_path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle, delimiter="\t")
+        writer.writerow(columns)
+        writer.writerows(rows)
+    return {
+        "lfq_path": str(lfq_path),
+        "control_prefix": "Control",
+        "treatment_prefix": "Treatment",
+        "spike_terms": "SPIKEUP,SPIKEUPB",
+        "expected_spike_log2fc": 2.0,
+        "expected_terms": ["SPIKEUP", "DOWN", "median", "missing"],
+    }
+
+
+def create_hpc_traces(output_dir: Path) -> dict[str, Any]:
+    """Create paired Darshan-style text traces with a planted write regression."""
+    baseline_path = output_dir / "baseline_darshan.txt"
+    candidate_path = output_dir / "candidate_darshan.txt"
+    baseline_path.write_text(
+        "\n".join(
+            [
+                "# CLIO benchmark baseline Darshan-style trace",
+                "runtime: 100.0 s",
+                "nprocs: 128",
+                "POSIX 0 shared POSIX_BYTES_WRITTEN 104857600",
+                "POSIX 0 shared POSIX_BYTES_READ 52428800",
+                "POSIX 0 shared POSIX_F_WRITE_TIME 12.0",
+                "POSIX 0 shared POSIX_F_READ_TIME 4.5",
+                "POSIX 0 shared POSIX_F_META_TIME 1.2",
+                "MPIIO 0 shared MPIIO_COLL_WRITES 96",
+                "MPIIO 0 shared MPIIO_INDEP_WRITES 8",
+                "write transfer sizes: 1048576 1048576 2097152",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    candidate_path.write_text(
+        "\n".join(
+            [
+                "# CLIO benchmark candidate Darshan-style trace",
+                "runtime: 118.0 s",
+                "nprocs: 128",
+                "POSIX 0 shared POSIX_BYTES_WRITTEN 104857600",
+                "POSIX 0 shared POSIX_BYTES_READ 52428800",
+                "POSIX 0 shared POSIX_F_WRITE_TIME 28.0",
+                "POSIX 0 shared POSIX_F_READ_TIME 4.7",
+                "POSIX 0 shared POSIX_F_META_TIME 5.8",
+                "MPIIO 0 shared MPIIO_COLL_WRITES 24",
+                "MPIIO 0 shared MPIIO_INDEP_WRITES 88",
+                "write transfer sizes: 131072 262144 524288",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    return {
+        "baseline_path": str(baseline_path),
+        "candidate_path": str(candidate_path),
+        "expected_terms": ["write_time", "metadata_time", "independent_writes", "regression"],
+    }
+
+
+def create_format_bridge(output_dir: Path) -> dict[str, Any]:
+    """Create an HDF5 source with conversion-safe and policy-risk columns."""
+    source_path = output_dir / "format_bridge_source.h5"
+    output_path = output_dir / "format_bridge_converted.parquet"
+    with h5py.File(source_path, "w") as handle:
+        values = np.linspace(0.0, 1.0, 32, dtype=np.float64)
+        values[7] = np.nan
+        handle.create_dataset("safe_float", data=values, compression="gzip")
+        handle.create_dataset("labels", data=np.array(["alpha", "beta"] * 16, dtype=h5py.string_dtype()))
+        handle.create_dataset("float16_policy", data=np.linspace(0.0, 1.0, 32, dtype=np.float16))
+        handle.create_dataset("complex_signal", data=np.arange(32, dtype=np.float64) + 1j)
+        datetime = handle.create_dataset("time_ns", data=np.arange(32, dtype=np.int64))
+        datetime.attrs["logical_type"] = "datetime64[ns]"
+    return {
+        "source_path": str(source_path),
+        "output_path": str(output_path),
+        "expected_terms": ["safe_float", "float16", "complex", "datetime", "checksum"],
+    }
+
+
+def create_terrain(output_dir: Path) -> dict[str, Any]:
+    """Create DEM and point-cloud terrain fixtures for site-suitability workflows."""
+    dem_path = output_dir / "terrain_dem.csv"
+    pointcloud_path = output_dir / "terrain_points.csv"
+    gridded_path = output_dir / "terrain_points_gridded.csv"
+    dem = np.array(
+        [
+            [100.0, 101.0, 102.0, 103.0],
+            [100.5, 101.5, 102.5, 103.5],
+            [101.0, 102.0, 103.0, 104.0],
+            [102.0, 103.0, 104.0, 105.0],
+        ],
+        dtype=float,
+    )
+    np.savetxt(dem_path, dem, delimiter=",", fmt="%.3f")
+    with pointcloud_path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["x", "y", "z"])
+        for y in range(4):
+            for x in range(4):
+                writer.writerow([x, y, float(dem[y, x])])
+    return {
+        "dem_path": str(dem_path),
+        "pointcloud_path": str(pointcloud_path),
+        "gridded_path": str(gridded_path),
+        "expected_terms": ["slope", "suitable", "point", "grid", "elevation"],
+    }
+
+
 def create_adios_bp5(output_dir: Path) -> dict[str, Any]:
     """Copy a real BP5 sample when present, otherwise create a BP-like container."""
     destination = output_dir / "gray scott noise 0.01 data.bp5"
@@ -497,6 +633,10 @@ def create_benchmark_data(output_dir: Path) -> dict[str, Any]:
     geospatial = create_geospatial(output_dir)
     imaging = create_imaging(output_dir)
     mass_spec = create_mass_spec(output_dir)
+    lfq = create_lfq(output_dir)
+    hpc = create_hpc_traces(output_dir)
+    format_bridge = create_format_bridge(output_dir)
+    terrain = create_terrain(output_dir)
     adios = create_adios_bp5(output_dir)
 
     manifest: dict[str, Any] = {
@@ -510,6 +650,10 @@ def create_benchmark_data(output_dir: Path) -> dict[str, Any]:
         "geospatial": geospatial,
         "imaging": imaging,
         "mass_spec": mass_spec,
+        "lfq": lfq,
+        "hpc": hpc,
+        "format_bridge": format_bridge,
+        "terrain": terrain,
         "adios": adios,
     }
     manifest_path = output_dir / "manifest.json"
