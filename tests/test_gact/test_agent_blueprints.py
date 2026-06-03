@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 
 from clio_agent.gact.agent_blueprints import (
     discover_agent_blueprints,
+    load_agent_blueprint_path,
     load_agent_blueprints,
     validate_agent_blueprint_path,
 )
@@ -281,6 +282,152 @@ Coordinate work.
     assert "root: skills are resolved at runtime" in warnings
     rows = {row["id"]: row for row in body["agents"]}
     assert "validation_warnings" in rows["root"]["metadata"]
+
+
+def test_agent_blueprint_includes_pack_local_expert_subtree(tmp_path: Path) -> None:
+    root = tmp_path / "seismic"
+    (root / "experts").mkdir(parents=True)
+    (root / "modules" / "ndp-collector" / "experts").mkdir(parents=True)
+    root.joinpath("AGENT.md").write_text(
+        """---
+id: seismic
+version: 0.1.0
+title: Seismic Agent
+root_expert: main
+blueprint:
+  format: agent-blueprint-v1
+includes:
+  - modules/ndp-collector/experts
+---
+Seismic agent.
+""",
+        encoding="utf-8",
+    )
+    root.joinpath("experts", "main.md").write_text(
+        """---
+id: main
+title: Main
+description: Main expert.
+tier: 1
+---
+Coordinate seismic work.
+""",
+        encoding="utf-8",
+    )
+    root.joinpath("experts", "data.md").write_text(
+        """---
+id: data
+title: Data
+description: Data expert.
+tier: 2
+parent_id: main
+---
+Own data access.
+""",
+        encoding="utf-8",
+    )
+    root.joinpath("modules", "ndp-collector", "experts", "ndp_catalog.md").write_text(
+        """---
+id: ndp_catalog
+title: NDP Catalog
+description: Catalog child expert.
+tier: 3
+parent_id: data
+---
+Search NDP and return compact catalog evidence.
+""",
+        encoding="utf-8",
+    )
+
+    body = validate_agent_blueprint_path(root)
+
+    assert body["enabled"] is True
+    rows = {row["id"]: row for row in body["agents"]}
+    assert set(rows) == {"main", "data", "ndp_catalog"}
+    assert rows["ndp_catalog"]["parent_id"] == "data"
+    assert rows["ndp_catalog"]["metadata"]["agent_blueprint_include"] == "modules/ndp-collector/experts"
+    assert rows["ndp_catalog"]["metadata"]["agent_blueprint_expert_source"] == "include"
+
+    loaded = {row.id: row for row in load_agent_blueprint_path(root)}
+    assert loaded["ndp_catalog"].metadata["agent_blueprint_include"] == "modules/ndp-collector/experts"
+
+
+def test_agent_blueprint_include_validation_rejects_missing_or_empty_path(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "broken"
+    (root / "experts").mkdir(parents=True)
+    (root / "modules" / "empty").mkdir(parents=True)
+    root.joinpath("AGENT.md").write_text(
+        """---
+id: broken
+version: 0.1.0
+title: Broken Agent
+root_expert: main
+blueprint:
+  format: agent-blueprint-v1
+includes:
+  - modules/missing
+  - modules/empty
+---
+Broken agent.
+""",
+        encoding="utf-8",
+    )
+    root.joinpath("experts", "main.md").write_text(
+        """---
+id: main
+title: Main
+description: Main expert.
+tier: 1
+---
+Coordinate work.
+""",
+        encoding="utf-8",
+    )
+
+    body = validate_agent_blueprint_path(root)
+
+    assert body["enabled"] is False
+    errors = "\n".join(body["validation_errors"])
+    assert "include path not found: modules/missing" in errors
+    assert "include path contains no expert markdown files: modules/empty" in errors
+
+
+def test_agent_blueprint_include_validation_rejects_path_escape(tmp_path: Path) -> None:
+    root = tmp_path / "broken"
+    (root / "experts").mkdir(parents=True)
+    root.joinpath("AGENT.md").write_text(
+        """---
+id: broken
+version: 0.1.0
+title: Broken Agent
+root_expert: main
+blueprint:
+  format: agent-blueprint-v1
+includes:
+  - ../outside
+---
+Broken agent.
+""",
+        encoding="utf-8",
+    )
+    root.joinpath("experts", "main.md").write_text(
+        """---
+id: main
+title: Main
+description: Main expert.
+tier: 1
+---
+Coordinate work.
+""",
+        encoding="utf-8",
+    )
+
+    body = validate_agent_blueprint_path(root)
+
+    assert body["enabled"] is False
+    assert "include path must be pack-local: ../outside" in "\n".join(body["validation_errors"])
 
 
 def test_agent_blueprint_activation_replaces_default_agent_graph(tmp_path: Path) -> None:
