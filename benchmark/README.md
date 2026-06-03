@@ -25,13 +25,21 @@ semantics, and surfaced-error behavior.
 - `FRESH_REAL_ORCHESTRATOR_REPORT.md` /
   `FRESH_REAL_ORCHESTRATOR_EVIDENCE.jsonl` - historical isolated replay
   evidence retained for debugging; this report is superseded for current
-  NDP/seismic status by `MARKETPLACE_UNIFIED_REPORT.md`.
+  NDP/seismic status by `MARKETPLACE_COMPLEX_HIERARCHY_REPORT.md`.
+- `MARKETPLACE_COMPLEX_HIERARCHY_REPORT.md` /
+  `MARKETPLACE_COMPLEX_HIERARCHY_EVIDENCE.jsonl` - June 3 full marketplace run
+  after stricter complex hierarchy criteria. This report proves five complex
+  marketplace hierarchy cases and records the geospatial delegation-prose
+  failure that was fixed immediately afterward.
+- `MARKETPLACE_GEOSPATIAL_RETRY_REPORT.md` /
+  `MARKETPLACE_GEOSPATIAL_RETRY_EVIDENCE.jsonl` - focused June 3 retry for the
+  only failed full-run case. It proves the corrected geospatial pack performs
+  real `main -> spatial_features -> main` sync delegation and tool calls.
 - `MARKETPLACE_UNIFIED_REPORT.md` /
-  `MARKETPLACE_UNIFIED_EVIDENCE.jsonl` - current passing evidence for
+  `MARKETPLACE_UNIFIED_EVIDENCE.jsonl` - historical May 29 evidence for
   marketplace Agent Blueprint loading, root-owned delegation, and one complex
-  seismic hierarchy. The strict marketplace lane gate now requires at least
-  three complex marketplace hierarchy cases before the report can be used as
-  broad hierarchy coverage.
+  seismic hierarchy. Superseded by the June 3 complex hierarchy evidence set for
+  current status.
 - `scripts/run_demo_benchmark.py` - executable runner that materializes these
   cases against a live GACT backend.
 - `scripts/create_benchmark_data.py` - deterministic local data generator.
@@ -90,6 +98,19 @@ coverage. Pack loading, root delegation, and tool use are necessary but not
 enough: `--require-lane-criteria` now also requires at least three marketplace
 cases with depth >= 3, branch count >= 2, sync handoff count >= 2, and complete
 parent-return provenance.
+
+The current committed June 3 marketplace evidence is a combined evidence set,
+not a single all-green full-lane rerun after every fix. Read it as:
+
+1. `MARKETPLACE_COMPLEX_HIERARCHY_REPORT.md` proves the full lane reached five
+   complex hierarchy passes after criteria correction and isolated the
+   geospatial failure. Its JSONL preserves the original runner verdict fields
+   from before the report was re-rendered.
+2. `MARKETPLACE_GEOSPATIAL_RETRY_REPORT.md` proves that remaining geospatial
+   failure was fixed with live sync delegation and tool-call evidence.
+
+A final public-demo dry run should still regenerate the full lane from a fresh
+machine/session once the benchmark pack set is frozen.
 
 Before running the expensive marketplace lane, run the static preflight against
 the marketplace source. This uses CLIO's Agent Blueprint validator for every
