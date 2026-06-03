@@ -20,6 +20,12 @@ fan-out, and typed evidence returns work. Agent Blueprints are the
 generalization of that prototype. They should make those DSPy-style semantics
 configurable, portable, editable, and shareable through marketplace packs.
 
+An expert should not be modeled as "just a prompt." Prompt text is one part of
+an expert, but the stronger abstraction is a DSPy semantic contract: signature,
+module/loop type, allowed tools/MCPs, structured outputs, delegation/fan-out
+contracts, memory/artifact access, and provider/model defaults. A prompt-only
+expert is a valid lightweight case, not the full expert model.
+
 ## Current State
 
 CLIO currently supports several DSPy-style expert behaviors, but not all of
@@ -53,6 +59,8 @@ cannot yet fully declare:
 
 - the expert signature: input fields, output fields, and structured evidence
   schema,
+- whether prompt-only execution is sufficient or a DSPy signature-backed module
+  is required,
 - the module/loop pattern: Predict, ChainOfThought, ReAct/tool loop,
   retry/refine, router, reducer, or bounded worker,
 - how tool results become typed evidence and final outputs,
@@ -94,6 +102,7 @@ declare the DSPy semantics it needs, for example:
 module:
   kind: react
   signature:
+    id: cohort_qc_review
     inputs:
       question: str
       parent_evidence: str
@@ -104,6 +113,9 @@ module:
   structured_outputs:
     evidence_fields: [item_id, finding, confidence, provenance]
     delegation_fields: [delegate_to, question, status]
+  prompt:
+    system: prompts/cohort_qc.system.md
+    profile: heavy
 ```
 
 A parent expert could also declare a fan-out block such as:
