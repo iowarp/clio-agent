@@ -2028,6 +2028,53 @@ def _coerce_expert_handoff_rows(value: Any) -> list[dict[str, Any]]:
     return []
 
 
+_REPEAT_HANDOFF_TRUE_VALUES = {"1", "true", "yes", "allow", "allowed", "force", "forced"}
+
+
+def _handoff_allows_repeat(row: Mapping[str, Any]) -> bool:
+    """Return true when a sync handoff explicitly asks to rerun a completed child."""
+
+    for key in ("allow_repeat", "repeat", "force", "retry"):
+        if key not in row:
+            continue
+        raw_value = row.get(key)
+        if isinstance(raw_value, bool):
+            if raw_value:
+                return True
+            continue
+        if str(raw_value or "").strip().lower() in _REPEAT_HANDOFF_TRUE_VALUES:
+            return True
+    return False
+
+
+def _filter_repeated_successful_sync_handoffs(
+    requested_rows: list[dict[str, Any]],
+    completed_child_ids: set[str],
+) -> list[dict[str, Any]]:
+    """Skip repeated child calls already completed in the current sync settlement."""
+
+    filtered: list[dict[str, Any]] = []
+    for row in requested_rows:
+        if not _should_execute_delegated_handoff(row):
+            filtered.append(row)
+            continue
+        target_id = _delegated_expert_agent_id(row)
+        if target_id and target_id in completed_child_ids and not _handoff_allows_repeat(row):
+            filtered.append(
+                {
+                    **row,
+                    "agent_id": target_id,
+                    "status": "skipped",
+                    "stage": "delegate.skipped",
+                    "skip_reason": "completed_sync_child_already_returned",
+                    "delegation_lifecycle": "sync",
+                }
+            )
+            continue
+        filtered.append(row)
+    return filtered
+
+
 def _runtime_dynamic_agent_children_context(
     app: "FastAPI",
     agent_def: "AgentDef",
@@ -2378,6 +2425,29 @@ def _compact_dynamic_delegation_output(output: str, *, limit: int = 2200) -> str
     if tail:
         pieces.append("[tail]\n" + tail)
     return "\n\n".join(pieces)
+
+
+def _latest_parent_resumed_output_summary(
+    rows: list[dict[str, Any]],
+    parent_id: str,
+) -> str:
+    """Return the latest compact output from a resumed delegated parent."""
+
+    latest = ""
+    stack = list(rows)
+    while stack:
+        row = stack.pop(0)
+        if (
+            str(row.get("agent_id") or "") == parent_id
+            and str(row.get("stage") or "") == "parent.resumed"
+        ):
+            summary = str(row.get("output_summary") or row.get("summary") or "").strip()
+            if summary:
+                latest = summary
+        children = row.get("children")
+        if isinstance(children, list):
+            stack.extend(child for child in children if isinstance(child, dict))
+    return latest
 
 
 def _tool_result_preview(result: Any) -> str:
@@ -4052,9 +4122,12 @@ async def _run_turn_in_background(
         source_text: str,
         depth: int = 0,
         seen: Optional[set[str]] = None,
+        completed_child_ids: Optional[set[str]] = None,
     ) -> list[dict[str, Any]]:
         if seen is None:
             seen = {parent_agent.id}
+        if completed_child_ids is None:
+            completed_child_ids = set()
         if depth >= 3:
             return [
                 {
@@ -4093,6 +4166,20 @@ async def _run_turn_in_background(
                         "agent_id": target_id,
                         "status": "failed",
                         "error": "delegate_not_available",
+                        "parent_id": parent_agent.id,
+                        "depth": depth,
+                    }
+                )
+                continue
+            if target.id in completed_child_ids and not _handoff_allows_repeat(row):
+                executed.append(
+                    {
+                        **row,
+                        "agent_id": target.id,
+                        "status": "skipped",
+                        "stage": "delegate.skipped",
+                        "skip_reason": "completed_sync_child_already_returned",
+                        "delegation_lifecycle": "sync",
                         "parent_id": parent_agent.id,
                         "depth": depth,
                     }
@@ -4206,6 +4293,11 @@ async def _run_turn_in_background(
                         depth=depth + 1,
                         seen={*seen, target.id},
                     )
+                if nested:
+                    resumed_summary = _latest_parent_resumed_output_summary(nested, target.id)
+                    if resumed_summary:
+                        output_summary = resumed_summary
+                        output = resumed_summary
                 completed_row = {
                     **row,
                     "agent_id": target.id,
@@ -4262,6 +4354,7 @@ async def _run_turn_in_background(
                     ),
                 )
                 executed.append(completed_row)
+                completed_child_ids.add(target.id)
                 resumed_row = {
                         "agent_id": parent_agent.id,
                         "parent_id": parent_agent.parent_id,
@@ -4367,12 +4460,34 @@ async def _run_turn_in_background(
         max_rounds = max(1, min(max_rounds, 8))
         missing_handoff_repairs = 0
         seen_continuation_contracts: set[tuple[str, str]] = set()
+        completed_child_ids: set[str] = set()
         for _round in range(max_rounds):
             requested_rows = _coerce_expert_handoff_rows(
                 getattr(latest_pred, "expert_handoffs", None)
             )
+            requested_rows = _filter_repeated_successful_sync_handoffs(
+                requested_rows,
+                completed_child_ids,
+            )
             executable_rows = [row for row in requested_rows if _should_execute_delegated_handoff(row)]
+            repeated_skips = [
+                row
+                for row in requested_rows
+                if row.get("status") == "skipped"
+                and row.get("skip_reason") == "completed_sync_child_already_returned"
+            ]
             if not executable_rows:
+                if repeated_skips:
+                    previous_answer = str(getattr(latest_pred, "answer", "") or "").strip()
+                    if not previous_answer:
+                        previous_answer = _latest_parent_resumed_output_summary(all_rows, parent_agent.id)
+                        latest_pred = SimpleNamespace(
+                            answer=previous_answer,
+                            selected_expert=parent_agent.id,
+                            routing_rationale="repeated completed child handoff skipped",
+                            expert_handoffs=[],
+                        )
+                    break
                 child_context = _runtime_dynamic_agent_children_context(
                     app,
                     parent_agent,
@@ -4404,6 +4519,7 @@ async def _run_turn_in_background(
                 parent_agent,
                 requested_rows,
                 source_text=source_text,
+                completed_child_ids=completed_child_ids,
             )
             all_rows.extend(executed_rows)
             completed_rows = [
@@ -4411,6 +4527,10 @@ async def _run_turn_in_background(
                 for row in executed_rows
                 if row.get("status") == "completed" and row.get("stage") == "delegate.completed"
             ]
+            for row in completed_rows:
+                child_id = str(row.get("agent_id") or row.get("delegate_to") or "").strip()
+                if child_id:
+                    completed_child_ids.add(child_id)
             if not completed_rows:
                 break
             contract_rows = _continuation_contract_handoff_rows(
@@ -4431,7 +4551,7 @@ async def _run_turn_in_background(
             continuation_prompt = _dynamic_parent_resume_prompt(
                 source_text,
                 parent_agent,
-                executed_rows,
+                all_rows,
             )
             latest_pred = await _run_dynamic_agent_sync(parent_agent, continuation_prompt)
         return latest_pred, all_rows

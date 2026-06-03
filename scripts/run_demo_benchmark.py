@@ -874,8 +874,10 @@ def _sync_delegation_pairs(result: DemoResult) -> list[tuple[str, str]]:
         if (
             stage.endswith("_child")
             or stage.startswith("delegate.")
-            or lifecycle == "sync"
-            or child_id in result.case.expected_handoff_agents
+            or (
+                lifecycle == "sync"
+                and stage not in {"parent.resumed", "delegate.completed", "delegate.failed"}
+            )
         ):
             pair = (parent_id, child_id)
             if pair not in seen:
@@ -2957,8 +2959,13 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             agent_blueprint_id="genomics-review",
             expected_agent="main",
             expected_tools=("genomics_vcf_cohort_qc",),
-            expected_handoff_agents=("cohort_qc",),
-            expected_terms=("sample_A", "call_rate", "heterozygosity"),
+            expected_handoff_agents=(
+                "cohort_qc",
+                "per_sample_metrics",
+                "cohort_outliers",
+                "manifest_reconciliation",
+            ),
+            expected_terms=("sample_A", "call rate", "heterozygosity", "manifest"),
             timeout_s=620.0,
             forbidden_route_sources=_REAL_ORCHESTRATOR_FORBIDDEN_SOURCES,
             complexity_tags=("marketplace", "genomics", "cohort-qc", "agent-blueprint"),
@@ -2969,7 +2976,9 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             ),
             expected=(
                 "CLIO runs the genomics-review marketplace Agent Blueprint through "
-                "its cohort_qc expert and calls genomics_vcf_cohort_qc."
+                "its cohort_qc expert, executes the per_sample_metrics -> "
+                "cohort_outliers -> manifest_reconciliation child chain, and "
+                "calls genomics_vcf_cohort_qc from the metric child."
             ),
             why=(
                 "Brings the first-wave cohort QC benchmark infrastructure into the "

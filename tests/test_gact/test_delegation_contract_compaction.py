@@ -6,6 +6,8 @@ from clio_agent.gact.app import (
     _compact_dynamic_delegation_output,
     _dynamic_answer_has_pending_child_work,
     _dynamic_parent_resume_prompt,
+    _filter_repeated_successful_sync_handoffs,
+    _latest_parent_resumed_output_summary,
 )
 
 
@@ -79,3 +81,77 @@ def test_parent_resume_prompt_receives_compacted_continuation_contracts() -> Non
     assert "NEXT_EXPERT: visualization" in prompt
     assert "NEXT_ACTION: plot_sac_traces /tmp/fresh.sac" in prompt
     assert "DO_NOT_FINALIZE_BEFORE_VISUALIZATION: true" in prompt
+
+
+def test_latest_parent_resumed_output_summary_prefers_final_nested_parent_result() -> None:
+    rows = [
+        {
+            "stage": "delegate.completed",
+            "agent_id": "per_sample_metrics",
+            "parent_id": "cohort_qc",
+            "output_summary": "Initial metrics child result.",
+        },
+        {
+            "stage": "parent.resumed",
+            "agent_id": "cohort_qc",
+            "resumed_from": "per_sample_metrics",
+            "output_summary": "Metrics summarized by coordinator.",
+        },
+        {
+            "stage": "delegate.completed",
+            "agent_id": "manifest_reconciliation",
+            "parent_id": "cohort_qc",
+            "output_summary": "No manifest was provided.",
+        },
+        {
+            "stage": "parent.resumed",
+            "agent_id": "cohort_qc",
+            "resumed_from": "manifest_reconciliation",
+            "output_summary": "Final coordinator answer with metrics and manifest caveat.",
+        },
+    ]
+
+    assert (
+        _latest_parent_resumed_output_summary(rows, "cohort_qc")
+        == "Final coordinator answer with metrics and manifest caveat."
+    )
+
+
+def test_repeated_successful_sync_handoff_is_skipped_without_retry_intent() -> None:
+    rows = [
+        {
+            "delegate_to": "per_sample_metrics",
+            "question": "Run per-sample metrics for the VCF.",
+            "status": "requested",
+            "execute": True,
+        },
+        {
+            "delegate_to": "manifest_reconciliation",
+            "question": "Reconcile manifest caveats.",
+            "status": "requested",
+            "execute": True,
+        },
+    ]
+
+    filtered = _filter_repeated_successful_sync_handoffs(rows, {"per_sample_metrics"})
+
+    assert filtered[0]["status"] == "skipped"
+    assert filtered[0]["stage"] == "delegate.skipped"
+    assert filtered[0]["skip_reason"] == "completed_sync_child_already_returned"
+    assert filtered[1]["status"] == "requested"
+
+
+def test_repeated_successful_sync_handoff_allows_explicit_retry() -> None:
+    rows = [
+        {
+            "delegate_to": "per_sample_metrics",
+            "question": "Retry per-sample metrics after a corrected file path.",
+            "status": "requested",
+            "retry": True,
+            "execute": True,
+        }
+    ]
+
+    filtered = _filter_repeated_successful_sync_handoffs(rows, {"per_sample_metrics"})
+
+    assert filtered == rows
