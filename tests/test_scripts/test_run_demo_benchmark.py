@@ -1734,6 +1734,60 @@ def test_marketplace_audit_requires_root_sync_delegation() -> None:
     ]
 
 
+def test_marketplace_blueprint_case_allows_live_wrapper_agent_with_root_sync_return() -> None:
+    message = _message(
+        text="chrA and plasmidB reference review complete",
+        route_source="live_tool_observer",
+        tools=[{"name": "genomics_inspect_fasta"}],
+    )
+    message["parts"][0]["selected_agent"] = "genomics"
+    message["metadata"]["expert_handoffs"] = [
+        {
+            "agent_id": "reference",
+            "parent_id": "main",
+            "stage": "delegate.completed",
+            "metadata": {"delegation_lifecycle": "sync", "return_to": "main"},
+        },
+        {
+            "agent_id": "main",
+            "stage": "parent.resumed",
+            "metadata": {"delegation_lifecycle": "sync", "resumed_from": "reference"},
+        },
+    ]
+    result = bench.DemoResult(
+        case=bench.DemoCase(
+            case_id="marketplace_genomics_reference_review",
+            title="marketplace genomics",
+            category="marketplace-test",
+            prompt="prompt",
+            why="why",
+            expected="expected",
+            session_group="marketplace",
+            agent_blueprint_id="genomics-review",
+            expected_agent="main",
+            expected_tools=("genomics_inspect_fasta",),
+            expected_handoff_agents=("reference",),
+            expected_terms=("chrA", "plasmidB"),
+        ),
+        session_id="sess_marketplace",
+        elapsed_s=1.0,
+        message=message,
+        provider={"provider": "argonne", "model": "gpt-oss-120b", "api_base": ""},
+        benchmark_lane="marketplace_agents",
+        agent_blueprint={"active_agent_blueprint_id": "genomics-review"},
+    )
+
+    assert result.passed is True
+    audit = bench._provider_lane_audit([result], "marketplace_agents")
+    root_row = next(
+        item
+        for item in audit
+        if item["criterion"] == "marketplace hierarchy cases prove root sync delegation"
+    )
+    assert root_row["passed"] is True
+    assert root_row["observed"] == 1
+
+
 def test_case_minimum_hierarchy_thresholds_affect_pass_status() -> None:
     message = _message(
         text="SAC plot saved at /tmp/plot.png",
