@@ -15,6 +15,7 @@ import re
 import sys
 import threading
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -226,6 +227,8 @@ class DemoResult:
     def expected_evidence_text(self) -> str:
         """Return text searched for expected benchmark evidence terms."""
         chunks: list[str] = [self.text, *self.artifacts]
+        if self.agent_blueprint:
+            chunks.append(json.dumps(self.agent_blueprint, sort_keys=True, default=str))
         for tool in self.tools:
             chunks.append(str(tool.get("name") or tool.get("tool") or ""))
             for key in ("result", "args", "arguments", "params"):
@@ -962,12 +965,57 @@ def _case_observed_semantic_proofs(result: DemoResult) -> tuple[str, ...]:
                 and bool(result.tool_names or result.handoff_agent_ids)
             )
         elif proof == "command_mcp_skill_scope":
-            proof_observed = any(
-                marker in evidence for marker in ("command", "mcp", "skill")
-            )
+            proof_observed = _command_mcp_skill_scope_observed(result)
         if proof_observed:
             observed.append(proof)
     return tuple(observed)
+
+
+def _command_mcp_skill_scope_observed(result: DemoResult) -> bool:
+    """Return whether session evidence proves command/MCP/skill capability scoping."""
+
+    blueprint_text = json.dumps(result.agent_blueprint, sort_keys=True, default=str).lower()
+    runtime_text = ""
+    metadata = result.message.get("metadata") if isinstance(result.message, Mapping) else {}
+    if isinstance(metadata, Mapping):
+        runtime_text = json.dumps(
+            metadata.get("runtime_provenance") or {},
+            sort_keys=True,
+            default=str,
+        ).lower()
+    session_text = json.dumps(
+        result.session_messages,
+        sort_keys=True,
+        default=str,
+    ).lower()
+    tool_text = json.dumps(result.tools, sort_keys=True, default=str).lower()
+    handoff_text = json.dumps(result.expert_handoffs, sort_keys=True, default=str).lower()
+    combined = "\n".join([blueprint_text, runtime_text, session_text, tool_text, handoff_text])
+
+    has_declared_surface = any(
+        marker in combined
+        for marker in (
+            "mcp_descriptors",
+            "agent_blueprint_mcp_descriptor",
+            '"commands"',
+            '"skills"',
+            '"resolved_skills"',
+            "capability_refs",
+        )
+    )
+    has_scope_status = any(
+        marker in combined
+        for marker in (
+            "requires explicit enablement",
+            "explicit trust",
+            '"enabled": false',
+            '"enabled": true',
+            "disabled",
+            "declared",
+            "resolved",
+        )
+    )
+    return result.passed and has_declared_surface and has_scope_status
 
 
 def _children(http: httpx.Client, parent_session_id: str) -> list[dict[str, Any]]:
@@ -2357,6 +2405,37 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             ),
         ),
         DemoCase(
+            case_id="marketplace_mcp_calculator_scope",
+            title="Marketplace MCP descriptor scope",
+            category="marketplace-mcp",
+            session_group="marketplace_mcp_calculator",
+            agent_blueprint_id="mcp-calculator-smoke",
+            expected_agent="main",
+            expected_terms=("calculator_add", "disabled", "trust"),
+            semantic_proofs=("command_mcp_skill_scope",),
+            complexity_tags=(
+                "marketplace",
+                "mcp",
+                "capability-scope",
+                "agent-blueprint",
+            ),
+            prompt=(
+                "Using the active calculator MCP smoke agent, verify whether the packaged "
+                "calculator capability is immediately usable. Explain the descriptor state, "
+                "what tool it would expose, and what trust or enablement step is required "
+                "before the tool can be called."
+            ),
+            expected=(
+                "CLIO runs the mcp-calculator-smoke Agent Blueprint and surfaces that the "
+                "pack-local calculator MCP descriptor is packaged but disabled until explicit "
+                "trust/enablement, with calculator_add named as the scoped tool."
+            ),
+            why=(
+                "Covers the semantic-regression proof for command/MCP/skill capability scoping "
+                "using marketplace blueprint metadata instead of a hardcoded tool path."
+            ),
+        ),
+        DemoCase(
             case_id="missing_hdf5_error",
             title="Missing file error surfacing",
             category="hardening",
@@ -2550,6 +2629,7 @@ _BENCHMARK_LANES: dict[str, tuple[str, ...]] = {
         "reasoning_cross_file_triage_nanoagents",
         "ndp_seismic_waveform_to_plot",
         "marketplace_seismic_waveform_review",
+        "marketplace_mcp_calculator_scope",
         "provider_swap_memory_followup",
     ),
     "claude_code": (

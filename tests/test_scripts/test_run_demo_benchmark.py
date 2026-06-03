@@ -144,6 +144,7 @@ def test_select_semantic_regression_lane_cases() -> None:
             "reasoning_cross_file_triage_nanoagents",
             "ndp_seismic_waveform_to_plot",
             "marketplace_seismic_waveform_review",
+            "marketplace_mcp_calculator_scope",
             "provider_swap_memory_followup",
         )
     ]
@@ -1385,6 +1386,63 @@ def test_semantic_regression_audit_reports_missing_proof_evidence() -> None:
     assert case_row["details"] == [
         "memory: workspace_memory_scope declared but not observed"
     ]
+
+
+def test_command_mcp_skill_scope_requires_structured_capability_evidence() -> None:
+    case = bench.DemoCase(
+        case_id="mcp_scope",
+        title="mcp scope",
+        category="test",
+        prompt="prompt",
+        why="why",
+        expected="expected",
+        session_group="semantic",
+        semantic_proofs=("command_mcp_skill_scope",),
+    )
+    result = bench.DemoResult(
+        case=case,
+        session_id="sess_mcp",
+        elapsed_s=1.0,
+        message=_message(text="calculator_add is disabled until explicit trust"),
+        provider={"provider": "codex", "model": "gpt-5.5", "api_base": ""},
+        benchmark_lane="semantic_regression",
+        agent_blueprint={
+            "active_agent_blueprint_id": "mcp-calculator-smoke",
+            "mcp_descriptors": [
+                {
+                    "id": "calculator",
+                    "enabled": False,
+                    "tools": ["calculator_add"],
+                    "trust": {"policy": "explicit"},
+                }
+            ],
+        },
+    )
+
+    assert bench._case_observed_semantic_proofs(result) == ("command_mcp_skill_scope",)
+
+
+def test_command_mcp_skill_scope_ignores_unstructured_model_words() -> None:
+    case = bench.DemoCase(
+        case_id="mcp_scope",
+        title="mcp scope",
+        category="test",
+        prompt="prompt",
+        why="why",
+        expected="expected",
+        session_group="semantic",
+        semantic_proofs=("command_mcp_skill_scope",),
+    )
+    result = bench.DemoResult(
+        case=case,
+        session_id="sess_mcp",
+        elapsed_s=1.0,
+        message=_message(text="This mentions command, mcp, skill, disabled, and trust."),
+        provider={"provider": "codex", "model": "gpt-5.5", "api_base": ""},
+        benchmark_lane="semantic_regression",
+    )
+
+    assert bench._case_observed_semantic_proofs(result) == ()
 
 
 def test_render_existing_jsonl_can_gate_missing_semantic_evidence(tmp_path: Path) -> None:
