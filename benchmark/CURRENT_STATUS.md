@@ -73,6 +73,15 @@ codex-provider run with live semantic events, root-owned sync delegation,
 HPC parser/comparison tools, and runtime skill provenance resolving declared
 HPC skills from the installed pack with `missing=[]`.
 
+Use `DEMO_READINESS_PROTEOMICS_SKILLS_REPORT.md` /
+`DEMO_READINESS_PROTEOMICS_SKILLS_EVIDENCE.jsonl` as the focused non-HPC watched
+evidence after `JaimeCernuda/clio-agent-marketplace#30` added pack-local skill
+bodies for the remaining first-wave packs. It proves a codex-provider
+proteomics LFQ run with live semantic events, `main -> lfq_differential -> main`
+sync delegation, the LFQ differential-abundance tool, and runtime skill
+provenance resolving both root routing skills and LFQ expert skills from
+`scope=pack` with `missing=[]`.
+
 Current result:
 
 - The re-rendered full marketplace report records `5/6` clean passes after the
@@ -121,12 +130,16 @@ Current result:
   load pack-local skills into expert runtime provenance while preserving the
   observed hierarchy chain `main -> trace_ingest -> baseline_ingest ->
   trace_ingest -> main -> regression_diff -> main -> root_cause -> main`.
+- The focused proteomics skill-resolution case proves the broader marketplace
+  skill-body fix is visible to a non-HPC pack at runtime: root route skills and
+  `lfq_differential` skills are loaded from the installed pack, and the LFQ tool
+  identifies the planted spike-in behavior in the generated benchmark fixture.
 
 Do not overclaim this as a single clean full-lane rerun after the geospatial
 fix. It is a combined evidence set: one corrected full run plus focused proofs
 for the geospatial retry, MCP descriptor scope, enabled MCP execution, and
 packaged hook invocation, workspace memory scope, and HPC pack-local skill
-resolution.
+resolution, plus focused proteomics pack-local skill resolution.
 
 ## What Failed And Was Fixed
 
@@ -188,9 +201,10 @@ seismic plus non-seismic packs. Remaining benchmark expansion items are:
   terrain/NDP final end-to-end runs. The runner now has canonical marketplace
   cases for those first-wave packs; the pending work is the watched
   real-provider execution and evidence review.
-- pack-local skill bodies for the remaining first-wave marketplace packs beyond
-  `hpc-io-regression`; this is tracked in
-  `JaimeCernuda/clio-agent-marketplace#28`.
+- watched full-lane evidence after `JaimeCernuda/clio-agent-marketplace#28`
+  closed the remaining pack-local skill-body gap. The focused proteomics run
+  proves runtime resolution for one non-HPC pack; it is not a substitute for
+  rerunning every first-wave pack.
 
 These are future benchmark coverage goals, not contradictions of the current
 marketplace hierarchy pass.
