@@ -33,6 +33,11 @@ Use `MARKETPLACE_WORKSPACE_MEMORY_SCOPE_REPORT.md` /
 semantic-regression proof that CLIO's agent-callable memory tools enforce
 same-workspace intent and deny other-workspace reads.
 
+Use `GENOMICS_COHORT_QC_INFRASTRUCTURE.md` as the current infrastructure note
+for progress toward the benchmark-source Genomics Cohort QC case. It documents
+the new reusable VCF cohort QC tool and the marketplace `cohort_qc` expert, but
+does not claim the final planted-defect end-to-end benchmark has run yet.
+
 Current result:
 
 - The re-rendered full marketplace report records `5/6` clean passes after the
