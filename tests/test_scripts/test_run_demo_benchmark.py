@@ -911,6 +911,40 @@ def test_expected_terms_can_match_tool_and_handoff_evidence() -> None:
     assert result.passed is True
 
 
+def test_expected_terms_match_normalized_scientific_unicode() -> None:
+    message = _message(
+        text=(
+            "Effects include Stop‑gained; material formula SrTiO₃ has space group "
+            "P\u202fm\u202f-3\u202fm. HPC evidence reports write time and independent writes."
+        ),
+        tools=[],
+    )
+    result = bench.DemoResult(
+        case=bench.DemoCase(
+            case_id="normalized_scientific_terms",
+            title="normalized",
+            category="test",
+            prompt="prompt",
+            why="why",
+            expected="expected",
+            session_group="test",
+            expected_terms=(
+                "stop-gained",
+                "SrTiO3",
+                "P m -3 m",
+                "write_time",
+                "independent_writes",
+            ),
+        ),
+        session_id="sess_test",
+        elapsed_s=1.0,
+        message=message,
+        provider={},
+    )
+
+    assert result.passed is True
+
+
 def test_rehydrated_ndp_waveform_case_preserves_artifact_requirement() -> None:
     message = _message(
         text="SAC statistics were computed and a .png path was mentioned, but no artifact exists.",

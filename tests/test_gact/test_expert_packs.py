@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from contextlib import nullcontext
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -12,6 +14,7 @@ from clio_agent.gact.expert_packs import (
     load_expert_packs,
     parse_expert_file,
 )
+from clio_agent.gact.types import AgentDef
 
 
 @pytest.fixture()
@@ -121,6 +124,60 @@ tier: 3
     assert "missing required frontmatter field: id" in row.validation_errors
     assert "tier > 1 experts must declare parent_id" in row.validation_errors
     assert "expert must provide a prompt body or prompt_id" in row.validation_errors
+
+
+def test_prompt_id_expert_preserves_markdown_body(
+    isolated_env: Path,
+    tmp_path: Path,
+) -> None:
+    from clio_agent.gact.app import _resolve_runtime_dynamic_agent
+
+    root = isolated_env / ".clio" / "experts"
+    root.mkdir(parents=True)
+    root.joinpath("waveform_main.md").write_text(
+        """---
+id: waveform_main
+title: Waveform Main
+parent_id: analysis
+tier: 2
+prompt_id: clio.main.planner
+prompt_profile: heavy
+---
+UNIQUE_PACK_FALLBACK_POLICY: use IU.ANMO.00.BHZ when no better bounds are available.
+""",
+        encoding="utf-8",
+    )
+
+    app = build_app(sessions_path=tmp_path / "sessions.json", agent=object())
+    resolved = _resolve_runtime_dynamic_agent(app, "waveform_main")
+
+    assert resolved is not None
+    assert "UNIQUE_PACK_FALLBACK_POLICY" in resolved.system_prompt
+    assert "Agent-specific instructions from this definition" in resolved.system_prompt
+    prompt_resolution = resolved.metadata["prompt_resolution"]
+    assert prompt_resolution["id"] == "clio.main.planner"
+    assert prompt_resolution["status"] == "resolved"
+    assert prompt_resolution["composed_with_agent_body"] is True
+
+
+def test_delegated_expert_prompt_appends_parent_evidence() -> None:
+    from clio_agent.gact.app import _delegated_expert_prompt
+
+    prompt = _delegated_expert_prompt(
+        {
+            "delegate_to": "variant_impact",
+            "question": "Assess high-impact variants and verification steps.",
+        },
+        (
+            "VCF evidence: file=/tmp/clio-benchmark-data/pathogen_sample_variants.vcf; "
+            "effects=frameshift, stop_gained."
+        ),
+    )
+
+    assert prompt.startswith("Assess high-impact variants")
+    assert "Parent evidence available for this delegated task" in prompt
+    assert "/tmp/clio-benchmark-data/pathogen_sample_variants.vcf" in prompt
+    assert "stop_gained" in prompt
 
 
 def test_manifest_pack_loads_nested_experts_with_pack_metadata(isolated_env: Path) -> None:
@@ -789,11 +846,30 @@ Inspect schemas.
 
     assert calls == [
         ("root_review", "inspect data.csv", sid),
-        ("schema_review", "Inspect the CSV schema", sid),
+        (
+            "schema_review",
+            (
+                "Inspect the CSV schema\n\n"
+                "Parent evidence available for this delegated task:\n\n"
+                "inspect data.csv"
+            ),
+            sid,
+        ),
         ("root_review", calls[2][1], sid),
     ]
     assert "Returned child expert results" in calls[2][1]
-    handoffs = assistant["metadata"]["expert_handoffs"]
+    def iter_handoffs(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        found: list[dict[str, Any]] = []
+        stack = list(rows)
+        while stack:
+            row = stack.pop(0)
+            found.append(row)
+            children = row.get("children")
+            if isinstance(children, list):
+                stack.extend(child for child in children if isinstance(child, dict))
+        return found
+
+    handoffs = iter_handoffs(assistant["metadata"]["expert_handoffs"])
     handoff = next(row for row in handoffs if row["agent_id"] == "schema_review")
     assert handoff["agent_id"] == "schema_review"
     assert handoff["parent_id"] == "root_review"
@@ -927,6 +1003,8 @@ def test_returned_continuation_contract_executes_declared_child(
         if agent_def.id == "visualization":
             assert "Continuation contract returned by schema_review" in question
             assert "Required next action: plot_schema_summary data.csv" in question
+            assert "Returned evidence:" in question
+            assert "SCHEMA_OK" in question
             return type(
                 "Pred",
                 (),
@@ -1004,7 +1082,18 @@ Produce artifacts.
         "visualization",
         "root_review",
     ]
-    handoffs = assistant["metadata"]["expert_handoffs"]
+    def iter_handoffs(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        found: list[dict[str, Any]] = []
+        stack = list(rows)
+        while stack:
+            row = stack.pop(0)
+            found.append(row)
+            children = row.get("children")
+            if isinstance(children, list):
+                stack.extend(child for child in children if isinstance(child, dict))
+        return found
+
+    handoffs = iter_handoffs(assistant["metadata"]["expert_handoffs"])
     visualization = next(
         row
         for row in handoffs
@@ -1135,6 +1224,758 @@ Must not be callable by root_review.
 
     assert calls == ["root_review", "schema_review", "root_review"]
     assert assistant["parts"][-1]["text"] == "ROOT_FINAL"
+
+
+def test_nested_child_evidence_survives_empty_parent_resume(
+    isolated_env: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from .conftest import complete_turn
+
+    calls: list[str] = []
+
+    async def fake_stream_unavailable(
+        app: Any,
+        enriched_text: str,
+        sid: str,
+        emit_chunk: Any,
+        **kwargs: Any,
+    ) -> None:
+        del enriched_text, emit_chunk, kwargs
+        from clio_agent.gact.app import _record_stream_fallback
+
+        _record_stream_fallback(app, sid, "dynamic_prompt_stream_unavailable")
+        return None
+
+    def fake_prompt_agent(base_agent: Any, agent_def: Any, question: str, session_id: str) -> Any:
+        del base_agent, question, session_id
+        calls.append(agent_def.id)
+        if agent_def.id == "root_review" and calls.count("root_review") == 1:
+            return type(
+                "Pred",
+                (),
+                {
+                    "answer": "ROOT_REQUESTED_DATA",
+                    "selected_expert": agent_def.id,
+                    "routing_rationale": "session selected expert-pack agent",
+                    "expert_handoffs": [
+                        {
+                            "delegate_to": "data",
+                            "question": "Find bounded waveform data",
+                            "status": "requested",
+                        }
+                    ],
+                },
+            )()
+        if agent_def.id == "data" and calls.count("data") == 1:
+            return type(
+                "Pred",
+                (),
+                {
+                    "answer": "DATA_REQUESTED_NDP",
+                    "selected_expert": agent_def.id,
+                    "routing_rationale": "delegated child expert",
+                    "expert_handoffs": [
+                        {
+                            "delegate_to": "ndp_catalog",
+                            "question": "Stage bounded NDP resource",
+                            "status": "requested",
+                        }
+                    ],
+                },
+            )()
+        if agent_def.id == "ndp_catalog":
+            return type(
+                "Pred",
+                (),
+                {
+                    "answer": "NDP staging failed: resource exceeds allowed staging limit.",
+                    "selected_expert": agent_def.id,
+                    "routing_rationale": "delegated child expert",
+                    "expert_handoffs": [],
+                },
+            )()
+        if agent_def.id == "data":
+            raise RuntimeError("user agent 'data' returned an empty answer")
+        if agent_def.id == "fallback_analysis":
+            return type(
+                "Pred",
+                (),
+                {
+                    "answer": "ANALYSIS_USED_FALLBACK",
+                    "selected_expert": agent_def.id,
+                    "routing_rationale": "continued from data blocker",
+                    "expert_handoffs": [],
+                },
+            )()
+        return type(
+            "Pred",
+            (),
+            {
+                "answer": "ROOT_FINAL",
+                "selected_expert": agent_def.id,
+                "routing_rationale": "parent resumed after analysis",
+                "expert_handoffs": [],
+            },
+        )()
+
+    monkeypatch.setattr("clio_agent.gact.app._try_streamed_forward", fake_stream_unavailable)
+    monkeypatch.setattr("clio_agent.gact.app._run_prompt_user_agent", fake_prompt_agent)
+
+    root = isolated_env / ".clio" / "experts"
+    root.mkdir(parents=True)
+    root.joinpath("root_review.md").write_text(
+        """---
+id: root_review
+title: Root Review Expert
+parent_id: analysis
+tier: 2
+children:
+  - data
+  - fallback_analysis
+---
+Coordinate the workflow.
+""",
+        encoding="utf-8",
+    )
+    root.joinpath("data.md").write_text(
+        """---
+id: data
+title: Data Expert
+parent_id: root_review
+tier: 3
+children:
+  - ndp_catalog
+parameters:
+  continuation_contracts:
+    - id: data_blocker_to_analysis
+      when_output_contains:
+        - staging limit
+      next_expert: fallback_analysis
+      next_action: run fallback analysis
+---
+Discover data and return blockers.
+""",
+        encoding="utf-8",
+    )
+    root.joinpath("ndp_catalog.md").write_text(
+        """---
+id: ndp_catalog
+title: NDP Catalog Expert
+parent_id: data
+tier: 4
+---
+Stage bounded resources.
+""",
+        encoding="utf-8",
+    )
+    root.joinpath("fallback_analysis.md").write_text(
+        """---
+id: fallback_analysis
+title: Analysis Expert
+parent_id: root_review
+tier: 3
+---
+Analyze recovered data.
+""",
+        encoding="utf-8",
+    )
+
+    app = build_app(sessions_path=tmp_path / "sessions.json", agent=object())
+    with TestClient(app) as client:
+        sid = client.post(
+            "/v1/sessions",
+            json={"title": "nested delegation run", "agent": {"id": "root_review"}},
+        ).json()["id"]
+        assistant = complete_turn(client, sid, "find waveform data and analyze fallback")
+
+    assert calls == [
+        "root_review",
+        "data",
+        "ndp_catalog",
+        "data",
+        "fallback_analysis",
+        "root_review",
+    ]
+    def iter_handoffs(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        found: list[dict[str, Any]] = []
+        stack = list(rows)
+        while stack:
+            row = stack.pop(0)
+            found.append(row)
+            children = row.get("children")
+            if isinstance(children, list):
+                stack.extend(child for child in children if isinstance(child, dict))
+        return found
+
+    handoffs = iter_handoffs(assistant["metadata"]["expert_handoffs"])
+    data = next(
+        row
+        for row in handoffs
+        if row.get("agent_id") == "data" and row.get("stage") == "delegate.completed"
+    )
+    analysis = next(
+        row
+        for row in handoffs
+        if row.get("agent_id") == "fallback_analysis"
+        and row.get("stage") == "delegate.completed"
+    )
+    assert data["status"] == "completed"
+    assert "staging limit" in data["output_summary"]
+    assert analysis["source"] == "agent_blueprint_continuation_policy"
+    assert assistant["parts"][-1]["text"] == "ROOT_FINAL"
+
+
+def test_tool_agent_preserves_trajectory_evidence_when_answer_empty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import dspy
+
+    from clio_agent.gact.app import _build_tool_user_agent_module
+
+    class FakeReact:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            self.extract = SimpleNamespace(predict=lambda *a, **k: None)
+
+        def __call__(self, *args: Any, **kwargs: Any) -> Any:
+            return SimpleNamespace(
+                answer="",
+                trajectory={
+                    "step_0_tool_name": "hdf5_list_datasets",
+                    "step_0_observation": {
+                        "datasets": ["/sim/temperature", "/sim/pressure"],
+                        "warnings": [],
+                    },
+                },
+            )
+
+    monkeypatch.setattr(dspy, "ReAct", FakeReact)
+    monkeypatch.setattr(dspy, "context", lambda **kwargs: nullcontext())
+    monkeypatch.setattr("clio_agent.config.create_lm", lambda config: object())
+    monkeypatch.setattr("clio_agent.config.create_chat_adapter", lambda config: object())
+
+    base_agent = SimpleNamespace(
+        tool_executor=SimpleNamespace(
+            to_dspy_tools=lambda: [SimpleNamespace(name="hdf5_list_datasets")]
+        )
+    )
+    agent_def = AgentDef(
+        id="source_inspect",
+        source="expert_pack",
+        title="Source Inspect",
+        tools=["hdf5_list_datasets"],
+    )
+
+    module = _build_tool_user_agent_module(base_agent, agent_def)
+    pred = module.forward(question="inspect source", session_id="sess_test")
+
+    assert pred.selected_expert == "source_inspect"
+    assert "produced no final prose answer" in pred.answer
+    assert "hdf5_list_datasets" not in pred.answer
+    assert "/sim/temperature" in pred.answer
+    assert pred.trajectory["step_0_tool_name"] == "hdf5_list_datasets"
+
+
+def test_prompt_agent_empty_answer_with_children_enters_repair_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import dspy
+
+    from clio_agent.gact.app import (
+        _ACTIVE_GACT_APP,
+        _ACTIVE_GACT_SESSION_ID,
+        _build_prompt_user_agent_module,
+    )
+
+    class FakePredict:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            pass
+
+        def __call__(self, *args: Any, **kwargs: Any) -> Any:
+            return SimpleNamespace(answer="", expert_handoffs=[])
+
+    monkeypatch.setattr(dspy, "Predict", FakePredict)
+    monkeypatch.setattr(dspy, "context", lambda **kwargs: nullcontext())
+    monkeypatch.setattr("clio_agent.config.create_lm", lambda config: object())
+    monkeypatch.setattr("clio_agent.config.create_chat_adapter", lambda config: object())
+    monkeypatch.setattr(
+        "clio_agent.gact.app._runtime_dynamic_agent_children_context",
+        lambda *args, **kwargs: "Declared child experts available for synchronous delegation:\n- mass_spec",
+    )
+
+    agent_def = AgentDef(
+        id="main",
+        source="expert_pack",
+        title="Proteomics Root",
+    )
+
+    app_token = _ACTIVE_GACT_APP.set(object())
+    session_token = _ACTIVE_GACT_SESSION_ID.set("sess_test")
+    try:
+        module = _build_prompt_user_agent_module(object(), agent_def)
+        pred = module.forward(question="review mzML", session_id="sess_test")
+    finally:
+        _ACTIVE_GACT_SESSION_ID.reset(session_token)
+        _ACTIVE_GACT_APP.reset(app_token)
+
+    assert pred.selected_expert == "main"
+    assert pred.answer == ""
+    assert pred.expert_handoffs == []
+    assert "handoff repair" in pred.routing_rationale
+
+
+def test_tool_agent_preserves_trajectory_evidence_when_answer_contradicts_tool(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import dspy
+
+    from clio_agent.gact.app import _build_tool_user_agent_module
+
+    class FakeReact:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            self.extract = SimpleNamespace(predict=lambda *a, **k: None)
+
+        def __call__(self, *args: Any, **kwargs: Any) -> Any:
+            return SimpleNamespace(
+                answer=(
+                    "I cannot inspect the CIF because no CIF file was provided. "
+                    "Please provide the correct path."
+                ),
+                trajectory={
+                    "step_0_tool_name": "materials_inspect_cif",
+                    "step_0_observation": {
+                        "error": {
+                            "code": "file_not_found",
+                            "path": "/tmp/clio-09-readiness/structure.cif",
+                        }
+                    },
+                    "step_1_observation": (
+                        '{"error": {"code": "file_not_found", '
+                        '"path": "/tmp/clio-09-readiness/stringified.cif"}}'
+                    ),
+                    "step_2_tool_name": "materials_inspect_cif",
+                    "step_2_observation": {
+                        "filepath": "/tmp/clio-benchmark-data/strontium_titanate.cif",
+                        "formula_sum": "SrTiO3",
+                        "space_group": "P m -3 m",
+                        "atom_site_count": 3,
+                    },
+                },
+            )
+
+    monkeypatch.setattr(dspy, "ReAct", FakeReact)
+    monkeypatch.setattr(dspy, "context", lambda **kwargs: nullcontext())
+    monkeypatch.setattr("clio_agent.config.create_lm", lambda config: object())
+    monkeypatch.setattr("clio_agent.config.create_chat_adapter", lambda config: object())
+
+    base_agent = SimpleNamespace(
+        tool_executor=SimpleNamespace(
+            to_dspy_tools=lambda: [SimpleNamespace(name="materials_inspect_cif")]
+        )
+    )
+    agent_def = AgentDef(
+        id="crystal_structure",
+        source="expert_pack",
+        title="Crystal Structure",
+        tools=["materials_inspect_cif"],
+    )
+
+    module = _build_tool_user_agent_module(base_agent, agent_def)
+    pred = module.forward(question="inspect CIF", session_id="sess_test")
+
+    assert pred.selected_expert == "crystal_structure"
+    assert "appeared to contradict successful tool observations" in pred.answer
+    assert "/tmp/clio-benchmark-data/strontium_titanate.cif" in pred.answer
+    assert "/tmp/clio-09-readiness/structure.cif" not in pred.answer
+    assert "/tmp/clio-09-readiness/stringified.cif" not in pred.answer
+    assert "SrTiO3" in pred.answer
+    assert "Discarded contradictory final answer" in pred.answer
+
+
+def test_tool_agent_empty_answer_without_observation_still_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import dspy
+
+    from clio_agent.gact.app import _build_tool_user_agent_module
+
+    class FakeReact:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            self.extract = SimpleNamespace(predict=lambda *a, **k: None)
+
+        def __call__(self, *args: Any, **kwargs: Any) -> Any:
+            return SimpleNamespace(
+                answer="",
+                trajectory={"step_0_tool_name": "hdf5_list_datasets"},
+            )
+
+    monkeypatch.setattr(dspy, "ReAct", FakeReact)
+    monkeypatch.setattr(dspy, "context", lambda **kwargs: nullcontext())
+    monkeypatch.setattr("clio_agent.config.create_lm", lambda config: object())
+    monkeypatch.setattr("clio_agent.config.create_chat_adapter", lambda config: object())
+
+    base_agent = SimpleNamespace(
+        tool_executor=SimpleNamespace(
+            to_dspy_tools=lambda: [SimpleNamespace(name="hdf5_list_datasets")]
+        )
+    )
+    agent_def = AgentDef(
+        id="source_inspect",
+        source="expert_pack",
+        title="Source Inspect",
+        tools=["hdf5_list_datasets"],
+    )
+
+    module = _build_tool_user_agent_module(base_agent, agent_def)
+    with pytest.raises(RuntimeError, match="returned an empty answer"):
+        module.forward(question="inspect source", session_id="sess_test")
+
+
+def test_current_expert_continuation_policy_executes_declared_child(
+    isolated_env: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from .conftest import complete_turn
+
+    calls: list[str] = []
+
+    async def fake_stream_unavailable(
+        app: Any,
+        enriched_text: str,
+        sid: str,
+        emit_chunk: Any,
+        **kwargs: Any,
+    ) -> None:
+        del enriched_text, emit_chunk, kwargs
+        from clio_agent.gact.app import _record_stream_fallback
+
+        _record_stream_fallback(app, sid, "dynamic_prompt_stream_unavailable")
+        return None
+
+    def fake_prompt_agent(base_agent: Any, agent_def: Any, question: str, session_id: str) -> Any:
+        del base_agent, question, session_id
+        calls.append(agent_def.id)
+        if agent_def.id == "root_review" and calls.count("root_review") == 1:
+            return type(
+                "Pred",
+                (),
+                {
+                    "answer": "ROOT_REQUESTED_STRUCTURE",
+                    "selected_expert": agent_def.id,
+                    "routing_rationale": "session selected expert-pack agent",
+                    "expert_handoffs": [
+                        {
+                            "delegate_to": "structure",
+                            "question": "Inspect CIF",
+                            "status": "requested",
+                        }
+                    ],
+                },
+            )()
+        if agent_def.id == "structure":
+            return type(
+                "Pred",
+                (),
+                {
+                    "answer": "Formula SrTiO3 and occupancy evidence are clean.",
+                    "selected_expert": agent_def.id,
+                    "routing_rationale": "tool-grounded structure answer",
+                    "expert_handoffs": [],
+                },
+            )()
+        if agent_def.id == "quality":
+            return type(
+                "Pred",
+                (),
+                {
+                    "answer": "QUALITY_REVIEW_DONE",
+                    "selected_expert": agent_def.id,
+                    "routing_rationale": "policy child",
+                    "expert_handoffs": [],
+                },
+            )()
+        return type(
+            "Pred",
+            (),
+            {
+                "answer": "ROOT_FINAL",
+                "selected_expert": agent_def.id,
+                "routing_rationale": "parent resumed after policy child",
+                "expert_handoffs": [],
+            },
+        )()
+
+    monkeypatch.setattr("clio_agent.gact.app._try_streamed_forward", fake_stream_unavailable)
+    monkeypatch.setattr("clio_agent.gact.app._run_prompt_user_agent", fake_prompt_agent)
+
+    root = isolated_env / ".clio" / "experts"
+    root.mkdir(parents=True)
+    root.joinpath("root_review.md").write_text(
+        """---
+id: root_review
+title: Root Review Expert
+parent_id: analysis
+tier: 2
+children:
+  - structure
+---
+Coordinate review.
+""",
+        encoding="utf-8",
+    )
+    root.joinpath("structure.md").write_text(
+        """---
+id: structure
+title: Structure Expert
+parent_id: root_review
+tier: 3
+children:
+  - quality
+parameters:
+  continuation_contracts:
+    - id: structure_to_quality
+      when_output_contains:
+        - occupancy
+      next_expert: quality
+      next_action: review quality
+---
+Inspect structure.
+""",
+        encoding="utf-8",
+    )
+    root.joinpath("quality.md").write_text(
+        """---
+id: quality
+title: Quality Expert
+parent_id: structure
+tier: 4
+---
+Review quality.
+""",
+        encoding="utf-8",
+    )
+
+    app = build_app(sessions_path=tmp_path / "sessions.json", agent=object())
+    with TestClient(app) as client:
+        sid = client.post(
+            "/v1/sessions",
+            json={"title": "current policy run", "agent": {"id": "root_review"}},
+        ).json()["id"]
+        assistant = complete_turn(client, sid, "review the CIF")
+
+    assert calls == ["root_review", "structure", "quality", "structure", "root_review"]
+    def iter_handoffs(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        found: list[dict[str, Any]] = []
+        stack = list(rows)
+        while stack:
+            row = stack.pop(0)
+            found.append(row)
+            children = row.get("children")
+            if isinstance(children, list):
+                stack.extend(child for child in children if isinstance(child, dict))
+        return found
+
+    handoffs = iter_handoffs(assistant["metadata"]["expert_handoffs"])
+    quality = next(
+        row
+        for row in handoffs
+        if row.get("agent_id") == "quality" and row.get("stage") == "delegate.completed"
+    )
+    assert quality["source"] == "agent_blueprint_continuation_policy"
+    assert assistant["parts"][-1]["text"] == "ROOT_FINAL"
+
+
+def test_continuation_contract_retries_incomplete_prior_child(
+    isolated_env: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from .conftest import complete_turn
+
+    calls: list[tuple[str, str]] = []
+
+    async def fake_stream_unavailable(
+        app: Any,
+        enriched_text: str,
+        sid: str,
+        emit_chunk: Any,
+        **kwargs: Any,
+    ) -> None:
+        del enriched_text, emit_chunk, kwargs
+        from clio_agent.gact.app import _record_stream_fallback
+
+        _record_stream_fallback(app, sid, "dynamic_prompt_stream_unavailable")
+        return None
+
+    def fake_prompt_agent(base_agent: Any, agent_def: Any, question: str, session_id: str) -> Any:
+        del base_agent, session_id
+        calls.append((agent_def.id, question))
+        if agent_def.id == "root_review" and len(calls) == 1:
+            return type(
+                "Pred",
+                (),
+                {
+                    "answer": "ROOT_REQUESTED_ANALYSIS_AND_PLOT",
+                    "selected_expert": agent_def.id,
+                    "routing_rationale": "session selected expert-pack agent",
+                    "expert_handoffs": [
+                        {
+                            "delegate_to": "waveform_visualization",
+                            "question": "Generate a PNG plot of the waveform using computed statistics.",
+                            "status": "requested",
+                        },
+                        {
+                            "delegate_to": "waveform_analysis",
+                            "question": "Recover SAC evidence and trace statistics.",
+                            "status": "requested",
+                        },
+                    ],
+                },
+            )()
+        if agent_def.id == "waveform_visualization" and "Returned evidence" not in question:
+            return type(
+                "Pred",
+                (),
+                {
+                    "answer": (
+                        "I cannot create the PNG yet because I do not have a SAC file. "
+                        "We need to obtain waveform data before plotting."
+                    ),
+                    "selected_expert": agent_def.id,
+                    "routing_rationale": "called before data was available",
+                    "expert_handoffs": [],
+                },
+            )()
+        if agent_def.id == "waveform_analysis":
+            return type(
+                "Pred",
+                (),
+                {
+                    "answer": (
+                        "Trace statistics complete for /tmp/waveform.sac.\n\n"
+                        "NEXT_EXPERT: waveform_visualization\n"
+                        "NEXT_ACTION: plot_sac_traces /tmp/waveform.sac"
+                    ),
+                    "selected_expert": agent_def.id,
+                    "routing_rationale": "analysis recovered SAC evidence",
+                    "expert_handoffs": [],
+                },
+            )()
+        if agent_def.id == "waveform_visualization":
+            assert "/tmp/waveform.sac" in question
+            return type(
+                "Pred",
+                (),
+                {
+                    "answer": "PNG_DONE /tmp/waveform.png",
+                    "selected_expert": agent_def.id,
+                    "routing_rationale": "retried with returned SAC evidence",
+                    "expert_handoffs": [],
+                },
+            )()
+        return type(
+            "Pred",
+            (),
+            {
+                "answer": "ROOT_FINAL",
+                "selected_expert": agent_def.id,
+                "routing_rationale": "root finalized",
+                "expert_handoffs": [],
+            },
+        )()
+
+    monkeypatch.setattr("clio_agent.gact.app._try_streamed_forward", fake_stream_unavailable)
+    monkeypatch.setattr("clio_agent.gact.app._run_prompt_user_agent", fake_prompt_agent)
+
+    root = isolated_env / ".clio" / "experts"
+    root.mkdir(parents=True)
+    root.joinpath("root_review.md").write_text(
+        """---
+id: root_review
+title: Root Review Expert
+parent_id: analysis
+tier: 2
+children:
+  - waveform_visualization
+  - waveform_analysis
+parameters:
+  max_sync_delegation_rounds: 4
+---
+Coordinate analysis and visualization.
+""",
+        encoding="utf-8",
+    )
+    root.joinpath("waveform_analysis.md").write_text(
+        """---
+id: waveform_analysis
+title: Analysis Expert
+parent_id: root_review
+tier: 3
+---
+Recover SAC evidence.
+""",
+        encoding="utf-8",
+    )
+    root.joinpath("waveform_visualization.md").write_text(
+        """---
+id: waveform_visualization
+title: Visualization Expert
+parent_id: root_review
+tier: 3
+---
+Plot SAC artifacts.
+""",
+        encoding="utf-8",
+    )
+
+    app = build_app(sessions_path=tmp_path / "sessions.json", agent=object())
+    with TestClient(app) as client:
+        sid = client.post(
+            "/v1/sessions",
+            json={"title": "retry continuation", "agent": {"id": "root_review"}},
+        ).json()["id"]
+        assistant = complete_turn(client, sid, "recover waveform and plot it")
+
+    assert calls, assistant
+    visualization_calls = [
+        question for agent_id, question in calls if agent_id == "waveform_visualization"
+    ]
+    assert len(visualization_calls) == 2
+    assert "Returned evidence" in visualization_calls[1]
+    assert assistant["parts"][-1]["text"] == "ROOT_FINAL"
+
+    def iter_handoffs(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        found: list[dict[str, Any]] = []
+        stack = list(rows)
+        while stack:
+            row = stack.pop(0)
+            found.append(row)
+            children = row.get("children")
+            if isinstance(children, list):
+                stack.extend(child for child in children if isinstance(child, dict))
+        return found
+
+    handoffs = iter_handoffs(assistant["metadata"]["expert_handoffs"])
+    visualization_completed = [
+        row
+        for row in handoffs
+        if row.get("agent_id") == "waveform_visualization"
+        and row.get("stage") == "delegate.completed"
+    ]
+    assert [row["output_summary"] for row in visualization_completed] == [
+        (
+            "I cannot create the PNG yet because I do not have a SAC file. "
+            "We need to obtain waveform data before plotting."
+        ),
+        "PNG_DONE /tmp/waveform.png",
+    ]
+    assert not any(
+        row.get("agent_id") == "waveform_visualization"
+        and row.get("stage") == "delegate.skipped"
+        for row in handoffs
+    )
 
 
 def test_pack_continuation_policy_executes_declared_child_when_contract_text_missing(
