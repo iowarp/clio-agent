@@ -36,7 +36,7 @@ import sys
 import threading
 import time
 import uuid
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from contextlib import asynccontextmanager, contextmanager, nullcontext
 from dataclasses import asdict
 from datetime import datetime, timezone
@@ -2190,6 +2190,125 @@ def _delegation_continuation_contract(output: str) -> dict[str, Any]:
     return contract
 
 
+def _delegation_policy_terms(policy: Mapping[str, Any]) -> list[str]:
+    """Return non-empty trigger terms from a pack-defined continuation policy."""
+
+    raw_terms = (
+        policy.get("when_output_contains")
+        or policy.get("trigger_terms")
+        or policy.get("contains")
+        or []
+    )
+    if isinstance(raw_terms, str):
+        raw_terms = [raw_terms]
+    if not isinstance(raw_terms, Iterable):
+        return []
+    terms: list[str] = []
+    for raw_term in raw_terms:
+        term = str(raw_term or "").strip()
+        if term:
+            terms.append(term)
+    return terms
+
+
+def _delegation_policy_matches(
+    policy: Mapping[str, Any],
+    output: str,
+) -> tuple[bool, list[str]]:
+    """Return whether a pack policy matches delegated output and which terms matched."""
+
+    terms = _delegation_policy_terms(policy)
+    if not terms:
+        return False, []
+    lowered_output = output.lower()
+    matched = [term for term in terms if term.lower() in lowered_output]
+    match_mode = str(policy.get("match") or policy.get("match_mode") or "any").strip().lower()
+    if match_mode == "all":
+        return len(matched) == len(terms), matched
+    return bool(matched), matched
+
+
+def _delegation_continuation_policy_contract(
+    agent_def: "AgentDef | None",
+    output: str,
+) -> dict[str, Any]:
+    """Synthesize a continuation contract from agent blueprint policy metadata."""
+
+    if agent_def is None or not isinstance(agent_def.parameters, Mapping):
+        return {}
+    params = agent_def.parameters
+    raw_policies = params.get("continuation_contracts")
+    if isinstance(raw_policies, Mapping):
+        raw_policies = [raw_policies]
+    if (
+        raw_policies
+        and isinstance(raw_policies, list)
+        and not any(isinstance(raw_policy, Mapping) for raw_policy in raw_policies)
+        and any(params.get(key) for key in ("next_expert", "required_next_expert", "target_expert"))
+    ):
+        # The dependency-free markdown frontmatter parser supports flat maps and
+        # may flatten a single nested list-of-maps policy under parameters.
+        source_policy = ""
+        first_item = str(raw_policies[0] or "").strip() if raw_policies else ""
+        if first_item.lower().startswith("id:"):
+            source_policy = first_item.partition(":")[2].strip()
+        flags = {
+            str(key): str(value)
+            for key, value in params.items()
+            if str(key).startswith("DO_NOT_")
+        }
+        raw_policies = [
+            {
+                "id": source_policy,
+                "when_output_contains": params.get("when_output_contains") or params.get("trigger_terms"),
+                "match": params.get("match") or params.get("match_mode") or "any",
+                "next_expert": params.get("next_expert")
+                or params.get("required_next_expert")
+                or params.get("target_expert"),
+                "next_action": params.get("next_action")
+                or params.get("required_next_action")
+                or params.get("action"),
+                "flags": flags,
+            }
+        ]
+    if not isinstance(raw_policies, list):
+        return {}
+    for index, raw_policy in enumerate(raw_policies):
+        if not isinstance(raw_policy, Mapping):
+            continue
+        matches, matched_terms = _delegation_policy_matches(raw_policy, output)
+        if not matches:
+            continue
+        target_id = str(
+            raw_policy.get("next_expert")
+            or raw_policy.get("required_next_expert")
+            or raw_policy.get("target_expert")
+            or ""
+        ).strip()
+        if not target_id:
+            continue
+        action = str(
+            raw_policy.get("next_action")
+            or raw_policy.get("required_next_action")
+            or raw_policy.get("action")
+            or ""
+        ).strip()
+        raw_flags = raw_policy.get("flags") or {}
+        flags = {str(key): str(value) for key, value in raw_flags.items()} if isinstance(raw_flags, Mapping) else {}
+        contract: dict[str, Any] = {
+            "next_expert": target_id,
+            "source": "agent_blueprint_continuation_policy",
+            "source_policy": str(raw_policy.get("id") or raw_policy.get("name") or index),
+            "matched_terms": matched_terms,
+        }
+        if action:
+            contract["next_action"] = action
+        if flags:
+            contract["flags"] = flags
+        return contract
+    return {}
+
+
 def _iter_delegation_return_rows(rows: list[dict[str, Any]]) -> Iterator[dict[str, Any]]:
     """Yield completed delegation rows, including nested child return rows."""
 
@@ -2398,6 +2517,7 @@ def _dynamic_agent_runtime_provenance(
                     if isinstance(row, Mapping)
                 ],
                 "commands": list(agent_def.commands),
+                "parameters": _redact_runtime_provenance_value(dict(agent_def.parameters)),
                 "pack": {
                     "id": str(agent_def.metadata.get("pack_id") or ""),
                     "version": str(agent_def.metadata.get("pack_version") or ""),
@@ -2477,6 +2597,32 @@ def _mcp_tool_runtime_provenance(
             }
         )
     return rows
+
+
+_SECRET_PROVENANCE_KEY_RE = re.compile(r"(secret|token|password|api[_-]?key|credential)", re.IGNORECASE)
+
+
+def _redact_runtime_provenance_value(value: Any, *, depth: int = 0) -> Any:
+    """Return a JSON-safe, non-secret parameter value for runtime provenance."""
+
+    if depth > 6:
+        return str(value)
+    if isinstance(value, Mapping):
+        redacted: dict[str, Any] = {}
+        for raw_key, raw_value in value.items():
+            key = str(raw_key)
+            if _SECRET_PROVENANCE_KEY_RE.search(key):
+                redacted[key] = "<redacted>"
+            else:
+                redacted[key] = _redact_runtime_provenance_value(raw_value, depth=depth + 1)
+        return redacted
+    if isinstance(value, list):
+        return [_redact_runtime_provenance_value(item, depth=depth + 1) for item in value]
+    if isinstance(value, tuple):
+        return [_redact_runtime_provenance_value(item, depth=depth + 1) for item in value]
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    return str(value)
 
 
 def _turn_runtime_provenance(
@@ -2654,6 +2800,10 @@ def _continuation_contract_handoff_rows(
     for row in _iter_delegation_return_rows(rows):
         summary = str(row.get("output_summary") or row.get("summary") or "").strip()
         contract = _delegation_continuation_contract(summary)
+        origin = str(row.get("agent_id") or row.get("delegate_to") or "").strip()
+        origin_agent = _resolve_runtime_dynamic_agent(app, origin, session_id=session_id) if origin else None
+        if not contract.get("next_expert"):
+            contract = _delegation_continuation_policy_contract(origin_agent, summary)
         target_id = str(contract.get("next_expert") or "").strip()
         if not target_id:
             continue
@@ -2667,7 +2817,6 @@ def _continuation_contract_handoff_rows(
         if key in seen_contracts:
             continue
         seen_contracts.add(key)
-        origin = str(row.get("agent_id") or row.get("delegate_to") or "").strip()
         origin_parent = str(row.get("parent_id") or "").strip()
         prompt_parts = [
             f"Continuation contract returned by {origin or 'child expert'}.",
@@ -2685,7 +2834,7 @@ def _continuation_contract_handoff_rows(
                 "question": "\n\n".join(prompt_parts),
                 "status": "requested",
                 "execute": True,
-                "source": "delegation_continuation_contract",
+                "source": str(contract.get("source") or "delegation_continuation_contract"),
                 "continuation_contract": {
                     **contract,
                     "origin_agent_id": origin,
