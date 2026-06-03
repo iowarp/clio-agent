@@ -2130,6 +2130,34 @@ def _dynamic_parent_resume_prompt(
     )
 
 
+_DELEGATION_CONTRACT_PREFIXES = (
+    "NEXT_EXPERT:",
+    "NEXT_ACTION:",
+    "REQUIRED_NEXT_EXPERT:",
+    "REQUIRED_NEXT_ACTION:",
+    "DO_NOT_",
+    "FINAL_ARTIFACT:",
+    "ARTIFACT:",
+)
+
+
+def _compact_delegation_contract_lines(output: str, *, limit: int = 16) -> list[str]:
+    """Return explicit pack-defined continuation contracts from child output."""
+
+    contract_lines: list[str] = []
+    for raw_line in output.splitlines():
+        line = " ".join(raw_line.strip().split())
+        if not line:
+            continue
+        upper = line.upper()
+        if any(upper.startswith(prefix) for prefix in _DELEGATION_CONTRACT_PREFIXES):
+            if line not in contract_lines:
+                contract_lines.append(line)
+        if len(contract_lines) >= limit:
+            break
+    return contract_lines
+
+
 def _compact_dynamic_delegation_output(output: str, *, limit: int = 2200) -> str:
     """Compact child output while retaining exact evidence needed by parents."""
 
@@ -2137,6 +2165,7 @@ def _compact_dynamic_delegation_output(output: str, *, limit: int = 2200) -> str
     if len(text) <= limit:
         return text
     evidence_index = _compact_exact_evidence_index(text)
+    contract_lines = _compact_delegation_contract_lines(text)
     stat_lines: list[str] = []
     stat_terms = (
         "trace",
@@ -2168,6 +2197,11 @@ def _compact_dynamic_delegation_output(output: str, *, limit: int = 2200) -> str
     retained_blocks: list[str] = []
     if evidence_index:
         retained_blocks.append(evidence_index)
+    if contract_lines:
+        retained_blocks.append(
+            "Retained delegation continuation contracts:\n"
+            + "\n".join(f"- {line}" for line in contract_lines)
+        )
     if stat_lines:
         retained_blocks.append("Retained numeric/trace evidence:\n" + "\n".join(f"- {line}" for line in stat_lines))
     retained = "\n\n".join(retained_blocks)
