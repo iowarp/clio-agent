@@ -461,19 +461,33 @@ def _mcp_stdio_spec_from_metadata(
     if method in {"binary", "command"} and package:
         return package, args, warnings
     if method in {"local", "pack-local", "python"}:
-        script = str(
-            install.get("path")
-            or install.get("script")
-            or runtime.get("path")
-            or runtime.get("script")
-            or ""
-        ).strip()
+        script = _local_mcp_script_from_metadata(meta)
         if script:
             resolved = root / script
             return "python", [str(resolved), *args], warnings
     if method:
         warnings.append(f"unsupported MCP install method for stdio launch derivation: {method}")
     return "", args, warnings
+
+
+def _local_mcp_script_from_metadata(meta: dict[str, Any]) -> str:
+    install = _mapping_field(meta, "install", "deployment")
+    runtime = _mapping_field(meta, "runtime", "run")
+    method = str(
+        install.get("method")
+        or install.get("type")
+        or install.get("manager")
+        or ""
+    ).strip()
+    if method not in {"local", "pack-local", "python"}:
+        return ""
+    return str(
+        install.get("path")
+        or install.get("script")
+        or runtime.get("path")
+        or runtime.get("script")
+        or ""
+    ).strip()
 
 
 def _validate_agent_tool_references(
@@ -573,6 +587,9 @@ def load_mcp_descriptors(
         if transport not in {"", "stdio", "http", "streamable-http"}:
             errors.append(f"unsupported MCP descriptor transport: {transport}")
         command, args, install_warnings = _mcp_stdio_spec_from_metadata(meta, root=root)
+        local_script = _local_mcp_script_from_metadata(meta)
+        if local_script and not (root / local_script).is_file():
+            errors.append(f"pack-local MCP launch path not found: {local_script}")
         if transport == "stdio" and not command:
             errors.append("stdio MCP descriptors require command")
         if transport in {"http", "streamable-http"} and not str(meta.get("url") or "").strip():

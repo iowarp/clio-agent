@@ -139,6 +139,8 @@ def _is_complex_pack(
 def _is_self_contained_mcp_descriptor(descriptor: dict[str, Any]) -> bool:
     """Return whether an MCP descriptor carries portable launch metadata."""
 
+    if descriptor.get("validation_errors"):
+        return False
     install = descriptor.get("install") if isinstance(descriptor.get("install"), dict) else {}
     method = str(install.get("method") or install.get("type") or install.get("manager") or "").strip()
     if method in {"uvx", "npx"}:

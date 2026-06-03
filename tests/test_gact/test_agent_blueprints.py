@@ -1201,6 +1201,11 @@ def test_agent_blueprint_mcp_descriptor_derives_pack_local_launch(
     root = tmp_path / "marketplace" / "local-calc"
     _write_blueprint(root, blueprint_id="local-calc")
     (root / "tools").mkdir()
+    (root / "mcp").mkdir()
+    (root / "mcp" / "calculator_server.py").write_text(
+        "print('calculator')\n",
+        encoding="utf-8",
+    )
     root.joinpath("tools", "calculator.md").write_text(
         """---
 id: calculator
@@ -1223,6 +1228,38 @@ Calculator descriptor.
     assert descriptor["validation_errors"] == []
     assert descriptor["command"] == "python"
     assert descriptor["args"] == [str(root / "mcp" / "calculator_server.py")]
+
+
+def test_agent_blueprint_mcp_descriptor_rejects_missing_pack_local_launch(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "marketplace" / "local-calc"
+    _write_blueprint(root, blueprint_id="local-calc")
+    (root / "tools").mkdir()
+    root.joinpath("tools", "calculator.md").write_text(
+        """---
+id: calculator
+name: Local Calculator MCP
+transport: stdio
+install:
+  method: pack-local
+  path: mcp/missing_server.py
+tools:
+  - calculator_add
+---
+Calculator descriptor.
+""",
+        encoding="utf-8",
+    )
+
+    body = validate_agent_blueprint_path(root)
+
+    assert body["enabled"] is False
+    errors = "\n".join(body["validation_errors"])
+    assert "calculator: pack-local MCP launch path not found: mcp/missing_server.py" in errors
+    descriptor = body["mcp_descriptors"][0]
+    assert descriptor["command"] == "python"
+    assert descriptor["args"] == [str(root / "mcp" / "missing_server.py")]
 
 
 def test_agent_blueprint_mcp_descriptor_validates_transport_requirements(

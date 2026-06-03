@@ -213,3 +213,46 @@ def test_marketplace_preflight_can_require_self_contained_mcp_descriptors(
     assert result["validation_errors"] == [
         "self-contained MCP descriptor count below requirement: 0/1"
     ]
+
+
+def test_marketplace_preflight_does_not_count_invalid_pack_local_mcp_descriptor(
+    tmp_path: Path,
+) -> None:
+    _write_pack(tmp_path, pack_id="local-mcp-pack", nested=False)
+    tools = tmp_path / "local-mcp-pack" / "tools"
+    tools.mkdir(parents=True)
+    tools.joinpath("calculator.md").write_text(
+        """---
+id: calculator
+name: Calculator MCP
+transport: stdio
+install:
+  method: pack-local
+  path: mcp/missing_server.py
+tools:
+  - calculator_add
+---
+Calculator descriptor.
+""",
+        encoding="utf-8",
+    )
+
+    result = validate_marketplace_source(
+        tmp_path,
+        options=MarketplaceValidationOptions(
+            require_mcp_descriptor_count=1,
+            require_self_contained_mcp_count=1,
+        ),
+    )
+
+    assert result["ok"] is False
+    assert result["mcp_descriptor_count"] == 1
+    assert result["self_contained_mcp_descriptor_count"] == 0
+    assert any(
+        "local-mcp-pack: calculator: pack-local MCP launch path not found: mcp/missing_server.py"
+        == error
+        for error in result["validation_errors"]
+    )
+    assert "self-contained MCP descriptor count below requirement: 0/1" in result[
+        "validation_errors"
+    ]
