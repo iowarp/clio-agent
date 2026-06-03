@@ -10,10 +10,16 @@ The final public-demo benchmark should be built from:
 
 - `CLIO_HIERARCHICAL_AGENT_BENCHMARK_CASES_SOURCE.md`
 - `CLIO_HIERARCHICAL_AGENT_BENCHMARK_REVIEW.md`
+- `CASE_EVIDENCE_CONTRACT.md`
 
 Those files define the target semantics: real scientific workflows, natural
 prompts, meaningful expert hierarchies, sync delegation returns, fan-out/merge,
 recovery, provenance, objective pass criteria, and ablations where useful.
+
+The 12-case checklist is tracked in `iowarp/clio-agent#628`. Each checklist item
+maps to a committed `caseXX-short-name/` folder. Do not mark a case complete
+from scattered historical evidence; the case folder must contain its own live
+stream capture, semantic trace, run metadata, outputs, and result note.
 
 ## How To Read Existing Evidence
 
@@ -77,3 +83,23 @@ benchmark. It currently contains:
 
 The next milestone is to replace the scaffold packs and rerun the watched
 benchmark with the researched packs.
+
+## Case Folder Status
+
+The current case folders are contracts, not pass claims:
+
+- `case01-genomics-cohort-qc`
+- `case02-genomics-memory-followup`
+- `case03-proteomics-lfq-qc`
+- `case04-proteomics-format-validation`
+- `case05-hpc-io-regression`
+- `case06-format-bridge-integrity`
+- `case07-terrain-lidar-suitability`
+- `case08-ndp-seismic-waveform-png`
+- `case09-catalog-recovery`
+- `case10-custom-mcp-workflow`
+- `case11-hooks-logging-streaming`
+- `case12-marketplace-workspace-swap`
+
+They should remain unchecked in `#628` until each folder contains the evidence
+required by `CASE_EVIDENCE_CONTRACT.md`.

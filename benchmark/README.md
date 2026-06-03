@@ -14,6 +14,13 @@ semantics, and surfaced-error behavior.
   which files are final benchmark sources, which reports are infrastructure
   evidence, and why the early marketplace packs must be replaced by researched
   scientific benchmark agents.
+- `CASE_EVIDENCE_CONTRACT.md` - required evidence layout for the 12 public-demo
+  benchmark case folders. A case is not passed until its folder contains live
+  streamed events, semantic trace, run metadata, outputs, and a human result
+  note.
+- `caseXX-short-name/` - per-case benchmark evidence folders tracked by
+  `iowarp/clio-agent#628`. These folders start as contracts and should be
+  filled by watched live runs, not by unit-test output.
 - `CURRENT_STATUS.md` - current human-facing benchmark status: what failed,
   what was fixed, what now works, and which stress gaps remain future work.
 - `../docs/PREBENCHMARK_HARDENING_AUDIT.md` - backend hardening matrix for
@@ -205,3 +212,9 @@ row for each case, especially `session_log.root_messages` and
 `session_log.child_sessions[].messages`. A human audit should check that the
 natural prompt, selected route, delegated experts, tool calls, surfaced errors
 or recoveries, artifacts, and final answer all agree with each other.
+
+For the 12-case public-demo benchmark, use the case-local evidence folders
+defined in `CASE_EVIDENCE_CONTRACT.md`. Historical flat reports in this
+directory can support debugging or migration, but the `#628` checklist should
+only be checked off after the matching `caseXX-short-name/` folder contains the
+live run trace, streamed event capture, semantic log, outputs, and result note.
