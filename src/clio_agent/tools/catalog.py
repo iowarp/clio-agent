@@ -154,6 +154,11 @@ TOOL_CATALOG: dict[str, ToolCatalogEntry] = {
         "mass_spec",
         {"mass-spectrometry", "mzml", "proteomics", "spectra", "inspect"},
     ),
+    "mass_spec_lfq_differential_abundance": _entry(
+        "mass_spec_lfq_differential_abundance",
+        "mass_spec",
+        {"mass-spectrometry", "proteomics", "lfq", "differential", "abundance"},
+    ),
     "plot_histogram": _entry(
         "plot_histogram", "visualization", {"visualization", "plot", "histogram"}
     ),

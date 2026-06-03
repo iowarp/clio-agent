@@ -58,6 +58,22 @@ def mzml_file(tmp_path):
     return path
 
 
+@pytest.fixture
+def lfq_table(tmp_path):
+    path = tmp_path / "proteinGroups.txt"
+    path.write_text(
+        "Protein IDs\tGene names\tReverse\tPotential contaminant\tIntensity 6A_1\tIntensity 6A_2\tIntensity 6A_3\tIntensity 6B_1\tIntensity 6B_2\tIntensity 6B_3\n"
+        "UPS1_P001\tUPS1A\t\t\t100\t120\t110\t1125\t1100\t1150\n"
+        "UPS1_P002\tUPS1B\t\t\t95\t105\t100\t1012\t1037\t1000\n"
+        "YEAST_P001\tACT1\t\t\t1000\t1010\t990\t4200\t4000\t4100\n"
+        "YEAST_P002\tTUB1\t\t\t500\t520\t510\t2050\t2100\t2080\n"
+        "YEAST_P003\tRPL3\t\t\t750\t760\t740\t3000\t\t3050\n"
+        "CON__TRYPSIN\tTRY\t\t+\t100\t100\t100\t100\t100\t100\n",
+        encoding="utf-8",
+    )
+    return path
+
+
 @pytest.mark.asyncio
 async def test_inspect_mzml_returns_spectrum_summary(mzml_file):
     async with Client(mass_spec_server) as client:
@@ -77,10 +93,67 @@ async def test_inspect_mzml_returns_spectrum_summary(mzml_file):
 
 
 @pytest.mark.asyncio
-async def test_gateway_exposes_mass_spec_tool(mzml_file):
+async def test_lfq_differential_abundance_selects_median_normalization(lfq_table):
+    async with Client(mass_spec_server) as client:
+        result = await client.call_tool(
+            "lfq_differential_abundance",
+            {
+                "filepath": str(lfq_table),
+                "group_a_prefix": "Intensity 6A_",
+                "group_b_prefix": "Intensity 6B_",
+                "spike_terms": "UPS1",
+                "expected_spike_log2fc": 1.566,
+                "min_observed_per_group": 2,
+            },
+        )
+    data = _parse_result(result)
+
+    assert data["ok"] is True
+    assert data["removed_contaminant_or_reverse_rows"] == 1
+    assert data["selected_normalization"] == "median"
+    assert data["normalization_methods"]["raw"]["spike_abs_error"] > 0.3
+    assert data["normalization_methods"]["median"]["spike_abs_error"] < 0.3
+    assert data["sample_missingness"]["Intensity 6B_2"]["missing"] == 1
+    ranked = {row["protein"]: row for row in data["ranked_proteins"]}
+    assert ranked["UPS1_P001"]["log2_fold_change"] > 1.3
+    assert ranked["UPS1_P002"]["log2_fold_change"] > 1.3
+    assert "CON__TRYPSIN" not in ranked
+
+
+@pytest.mark.asyncio
+async def test_lfq_differential_abundance_reports_missing_groups(lfq_table):
+    async with Client(mass_spec_server) as client:
+        result = await client.call_tool(
+            "lfq_differential_abundance",
+            {
+                "filepath": str(lfq_table),
+                "group_a_prefix": "missing_A",
+                "group_b_prefix": "Intensity 6B_",
+            },
+        )
+    data = _parse_result(result)
+
+    assert data["ok"] is False
+    assert "Could not find intensity columns" in data["error"]
+    assert "Intensity 6B_1" in data["available_numeric_columns"]
+
+
+@pytest.mark.asyncio
+async def test_gateway_exposes_mass_spec_tool(mzml_file, lfq_table):
     async with Client(gateway) as client:
         result = await client.call_tool("mass_spec_inspect_mzml", {"filepath": str(mzml_file)})
+        lfq = await client.call_tool(
+            "mass_spec_lfq_differential_abundance",
+            {
+                "filepath": str(lfq_table),
+                "group_a_prefix": "Intensity 6A_",
+                "group_b_prefix": "Intensity 6B_",
+                "spike_terms": "UPS1",
+                "expected_spike_log2fc": 1.566,
+            },
+        )
 
     data = _parse_result(result)
     assert data["ok"] is True
     assert data["ms_levels"]["2"] == 1
+    assert _parse_result(lfq)["selected_normalization"] == "median"
