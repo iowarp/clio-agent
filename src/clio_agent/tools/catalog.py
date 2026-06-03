@@ -129,6 +129,11 @@ TOOL_CATALOG: dict[str, ToolCatalogEntry] = {
         "genomics",
         {"genomics", "vcf", "variants", "sequence", "analysis"},
     ),
+    "genomics_vcf_cohort_qc": _entry(
+        "genomics_vcf_cohort_qc",
+        "genomics",
+        {"genomics", "vcf", "cohort", "qc", "samples", "heterozygosity"},
+    ),
     "materials_inspect_cif": _entry(
         "materials_inspect_cif",
         "materials",
