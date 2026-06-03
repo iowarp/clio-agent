@@ -57,12 +57,18 @@ _DATA_FILE_SUFFIXES = {
     ".gz",
     ".h5",
     ".hdf5",
+    ".las",
+    ".laz",
     ".mzml",
+    ".npy",
+    ".npz",
     ".parquet",
     ".png",
     ".sac",
     ".tar",
     ".tgz",
+    ".tsv",
+    ".txt",
     ".vcf",
 }
 _CANONICAL_CASES_BY_ID: dict[str, "DemoCase"] | None = None
@@ -2275,6 +2281,26 @@ def _canonical_benchmark_manifest() -> dict[str, Any]:
         "geospatial": {"geojson_path": str(root / "field_sites.geojson")},
         "imaging": {"png_path": str(root / "microscopy_cells.png")},
         "mass_spec": {"mzml_path": str(root / "proteomics_qc.mzML")},
+        "lfq": {
+            "lfq_path": str(root / "proteinGroups_lfq_benchmark.tsv"),
+            "control_prefix": "Control",
+            "treatment_prefix": "Treatment",
+            "spike_terms": "SPIKEUP,SPIKEUPB",
+            "expected_spike_log2fc": 2.0,
+        },
+        "hpc": {
+            "baseline_path": str(root / "baseline_darshan.txt"),
+            "candidate_path": str(root / "candidate_darshan.txt"),
+        },
+        "format_bridge": {
+            "source_path": str(root / "format_bridge_source.h5"),
+            "output_path": str(root / "format_bridge_converted.parquet"),
+        },
+        "terrain": {
+            "dem_path": str(root / "terrain_dem.csv"),
+            "pointcloud_path": str(root / "terrain_points.csv"),
+            "gridded_path": str(root / "terrain_points_gridded.csv"),
+        },
     }
 
 
@@ -2290,6 +2316,18 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
     geojson = manifest["geospatial"]["geojson_path"]
     png = manifest["imaging"]["png_path"]
     mzml = manifest["mass_spec"]["mzml_path"]
+    lfq = manifest["lfq"]["lfq_path"]
+    lfq_control = manifest["lfq"]["control_prefix"]
+    lfq_treatment = manifest["lfq"]["treatment_prefix"]
+    lfq_spikes = manifest["lfq"]["spike_terms"]
+    lfq_expected_fc = manifest["lfq"]["expected_spike_log2fc"]
+    hpc_baseline = manifest["hpc"]["baseline_path"]
+    hpc_candidate = manifest["hpc"]["candidate_path"]
+    format_source = manifest["format_bridge"]["source_path"]
+    format_output = manifest["format_bridge"]["output_path"]
+    terrain_dem = manifest["terrain"]["dem_path"]
+    terrain_pointcloud = manifest["terrain"]["pointcloud_path"]
+    terrain_gridded = manifest["terrain"]["gridded_path"]
     missing = str(Path(h5).with_name("missing_fusion_run.h5"))
 
     return [
@@ -2909,6 +2947,33 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             ),
         ),
         DemoCase(
+            case_id="marketplace_genomics_cohort_qc",
+            title="Marketplace genomics cohort QC",
+            category="marketplace-genomics",
+            session_group="marketplace_genomics_cohort",
+            agent_blueprint_id="genomics-review",
+            expected_agent="main",
+            expected_tools=("genomics_vcf_cohort_qc",),
+            expected_handoff_agents=("cohort_qc",),
+            expected_terms=("sample_A", "call_rate", "heterozygosity"),
+            timeout_s=620.0,
+            forbidden_route_sources=_REAL_ORCHESTRATOR_FORBIDDEN_SOURCES,
+            complexity_tags=("marketplace", "genomics", "cohort-qc", "agent-blueprint"),
+            prompt=(
+                f"Review this VCF cohort for downstream QC readiness: {vcf}. "
+                "Check per-sample call rate, missingness, heterozygosity, and "
+                "whether any samples should be dropped before analysis."
+            ),
+            expected=(
+                "CLIO runs the genomics-review marketplace Agent Blueprint through "
+                "its cohort_qc expert and calls genomics_vcf_cohort_qc."
+            ),
+            why=(
+                "Brings the first-wave cohort QC benchmark infrastructure into the "
+                "marketplace runner instead of leaving it as only a tool-level proof."
+            ),
+        ),
+        DemoCase(
             case_id="marketplace_materials_crystal_review",
             title="Marketplace materials CIF readiness review",
             category="marketplace-materials",
@@ -2999,6 +3064,124 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             why=(
                 "Proves a proteomics marketplace agent can be loaded per session "
                 "and can execute a non-seismic multi-expert hierarchy."
+            ),
+        ),
+        DemoCase(
+            case_id="marketplace_proteomics_lfq_differential",
+            title="Marketplace proteomics LFQ differential abundance",
+            category="marketplace-proteomics",
+            session_group="marketplace_proteomics_lfq",
+            agent_blueprint_id="proteomics-mzml-review",
+            expected_agent="main",
+            expected_tools=("mass_spec_lfq_differential_abundance",),
+            expected_handoff_agents=("lfq_differential",),
+            expected_terms=("SPIKEUP", "selected", "median"),
+            timeout_s=620.0,
+            forbidden_route_sources=_REAL_ORCHESTRATOR_FORBIDDEN_SOURCES,
+            complexity_tags=("marketplace", "proteomics", "lfq", "agent-blueprint"),
+            prompt=(
+                f"Review this LFQ proteinGroups matrix for differential abundance: {lfq}. "
+                f"Compare columns matching {lfq_control} against {lfq_treatment}, use "
+                f"spike-in terms {lfq_spikes} with an expected log2 fold change near "
+                f"{lfq_expected_fc}, and tell me which proteins look most changed."
+            ),
+            expected=(
+                "CLIO runs the proteomics marketplace Agent Blueprint through its "
+                "lfq_differential expert and calls the LFQ differential-abundance tool."
+            ),
+            why=(
+                "Exercises the first-wave proteomics LFQ decision-subtree infrastructure "
+                "rather than only mzML inspection."
+            ),
+        ),
+        DemoCase(
+            case_id="marketplace_hpc_io_regression",
+            title="Marketplace HPC I/O regression",
+            category="marketplace-hpc",
+            session_group="marketplace_hpc_regression",
+            agent_blueprint_id="hpc-io-regression",
+            expected_agent="main",
+            expected_tools=("hpc_compare_darshan_traces",),
+            expected_handoff_agents=("trace_ingest", "regression_diff"),
+            expected_terms=("write_time", "regression", "independent_writes"),
+            min_expert_depth=_MARKETPLACE_COMPLEX_MIN_EXPERT_DEPTH,
+            min_branch_count=_MARKETPLACE_COMPLEX_MIN_BRANCH_COUNT,
+            timeout_s=720.0,
+            forbidden_route_sources=_REAL_ORCHESTRATOR_FORBIDDEN_SOURCES,
+            complexity_tags=("marketplace", "hpc", "darshan", "agent-blueprint", "tier-3"),
+            prompt=(
+                f"Compare these two HPC I/O traces before collaborator handoff: "
+                f"baseline {hpc_baseline} and candidate {hpc_candidate}. Identify "
+                "the main I/O regression, stable metrics, and likely root cause."
+            ),
+            expected=(
+                "CLIO runs the hpc-io-regression marketplace Agent Blueprint, parses "
+                "both traces through its ingest path, compares them, and synthesizes "
+                "root-cause evidence."
+            ),
+            why=(
+                "Adds the first-wave HPC I/O regression case to the marketplace lane, "
+                "including paired inputs and tier-3 ingest workers."
+            ),
+        ),
+        DemoCase(
+            case_id="marketplace_format_bridge_integrity",
+            title="Marketplace scientific format bridge integrity",
+            category="marketplace-format",
+            session_group="marketplace_format_bridge",
+            agent_blueprint_id="format-bridge",
+            expected_agent="main",
+            expected_tools=("format_convert_hdf5_to_parquet",),
+            expected_handoff_agents=("source_inspect", "conversion_policy", "integrity"),
+            expected_terms=("safe_float", "skipped", "checksum"),
+            min_expert_depth=_MARKETPLACE_COMPLEX_MIN_EXPERT_DEPTH,
+            min_branch_count=_MARKETPLACE_COMPLEX_MIN_BRANCH_COUNT,
+            timeout_s=720.0,
+            forbidden_route_sources=_REAL_ORCHESTRATOR_FORBIDDEN_SOURCES,
+            complexity_tags=("marketplace", "format-bridge", "hdf5", "parquet", "agent-blueprint"),
+            prompt=(
+                f"Convert this scientific HDF5 table to Parquet with integrity evidence: "
+                f"{format_source}. Write the output to {format_output}. Preserve row counts, "
+                "flag unsafe or lossy dtype decisions, and tell me whether the conversion is "
+                "safe for downstream visualization."
+            ),
+            expected=(
+                "CLIO runs the format-bridge marketplace Agent Blueprint through inspect, "
+                "conversion policy, and integrity experts, using the HDF5-to-Parquet tool."
+            ),
+            why=(
+                "Adds the first-wave scientific format bridge case to benchmark evidence "
+                "instead of relying only on unit tests for conversion policy."
+            ),
+        ),
+        DemoCase(
+            case_id="marketplace_terrain_pointcloud_suitability",
+            title="Marketplace terrain point-cloud suitability",
+            category="marketplace-terrain",
+            session_group="marketplace_terrain",
+            agent_blueprint_id="terrain-suitability",
+            expected_agent="main",
+            expected_tools=("terrain_pointcloud_read", "terrain_dem_terrain"),
+            expected_handoff_agents=("terrain_derivation", "gridding", "suitability"),
+            expected_terms=("slope", "suitable", "grid"),
+            min_expert_depth=_MARKETPLACE_COMPLEX_MIN_EXPERT_DEPTH,
+            min_branch_count=_MARKETPLACE_COMPLEX_MIN_BRANCH_COUNT,
+            timeout_s=720.0,
+            forbidden_route_sources=_REAL_ORCHESTRATOR_FORBIDDEN_SOURCES,
+            complexity_tags=("marketplace", "terrain", "point-cloud", "agent-blueprint", "tier-3"),
+            prompt=(
+                f"Evaluate these terrain points for site suitability: {terrain_pointcloud}. "
+                f"Grid them to {terrain_gridded}, derive terrain, and identify cells with "
+                "elevation between 100 and 104 meters and slope below 60 degrees. "
+                f"Use the ready DEM {terrain_dem} only as a comparison if needed."
+            ),
+            expected=(
+                "CLIO runs the terrain-suitability marketplace Agent Blueprint, routes raw "
+                "point-cloud input through gridding, then applies DEM terrain suitability."
+            ),
+            why=(
+                "Adds the first-wave terrain/lidar conditional-branch case to the runner, "
+                "including the point-cloud-to-DEM path the benchmark was designed to stress."
             ),
         ),
         DemoCase(
@@ -3367,9 +3550,14 @@ _BENCHMARK_LANES: dict[str, tuple[str, ...]] = {
     "marketplace_agents": (
         "marketplace_genomics_reference_review",
         "marketplace_genomics_variant_review",
+        "marketplace_genomics_cohort_qc",
         "marketplace_materials_crystal_review",
         "marketplace_geospatial_field_review",
         "marketplace_proteomics_mzml_review",
+        "marketplace_proteomics_lfq_differential",
+        "marketplace_hpc_io_regression",
+        "marketplace_format_bridge_integrity",
+        "marketplace_terrain_pointcloud_suitability",
         "marketplace_seismic_waveform_review",
     ),
     "semantic_regression": (

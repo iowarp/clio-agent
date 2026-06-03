@@ -59,6 +59,12 @@ for progress toward the benchmark-source terrain/lidar site-suitability case.
 It documents the new reusable DEM terrain and point-cloud gridding tools, but
 does not claim the final NDP/OpenTopography end-to-end benchmark has run yet.
 
+Use `FIRST_WAVE_MARKETPLACE_RUNNER_COVERAGE.md` as the current runner-coverage
+note for the expanded first-wave marketplace benchmark lane. It documents that
+the runner now has deterministic fixtures and canonical cases for cohort QC,
+LFQ, HPC regression, format bridge, and terrain suitability, but does not claim
+the final real-provider marketplace lane has run yet.
+
 Current result:
 
 - The re-rendered full marketplace report records `5/6` clean passes after the
@@ -166,7 +172,9 @@ seismic plus non-seismic packs. Remaining benchmark expansion items are:
 - more benchmark-design cases from
   `CLIO_HIERARCHICAL_AGENT_BENCHMARK_CASES_SOURCE.md`, especially genomics
   cohort QC, proteomics LFQ, HPC I/O regression, scientific format bridge, and
-  terrain/NDP final end-to-end runs.
+  terrain/NDP final end-to-end runs. The runner now has canonical marketplace
+  cases for those first-wave packs; the pending work is the watched
+  real-provider execution and evidence review.
 
 These are future benchmark coverage goals, not contradictions of the current
 marketplace hierarchy pass.
