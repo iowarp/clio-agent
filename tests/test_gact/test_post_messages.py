@@ -71,6 +71,24 @@ class FakeClioAgent:
         )
 
 
+class ImageAwareFakeClioAgent(FakeClioAgent):
+    def __init__(self) -> None:
+        super().__init__(answer="image seen")
+        self.image_calls: list[list[Any]] = []
+
+    def forward(
+        self,
+        question: str,
+        session_id: str,
+        *,
+        images: list[Any] | None = None,
+        **_: Any,
+    ) -> Any:
+        self.calls.append((question, session_id))
+        self.image_calls.append(list(images or []))
+        return FakePrediction(answer=self.answer)
+
+
 class SlowClioAgent(FakeClioAgent):
     def __init__(self, delay_s: float) -> None:
         super().__init__(answer="too late")
@@ -218,6 +236,50 @@ def test_post_message_preserves_image_parts_for_vision_capable_provider(
     }
     assert assistant["parts"][-1]["text"] == "hello from fake"
     assert fake_agent.calls == [("describe this image", sid)]
+
+
+def test_post_message_dispatches_image_parts_to_image_aware_agent(tmp_path: Path) -> None:
+    from .conftest import complete_turn
+
+    fake_agent = ImageAwareFakeClioAgent()
+    app = build_app(sessions_path=tmp_path / "sessions.json", agent=fake_agent)
+    app.state.lm_config = {
+        "provider": "openai",
+        "model": "gpt-4o",
+        "supports_vision": True,
+    }
+    with TestClient(app) as c:
+        sid = c.post("/v1/sessions", json={"title": "vision"}).json()["id"]
+        assistant = complete_turn(
+            c,
+            sid,
+            "",
+            json_override={
+                "parts": [
+                    {"type": "text", "text": "describe this image"},
+                    {
+                        "type": "image",
+                        "data": "iVBORw0KGgo=",
+                        "media_type": "image/png",
+                    },
+                ]
+            },
+        )
+        messages = c.get(f"/v1/sessions/{sid}/messages").json()["messages"]
+
+    user_msg = next(m for m in messages if m["role"] == "user")
+    assert user_msg["metadata"]["multimodal"] == {
+        "image_part_count": 1,
+        "transcript_preserved": True,
+        "native_model_dispatch": True,
+    }
+    assert assistant["parts"][-1]["text"] == "image seen"
+    assert fake_agent.calls == [("describe this image", sid)]
+    assert len(fake_agent.image_calls) == 1
+    assert len(fake_agent.image_calls[0]) == 1
+    assert getattr(fake_agent.image_calls[0][0], "url", "").startswith(
+        "data:image/png;base64,"
+    )
 
 
 def test_post_message_bumps_message_count_by_two(client: TestClient) -> None:
