@@ -3458,6 +3458,21 @@ def _active_lm_supports_vision(app: "FastAPI") -> bool:
     return str(cfg.get("provider") or "") in {"openai", "anthropic"}
 
 
+def _agent_accepts_images(agent: Any) -> bool:
+    """Return whether agent.forward can receive native image inputs."""
+
+    forward = getattr(agent, "forward", None)
+    if not callable(forward):
+        return False
+    try:
+        params = inspect.signature(forward).parameters
+    except (TypeError, ValueError):
+        return False
+    if "images" in params:
+        return True
+    return any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
+
+
 def _image_part_error(
     *,
     session_id: str,
@@ -3550,6 +3565,33 @@ def _image_part_summaries(parts: list["Part"]) -> list[dict[str, Any]]:
             }
         )
     return rows
+
+
+def _dspy_images_from_parts(parts: list["Part"]) -> list[Any]:
+    """Convert GACT image parts to DSPy image inputs for native vision models."""
+
+    images: list[Any] = []
+    for part in parts:
+        if part.type != "image":
+            continue
+        try:
+            import dspy  # noqa: PLC0415
+
+            if part.url:
+                images.append(dspy.Image(part.url))
+                continue
+            if part.data:
+                data = part.data
+                if data.startswith("data:"):
+                    images.append(dspy.Image(data))
+                    continue
+                media_type = part.media_type or part.metadata.get("media_type") or "image/png"
+                images.append(dspy.Image(f"data:{media_type};base64,{data}"))
+        except Exception:
+            # Keep malformed original image parts in the transcript; omit only
+            # the native model input that DSPy cannot encode.
+            continue
+    return images
 
 
 def _clear_session_model_refs(app: "FastAPI") -> None:
@@ -3656,6 +3698,7 @@ async def _run_turn_in_background(
     trace_id = _semantic_trace_id(turn_id)
     _ACTIVE_GACT_TURN_ID.set(turn_id)
     _ACTIVE_GACT_TRACE_ID.set(trace_id)
+    native_images = _dspy_images_from_parts(user_msg.parts)
     turn_tokens: dict[str, int] = {
         "input": 0,
         "output": 0,
@@ -3708,7 +3751,12 @@ async def _run_turn_in_background(
         summary="User turn accepted and CLIO runtime started.",
         actor={"role": "user"},
         subject={"message_id": user_msg.id},
-        payload={"text": user_text, "retry_attempt_id": retry_attempt_id},
+        payload={
+            "text": user_text,
+            "retry_attempt_id": retry_attempt_id,
+            "image_part_count": len(_image_part_summaries(user_msg.parts)),
+            "native_image_count": len(native_images),
+        },
     )
 
     # iowarp/clio-agent#5: prepend any attached context files to the
@@ -4625,6 +4673,7 @@ async def _run_turn_in_background(
                             "session_mode": getattr(sess, "mode", "chat"),
                             "edit_mode": getattr(sess, "edit_mode", "diff"),
                             "input": enriched_text,
+                            "native_image_count": len(native_images),
                         },
                     )
                     pred = await _await_turn_work(
@@ -4635,6 +4684,7 @@ async def _run_turn_in_background(
                             _emit_chunk,
                             session_mode=getattr(sess, "mode", "chat"),
                             session_edit_mode=getattr(sess, "edit_mode", "diff"),
+                            images=native_images,
                             cancel_requested=cancel_requested,
                         )
                     )
@@ -4669,6 +4719,7 @@ async def _run_turn_in_background(
                                 "session_mode": getattr(sess, "mode", "chat"),
                                 "edit_mode": getattr(sess, "edit_mode", "diff"),
                                 "input": enriched_text,
+                                "native_image_count": len(native_images),
                             },
                         )
                         loop = asyncio.get_running_loop()
@@ -4684,6 +4735,7 @@ async def _run_turn_in_background(
                                     getattr(sess, "mode", "chat"),
                                     getattr(sess, "edit_mode", "diff"),
                                     cancel_requested,
+                                    native_images,
                                 ),
                             ),
                         )
@@ -7008,6 +7060,7 @@ def _agent_forward_compat(
     session_mode: str,
     session_edit_mode: str,
     cancel_requested: Any | None = None,
+    images: list[Any] | None = None,
 ) -> Any:
     """Call agent.forward, threading session_mode + session_edit_mode
     when the agent accepts them, falling back to the legacy
@@ -7017,24 +7070,39 @@ def _agent_forward_compat(
     every test fixture that hand-rolled a minimal forward signature.
     """
 
-    try:
-        return agent.forward(
-            question,
-            session_id=session_id,
-            session_mode=session_mode,
-            session_edit_mode=session_edit_mode,
-            cancel_requested=cancel_requested,
-        )
-    except TypeError:
+    optional_kwargs: dict[str, Any] = {
+        "images": images or [],
+        "cancel_requested": cancel_requested,
+    }
+    attempts = [
+        optional_kwargs,
+        {"cancel_requested": cancel_requested},
+        {"images": images or []},
+        {},
+    ]
+    last_type_error: TypeError | None = None
+    for optional in attempts:
         try:
             return agent.forward(
                 question,
                 session_id=session_id,
                 session_mode=session_mode,
                 session_edit_mode=session_edit_mode,
+                **optional,
             )
-        except TypeError:
-            return agent.forward(question, session_id=session_id)
+        except TypeError as exc:
+            message = str(exc)
+            if "images" not in message and "cancel_requested" not in message:
+                last_type_error = exc
+                break
+            last_type_error = exc
+
+    try:
+        return agent.forward(question, session_id=session_id)
+    except TypeError as exc:
+        if last_type_error is not None:
+            raise last_type_error from exc
+        raise
 
 
 async def _try_streamed_forward_compat(
@@ -7045,42 +7113,44 @@ async def _try_streamed_forward_compat(
     *,
     session_mode: str = "chat",
     session_edit_mode: str = "diff",
+    images: list[Any] | None = None,
     agent_override: Any | None = None,
     cancel_requested: Any | None = None,
 ) -> Optional[Any]:
     """Call _try_streamed_forward with a legacy-signature fallback for tests/plugins."""
 
-    kwargs: dict[str, Any] = {
+    base_kwargs: dict[str, Any] = {
         "session_mode": session_mode,
         "session_edit_mode": session_edit_mode,
-        "cancel_requested": cancel_requested,
     }
     if agent_override is not None:
-        kwargs["agent_override"] = agent_override
-    try:
-        return await _try_streamed_forward(
-            app,
-            enriched_text,
-            sid,
-            emit_chunk,
-            **kwargs,
-        )
-    except TypeError as exc:
-        if "cancel_requested" not in str(exc):
-            raise
-        legacy_kwargs: dict[str, Any] = {
-            "session_mode": session_mode,
-            "session_edit_mode": session_edit_mode,
-        }
-        if agent_override is not None:
-            legacy_kwargs["agent_override"] = agent_override
-        return await _try_streamed_forward(
-            app,
-            enriched_text,
-            sid,
-            emit_chunk,
-            **legacy_kwargs,
-        )
+        base_kwargs["agent_override"] = agent_override
+
+    optional_attempts: list[dict[str, Any]] = [
+        {"images": images or [], "cancel_requested": cancel_requested},
+        {"cancel_requested": cancel_requested},
+        {"images": images or []},
+        {},
+    ]
+    last_type_error: TypeError | None = None
+    for optional in optional_attempts:
+        try:
+            return await _try_streamed_forward(
+                app,
+                enriched_text,
+                sid,
+                emit_chunk,
+                **base_kwargs,
+                **optional,
+            )
+        except TypeError as exc:
+            message = str(exc)
+            if "cancel_requested" not in message and "images" not in message:
+                raise
+            last_type_error = exc
+    if last_type_error is not None:
+        raise last_type_error
+    return None
 
 
 def _run_dynamic_agent_compat(
@@ -7434,6 +7504,7 @@ async def _try_streamed_forward(
     emit_chunk,
     session_mode: str = "chat",
     session_edit_mode: str = "diff",
+    images: list[Any] | None = None,
     agent_override: Any | None = None,
     cancel_requested: Any | None = None,
 ) -> Optional[Any]:
@@ -7534,6 +7605,7 @@ async def _try_streamed_forward(
                 session_id=sid,
                 session_mode=session_mode,
                 session_edit_mode=session_edit_mode,
+                images=images or [],
                 cancel_requested=cancel_requested,
             )
         except TypeError:
@@ -7543,6 +7615,7 @@ async def _try_streamed_forward(
                     session_id=sid,
                     session_mode=session_mode,
                     session_edit_mode=session_edit_mode,
+                    images=images or [],
                 )
             except TypeError:
                 stream_iter = streamed(question=enriched_text, session_id=sid)
@@ -15565,11 +15638,16 @@ def build_app(
         user_metadata = dict(metadata or {})
         image_summaries = _image_part_summaries(request_parts or [])
         if image_summaries:
+            native_model_dispatch = (
+                _active_lm_supports_vision(app)
+                and _agent_accepts_images(app.state.agent)
+                and not turn_agent_id
+            )
             user_metadata["image_parts"] = image_summaries
             user_metadata["multimodal"] = {
                 "image_part_count": len(image_summaries),
                 "transcript_preserved": True,
-                "native_model_dispatch": False,
+                "native_model_dispatch": native_model_dispatch,
             }
         if turn_agent_id:
             user_metadata["agent_override"] = {

@@ -641,6 +641,7 @@ class ClioAgent(dspy.Module):
         *,
         session_mode: str = "chat",
         session_edit_mode: str = "diff",
+        images: list[Any] | None = None,
         cancel_requested: Callable[[], bool] | None = None,
     ) -> dspy.Prediction:
         """Process a question through the CLIO agent loop.
@@ -673,6 +674,7 @@ class ClioAgent(dspy.Module):
                     session_id=session_id,
                     session_mode=session_mode,
                     session_edit_mode=session_edit_mode,
+                    images=images,
                 )
 
         start_time = time.time()
@@ -707,6 +709,7 @@ class ClioAgent(dspy.Module):
                 question=question,
                 session_context=session_context,
                 file_context=file_context,
+                images=images,
                 trace=trace,
                 routing_mode=routing_mode,
             )
@@ -812,12 +815,19 @@ class ClioAgent(dspy.Module):
         session_context: str,
         file_context: str,
         trace: RunTrace,
+        images: list[Any] | None = None,
         routing_mode: str = "auto",
     ) -> tuple[str, str, Any, dict[str, Any] | None, RouteDecision]:
         """Run the planner/executor loop for one user request."""
         self._raise_if_cancelled("agent_loop_start")
+        image_inputs = list(images or [])
         if routing_mode == "chat":
-            answer = self._run_chat_agent(question, session_context, trace=trace)
+            answer = self._run_chat_agent(
+                question,
+                session_context,
+                images=image_inputs,
+                trace=trace,
+            )
             route = self._route_for_selected(
                 "chat",
                 "Session routing_mode='chat' forced the conversational path.",
@@ -841,6 +851,7 @@ class ClioAgent(dspy.Module):
                     question=question,
                     session_context=session_context,
                     file_context=file_context,
+                    images=image_inputs,
                     capabilities=capabilities,
                     observations=observations,
                 )
@@ -850,6 +861,7 @@ class ClioAgent(dspy.Module):
                 answer = self._synthesize_agent_answer(
                     question=question,
                     session_context=session_context,
+                    images=image_inputs,
                     observations=observations,
                 )
                 trace_selected = self._selected_expert_from_trace(trace)
@@ -1047,7 +1059,12 @@ class ClioAgent(dspy.Module):
                                 planner_action=action,
                             ),
                         )
-                    answer = self._run_chat_agent(question, session_context, trace=trace)
+                    answer = self._run_chat_agent(
+                        question,
+                        session_context,
+                        images=image_inputs,
+                        trace=trace,
+                    )
                     route = self._route_for_selected(
                         "chat",
                         "Planner expert action ignored because no concrete file/data context exists.",
@@ -1204,6 +1221,7 @@ class ClioAgent(dspy.Module):
                     answer = self._synthesize_agent_answer(
                         question=question,
                         session_context=session_context,
+                        images=image_inputs,
                         observations=observations,
                     )
                 if not answer:
@@ -1256,6 +1274,7 @@ class ClioAgent(dspy.Module):
             answer = self._synthesize_agent_answer(
                 question=question,
                 session_context=session_context,
+                images=image_inputs,
                 observations=observations,
             )
         self._raise_if_cancelled("answer_synthesis_after")
@@ -1638,6 +1657,7 @@ class ClioAgent(dspy.Module):
         question: str,
         session_context: str,
         file_context: str,
+        images: list[Any] | None = None,
         capabilities: str,
         observations: list[dict[str, Any]],
     ) -> dict[str, Any]:
@@ -1650,11 +1670,13 @@ class ClioAgent(dspy.Module):
         """
         observations_text = self._format_observations_for_prompt(observations)
         planner_context = self._planner_session_context(session_context)
+        image_inputs = list(images or [])
         try:
             result = self._call_with_transient_provider_retries(
                 "action_planner",
                 lambda: self._call_action_planner(
                     question=self._planner_question(question),
+                    images=image_inputs,
                     session_context=planner_context,
                     file_context=file_context,
                     capabilities=capabilities,
@@ -1673,6 +1695,7 @@ class ClioAgent(dspy.Module):
                         "action_planner_compact",
                         lambda: self._call_action_planner(
                             question=self._planner_retry_question(question),
+                            images=image_inputs,
                             session_context=planner_context,
                             file_context=file_context,
                             capabilities=retry_capabilities,
@@ -1704,6 +1727,7 @@ class ClioAgent(dspy.Module):
         self,
         *,
         question: str,
+        images: list[Any] | None = None,
         session_context: str,
         file_context: str,
         capabilities: str,
@@ -1713,6 +1737,7 @@ class ClioAgent(dspy.Module):
         with dspy.context(lm=self._planner_lm, adapter=self._dspy_adapter):
             return self.action_planner(
                 question=question,
+                images=list(images or []),
                 session_context=session_context,
                 file_context=file_context or "No current file context",
                 capabilities=capabilities,
@@ -2644,6 +2669,7 @@ class ClioAgent(dspy.Module):
         *,
         question: str,
         session_context: str,
+        images: list[Any] | None = None,
         observations: list[dict[str, Any]],
     ) -> str:
         """Produce a final answer from observations or surface synthesis failure."""
@@ -2656,6 +2682,7 @@ class ClioAgent(dspy.Module):
                     "answer_synthesizer",
                     lambda: self.answer_synthesizer(
                         question=answer_question,
+                        images=list(images or []),
                         session_context=session_context,
                         observations=observations_text,
                     ),
@@ -3939,11 +3966,13 @@ class ClioAgent(dspy.Module):
         question: str,
         session_context: str,
         *,
+        images: list[Any] | None = None,
         trace: RunTrace | None = None,
     ) -> str:
         """Generate a conversational reply through DSPy/LiteLLM."""
         self._raise_if_cancelled("chat_before")
         chat_context = self._chat_session_context(session_context)
+        image_inputs = list(images or [])
         try:
             with dspy.context(lm=self._main_lm, adapter=self._dspy_adapter):
                 if self._chat_should_use_utility_tools(question, session_context):
@@ -3952,9 +3981,17 @@ class ClioAgent(dspy.Module):
                         question=question,
                         session_context=session_context,
                     )
-                    result = tool_agent(question=question, session_context=chat_context)
+                    result = tool_agent(
+                        question=question,
+                        images=image_inputs,
+                        session_context=chat_context,
+                    )
                 else:
-                    result = self.chat_agent(question=question, session_context=chat_context)
+                    result = self.chat_agent(
+                        question=question,
+                        images=image_inputs,
+                        session_context=chat_context,
+                    )
             answer = self._coerce_text(getattr(result, "answer", None)).strip()
             self._raise_if_cancelled("chat_after")
             if answer:

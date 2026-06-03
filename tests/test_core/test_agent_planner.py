@@ -84,6 +84,26 @@ def test_mass_spec_qc_sentence_uses_readable_terms():
     assert "25140.0" in sentence
 
 
+def test_forward_threads_images_to_action_planner(agent: ClioAgent) -> None:
+    image = object()
+    captured: dict[str, object] = {}
+
+    def fake_planner(**kwargs):
+        captured["images"] = kwargs["images"]
+        return type(
+            "PlannerResult",
+            (),
+            {"action_json": '{"action":"answer","answer":"image observed","reason":"done"}'},
+        )()
+
+    agent._call_action_planner = MagicMock(side_effect=fake_planner)
+
+    result = agent.forward("describe this image", session_id="s", images=[image])
+
+    assert result.answer == "image observed"
+    assert captured["images"] == [image]
+
+
 def test_recovered_tool_failure_does_not_surface_blocking_error() -> None:
     trace = _trace()
     trace.record_tool(

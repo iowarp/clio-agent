@@ -79,6 +79,9 @@ class AgentActionSignature(dspy.Signature):
     """
 
     question: str = dspy.InputField(desc="User's current message")
+    images: list[dspy.Image] = dspy.InputField(
+        desc="User-provided image attachments for this turn, if any"
+    )
     session_context: str = dspy.InputField(desc="Relevant conversation history")
     file_context: str = dspy.InputField(desc="Current file context, if any")
     capabilities: str = dspy.InputField(desc="Registered experts and callable tools")
@@ -99,6 +102,9 @@ class AgentAnswerSignature(dspy.Signature):
     """
 
     question: str = dspy.InputField(desc="User's current message")
+    images: list[dspy.Image] = dspy.InputField(
+        desc="User-provided image attachments for this turn, if any"
+    )
     session_context: str = dspy.InputField(desc="Relevant conversation history")
     observations: str = dspy.InputField(desc="Tool/expert observations from this request")
     answer: str = dspy.OutputField(desc="Final user-facing answer")
@@ -132,5 +138,8 @@ class ChatAgentSignature(dspy.Signature):
     Keep responses concise but informative. Be confident and direct."""
 
     question: str = dspy.InputField(desc="User's question or message")
+    images: list[dspy.Image] = dspy.InputField(
+        desc="User-provided image attachments for this turn, if any"
+    )
     session_context: str = dspy.InputField(desc="Relevant context from conversation history")
     answer: str = dspy.OutputField(desc="CLIO's conversational response")
