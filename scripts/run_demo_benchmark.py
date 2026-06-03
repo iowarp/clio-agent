@@ -40,6 +40,7 @@ _SEMANTIC_REGRESSION_REQUIRED_PROOFS = {
     "workspace_memory_scope": "workspace/global memory scope policy is observed",
     "marketplace_pack": "marketplace Agent Blueprint activation is observed",
     "command_mcp_skill_scope": "command, MCP, or skill capability scoping is observed",
+    "enabled_mcp_execution": "marketplace MCP descriptor is trusted, launched, and callable",
 }
 _DATA_FILE_SUFFIXES = {
     ".bp",
@@ -105,6 +106,10 @@ class DemoCase:
     min_expert_depth: int = 0
     min_branch_count: int = 0
     semantic_proofs: tuple[str, ...] = ()
+    mcp_enable_descriptor_id: str = ""
+    mcp_call_tool: str = ""
+    mcp_call_args: dict[str, Any] = field(default_factory=dict)
+    skip_model_turn: bool = False
 
 
 @dataclass
@@ -229,6 +234,8 @@ class DemoResult:
         chunks: list[str] = [self.text, *self.artifacts]
         if self.agent_blueprint:
             chunks.append(json.dumps(self.agent_blueprint, sort_keys=True, default=str))
+        if self.actions:
+            chunks.append(json.dumps(self.actions, sort_keys=True, default=str))
         for tool in self.tools:
             chunks.append(str(tool.get("name") or tool.get("tool") or ""))
             for key in ("result", "args", "arguments", "params"):
@@ -966,6 +973,8 @@ def _case_observed_semantic_proofs(result: DemoResult) -> tuple[str, ...]:
             )
         elif proof == "command_mcp_skill_scope":
             proof_observed = _command_mcp_skill_scope_observed(result)
+        elif proof == "enabled_mcp_execution":
+            proof_observed = _enabled_mcp_execution_observed(result)
         if proof_observed:
             observed.append(proof)
     return tuple(observed)
@@ -1016,6 +1025,40 @@ def _command_mcp_skill_scope_observed(result: DemoResult) -> bool:
         )
     )
     return result.passed and has_declared_surface and has_scope_status
+
+
+def _enabled_mcp_execution_observed(result: DemoResult) -> bool:
+    """Return whether actions prove enabled marketplace MCP launch and call."""
+
+    enable_actions = [
+        action
+        for action in result.actions
+        if action.get("type") == "agent_blueprint_mcp_enable" and action.get("ok") is True
+    ]
+    call_actions = [
+        action
+        for action in result.actions
+        if action.get("type") == "mcp_tool_call" and action.get("ok") is True
+    ]
+    if not result.passed or not enable_actions or not call_actions:
+        return False
+    ready_tools = {
+        tool
+        for action in enable_actions
+        for tool in action.get("ready_tools", [])
+        if isinstance(tool, str)
+    }
+    called_tools = {
+        str(action.get("tool") or "")
+        for action in call_actions
+        if str(action.get("tool") or "")
+    }
+    trusted = any(
+        isinstance(action.get("trust"), Mapping)
+        and (action.get("trust") or {}).get("trusted") is True
+        for action in enable_actions
+    )
+    return bool(ready_tools.intersection(called_tools)) and trusted
 
 
 def _children(http: httpx.Client, parent_session_id: str) -> list[dict[str, Any]]:
@@ -1365,6 +1408,139 @@ def _swap_provider_for_case(http: httpx.Client, case: DemoCase, timeout_s: float
             "model": model,
             "error": repr(exc),
         }
+
+
+def _enable_blueprint_mcp_for_case(
+    http: httpx.Client,
+    case: DemoCase,
+    *,
+    workspace_id: str,
+    timeout_s: float,
+) -> dict[str, Any]:
+    """Trust/enable an Agent Blueprint MCP descriptor for benchmark evidence."""
+
+    started = time.monotonic()
+    descriptor_id = case.mcp_enable_descriptor_id
+    if not case.agent_blueprint_id or not descriptor_id:
+        return {
+            "type": "agent_blueprint_mcp_enable",
+            "ok": False,
+            "elapsed_s": round(time.monotonic() - started, 3),
+            "error": "case is missing agent_blueprint_id or mcp_enable_descriptor_id",
+        }
+    try:
+        response = http.post(
+            f"/v1/agent-blueprints/{case.agent_blueprint_id}/mcp/{descriptor_id}/enable",
+            json={"workspace_id": workspace_id, "trust": True, "probe": True},
+            timeout=timeout_s,
+        )
+        payload = response.json()
+        tools = payload.get("tools") if isinstance(payload, Mapping) else []
+        ready_tools = [
+            str(tool.get("name") or tool.get("id") or "")
+            for tool in tools
+            if isinstance(tool, Mapping) and tool.get("enabled") is True
+        ]
+        return {
+            "type": "agent_blueprint_mcp_enable",
+            "ok": response.status_code == 200 and bool(ready_tools),
+            "status_code": response.status_code,
+            "elapsed_s": round(time.monotonic() - started, 3),
+            "agent_blueprint_id": case.agent_blueprint_id,
+            "descriptor_id": descriptor_id,
+            "server_id": payload.get("id") if isinstance(payload, Mapping) else "",
+            "status": payload.get("status") if isinstance(payload, Mapping) else "",
+            "ready_tools": ready_tools,
+            "trust": payload.get("trust") if isinstance(payload, Mapping) else {},
+            "result": payload,
+        }
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "type": "agent_blueprint_mcp_enable",
+            "ok": False,
+            "elapsed_s": round(time.monotonic() - started, 3),
+            "agent_blueprint_id": case.agent_blueprint_id,
+            "descriptor_id": descriptor_id,
+            "error": repr(exc),
+        }
+
+
+def _call_enabled_mcp_for_case(
+    http: httpx.Client,
+    case: DemoCase,
+    enable_action: dict[str, Any],
+    *,
+    timeout_s: float,
+) -> dict[str, Any]:
+    """Call an enabled MCP tool through CLIO and record structured evidence."""
+
+    started = time.monotonic()
+    server_id = str(enable_action.get("server_id") or "")
+    if not server_id or not case.mcp_call_tool:
+        return {
+            "type": "mcp_tool_call",
+            "ok": False,
+            "elapsed_s": round(time.monotonic() - started, 3),
+            "error": "case is missing enabled server_id or mcp_call_tool",
+        }
+    try:
+        response = http.post(
+            f"/v1/mcp/servers/{server_id}/call",
+            json={"tool": case.mcp_call_tool, "args": case.mcp_call_args},
+            timeout=timeout_s,
+        )
+        payload = response.json()
+        return {
+            "type": "mcp_tool_call",
+            "ok": response.status_code == 200 and payload.get("is_error") is not True,
+            "status_code": response.status_code,
+            "elapsed_s": round(time.monotonic() - started, 3),
+            "server_id": server_id,
+            "tool": case.mcp_call_tool,
+            "args": case.mcp_call_args,
+            "result": payload,
+        }
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "type": "mcp_tool_call",
+            "ok": False,
+            "elapsed_s": round(time.monotonic() - started, 3),
+            "server_id": server_id,
+            "tool": case.mcp_call_tool,
+            "args": case.mcp_call_args,
+            "error": repr(exc),
+        }
+
+
+def _action_only_message(case: DemoCase, actions: list[dict[str, Any]]) -> dict[str, Any]:
+    """Return a benchmark-only message for cases proven by setup actions."""
+
+    tool_calls: list[dict[str, Any]] = []
+    for action in actions:
+        if action.get("type") != "mcp_tool_call" or not action.get("tool"):
+            continue
+        tool_calls.append(
+            {
+                "name": str(action.get("tool") or ""),
+                "tool": str(action.get("tool") or ""),
+                "args": action.get("args") or {},
+                "result": action.get("result") or {},
+                "ok": action.get("ok") is True,
+                "telemetry_source": "benchmark_action",
+            }
+        )
+    return {
+        "id": f"benchmark_action_{case.case_id}",
+        "role": "assistant",
+        "parts": [],
+        "metadata": {
+            "benchmark_action_only": True,
+            "tools_called": tool_calls,
+            "stream_source": "action_only",
+        },
+        "error_info": None,
+        "stop_reason": "end_turn",
+    }
 
 
 def _case_row(result: DemoResult) -> dict[str, Any]:
@@ -2451,6 +2627,40 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             ),
         ),
         DemoCase(
+            case_id="marketplace_mcp_calculator_enabled_call",
+            title="Marketplace MCP enabled tool call",
+            category="marketplace-mcp",
+            session_group="marketplace_mcp_calculator_enabled",
+            agent_blueprint_id="mcp-calculator-smoke",
+            expected_terms=("calculator_add", "enabled", "7"),
+            semantic_proofs=("command_mcp_skill_scope", "enabled_mcp_execution"),
+            mcp_enable_descriptor_id="calculator",
+            mcp_call_tool="calculator_add",
+            mcp_call_args={"a": 2, "b": 5},
+            expected_actions=("agent_blueprint_mcp_enable", "mcp_tool_call"),
+            skip_model_turn=True,
+            complexity_tags=(
+                "marketplace",
+                "mcp",
+                "enabled-execution",
+                "agent-blueprint",
+            ),
+            prompt=(
+                "Using the active calculator MCP smoke agent, report whether the packaged "
+                "calculator tool is now enabled and what result was observed for adding "
+                "2 and 5."
+            ),
+            expected=(
+                "CLIO explicitly trusts and enables the pack-local calculator MCP descriptor, "
+                "probes calculator_add as a ready tool, calls it through the MCP server endpoint, "
+                "and records a successful result before the model-facing turn."
+            ),
+            why=(
+                "Proves the marketplace pack can provide a self-contained external MCP tool "
+                "surface that CLIO can launch and call, not just advertise as metadata."
+            ),
+        ),
+        DemoCase(
             case_id="missing_hdf5_error",
             title="Missing file error surfacing",
             category="hardening",
@@ -2645,6 +2855,7 @@ _BENCHMARK_LANES: dict[str, tuple[str, ...]] = {
         "ndp_seismic_waveform_to_plot",
         "marketplace_seismic_waveform_review",
         "marketplace_mcp_calculator_scope",
+        "marketplace_mcp_calculator_enabled_call",
         "provider_swap_memory_followup",
     ),
     "claude_code": (
@@ -2768,22 +2979,58 @@ def run_benchmark(
                         f"model={action.get('model') or '-'} elapsed={action.get('elapsed_s')}s",
                         flush=True,
                     )
+                if case.mcp_enable_descriptor_id:
+                    action = _enable_blueprint_mcp_for_case(
+                        http,
+                        case,
+                        workspace_id=workspace_id,
+                        timeout_s=case.timeout_s,
+                    )
+                    actions.append(action)
+                    print(
+                        f"  MCP enable {'ok' if action.get('ok') else 'failed'} "
+                        f"descriptor={case.mcp_enable_descriptor_id} "
+                        f"status={action.get('status') or '-'} "
+                        f"elapsed={action.get('elapsed_s')}s",
+                        flush=True,
+                    )
+                    if case.mcp_call_tool:
+                        call_action = _call_enabled_mcp_for_case(
+                            http,
+                            case,
+                            action,
+                            timeout_s=case.timeout_s,
+                        )
+                        actions.append(call_action)
+                        print(
+                            f"  MCP call {'ok' if call_action.get('ok') else 'failed'} "
+                            f"tool={case.mcp_call_tool} "
+                            f"elapsed={call_action.get('elapsed_s')}s",
+                            flush=True,
+                        )
                 provider = _provider(http)
                 started = time.monotonic()
-                with _LiveEventWatch(base_url, session_id, enabled=watch_events):
-                    message = _post_turn(
+                if case.skip_model_turn:
+                    message = _action_only_message(case, actions)
+                else:
+                    with _LiveEventWatch(base_url, session_id, enabled=watch_events):
+                        message = _post_turn(
+                            http,
+                            session_id,
+                            case.prompt,
+                            timeout_s=case.timeout_s,
+                            cancel_after_s=case.cancel_after_s,
+                            agent_id=_turn_agent_id_for_lane(case, lane),
+                        )
+                elapsed_s = time.monotonic() - started
+                semantic_events = (
+                    []
+                    if case.skip_model_turn
+                    else _semantic_events_for_completed_message(
                         http,
                         session_id,
-                        case.prompt,
-                        timeout_s=case.timeout_s,
-                        cancel_after_s=case.cancel_after_s,
-                        agent_id=_turn_agent_id_for_lane(case, lane),
+                        str(message.get("id") or ""),
                     )
-                elapsed_s = time.monotonic() - started
-                semantic_events = _semantic_events_for_completed_message(
-                    http,
-                    session_id,
-                    str(message.get("id") or ""),
                 )
                 after_children = _children(http, session_id)
                 new_children = [

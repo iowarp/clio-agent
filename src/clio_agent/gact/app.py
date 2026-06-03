@@ -20086,6 +20086,8 @@ def build_app(
                         "description": tool.get("description") or "",
                         "server_id": f"mcp_{srv}" if srv else "",
                         "source": "mcp",
+                        "status": "ready",
+                        "enabled": True,
                         "input_schema": tool.get("input_schema") or {},
                         "output_schema": tool.get("output_schema") or {},
                         "permission_default": "ask",
@@ -20165,6 +20167,8 @@ def build_app(
                                 "description": getattr(t, "description", "") or "",
                                 "server_id": sid,
                                 "source": "mcp",
+                                "status": "ready",
+                                "enabled": True,
                                 "input_schema": getattr(t, "inputSchema", None)
                                 or getattr(t, "input_schema", None)
                                 or {},
@@ -20175,6 +20179,8 @@ def build_app(
                                 "owner": _tool_owner_for_catalog(tool_name),
                                 "tags": _tool_tags_for_catalog(tool_name),
                                 "visible_to": _tool_visible_to_for_catalog(tool_name),
+                                "agent_blueprint_id": info.get("agent_blueprint_id") or "",
+                                "descriptor_id": info.get("descriptor_id") or "",
                             }
                         )
                 except Exception as exc:  # noqa: BLE001
