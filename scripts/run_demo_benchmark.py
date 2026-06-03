@@ -290,7 +290,10 @@ class DemoResult:
                 if isinstance(self.case.expected_agent, str)
                 else self.case.expected_agent
             )
-            if self.selected_agent not in expected_agents:
+            if (
+                not self.case.agent_blueprint_id
+                and self.selected_agent not in expected_agents
+            ):
                 return False
         if self.case.agent_blueprint_id:
             if self.active_agent_blueprint_id != self.case.agent_blueprint_id:
@@ -4190,8 +4193,7 @@ def _provider_lane_audit(results: list[DemoResult], lane: str) -> list[dict[str,
             if result.case.agent_blueprint_id
             and result.case.expected_handoff_agents
             and (
-                result.selected_agent != "main"
-                or result.case.expected_handoff_agents[0] not in result.handoff_agent_ids
+                result.case.expected_handoff_agents[0] not in result.handoff_agent_ids
                 or _missing_sync_return_pairs(result)
             )
         ]
