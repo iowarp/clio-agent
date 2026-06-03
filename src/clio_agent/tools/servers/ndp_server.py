@@ -25,6 +25,10 @@ _WEBGET_MAX_TIME_S = 45
 _WEBGET_RETRY_COUNT = 1
 _WEBGET_RETRY_DELAY_S = 1
 _WEBGET_SUBPROCESS_TIMEOUT_S = 60
+_CLIO_KIT_SKIP_UVX_REASON = (
+    "no configured/local/PATH clio-kit launcher; using public CKAN fallback "
+    "instead of uvx package launch"
+)
 _SIZE_UNITS = {
     "b": 1,
     "byte": 1,
@@ -74,6 +78,40 @@ def _clio_kit_transport(server_name: str = "ndp") -> StdioTransport:
         command="uvx",
         args=["--from", "clio-kit", "clio-kit", "mcp-server", server_name],
     )
+
+
+def _clio_kit_launcher_source() -> str:
+    """Return how CLIO would launch clio-kit, without starting it."""
+
+    configured = os.environ.get("CLIO_KIT_PATH", "").strip()
+    local_path = Path(configured).expanduser() if configured else Path("../clio-kit")
+    if local_path.resolve().exists():
+        return "local_path"
+    if os.environ.get("CLIO_KIT_COMMAND", "").strip():
+        return "explicit_command"
+    if shutil.which("clio-kit"):
+        return "path_command"
+    if os.environ.get("CLIO_KIT_ALLOW_UVX", "").strip().lower() in {"1", "true", "yes", "on"}:
+        return "uvx"
+    return ""
+
+
+def _should_try_clio_kit(server: str) -> bool:
+    """Return whether an NDP call should start clio-kit for this request."""
+
+    if server != "global":
+        return True
+    return bool(_clio_kit_launcher_source())
+
+
+def _annotate_ckan_skip(payload: dict[str, Any]) -> dict[str, Any]:
+    """Record that public CKAN was used without probing the broken uvx path."""
+
+    meta = payload.setdefault("_meta", {})
+    if isinstance(meta, dict):
+        meta.setdefault("clio_kit_skipped", True)
+        meta.setdefault("clio_kit_skip_reason", _CLIO_KIT_SKIP_UVX_REASON)
+    return payload
 
 
 def _decode_text_content(result: Any) -> dict[str, Any]:
@@ -773,8 +811,23 @@ async def _dataset_details(
     if server == "global" and identifier_type in {"id", "name"}:
         try:
             direct = _global_ckan_package_show(dataset_identifier)
-        except Exception:
-            pass
+        except Exception as exc:
+            if not _should_try_clio_kit(server):
+                return _tool_error(
+                    code="ndp_dataset_details_unavailable",
+                    message=f"Could not retrieve NDP dataset details from public CKAN: {exc}",
+                    next_action=(
+                        "Retry later, set CLIO_KIT_COMMAND or CLIO_KIT_PATH to a "
+                        "working clio-kit launcher, or use a dataset identifier from "
+                        "NDP search results."
+                    ),
+                    details={
+                        "dataset_identifier": dataset_identifier,
+                        "identifier_type": identifier_type,
+                        "clio_kit_skipped": True,
+                        "clio_kit_skip_reason": _CLIO_KIT_SKIP_UVX_REASON,
+                    },
+                )
         else:
             if compact:
                 compacted = _compact_dataset(direct)
@@ -783,6 +836,8 @@ async def _dataset_details(
                     "status": "success",
                     "source": "ckan_package_show",
                 }
+                if not _should_try_clio_kit(server):
+                    _annotate_ckan_skip(compacted)
                 return compacted
             return direct
 
@@ -832,6 +887,8 @@ async def list_organizations(
         "name_filter": _clean_optional_text(name_filter),
         "server": _clean_server(server, allowed={"local", "global", "pre_ckan"}),
     }
+    if not _should_try_clio_kit(args["server"]):
+        return _annotate_ckan_skip(_global_ckan_organization_list(args["name_filter"]))
     clio_kit_result = await _call_clio_kit_ndp_tool("list_organizations", args)
     if not clio_kit_result.get("error") or args["server"] != "global":
         return clio_kit_result
@@ -880,6 +937,8 @@ async def search_datasets(
         "limit": _clean_limit(limit),
     }
     cleaned_args = {key: value for key, value in args.items() if value is not None}
+    if not _should_try_clio_kit(cleaned_args.get("server", "global")):
+        return _annotate_ckan_skip(_global_ckan_package_search(cleaned_args))
     clio_kit_result = await _call_clio_kit_ndp_tool(
         "search_datasets",
         cleaned_args,

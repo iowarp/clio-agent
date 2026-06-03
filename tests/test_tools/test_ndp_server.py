@@ -97,10 +97,30 @@ def test_clio_kit_transport_falls_back_to_uvx(
     assert transport.args == ["--from", "clio-kit", "clio-kit", "mcp-server", "ndp"]
 
 
+def test_clio_kit_launcher_source_requires_uvx_opt_in(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CLIO_KIT_PATH", str(tmp_path / "missing"))
+    monkeypatch.delenv("CLIO_KIT_COMMAND", raising=False)
+    monkeypatch.delenv("CLIO_KIT_ALLOW_UVX", raising=False)
+    monkeypatch.setattr(ndp_module.shutil, "which", lambda name: None)
+
+    assert ndp_module._clio_kit_launcher_source() == ""
+    assert ndp_module._should_try_clio_kit("global") is False
+    assert ndp_module._should_try_clio_kit("local") is True
+
+    monkeypatch.setenv("CLIO_KIT_ALLOW_UVX", "1")
+
+    assert ndp_module._clio_kit_launcher_source() == "uvx"
+    assert ndp_module._should_try_clio_kit("global") is True
+
+
 @pytest.mark.asyncio
 async def test_ndp_server_lists_organizations_through_clio_kit(monkeypatch: pytest.MonkeyPatch):
     """NDP wrapper should pass exact args through to the clio-kit MCP server."""
     calls: list[tuple[str, dict[str, Any]]] = []
+    monkeypatch.setenv("CLIO_KIT_COMMAND", "clio-kit")
 
     async def fake_call(tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
         calls.append((tool_name, args))
@@ -127,10 +147,57 @@ async def test_ndp_server_lists_organizations_through_clio_kit(monkeypatch: pyte
 
 
 @pytest.mark.asyncio
+async def test_ndp_list_organizations_uses_ckan_without_uvx_probe(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("CLIO_KIT_PATH", str(tmp_path / "missing"))
+    monkeypatch.delenv("CLIO_KIT_COMMAND", raising=False)
+    monkeypatch.delenv("CLIO_KIT_ALLOW_UVX", raising=False)
+    monkeypatch.setattr(ndp_module.shutil, "which", lambda name: None)
+
+    async def fail_call(tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
+        raise AssertionError(f"unexpected clio-kit call: {tool_name} {args}")
+
+    class FakeResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, Any]:
+            return {
+                "success": True,
+                "result": [
+                    {
+                        "id": "org1",
+                        "name": "noaa-global-systems-laboratory",
+                        "title": "NOAA Global Systems Laboratory",
+                        "package_count": 3,
+                    }
+                ],
+            }
+
+    monkeypatch.setattr(ndp_module, "_call_clio_kit_ndp_tool", fail_call)
+    monkeypatch.setattr(ndp_module.requests, "get", lambda *args, **kwargs: FakeResponse())
+
+    async with Client(ndp_server) as client:
+        result = await client.call_tool(
+            "list_organizations",
+            {"name_filter": "noaa", "server": "global"},
+        )
+
+    data = _parse_result(result)
+    assert data["organizations"][0]["name"] == "noaa-global-systems-laboratory"
+    assert data["_meta"]["source"] == "ckan_organization_list"
+    assert data["_meta"]["clio_kit_skipped"] is True
+    assert "uvx package launch" in data["_meta"]["clio_kit_skip_reason"]
+
+
+@pytest.mark.asyncio
 async def test_ndp_list_organizations_falls_back_to_ckan(
     monkeypatch: pytest.MonkeyPatch,
 ):
     """Fresh installs should still list global organizations if clio-kit fails."""
+    monkeypatch.setenv("CLIO_KIT_COMMAND", "clio-kit")
 
     async def fake_call(tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
         return {
@@ -191,6 +258,7 @@ async def test_ndp_list_organizations_falls_back_to_ckan(
 async def test_ndp_search_omits_null_arguments(monkeypatch: pytest.MonkeyPatch):
     """The wrapper should not forward null filters that change clio-kit semantics."""
     calls: list[tuple[str, dict[str, Any]]] = []
+    monkeypatch.setenv("CLIO_KIT_COMMAND", "clio-kit")
 
     async def fake_call(tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
         calls.append((tool_name, args))
@@ -215,6 +283,7 @@ async def test_ndp_search_omits_null_arguments(monkeypatch: pytest.MonkeyPatch):
 @pytest.mark.asyncio
 async def test_ndp_search_falls_back_to_ckan(monkeypatch: pytest.MonkeyPatch):
     """Fresh installs should still search global datasets if clio-kit fails."""
+    monkeypatch.setenv("CLIO_KIT_COMMAND", "clio-kit")
 
     async def fake_call(tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
         return {
@@ -275,6 +344,62 @@ async def test_ndp_search_falls_back_to_ckan(monkeypatch: pytest.MonkeyPatch):
     assert data["datasets"][0]["resource_urls"] == ["osdf:///ndp/public/ucr_seis/Data_Salton"]
     assert data["_meta"]["source"] == "ckan_package_search"
     assert data["_meta"]["clio_kit_error"]["code"] == "clio_kit_ndp_unavailable"
+
+
+@pytest.mark.asyncio
+async def test_ndp_search_uses_ckan_without_uvx_probe(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("CLIO_KIT_PATH", str(tmp_path / "missing"))
+    monkeypatch.delenv("CLIO_KIT_COMMAND", raising=False)
+    monkeypatch.delenv("CLIO_KIT_ALLOW_UVX", raising=False)
+    monkeypatch.setattr(ndp_module.shutil, "which", lambda name: None)
+
+    async def fail_call(tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
+        raise AssertionError(f"unexpected clio-kit call: {tool_name} {args}")
+
+    class FakeResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, Any]:
+            return {
+                "success": True,
+                "result": {
+                    "count": 1,
+                    "results": [
+                        {
+                            "id": "ds1",
+                            "name": "salton-sea-seismic-data",
+                            "title": "Salton Sea Seismic Data",
+                            "owner_org": "ucr-earth-and-planetary-sciences",
+                            "notes": "MiniSEED waveform data",
+                            "resources": [
+                                {
+                                    "name": "Salton Sea Seismic Waveforms",
+                                    "url": "osdf:///ndp/public/ucr_seis/Data_Salton",
+                                }
+                            ],
+                        }
+                    ],
+                },
+            }
+
+    monkeypatch.setattr(ndp_module, "_call_clio_kit_ndp_tool", fail_call)
+    monkeypatch.setattr(ndp_module.requests, "get", lambda *args, **kwargs: FakeResponse())
+
+    async with Client(ndp_server) as client:
+        result = await client.call_tool(
+            "search_datasets",
+            {"search_terms": ["seismic"], "server": "global", "limit": 3},
+        )
+
+    data = _parse_result(result)
+    assert data["datasets"][0]["name"] == "salton-sea-seismic-data"
+    assert data["_meta"]["source"] == "ckan_package_search"
+    assert data["_meta"]["clio_kit_skipped"] is True
+    assert "uvx package launch" in data["_meta"]["clio_kit_skip_reason"]
 
 
 @pytest.mark.asyncio
@@ -345,6 +470,41 @@ async def test_ndp_details_falls_back_to_public_ckan(monkeypatch: pytest.MonkeyP
     assert data["title"] == "Salton Sea Seismic Data"
     assert data["resource_urls"] == ["osdf:///ndp/public/ucr_seis/Data_Salton"]
     assert data["_meta"]["source"] == "ckan_package_show"
+
+
+@pytest.mark.asyncio
+async def test_ndp_details_returns_structured_error_when_ckan_skip_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CLIO_KIT_PATH", str(tmp_path / "missing"))
+    monkeypatch.delenv("CLIO_KIT_COMMAND", raising=False)
+    monkeypatch.delenv("CLIO_KIT_ALLOW_UVX", raising=False)
+    monkeypatch.setattr(ndp_module.shutil, "which", lambda name: None)
+
+    async def fail_call(tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
+        raise AssertionError(f"unexpected clio-kit call: {tool_name} {args}")
+
+    def fail_get(*args: Any, **kwargs: Any) -> Any:
+        raise RuntimeError("network down")
+
+    monkeypatch.setattr(ndp_module, "_call_clio_kit_ndp_tool", fail_call)
+    monkeypatch.setattr(ndp_module.requests, "get", fail_get)
+
+    async with Client(ndp_server) as client:
+        result = await client.call_tool(
+            "get_dataset_details",
+            {
+                "dataset_identifier": "salton-sea-seismic-data",
+                "identifier_type": "name",
+                "server": "global",
+            },
+        )
+
+    data = _parse_result(result)
+    assert data["error"]["code"] == "ndp_dataset_details_unavailable"
+    assert data["error"]["details"]["clio_kit_skipped"] is True
+    assert "uvx package launch" in data["error"]["details"]["clio_kit_skip_reason"]
 
 
 @pytest.mark.asyncio
