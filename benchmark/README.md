@@ -10,6 +10,10 @@ semantics, and surfaced-error behavior.
 
 ## Files
 
+- `BENCHMARK_READINESS_INDEX.md` - short status boundary for this directory:
+  which files are final benchmark sources, which reports are infrastructure
+  evidence, and why the early marketplace packs must be replaced by researched
+  scientific benchmark agents.
 - `CURRENT_STATUS.md` - current human-facing benchmark status: what failed,
   what was fixed, what now works, and which stress gaps remain future work.
 - `../docs/PREBENCHMARK_HARDENING_AUDIT.md` - backend hardening matrix for
@@ -62,6 +66,12 @@ semantics, and surfaced-error behavior.
   cross-session memory search is denied without explicit intent,
   same-workspace memory search succeeds with intent and provenance, and
   another workspace's session summary is denied.
+- `ALCF_GENOMICS_REFERENCE_DELEGATION_REPORT.md` /
+  `ALCF_GENOMICS_REFERENCE_DELEGATION_EVIDENCE.jsonl` - focused June 3 ALCF
+  Metis evidence after merged CLIO and marketplace fixes. It proves Agent
+  Blueprint wrapper-agent evidence handling plus root-owned sync delegation for
+  `genomics-review`. This is infrastructure evidence, not final benchmark
+  content.
 - `MARKETPLACE_UNIFIED_REPORT.md` /
   `MARKETPLACE_UNIFIED_EVIDENCE.jsonl` - historical May 29 evidence for
   marketplace Agent Blueprint loading, root-owned delegation, and one complex
@@ -119,6 +129,12 @@ uv run python scripts/run_demo_benchmark.py \
 
 New strict benchmark evidence should normally stay under this `benchmark/`
 directory. Historical provider-specific reports can remain under `docs/`.
+
+The early marketplace packs and reports in this folder are not the final
+scientific benchmark target. They are retained because they exposed runtime
+defects and prove infrastructure contracts. Replacement of those scaffold packs
+with researched scientific benchmark agents is tracked in
+`JaimeCernuda/clio-agent-marketplace#33`.
 
 The `marketplace_agents` lane separates smoke coverage from complex hierarchy
 coverage. Pack loading, root delegation, and tool use are necessary but not

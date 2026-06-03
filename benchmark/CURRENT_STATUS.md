@@ -6,6 +6,16 @@ This file is the human entry point for the current benchmark evidence. Older
 reports in this directory are useful debugging history, but they are not all
 current release evidence.
 
+For the short boundary between final benchmark sources, infrastructure
+evidence, and scaffold-pack replacement work, read
+`BENCHMARK_READINESS_INDEX.md` first.
+
+The early marketplace packs and first-wave reports should not be treated as the
+final benchmark target. They are infrastructure evidence and scaffolding that
+helped find runtime bugs. The final public-demo benchmark should be rebuilt
+from the researched cases in `CLIO_HIERARCHICAL_AGENT_BENCHMARK_CASES_SOURCE.md`
+and `CLIO_HIERARCHICAL_AGENT_BENCHMARK_REVIEW.md`.
+
 ## Current Marketplace Evidence
 
 Use `MARKETPLACE_COMPLEX_HIERARCHY_REPORT.md` /
@@ -32,6 +42,14 @@ Use `MARKETPLACE_WORKSPACE_MEMORY_SCOPE_REPORT.md` /
 `MARKETPLACE_WORKSPACE_MEMORY_SCOPE_EVIDENCE.jsonl` as the focused
 semantic-regression proof that CLIO's agent-callable memory tools enforce
 same-workspace intent and deny other-workspace reads.
+
+Use `ALCF_GENOMICS_REFERENCE_DELEGATION_REPORT.md` /
+`ALCF_GENOMICS_REFERENCE_DELEGATION_EVIDENCE.jsonl` as focused ALCF Metis
+evidence for merged CLIO plus merged marketplace root delegation semantics. It
+proves `genomics-review` can run through CLIO on `argonne / gpt-oss-120b` with
+`main -> reference -> main`, `reference -> reference_quality -> reference`, and
+successful `genomics_inspect_fasta` calls. It is an infrastructure proof, not a
+claim that the early genomics-reference case is final benchmark content.
 
 Use `GENOMICS_COHORT_QC_INFRASTRUCTURE.md` as the current infrastructure note
 for progress toward the benchmark-source Genomics Cohort QC case. It documents
@@ -186,8 +204,13 @@ non-seismic complex hierarchy expansion.
 
 ## Remaining Future Stress Gaps
 
-The current marketplace lane now has broad first-wave hierarchy proof across
-seismic plus non-seismic packs. Remaining benchmark expansion items are:
+The current marketplace lane has useful first-wave hierarchy infrastructure
+proof across seismic plus non-seismic packs. The next step is not to polish the
+old simple packs into release claims; it is to replace or rewrite them as
+researched scientific benchmark agents. Marketplace issue
+`JaimeCernuda/clio-agent-marketplace#33` tracks that replacement work.
+
+Remaining benchmark expansion items are:
 
 - at least ten complex collaborator-grade demos,
 - at least three tier-3 or nanoagent cases,
