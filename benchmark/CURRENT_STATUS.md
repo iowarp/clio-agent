@@ -43,6 +43,11 @@ progress toward the benchmark-source Proteomics LFQ differential-abundance
 case. It documents the new reusable LFQ matrix tool, but does not claim the
 final spike-in end-to-end benchmark has run yet.
 
+Use `HPC_DARSHAN_INFRASTRUCTURE.md` as the current infrastructure note for
+progress toward the benchmark-source HPC I/O regression case. It documents the
+new reusable Darshan text parser and two-trace comparison tool, but does not
+claim the final two-branch end-to-end benchmark has run yet.
+
 Current result:
 
 - The re-rendered full marketplace report records `5/6` clean passes after the

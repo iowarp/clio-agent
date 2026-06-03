@@ -144,6 +144,16 @@ TOOL_CATALOG: dict[str, ToolCatalogEntry] = {
         "geospatial",
         {"geospatial", "geojson", "spatial", "geometry", "inspect"},
     ),
+    "hpc_parse_darshan_text": _entry(
+        "hpc_parse_darshan_text",
+        "hpc",
+        {"hpc", "darshan", "io", "trace", "parse", "performance"},
+    ),
+    "hpc_compare_darshan_traces": _entry(
+        "hpc_compare_darshan_traces",
+        "hpc",
+        {"hpc", "darshan", "io", "trace", "regression", "diff", "performance"},
+    ),
     "imaging_inspect_png": _entry(
         "imaging_inspect_png",
         "imaging",
