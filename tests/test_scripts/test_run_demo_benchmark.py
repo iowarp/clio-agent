@@ -324,6 +324,137 @@ def test_case_row_records_semantic_proof_declarations() -> None:
     assert rehydrated.case.semantic_proofs == ("no_shortcuts", "root_delegation")
 
 
+def test_format_live_event_line_renders_compact_semantic_event() -> None:
+    line = bench._format_live_event_line(
+        {
+            "type": "semantic.event",
+            "occurred_at": "2026-06-03T00:00:00+00:00",
+            "payload": {
+                "event_type": "llm.request.started",
+                "status": "running",
+                "summary": "LLM request started for data.",
+                "actor": {"agent_id": "data"},
+            },
+        }
+    )
+
+    assert line == (
+        "semantic llm.request.started | agent=data | status=running | "
+        "LLM request started for data."
+    )
+
+
+def test_format_live_event_line_ignores_heartbeat_noise() -> None:
+    assert bench._format_live_event_line({"type": "server.connected", "payload": {}}) == ""
+    assert bench._format_live_event_line({"type": "server.heartbeat", "payload": {}}) == ""
+
+
+def test_live_event_watch_starts_before_turn_and_stops_after(monkeypatch) -> None:
+    calls: list[str] = []
+
+    class FakeWatch:
+        def __init__(self, *_args, enabled: bool, **_kwargs) -> None:
+            self.enabled = enabled
+
+        def __enter__(self):
+            assert self.enabled is True
+            calls.append("watch_enter")
+            return self
+
+        def __exit__(self, *_exc: object) -> None:
+            calls.append("watch_exit")
+
+    class FakeResponse:
+        def __init__(self, payload: dict[str, object]) -> None:
+            self._payload = payload
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, object]:
+            return self._payload
+
+    class FakeLog:
+        def write(self, _text: str) -> None:
+            calls.append("log_write")
+
+        def flush(self) -> None:
+            return None
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc: object) -> None:
+            return None
+
+    class FakeClient:
+        def __init__(self, *_args, **_kwargs) -> None:
+            return None
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc: object) -> None:
+            return None
+
+        def get(self, path: str) -> FakeResponse:
+            if path == "/v1/health":
+                return FakeResponse({})
+            raise AssertionError(path)
+
+    case = bench.DemoCase(
+        case_id="watch_case",
+        title="watch",
+        category="test",
+        prompt="prompt",
+        why="why",
+        expected="expected",
+        session_group="watch",
+    )
+    message = _message(text="ok")
+    message["id"] = "msg_assistant"
+
+    monkeypatch.setattr(bench.httpx, "Client", FakeClient)
+    monkeypatch.setattr(bench, "create_benchmark_data", lambda _data_dir: {})
+    monkeypatch.setattr(bench, "_make_cases", lambda _manifest: [case])
+    monkeypatch.setattr(
+        bench,
+        "_create_sessions",
+        lambda _http, _cases, workspace_id="": {bench._session_key(case): "sid"},
+    )
+    monkeypatch.setattr(bench, "_children", lambda _http, _session_id: [])
+    monkeypatch.setattr(bench, "_provider", lambda _http: {})
+    monkeypatch.setattr(bench, "_session_agent_blueprint", lambda _http, _session_id: {})
+    monkeypatch.setattr(bench, "_chronological_session_messages", lambda _http, _session_id: [])
+    monkeypatch.setattr(
+        bench,
+        "_semantic_events_for_completed_message",
+        lambda *_args, **_kwargs: [],
+    )
+    monkeypatch.setattr(bench, "_LiveEventWatch", FakeWatch)
+
+    def fake_post_turn(*_args, **_kwargs):
+        calls.append("post_turn")
+        return message
+
+    monkeypatch.setattr(bench, "_post_turn", fake_post_turn)
+    monkeypatch.setattr(Path, "open", lambda *_args, **_kwargs: FakeLog())
+    monkeypatch.setattr(Path, "write_text", lambda *_args, **_kwargs: None)
+
+    code = bench.run_benchmark(
+        "http://example.test",
+        Path("/tmp/data"),
+        Path("/tmp/out.jsonl"),
+        Path("/tmp/report.md"),
+        lane="all",
+        case_ids=("watch_case",),
+        watch_events=True,
+    )
+
+    assert code == 0
+    assert calls[:3] == ["watch_enter", "post_turn", "watch_exit"]
+
+
 def test_route_graph_summary_preserves_sync_delegation_returns() -> None:
     message = _message(route_source="dspy")
     message["metadata"]["expert_handoffs"] = [
