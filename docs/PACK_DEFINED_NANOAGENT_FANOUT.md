@@ -2,6 +2,8 @@
 
 Related issue: `iowarp/clio-agent#629`.
 
+Companion inventory: `NATIVE_EXPERT_MIGRATION_INVENTORY.md`.
+
 ## Architecture Target
 
 CLIO should not have two classes of experts. Marketplace/Agent Blueprint
@@ -91,6 +93,9 @@ substrate. For every native expert behavior, classify it as:
 
 Benchmarks should not be accepted as final public-demo passes if their expert
 semantics depend on native-only domain expert behavior.
+
+The current native expert migration inventory is maintained in
+`NATIVE_EXPERT_MIGRATION_INVENTORY.md`.
 
 ## Desired Blueprint Shape
 
