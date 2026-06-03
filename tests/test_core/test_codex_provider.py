@@ -20,6 +20,7 @@ from clio_agent.providers.codex_litellm import (
     CodexCLIUnavailableError,
     CodexExecError,
     CodexLLM,
+    CodexUnsupportedMultimodalError,
     _build_model_response,
     _messages_to_codex_prompt,
     _run_exec,
@@ -75,20 +76,19 @@ class TestMessagesToCodexPrompt:
             {"role": "user", "content": "ping"},
         ]
 
-    def test_vision_content_parts_flatten(self):
-        prompt = _messages_to_codex_prompt(
-            [
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": "describe this"},
-                        {"type": "image_url", "image_url": {"url": "..."}},
-                    ],
-                }
-            ]
-        )
-        row = json.loads(prompt.splitlines()[-1])
-        assert row == {"role": "user", "content": "describe this"}
+    def test_vision_content_parts_fail_fast(self):
+        with pytest.raises(CodexUnsupportedMultimodalError, match="image message parts"):
+            _messages_to_codex_prompt(
+                [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": "describe this"},
+                            {"type": "image_url", "image_url": {"url": "..."}},
+                        ],
+                    }
+                ]
+            )
 
     def test_missing_content_renders_empty(self):
         prompt = _messages_to_codex_prompt(

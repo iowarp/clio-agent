@@ -124,6 +124,102 @@ def test_post_message_happy_path(client: TestClient, fake_agent: FakeClioAgent) 
     assert fake_agent.calls == [("refactor this function", sid)]
 
 
+def test_capabilities_and_provider_catalog_report_image_part_support(client: TestClient) -> None:
+    caps = client.get("/v1/capabilities").json()["capabilities"]
+    assert caps["multimodal_image_parts"] is True
+
+    providers = client.get("/v1/providers").json()["providers"]
+    by_id = {row["id"]: row for row in providers}
+    assert by_id["openai"]["metadata"]["supports_vision"] is True
+    assert by_id["anthropic"]["metadata"]["supports_vision"] is True
+    assert by_id["codex"]["metadata"]["supports_vision"] is False
+    assert by_id["claude_code"]["metadata"]["supports_vision"] is False
+
+
+def test_post_message_rejects_image_parts_for_text_only_provider(
+    tmp_path: Path,
+    fake_agent: FakeClioAgent,
+) -> None:
+    app = build_app(sessions_path=tmp_path / "sessions.json", agent=fake_agent)
+    app.state.lm_config = {
+        "provider": "codex",
+        "model": "gpt-5.5",
+        "supports_vision": False,
+    }
+    with TestClient(app) as c:
+        sid = c.post("/v1/sessions", json={"title": "vision"}).json()["id"]
+        resp = c.post(
+            f"/v1/sessions/{sid}/messages",
+            json={
+                "parts": [
+                    {"type": "text", "text": "describe this image"},
+                    {
+                        "type": "image",
+                        "data": "iVBORw0KGgo=",
+                        "media_type": "image/png",
+                    },
+                ]
+            },
+        )
+
+        assert resp.status_code == 501, resp.text
+        body = resp.json()["error"]
+        assert body["error"] == "unsupported_multimodal_image"
+        assert body["details"]["provider"] == "codex"
+        assert body["details"]["image_part_count"] == 1
+        assert c.get(f"/v1/sessions/{sid}/messages").json()["messages"] == []
+
+    assert fake_agent.calls == []
+
+
+def test_post_message_preserves_image_parts_for_vision_capable_provider(
+    tmp_path: Path,
+    fake_agent: FakeClioAgent,
+) -> None:
+    from .conftest import complete_turn
+
+    app = build_app(sessions_path=tmp_path / "sessions.json", agent=fake_agent)
+    app.state.lm_config = {
+        "provider": "openai",
+        "model": "gpt-4o",
+        "supports_vision": True,
+    }
+    with TestClient(app) as c:
+        sid = c.post("/v1/sessions", json={"title": "vision"}).json()["id"]
+        assistant = complete_turn(
+            c,
+            sid,
+            "",
+            json_override={
+                "parts": [
+                    {"type": "text", "text": "describe this image"},
+                    {
+                        "type": "image",
+                        "data": "iVBORw0KGgo=",
+                        "media_type": "image/png",
+                        "metadata": {"filename": "cell.png"},
+                    },
+                ]
+            },
+        )
+        messages = c.get(f"/v1/sessions/{sid}/messages").json()["messages"]
+
+    user_msg = next(m for m in messages if m["role"] == "user")
+    assert [part["type"] for part in user_msg["parts"]] == ["text", "image"]
+    image = user_msg["parts"][1]
+    assert image["media_type"] == "image/png"
+    assert image["data"] == "iVBORw0KGgo="
+    assert image["metadata"]["filename"] == "cell.png"
+    assert image["metadata"]["clio_multimodal"] == "preserved"
+    assert user_msg["metadata"]["multimodal"] == {
+        "image_part_count": 1,
+        "transcript_preserved": True,
+        "native_model_dispatch": False,
+    }
+    assert assistant["parts"][-1]["text"] == "hello from fake"
+    assert fake_agent.calls == [("describe this image", sid)]
+
+
 def test_post_message_bumps_message_count_by_two(client: TestClient) -> None:
     from .conftest import complete_turn
 

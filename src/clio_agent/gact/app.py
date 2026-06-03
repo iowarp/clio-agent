@@ -3429,6 +3429,7 @@ def _effective_lm_config(app: "FastAPI") -> dict[str, Any]:
         "max_tokens",
         "context_length",
         "thinking_budget",
+        "supports_vision",
     ):
         if not cfg.get(key):
             value = getattr(provider_config, key, None)
@@ -3448,10 +3449,107 @@ def _active_lm_model_ref(app: "FastAPI") -> dict[str, str]:
     return {"provider_id": provider, "model_id": model, "variant": ""}
 
 
+def _active_lm_supports_vision(app: "FastAPI") -> bool:
+    """Return whether the active provider transport can carry image parts."""
+
+    cfg = _effective_lm_config(app)
+    if "supports_vision" in cfg:
+        return bool(cfg.get("supports_vision"))
+    return str(cfg.get("provider") or "") in {"openai", "anthropic"}
+
+
+def _image_part_error(
+    *,
+    session_id: str,
+    image_count: int,
+    provider: Mapping[str, Any],
+) -> ErrorEnvelope:
+    provider_id = str(provider.get("provider") or provider.get("provider_id") or "")
+    model_id = str(provider.get("model") or provider.get("model_id") or "")
+    return ErrorEnvelope(
+        error=ErrorInfo(
+            error="unsupported_multimodal_image",
+            message=(
+                "The active LM provider cannot receive image message parts. "
+                "Switch to a vision-capable direct provider or remove the image."
+            ),
+            details={
+                "session_id": session_id,
+                "image_part_count": image_count,
+                "provider": provider_id,
+                "model": model_id,
+                "supports_vision": False,
+                "recovery_actions": [
+                    "switch_to_openai_or_anthropic",
+                    "remove_image_part",
+                    "attach_image_as_context_file_for_tool_inspection",
+                ],
+            },
+            recoverable=True,
+        )
+    )
+
+
 def _model_ref_matches_active(value: Any, app: "FastAPI") -> bool:
     """Return true when a requested model ref exactly matches the active LM."""
 
     return _model_ref_dict(value) == _active_lm_model_ref(app)
+
+
+def _user_message_parts(
+    *,
+    request_parts: list["Part"],
+    user_text: str,
+) -> list["Part"]:
+    """Return transcript parts for a user turn, preserving image parts."""
+
+    if not request_parts:
+        return [Part(id=_new_part_id(), type="text", text=user_text)]
+    parts: list[Part] = []
+    has_text = False
+    for part in request_parts:
+        if part.type not in {"text", "image"}:
+            continue
+        metadata = dict(part.metadata)
+        if part.type == "image":
+            metadata.setdefault("clio_multimodal", "preserved")
+        copied = part.model_copy(
+            update={
+                "id": part.id or _new_part_id(),
+                "metadata": metadata,
+            }
+        )
+        if copied.type == "text" and copied.text:
+            has_text = True
+        parts.append(copied)
+    if not has_text and user_text:
+        parts.insert(0, Part(id=_new_part_id(), type="text", text=user_text))
+    return parts or [Part(id=_new_part_id(), type="text", text=user_text)]
+
+
+def _image_part_summaries(parts: list["Part"]) -> list[dict[str, Any]]:
+    """Return bounded metadata for image parts without logging raw base64."""
+
+    rows: list[dict[str, Any]] = []
+    for index, part in enumerate(parts):
+        if part.type != "image":
+            continue
+        rows.append(
+            {
+                "index": index,
+                "id": part.id,
+                "media_type": part.media_type or part.metadata.get("media_type", ""),
+                "has_data": bool(part.data),
+                "data_length": len(part.data or ""),
+                "url": part.url,
+                "metadata": {
+                    key: value
+                    for key, value in part.metadata.items()
+                    if key not in {"data", "base64", "file"}
+                },
+            }
+        )
+    return rows
 
 
 def _clear_session_model_refs(app: "FastAPI") -> None:
@@ -9560,6 +9658,7 @@ def build_app(
                 session_export=True,  # #16 — /v1/sessions/{sid}/export + import
                 session_summary=True,  # POST /v1/sessions/{sid}/summarize — user-facing TLDR
                 attachments_upload=True,  # POST /v1/sessions/{sid}/attachments — base64 byte upload
+                multimodal_image_parts=True,  # #528 — preserve image parts + provider gate
                 mcp=True,  # #13 — /v1/mcp/servers exposes the gateway namespaces
                 providers=True,  # #15 — /v1/providers catalogs the LM presets
                 commands=True,  # #14 — /v1/commands + dispatch
@@ -11164,6 +11263,7 @@ def build_app(
                     )
                 ).model_dump(exclude_none=True),
             )
+        media_type = str(body.get("media_type") or body.get("mime_type") or "").strip()
 
         # --- decode bytes (size-capped) ---
         max_bytes = 25 * 1024 * 1024  # 25 MiB
@@ -11361,6 +11461,9 @@ def build_app(
             "language": "",
             "uploaded": True,
         }
+        if media_type:
+            row["media_type"] = media_type
+            row["mime_type"] = media_type
         bucket = app.state.context_files.setdefault(sid, {})
         bucket[row["path"]] = row
         _flush_context_files(app)
@@ -12808,6 +12911,7 @@ def build_app(
             "metadata": {
                 "provider_kind": preset.provider,
                 "requires_api_key": preset.requires_api_key,
+                "supports_vision": preset.supports_vision,
             },
         }
 
@@ -15452,12 +15556,21 @@ def build_app(
         sess: Session,
         user_text: str,
         *,
+        request_parts: Optional[list[Part]] = None,
         metadata: Optional[dict[str, Any]] = None,
         prev_status: str = "idle",
         turn_agent_id: str = "",
     ) -> Message:
         now = time.time()
         user_metadata = dict(metadata or {})
+        image_summaries = _image_part_summaries(request_parts or [])
+        if image_summaries:
+            user_metadata["image_parts"] = image_summaries
+            user_metadata["multimodal"] = {
+                "image_part_count": len(image_summaries),
+                "transcript_preserved": True,
+                "native_model_dispatch": False,
+            }
         if turn_agent_id:
             user_metadata["agent_override"] = {
                 "requested_agent_id": turn_agent_id,
@@ -15470,7 +15583,7 @@ def build_app(
             role="user",
             created_at=_iso_from_epoch(now),
             updated_at=_iso_from_epoch(now),
-            parts=[Part(id=_new_part_id(), type="text", text=user_text)],
+            parts=_user_message_parts(request_parts=request_parts or [], user_text=user_text),
             metadata=user_metadata,
         )
 
@@ -16088,7 +16201,17 @@ def build_app(
 
         user_text = req.extract_text()
         turn_agent_id = req.extract_agent_id().strip()
-        if not user_text:
+        image_parts = req.image_parts()
+        if image_parts and not _active_lm_supports_vision(app):
+            raise HTTPException(
+                status_code=501,
+                detail=_image_part_error(
+                    session_id=sid,
+                    image_count=len(image_parts),
+                    provider=_effective_lm_config(app),
+                ).model_dump(exclude_none=True),
+            )
+        if not user_text and not image_parts:
             raise HTTPException(
                 status_code=422,
                 detail=ErrorEnvelope(
@@ -16113,6 +16236,7 @@ def build_app(
             sid,
             sess,
             user_text,
+            request_parts=req.parts,
             metadata=req.metadata,
             prev_status="idle",
             turn_agent_id=turn_agent_id,
@@ -19842,6 +19966,7 @@ def build_app(
             "context_length": req.context_length,
             "thinking_budget": req.thinking_budget,
             "transport": cfg.codex_transport if req.provider == "codex" else None,
+            "supports_vision": cfg.supports_vision,
         }
         _clear_session_model_refs(app)
         # Publish so live SSE subscribers see the swap (TUI updates
@@ -19858,6 +19983,7 @@ def build_app(
                     "max_tokens": req.max_tokens,
                     "context_length": req.context_length,
                     "transport": cfg.codex_transport if req.provider == "codex" else None,
+                    "supports_vision": cfg.supports_vision,
                 },
             )
         )

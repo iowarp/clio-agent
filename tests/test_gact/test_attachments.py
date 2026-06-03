@@ -72,6 +72,28 @@ def test_upload_writes_into_workspace_and_registers(setup) -> None:
     assert any(f["path"] == row["path"] for f in listed)
 
 
+def test_upload_preserves_media_type_metadata(setup) -> None:
+    app, c, _agent, _tmp = setup
+    sid = c.post("/v1/sessions", json={"title": "t"}).json()["id"]
+
+    resp = c.post(
+        f"/v1/sessions/{sid}/attachments",
+        json={
+            "file": base64.b64encode(b"\x89PNG\r\n").decode("ascii"),
+            "filename": "cells.png",
+            "media_type": "image/png",
+        },
+    )
+
+    assert resp.status_code == 200, resp.text
+    row = resp.json()
+    assert row["media_type"] == "image/png"
+    assert row["mime_type"] == "image/png"
+    listed = c.get(f"/v1/sessions/{sid}/context/files").json()["files"]
+    listed_row = next(item for item in listed if item["path"] == row["path"])
+    assert listed_row["media_type"] == "image/png"
+
+
 def test_upload_consumed_by_agent_next_turn(setup) -> None:
     from .conftest import complete_turn
 
