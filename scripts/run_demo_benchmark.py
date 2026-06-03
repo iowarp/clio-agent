@@ -462,6 +462,28 @@ class DemoResult:
         return [str(row.get("event_type") or "") for row in self.semantic_events]
 
     @property
+    def invalid_tool_selections(self) -> list[dict[str, Any]]:
+        """Return blocked invalid tool selections observed in semantic traces."""
+        rows: list[dict[str, Any]] = []
+        for event in self.semantic_events:
+            if event.get("event_type") != "tool.selection.invalid":
+                continue
+            payload = event.get("payload")
+            if not isinstance(payload, dict):
+                payload = {}
+            rows.append(
+                {
+                    "case_id": self.case.case_id,
+                    "agent_id": str(payload.get("agent_id") or ""),
+                    "requested_tool": str(payload.get("requested_tool") or ""),
+                    "allowed_tools": list(payload.get("allowed_tools") or []),
+                    "recovery_status": str(payload.get("recovery_status") or ""),
+                    "tool_executed": bool(payload.get("tool_executed") is True),
+                }
+            )
+        return rows
+
+    @property
     def semantic_trace_summary(self) -> dict[str, Any]:
         """Return compact semantic trace proof for machine-readable evidence rows."""
         event_types = [event_type for event_type in self.semantic_event_types if event_type]
@@ -488,6 +510,7 @@ class DemoResult:
             "trace_ids": trace_ids,
             "turn_ids": turn_ids,
             "has_live_trace": bool(self.semantic_events) and live_count == len(self.semantic_events),
+            "invalid_tool_selection_count": len(self.invalid_tool_selections),
         }
 
 
@@ -4411,6 +4434,19 @@ def _render_report(results: list[DemoResult], output_jsonl: Path) -> str:
             for event_type in result.semantic_trace_summary["unique_event_types"]
         }
     )
+    invalid_tool_selections = [
+        row for result in results for row in result.invalid_tool_selections
+    ]
+    invalid_tool_examples = sorted(
+        {
+            (
+                f"{row['case_id']}:{row['agent_id']}->{row['requested_tool']}"
+                if row["agent_id"] and row["requested_tool"]
+                else str(row["case_id"])
+            )
+            for row in invalid_tool_selections
+        }
+    )
     declared_semantic_proofs = sorted(
         {proof for result in results for proof in result.case.semantic_proofs}
     )
@@ -4489,6 +4525,17 @@ def _render_report(results: list[DemoResult], output_jsonl: Path) -> str:
             (
                 "- Semantic event types: "
                 f"{', '.join(semantic_event_types) if semantic_event_types else 'none'}"
+            ),
+            (
+                "- Invalid tool selections blocked: "
+                f"{len(invalid_tool_selections)}"
+                + (
+                    f" ({', '.join(invalid_tool_examples[:8])}"
+                    + (" ..." if len(invalid_tool_examples) > 8 else "")
+                    + ")"
+                    if invalid_tool_examples
+                    else ""
+                )
             ),
             (
                 "- Declared semantic proofs: "
