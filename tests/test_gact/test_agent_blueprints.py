@@ -2057,9 +2057,88 @@ EarthScope descriptor.
     assert call.json()["content"] == [
         {"type": "text", "text": "earthscope_query:ANMO"}
     ]
-    declared = next(row for row in tools if row["id"] == "earthscope_query")
+    declared = next(
+        row
+        for row in tools
+        if row["id"] == "earthscope_query"
+        and row.get("source") == "agent_blueprint_mcp_descriptor"
+    )
     assert declared["enabled"] is True
     assert declared["status"] == "ready"
+
+
+def test_enabled_pack_local_mcp_descriptor_calls_real_stdio_server(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    root = workspace / ".clio" / "agent-blueprints" / "calc"
+    _write_blueprint(root, blueprint_id="calc")
+    (root / "tools").mkdir()
+    (root / "mcp").mkdir()
+    root.joinpath("mcp", "calculator_server.py").write_text(
+        """from __future__ import annotations
+
+from fastmcp import FastMCP
+
+mcp = FastMCP("calculator-smoke")
+
+
+@mcp.tool()
+def calculator_add(a: float, b: float) -> dict[str, float]:
+    return {"a": a, "b": b, "sum": a + b}
+
+
+if __name__ == "__main__":
+    mcp.run(transport="stdio", show_banner=False)
+""",
+        encoding="utf-8",
+    )
+    root.joinpath("tools", "calculator.md").write_text(
+        """---
+id: calculator
+name: Calculator MCP
+transport: stdio
+install:
+  method: pack-local
+  path: mcp/calculator_server.py
+runtime:
+  args:
+    - serve
+tools:
+  - calculator_add
+trust:
+  policy: explicit
+---
+Calculator descriptor.
+""",
+        encoding="utf-8",
+    )
+
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    with TestClient(app) as client:
+        wid = client.post(
+            "/v1/workspaces",
+            json={
+                "name": "Workspace",
+                "root_path": str(workspace),
+                "storage_root": str(workspace / ".clio"),
+            },
+        ).json()["id"]
+        enabled = client.post(
+            "/v1/agent-blueprints/calc/mcp/calculator/enable",
+            json={"workspace_id": wid, "trust": True},
+        )
+        call = client.post(
+            "/v1/mcp/servers/agent_blueprint_mcp_calc_calculator/call",
+            json={"tool": "calculator_add", "args": {"a": 2, "b": 5}},
+        )
+
+    assert enabled.status_code == 200, enabled.text
+    assert enabled.json()["status"] == "ready"
+    assert enabled.json()["tools"][0]["enabled"] is True
+    assert call.status_code == 200, call.text
+    assert call.json()["is_error"] is False
+    assert call.json()["content"] == [
+        {"type": "text", "text": '{"a":2.0,"b":5.0,"sum":7.0}'}
+    ]
 
 
 def test_enabled_agent_blueprint_mcp_tool_reenables_session_expert(

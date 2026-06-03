@@ -145,6 +145,7 @@ def test_select_semantic_regression_lane_cases() -> None:
             "ndp_seismic_waveform_to_plot",
             "marketplace_seismic_waveform_review",
             "marketplace_mcp_calculator_scope",
+            "marketplace_mcp_calculator_enabled_call",
             "provider_swap_memory_followup",
         )
     ]
@@ -1380,6 +1381,7 @@ def test_semantic_regression_audit_reports_missing_proof_evidence() -> None:
     )
     assert declared_row["passed"] is False
     assert "command_mcp_skill_scope" in "\n".join(declared_row["details"])
+    assert "enabled_mcp_execution" in "\n".join(declared_row["details"])
     assert observed_row["passed"] is False
     assert "workspace_memory_scope" in "\n".join(observed_row["details"])
     assert case_row["passed"] is False
@@ -1443,6 +1445,43 @@ def test_command_mcp_skill_scope_ignores_unstructured_model_words() -> None:
     )
 
     assert bench._case_observed_semantic_proofs(result) == ()
+
+
+def test_enabled_mcp_execution_requires_enable_and_call_actions() -> None:
+    case = bench.DemoCase(
+        case_id="mcp_enabled",
+        title="mcp enabled",
+        category="test",
+        prompt="prompt",
+        why="why",
+        expected="expected",
+        session_group="semantic",
+        semantic_proofs=("enabled_mcp_execution",),
+    )
+    result = bench.DemoResult(
+        case=case,
+        session_id="sess_mcp",
+        elapsed_s=1.0,
+        message=_message(text="calculator_add ready"),
+        provider={"provider": "codex", "model": "gpt-5.5", "api_base": ""},
+        benchmark_lane="semantic_regression",
+        actions=[
+            {
+                "type": "agent_blueprint_mcp_enable",
+                "ok": True,
+                "ready_tools": ["calculator_add"],
+                "trust": {"trusted": True, "source": "request"},
+            },
+            {
+                "type": "mcp_tool_call",
+                "ok": True,
+                "tool": "calculator_add",
+                "result": {"content": [{"type": "text", "text": '{"sum":7.0}'}]},
+            },
+        ],
+    )
+
+    assert bench._case_observed_semantic_proofs(result) == ("enabled_mcp_execution",)
 
 
 def test_render_existing_jsonl_can_gate_missing_semantic_evidence(tmp_path: Path) -> None:

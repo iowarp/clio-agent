@@ -41,6 +41,13 @@ semantics, and surfaced-error behavior.
   `mcp-calculator-smoke` pack exposes disabled-by-default descriptor metadata,
   pack-local stdio launch derivation, `calculator_add` scope, and explicit
   trust requirements. It does not claim enabled MCP tool execution.
+- `MARKETPLACE_MCP_ENABLED_EXECUTION_REPORT.md` /
+  `MARKETPLACE_MCP_ENABLED_EXECUTION_EVIDENCE.jsonl` - focused June 3
+  semantic-regression evidence for enabled marketplace MCP execution. It proves
+  the `mcp-calculator-smoke` descriptor can be explicitly trusted, launched as a
+  real pack-local stdio FastMCP server, probed to ready, and called through
+  CLIO's MCP call endpoint. This is an action-only infrastructure proof, not a
+  model-turn or hierarchy-depth proof.
 - `MARKETPLACE_UNIFIED_REPORT.md` /
   `MARKETPLACE_UNIFIED_EVIDENCE.jsonl` - historical May 29 evidence for
   marketplace Agent Blueprint loading, root-owned delegation, and one complex
@@ -118,10 +125,12 @@ not a single all-green full-lane rerun after every fix. Read it as:
 A final public-demo dry run should still regenerate the full lane from a fresh
 machine/session once the benchmark pack set is frozen.
 
-The MCP scope report is intentionally a focused semantic-regression case. It
-does not call `calculator_add`; it proves CLIO surfaces the descriptor, launch
-metadata, and trust state before enablement. Enabled marketplace MCP execution
-should be proven separately.
+The MCP scope and enabled-execution reports are intentionally focused
+semantic-regression cases. The scope report proves CLIO surfaces descriptor,
+launch metadata, and trust state before enablement. The enabled-execution report
+proves explicit trust/enable/probe/call with a real pack-local MCP server. It is
+action-only by design so provider availability does not mask the MCP runtime
+contract.
 
 Before running the expensive marketplace lane, run the static preflight against
 the marketplace source. This uses CLIO's Agent Blueprint validator for every

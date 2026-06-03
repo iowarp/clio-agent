@@ -22,9 +22,15 @@ def test_current_status_points_to_current_marketplace_hierarchy_evidence() -> No
     mcp_report = (BENCHMARK / "MARKETPLACE_MCP_SCOPE_REPORT.md").read_text(
         encoding="utf-8"
     )
+    mcp_enabled_report = (
+        BENCHMARK / "MARKETPLACE_MCP_ENABLED_EXECUTION_REPORT.md"
+    ).read_text(encoding="utf-8")
     complex_rows = _jsonl_rows(BENCHMARK / "MARKETPLACE_COMPLEX_HIERARCHY_EVIDENCE.jsonl")
     retry_rows = _jsonl_rows(BENCHMARK / "MARKETPLACE_GEOSPATIAL_RETRY_EVIDENCE.jsonl")
     mcp_rows = _jsonl_rows(BENCHMARK / "MARKETPLACE_MCP_SCOPE_EVIDENCE.jsonl")
+    mcp_enabled_rows = _jsonl_rows(
+        BENCHMARK / "MARKETPLACE_MCP_ENABLED_EXECUTION_EVIDENCE.jsonl"
+    )
 
     seismic = next(
         row for row in complex_rows if row["case"] == "marketplace_seismic_waveform_review"
@@ -33,10 +39,16 @@ def test_current_status_points_to_current_marketplace_hierarchy_evidence() -> No
         row for row in retry_rows if row["case"] == "marketplace_geospatial_field_review"
     )
     mcp = next(row for row in mcp_rows if row["case"] == "marketplace_mcp_calculator_scope")
+    mcp_enabled = next(
+        row
+        for row in mcp_enabled_rows
+        if row["case"] == "marketplace_mcp_calculator_enabled_call"
+    )
 
     assert "MARKETPLACE_COMPLEX_HIERARCHY_REPORT.md" in status
     assert "MARKETPLACE_GEOSPATIAL_RETRY_REPORT.md" in status
     assert "MARKETPLACE_MCP_SCOPE_REPORT.md" in status
+    assert "MARKETPLACE_MCP_ENABLED_EXECUTION_REPORT.md" in status
     assert "FRESH_REAL_ORCHESTRATOR_REPORT.md" in status
     assert "historical" in status.lower()
     assert "5/6" in status
@@ -54,6 +66,19 @@ def test_current_status_points_to_current_marketplace_hierarchy_evidence() -> No
     assert descriptor["trust"] == {"policy": "explicit", "trusted": False}
     assert descriptor["tools"][0]["name"] == "calculator_add"
     assert descriptor["tools"][0]["status"] == "disabled"
+    assert mcp_enabled["outcome"] == "pass"
+    assert mcp_enabled["observed_semantic_proofs"] == [
+        "command_mcp_skill_scope",
+        "enabled_mcp_execution",
+    ]
+    assert [action["type"] for action in mcp_enabled["actions"]] == [
+        "agent_blueprint_mcp_enable",
+        "mcp_tool_call",
+    ]
+    assert all(action["ok"] for action in mcp_enabled["actions"])
+    assert mcp_enabled["actions"][0]["ready_tools"] == ["calculator_add"]
+    assert mcp_enabled["actions"][0]["trust"]["trusted"] is True
+    assert mcp_enabled["actions"][1]["tool"] == "calculator_add"
     assert "NDP full SAC/PNG chain verified" not in status
     assert "Result: 5/6 clean passes" in complex_report
     assert "at least three marketplace cases prove complex hierarchy depth | 5 | 3 | pass" in complex_report
@@ -61,6 +86,8 @@ def test_current_status_points_to_current_marketplace_hierarchy_evidence() -> No
     assert "main -> spatial_features -> main" in retry_report
     assert "Result: 1/1 clean passes" in mcp_report
     assert "command_mcp_skill_scope | command_mcp_skill_scope" in mcp_report
+    assert "Result: 1/1 clean passes" in mcp_enabled_report
+    assert "enabled_mcp_execution" in mcp_enabled_report
 
 
 def test_superseded_real_orchestrator_report_is_labeled_historical() -> None:

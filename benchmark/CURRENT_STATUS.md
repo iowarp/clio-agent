@@ -18,6 +18,11 @@ Use `MARKETPLACE_MCP_SCOPE_REPORT.md` /
 `MARKETPLACE_MCP_SCOPE_EVIDENCE.jsonl` as the focused semantic-regression proof
 for pack-defined MCP descriptor scope.
 
+Use `MARKETPLACE_MCP_ENABLED_EXECUTION_REPORT.md` /
+`MARKETPLACE_MCP_ENABLED_EXECUTION_EVIDENCE.jsonl` as the focused
+semantic-regression proof that a marketplace pack-local MCP descriptor can be
+explicitly trusted, launched, probed, and called through CLIO.
+
 Current result:
 
 - The re-rendered full marketplace report records `5/6` clean passes after the
@@ -46,10 +51,15 @@ Current result:
   metadata. The descriptor is disabled by default, derives a stdio launch from
   `mcp/calculator_server.py`, declares `calculator_add`, and records
   `trust.policy=explicit` / `trusted=false`.
+- The focused enabled MCP execution case proves the same pack-local descriptor
+  can be explicitly trusted, launched as a real stdio FastMCP server, probed to
+  ready, and called through `/v1/mcp/servers/{server_id}/call`. This is an
+  action-only infrastructure proof, so it does not claim model reasoning,
+  hierarchy depth, or provider-turn success.
 
 Do not overclaim this as a single clean full-lane rerun after the geospatial
-fix. It is a combined evidence set: one corrected full run plus a focused retry
-for the only failed case.
+fix. It is a combined evidence set: one corrected full run plus focused proofs
+for the geospatial retry, MCP descriptor scope, and enabled MCP execution.
 
 ## What Failed And Was Fixed
 
@@ -105,8 +115,6 @@ seismic plus non-seismic packs. Remaining benchmark expansion items are:
 - at least two deliberate surfaced-error cases,
 - at least one context-pressure or compaction case,
 - at least one provider/model-swap stress case.
-- enabled custom MCP tool execution from a marketplace pack, beyond disabled
-  descriptor scope and trust metadata,
 - more benchmark-design cases from
   `CLIO_HIERARCHICAL_AGENT_BENCHMARK_CASES_SOURCE.md`, especially genomics
   cohort QC, proteomics LFQ, HPC I/O regression, scientific format bridge, and
