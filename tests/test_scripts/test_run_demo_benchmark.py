@@ -1133,6 +1133,75 @@ def test_semantic_regression_audit_reports_missing_proof_evidence() -> None:
     ]
 
 
+def test_render_existing_jsonl_can_gate_missing_semantic_evidence(tmp_path: Path) -> None:
+    result = bench.DemoResult(
+        case=bench.DemoCase(
+            case_id="memory_scope",
+            title="memory scope",
+            category="test",
+            prompt="prompt",
+            why="why",
+            expected="expected",
+            session_group="semantic",
+            semantic_proofs=("workspace_memory_scope",),
+        ),
+        session_id="sess_memory",
+        elapsed_s=1.0,
+        message=_message(text="continued from prior session context", route_source="dspy"),
+        provider={"provider": "codex", "model": "gpt-5.5", "api_base": ""},
+        benchmark_lane="semantic_regression",
+    )
+    evidence = tmp_path / "semantic.jsonl"
+    evidence.write_text(
+        bench.json.dumps(bench._case_row(result), sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    report = tmp_path / "semantic.md"
+
+    exit_code = bench.render_report_from_jsonl(
+        evidence,
+        report,
+        lane="semantic_regression",
+        require_lane_criteria=True,
+    )
+
+    assert exit_code == 1
+    report_text = report.read_text(encoding="utf-8")
+    assert "semantic-regression passing evidence covers required proof classes" in report_text
+    assert "workspace_memory_scope" in report_text
+
+
+def test_render_existing_jsonl_without_gate_keeps_report_rendering_permissive(tmp_path: Path) -> None:
+    result = bench.DemoResult(
+        case=bench.DemoCase(
+            case_id="memory_scope",
+            title="memory scope",
+            category="test",
+            prompt="prompt",
+            why="why",
+            expected="expected",
+            session_group="semantic",
+            semantic_proofs=("workspace_memory_scope",),
+        ),
+        session_id="sess_memory",
+        elapsed_s=1.0,
+        message=_message(text="continued from prior session context", route_source="dspy"),
+        provider={"provider": "codex", "model": "gpt-5.5", "api_base": ""},
+        benchmark_lane="semantic_regression",
+    )
+    evidence = tmp_path / "semantic.jsonl"
+    evidence.write_text(
+        bench.json.dumps(bench._case_row(result), sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    report = tmp_path / "semantic.md"
+
+    exit_code = bench.render_report_from_jsonl(evidence, report, lane="semantic_regression")
+
+    assert exit_code == 0
+    assert report.read_text(encoding="utf-8")
+
+
 def test_marketplace_audit_requires_root_sync_delegation() -> None:
     message = _message(
         text="reference review complete",
