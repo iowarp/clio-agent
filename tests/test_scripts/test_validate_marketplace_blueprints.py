@@ -75,6 +75,44 @@ Format prompt.
         )
 
 
+def _write_mcp_descriptor(root: Path, *, pack_id: str, self_contained: bool) -> None:
+    tools = root / pack_id / "tools"
+    tools.mkdir(parents=True)
+    if self_contained:
+        tools.joinpath("calculator.md").write_text(
+            """---
+id: calculator
+name: Calculator MCP
+transport: stdio
+install:
+  method: uvx
+  package: clio-calculator-mcp
+runtime:
+  args:
+    - serve
+tools:
+  - calculator_add
+---
+Calculator descriptor.
+""",
+            encoding="utf-8",
+        )
+        return
+    tools.joinpath("bare.md").write_text(
+        """---
+id: bare
+name: Bare MCP
+transport: stdio
+command: bare-mcp
+tools:
+  - bare_tool
+---
+Bare descriptor.
+""",
+        encoding="utf-8",
+    )
+
+
 def test_marketplace_preflight_fails_when_complex_count_is_too_low(tmp_path: Path) -> None:
     _write_pack(tmp_path, pack_id="shallow", nested=False)
     _write_pack(tmp_path, pack_id="complex", nested=True)
@@ -127,3 +165,51 @@ def test_marketplace_preflight_can_exclude_seismic_from_complex_count(
 
     assert result["ok"] is True
     assert result["complex_blueprints"] == ["domain-a", "domain-b"]
+
+
+def test_marketplace_preflight_counts_self_contained_mcp_descriptors(
+    tmp_path: Path,
+) -> None:
+    _write_pack(tmp_path, pack_id="bare-mcp-pack", nested=False)
+    _write_mcp_descriptor(tmp_path, pack_id="bare-mcp-pack", self_contained=False)
+    _write_pack(tmp_path, pack_id="portable-mcp-pack", nested=False)
+    _write_mcp_descriptor(tmp_path, pack_id="portable-mcp-pack", self_contained=True)
+
+    result = validate_marketplace_source(
+        tmp_path,
+        options=MarketplaceValidationOptions(
+            require_mcp_descriptor_count=2,
+            require_self_contained_mcp_count=1,
+        ),
+    )
+
+    assert result["ok"] is True
+    assert result["mcp_descriptor_count"] == 2
+    assert result["self_contained_mcp_descriptor_count"] == 1
+    rows = {row["id"]: row for row in result["blueprints"]}
+    assert rows["bare-mcp-pack"]["mcp_descriptor_count"] == 1
+    assert rows["bare-mcp-pack"]["self_contained_mcp_descriptor_count"] == 0
+    assert rows["portable-mcp-pack"]["mcp_descriptor_count"] == 1
+    assert rows["portable-mcp-pack"]["self_contained_mcp_descriptor_count"] == 1
+
+
+def test_marketplace_preflight_can_require_self_contained_mcp_descriptors(
+    tmp_path: Path,
+) -> None:
+    _write_pack(tmp_path, pack_id="bare-mcp-pack", nested=False)
+    _write_mcp_descriptor(tmp_path, pack_id="bare-mcp-pack", self_contained=False)
+
+    result = validate_marketplace_source(
+        tmp_path,
+        options=MarketplaceValidationOptions(
+            require_mcp_descriptor_count=1,
+            require_self_contained_mcp_count=1,
+        ),
+    )
+
+    assert result["ok"] is False
+    assert result["mcp_descriptor_count"] == 1
+    assert result["self_contained_mcp_descriptor_count"] == 0
+    assert result["validation_errors"] == [
+        "self-contained MCP descriptor count below requirement: 0/1"
+    ]

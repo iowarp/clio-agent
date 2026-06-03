@@ -23,6 +23,8 @@ class MarketplaceValidationOptions:
     complex_min_edges: int = 2
     complex_min_levels: int = 3
     require_complex_count: int = 0
+    require_mcp_descriptor_count: int = 0
+    require_self_contained_mcp_count: int = 0
     exclude_complex_ids: tuple[str, ...] = ()
 
 
@@ -134,6 +136,20 @@ def _is_complex_pack(
     )
 
 
+def _is_self_contained_mcp_descriptor(descriptor: dict[str, Any]) -> bool:
+    """Return whether an MCP descriptor carries portable launch metadata."""
+
+    install = descriptor.get("install") if isinstance(descriptor.get("install"), dict) else {}
+    method = str(install.get("method") or install.get("type") or install.get("manager") or "").strip()
+    if method in {"uvx", "npx"}:
+        return bool(str(install.get("package") or install.get("name") or install.get("binary") or "").strip())
+    if method in {"binary", "command"}:
+        return bool(str(install.get("package") or install.get("name") or install.get("binary") or "").strip())
+    if method in {"local", "pack-local", "python"}:
+        return bool(str(install.get("path") or install.get("script") or "").strip())
+    return False
+
+
 def validate_marketplace_source(
     source: Path,
     *,
@@ -163,6 +179,10 @@ def validate_marketplace_source(
         validation_warnings = [
             str(warning) for warning in validation.get("validation_warnings", []) or []
         ]
+        mcp_descriptors = list(validation.get("mcp_descriptors", []) or [])
+        self_contained_mcp_count = sum(
+            1 for descriptor in mcp_descriptors if _is_self_contained_mcp_descriptor(descriptor)
+        )
         if validation_errors:
             errors.extend(f"{blueprint_id}: {error}" for error in validation_errors)
         row = {
@@ -172,7 +192,8 @@ def validate_marketplace_source(
             "enabled": bool(validation.get("enabled")) and not validation_errors,
             "validation_errors": validation_errors,
             "validation_warnings": validation_warnings,
-            "mcp_descriptor_count": len(validation.get("mcp_descriptors", []) or []),
+            "mcp_descriptor_count": len(mcp_descriptors),
+            "self_contained_mcp_descriptor_count": self_contained_mcp_count,
             "hook_descriptor_count": len(validation.get("hook_descriptors", []) or []),
             "metrics": _hierarchy_metrics(list(validation.get("agents", []) or [])),
         }
@@ -185,6 +206,21 @@ def validate_marketplace_source(
             "complex blueprint count below requirement: "
             f"{len(complex_blueprints)}/{options.require_complex_count}"
         )
+    mcp_descriptor_count = sum(row["mcp_descriptor_count"] for row in blueprints)
+    self_contained_mcp_count = sum(row["self_contained_mcp_descriptor_count"] for row in blueprints)
+    if options.require_mcp_descriptor_count and mcp_descriptor_count < options.require_mcp_descriptor_count:
+        errors.append(
+            "MCP descriptor count below requirement: "
+            f"{mcp_descriptor_count}/{options.require_mcp_descriptor_count}"
+        )
+    if (
+        options.require_self_contained_mcp_count
+        and self_contained_mcp_count < options.require_self_contained_mcp_count
+    ):
+        errors.append(
+            "self-contained MCP descriptor count below requirement: "
+            f"{self_contained_mcp_count}/{options.require_self_contained_mcp_count}"
+        )
 
     return {
         "source": str(source.expanduser().resolve()),
@@ -193,11 +229,15 @@ def validate_marketplace_source(
         "blueprint_count": len(blueprints),
         "complex_blueprint_count": len(complex_blueprints),
         "complex_blueprints": complex_blueprints,
+        "mcp_descriptor_count": mcp_descriptor_count,
+        "self_contained_mcp_descriptor_count": self_contained_mcp_count,
         "requirements": {
             "complex_min_experts": options.complex_min_experts,
             "complex_min_edges": options.complex_min_edges,
             "complex_min_levels": options.complex_min_levels,
             "require_complex_count": options.require_complex_count,
+            "require_mcp_descriptor_count": options.require_mcp_descriptor_count,
+            "require_self_contained_mcp_count": options.require_self_contained_mcp_count,
             "exclude_complex_ids": list(options.exclude_complex_ids),
         },
         "blueprints": blueprints,
@@ -222,10 +262,28 @@ def _render_text_report(result: dict[str, Any]) -> str:
                 else ""
             )
         ),
+        (
+            "MCP descriptors: "
+            f"{result['mcp_descriptor_count']}"
+            + (
+                f" / required {requirements['require_mcp_descriptor_count']}"
+                if requirements["require_mcp_descriptor_count"]
+                else ""
+            )
+        ),
+        (
+            "Self-contained MCP descriptors: "
+            f"{result['self_contained_mcp_descriptor_count']}"
+            + (
+                f" / required {requirements['require_self_contained_mcp_count']}"
+                if requirements["require_self_contained_mcp_count"]
+                else ""
+            )
+        ),
         f"Status: {'pass' if result['ok'] else 'fail'}",
         "",
-        "| Blueprint | Enabled | Complex | Experts | Edges | Levels | Tools | MCP | Errors |",
-        "| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | --- |",
+        "| Blueprint | Enabled | Complex | Experts | Edges | Levels | Tools | MCP | Self MCP | Errors |",
+        "| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
     ]
     for row in result["blueprints"]:
         metrics = row["metrics"]
@@ -241,6 +299,7 @@ def _render_text_report(result: dict[str, Any]) -> str:
                     str(metrics["max_levels"]),
                     str(metrics["tool_count"]),
                     str(row["mcp_descriptor_count"]),
+                    str(row["self_contained_mcp_descriptor_count"]),
                     "; ".join(row["validation_errors"]) or "-",
                 ]
             )
@@ -261,6 +320,8 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--complex-min-edges", type=int, default=2)
     parser.add_argument("--complex-min-levels", type=int, default=3)
     parser.add_argument("--require-complex-count", type=int, default=0)
+    parser.add_argument("--require-mcp-descriptor-count", type=int, default=0)
+    parser.add_argument("--require-self-contained-mcp-count", type=int, default=0)
     parser.add_argument(
         "--exclude-complex-id",
         action="append",
@@ -277,6 +338,8 @@ def main(argv: list[str] | None = None) -> int:
         complex_min_edges=args.complex_min_edges,
         complex_min_levels=args.complex_min_levels,
         require_complex_count=args.require_complex_count,
+        require_mcp_descriptor_count=args.require_mcp_descriptor_count,
+        require_self_contained_mcp_count=args.require_self_contained_mcp_count,
         exclude_complex_ids=tuple(args.exclude_complex_id or ()),
     )
     result = validate_marketplace_source(args.source, options=options)
