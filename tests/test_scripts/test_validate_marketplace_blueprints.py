@@ -148,6 +148,74 @@ def test_marketplace_preflight_reports_pack_validation_errors(tmp_path: Path) ->
     assert broken["metrics"]["expert_count"] == 3
 
 
+def test_marketplace_preflight_counts_included_expert_subtrees(tmp_path: Path) -> None:
+    pack = tmp_path / "seismic"
+    experts = pack / "experts"
+    module = pack / "modules" / "ndp-collector" / "experts"
+    experts.mkdir(parents=True)
+    module.mkdir(parents=True)
+    pack.joinpath("AGENT.md").write_text(
+        """---
+id: seismic
+version: 1.0.0
+title: Seismic
+description: Test pack
+blueprint:
+  format: agent-blueprint-v1
+root_expert: main
+includes:
+  - modules/ndp-collector/experts
+---
+Root prompt.
+""",
+        encoding="utf-8",
+    )
+    experts.joinpath("main.md").write_text(
+        """---
+id: main
+title: Main
+tier: 1
+---
+Main prompt.
+""",
+        encoding="utf-8",
+    )
+    experts.joinpath("data.md").write_text(
+        """---
+id: data
+title: Data
+tier: 2
+parent_id: main
+---
+Data prompt.
+""",
+        encoding="utf-8",
+    )
+    module.joinpath("ndp_catalog.md").write_text(
+        """---
+id: ndp_catalog
+title: NDP Catalog
+tier: 3
+parent_id: data
+---
+Catalog prompt.
+""",
+        encoding="utf-8",
+    )
+
+    result = validate_marketplace_source(
+        tmp_path,
+        options=MarketplaceValidationOptions(require_complex_count=1),
+    )
+
+    assert result["ok"] is True
+    assert result["complex_blueprints"] == ["seismic"]
+    row = result["blueprints"][0]
+    assert row["metrics"]["expert_count"] == 3
+    assert row["metrics"]["edge_count"] == 2
+    assert row["metrics"]["max_levels"] == 3
+
+
 def test_marketplace_preflight_can_exclude_seismic_from_complex_count(
     tmp_path: Path,
 ) -> None:

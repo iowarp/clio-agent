@@ -48,6 +48,7 @@ _SUPPORTED_BLUEPRINT_FIELDS = {
     "requires",
     "compatibility",
     "install",
+    "includes",
 }
 _SUPPORTED_EXPERT_FIELDS = {
     "id",
@@ -208,6 +209,8 @@ def parse_agent_blueprint_root(root: Path, *, scope: str) -> AgentBlueprintDefin
     if raw_requires is not None and not isinstance(raw_requires, dict):
         errors.append("requires field must be a mapping")
     requirements = raw_requires if isinstance(raw_requires, dict) else {}
+    includes = _list_field(meta, "includes")
+    errors.extend(_validate_blueprint_includes(path.parent, includes))
     for field_name in sorted(set(meta) - _SUPPORTED_BLUEPRINT_FIELDS):
         if not field_name.startswith("x_"):
             warnings.append(f"unknown blueprint field ignored: {field_name}")
@@ -238,6 +241,7 @@ def parse_agent_blueprint_root(root: Path, *, scope: str) -> AgentBlueprintDefin
             "strict_v1": strict_v1,
             "compatibility": meta.get("compatibility") if isinstance(meta.get("compatibility"), dict) else {},
             "requires": requirements,
+            "includes": includes,
             "blueprint": blueprint_meta,
             "install": install_metadata
             or (meta.get("install") if isinstance(meta.get("install"), dict) else {}),
@@ -851,19 +855,83 @@ def _tree_checksum(root: Path) -> str:
     return digest.hexdigest()
 
 
-def _load_blueprint_agents(blueprint: AgentBlueprintDefinition) -> list[AgentDef]:
+def _reserved_blueprint_markdown(path: Path) -> bool:
+    parts = set(path.parts)
+    return (
+        path.name == _BLUEPRINT_ROOT_NAME
+        or "prompts" in parts
+        or "commands" in parts
+        or "skills" in parts
+        or "tools" in parts
+        or "profiles" in parts
+    )
+
+
+def _path_within(root: Path, path: Path) -> bool:
+    try:
+        path.resolve().relative_to(root.resolve())
+    except ValueError:
+        return False
+    return True
+
+
+def _include_target(root: Path, include: str) -> Path | None:
+    include = include.strip()
+    if not include:
+        return None
+    path = Path(include)
+    if path.is_absolute():
+        return None
+    candidate = root / path
+    return candidate if _path_within(root, candidate) else None
+
+
+def _expert_markdown_files(path: Path) -> list[Path]:
+    if path.is_file():
+        return [path] if path.suffix == ".md" and not _reserved_blueprint_markdown(path) else []
+    if path.is_dir():
+        return sorted(
+            child
+            for child in path.rglob("*.md")
+            if child.is_file() and not _reserved_blueprint_markdown(child)
+        )
+    return []
+
+
+def _validate_blueprint_includes(root: Path, includes: list[str]) -> list[str]:
+    errors: list[str] = []
+    for include in includes:
+        target = _include_target(root, include)
+        if target is None:
+            errors.append(f"include path must be pack-local: {include}")
+            continue
+        if not target.exists():
+            errors.append(f"include path not found: {include}")
+            continue
+        if not _expert_markdown_files(target):
+            errors.append(f"include path contains no expert markdown files: {include}")
+    return errors
+
+
+def _blueprint_expert_files(blueprint: AgentBlueprintDefinition) -> list[tuple[Path, str]]:
     expert_root = blueprint.root / "experts"
-    files = sorted((expert_root if expert_root.is_dir() else blueprint.root).rglob("*.md"))
-    files = [
-        path
-        for path in files
-        if path.name != _BLUEPRINT_ROOT_NAME
-        and "/prompts/" not in path.as_posix()
-        and "/commands/" not in path.as_posix()
-        and "/skills/" not in path.as_posix()
-        and "/tools/" not in path.as_posix()
-        and "/profiles/" not in path.as_posix()
-    ]
+    files = dict.fromkeys(
+        _expert_markdown_files(expert_root if expert_root.is_dir() else blueprint.root),
+        "",
+    )
+    for include in blueprint.metadata.get("includes", []) or []:
+        if not isinstance(include, str):
+            continue
+        target = _include_target(blueprint.root, include)
+        if target is None or not target.exists():
+            continue
+        for path in _expert_markdown_files(target):
+            files.setdefault(path, include)
+    return sorted(files.items(), key=lambda item: str(item[0]))
+
+
+def _load_blueprint_agents(blueprint: AgentBlueprintDefinition) -> list[AgentDef]:
+    files = _blueprint_expert_files(blueprint)
     pack = ExpertPackDefinition(
         id=blueprint.id,
         version=blueprint.version,
@@ -877,7 +945,20 @@ def _load_blueprint_agents(blueprint: AgentBlueprintDefinition) -> list[AgentDef
         defaults=dict(blueprint.defaults),
         metadata={"default_root_expert": blueprint.root_expert, "layout": "agent_blueprint"},
     )
-    rows = [parse_expert_file(path, scope=blueprint.scope, pack=pack) for path in files]
+    rows: list[AgentDef] = []
+    for path, include in files:
+        row = parse_expert_file(path, scope=blueprint.scope, pack=pack)
+        if include:
+            row = row.model_copy(
+                update={
+                    "metadata": {
+                        **row.metadata,
+                        "agent_blueprint_include": include,
+                        "agent_blueprint_expert_source": "include",
+                    }
+                }
+            )
+        rows.append(row)
     out: list[AgentDef] = []
     for row in rows:
         metadata = {
