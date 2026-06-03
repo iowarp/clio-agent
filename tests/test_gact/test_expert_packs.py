@@ -863,6 +863,280 @@ Inspect schemas.
     assert assistant["parts"][-1]["text"] == "ROOT_FINAL"
 
 
+def test_returned_continuation_contract_executes_declared_child(
+    isolated_env: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from .conftest import complete_turn
+
+    calls: list[tuple[str, str, str]] = []
+
+    async def fake_stream_unavailable(
+        app: Any,
+        enriched_text: str,
+        sid: str,
+        emit_chunk: Any,
+        **kwargs: Any,
+    ) -> None:
+        del enriched_text, emit_chunk, kwargs
+        from clio_agent.gact.app import _record_stream_fallback
+
+        _record_stream_fallback(app, sid, "dynamic_prompt_stream_unavailable")
+        return None
+
+    def fake_prompt_agent(base_agent: Any, agent_def: Any, question: str, session_id: str) -> Any:
+        del base_agent
+        calls.append((agent_def.id, question, session_id))
+        root_calls = len([row for row in calls if row[0] == "root_review"])
+        if agent_def.id == "root_review" and root_calls == 1:
+            return type(
+                "Pred",
+                (),
+                {
+                    "answer": "ROOT_REQUESTED_SCHEMA",
+                    "selected_expert": agent_def.id,
+                    "routing_rationale": "session selected expert-pack agent",
+                    "expert_handoffs": [
+                        {
+                            "delegate_to": "schema_review",
+                            "question": "Inspect the CSV schema",
+                            "status": "requested",
+                        }
+                    ],
+                },
+            )()
+        if agent_def.id == "schema_review":
+            return type(
+                "Pred",
+                (),
+                {
+                    "answer": "\n".join(
+                        [
+                            "SCHEMA_OK",
+                            "NEXT_EXPERT: visualization",
+                            "NEXT_ACTION: plot_schema_summary data.csv",
+                            "DO_NOT_FINALIZE_BEFORE_VISUALIZATION: true",
+                        ]
+                    ),
+                    "selected_expert": agent_def.id,
+                    "routing_rationale": "delegated child expert",
+                    "expert_handoffs": [],
+                },
+            )()
+        if agent_def.id == "visualization":
+            assert "Continuation contract returned by schema_review" in question
+            assert "Required next action: plot_schema_summary data.csv" in question
+            return type(
+                "Pred",
+                (),
+                {
+                    "answer": "FINAL_ARTIFACT: /tmp/schema.png",
+                    "selected_expert": agent_def.id,
+                    "routing_rationale": "returned continuation contract",
+                    "expert_handoffs": [],
+                },
+            )()
+        return type(
+            "Pred",
+            (),
+            {
+                "answer": "ROOT_FINAL",
+                "selected_expert": agent_def.id,
+                "routing_rationale": "parent resumed after continuation child",
+                "expert_handoffs": [],
+            },
+        )()
+
+    monkeypatch.setattr("clio_agent.gact.app._try_streamed_forward", fake_stream_unavailable)
+    monkeypatch.setattr("clio_agent.gact.app._run_prompt_user_agent", fake_prompt_agent)
+
+    root = isolated_env / ".clio" / "experts"
+    root.mkdir(parents=True)
+    root.joinpath("root_review.md").write_text(
+        """---
+id: root_review
+title: Root Review Expert
+parent_id: analysis
+tier: 2
+children:
+  - schema_review
+  - visualization
+---
+Coordinate data quality review.
+""",
+        encoding="utf-8",
+    )
+    root.joinpath("schema_review.md").write_text(
+        """---
+id: schema_review
+title: Schema Review Expert
+parent_id: root_review
+tier: 3
+---
+Inspect schemas.
+""",
+        encoding="utf-8",
+    )
+    root.joinpath("visualization.md").write_text(
+        """---
+id: visualization
+title: Visualization Expert
+parent_id: root_review
+tier: 3
+---
+Produce artifacts.
+""",
+        encoding="utf-8",
+    )
+
+    app = build_app(sessions_path=tmp_path / "sessions.json", agent=object())
+    with TestClient(app) as client:
+        sid = client.post(
+            "/v1/sessions",
+            json={"title": "delegated expert run", "agent": {"id": "root_review"}},
+        ).json()["id"]
+        assistant = complete_turn(client, sid, "inspect data.csv and plot a summary")
+
+    assert [row[0] for row in calls] == [
+        "root_review",
+        "schema_review",
+        "visualization",
+        "root_review",
+    ]
+    handoffs = assistant["metadata"]["expert_handoffs"]
+    visualization = next(
+        row
+        for row in handoffs
+        if row.get("agent_id") == "visualization"
+        and row.get("stage") == "delegate.completed"
+    )
+    assert visualization["source"] == "delegation_continuation_contract"
+    assert visualization["continuation_contract"]["next_expert"] == "visualization"
+    assert visualization["continuation_contract"]["origin_agent_id"] == "schema_review"
+    assert visualization["output_summary"] == "FINAL_ARTIFACT: /tmp/schema.png"
+    assert assistant["parts"][-1]["text"] == "ROOT_FINAL"
+
+
+def test_returned_continuation_contract_rejects_non_child_target(
+    isolated_env: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from .conftest import complete_turn
+
+    calls: list[str] = []
+
+    async def fake_stream_unavailable(
+        app: Any,
+        enriched_text: str,
+        sid: str,
+        emit_chunk: Any,
+        **kwargs: Any,
+    ) -> None:
+        del enriched_text, emit_chunk, kwargs
+        from clio_agent.gact.app import _record_stream_fallback
+
+        _record_stream_fallback(app, sid, "dynamic_prompt_stream_unavailable")
+        return None
+
+    def fake_prompt_agent(base_agent: Any, agent_def: Any, question: str, session_id: str) -> Any:
+        del base_agent, question, session_id
+        calls.append(agent_def.id)
+        if agent_def.id == "root_review" and calls.count("root_review") == 1:
+            return type(
+                "Pred",
+                (),
+                {
+                    "answer": "ROOT_REQUESTED_SCHEMA",
+                    "selected_expert": agent_def.id,
+                    "routing_rationale": "session selected expert-pack agent",
+                    "expert_handoffs": [
+                        {
+                            "delegate_to": "schema_review",
+                            "question": "Inspect the CSV schema",
+                            "status": "requested",
+                        }
+                    ],
+                },
+            )()
+        if agent_def.id == "schema_review":
+            return type(
+                "Pred",
+                (),
+                {
+                    "answer": "NEXT_EXPERT: outside_agent\nNEXT_ACTION: should_not_run",
+                    "selected_expert": agent_def.id,
+                    "routing_rationale": "delegated child expert",
+                    "expert_handoffs": [],
+                },
+            )()
+        if agent_def.id == "outside_agent":
+            raise AssertionError("non-child continuation target must not execute")
+        return type(
+            "Pred",
+            (),
+            {
+                "answer": "ROOT_FINAL",
+                "selected_expert": agent_def.id,
+                "routing_rationale": "parent resumed after ignored contract",
+                "expert_handoffs": [],
+            },
+        )()
+
+    monkeypatch.setattr("clio_agent.gact.app._try_streamed_forward", fake_stream_unavailable)
+    monkeypatch.setattr("clio_agent.gact.app._run_prompt_user_agent", fake_prompt_agent)
+
+    root = isolated_env / ".clio" / "experts"
+    root.mkdir(parents=True)
+    root.joinpath("root_review.md").write_text(
+        """---
+id: root_review
+title: Root Review Expert
+parent_id: analysis
+tier: 2
+children:
+  - schema_review
+---
+Coordinate data quality review.
+""",
+        encoding="utf-8",
+    )
+    root.joinpath("schema_review.md").write_text(
+        """---
+id: schema_review
+title: Schema Review Expert
+parent_id: root_review
+tier: 3
+---
+Inspect schemas.
+""",
+        encoding="utf-8",
+    )
+    root.joinpath("outside_agent.md").write_text(
+        """---
+id: outside_agent
+title: Outside Expert
+parent_id: other_parent
+tier: 3
+---
+Must not be callable by root_review.
+""",
+        encoding="utf-8",
+    )
+
+    app = build_app(sessions_path=tmp_path / "sessions.json", agent=object())
+    with TestClient(app) as client:
+        sid = client.post(
+            "/v1/sessions",
+            json={"title": "delegated expert run", "agent": {"id": "root_review"}},
+        ).json()["id"]
+        assistant = complete_turn(client, sid, "inspect data.csv")
+
+    assert calls == ["root_review", "schema_review", "root_review"]
+    assert assistant["parts"][-1]["text"] == "ROOT_FINAL"
+
+
 def test_delegated_child_tool_telemetry_stays_on_active_parent_turn(
     isolated_env: Path,
     tmp_path: Path,
