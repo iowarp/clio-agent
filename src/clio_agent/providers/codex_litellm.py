@@ -77,7 +77,12 @@ class CodexExecError(RuntimeError):
     produces no last-message output."""
 
 
+class CodexUnsupportedMultimodalError(CodexExecError):
+    """Raised when Codex CLI transport receives content it would drop."""
+
+
 _ALLOWED_MESSAGE_ROLES = {"system", "developer", "user", "assistant", "tool"}
+_UNSUPPORTED_IMAGE_PART_TYPES = {"image", "image_url", "input_image"}
 
 
 def _normalise_message_content(content: Any) -> str:
@@ -91,6 +96,12 @@ def _normalise_message_content(content: Any) -> str:
         for part in content:
             if not isinstance(part, dict):
                 continue
+            part_type = str(part.get("type") or "").strip().lower()
+            if part_type in _UNSUPPORTED_IMAGE_PART_TYPES or "image_url" in part:
+                raise CodexUnsupportedMultimodalError(
+                    "Codex CLI transport cannot receive image message parts; "
+                    "use a direct vision-capable provider instead."
+                )
             if isinstance(part.get("text"), str):
                 text_parts.append(part["text"])
         return "\n".join(text_parts)

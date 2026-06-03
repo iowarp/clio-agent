@@ -88,6 +88,7 @@ class Provider:
     #: OAuth flows.
     api_key_env: str | None = None
     supports_live_catalog: bool = True
+    supports_vision: bool = False
 
     # ----- capability flags -------------------------------------------
     max_tokens_default: int = 32000
@@ -234,6 +235,7 @@ PROVIDERS: tuple[Provider, ...] = (
         suggested_model="gpt-4o-mini",
         api_key_env="OPENAI_API_KEY",
         is_kind_default=True,
+        supports_vision=True,
         model_catalog=(
             ModelEntry(
                 "gpt-4o-mini",
@@ -261,6 +263,7 @@ PROVIDERS: tuple[Provider, ...] = (
         suggested_model="claude-sonnet-4-20250514",
         api_key_env="ANTHROPIC_API_KEY",
         is_kind_default=True,
+        supports_vision=True,
         model_catalog=(
             ModelEntry(
                 "claude-haiku-4-5-20251001",
@@ -493,6 +496,7 @@ def as_provider_defaults_dict() -> dict[str, dict[str, Any]]:
             "api_base": p.api_base,
             "model": p.suggested_model,
             "api_key": p.api_key_default,
+            "supports_vision": p.supports_vision,
         }
         if p.max_tokens_default != 32000:
             entry["max_tokens"] = p.max_tokens_default
@@ -537,6 +541,7 @@ def as_lm_presets() -> list[Any]:
             is_authenticated=p.auth_method == "none",
             description=p.description,
             supports_live_catalog=p.supports_live_catalog,
+            supports_vision=p.supports_vision,
         )
         for p in PROVIDERS
     ]

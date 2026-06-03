@@ -75,6 +75,7 @@ class CapabilityFlags(BaseModel):
         False  # POST /sessions/{id}/summarize — user-facing TLDR (distinct from compact)
     )
     attachments_upload: bool = False  # POST /sessions/{id}/attachments — base64 byte upload
+    multimodal_image_parts: bool = False  # POST /messages accepts/preserves image parts
     cost_tracking: bool = False
     thinking_blocks: bool = False
     edit_modes: bool = False
@@ -466,6 +467,13 @@ class Part(BaseModel):
     # text / error (v0.1 error part shape)
     text: str = ""
 
+    # image (CLIO extension for multimodal user content). A client may send
+    # data or url; the server preserves the fields on the
+    # transcript and validates provider support before scheduling the turn.
+    data: Optional[str] = None
+    url: Optional[str] = None
+    media_type: Optional[str] = None
+
     # routing_decision (v0.2 §4.5)
     selected_agent: str = ""
     rationale: str = ""
@@ -566,15 +574,22 @@ class PostMessageRequest(BaseModel):
     def extract_text(self) -> str:
         """Return the user-visible text payload.
 
-        Preference order: the first Part with ``type == "text"``,
-        falling back to the legacy ``text`` field when the caller
-        used the simpler shape.
+        Preference order: text parts joined in order, falling back to the legacy
+        ``text`` field when the caller used the simpler shape.
         """
 
+        text_parts: list[str] = []
         for p in self.parts:
             if p.type == "text" and p.text:
-                return p.text
+                text_parts.append(p.text)
+        if text_parts:
+            return "\n".join(text_parts).strip()
         return self.text or ""
+
+    def image_parts(self) -> list[Part]:
+        """Return image parts supplied in this message."""
+
+        return [p for p in self.parts if p.type == "image"]
 
     def extract_agent_id(self) -> str:
         """Return a per-turn agent override, if the caller supplied one."""
@@ -855,6 +870,7 @@ class LMProviderPreset(BaseModel):
     ] = "unknown"
     status_message: str = ""
     supports_live_catalog: bool = True
+    supports_vision: bool = False
 
 
 class LMProviderRequest(BaseModel):

@@ -227,6 +227,7 @@ class LMProviderConfig:
     # PROVIDER_DEFAULTS so adding a new wire-protocol quirk = one
     # entry in the defaults dict, no agent.py branches.
     strip_openai_prefix: bool = field(init=False, default=True)
+    supports_vision: bool = field(init=False, default=False)
 
     def __post_init__(self) -> None:
         """Fill empty fields + capability flags from provider defaults."""
@@ -262,6 +263,7 @@ class LMProviderConfig:
         # via env vars (they're wire-protocol facts about the provider),
         # so re-reading on every config load is safe.
         self.strip_openai_prefix = bool(defaults.get("strip_openai_prefix", True))
+        self.supports_vision = bool(defaults.get("supports_vision", False))
         if self.codex_transport not in {"exec", "sdk"}:
             raise ValueError(
                 f"codex_transport must be 'exec' or 'sdk' (got {self.codex_transport!r})"
