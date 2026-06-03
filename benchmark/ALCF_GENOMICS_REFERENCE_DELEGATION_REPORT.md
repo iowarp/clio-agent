@@ -1,6 +1,6 @@
 # CLIO Marketplace Agent Benchmark Report
 
-Generated: 2026-06-03 10:55:02 CDT
+Generated: 2026-06-03 10:57:51 CDT
 Evidence JSONL: `/tmp/clio-09-readiness/benchmark/ALCF_GENOMICS_REFERENCE_DELEGATION_EVIDENCE.jsonl`
 Benchmark lane: `marketplace_agents`
 
@@ -24,7 +24,7 @@ Extended stress coverage: has optional gaps outside the per-lane pass/fail gate.
 
 ## Evidence Summary
 
-- Max elapsed case: `marketplace_genomics_reference_review` (20.1s)
+- Max elapsed case: `marketplace_genomics_reference_review` (16.1s)
 - Max expert depth: `marketplace_genomics_reference_review` (4)
 - Max branch fanout: `marketplace_genomics_reference_review` (2)
 - Unique tools used: genomics_inspect_fasta
@@ -58,7 +58,7 @@ Provider evidence details:
 
 | Case | Category | Blueprint | Mode | Source | Outcome | Agent | Handoffs | Tools | Children | Elapsed |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| marketplace_genomics_reference_review | marketplace-genomics | genomics-review | auto | live_tool_observer | pass | genomics | reference x3, reference_quality x2, main | genomics_inspect_fasta, genomics_inspect_fasta, genomics_inspect_fasta | 0 | 20.1s |
+| marketplace_genomics_reference_review | marketplace-genomics | genomics-review | auto | live_tool_observer | pass | genomics | reference x2, reference_quality, main | genomics_inspect_fasta, genomics_inspect_fasta | 0 | 16.1s |
 
 ## Best 10 Demo Prompts
 
@@ -72,11 +72,11 @@ Selected agent: `genomics`
 Active Agent Blueprint: `genomics-review`
 Provider/model: `argonne` / `gpt-oss-120b` via `https://inference-api.alcf.anl.gov/resource_server/metis/api/v1`
 Provider settings: temperature=1.0, max_tokens=256, context_length=0, thinking_budget=0
-Route graph: orchestrator -> genomics; main -> reference -> main; reference -> reference_quality -> reference
-Route metrics: depth=4, branches=2, sync_handoffs=2, child_sessions=0, tools=3
+Route graph: orchestrator -> genomics; reference -> reference_quality -> reference; main -> reference -> main
+Route metrics: depth=4, branches=2, sync_handoffs=2, child_sessions=0, tools=2
 Semantic trace: 0 events, 0 live, types=none
-Expert handoffs: reference x3, reference_quality x2, main
-Tools: genomics_inspect_fasta, genomics_inspect_fasta, genomics_inspect_fasta
+Expert handoffs: reference x2, reference_quality, main
+Tools: genomics_inspect_fasta, genomics_inspect_fasta
 Data/input files: /tmp/clio-benchmark-data/pathogen_reference.fasta
 Setup turns: 0
 Root session messages: 2
@@ -85,7 +85,7 @@ Actions: none
 Child sessions: none
 Artifacts: none
 Artifact evidence: none
-Elapsed: 20.1s
+Elapsed: 16.1s
 
 Prompt:
 
@@ -100,20 +100,23 @@ Why this is interesting: Proves a domain agent installed from the marketplace ca
 Observed excerpt:
 
 ```text
-The reference FASTA `/tmp/clio-benchmark-data/pathogen_reference.fasta` contains two clean contigs:
+**Reference FASTA Summary – `/tmp/clio-benchmark-data/pathogen_reference.fasta`**
 
-* **chrA** – 4,800 bp, 58.6 % GC, no ambiguous bases.  
-* **plasmidB** – 1,250 bp, 35.4 % GC, no ambiguous bases.  
+- **File status:** Valid FASTA, no truncation or parsing errors.  
+- **Overall metrics:** 2 contigs, 6 050 total bases, GC content ≈ 53.8 % (A 23.3 %, C 27.7 %, G 26.2 %, T 23.0 %, N 0 %).  
 
-Overall the file has 6,050 bp, ≈ 53.8 % GC, and no truncation or “N” characters.  The contig identifiers and metadata are well‑formed, indicating a complete and uncorrupted reference suitable for downstream analyses.
+**Contig details**
 
-**Recommended verification before variant interpretation**
+| Contig ID | Length (bp) | GC % | Base counts (A C G T N) |
+|----------|-------------|------|--------------------------|
+| **chrA**  | 4 800       | 58.6 | A 1 005 · C 1 446 · G 1 366 · T 983 · N 0 |
+| **plasmidB** | 1 250   | 35.4 | A 401 · C 227 · G 215 · T 407 · N 0 |
 
-1. **Checksum generation** – compute and record an MD5 or SHA‑256 checksum of the FASTA file.  
-2. **Metadata manifest** – store a small JSON/TSV file documenting contig IDs, lengths, GC fractions, and base counts.  
-3. **Integrity check after transfers** – recompute the checksum and compare to the recorded value to confirm file fidelity.
+*No ambiguous bases (N) are present. The GC content differs markedly between contigs (chrA GC‑rich, plasmidB GC‑poor), which may influence downstream bias corrections.*
 
-After completing these steps, the reference can be safely used
+**Recommended verification / QC steps before variant interpretation**
+
+1. **Index the FASTA** (e.g., `samtools faidx` or `bwa index`) to enable rapid random acce
 ```
 
 ## Failures Fixed During This Campaign
