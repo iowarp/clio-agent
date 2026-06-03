@@ -2261,7 +2261,7 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             expected_agent="main",
             expected_tools=("genomics_summarize_vcf",),
             expected_handoff_agents=("variants",),
-            expected_terms=("missense", "frameshift"),
+            expected_terms=("frameshift", "stop_gained"),
             timeout_s=620.0,
             forbidden_route_sources=_REAL_ORCHESTRATOR_FORBIDDEN_SOURCES,
             complexity_tags=("marketplace", "genomics", "vcf", "agent-blueprint"),
@@ -2281,28 +2281,35 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
         ),
         DemoCase(
             case_id="marketplace_materials_crystal_review",
-            title="Marketplace materials CIF review",
+            title="Marketplace materials CIF readiness review",
             category="marketplace-materials",
             session_group="marketplace_materials",
             agent_blueprint_id="materials-crystal-review",
             expected_agent="main",
             expected_tools=("materials_inspect_cif",),
-            expected_handoff_agents=("crystal_structure",),
+            expected_handoff_agents=(
+                "crystal_structure",
+                "symmetry_quality",
+            ),
             expected_terms=("SrTiO3", "P m -3 m"),
+            min_expert_depth=_MARKETPLACE_COMPLEX_MIN_EXPERT_DEPTH,
+            min_branch_count=_MARKETPLACE_COMPLEX_MIN_BRANCH_COUNT,
             timeout_s=620.0,
             forbidden_route_sources=_REAL_ORCHESTRATOR_FORBIDDEN_SOURCES,
             complexity_tags=("marketplace", "materials", "cif", "agent-blueprint"),
             prompt=(
-                f"Review this CIF as a materials handoff: {cif}. Summarize formula, "
-                "symmetry, species, and what simulation metadata should be verified."
+                f"Review this CIF as a materials simulation handoff: {cif}. "
+                "Summarize formula, symmetry, occupancy or atom-site quality, and "
+                "whether the structure is ready to spend compute time on."
             ),
             expected=(
                 "CLIO runs the materials-crystal-review marketplace Agent Blueprint "
-                "through its root expert and uses the crystal_structure expert."
+                "through its root expert, inspects the CIF with crystal_structure, "
+                "and continues through symmetry_quality before final synthesis."
             ),
             why=(
                 "Proves a separate materials marketplace agent can be loaded per "
-                "session and can delegate through its own hierarchy."
+                "session and can execute a non-seismic multi-expert hierarchy."
             ),
         ),
         DemoCase(
@@ -2333,28 +2340,36 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
         ),
         DemoCase(
             case_id="marketplace_proteomics_mzml_review",
-            title="Marketplace proteomics mzML review",
+            title="Marketplace proteomics mzML readiness review",
             category="marketplace-proteomics",
             session_group="marketplace_proteomics",
             agent_blueprint_id="proteomics-mzml-review",
             expected_agent="main",
             expected_tools=("mass_spec_inspect_mzml",),
-            expected_handoff_agents=("mass_spec",),
+            expected_handoff_agents=(
+                "mass_spec",
+                "spectra_quality",
+            ),
             expected_terms=("spectra", "tic"),
+            min_expert_depth=_MARKETPLACE_COMPLEX_MIN_EXPERT_DEPTH,
+            min_branch_count=_MARKETPLACE_COMPLEX_MIN_BRANCH_COUNT,
             timeout_s=620.0,
             forbidden_route_sources=_REAL_ORCHESTRATOR_FORBIDDEN_SOURCES,
             complexity_tags=("marketplace", "proteomics", "mzml", "agent-blueprint"),
             prompt=(
-                f"Review this mzML run for proteomics handoff: {mzml}. Summarize "
-                "spectra, MS-level balance, m/z coverage, TIC evidence, and metadata risks."
+                f"Review this mzML run for peptide-search handoff: {mzml}. "
+                "Summarize spectra, MS-level balance, m/z coverage, TIC evidence, "
+                "spectra-quality risks, and whether the run is ready for search."
             ),
             expected=(
                 "CLIO runs the proteomics-mzml-review marketplace Agent Blueprint "
-                "through its root expert and uses the mass_spec expert."
+                "through its root expert, inspects mzML with mass_spec, continues "
+                "through spectra_quality, and then synthesizes peptide-search "
+                "readiness from the returned evidence."
             ),
             why=(
                 "Proves a proteomics marketplace agent can be loaded per session "
-                "and can delegate through its own hierarchy."
+                "and can execute a non-seismic multi-expert hierarchy."
             ),
         ),
         DemoCase(
