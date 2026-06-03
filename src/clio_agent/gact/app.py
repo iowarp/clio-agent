@@ -17647,10 +17647,30 @@ def build_app(
         blueprint_wire: dict[str, Any] | None = (
             blueprint.to_wire() if blueprint is not None else None
         )
+        descriptor_root: Path | None = blueprint.root if blueprint is not None else None
         if blueprint is None and blueprint_path is not None:
             validation = validate_agent_blueprint_path(blueprint_path, scope="session")
             raw_blueprint = validation.get("agent_blueprint")
             blueprint_wire = raw_blueprint if isinstance(raw_blueprint, dict) else None
+            descriptor_root = blueprint_path
+        mcp_descriptors = (
+            load_mcp_descriptors(
+                descriptor_root,
+                scope=str((blueprint_wire or {}).get("scope") or "session"),
+                blueprint_id=blueprint_id,
+            )
+            if descriptor_root is not None and blueprint_id
+            else []
+        )
+        hook_descriptors = (
+            load_hook_descriptors(
+                descriptor_root,
+                scope=str((blueprint_wire or {}).get("scope") or "session"),
+                blueprint_id=blueprint_id,
+            )
+            if descriptor_root is not None and blueprint_id
+            else []
+        )
         return {
             "session_id": sid,
             "workspace_id": getattr(sess, "workspace_id", ""),
@@ -17659,6 +17679,8 @@ def build_app(
             if blueprint_path is not None
             else "",
             "agent_blueprint": blueprint_wire,
+            "mcp_descriptors": mcp_descriptors,
+            "hook_descriptors": hook_descriptors,
             "agent_overlay": _session_agent_overlay(sid),
             "activation": {
                 key: str(value)

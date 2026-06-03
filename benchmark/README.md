@@ -35,6 +35,12 @@ semantics, and surfaced-error behavior.
   `MARKETPLACE_GEOSPATIAL_RETRY_EVIDENCE.jsonl` - focused June 3 retry for the
   only failed full-run case. It proves the corrected geospatial pack performs
   real `main -> spatial_features -> main` sync delegation and tool calls.
+- `MARKETPLACE_MCP_SCOPE_REPORT.md` /
+  `MARKETPLACE_MCP_SCOPE_EVIDENCE.jsonl` - focused June 3 semantic-regression
+  evidence for a marketplace pack-local MCP descriptor. It proves the
+  `mcp-calculator-smoke` pack exposes disabled-by-default descriptor metadata,
+  pack-local stdio launch derivation, `calculator_add` scope, and explicit
+  trust requirements. It does not claim enabled MCP tool execution.
 - `MARKETPLACE_UNIFIED_REPORT.md` /
   `MARKETPLACE_UNIFIED_EVIDENCE.jsonl` - historical May 29 evidence for
   marketplace Agent Blueprint loading, root-owned delegation, and one complex
@@ -111,6 +117,11 @@ not a single all-green full-lane rerun after every fix. Read it as:
 
 A final public-demo dry run should still regenerate the full lane from a fresh
 machine/session once the benchmark pack set is frozen.
+
+The MCP scope report is intentionally a focused semantic-regression case. It
+does not call `calculator_add`; it proves CLIO surfaces the descriptor, launch
+metadata, and trust state before enablement. Enabled marketplace MCP execution
+should be proven separately.
 
 Before running the expensive marketplace lane, run the static preflight against
 the marketplace source. This uses CLIO's Agent Blueprint validator for every

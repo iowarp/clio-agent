@@ -14,6 +14,10 @@ Use `MARKETPLACE_COMPLEX_HIERARCHY_REPORT.md` /
 `MARKETPLACE_GEOSPATIAL_RETRY_EVIDENCE.jsonl` as the current June 3 marketplace
 evidence set.
 
+Use `MARKETPLACE_MCP_SCOPE_REPORT.md` /
+`MARKETPLACE_MCP_SCOPE_EVIDENCE.jsonl` as the focused semantic-regression proof
+for pack-defined MCP descriptor scope.
+
 Current result:
 
 - The re-rendered full marketplace report records `5/6` clean passes after the
@@ -37,6 +41,11 @@ Current result:
   -> sac_format -> analysis -> main -> visualization -> main`.
 - The seismic case creates and verifies a PNG artifact:
   `.clio-agent-artifacts/charts/sac_traces_earthscope_IU_ANMO_00_BHZ_2010-02-27T063000.png`.
+- The focused MCP scope case proves CLIO can load the `mcp-calculator-smoke`
+  marketplace pack and expose its pack-local MCP descriptor in session
+  metadata. The descriptor is disabled by default, derives a stdio launch from
+  `mcp/calculator_server.py`, declares `calculator_add`, and records
+  `trust.policy=explicit` / `trusted=false`.
 
 Do not overclaim this as a single clean full-lane rerun after the geospatial
 fix. It is a combined evidence set: one corrected full run plus a focused retry
@@ -96,8 +105,8 @@ seismic plus non-seismic packs. Remaining benchmark expansion items are:
 - at least two deliberate surfaced-error cases,
 - at least one context-pressure or compaction case,
 - at least one provider/model-swap stress case.
-- pack-defined custom MCP runtime evidence beyond the smoke calculator and OGC
-  descriptor cases,
+- enabled custom MCP tool execution from a marketplace pack, beyond disabled
+  descriptor scope and trust metadata,
 - more benchmark-design cases from
   `CLIO_HIERARCHICAL_AGENT_BENCHMARK_CASES_SOURCE.md`, especially genomics
   cohort QC, proteomics LFQ, HPC I/O regression, scientific format bridge, and
