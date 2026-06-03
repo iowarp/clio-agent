@@ -4,6 +4,7 @@ from dataclasses import dataclass
 
 from clio_agent.gact.app import (
     _compact_dynamic_delegation_output,
+    _dynamic_answer_has_pending_child_work,
     _dynamic_parent_resume_prompt,
 )
 
@@ -37,6 +38,15 @@ def test_compact_delegation_output_preserves_continuation_contracts() -> None:
     assert "DO_NOT_FINALIZE_BEFORE_VISUALIZATION: true" in compact
     assert sac_path in compact
     assert "npts: 1200" in compact
+
+
+def test_dynamic_answer_has_pending_child_work_detects_delegation_prose() -> None:
+    assert _dynamic_answer_has_pending_child_work(
+        "Delegating this review through mass_spec and search_readiness."
+    )
+    assert _dynamic_answer_has_pending_child_work(
+        "This should route to the child expert before final synthesis."
+    )
 
 
 def test_parent_resume_prompt_receives_compacted_continuation_contracts() -> None:

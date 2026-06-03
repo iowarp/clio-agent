@@ -1620,6 +1620,28 @@ def test_case_minimum_hierarchy_thresholds_affect_pass_status() -> None:
     assert row["min_branch_count"] == 2
 
 
+def test_marketplace_canonical_cases_require_nonseismic_complex_hierarchy() -> None:
+    cases = {
+        case.case_id: case
+        for case in bench._make_cases(bench._canonical_benchmark_manifest())
+    }
+    materials = cases["marketplace_materials_crystal_review"]
+    proteomics = cases["marketplace_proteomics_mzml_review"]
+
+    assert materials.min_expert_depth == bench._MARKETPLACE_COMPLEX_MIN_EXPERT_DEPTH
+    assert materials.min_branch_count == bench._MARKETPLACE_COMPLEX_MIN_BRANCH_COUNT
+    assert materials.expected_handoff_agents == (
+        "crystal_structure",
+        "symmetry_quality",
+    )
+    assert proteomics.min_expert_depth == bench._MARKETPLACE_COMPLEX_MIN_EXPERT_DEPTH
+    assert proteomics.min_branch_count == bench._MARKETPLACE_COMPLEX_MIN_BRANCH_COUNT
+    assert proteomics.expected_handoff_agents == (
+        "mass_spec",
+        "spectra_quality",
+    )
+
+
 def test_marketplace_audit_distinguishes_complex_hierarchy_from_smoke() -> None:
     def marketplace_result(
         case_id: str,
