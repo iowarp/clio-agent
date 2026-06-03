@@ -54,6 +54,11 @@ documents the new reusable HDF5-to-Parquet conversion/integrity tool, but does
 not claim the final inspect -> convert/policy -> integrity -> visualization
 end-to-end benchmark has run yet.
 
+Use `TERRAIN_SUITABILITY_INFRASTRUCTURE.md` as the current infrastructure note
+for progress toward the benchmark-source terrain/lidar site-suitability case.
+It documents the new reusable DEM terrain and point-cloud gridding tools, but
+does not claim the final NDP/OpenTopography end-to-end benchmark has run yet.
+
 Current result:
 
 - The re-rendered full marketplace report records `5/6` clean passes after the
@@ -161,7 +166,7 @@ seismic plus non-seismic packs. Remaining benchmark expansion items are:
 - more benchmark-design cases from
   `CLIO_HIERARCHICAL_AGENT_BENCHMARK_CASES_SOURCE.md`, especially genomics
   cohort QC, proteomics LFQ, HPC I/O regression, scientific format bridge, and
-  terrain/NDP.
+  terrain/NDP final end-to-end runs.
 
 These are future benchmark coverage goals, not contradictions of the current
 marketplace hierarchy pass.
