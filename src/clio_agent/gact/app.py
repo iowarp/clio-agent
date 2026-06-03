@@ -2140,6 +2140,14 @@ _DELEGATION_CONTRACT_PREFIXES = (
     "ARTIFACT:",
 )
 
+_DELEGATION_CONTRACT_LINE_RE = re.compile(
+    r"^\s*(?:[-*]\s*)?"
+    r"(?P<key>NEXT_EXPERT|NEXT_ACTION|REQUIRED_NEXT_EXPERT|REQUIRED_NEXT_ACTION|"
+    r"DO_NOT_[A-Z0-9_]+|FINAL_ARTIFACT|ARTIFACT)"
+    r"\s*:\s*(?P<value>.+?)\s*$",
+    re.IGNORECASE,
+)
+
 
 def _compact_delegation_contract_lines(output: str, *, limit: int = 16) -> list[str]:
     """Return explicit pack-defined continuation contracts from child output."""
@@ -2156,6 +2164,42 @@ def _compact_delegation_contract_lines(output: str, *, limit: int = 16) -> list[
         if len(contract_lines) >= limit:
             break
     return contract_lines
+
+
+def _delegation_continuation_contract(output: str) -> dict[str, Any]:
+    """Parse explicit continuation contract lines from delegated output."""
+
+    contract: dict[str, Any] = {}
+    flags: dict[str, str] = {}
+    for raw_line in output.splitlines():
+        match = _DELEGATION_CONTRACT_LINE_RE.match(raw_line)
+        if match is None:
+            continue
+        key = match.group("key").upper()
+        value = match.group("value").strip().strip("`")
+        if key in {"NEXT_EXPERT", "REQUIRED_NEXT_EXPERT"}:
+            contract["next_expert"] = value.split()[0].strip("`")
+        elif key in {"NEXT_ACTION", "REQUIRED_NEXT_ACTION"}:
+            contract["next_action"] = value
+        elif key.startswith("DO_NOT_"):
+            flags[key] = value
+        elif key in {"FINAL_ARTIFACT", "ARTIFACT"}:
+            contract["artifact"] = value
+    if flags:
+        contract["flags"] = flags
+    return contract
+
+
+def _iter_delegation_return_rows(rows: list[dict[str, Any]]) -> Iterator[dict[str, Any]]:
+    """Yield completed delegation rows, including nested child return rows."""
+
+    for row in rows:
+        if row.get("stage") == "delegate.completed":
+            yield row
+        children = row.get("children")
+        if isinstance(children, list):
+            child_rows = [child for child in children if isinstance(child, dict)]
+            yield from _iter_delegation_return_rows(child_rows)
 
 
 def _compact_dynamic_delegation_output(output: str, *, limit: int = 2200) -> str:
@@ -2594,6 +2638,62 @@ def _should_execute_delegated_handoff(row: Mapping[str, Any]) -> bool:
         return True
     status = str(row.get("status") or "").strip().lower()
     return status in {"requested", "pending", "delegate", "delegated"}
+
+
+def _continuation_contract_handoff_rows(
+    app: FastAPI,
+    parent_agent: "AgentDef",
+    rows: list[dict[str, Any]],
+    *,
+    session_id: str,
+    seen_contracts: set[tuple[str, str]],
+) -> list[dict[str, Any]]:
+    """Build executable child handoffs from returned continuation contracts."""
+
+    handoffs: list[dict[str, Any]] = []
+    for row in _iter_delegation_return_rows(rows):
+        summary = str(row.get("output_summary") or row.get("summary") or "").strip()
+        contract = _delegation_continuation_contract(summary)
+        target_id = str(contract.get("next_expert") or "").strip()
+        if not target_id:
+            continue
+        target = _resolve_runtime_dynamic_agent(app, target_id, session_id=session_id)
+        if target is None or target.source != "expert_pack" or not target.enabled:
+            continue
+        if target.parent_id != parent_agent.id:
+            continue
+        action = str(contract.get("next_action") or "").strip()
+        key = (target.id, action)
+        if key in seen_contracts:
+            continue
+        seen_contracts.add(key)
+        origin = str(row.get("agent_id") or row.get("delegate_to") or "").strip()
+        origin_parent = str(row.get("parent_id") or "").strip()
+        prompt_parts = [
+            f"Continuation contract returned by {origin or 'child expert'}.",
+        ]
+        if origin_parent:
+            prompt_parts.append(f"Original return parent: {origin_parent}.")
+        if action:
+            prompt_parts.append(f"Required next action: {action}")
+        if summary:
+            prompt_parts.append(f"Returned evidence:\n{summary}")
+        handoffs.append(
+            {
+                "delegate_to": target.id,
+                "agent_id": target.id,
+                "question": "\n\n".join(prompt_parts),
+                "status": "requested",
+                "execute": True,
+                "source": "delegation_continuation_contract",
+                "continuation_contract": {
+                    **contract,
+                    "origin_agent_id": origin,
+                    "origin_parent_id": origin_parent,
+                },
+            }
+        )
+    return handoffs
 
 
 def _user_agent_param(agent_def: "AgentDef", name: str) -> Any:
@@ -3959,6 +4059,7 @@ async def _run_turn_in_background(
         max_rounds = _user_agent_int_param(parent_agent, "max_sync_delegation_rounds", 4)
         max_rounds = max(1, min(max_rounds, 8))
         missing_handoff_repairs = 0
+        seen_continuation_contracts: set[tuple[str, str]] = set()
         for _round in range(max_rounds):
             requested_rows = _coerce_expert_handoff_rows(
                 getattr(latest_pred, "expert_handoffs", None)
@@ -4005,6 +4106,21 @@ async def _run_turn_in_background(
             ]
             if not completed_rows:
                 break
+            contract_rows = _continuation_contract_handoff_rows(
+                app,
+                parent_agent,
+                executed_rows,
+                session_id=sid,
+                seen_contracts=seen_continuation_contracts,
+            )
+            if contract_rows:
+                latest_pred = SimpleNamespace(
+                    answer="Executing returned delegation continuation contract.",
+                    selected_expert=parent_agent.id,
+                    routing_rationale="returned child delegation continuation contract",
+                    expert_handoffs=contract_rows,
+                )
+                continue
             continuation_prompt = _dynamic_parent_resume_prompt(
                 source_text,
                 parent_agent,
