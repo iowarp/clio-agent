@@ -1227,20 +1227,71 @@ def _rows_from_jsonl(path: Path) -> list[dict[str, Any]]:
     return rows
 
 
-def render_report_from_jsonl(output_jsonl: Path, report_path: Path) -> None:
+def _apply_render_lane(results: list[DemoResult], lane: str) -> list[DemoResult]:
+    """Apply an explicit audit/report lane to rehydrated evidence rows."""
+
+    if not lane:
+        return results
+    for result in results:
+        result.benchmark_lane = lane
+    return results
+
+
+def _existing_jsonl_exit_code(
+    results: list[DemoResult],
+    *,
+    require_stress_criteria: bool,
+    require_lane_criteria: bool,
+) -> int:
+    """Return the release-gate exit code for rehydrated benchmark evidence."""
+
+    if not results:
+        return 2
+    cases_passed = all(result.passed for result in results)
+    audit_passed = all(item["passed"] for item in _stress_audit(results))
+    lane = results[0].benchmark_lane if results else "recorded"
+    lane_passed = all(item["passed"] for item in _provider_lane_audit(results, lane))
+    if require_lane_criteria:
+        return 0 if cases_passed and lane_passed else 1
+    if require_stress_criteria:
+        return 0 if cases_passed and audit_passed else 1
+    return 0
+
+
+def render_report_from_jsonl(
+    output_jsonl: Path,
+    report_path: Path,
+    *,
+    lane: str = "",
+    require_stress_criteria: bool = False,
+    require_lane_criteria: bool = False,
+) -> int:
     """Render a markdown report from an existing benchmark JSONL evidence file."""
     rows = _rows_from_jsonl(output_jsonl)
-    results = [_result_from_case_row(row) for row in rows]
+    results = _apply_render_lane([_result_from_case_row(row) for row in rows], lane)
     report_path.write_text(_render_report(results, output_jsonl.resolve()), encoding="utf-8")
+    return _existing_jsonl_exit_code(
+        results,
+        require_stress_criteria=require_stress_criteria,
+        require_lane_criteria=require_lane_criteria,
+    )
 
 
-def render_report_from_jsonls(input_jsonls: list[Path], output_jsonl: Path, report_path: Path) -> None:
+def render_report_from_jsonls(
+    input_jsonls: list[Path],
+    output_jsonl: Path,
+    report_path: Path,
+    *,
+    lane: str = "",
+    require_stress_criteria: bool = False,
+    require_lane_criteria: bool = False,
+) -> int:
     """Combine existing benchmark JSONL evidence files and render one report."""
 
     rows: list[dict[str, Any]] = []
     for path in input_jsonls:
         rows.extend(_rows_from_jsonl(path))
-    results = [_result_from_case_row(row) for row in rows]
+    results = _apply_render_lane([_result_from_case_row(row) for row in rows], lane)
     normalized_rows = [_case_row(result) for result in results]
     output_jsonl.parent.mkdir(parents=True, exist_ok=True)
     output_jsonl.write_text(
@@ -1248,6 +1299,11 @@ def render_report_from_jsonls(input_jsonls: list[Path], output_jsonl: Path, repo
         encoding="utf-8",
     )
     report_path.write_text(_render_report(results, output_jsonl.resolve()), encoding="utf-8")
+    return _existing_jsonl_exit_code(
+        results,
+        require_stress_criteria=require_stress_criteria,
+        require_lane_criteria=require_lane_criteria,
+    )
 
 
 def _canonical_cases_by_id() -> dict[str, DemoCase]:
@@ -3420,11 +3476,27 @@ def main() -> None:
     args = parser.parse_args()
     if args.render_existing_jsonl is not None:
         existing = [path.resolve() for path in args.render_existing_jsonl]
+        render_lane = (
+            args.lane if args.require_lane_criteria or args.lane != "real_orchestrator" else ""
+        )
         if len(existing) == 1:
-            render_report_from_jsonl(existing[0], args.report.resolve())
+            code = render_report_from_jsonl(
+                existing[0],
+                args.report.resolve(),
+                lane=render_lane,
+                require_stress_criteria=args.require_stress_criteria,
+                require_lane_criteria=args.require_lane_criteria,
+            )
         else:
-            render_report_from_jsonls(existing, args.output_jsonl.resolve(), args.report.resolve())
-        raise SystemExit(0)
+            code = render_report_from_jsonls(
+                existing,
+                args.output_jsonl.resolve(),
+                args.report.resolve(),
+                lane=render_lane,
+                require_stress_criteria=args.require_stress_criteria,
+                require_lane_criteria=args.require_lane_criteria,
+            )
+        raise SystemExit(code)
     raise SystemExit(
         run_benchmark(
             args.base_url.rstrip("/"),
