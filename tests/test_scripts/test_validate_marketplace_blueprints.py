@@ -113,6 +113,17 @@ Bare descriptor.
     )
 
 
+def _write_hook(root: Path, *, pack_id: str) -> None:
+    hooks = root / pack_id / "hooks"
+    hooks.mkdir(parents=True)
+    hooks.joinpath("pre_message.py").write_text(
+        """def pre_message(session_id, text):
+    return None
+""",
+        encoding="utf-8",
+    )
+
+
 def test_marketplace_preflight_fails_when_complex_count_is_too_low(tmp_path: Path) -> None:
     _write_pack(tmp_path, pack_id="shallow", nested=False)
     _write_pack(tmp_path, pack_id="complex", nested=True)
@@ -308,6 +319,40 @@ def test_marketplace_preflight_can_require_self_contained_mcp_descriptors(
     assert result["self_contained_mcp_descriptor_count"] == 0
     assert result["validation_errors"] == [
         "self-contained MCP descriptor count below requirement: 0/1"
+    ]
+
+
+def test_marketplace_preflight_can_require_packaged_hook_descriptors(
+    tmp_path: Path,
+) -> None:
+    _write_pack(tmp_path, pack_id="hook-pack", nested=False)
+    _write_hook(tmp_path, pack_id="hook-pack")
+
+    result = validate_marketplace_source(
+        tmp_path,
+        options=MarketplaceValidationOptions(require_hook_descriptor_count=1),
+    )
+
+    assert result["ok"] is True
+    assert result["hook_descriptor_count"] == 1
+    rows = {row["id"]: row for row in result["blueprints"]}
+    assert rows["hook-pack"]["hook_descriptor_count"] == 1
+
+
+def test_marketplace_preflight_fails_when_hook_descriptor_count_is_too_low(
+    tmp_path: Path,
+) -> None:
+    _write_pack(tmp_path, pack_id="no-hook-pack", nested=False)
+
+    result = validate_marketplace_source(
+        tmp_path,
+        options=MarketplaceValidationOptions(require_hook_descriptor_count=1),
+    )
+
+    assert result["ok"] is False
+    assert result["hook_descriptor_count"] == 0
+    assert result["validation_errors"] == [
+        "hook descriptor count below requirement: 0/1"
     ]
 
 

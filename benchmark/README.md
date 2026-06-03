@@ -48,6 +48,14 @@ semantics, and surfaced-error behavior.
   real pack-local stdio FastMCP server, probed to ready, and called through
   CLIO's MCP call endpoint. This is an action-only infrastructure proof, not a
   model-turn or hierarchy-depth proof.
+- `MARKETPLACE_PACKAGED_HOOK_REPORT.md` /
+  `MARKETPLACE_PACKAGED_HOOK_EVIDENCE.jsonl` - focused June 3
+  semantic-regression evidence for marketplace packaged hook invocation. It
+  proves the `hook-smoke` pack exposes a disabled-by-default `pre_message` hook
+  descriptor, explicitly trusts/enables it, and records live
+  `hook.pre_message.blocked` semantic events with packaged Agent Blueprint
+  provenance. This is an action-only infrastructure proof, not a model-turn or
+  hierarchy-depth proof.
 - `MARKETPLACE_UNIFIED_REPORT.md` /
   `MARKETPLACE_UNIFIED_EVIDENCE.jsonl` - historical May 29 evidence for
   marketplace Agent Blueprint loading, root-owned delegation, and one complex
@@ -128,9 +136,10 @@ machine/session once the benchmark pack set is frozen.
 The MCP scope and enabled-execution reports are intentionally focused
 semantic-regression cases. The scope report proves CLIO surfaces descriptor,
 launch metadata, and trust state before enablement. The enabled-execution report
-proves explicit trust/enable/probe/call with a real pack-local MCP server. It is
-action-only by design so provider availability does not mask the MCP runtime
-contract.
+proves explicit trust/enable/probe/call with a real pack-local MCP server. The
+packaged-hook report proves CLIO can invoke an explicitly enabled pack-local
+hook with semantic trace provenance. Both are action-only by design so provider
+availability does not mask the underlying runtime contracts.
 
 Before running the expensive marketplace lane, run the static preflight against
 the marketplace source. This uses CLIO's Agent Blueprint validator for every
