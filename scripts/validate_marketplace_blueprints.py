@@ -25,6 +25,7 @@ class MarketplaceValidationOptions:
     require_complex_count: int = 0
     require_mcp_descriptor_count: int = 0
     require_self_contained_mcp_count: int = 0
+    require_hook_descriptor_count: int = 0
     require_included_expert_count: int = 0
     require_included_subtree_count: int = 0
     exclude_complex_ids: tuple[str, ...] = ()
@@ -237,6 +238,7 @@ def validate_marketplace_source(
         )
     mcp_descriptor_count = sum(row["mcp_descriptor_count"] for row in blueprints)
     self_contained_mcp_count = sum(row["self_contained_mcp_descriptor_count"] for row in blueprints)
+    hook_descriptor_count = sum(row["hook_descriptor_count"] for row in blueprints)
     included_expert_count = sum(row["included_expert_count"] for row in blueprints)
     included_subtree_count = sum(row["included_subtree_count"] for row in blueprints)
     if options.require_mcp_descriptor_count and mcp_descriptor_count < options.require_mcp_descriptor_count:
@@ -251,6 +253,11 @@ def validate_marketplace_source(
         errors.append(
             "self-contained MCP descriptor count below requirement: "
             f"{self_contained_mcp_count}/{options.require_self_contained_mcp_count}"
+        )
+    if options.require_hook_descriptor_count and hook_descriptor_count < options.require_hook_descriptor_count:
+        errors.append(
+            "hook descriptor count below requirement: "
+            f"{hook_descriptor_count}/{options.require_hook_descriptor_count}"
         )
     if options.require_included_expert_count and included_expert_count < options.require_included_expert_count:
         errors.append(
@@ -272,6 +279,7 @@ def validate_marketplace_source(
         "complex_blueprints": complex_blueprints,
         "mcp_descriptor_count": mcp_descriptor_count,
         "self_contained_mcp_descriptor_count": self_contained_mcp_count,
+        "hook_descriptor_count": hook_descriptor_count,
         "included_expert_count": included_expert_count,
         "included_subtree_count": included_subtree_count,
         "requirements": {
@@ -281,6 +289,7 @@ def validate_marketplace_source(
             "require_complex_count": options.require_complex_count,
             "require_mcp_descriptor_count": options.require_mcp_descriptor_count,
             "require_self_contained_mcp_count": options.require_self_contained_mcp_count,
+            "require_hook_descriptor_count": options.require_hook_descriptor_count,
             "require_included_expert_count": options.require_included_expert_count,
             "require_included_subtree_count": options.require_included_subtree_count,
             "exclude_complex_ids": list(options.exclude_complex_ids),
@@ -326,6 +335,15 @@ def _render_text_report(result: dict[str, Any]) -> str:
             )
         ),
         (
+            "Hook descriptors: "
+            f"{result['hook_descriptor_count']}"
+            + (
+                f" / required {requirements['require_hook_descriptor_count']}"
+                if requirements["require_hook_descriptor_count"]
+                else ""
+            )
+        ),
+        (
             "Included experts: "
             f"{result['included_expert_count']}"
             + (
@@ -345,8 +363,8 @@ def _render_text_report(result: dict[str, Any]) -> str:
         ),
         f"Status: {'pass' if result['ok'] else 'fail'}",
         "",
-        "| Blueprint | Enabled | Complex | Experts | Edges | Levels | Tools | Includes | MCP | Self MCP | Errors |",
-        "| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
+        "| Blueprint | Enabled | Complex | Experts | Edges | Levels | Tools | Includes | MCP | Self MCP | Hooks | Errors |",
+        "| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
     ]
     for row in result["blueprints"]:
         metrics = row["metrics"]
@@ -364,6 +382,7 @@ def _render_text_report(result: dict[str, Any]) -> str:
                     str(row["included_subtree_count"]),
                     str(row["mcp_descriptor_count"]),
                     str(row["self_contained_mcp_descriptor_count"]),
+                    str(row["hook_descriptor_count"]),
                     "; ".join(row["validation_errors"]) or "-",
                 ]
             )
@@ -386,6 +405,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--require-complex-count", type=int, default=0)
     parser.add_argument("--require-mcp-descriptor-count", type=int, default=0)
     parser.add_argument("--require-self-contained-mcp-count", type=int, default=0)
+    parser.add_argument("--require-hook-descriptor-count", type=int, default=0)
     parser.add_argument("--require-included-expert-count", type=int, default=0)
     parser.add_argument("--require-included-subtree-count", type=int, default=0)
     parser.add_argument(
@@ -406,6 +426,7 @@ def main(argv: list[str] | None = None) -> int:
         require_complex_count=args.require_complex_count,
         require_mcp_descriptor_count=args.require_mcp_descriptor_count,
         require_self_contained_mcp_count=args.require_self_contained_mcp_count,
+        require_hook_descriptor_count=args.require_hook_descriptor_count,
         require_included_expert_count=args.require_included_expert_count,
         require_included_subtree_count=args.require_included_subtree_count,
         exclude_complex_ids=tuple(args.exclude_complex_id or ()),

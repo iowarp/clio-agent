@@ -23,6 +23,11 @@ Use `MARKETPLACE_MCP_ENABLED_EXECUTION_REPORT.md` /
 semantic-regression proof that a marketplace pack-local MCP descriptor can be
 explicitly trusted, launched, probed, and called through CLIO.
 
+Use `MARKETPLACE_PACKAGED_HOOK_REPORT.md` /
+`MARKETPLACE_PACKAGED_HOOK_EVIDENCE.jsonl` as the focused semantic-regression
+proof that a marketplace pack-local hook descriptor can be explicitly trusted,
+enabled, and invoked with packaged provenance during session message handling.
+
 Current result:
 
 - The re-rendered full marketplace report records `5/6` clean passes after the
@@ -56,10 +61,18 @@ Current result:
   ready, and called through `/v1/mcp/servers/{server_id}/call`. This is an
   action-only infrastructure proof, so it does not claim model reasoning,
   hierarchy depth, or provider-turn success.
+- The focused packaged hook case proves CLIO can load the `hook-smoke`
+  marketplace pack, expose its disabled-by-default `pre_message` hook
+  descriptor, explicitly trust and enable it, and record live
+  `hook.pre_message.blocked` semantic events with `source=agent_blueprint`,
+  checksum, trust, installed path, and Agent Blueprint provenance. This is an
+  action-only infrastructure proof, so it does not claim model reasoning,
+  hierarchy depth, or provider-turn success.
 
 Do not overclaim this as a single clean full-lane rerun after the geospatial
 fix. It is a combined evidence set: one corrected full run plus focused proofs
-for the geospatial retry, MCP descriptor scope, and enabled MCP execution.
+for the geospatial retry, MCP descriptor scope, enabled MCP execution, and
+packaged hook invocation.
 
 ## What Failed And Was Fixed
 
