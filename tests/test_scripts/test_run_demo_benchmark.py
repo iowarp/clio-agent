@@ -455,6 +455,129 @@ def test_live_event_watch_starts_before_turn_and_stops_after(monkeypatch) -> Non
     assert calls[:3] == ["watch_enter", "post_turn", "watch_exit"]
 
 
+def test_failed_result_recovers_partial_route_evidence_from_semantic_events() -> None:
+    message = _message(text="", error="provider_timeout", tools=[])
+    message["parts"] = [{"type": "text", "text": ""}]
+    message["metadata"]["expert_handoffs"] = []
+    result = bench.DemoResult(
+        case=bench.DemoCase(
+            case_id="failed_semantic",
+            title="failed semantic",
+            category="test",
+            prompt="prompt",
+            why="why",
+            expected="expected",
+            session_group="failed",
+            expected_tools=("sac_fetch_earthscope_waveform",),
+        ),
+        session_id="sess_test",
+        elapsed_s=300.0,
+        message=message,
+        provider={"provider": "codex", "model": "gpt-5.5", "api_base": "codex://exec"},
+        semantic_events=[
+            {
+                "event_type": "agent.invocation.started",
+                "actor": {"agent_id": "main"},
+                "status": "running",
+            },
+            {
+                "event_type": "delegation.started",
+                "actor": {"agent_id": "main"},
+                "subject": {"agent_id": "data"},
+                "payload": {
+                    "agent_id": "data",
+                    "parent_id": "main",
+                    "stage": "delegate.started",
+                    "delegation_lifecycle": "sync",
+                },
+            },
+            {
+                "event_type": "delegation.started",
+                "actor": {"agent_id": "data"},
+                "subject": {"agent_id": "ndp_catalog"},
+                "payload": {
+                    "agent_id": "ndp_catalog",
+                    "parent_id": "data",
+                    "stage": "delegate.started",
+                    "delegation_lifecycle": "sync",
+                },
+            },
+            {
+                "event_type": "tool.call.completed",
+                "actor": {"tool": "ndp_search_datasets"},
+                "subject": {"call_id": "call_ndp"},
+                "payload": {
+                    "call_id": "call_ndp",
+                    "tool": "ndp_search_datasets",
+                    "ok": True,
+                    "duration_ms": 12.0,
+                },
+            },
+            {
+                "event_type": "delegation.completed",
+                "actor": {"agent_id": "ndp_catalog"},
+                "subject": {"agent_id": "data"},
+                "payload": {
+                    "agent_id": "ndp_catalog",
+                    "parent_id": "data",
+                    "stage": "delegate.completed",
+                    "delegation_lifecycle": "sync",
+                },
+            },
+            {
+                "event_type": "delegation.parent_resumed",
+                "actor": {"agent_id": "data"},
+                "subject": {"agent_id": "ndp_catalog"},
+                "payload": {
+                    "agent_id": "data",
+                    "parent_id": "main",
+                    "stage": "parent.resumed",
+                    "resumed_from": "ndp_catalog",
+                    "delegation_lifecycle": "sync",
+                },
+            },
+            {
+                "event_type": "delegation.completed",
+                "actor": {"agent_id": "data"},
+                "subject": {"agent_id": "main"},
+                "payload": {
+                    "agent_id": "data",
+                    "parent_id": "main",
+                    "stage": "delegate.completed",
+                    "delegation_lifecycle": "sync",
+                },
+            },
+            {
+                "event_type": "delegation.parent_resumed",
+                "actor": {"agent_id": "main"},
+                "subject": {"agent_id": "data"},
+                "payload": {
+                    "agent_id": "main",
+                    "stage": "parent.resumed",
+                    "resumed_from": "data",
+                    "delegation_lifecycle": "sync",
+                },
+            },
+        ],
+    )
+
+    row = bench._case_row(result)
+
+    assert result.passed is False
+    assert row["selected_agent"] == "main"
+    assert row["tool_names"] == ["ndp_search_datasets"]
+    assert row["expert_handoffs"][0]["telemetry_source"] == "semantic_event"
+    assert row["route_metrics"]["expert_depth"] == 3
+    assert row["route_metrics"]["sync_handoff_count"] == 2
+    assert bench._missing_sync_return_pairs(result) == []
+    assert row["route_graph"]["edges"][:4] == [
+        {"from": "main", "to": "data", "kind": "handoff"},
+        {"from": "data", "to": "main", "kind": "return"},
+        {"from": "data", "to": "ndp_catalog", "kind": "handoff"},
+        {"from": "ndp_catalog", "to": "data", "kind": "return"},
+    ]
+
+
 def test_route_graph_summary_preserves_sync_delegation_returns() -> None:
     message = _message(route_source="dspy")
     message["metadata"]["expert_handoffs"] = [
