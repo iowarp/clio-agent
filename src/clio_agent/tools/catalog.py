@@ -144,6 +144,18 @@ TOOL_CATALOG: dict[str, ToolCatalogEntry] = {
         "geospatial",
         {"geospatial", "geojson", "spatial", "geometry", "inspect"},
     ),
+    "terrain_dem_terrain": _entry(
+        "terrain_dem_terrain",
+        "terrain_derivation",
+        {"geospatial", "terrain", "dem", "slope", "site-suitability"},
+        visible_to={"data", "analysis", "visualization"},
+    ),
+    "terrain_pointcloud_read": _entry(
+        "terrain_pointcloud_read",
+        "terrain_derivation",
+        {"geospatial", "terrain", "lidar", "point-cloud", "gridding"},
+        visible_to={"data", "analysis"},
+    ),
     "hpc_parse_darshan_text": _entry(
         "hpc_parse_darshan_text",
         "hpc",

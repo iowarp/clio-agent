@@ -38,6 +38,7 @@ from clio_agent.tools.servers.ndp_server import ndp_server
 from clio_agent.tools.servers.parquet_server import parquet_server
 from clio_agent.tools.servers.sac_server import sac_server
 from clio_agent.tools.servers.shell_server import shell_server
+from clio_agent.tools.servers.terrain_server import terrain_server
 
 
 def _mount_with_namespace(parent: FastMCP, server: FastMCP, namespace: str) -> None:
@@ -64,6 +65,7 @@ _mount_with_namespace(gateway, genomics_server, "genomics")
 _mount_with_namespace(gateway, imaging_server, "imaging")
 _mount_with_namespace(gateway, mass_spec_server, "mass_spec")
 _mount_with_namespace(gateway, materials_server, "materials")
+_mount_with_namespace(gateway, terrain_server, "terrain")
 _mount_with_namespace(gateway, fs_server, "fs")
 _mount_with_namespace(gateway, shell_server, "shell")
 
@@ -156,6 +158,8 @@ def _infer_tool_server(tool_name: str) -> str:
         return "mass_spec"
     if tool_name.startswith("materials_"):
         return "materials"
+    if tool_name.startswith("terrain_"):
+        return "terrain"
     if tool_name.startswith("fs_"):
         return "fs"
     if tool_name.startswith("shell_"):
