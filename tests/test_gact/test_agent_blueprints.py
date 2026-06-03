@@ -1554,6 +1554,70 @@ EarthScope descriptor.
     assert any(row["id"] == "agent_blueprint_mcp_earth_earthscope" for row in rows_after)
 
 
+def test_session_agent_blueprint_exposes_mcp_descriptor_scope(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    root = workspace / ".clio" / "agent-blueprints" / "calc"
+    _write_blueprint(root, blueprint_id="calc")
+    (root / "tools").mkdir()
+    (root / "mcp").mkdir()
+    (root / "mcp" / "calculator_server.py").write_text("print('ok')\n", encoding="utf-8")
+    root.joinpath("tools", "calculator.md").write_text(
+        """---
+id: calculator
+name: Calculator MCP
+transport: stdio
+install:
+  method: pack-local
+  path: mcp/calculator_server.py
+runtime:
+  args:
+    - serve
+tools:
+  - calculator_add
+trust:
+  policy: explicit
+---
+Calculator descriptor.
+""",
+        encoding="utf-8",
+    )
+
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    with TestClient(app) as client:
+        wid = client.post(
+            "/v1/workspaces",
+            json={
+                "name": "Workspace",
+                "root_path": str(workspace),
+                "storage_root": str(workspace / ".clio"),
+            },
+        ).json()["id"]
+        sid = client.post(
+            "/v1/sessions",
+            json={"title": "blueprint", "workspace_id": wid},
+        ).json()["id"]
+        activated = client.post(
+            f"/v1/sessions/{sid}/agent-blueprint",
+            json={"blueprint_id": "calc"},
+        )
+        body = client.get(f"/v1/sessions/{sid}/agent-blueprint").json()
+
+    assert activated.status_code == 200, activated.text
+    assert body["active_agent_blueprint_id"] == "calc"
+    descriptor = body["mcp_descriptors"][0]
+    assert descriptor["id"] == "calculator"
+    assert descriptor["enabled"] is False
+    assert descriptor["status"] == "disabled"
+    assert descriptor["tools"][0]["name"] == "calculator_add"
+    assert descriptor["tools"][0]["status"] == "disabled"
+    assert descriptor["trust"] == {"policy": "explicit", "trusted": False}
+    assert descriptor["install"] == {
+        "method": "pack-local",
+        "path": "mcp/calculator_server.py",
+    }
+    assert body["hook_descriptors"] == []
+
+
 def test_agent_blueprint_mcp_enable_records_install_and_trust_metadata(
     tmp_path: Path,
 ) -> None:
