@@ -65,6 +65,14 @@ the runner now has deterministic fixtures and canonical cases for cohort QC,
 LFQ, HPC regression, format bridge, and terrain suitability, but does not claim
 the final real-provider marketplace lane has run yet.
 
+Use `DEMO_READINESS_HPC_SKILLS_REPORT.md` /
+`DEMO_READINESS_HPC_SKILLS_EVIDENCE.jsonl` as the current focused watched
+evidence for the HPC I/O regression marketplace pack after adding pack-local
+skill bodies in `JaimeCernuda/clio-agent-marketplace#29`. It proves one
+codex-provider run with live semantic events, root-owned sync delegation,
+HPC parser/comparison tools, and runtime skill provenance resolving declared
+HPC skills from the installed pack with `missing=[]`.
+
 Current result:
 
 - The re-rendered full marketplace report records `5/6` clean passes after the
@@ -109,11 +117,16 @@ Current result:
   search without user intent, allows same-workspace memory search with explicit
   intent and `gact_memory_tool` provenance, and denies another workspace's
   session-summary read with `deny_other_workspace`.
+- The focused HPC skill-resolution case proves the `hpc-io-regression` pack can
+  load pack-local skills into expert runtime provenance while preserving the
+  observed hierarchy chain `main -> trace_ingest -> baseline_ingest ->
+  trace_ingest -> main -> regression_diff -> main -> root_cause -> main`.
 
 Do not overclaim this as a single clean full-lane rerun after the geospatial
 fix. It is a combined evidence set: one corrected full run plus focused proofs
 for the geospatial retry, MCP descriptor scope, enabled MCP execution, and
-packaged hook invocation, plus workspace memory scope.
+packaged hook invocation, workspace memory scope, and HPC pack-local skill
+resolution.
 
 ## What Failed And Was Fixed
 
@@ -175,6 +188,9 @@ seismic plus non-seismic packs. Remaining benchmark expansion items are:
   terrain/NDP final end-to-end runs. The runner now has canonical marketplace
   cases for those first-wave packs; the pending work is the watched
   real-provider execution and evidence review.
+- pack-local skill bodies for the remaining first-wave marketplace packs beyond
+  `hpc-io-regression`; this is tracked in
+  `JaimeCernuda/clio-agent-marketplace#28`.
 
 These are future benchmark coverage goals, not contradictions of the current
 marketplace hierarchy pass.
