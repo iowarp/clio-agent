@@ -28,6 +28,11 @@ Use `MARKETPLACE_PACKAGED_HOOK_REPORT.md` /
 proof that a marketplace pack-local hook descriptor can be explicitly trusted,
 enabled, and invoked with packaged provenance during session message handling.
 
+Use `MARKETPLACE_WORKSPACE_MEMORY_SCOPE_REPORT.md` /
+`MARKETPLACE_WORKSPACE_MEMORY_SCOPE_EVIDENCE.jsonl` as the focused
+semantic-regression proof that CLIO's agent-callable memory tools enforce
+same-workspace intent and deny other-workspace reads.
+
 Current result:
 
 - The re-rendered full marketplace report records `5/6` clean passes after the
@@ -68,11 +73,15 @@ Current result:
   checksum, trust, installed path, and Agent Blueprint provenance. This is an
   action-only infrastructure proof, so it does not claim model reasoning,
   hierarchy depth, or provider-turn success.
+- The focused workspace memory case proves CLIO denies cross-session memory
+  search without user intent, allows same-workspace memory search with explicit
+  intent and `gact_memory_tool` provenance, and denies another workspace's
+  session-summary read with `deny_other_workspace`.
 
 Do not overclaim this as a single clean full-lane rerun after the geospatial
 fix. It is a combined evidence set: one corrected full run plus focused proofs
 for the geospatial retry, MCP descriptor scope, enabled MCP execution, and
-packaged hook invocation.
+packaged hook invocation, plus workspace memory scope.
 
 ## What Failed And Was Fixed
 

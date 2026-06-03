@@ -143,13 +143,14 @@ def test_select_semantic_regression_lane_cases() -> None:
         for case_id in (
             "reasoning_cross_file_triage_nanoagents",
             "ndp_seismic_waveform_to_plot",
-                "marketplace_seismic_waveform_review",
-                "marketplace_mcp_calculator_scope",
-                "marketplace_mcp_calculator_enabled_call",
-                "marketplace_packaged_hook_blocked_turn",
-                "provider_swap_memory_followup",
-            )
-        ]
+            "marketplace_seismic_waveform_review",
+            "marketplace_mcp_calculator_scope",
+            "marketplace_mcp_calculator_enabled_call",
+            "marketplace_packaged_hook_blocked_turn",
+            "workspace_memory_scope_policy",
+            "provider_swap_memory_followup",
+        )
+    ]
 
     selected, missing = bench._select_cases(cases, lane="semantic_regression", case_ids=())
 
@@ -1537,6 +1538,58 @@ def test_packaged_hook_invocation_requires_enable_and_trace_provenance() -> None
     )
 
     assert bench._case_observed_semantic_proofs(result) == ("packaged_hook_invocation",)
+
+
+def test_workspace_memory_scope_requires_structured_policy_actions() -> None:
+    case = bench.DemoCase(
+        case_id="workspace_memory",
+        title="workspace memory",
+        category="test",
+        prompt="prompt",
+        why="why",
+        expected="expected",
+        session_group="semantic",
+        semantic_proofs=("workspace_memory_scope",),
+    )
+    result = bench.DemoResult(
+        case=case,
+        session_id="sess_current",
+        elapsed_s=1.0,
+        message=_message(text="workspace memory scope"),
+        provider={"provider": "codex", "model": "gpt-5.5", "api_base": ""},
+        benchmark_lane="semantic_regression",
+        actions=[
+            {
+                "type": "workspace_memory_scope_probe",
+                "ok": True,
+                "current_session_id": "sess_current",
+                "prior_session_id": "sess_prior",
+                "other_session_id": "sess_other",
+                "same_workspace_hit_session_id": "sess_prior",
+                "other_workspace_hit_session_id": "",
+                "checks": [
+                    {
+                        "name": "deny_without_intent",
+                        "ok": True,
+                        "policy_decision": "deny_cross_session_requires_intent",
+                    },
+                    {
+                        "name": "allow_same_workspace_with_intent",
+                        "ok": True,
+                        "policy_decision": "allow_same_workspace_user_intent",
+                        "hit_session_ids": ["sess_prior"],
+                    },
+                    {
+                        "name": "deny_other_workspace_summary",
+                        "ok": True,
+                        "decision": "deny_other_workspace",
+                    },
+                ],
+            }
+        ],
+    )
+
+    assert bench._case_observed_semantic_proofs(result) == ("workspace_memory_scope",)
 
 
 def test_render_existing_jsonl_can_gate_missing_semantic_evidence(tmp_path: Path) -> None:
