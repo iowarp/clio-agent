@@ -48,6 +48,12 @@ progress toward the benchmark-source HPC I/O regression case. It documents the
 new reusable Darshan text parser and two-trace comparison tool, but does not
 claim the final two-branch end-to-end benchmark has run yet.
 
+Use `FORMAT_BRIDGE_INFRASTRUCTURE.md` as the current infrastructure note for
+progress toward the benchmark-source scientific format bridge case. It
+documents the new reusable HDF5-to-Parquet conversion/integrity tool, but does
+not claim the final inspect -> convert/policy -> integrity -> visualization
+end-to-end benchmark has run yet.
+
 Current result:
 
 - The re-rendered full marketplace report records `5/6` clean passes after the

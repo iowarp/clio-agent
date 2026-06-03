@@ -154,6 +154,12 @@ TOOL_CATALOG: dict[str, ToolCatalogEntry] = {
         "hpc",
         {"hpc", "darshan", "io", "trace", "regression", "diff", "performance"},
     ),
+    "format_convert_hdf5_to_parquet": _entry(
+        "format_convert_hdf5_to_parquet",
+        "format_bridge",
+        {"scientific-data", "format", "conversion", "hdf5", "parquet", "integrity"},
+        visible_to={"data", "analysis"},
+    ),
     "imaging_inspect_png": _entry(
         "imaging_inspect_png",
         "imaging",
