@@ -127,7 +127,7 @@ class DemoResult:
     @property
     def selected_agent(self) -> str:
         """Return selected agent from the routing part, if present."""
-        return _routing_agent(self.message)
+        return _routing_agent(self.message) or _semantic_selected_agent(self.semantic_events)
 
     @property
     def text(self) -> str:
@@ -142,7 +142,10 @@ class DemoResult:
     @property
     def tools(self) -> list[dict[str, Any]]:
         """Return tool call metadata."""
-        return _tools(self.message)
+        tools = _tools(self.message)
+        if tools:
+            return tools
+        return _semantic_tools(self.semantic_events)
 
     @property
     def tool_names(self) -> list[str]:
@@ -157,7 +160,10 @@ class DemoResult:
     @property
     def expert_handoffs(self) -> list[dict[str, Any]]:
         """Return expert handoff provenance metadata."""
-        return _expert_handoffs(self.message)
+        handoffs = _expert_handoffs(self.message)
+        if handoffs:
+            return handoffs
+        return _semantic_handoffs(self.semantic_events)
 
     @property
     def handoff_agent_ids(self) -> list[str]:
@@ -497,6 +503,124 @@ def _expert_handoffs(message: dict[str, Any]) -> list[dict[str, Any]]:
     for row in rows:
         visit(row)
     return flattened
+
+
+def _semantic_payload(row: dict[str, Any]) -> dict[str, Any]:
+    payload = row.get("payload")
+    return payload if isinstance(payload, dict) else {}
+
+
+def _semantic_actor(row: dict[str, Any]) -> dict[str, Any]:
+    actor = row.get("actor")
+    return actor if isinstance(actor, dict) else {}
+
+
+def _semantic_subject(row: dict[str, Any]) -> dict[str, Any]:
+    subject = row.get("subject")
+    return subject if isinstance(subject, dict) else {}
+
+
+def _semantic_selected_agent(events: list[dict[str, Any]]) -> str:
+    """Return the invoked root agent from semantic events, if available."""
+
+    for row in events:
+        if row.get("event_type") != "agent.invocation.started":
+            continue
+        agent_id = str(_semantic_actor(row).get("agent_id") or "")
+        if agent_id:
+            return agent_id
+    return ""
+
+
+def _semantic_tools(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Recover tool-call rows from semantic events for failed partial turns."""
+
+    by_call_id: dict[str, dict[str, Any]] = {}
+    order: list[str] = []
+    anonymous_index = 0
+    for row in events:
+        if str(row.get("event_type") or "") not in {
+            "tool.call.started",
+            "tool.call.completed",
+        }:
+            continue
+        payload = _semantic_payload(row)
+        actor = _semantic_actor(row)
+        subject = _semantic_subject(row)
+        tool = str(payload.get("tool") or actor.get("tool") or "")
+        if not tool:
+            continue
+        call_id = str(payload.get("call_id") or subject.get("call_id") or "")
+        if not call_id:
+            anonymous_index += 1
+            call_id = f"semantic_tool_{anonymous_index}"
+        if call_id not in by_call_id:
+            order.append(call_id)
+            by_call_id[call_id] = {
+                "name": tool,
+                "tool": tool,
+                "call_id": call_id,
+                "telemetry_source": "semantic_event",
+            }
+        target = by_call_id[call_id]
+        if row.get("event_type") == "tool.call.completed":
+            target["ok"] = bool(payload.get("ok", row.get("status") != "failed"))
+            if payload.get("duration_ms") is not None:
+                target["duration_ms"] = payload.get("duration_ms")
+            if payload.get("cached") is not None:
+                target["cached"] = payload.get("cached")
+        elif "ok" not in target:
+            target["ok"] = False
+            target["status"] = "started"
+    return [by_call_id[call_id] for call_id in order]
+
+
+def _semantic_handoffs(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Recover delegation provenance rows from semantic events."""
+
+    handoffs: list[dict[str, Any]] = []
+    for row in events:
+        event_type = str(row.get("event_type") or "")
+        if not event_type.startswith("delegation."):
+            continue
+        payload = _semantic_payload(row)
+        actor = _semantic_actor(row)
+        subject = _semantic_subject(row)
+        if event_type == "delegation.started":
+            agent_id = str(
+                payload.get("agent_id")
+                or payload.get("delegate_to")
+                or subject.get("agent_id")
+                or ""
+            )
+            parent_id = str(payload.get("parent_id") or actor.get("agent_id") or "")
+            stage = str(payload.get("stage") or "delegate.started")
+        elif event_type == "delegation.completed":
+            agent_id = str(payload.get("agent_id") or actor.get("agent_id") or "")
+            parent_id = str(payload.get("parent_id") or subject.get("agent_id") or "")
+            stage = str(payload.get("stage") or "delegate.completed")
+        elif event_type == "delegation.parent_resumed":
+            agent_id = str(payload.get("agent_id") or actor.get("agent_id") or "")
+            parent_id = str(payload.get("parent_id") or "")
+            stage = str(payload.get("stage") or "parent.resumed")
+        else:
+            continue
+        if not agent_id:
+            continue
+        handoffs.append(
+            {
+                "agent_id": agent_id,
+                "parent_id": parent_id,
+                "return_to": parent_id if stage in {"delegate.completed", "delegate.failed"} else "",
+                "stage": stage,
+                "status": str(payload.get("status") or row.get("status") or ""),
+                "delegation_lifecycle": str(payload.get("delegation_lifecycle") or "sync"),
+                "dispatch_target": str(payload.get("dispatch_target") or agent_id),
+                "resumed_from": str(payload.get("resumed_from") or subject.get("agent_id") or ""),
+                "telemetry_source": "semantic_event",
+            }
+        )
+    return handoffs
 
 
 def _tool_name(row: dict[str, Any]) -> str:
