@@ -123,7 +123,7 @@ tier: 1
 prompt_id: profile.root
 prompt_profile: heavy
 ---
-Inline root prompt should be replaced.
+Inline root prompt should be composed.
 """,
         encoding="utf-8",
     )
@@ -136,7 +136,7 @@ tier: 2
 prompt_id: profile.analysis
 prompt_profile: light
 ---
-Inline analysis prompt should be replaced.
+Inline analysis prompt should be composed.
 """,
         encoding="utf-8",
     )
@@ -202,6 +202,128 @@ def test_validate_agent_blueprint_markdown_root(tmp_path: Path) -> None:
     assert rows["variant"]["parent_id"] == "root"
     assert rows["variant"]["tools"] == ["memory_search_sessions"]
     assert any("compatibility mode" in warning for warning in body["validation_warnings"])
+
+
+def test_agent_blueprint_expert_exposes_dspy_semantics_metadata(tmp_path: Path) -> None:
+    root = tmp_path / "dspy-agent"
+    (root / "experts").mkdir(parents=True)
+    root.joinpath("AGENT.md").write_text(
+        """---
+id: dspy-agent
+version: 0.1.0
+title: DSPy Agent
+root_expert: root
+blueprint:
+  format: agent-blueprint-v1
+---
+DSPy agent.
+""",
+        encoding="utf-8",
+    )
+    root.joinpath("experts", "root.md").write_text(
+        """---
+id: root
+title: Root
+description: Root expert.
+tier: 1
+module:
+  kind: react
+signature:
+  id: cohort_qc_review
+  inputs:
+    - question
+    - parent_evidence
+  outputs:
+    - evidence
+    - expert_handoffs
+    - final_answer
+structured_outputs:
+  evidence_fields:
+    - item_id
+    - finding
+    - provenance
+fanout:
+  id: per_sample_qc
+  item_source: files
+  worker: sample_qc
+  max_items: 50
+  concurrency: 4
+  partial_failure: report_and_continue
+---
+Coordinate work.
+""",
+        encoding="utf-8",
+    )
+
+    body = validate_agent_blueprint_path(root)
+
+    assert body["enabled"] is True
+    row = {row["id"]: row for row in body["agents"]}["root"]
+    assert row["metadata"]["dspy"] == {
+        "module": {"kind": "react"},
+        "signature": {
+            "id": "cohort_qc_review",
+            "inputs": ["question", "parent_evidence"],
+            "outputs": ["evidence", "expert_handoffs", "final_answer"],
+        },
+    }
+    assert row["metadata"]["structured_outputs"] == {
+        "evidence_fields": ["item_id", "finding", "provenance"]
+    }
+    assert row["metadata"]["fanout"] == {
+        "id": "per_sample_qc",
+        "item_source": "files",
+        "worker": "sample_qc",
+        "max_items": "50",
+        "concurrency": "4",
+        "partial_failure": "report_and_continue",
+    }
+    warnings = "\n".join(body["validation_warnings"])
+    assert "unknown expert field ignored: module" not in warnings
+    assert "unknown expert field ignored: signature" not in warnings
+    assert "unknown expert field ignored: fanout" not in warnings
+
+
+def test_agent_blueprint_dspy_semantics_validation_errors(tmp_path: Path) -> None:
+    root = tmp_path / "bad-dspy-agent"
+    (root / "experts").mkdir(parents=True)
+    root.joinpath("AGENT.md").write_text(
+        """---
+id: bad-dspy-agent
+version: 0.1.0
+title: Bad DSPy Agent
+root_expert: root
+blueprint:
+  format: agent-blueprint-v1
+---
+Bad DSPy agent.
+""",
+        encoding="utf-8",
+    )
+    root.joinpath("experts", "root.md").write_text(
+        """---
+id: root
+title: Root
+description: Root expert.
+tier: 1
+module:
+  kind: unsupported_loop
+fanout:
+  max_items: 0
+  concurrency: many
+---
+Coordinate work.
+""",
+        encoding="utf-8",
+    )
+
+    body = validate_agent_blueprint_path(root)
+
+    assert body["enabled"] is False
+    errors = "\n".join(body["validation_errors"])
+    assert "root: unsupported dspy.module.kind: unsupported_loop" in errors
+    assert "root: fanout.max_items must be a positive integer" in errors
+    assert "root: fanout.concurrency must be a positive integer" in errors
 
 
 def test_agent_blueprint_v1_contract_rejects_missing_required_manifest_fields(
@@ -931,10 +1053,22 @@ def test_agent_blueprint_prompt_profile_provider_runtime_provenance(
 
     root_call = next(row for row in seen if row["agent_id"] == "root")
     analysis_call = next(row for row in seen if row["agent_id"] == "analysis")
-    assert root_call["prompt"] == "Root prompt from blueprint profile."
+    assert root_call["prompt"] == "\n\n".join(
+        (
+            "Root prompt from blueprint profile.",
+            "Agent-specific instructions from this definition:",
+            "Inline root prompt should be composed.",
+        )
+    )
     assert root_call["provider"] == "openai"
     assert root_call["model"] == "gpt-5.1"
-    assert analysis_call["prompt"] == "Analysis prompt from blueprint profile."
+    assert analysis_call["prompt"] == "\n\n".join(
+        (
+            "Analysis prompt from blueprint profile.",
+            "Agent-specific instructions from this definition:",
+            "Inline analysis prompt should be composed.",
+        )
+    )
     assert analysis_call["provider"] == "anthropic"
     assert analysis_call["model"] == "claude-sonnet-4-20250514"
 

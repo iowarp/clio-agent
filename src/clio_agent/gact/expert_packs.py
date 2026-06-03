@@ -265,6 +265,15 @@ def parse_expert_file(
     for key in ("fallback_tier", "model_fallback", "delegation_policy"):
         if meta.get(key):
             metadata[key] = str(meta[key]).strip()
+    dspy_semantics = _dspy_semantics_from_meta(meta)
+    if dspy_semantics:
+        metadata["dspy"] = dspy_semantics
+    structured_outputs = _mapping_field(meta, "structured_outputs", "structured-outputs")
+    if structured_outputs:
+        metadata["structured_outputs"] = structured_outputs
+    fanout = _mapping_field(meta, "fanout", "fan_out", "fan-out")
+    if fanout:
+        metadata["fanout"] = fanout
     enabled_meta = str(meta.get("enabled") or "true").strip().lower()
     enabled = enabled_meta not in {"false", "0", "no", "off"} and not errors
     return AgentDef(
@@ -576,6 +585,56 @@ def _list_field(meta: dict[str, Any], *keys: str) -> list[str]:
             value = value[1:-1]
         return [item.strip() for item in value.split(",") if item.strip()]
     return []
+
+
+def _mapping_field(meta: dict[str, Any], *keys: str) -> dict[str, Any]:
+    for key in keys:
+        value = meta.get(key)
+        if isinstance(value, dict):
+            return {str(k): v for k, v in value.items()}
+    return {}
+
+
+def _dspy_semantics_from_meta(meta: dict[str, Any]) -> dict[str, Any]:
+    raw_dspy = _mapping_field(meta, "dspy")
+    module = _mapping_field(meta, "module")
+    signature = _mapping_field(meta, "signature")
+    if isinstance(meta.get("module"), str):
+        module = {"kind": str(meta["module"]).strip()}
+    if isinstance(meta.get("signature"), str):
+        signature = {"id": str(meta["signature"]).strip()}
+    if "module" in raw_dspy and not module:
+        raw_module = raw_dspy.get("module")
+        if isinstance(raw_module, dict):
+            module = {str(k): v for k, v in raw_module.items()}
+        elif raw_module:
+            module = {"kind": str(raw_module).strip()}
+    if "signature" in raw_dspy and not signature:
+        raw_signature = raw_dspy.get("signature")
+        if isinstance(raw_signature, dict):
+            signature = {str(k): v for k, v in raw_signature.items()}
+        elif raw_signature:
+            signature = {"id": str(raw_signature).strip()}
+    if "kind" in raw_dspy and "kind" not in module:
+        module["kind"] = str(raw_dspy["kind"]).strip()
+    if "inputs" in signature:
+        signature["inputs"] = _coerce_string_list(signature["inputs"])
+    if "outputs" in signature:
+        signature["outputs"] = _coerce_string_list(signature["outputs"])
+    out: dict[str, Any] = {}
+    if module:
+        out["module"] = module
+    if signature:
+        out["signature"] = signature
+    return out
+
+
+def _coerce_string_list(value: Any) -> Any:
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    if isinstance(value, str):
+        return [item.strip() for item in value.strip("[]").split(",") if item.strip()]
+    return value
 
 
 def _capability_refs_from_meta(meta: dict[str, Any]) -> list[Any]:

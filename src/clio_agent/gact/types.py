@@ -644,7 +644,9 @@ class AgentDef(BaseModel):
     validation_errors: list[str] = Field(default_factory=list)
 
     # v0.2 — multi-tier routing
-    tier: int = 0  # 0 = untagged, 1 = orchestrator, 2 = specialist, 3 = nanoagent
+    # 0 = untagged, 1 = root/orchestrator, 2+ = declared hierarchy depth.
+    # Runtime-spawned nanoagents are an execution mode, not a fixed tier.
+    tier: int = 0
     specialization: str = ""
     keywords: list[str] = Field(default_factory=list)
 

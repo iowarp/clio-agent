@@ -80,6 +80,14 @@ _SUPPORTED_EXPERT_FIELDS = {
     "fallback_tier",
     "model_fallback",
     "delegation_policy",
+    "module",
+    "dspy",
+    "signature",
+    "structured_outputs",
+    "structured-outputs",
+    "fanout",
+    "fan_out",
+    "fan-out",
     "metadata_route_type",
     "metadata_future_model_boundary",
 }
@@ -392,6 +400,7 @@ def _validate_blueprint_v1_agents(
             if field_name.startswith("param_") or field_name.startswith("metadata_") or field_name.startswith("x_"):
                 continue
             warnings.append(f"unknown expert field ignored: {field_name}")
+        errors.extend(_validate_dspy_semantics(row))
         if row.skills:
             warnings.append("skills are resolved at runtime from pack, workspace, and global skill roots")
         metadata = dict(row.metadata)
@@ -407,6 +416,73 @@ def _validate_blueprint_v1_agents(
             )
         )
     return out
+
+
+_SUPPORTED_DSPY_MODULE_KINDS = {
+    "prompt",
+    "predict",
+    "chain_of_thought",
+    "chain-of-thought",
+    "cot",
+    "react",
+    "router",
+    "reducer",
+    "retry_refine",
+    "retry-refine",
+    "bounded_worker",
+    "bounded-worker",
+}
+
+
+def _validate_dspy_semantics(row: AgentDef) -> list[str]:
+    """Return validation errors for blueprint-declared DSPy semantics metadata.
+
+    This validates the first file-backed contract for #629. The runtime does
+    not execute these declarations yet, but packs should be able to declare
+    them without being treated as unknown frontmatter.
+    """
+
+    errors: list[str] = []
+    dspy_meta = row.metadata.get("dspy")
+    if dspy_meta is not None and not isinstance(dspy_meta, dict):
+        return ["dspy metadata must be a mapping"]
+    dspy_map = dspy_meta if isinstance(dspy_meta, dict) else {}
+    module = dspy_map.get("module")
+    if module is not None and not isinstance(module, dict):
+        errors.append("dspy.module must be a mapping")
+    module_map = module if isinstance(module, dict) else {}
+    module_kind = str(module_map.get("kind") or "").strip()
+    if module_kind and module_kind not in _SUPPORTED_DSPY_MODULE_KINDS:
+        errors.append(f"unsupported dspy.module.kind: {module_kind}")
+    signature = dspy_map.get("signature")
+    if signature is not None and not isinstance(signature, dict):
+        errors.append("dspy.signature must be a mapping")
+    signature_map = signature if isinstance(signature, dict) else {}
+    for field_name in ("inputs", "outputs"):
+        value = signature_map.get(field_name)
+        if value is not None and not isinstance(value, list):
+            errors.append(f"dspy.signature.{field_name} must be a list")
+    structured_outputs = row.metadata.get("structured_outputs")
+    if structured_outputs is not None and not isinstance(structured_outputs, dict):
+        errors.append("structured_outputs must be a mapping")
+    fanout = row.metadata.get("fanout")
+    if fanout is not None and not isinstance(fanout, dict):
+        errors.append("fanout must be a mapping")
+    fanout_map = fanout if isinstance(fanout, dict) else {}
+    for int_field in ("max_items", "concurrency"):
+        value = fanout_map.get(int_field)
+        if value in (None, ""):
+            continue
+        if value is None:
+            continue
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            errors.append(f"fanout.{int_field} must be a positive integer")
+            continue
+        if parsed < 1:
+            errors.append(f"fanout.{int_field} must be a positive integer")
+    return errors
 
 
 _MEMORY_TOOL_NAMES = {
