@@ -25,6 +25,7 @@ from typing import Any, cast
 from fastmcp import Client, FastMCP
 
 from clio_agent.tools.servers.adios_server import adios_server
+from clio_agent.tools.servers.format_server import format_server
 from clio_agent.tools.servers.fs_server import fs_server
 from clio_agent.tools.servers.genomics_server import genomics_server
 from clio_agent.tools.servers.geospatial_server import geospatial_server
@@ -58,6 +59,7 @@ _mount_with_namespace(gateway, ndp_server, "ndp")
 _mount_with_namespace(gateway, sac_server, "sac")
 _mount_with_namespace(gateway, geospatial_server, "geospatial")
 _mount_with_namespace(gateway, hpc_server, "hpc")
+_mount_with_namespace(gateway, format_server, "format")
 _mount_with_namespace(gateway, genomics_server, "genomics")
 _mount_with_namespace(gateway, imaging_server, "imaging")
 _mount_with_namespace(gateway, mass_spec_server, "mass_spec")
@@ -144,6 +146,8 @@ def _infer_tool_server(tool_name: str) -> str:
         return "geospatial"
     if tool_name.startswith("hpc_"):
         return "hpc"
+    if tool_name.startswith("format_"):
+        return "format"
     if tool_name.startswith("genomics_"):
         return "genomics"
     if tool_name.startswith("imaging_"):
