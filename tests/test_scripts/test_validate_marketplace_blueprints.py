@@ -214,6 +214,34 @@ Catalog prompt.
     assert row["metrics"]["expert_count"] == 3
     assert row["metrics"]["edge_count"] == 2
     assert row["metrics"]["max_levels"] == 3
+    assert row["included_expert_count"] == 1
+    assert row["included_experts"] == ["ndp_catalog"]
+    assert row["included_subtree_count"] == 1
+    assert row["included_subtrees"] == ["modules/ndp-collector/experts"]
+    assert result["included_expert_count"] == 1
+    assert result["included_subtree_count"] == 1
+
+
+def test_marketplace_preflight_can_require_included_expert_subtrees(
+    tmp_path: Path,
+) -> None:
+    _write_pack(tmp_path, pack_id="plain-complex", nested=True)
+
+    result = validate_marketplace_source(
+        tmp_path,
+        options=MarketplaceValidationOptions(
+            require_included_expert_count=1,
+            require_included_subtree_count=1,
+        ),
+    )
+
+    assert result["ok"] is False
+    assert result["included_expert_count"] == 0
+    assert result["included_subtree_count"] == 0
+    assert result["validation_errors"] == [
+        "included expert count below requirement: 0/1",
+        "included subtree count below requirement: 0/1",
+    ]
 
 
 def test_marketplace_preflight_can_exclude_seismic_from_complex_count(
