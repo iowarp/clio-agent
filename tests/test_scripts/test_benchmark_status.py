@@ -28,6 +28,9 @@ def test_current_status_points_to_current_marketplace_hierarchy_evidence() -> No
     hook_report = (BENCHMARK / "MARKETPLACE_PACKAGED_HOOK_REPORT.md").read_text(
         encoding="utf-8"
     )
+    memory_report = (BENCHMARK / "MARKETPLACE_WORKSPACE_MEMORY_SCOPE_REPORT.md").read_text(
+        encoding="utf-8"
+    )
     complex_rows = _jsonl_rows(BENCHMARK / "MARKETPLACE_COMPLEX_HIERARCHY_EVIDENCE.jsonl")
     retry_rows = _jsonl_rows(BENCHMARK / "MARKETPLACE_GEOSPATIAL_RETRY_EVIDENCE.jsonl")
     mcp_rows = _jsonl_rows(BENCHMARK / "MARKETPLACE_MCP_SCOPE_EVIDENCE.jsonl")
@@ -35,6 +38,9 @@ def test_current_status_points_to_current_marketplace_hierarchy_evidence() -> No
         BENCHMARK / "MARKETPLACE_MCP_ENABLED_EXECUTION_EVIDENCE.jsonl"
     )
     hook_rows = _jsonl_rows(BENCHMARK / "MARKETPLACE_PACKAGED_HOOK_EVIDENCE.jsonl")
+    memory_rows = _jsonl_rows(
+        BENCHMARK / "MARKETPLACE_WORKSPACE_MEMORY_SCOPE_EVIDENCE.jsonl"
+    )
 
     seismic = next(
         row for row in complex_rows if row["case"] == "marketplace_seismic_waveform_review"
@@ -53,12 +59,18 @@ def test_current_status_points_to_current_marketplace_hierarchy_evidence() -> No
         for row in hook_rows
         if row["case"] == "marketplace_packaged_hook_blocked_turn"
     )
+    memory = next(
+        row
+        for row in memory_rows
+        if row["case"] == "workspace_memory_scope_policy"
+    )
 
     assert "MARKETPLACE_COMPLEX_HIERARCHY_REPORT.md" in status
     assert "MARKETPLACE_GEOSPATIAL_RETRY_REPORT.md" in status
     assert "MARKETPLACE_MCP_SCOPE_REPORT.md" in status
     assert "MARKETPLACE_MCP_ENABLED_EXECUTION_REPORT.md" in status
     assert "MARKETPLACE_PACKAGED_HOOK_REPORT.md" in status
+    assert "MARKETPLACE_WORKSPACE_MEMORY_SCOPE_REPORT.md" in status
     assert "FRESH_REAL_ORCHESTRATOR_REPORT.md" in status
     assert "historical" in status.lower()
     assert "5/6" in status
@@ -107,6 +119,23 @@ def test_current_status_points_to_current_marketplace_hierarchy_evidence() -> No
     handler = blocked_events[0]["payload"]["handlers"][0]
     assert handler["source"] == "agent_blueprint"
     assert handler["agent_blueprint_id"] == "hook-smoke"
+    assert memory["outcome"] == "pass"
+    assert memory["observed_semantic_proofs"] == ["workspace_memory_scope"]
+    assert [action["type"] for action in memory["actions"]] == [
+        "workspace_memory_scope_probe"
+    ]
+    memory_action = memory["actions"][0]
+    assert memory_action["ok"] is True
+    assert memory_action["same_workspace_hit_session_id"] == memory_action["prior_session_id"]
+    assert memory_action["other_workspace_hit_session_id"] == ""
+    checks = {check["name"]: check for check in memory_action["checks"]}
+    assert checks["deny_without_intent"]["policy_decision"] == (
+        "deny_cross_session_requires_intent"
+    )
+    assert checks["allow_same_workspace_with_intent"]["policy_decision"] == (
+        "allow_same_workspace_user_intent"
+    )
+    assert checks["deny_other_workspace_summary"]["decision"] == "deny_other_workspace"
     assert "NDP full SAC/PNG chain verified" not in status
     assert "Result: 5/6 clean passes" in complex_report
     assert "at least three marketplace cases prove complex hierarchy depth | 5 | 3 | pass" in complex_report
@@ -118,6 +147,8 @@ def test_current_status_points_to_current_marketplace_hierarchy_evidence() -> No
     assert "enabled_mcp_execution" in mcp_enabled_report
     assert "Result: 1/1 clean passes" in hook_report
     assert "packaged_hook_invocation" in hook_report
+    assert "Result: 1/1 clean passes" in memory_report
+    assert "workspace_memory_scope" in memory_report
 
 
 def test_superseded_real_orchestrator_report_is_labeled_historical() -> None:

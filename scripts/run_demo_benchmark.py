@@ -15,6 +15,7 @@ import re
 import sys
 import threading
 import time
+import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
@@ -112,6 +113,7 @@ class DemoCase:
     mcp_call_args: dict[str, Any] = field(default_factory=dict)
     hook_enable_id: str = ""
     hook_probe_text: str = ""
+    memory_scope_probe: bool = False
     skip_model_turn: bool = False
 
 
@@ -933,7 +935,6 @@ def _case_observed_semantic_proofs(result: DemoResult) -> tuple[str, ...]:
     if not result.case.semantic_proofs:
         return ()
     observed: list[str] = []
-    evidence = result.expected_evidence_text.lower()
     route_ok = result.route_source not in result.case.forbidden_route_sources
     for proof in result.case.semantic_proofs:
         proof_observed = False
@@ -963,11 +964,7 @@ def _case_observed_semantic_proofs(result: DemoResult) -> tuple[str, ...]:
                 )
             )
         elif proof == "workspace_memory_scope":
-            proof_observed = (
-                "workspace_scope" in evidence
-                or "policy_decision" in evidence
-                or "memory_scope" in evidence
-            )
+            proof_observed = _workspace_memory_scope_observed(result)
         elif proof == "marketplace_pack":
             proof_observed = (
                 bool(result.case.agent_blueprint_id)
@@ -1064,6 +1061,47 @@ def _enabled_mcp_execution_observed(result: DemoResult) -> bool:
         for action in enable_actions
     )
     return bool(ready_tools.intersection(called_tools)) and trusted
+
+
+def _workspace_memory_scope_observed(result: DemoResult) -> bool:
+    """Return whether structured actions prove memory/workspace policy scope."""
+
+    action = next(
+        (
+            row
+            for row in result.actions
+            if row.get("type") == "workspace_memory_scope_probe" and row.get("ok") is True
+        ),
+        None,
+    )
+    if action is not None:
+        decisions = {
+            str(row.get("policy_decision") or row.get("decision") or "")
+            for row in action.get("checks") or []
+            if isinstance(row, Mapping)
+        }
+        statuses = {
+            str(row.get("name") or ""): bool(row.get("ok"))
+            for row in action.get("checks") or []
+            if isinstance(row, Mapping)
+        }
+        return (
+            result.passed
+            and statuses.get("deny_without_intent") is True
+            and statuses.get("allow_same_workspace_with_intent") is True
+            and statuses.get("deny_other_workspace_summary") is True
+            and "deny_cross_session_requires_intent" in decisions
+            and "allow_same_workspace_user_intent" in decisions
+            and "deny_other_workspace" in decisions
+            and action.get("same_workspace_hit_session_id") == action.get("prior_session_id")
+            and action.get("other_workspace_hit_session_id") in {"", None}
+        )
+    evidence = result.expected_evidence_text.lower()
+    return result.passed and (
+        "workspace_scope" in evidence
+        or "policy_decision" in evidence
+        or "memory_scope" in evidence
+    )
 
 
 def _packaged_hook_invocation_observed(result: DemoResult) -> bool:
@@ -1663,6 +1701,219 @@ def _probe_packaged_hook_for_case(
             "elapsed_s": round(time.monotonic() - started, 3),
             "agent_blueprint_id": case.agent_blueprint_id,
             "hook_id": case.hook_enable_id,
+            "error": repr(exc),
+        }
+
+
+def _create_benchmark_workspace(
+    http: httpx.Client,
+    *,
+    name: str,
+    root_path: str,
+    timeout_s: float,
+) -> str:
+    """Create a workspace for benchmark setup actions and return its id."""
+
+    response = http.post(
+        "/v1/workspaces",
+        json={"name": name, "root_path": root_path},
+        timeout=timeout_s,
+    )
+    response.raise_for_status()
+    return str(response.json().get("id") or "")
+
+
+def _create_benchmark_session(
+    http: httpx.Client,
+    *,
+    title: str,
+    workspace_id: str,
+    timeout_s: float,
+) -> str:
+    """Create a session for benchmark setup actions and return its id."""
+
+    response = http.post(
+        "/v1/sessions",
+        json={"title": title, **({"workspace_id": workspace_id} if workspace_id else {})},
+        timeout=timeout_s,
+    )
+    response.raise_for_status()
+    return str(response.json().get("id") or "")
+
+
+def _memory_policy_detail(response: httpx.Response) -> str:
+    """Return the most useful memory policy decision from a response."""
+
+    try:
+        payload = response.json()
+    except Exception:
+        return ""
+    if not isinstance(payload, Mapping):
+        return ""
+    metadata = payload.get("metadata") if isinstance(payload.get("metadata"), Mapping) else {}
+    if metadata.get("policy_decision"):
+        return str(metadata.get("policy_decision") or "")
+    error = payload.get("error") if isinstance(payload.get("error"), Mapping) else {}
+    details = error.get("details") if isinstance(error.get("details"), Mapping) else {}
+    return str(details.get("policy_decision") or details.get("scope") or "")
+
+
+def _memory_hit_session_ids(payload: Mapping[str, Any]) -> list[str]:
+    """Return hit session ids from a memory search response payload."""
+
+    hits = payload.get("hits") if isinstance(payload.get("hits"), list) else []
+    return [
+        str(hit.get("session_id") or "")
+        for hit in hits
+        if isinstance(hit, Mapping) and str(hit.get("session_id") or "")
+    ]
+
+
+def _probe_workspace_memory_scope_for_case(
+    http: httpx.Client,
+    case: DemoCase,
+    *,
+    session_id: str,
+    workspace_id: str,
+    timeout_s: float,
+) -> dict[str, Any]:
+    """Exercise memory tool scope policy through live GACT endpoints."""
+
+    started = time.monotonic()
+    checks: list[dict[str, Any]] = []
+    try:
+        other_workspace_id = _create_benchmark_workspace(
+            http,
+            name=f"memory probe other {case.case_id}",
+            root_path=str(Path.cwd() / "tmp" / f"{case.case_id}-other-workspace"),
+            timeout_s=timeout_s,
+        )
+        prior_session_id = _create_benchmark_session(
+            http,
+            title=f"memory prior {case.case_id}",
+            workspace_id=workspace_id,
+            timeout_s=timeout_s,
+        )
+        other_session_id = _create_benchmark_session(
+            http,
+            title=f"memory other {case.case_id}",
+            workspace_id=other_workspace_id,
+            timeout_s=timeout_s,
+        )
+        marker_id = uuid.uuid4().hex[:12]
+        prior_marker = f"ALPHA_WORKSPACE_MEMORY_{case.case_id}_{marker_id}"
+        other_marker = f"BETA_OTHER_WORKSPACE_MEMORY_{case.case_id}_{marker_id}"
+        query = f"WORKSPACE_MEMORY_{case.case_id}_{marker_id}"
+        _post_turn(
+            http,
+            prior_session_id,
+            (
+                f"Dataset memory seed {prior_marker}: pressure dataset belongs to "
+                "the current workspace and may be reused only with explicit user intent."
+            ),
+            timeout_s=timeout_s,
+        )
+        _post_turn(
+            http,
+            other_session_id,
+            (
+                f"Dataset memory seed {other_marker}: pressure dataset belongs to "
+                "a different workspace and must not leak into the current workspace."
+            ),
+            timeout_s=timeout_s,
+        )
+
+        denied = http.post(
+            f"/v1/sessions/{session_id}/memory/tools/search-sessions",
+            json={"query": query, "scope": "current_workspace", "limit": 10},
+            timeout=timeout_s,
+        )
+        denied_decision = _memory_policy_detail(denied)
+        checks.append(
+            {
+                "name": "deny_without_intent",
+                "ok": denied.status_code == 403
+                and denied_decision == "deny_cross_session_requires_intent",
+                "status_code": denied.status_code,
+                "policy_decision": denied_decision,
+            }
+        )
+
+        allowed = http.post(
+            f"/v1/sessions/{session_id}/memory/tools/search-sessions",
+            json={
+                "query": query,
+                "scope": "current_workspace",
+                "user_intent": "answer the user's request about work from the last few days",
+                "caller": {"type": "agent", "agent_id": "orchestrator"},
+                "limit": 10,
+            },
+            timeout=timeout_s,
+        )
+        allowed_payload = allowed.json()
+        allowed_payload = allowed_payload if isinstance(allowed_payload, Mapping) else {}
+        allowed_decision = _memory_policy_detail(allowed)
+        hit_session_ids = _memory_hit_session_ids(allowed_payload)
+        checks.append(
+            {
+                "name": "allow_same_workspace_with_intent",
+                "ok": allowed.status_code == 200
+                and allowed_decision == "allow_same_workspace_user_intent"
+                and prior_session_id in hit_session_ids
+                and other_session_id not in hit_session_ids,
+                "status_code": allowed.status_code,
+                "policy_decision": allowed_decision,
+                "hit_session_ids": hit_session_ids,
+            }
+        )
+
+        other_denied = http.post(
+            f"/v1/sessions/{session_id}/memory/tools/read-session-summary",
+            json={
+                "target_session_id": other_session_id,
+                "scope": "current_workspace",
+                "user_intent": "look across my recent work",
+            },
+            timeout=timeout_s,
+        )
+        other_decision = _memory_policy_detail(other_denied)
+        checks.append(
+            {
+                "name": "deny_other_workspace_summary",
+                "ok": other_denied.status_code == 403 and other_decision == "deny_other_workspace",
+                "status_code": other_denied.status_code,
+                "decision": other_decision,
+            }
+        )
+
+        same_workspace_hit = prior_session_id if prior_session_id in hit_session_ids else ""
+        other_workspace_hit = other_session_id if other_session_id in hit_session_ids else ""
+        return {
+            "type": "workspace_memory_scope_probe",
+            "ok": all(row.get("ok") is True for row in checks),
+            "elapsed_s": round(time.monotonic() - started, 3),
+            "workspace_id": workspace_id,
+            "other_workspace_id": other_workspace_id,
+            "current_session_id": session_id,
+            "prior_session_id": prior_session_id,
+            "other_session_id": other_session_id,
+            "same_workspace_hit_session_id": same_workspace_hit,
+            "other_workspace_hit_session_id": other_workspace_hit,
+            "query": query,
+            "checks": checks,
+            "provenance": {
+                "source": "gact_memory_tool",
+                "tool_name": "memory_search_sessions",
+            },
+        }
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "type": "workspace_memory_scope_probe",
+            "ok": False,
+            "elapsed_s": round(time.monotonic() - started, 3),
+            "workspace_id": workspace_id,
+            "current_session_id": session_id,
+            "checks": checks,
             "error": repr(exc),
         }
 
@@ -2897,6 +3148,41 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             ),
         ),
         DemoCase(
+            case_id="workspace_memory_scope_policy",
+            title="Workspace memory scope policy",
+            category="memory-scope",
+            session_group="workspace_memory_scope",
+            expected_terms=(
+                "allow_same_workspace_user_intent",
+                "deny_cross_session_requires_intent",
+                "deny_other_workspace",
+            ),
+            semantic_proofs=("workspace_memory_scope",),
+            expected_actions=("workspace_memory_scope_probe",),
+            memory_scope_probe=True,
+            skip_model_turn=True,
+            complexity_tags=(
+                "memory",
+                "workspace-scope",
+                "policy",
+                "semantic-regression",
+            ),
+            prompt=(
+                "Using the current workspace, prove that cross-session memory search "
+                "requires explicit user intent, same-workspace memory can be read with "
+                "that intent, and another workspace's session memory does not leak."
+            ),
+            expected=(
+                "CLIO records denied cross-session memory search without intent, allows "
+                "same-workspace memory search with user intent and provenance, and denies "
+                "a read of another workspace's session summary."
+            ),
+            why=(
+                "Turns workspace memory compartmentalization from API-only tests into "
+                "committed benchmark evidence for the 1.0 semantic regression lane."
+            ),
+        ),
+        DemoCase(
             case_id="missing_hdf5_error",
             title="Missing file error surfacing",
             category="hardening",
@@ -3093,6 +3379,7 @@ _BENCHMARK_LANES: dict[str, tuple[str, ...]] = {
         "marketplace_mcp_calculator_scope",
         "marketplace_mcp_calculator_enabled_call",
         "marketplace_packaged_hook_blocked_turn",
+        "workspace_memory_scope_policy",
         "provider_swap_memory_followup",
     ),
     "claude_code": (
@@ -3172,8 +3459,9 @@ def run_benchmark(
         health = http.get("/v1/health")
         health.raise_for_status()
         workspace_id = ""
-        if any(case.agent_blueprint_id for case in cases):
+        if any(case.agent_blueprint_id or case.memory_scope_probe for case in cases):
             workspace_id = _ensure_benchmark_workspace(http, Path.cwd())
+        if any(case.agent_blueprint_id for case in cases):
             _install_marketplace_blueprints(
                 http,
                 marketplace_source,
@@ -3274,6 +3562,21 @@ def run_benchmark(
                             f"elapsed={probe_action.get('elapsed_s')}s",
                             flush=True,
                         )
+                if case.memory_scope_probe:
+                    action = _probe_workspace_memory_scope_for_case(
+                        http,
+                        case,
+                        session_id=session_id,
+                        workspace_id=workspace_id,
+                        timeout_s=case.timeout_s,
+                    )
+                    actions.append(action)
+                    print(
+                        f"  memory scope {'ok' if action.get('ok') else 'failed'} "
+                        f"checks={len(action.get('checks') or [])} "
+                        f"elapsed={action.get('elapsed_s')}s",
+                        flush=True,
+                    )
                 provider = _provider(http)
                 started = time.monotonic()
                 if case.skip_model_turn:

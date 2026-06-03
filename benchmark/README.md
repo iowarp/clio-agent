@@ -56,6 +56,12 @@ semantics, and surfaced-error behavior.
   `hook.pre_message.blocked` semantic events with packaged Agent Blueprint
   provenance. This is an action-only infrastructure proof, not a model-turn or
   hierarchy-depth proof.
+- `MARKETPLACE_WORKSPACE_MEMORY_SCOPE_REPORT.md` /
+  `MARKETPLACE_WORKSPACE_MEMORY_SCOPE_EVIDENCE.jsonl` - focused June 3
+  semantic-regression evidence for workspace memory scope. It proves
+  cross-session memory search is denied without explicit intent,
+  same-workspace memory search succeeds with intent and provenance, and
+  another workspace's session summary is denied.
 - `MARKETPLACE_UNIFIED_REPORT.md` /
   `MARKETPLACE_UNIFIED_EVIDENCE.jsonl` - historical May 29 evidence for
   marketplace Agent Blueprint loading, root-owned delegation, and one complex
@@ -140,6 +146,10 @@ proves explicit trust/enable/probe/call with a real pack-local MCP server. The
 packaged-hook report proves CLIO can invoke an explicitly enabled pack-local
 hook with semantic trace provenance. Both are action-only by design so provider
 availability does not mask the underlying runtime contracts.
+
+The workspace-memory report is also intentionally action-only. It proves the
+memory policy/tool contract directly through GACT endpoints, not through
+provider prose.
 
 Before running the expensive marketplace lane, run the static preflight against
 the marketplace source. This uses CLIO's Agent Blueprint validator for every
