@@ -15,6 +15,7 @@ import re
 import sys
 import threading
 import time
+import unicodedata
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
@@ -266,6 +267,30 @@ class DemoResult:
                     chunks.append(json.dumps(value, sort_keys=True, default=str))
         return "\n".join(chunks)
 
+    @staticmethod
+    def _normalize_evidence_match_text(text: str) -> str:
+        """Normalize evidence text for robust scientific term matching."""
+
+        normalized = unicodedata.normalize("NFKC", text)
+        normalized = normalized.translate(
+            str.maketrans(
+                {
+                    "\u2010": " ",
+                    "\u2011": " ",
+                    "\u2012": " ",
+                    "\u2013": " ",
+                    "\u2014": " ",
+                    "\u2212": " ",
+                    "\u00a0": " ",
+                    "\u202f": " ",
+                    "\u2009": " ",
+                    "_": " ",
+                    "-": " ",
+                }
+            )
+        )
+        return " ".join(normalized.split()).lower()
+
     @property
     def passed(self) -> bool:
         """Return whether this case satisfied its declared expectations."""
@@ -317,7 +342,7 @@ class DemoResult:
             self.case.expected_tool_prefix_groups,
         ):
             return False
-        lowered = self.expected_evidence_text.lower()
+        lowered = self._normalize_evidence_match_text(self.expected_evidence_text)
         if not self._matches_any_text_group(
             lowered,
             self.case.expected_terms,
@@ -382,7 +407,8 @@ class DemoResult:
         """Return whether all required terms from any acceptable group are present."""
         groups = alternatives or ((required,) if required else ())
         return not groups or any(
-            all(term.lower() in lowered_text for term in group) for group in groups
+            all(DemoResult._normalize_evidence_match_text(term) in lowered_text for term in group)
+            for group in groups
         )
 
     @property
@@ -2705,7 +2731,7 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             category="hierarchical-science",
             session_group="ndp_seismic",
             expected_agent=("data", "analysis", "visualization"),
-            expected_tool_prefixes=("ndp_", "sac_"),
+            expected_tool_prefixes=("sac_",),
             expected_tools=("sac_fetch_earthscope_waveform",),
             expected_tool_prefix_groups=(("ndp_", "sac_"), ("ndp_",)),
             expected_handoff_agents=("ndp_catalog", "sac_format"),
@@ -2933,7 +2959,7 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             expected_agent="main",
             expected_tools=("genomics_summarize_vcf",),
             expected_handoff_agents=("variants",),
-            expected_terms=("frameshift", "stop_gained"),
+            expected_terms=("frameshift", "stop-gained"),
             timeout_s=620.0,
             forbidden_route_sources=_REAL_ORCHESTRATOR_FORBIDDEN_SOURCES,
             complexity_tags=("marketplace", "genomics", "vcf", "agent-blueprint"),

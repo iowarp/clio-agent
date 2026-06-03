@@ -1906,7 +1906,18 @@ def _apply_prompt_registry_to_agent(
     metadata["prompt_resolution"] = resolution
     updates: dict[str, Any] = {"metadata": metadata}
     if resolved.text.strip():
-        updates["system_prompt"] = resolved.text
+        agent_body = agent_def.system_prompt.strip()
+        if agent_body:
+            resolution["composed_with_agent_body"] = True
+            updates["system_prompt"] = "\n\n".join(
+                (
+                    resolved.text.strip(),
+                    "Agent-specific instructions from this definition:",
+                    agent_body,
+                )
+            )
+        else:
+            updates["system_prompt"] = resolved.text
     if resolved.provider:
         updates["default_provider"] = resolved.provider
     if resolved.model:
@@ -2047,19 +2058,54 @@ def _handoff_allows_repeat(row: Mapping[str, Any]) -> bool:
     return False
 
 
+def _handoff_is_continuation_contract(row: Mapping[str, Any]) -> bool:
+    """Return true when a handoff came from returned child continuation evidence."""
+
+    if isinstance(row.get("continuation_contract"), Mapping):
+        return True
+    source = str(row.get("source") or "").strip().lower()
+    return "continuation" in source
+
+
+def _completed_child_repeat_blocked(
+    row: Mapping[str, Any],
+    completed_child_ids: set[str],
+    completed_child_outputs: Mapping[str, str],
+) -> bool:
+    """Return whether a requested sync child repeat should be skipped."""
+
+    target_id = _delegated_expert_agent_id(row)
+    if not target_id or target_id not in completed_child_ids:
+        return False
+    if _handoff_allows_repeat(row):
+        return False
+    previous_output = str(completed_child_outputs.get(target_id) or "").strip()
+    if _handoff_is_continuation_contract(row) and _dynamic_answer_has_pending_child_work(
+        previous_output
+    ):
+        return False
+    return True
+
+
 def _filter_repeated_successful_sync_handoffs(
     requested_rows: list[dict[str, Any]],
     completed_child_ids: set[str],
+    completed_child_outputs: Mapping[str, str] | None = None,
 ) -> list[dict[str, Any]]:
     """Skip repeated child calls already completed in the current sync settlement."""
 
+    completed_child_outputs = completed_child_outputs or {}
     filtered: list[dict[str, Any]] = []
     for row in requested_rows:
         if not _should_execute_delegated_handoff(row):
             filtered.append(row)
             continue
         target_id = _delegated_expert_agent_id(row)
-        if target_id and target_id in completed_child_ids and not _handoff_allows_repeat(row):
+        if _completed_child_repeat_blocked(
+            row,
+            completed_child_ids,
+            completed_child_outputs,
+        ):
             filtered.append(
                 {
                     **row,
@@ -2450,6 +2496,12 @@ def _latest_parent_resumed_output_summary(
     return latest
 
 
+def _is_empty_dynamic_agent_answer_error(exc: Exception) -> bool:
+    """Return whether a dynamic expert failed only because it produced no answer."""
+
+    return "returned an empty answer" in str(exc)
+
+
 def _tool_result_preview(result: Any) -> str:
     if result is None:
         return "completed"
@@ -2459,6 +2511,149 @@ def _tool_result_preview(result: Any) -> str:
         return json.dumps(result, ensure_ascii=False, sort_keys=True, default=str)
     except Exception:  # noqa: BLE001
         return str(result)
+
+
+def _tool_result_is_error(result: Any) -> bool:
+    if isinstance(result, Mapping):
+        if result.get("error"):
+            return True
+        status = str(result.get("status") or "").strip().lower()
+        if status in {"error", "failed", "failure"}:
+            return True
+        ok = result.get("ok")
+        if ok is False:
+            return True
+    elif isinstance(result, str):
+        normalized = result.strip().casefold()
+        if normalized.startswith("{") and '"error"' in normalized:
+            return True
+        if any(
+            token in normalized
+            for token in (
+                "file_not_found",
+                "file does not exist",
+                "tool_error",
+                "status=error",
+                "status=failed",
+            )
+        ):
+            return True
+    return False
+
+
+_TOOL_TRAJECTORY_EVIDENCE_KEYS = (
+    "observation",
+    "observations",
+    "result",
+    "results",
+    "output",
+    "outputs",
+    "response",
+    "responses",
+    "tool_result",
+    "tool_results",
+    "tool_output",
+    "tool_outputs",
+)
+
+
+def _tool_agent_empty_answer_fallback(trajectory: Any, *, max_items: int = 6) -> str:
+    """Return bounded tool evidence when a ReAct tool agent produced no answer."""
+
+    if not trajectory:
+        return ""
+
+    evidence: list[tuple[str, Any]] = []
+
+    def collect(label: str, value: Any) -> None:
+        if len(evidence) >= max_items:
+            return
+        if _tool_result_is_error(value):
+            return
+        preview = _tool_result_preview(value).strip()
+        normalized_preview = preview.rstrip(".").casefold()
+        if not preview or normalized_preview == "completed":
+            return
+        evidence.append((label, value))
+
+    def visit(label: str, value: Any) -> None:
+        if len(evidence) >= max_items:
+            return
+        if isinstance(value, Mapping):
+            for key, child in value.items():
+                child_label = f"{label}.{key}" if label else str(key)
+                normalized_key = str(key).lower()
+                if any(token in normalized_key for token in _TOOL_TRAJECTORY_EVIDENCE_KEYS):
+                    collect(child_label, child)
+                elif isinstance(child, Mapping | list | tuple):
+                    visit(child_label, child)
+            return
+        if isinstance(value, list | tuple):
+            for idx, item in enumerate(value):
+                visit(f"{label}[{idx}]" if label else f"[{idx}]", item)
+
+    visit("trajectory", trajectory)
+    if not evidence:
+        return ""
+
+    lines = [
+        "The tool-backed expert produced no final prose answer, but CLIO retained "
+        "successful tool-grounded evidence from its ReAct trajectory.",
+        "",
+        "Retained tool observations:",
+    ]
+    for label, value in evidence:
+        preview = _tool_result_preview(value).strip()
+        if len(preview) > 1200:
+            preview = f"{preview[:1200].rstrip()}..."
+        lines.append(f"- {label}: {preview}")
+    return "\n".join(lines)
+
+
+_CONTRADICTORY_MISSING_INPUT_TERMS = (
+    "does not exist",
+    "file does not exist",
+    "file you referenced",
+    "no file",
+    "no input",
+    "no cif file",
+    "no vcf file",
+    "no mzml file",
+    "not provided",
+    "was not provided",
+    "please provide",
+    "provide the correct path",
+    "unable to perform",
+    "unable to produce",
+)
+
+
+def _tool_agent_contradictory_answer_fallback(
+    answer: str,
+    trajectory: Any,
+    *,
+    max_items: int = 6,
+) -> str:
+    """Preserve successful tool evidence when final prose claims missing input."""
+
+    normalized_answer = answer.casefold()
+    if not any(term in normalized_answer for term in _CONTRADICTORY_MISSING_INPUT_TERMS):
+        return ""
+    retained = _tool_agent_empty_answer_fallback(trajectory, max_items=max_items)
+    if not retained:
+        return ""
+    return "\n".join(
+        (
+            "The tool-backed expert produced final prose that appeared to contradict "
+            "successful tool observations. CLIO retained the tool-grounded evidence "
+            "instead of propagating the missing-input answer.",
+            "",
+            retained,
+            "",
+            "Discarded contradictory final answer:",
+            answer,
+        )
+    )
 
 
 def _dynamic_answer_has_pending_child_work(answer: str) -> bool:
@@ -2852,10 +3047,29 @@ def _delegated_expert_agent_id(row: Mapping[str, Any]) -> str:
 
 
 def _delegated_expert_prompt(row: Mapping[str, Any], fallback: str) -> str:
+    """Build the child prompt for a synchronous expert delegation.
+
+    Model-authored handoff rows are often intentionally brief. Preserve that task
+    text, but also pass a compact slice of the parent evidence so children keep
+    concrete paths, identifiers, and tool results without seeing unbounded state.
+    """
+
+    fallback = fallback.strip()
     for key in ("question", "input", "prompt", "request"):
         value = str(row.get(key) or "").strip()
         if value:
-            return value
+            if not fallback or fallback in value:
+                return value
+            evidence = fallback
+            if len(evidence) > 2500:
+                evidence = f"{evidence[:2500].rstrip()}..."
+            return "\n\n".join(
+                (
+                    value,
+                    "Parent evidence available for this delegated task:",
+                    evidence,
+                )
+            )
     return fallback
 
 
@@ -3043,6 +3257,7 @@ def _build_prompt_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> A
                 for part in (runtime_text, agent_prompt, skill_context, child_context)
                 if part
             )
+            self.has_declared_children = bool(child_context.strip())
             self.answer_synthesizer = dspy.Predict(_prompt_user_agent_signature())
 
         def forward(
@@ -3080,7 +3295,20 @@ def _build_prompt_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> A
                 )
             answer = str(getattr(result, "answer", "") or "").strip()
             if not answer:
-                raise RuntimeError(f"user agent {self.agent_def.id!r} returned an empty answer")
+                if not self.has_declared_children:
+                    raise RuntimeError(f"user agent {self.agent_def.id!r} returned an empty answer")
+                return dspy.Prediction(
+                    answer="",
+                    selected_expert=self.agent_def.id,
+                    routing_rationale=(
+                        "Prompt agent returned an empty answer; CLIO will attempt "
+                        "declared-child handoff repair."
+                    ),
+                    route_source="user_agent",
+                    session_id=session_id,
+                    expert_handoffs=[],
+                    error_info=None,
+                )
             return dspy.Prediction(
                 answer=answer,
                 selected_expert=self.agent_def.id,
@@ -3375,6 +3603,18 @@ def _build_tool_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> Any
                     )
                 )
             answer = str(getattr(result, "answer", "") or "").strip()
+            if not answer:
+                answer = _tool_agent_empty_answer_fallback(
+                    getattr(result, "trajectory", None)
+                )
+            else:
+                answer = (
+                    _tool_agent_contradictory_answer_fallback(
+                        answer,
+                        getattr(result, "trajectory", None),
+                    )
+                    or answer
+                )
             if not answer:
                 raise RuntimeError(f"user agent {self.agent_def.id!r} returned an empty answer")
             return dspy.Prediction(
@@ -4123,11 +4363,14 @@ async def _run_turn_in_background(
         depth: int = 0,
         seen: Optional[set[str]] = None,
         completed_child_ids: Optional[set[str]] = None,
+        completed_child_outputs: Optional[dict[str, str]] = None,
     ) -> list[dict[str, Any]]:
         if seen is None:
             seen = {parent_agent.id}
         if completed_child_ids is None:
             completed_child_ids = set()
+        if completed_child_outputs is None:
+            completed_child_outputs = {}
         if depth >= 3:
             return [
                 {
@@ -4171,7 +4414,11 @@ async def _run_turn_in_background(
                     }
                 )
                 continue
-            if target.id in completed_child_ids and not _handoff_allows_repeat(row):
+            if _completed_child_repeat_blocked(
+                row,
+                completed_child_ids,
+                completed_child_outputs,
+            ):
                 executed.append(
                     {
                         **row,
@@ -4295,7 +4542,7 @@ async def _run_turn_in_background(
                     )
                 if nested:
                     resumed_summary = _latest_parent_resumed_output_summary(nested, target.id)
-                    if resumed_summary:
+                    if resumed_summary and not output_summary:
                         output_summary = resumed_summary
                         output = resumed_summary
                 completed_row = {
@@ -4461,6 +4708,7 @@ async def _run_turn_in_background(
         missing_handoff_repairs = 0
         seen_continuation_contracts: set[tuple[str, str]] = set()
         completed_child_ids: set[str] = set()
+        completed_child_outputs: dict[str, str] = {}
         for _round in range(max_rounds):
             requested_rows = _coerce_expert_handoff_rows(
                 getattr(latest_pred, "expert_handoffs", None)
@@ -4468,6 +4716,7 @@ async def _run_turn_in_background(
             requested_rows = _filter_repeated_successful_sync_handoffs(
                 requested_rows,
                 completed_child_ids,
+                completed_child_outputs,
             )
             executable_rows = [row for row in requested_rows if _should_execute_delegated_handoff(row)]
             repeated_skips = [
@@ -4494,6 +4743,30 @@ async def _run_turn_in_background(
                     session_id=sid,
                 )
                 previous_answer = str(getattr(latest_pred, "answer", "") or "").strip()
+                self_contract_rows: list[dict[str, Any]] = []
+                if previous_answer:
+                    self_contract_rows = _continuation_contract_handoff_rows(
+                        app,
+                        parent_agent,
+                        [
+                            {
+                                "agent_id": parent_agent.id,
+                                "status": "completed",
+                                "stage": "delegate.completed",
+                                "output_summary": previous_answer,
+                            }
+                        ],
+                        session_id=sid,
+                        seen_contracts=seen_continuation_contracts,
+                    )
+                if self_contract_rows:
+                    latest_pred = SimpleNamespace(
+                        answer="Executing current expert continuation policy.",
+                        selected_expert=parent_agent.id,
+                        routing_rationale="current expert continuation policy",
+                        expert_handoffs=self_contract_rows,
+                    )
+                    continue
                 should_repair_missing_handoff = (
                     child_context
                     and missing_handoff_repairs < 2
@@ -4520,6 +4793,7 @@ async def _run_turn_in_background(
                 requested_rows,
                 source_text=source_text,
                 completed_child_ids=completed_child_ids,
+                completed_child_outputs=completed_child_outputs,
             )
             all_rows.extend(executed_rows)
             completed_rows = [
@@ -4531,6 +4805,9 @@ async def _run_turn_in_background(
                 child_id = str(row.get("agent_id") or row.get("delegate_to") or "").strip()
                 if child_id:
                     completed_child_ids.add(child_id)
+                    completed_child_outputs[child_id] = str(
+                        row.get("output_summary") or row.get("summary") or ""
+                    ).strip()
             if not completed_rows:
                 break
             contract_rows = _continuation_contract_handoff_rows(
@@ -4553,7 +4830,21 @@ async def _run_turn_in_background(
                 parent_agent,
                 all_rows,
             )
-            latest_pred = await _run_dynamic_agent_sync(parent_agent, continuation_prompt)
+            try:
+                latest_pred = await _run_dynamic_agent_sync(parent_agent, continuation_prompt)
+            except RuntimeError as exc:
+                fallback_answer = _latest_parent_resumed_output_summary(all_rows, parent_agent.id)
+                if not fallback_answer or not _is_empty_dynamic_agent_answer_error(exc):
+                    raise
+                latest_pred = SimpleNamespace(
+                    answer=fallback_answer,
+                    selected_expert=parent_agent.id,
+                    routing_rationale=(
+                        "parent resume produced an empty answer; preserving compact "
+                        "completed child delegation evidence"
+                    ),
+                    expert_handoffs=[],
+                )
         return latest_pred, all_rows
 
     try:
@@ -4731,7 +5022,8 @@ async def _run_turn_in_background(
                 )
                 with _cancellation_checker(cancel_requested), _tool_session_context(sid):
                     loop = asyncio.get_running_loop()
-                    turn_context = contextvars.copy_context()
+                    with _gact_app_context(app):
+                        turn_context = contextvars.copy_context()
                     pred = await _await_turn_work(
                         loop.run_in_executor(
                             None,
