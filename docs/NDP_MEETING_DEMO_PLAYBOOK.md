@@ -128,6 +128,74 @@ The run should fail the benchmark if:
 - the trace lacks distinct geospatial, catalog, analysis, and visualization
   evidence.
 
+### Corrected NDP Pipeline Observed Manually
+
+The useful case definition is a full data-search, analysis, and visualization
+pipeline:
+
+```text
+San Diego natural language request
+-> generic geospatial resolution
+-> NDP EarthScope station catalog evidence
+-> nearest GNSS station/resource selection
+-> NDP-listed station CSV download
+-> CSV validation and time-series profiling
+-> displacement/uncertainty analysis
+-> map or time-series visualization
+-> final brief with source and artifact provenance
+```
+
+Manual NDP catalog exploration showed that the San Diego-centered demo should
+not be SAC-first. NDP exposes EarthScope GNSS station metadata and station
+time-series CSV resources that are a better fit for a geography-driven
+EarthScope collaboration demo.
+
+Observed San Diego region facts:
+
+- Resolved center used for manual inspection: `32.7157, -117.1611`.
+- NDP EarthScope station metadata contained nearby active GNSS stations.
+- Closest observed stations included `P475` at 9.5 km, `SIO5` at 16.2 km,
+  `P473` at 19.9 km, `P472` at 20.0 km, `JAS1` at 20.4 km, and `NSSS` at
+  23.3 km.
+- NDP package `p475-ci-ly-20` exposed station `P475.CI.LY_.20` as `gnss` data.
+- CSV resource:
+  `https://ds2.datacollaboratory.org/Earthscope_api_dec2024/raw_csv/P475.CI.LY_.20.csv`
+- PNG resource:
+  `https://ds2.datacollaboratory.org/Earthscope_api_dec2024/generated_png/P475.CI.LY_.20.png`
+- Dashboard:
+  `https://di.ndp.utah.edu/datasets/339c7577-adb1-4f8b-a1c2-a45ef2db142e`
+
+The downloaded station CSV had these properties during manual inspection:
+
+- Rows: 858,619.
+- Time range: `2024-12-03T00:00:00+00:00` to
+  `2024-12-12T23:59:46+00:00`.
+- Columns: `time`, `east`, `north`, `up`, `sigEE`, `sigNN`, `sigUU`,
+  `qChannel`.
+- Observed ranges:
+  - `east`: -3.377 to 2.593
+  - `north`: -6.002 to 3.793
+  - `up`: -2.774 to 11.877
+  - `sigEE`: 0.028 to 68.987
+  - `sigNN`: 0.032 to 23.798
+  - `sigUU`: 0.064 to 99.685
+
+This manual path should become the agentic benchmark path. For a smaller model,
+the burden should move into typed tools and blueprint contracts:
+
+- `resolve_region`: place, bbox, state, county, or lat/lon to region object.
+- `load_ndp_earthscope_stations`: station metadata table with provenance.
+- `rank_nearest_stations`: deterministic station ranking by distance.
+- `find_ndp_station_resources`: station code to NDP package/resource URLs.
+- `stage_station_csv`: download through the selected NDP resource URL.
+- `profile_gnss_csv`: validate columns, row count, time range, and quality.
+- `analyze_gnss_timeseries`: displacement and uncertainty summaries.
+- `plot_gnss_timeseries`: discussion artifact from the staged CSV or analysis.
+
+The small model should orchestrate those contracts. It should not need to infer
+EarthScope station formats, San Diego coordinates, NDP package naming, or GNSS
+CSV semantics from raw prose.
+
 ### Rehearsal Evidence
 
 - JSONL: `tmp/ndp-meeting-seismic/marketplace_seismic_live.jsonl`

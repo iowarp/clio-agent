@@ -25,6 +25,7 @@ import argparse
 import asyncio
 import contextvars
 import fnmatch
+import hashlib
 import importlib.util
 import inspect
 import json
@@ -33,6 +34,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import uuid
@@ -201,6 +203,26 @@ def _active_semantic_trace_id() -> str:
     return _ACTIVE_GACT_TRACE_ID.get()
 
 
+def _with_ui_safe_semantic_fields(
+    event_type: str,
+    *,
+    status: str,
+    summary: str,
+    payload: Optional[dict[str, Any]],
+) -> dict[str, Any]:
+    """Return payload enriched with short UI-safe summary fields."""
+
+    enriched = dict(payload or {})
+    clean_summary = str(summary or "").strip()
+    if clean_summary:
+        enriched.setdefault("ui_summary", clean_summary)
+    elif event_type:
+        enriched.setdefault("ui_summary", f"{event_type} {status}".strip())
+    if event_type.endswith(".completed") or status in {"completed", "failed", "error"}:
+        enriched.setdefault("result_summary", enriched.get("ui_summary", ""))
+    return enriched
+
+
 def _emit_semantic_event(
     app: "FastAPI",
     sid: str,
@@ -229,6 +251,12 @@ def _emit_semantic_event(
     else:
         sess = None
     workspace_id = str(getattr(sess, "workspace_id", "") or "")
+    event_payload = _with_ui_safe_semantic_fields(
+        event_type,
+        status=status,
+        summary=summary,
+        payload=payload,
+    )
     event = SemanticEvent(
         event_type=event_type,
         session_id=sid,
@@ -242,7 +270,7 @@ def _emit_semantic_event(
         subject=subject or {},
         blueprint=blueprint or {},
         provider=provider or {},
-        payload=payload or {},
+        payload=event_payload,
         live_observed=live_observed,
         detail_level=getattr(app.state, "semantic_trace_detail_level", DEFAULT_DETAIL_LEVEL),
     )
@@ -259,6 +287,23 @@ def _llm_provider_payload(app: "FastAPI", agent_id: str = "") -> dict[str, Any]:
         "max_tokens": cfg.get("max_tokens"),
         "agent_id": agent_id,
     }
+
+
+def _provider_runtime_kind(provider_id: str) -> str:
+    """Return the wire/runtime provider kind for a catalog id or provider kind."""
+
+    provider_id = str(provider_id or "").strip()
+    if not provider_id:
+        return ""
+    try:
+        from clio_agent.providers.registry import get_provider  # noqa: PLC0415
+
+        provider = get_provider(provider_id)
+    except Exception:
+        provider = None
+    if provider is not None:
+        return str(provider.provider_kind or provider_id)
+    return provider_id
 
 
 def _prediction_summary(pred: Any) -> dict[str, Any]:
@@ -2405,6 +2450,26 @@ def _latest_parent_resumed_output_summary(
         ):
             summary = str(row.get("output_summary") or row.get("summary") or "").strip()
             if summary:
+                latest = summary
+        children = row.get("children")
+        if isinstance(children, list):
+            stack.extend(child for child in children if isinstance(child, dict))
+    return latest
+
+
+def _latest_completed_artifact_output_summary(rows: list[dict[str, Any]]) -> str:
+    """Return the latest completed child output that contains final artifact evidence."""
+
+    latest = ""
+    stack = list(rows)
+    while stack:
+        row = stack.pop(0)
+        if (
+            str(row.get("stage") or "") == "delegate.completed"
+            and str(row.get("status") or "") in {"", "completed"}
+        ):
+            summary = str(row.get("output_summary") or row.get("summary") or "").strip()
+            if re.search(r"(?im)^\s*(?:FINAL_ARTIFACT|ARTIFACT)\s*:", summary):
                 latest = summary
         children = row.get("children")
         if isinstance(children, list):
@@ -5309,6 +5374,19 @@ async def _run_turn_in_background(
                     expert_handoffs=[],
                 )
         final_answer = str(getattr(latest_pred, "answer", "") or "").strip()
+        if final_answer and _dynamic_answer_has_pending_child_work(final_answer):
+            artifact_answer = _latest_completed_artifact_output_summary(all_rows)
+            if artifact_answer:
+                latest_pred = SimpleNamespace(
+                    answer=artifact_answer,
+                    selected_expert=parent_agent.id,
+                    routing_rationale=(
+                        "pending delegation prose replaced with completed artifact evidence "
+                        "at settlement boundary"
+                    ),
+                    expert_handoffs=[],
+                )
+                final_answer = artifact_answer
         if _dynamic_answer_is_delegation_placeholder(final_answer):
             fallback_answer = _latest_parent_resumed_output_summary(all_rows, parent_agent.id)
             if fallback_answer:
@@ -7841,6 +7919,7 @@ def _make_tool_observer(app: "FastAPI"):
                     "executor_work_may_continue": True,
                 }
             ok = completion_error is None
+            result_summary = f"Tool {name} {'completed' if ok else 'failed'}."
             payload = {
                 "call_id": call_id,
                 "tool": name,
@@ -7848,6 +7927,8 @@ def _make_tool_observer(app: "FastAPI"):
                 "duration_ms": duration_ms,
                 "cached": False,
                 "telemetry_source": "live_observer",
+                "ui_summary": result_summary,
+                "result_summary": result_summary,
                 **({"error": completion_error} if completion_error else {}),
                 **cancellation_metadata,
             }
@@ -7858,7 +7939,7 @@ def _make_tool_observer(app: "FastAPI"):
                 turn_id=_ACTIVE_GACT_TURN_ID.get(),
                 trace_id=_ACTIVE_GACT_TRACE_ID.get(),
                 status="completed" if ok else "failed",
-                summary=f"Tool {name} {'completed' if ok else 'failed'}.",
+                summary=result_summary,
                 actor={"tool": name},
                 subject={"call_id": call_id},
                 payload=payload,
@@ -8282,7 +8363,8 @@ def _agent_streaming_unsupported_reason(agent: Any) -> str:
 
     provider_config = getattr(agent, "_provider_config", None)
     provider = str(getattr(provider_config, "provider", "") or "")
-    if provider in {"argonne", "claude_code", "codex"}:
+    provider_kind = _provider_runtime_kind(provider)
+    if provider_kind in {"argonne", "claude_code", "codex"}:
         return "provider_streaming_unsupported"
     return ""
 
@@ -9645,6 +9727,7 @@ from clio_agent.gact.agent_blueprints import (
     load_agent_blueprint_path,
     load_agent_blueprints,
     load_mcp_descriptors,
+    parse_agent_blueprint_root,
     read_install_metadata,
     uninstall_agent_blueprint,
     update_installed_agent_blueprint,
@@ -16764,6 +16847,190 @@ def build_app(
             for row in validate_expert_hierarchy(_merge_agent_def_rows(rows))
         ]
 
+    def _agent_blueprint_sources_path() -> Path:
+        base = os.environ.get("XDG_CONFIG_HOME")
+        config_root = Path(base) / "clio-agent" if base else Path.home() / ".config" / "clio-agent"
+        return config_root / "agent-blueprint-sources.json"
+
+    def _source_registry_id(source: str, ref: str = "") -> str:
+        digest = hashlib.sha256(f"{source}\n{ref}".encode("utf-8")).hexdigest()[:12]
+        return f"src_{digest}"
+
+    def _load_agent_blueprint_sources() -> list[dict[str, Any]]:
+        path = _agent_blueprint_sources_path()
+        if not path.exists():
+            return []
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return []
+        rows = payload.get("sources") if isinstance(payload, dict) else payload
+        if not isinstance(rows, list):
+            return []
+        return [dict(row) for row in rows if isinstance(row, dict)]
+
+    def _save_agent_blueprint_sources(rows: list[dict[str, Any]]) -> None:
+        path = _agent_blueprint_sources_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps({"sources": rows}, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+
+    def _agent_blueprint_candidates(root: Path) -> list[dict[str, Any]]:
+        candidates: list[Path] = []
+        if (root / "AGENT.md").exists():
+            candidates.append(root)
+        if root.is_dir():
+            candidates.extend(sorted(path for path in root.iterdir() if (path / "AGENT.md").exists()))
+        rows: list[dict[str, Any]] = []
+        for candidate in candidates:
+            parsed = parse_agent_blueprint_root(candidate, scope="marketplace")
+            rows.append(
+                {
+                    "id": parsed.id,
+                    "title": parsed.title,
+                    "version": parsed.version,
+                    "enabled": parsed.enabled,
+                    "validation_errors": list(parsed.validation_errors),
+                    "definition_path": str(parsed.root_path),
+                }
+            )
+        return rows
+
+    def _refresh_agent_blueprint_source(row: Mapping[str, Any]) -> dict[str, Any]:
+        source = str(row.get("source") or "").strip()
+        ref = str(row.get("ref") or "").strip()
+        refreshed = dict(row)
+        refreshed["ref"] = ref
+        refreshed["available_blueprints"] = []
+        if not source:
+            return {**refreshed, "status": "error", "error": "source is empty"}
+        source_path = Path(source).expanduser()
+        refreshed["source_kind"] = "path" if source_path.exists() else "git"
+        refreshed["status"] = "ready"
+        refreshed["error"] = ""
+        try:
+            if source_path.exists():
+                try:
+                    refreshed["commit"] = subprocess.check_output(
+                        ["git", "-C", str(source_path), "rev-parse", "HEAD"],
+                        text=True,
+                        stderr=subprocess.DEVNULL,
+                    ).strip()
+                except Exception:
+                    refreshed["commit"] = ""
+                refreshed["available_blueprints"] = _agent_blueprint_candidates(source_path)
+                return refreshed
+            with tempfile.TemporaryDirectory(prefix="clio-agent-blueprint-source-") as tmp:
+                clone_target = Path(tmp) / "repo"
+                cmd = ["git", "clone", "--depth", "1"]
+                if ref:
+                    cmd.extend(["--branch", ref])
+                cmd.extend([source, str(clone_target)])
+                env = {
+                    **os.environ,
+                    "GIT_TERMINAL_PROMPT": "0",
+                    "GIT_SSH_COMMAND": "ssh -o BatchMode=yes",
+                }
+                subprocess.run(
+                    cmd,
+                    check=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    timeout=30,
+                    env=env,
+                )
+                refreshed["commit"] = subprocess.check_output(
+                    ["git", "-C", str(clone_target), "rev-parse", "HEAD"],
+                    text=True,
+                ).strip()
+                refreshed["available_blueprints"] = _agent_blueprint_candidates(clone_target)
+                return refreshed
+        except Exception as exc:  # noqa: BLE001
+            refreshed["status"] = "error"
+            refreshed["error"] = str(exc)
+            return refreshed
+
+    @app.get("/v1/agent-blueprints/sources")
+    async def list_agent_blueprint_sources() -> dict[str, Any]:
+        return {"sources": _load_agent_blueprint_sources()}
+
+    @app.post("/v1/agent-blueprints/sources", status_code=201)
+    async def add_agent_blueprint_source(req: dict[str, Any]) -> dict[str, Any]:
+        source = str(req.get("source") or req.get("url") or "").strip()
+        if not source:
+            raise HTTPException(
+                status_code=400,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="validation_error",
+                        message="source or url is required",
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        ref = str(req.get("ref") or "").strip()
+        source_id = str(req.get("id") or "").strip() or _source_registry_id(source, ref)
+        now = datetime.now(timezone.utc).isoformat()
+        row = {
+            "id": source_id,
+            "name": str(req.get("name") or source),
+            "source": source,
+            "ref": ref,
+            "pinned_commit": str(req.get("pinned_commit") or "").strip(),
+            "status": "unknown",
+            "added_at": now,
+            "updated_at": now,
+        }
+        if bool(req.get("refresh", True)):
+            row = _refresh_agent_blueprint_source(row)
+            row["updated_at"] = datetime.now(timezone.utc).isoformat()
+        rows = [existing for existing in _load_agent_blueprint_sources() if existing.get("id") != source_id]
+        rows.append(row)
+        _save_agent_blueprint_sources(rows)
+        return {"source": row}
+
+    @app.post("/v1/agent-blueprints/sources/{source_id}/refresh")
+    async def refresh_agent_blueprint_source(source_id: str) -> dict[str, Any]:
+        rows = _load_agent_blueprint_sources()
+        for index, row in enumerate(rows):
+            if row.get("id") == source_id:
+                refreshed = _refresh_agent_blueprint_source(row)
+                refreshed["updated_at"] = datetime.now(timezone.utc).isoformat()
+                rows[index] = refreshed
+                _save_agent_blueprint_sources(rows)
+                return {"source": refreshed}
+        raise HTTPException(
+            status_code=404,
+            detail=ErrorEnvelope(
+                error=ErrorInfo(
+                    error="not_found",
+                    message=f"agent blueprint source not found: {source_id}",
+                    recoverable=False,
+                )
+            ).model_dump(exclude_none=True),
+        )
+
+    @app.delete("/v1/agent-blueprints/sources/{source_id}")
+    async def delete_agent_blueprint_source(source_id: str) -> dict[str, Any]:
+        rows = _load_agent_blueprint_sources()
+        kept = [row for row in rows if row.get("id") != source_id]
+        if len(kept) == len(rows):
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="not_found",
+                        message=f"agent blueprint source not found: {source_id}",
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        _save_agent_blueprint_sources(kept)
+        return {"deleted": {"id": source_id}}
+
     @app.get("/v1/agent-blueprints")
     async def list_agent_blueprints(workspace_id: Optional[str] = None) -> dict[str, Any]:
         cwd = _workspace_catalog_cwd(workspace_id=workspace_id or "")
@@ -16821,7 +17088,31 @@ def build_app(
 
     @app.post("/v1/agent-blueprints/install", status_code=201)
     async def install_agent_blueprint_route(req: dict[str, Any]) -> dict[str, Any]:
-        source = str(req.get("source") or req.get("url") or req.get("path") or "").strip()
+        source_id = str(req.get("source_id") or "").strip()
+        source_row: dict[str, Any] = {}
+        if source_id:
+            source_row = next(
+                (row for row in _load_agent_blueprint_sources() if row.get("id") == source_id),
+                {},
+            )
+            if not source_row:
+                raise HTTPException(
+                    status_code=404,
+                    detail=ErrorEnvelope(
+                        error=ErrorInfo(
+                            error="not_found",
+                            message=f"agent blueprint source not found: {source_id}",
+                            recoverable=False,
+                        )
+                    ).model_dump(exclude_none=True),
+                )
+        source = str(
+            req.get("source")
+            or req.get("url")
+            or req.get("path")
+            or source_row.get("source")
+            or ""
+        ).strip()
         if not source:
             raise HTTPException(
                 status_code=400,
@@ -16851,8 +17142,11 @@ def build_app(
                 source=source,
                 scope=scope,  # type: ignore[arg-type]
                 cwd=cwd or Path.cwd(),
-                ref=str(req.get("ref") or ""),
+                ref=str(req.get("ref") or source_row.get("ref") or ""),
                 blueprint_id=str(req.get("blueprint_id") or ""),
+                pinned_commit=str(
+                    req.get("pinned_commit") or source_row.get("pinned_commit") or ""
+                ),
             )
         except (OSError, ValueError, subprocess.CalledProcessError) as exc:
             raise HTTPException(
@@ -18321,6 +18615,7 @@ def build_app(
             )
 
         async def event_stream() -> AsyncIterator[bytes]:
+            sess_snapshot = app.state.sessions.get(sid)
             # Initial server.connected event so clients can flip
             # their UI from "connecting" to "live" immediately.
             connected = Event(
@@ -18329,6 +18624,18 @@ def build_app(
                 payload={"server_version": GACT_BACKEND_VERSION},
             )
             yield _format_sse(connected)
+            if sess_snapshot is not None:
+                snapshot = Event(
+                    type="session.snapshot",
+                    session_id=sid,
+                    payload={
+                        "session_id": sid,
+                        "status": sess_snapshot.status,
+                        "updated_at": sess_snapshot.updated_at,
+                        "authoritative": True,
+                    },
+                )
+                yield _format_sse(snapshot)
 
             try:
                 last_event_id = int(request.headers.get("last-event-id", "0"))
@@ -18841,6 +19148,23 @@ def build_app(
 
     _LM_PRESETS: list[LMProviderPreset] = _build_lm_presets()
 
+    def _normalize_lm_provider_request(req: LMProviderRequest) -> LMProviderRequest:
+        """Convert catalog preset ids to runtime provider kinds before wiring DSPy."""
+
+        preset = next((p for p in _LM_PRESETS if p.id == req.provider), None)
+        if preset is None:
+            return req
+        provider_kind = _provider_runtime_kind(req.provider)
+        if provider_kind == req.provider:
+            return req
+        return req.model_copy(
+            update={
+                "provider": provider_kind,
+                "api_base": req.api_base or preset.api_base,
+                "model": req.model or preset.suggested_model,
+            }
+        )
+
     def _preset_api_key_env(preset: LMProviderPreset) -> str:
         if preset.api_key_env:
             return preset.api_key_env
@@ -19020,6 +19344,7 @@ def build_app(
         messages) is preserved across the swap.
         """
 
+        req = _normalize_lm_provider_request(req)
         env_keys = (
             "CLIO_LM_PROVIDER",
             "CLIO_LM_API_BASE",
@@ -19430,6 +19755,7 @@ def build_app(
     async def put_lm_provider(req: LMProviderRequest) -> LMProviderInfo:
         """Start or perform an LM provider swap without freezing the backend."""
 
+        req = _normalize_lm_provider_request(req)
         running_task = getattr(app.state, "lm_config_task", None)
         if running_task is not None and not running_task.done():
             status = _lm_provider_status()

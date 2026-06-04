@@ -53,7 +53,7 @@ def _next_event_id() -> int:
 class Event:
     """In-memory event record."""
 
-    __slots__ = ("id", "type", "session_id", "occurred_at", "payload")
+    __slots__ = ("id", "type", "session_id", "occurred_at", "payload", "replay")
 
     def __init__(
         self,
@@ -61,21 +61,38 @@ class Event:
         type: str,
         session_id: str,
         payload: dict[str, Any],
+        replay: bool = False,
     ) -> None:
         self.id = _next_event_id()
         self.type = type
         self.session_id = session_id
         self.occurred_at = _utcnow_iso()
         self.payload = payload
+        self.replay = replay
+
+    def replay_copy(self) -> "Event":
+        """Return a replay-marked copy preserving the original event id/time."""
+
+        copy = object.__new__(Event)
+        copy.id = self.id
+        copy.type = self.type
+        copy.session_id = self.session_id
+        copy.occurred_at = self.occurred_at
+        copy.payload = self.payload
+        copy.replay = True
+        return copy
 
     def envelope(self) -> dict[str, Any]:
         """SPEC §7.2 wire envelope."""
 
-        return {
+        envelope: dict[str, Any] = {
             "type": self.type,
             "occurred_at": self.occurred_at,
             "payload": self.payload,
         }
+        if self.replay:
+            envelope["replay"] = True
+        return envelope
 
 
 class EventBus:
@@ -118,11 +135,30 @@ class EventBus:
         if len(log) > self._history_cap:
             del log[: len(log) - self._history_cap]
 
-        for q in self._subs.get(event.session_id, []):
-            try:
-                q.put_nowait(event)
-            except asyncio.QueueFull:
-                pass
+        subscriber_sessions = (
+            list(self._subs)
+            if event.session_id == ""
+            else [event.session_id]
+        )
+        for subscriber_session in subscriber_sessions:
+            for q in self._subs.get(subscriber_session, []):
+                try:
+                    q.put_nowait(event)
+                except asyncio.QueueFull:
+                    pass
+
+    def _history_snapshot(self, session_id: str) -> list[Event]:
+        """Return global plus session history ordered by event id."""
+
+        if session_id == "":
+            return list(self._history.get("", []))
+        return sorted(
+            [
+                *self._history.get("", []),
+                *self._history.get(session_id, []),
+            ],
+            key=lambda event: event.id,
+        )
 
     async def subscribe(self, session_id: str, *, last_event_id: int = 0) -> AsyncIterator[Event]:
         """Yield events for ``session_id`` until the consumer drops.
@@ -147,11 +183,11 @@ class EventBus:
             # turn that just fired. We snapshot the history up-front
             # so events published DURING replay come via the queue
             # only (not also via the snapshot), avoiding duplicates.
-            snapshot = list(self._history.get(session_id, []))
+            snapshot = self._history_snapshot(session_id)
             replayed_max = last_event_id
             for ev in snapshot:
                 if ev.id > last_event_id:
-                    yield ev
+                    yield ev.replay_copy()
                     if ev.id > replayed_max:
                         replayed_max = ev.id
             while True:

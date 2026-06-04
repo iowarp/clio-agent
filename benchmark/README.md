@@ -32,6 +32,41 @@ Every case must exercise a real CLIO session through the normal orchestrator,
 not a direct tool call or a hand-routed internal path. The prompt should be
 natural and should not name internal experts, tool names, or the answer schema.
 
+A benchmark case is a semantic workflow contract, not a single prompt plus a
+plausible answer. The case definition must name the required intermediate
+transformations so the trace can be audited at each boundary. For data-search
+cases, the expected shape is:
+
+```text
+natural language intent
+-> resolved domain/spatial/temporal intent
+-> catalog discovery
+-> dataset/resource selection
+-> data acquisition
+-> data validation
+-> scientific analysis
+-> visualization or durable artifact
+-> final evidence-backed synthesis
+```
+
+Each arrow is a benchmark boundary. A run does not pass if CLIO skips a
+boundary, hides it inside a domain-specific shortcut, or replaces it with
+unsupported prose. The trace must show the expert, tool, input object, output
+object, provenance, and artifact evidence needed to decide whether that
+boundary was crossed correctly.
+
+Case definitions may compare hierarchy shapes:
+
+- depth semantics: one long expert chain that tests state preservation;
+- width semantics: parallel evidence branches that test fanout and merge;
+- domain semantics: grouped `data`, `analysis`, `visualization`, and
+  `synthesis` branches that test reusable capability boundaries.
+
+Domain grouping must not erase semantic boundaries. For example, a `data`
+expert may own geospatial resolution, but if the user prompt contains spatial
+intent, the trace still needs an explicit geospatial output before any
+domain-specific catalog query consumes the location.
+
 The final benchmark must prove:
 
 - generic planning rather than benchmark-specific shortcuts;

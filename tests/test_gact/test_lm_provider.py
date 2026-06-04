@@ -599,6 +599,69 @@ def test_put_argonne_uses_provider_default_max_tokens_when_omitted(
     }
 
 
+def test_put_argonne_preset_id_normalizes_to_runtime_provider_kind(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Preset ids are catalog choices; runtime checks need provider kind."""
+
+    captured: dict[str, Any] = {}
+
+    class _StubAgent:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            self.arc = type(
+                "ARC",
+                (),
+                {
+                    "get_cache_stats": lambda self: {
+                        "hits": 0,
+                        "misses": 0,
+                        "hit_rate": 0.0,
+                        "capacity": 10,
+                    }
+                },
+            )()
+
+        def forward(self, *args: Any, **kwargs: Any) -> Any:
+            return type("Pred", (), {"answer": "ok", "selected_expert": ""})()
+
+    def _stub_create_lm(cfg: Any) -> object:
+        captured["provider"] = cfg.provider
+        captured["api_base"] = cfg.api_base
+        captured["model"] = cfg.model
+        captured["api_key"] = cfg.api_key
+        return type("FakeLM", (), {"history": []})()
+
+    monkeypatch.setattr("clio_agent.agent.ClioAgent", _StubAgent)
+    monkeypatch.setattr("clio_agent.config._resolve_argonne_api_key", lambda: "token")
+    monkeypatch.setattr("clio_agent.config.create_lm", _stub_create_lm)
+    monkeypatch.setattr("clio_agent.config.create_chat_adapter", lambda cfg: object())
+    monkeypatch.setattr("clio_agent.config.create_planner_lm", lambda cfg: object())
+
+    app = build_app(sessions_path=tmp_path / "s.json")
+    with TestClient(app) as c:
+        resp = c.put(
+            "/v1/providers/lm",
+            json={
+                "provider": "argonne_sophia",
+                "api_base": "https://inference-api.alcf.anl.gov/resource_server/sophia/vllm/v1",
+                "model": "openai/gpt-oss-120b",
+                "api_key": "",
+            },
+        )
+        body = _wait_lm_provider_ready(c)
+
+    assert resp.status_code == 200, resp.text
+    assert body["state"] == "ready"
+    assert body["provider"] == "argonne"
+    assert captured == {
+        "provider": "argonne",
+        "api_base": "https://inference-api.alcf.anl.gov/resource_server/sophia/vllm/v1",
+        "model": "openai/gpt-oss-120b",
+        "api_key": "token",
+    }
+    assert app.state.lm_config["provider"] == "argonne"
+
+
 def test_put_argonne_ignores_placeholder_api_key(tmp_path: Path, monkeypatch) -> None:
     """OAuth providers must not treat local no-auth placeholder keys as bearer tokens."""
 

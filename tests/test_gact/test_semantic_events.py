@@ -66,6 +66,11 @@ def test_semantic_events_stream_and_trace_file(tmp_path: Path, monkeypatch) -> N
     assert "turn.completed" in event_types
     assert semantic_events[-1].payload["detail_level"] == "semantic"
     assert all(e.payload["trace_id"].startswith("trace_msg_user_") for e in semantic_events)
+    assert all(e.payload["payload"].get("ui_summary") for e in semantic_events)
+    turn_completed = next(
+        e.payload for e in semantic_events if e.payload["event_type"] == "turn.completed"
+    )
+    assert turn_completed["payload"]["result_summary"] == turn_completed["summary"]
 
     completed_idx = next(i for i, e in enumerate(history) if e.type == "message.completed")
     semantic_completed_idx = next(
