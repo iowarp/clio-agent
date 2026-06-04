@@ -172,7 +172,13 @@ class FileAccessPolicy:
             )
         return resolved
 
-    def validate_write(self, filepath: str, *, field: str = "output_path") -> Path:
+    def validate_write(
+        self,
+        filepath: str,
+        *,
+        field: str = "output_path",
+        create_parent: bool = False,
+    ) -> Path:
         """Validate an explicit output path and return its resolved path."""
         raw_path = _coerce_path(filepath, field=field)
         parent = raw_path.parent
@@ -187,6 +193,12 @@ class FileAccessPolicy:
         try:
             resolved_parent = parent.resolve(strict=True)
         except FileNotFoundError as exc:
+            if create_parent:
+                resolved_parent = parent.resolve(strict=False)
+                self._ensure_allowed(resolved_parent, field=field)
+                parent.mkdir(parents=True, exist_ok=True)
+                resolved_parent = parent.resolve(strict=True)
+                return resolved_parent / raw_path.name
             raise self._error(
                 code="parent_not_found",
                 message=f"Output directory does not exist: {parent}",
@@ -234,9 +246,18 @@ def validate_read_path(filepath: str, *, field: str = "filepath") -> Path:
     return FileAccessPolicy.from_env().validate_read(filepath, field=field)
 
 
-def validate_write_path(filepath: str, *, field: str = "output_path") -> Path:
+def validate_write_path(
+    filepath: str,
+    *,
+    field: str = "output_path",
+    create_parent: bool = False,
+) -> Path:
     """Validate a write path with policy loaded from the environment."""
-    return FileAccessPolicy.from_env().validate_write(filepath, field=field)
+    return FileAccessPolicy.from_env().validate_write(
+        filepath,
+        field=field,
+        create_parent=create_parent,
+    )
 
 
 def validate_choice(value: str, allowed: set[str], *, field: str) -> None:

@@ -3576,26 +3576,69 @@ def _blueprint_runtime_signature(agent_def: "AgentDef") -> Any:
     raw_inputs = raw_signature.get("inputs") or raw_signature.get("input") or {}
     raw_outputs = raw_signature.get("outputs") or raw_signature.get("output") or {}
 
-    def _ordered_fields(value: Any, defaults: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    def _field_type(value: Any) -> Any:
+        if value in (None, ""):
+            return str
+        raw = str(value).strip().lower()
+        return {
+            "str": str,
+            "string": str,
+            "text": str,
+            "int": int,
+            "integer": int,
+            "float": float,
+            "number": float,
+            "bool": bool,
+            "boolean": bool,
+            "dict": dict,
+            "object": dict,
+            "json": dict,
+            "list": list,
+            "array": list,
+        }.get(raw, str)
+
+    def _field_declaration(name: str, raw: Any) -> tuple[str, str, Any]:
+        if isinstance(raw, Mapping):
+            desc = str(
+                raw.get("description")
+                or raw.get("desc")
+                or raw.get("doc")
+                or raw.get("help")
+                or name
+            )
+            return name, desc, _field_type(raw.get("type") or raw.get("dtype"))
+        return name, str(raw or name), str
+
+    def _ordered_fields(
+        value: Any,
+        defaults: list[tuple[str, str, Any]],
+    ) -> list[tuple[str, str, Any]]:
         if isinstance(value, Mapping):
-            mapping_rows = [(str(k), str(v or k)) for k, v in value.items() if str(k).strip()]
+            mapping_rows = [
+                _field_declaration(str(k).strip(), v)
+                for k, v in value.items()
+                if str(k).strip()
+            ]
             return mapping_rows or defaults
         if isinstance(value, list):
-            list_rows: list[tuple[str, str]] = []
+            list_rows: list[tuple[str, str, Any]] = []
             for item in value:
                 if isinstance(item, Mapping):
                     name = str(item.get("name") or item.get("id") or "").strip()
                     if name:
-                        list_rows.append((name, str(item.get("description") or item.get("desc") or name)))
+                        list_rows.append(_field_declaration(name, item))
                 else:
                     name = str(item).strip()
                     if name:
-                        list_rows.append((name, name))
+                        list_rows.append((name, name, str))
             return list_rows or defaults
         return defaults
 
-    inputs = _ordered_fields(raw_inputs, [("system_prompt", "Runtime instructions"), ("question", "User request")])
-    outputs = _ordered_fields(raw_outputs, [("answer", "User-facing answer")])
+    inputs = _ordered_fields(
+        raw_inputs,
+        [("system_prompt", "Runtime instructions", str), ("question", "User request", str)],
+    )
+    outputs = _ordered_fields(raw_outputs, [("answer", "User-facing answer", str)])
     structured = agent_def.structured_outputs if isinstance(agent_def.structured_outputs, Mapping) else {}
 
     def _structured_output_enabled(value: Any) -> bool:
@@ -3615,16 +3658,16 @@ def _blueprint_runtime_signature(agent_def: "AgentDef") -> Any:
         ),
     }.items():
         enabled = _structured_output_enabled(structured.get(name, True))
-        if enabled and name not in {field for field, _ in outputs}:
-            outputs.append((name, desc))
+        if enabled and name not in {field for field, _, _ in outputs}:
+            outputs.append((name, desc, str))
 
     namespace: dict[str, Any] = {"__doc__": f"DSPy signature for Agent Blueprint expert {agent_def.id}."}
     annotations: dict[str, Any] = {}
-    for name, desc in inputs:
-        annotations[name] = str
+    for name, desc, field_type in inputs:
+        annotations[name] = field_type
         namespace[name] = dspy.InputField(desc=desc)
-    for name, desc in outputs:
-        annotations[name] = str
+    for name, desc, field_type in outputs:
+        annotations[name] = field_type
         namespace[name] = dspy.OutputField(desc=desc)
     namespace["__annotations__"] = annotations
     return type(f"{agent_def.id.title().replace('-', '').replace('_', '')}BlueprintSignature", (dspy.Signature,), namespace)
@@ -9033,6 +9076,9 @@ _EXPERT_TOOLS: dict[str, list[str]] = {
         "ndp_search_datasets",
         "ndp_get_dataset_details",
         "ndp_stage_resource",
+        "ndp_query_arcgis_features",
+        "ndp_profile_csv_resource",
+        "ndp_plot_csv_timeseries",
     ],
     "sac_format": [
         "sac_inspect_archive",

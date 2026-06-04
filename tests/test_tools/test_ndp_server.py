@@ -449,6 +449,21 @@ async def test_ndp_details_falls_back_to_public_ckan(monkeypatch: pytest.MonkeyP
                             "name": "Salton Sea Seismic Waveforms",
                             "url": "osdf:///ndp/public/ucr_seis/Data_Salton",
                         }
+                    ]
+                    + [
+                        {
+                            "name": f"CIMIS Station #{index} Hourly Weather Data",
+                            "format": "CSV",
+                            "url": f"https://example.test/stations/{index}.csv",
+                        }
+                        for index in range(1, 19)
+                    ]
+                    + [
+                        {
+                            "name": "CIMIS Station #80 - Fresno State Hourly Weather Data",
+                            "format": "CSV",
+                            "url": "https://example.test/stations/80-fresnostate.csv",
+                        }
                     ],
                 },
             }
@@ -468,7 +483,14 @@ async def test_ndp_details_falls_back_to_public_ckan(monkeypatch: pytest.MonkeyP
 
     data = _parse_result(result)
     assert data["title"] == "Salton Sea Seismic Data"
-    assert data["resource_urls"] == ["osdf:///ndp/public/ucr_seis/Data_Salton"]
+    assert data["resource_urls"][0] == "osdf:///ndp/public/ucr_seis/Data_Salton"
+    assert data["resource_summaries"][19] == {
+        "index": 19,
+        "name": "CIMIS Station #80 - Fresno State Hourly Weather Data",
+        "format": "CSV",
+        "url": "https://example.test/stations/80-fresnostate.csv",
+    }
+    assert data["resource_summaries_truncated"] is False
     assert data["_meta"]["source"] == "ckan_package_show"
 
 
@@ -639,6 +661,10 @@ async def test_ndp_stage_resource_creates_explicit_output_dir(
 
     data = _parse_result(result)
     assert data["staged"] is True
+    assert data["resource_name"] == "sample.txt"
+    assert data["selected_resource_name"] == "sample.txt"
+    assert data["selected_resource_url"] == "https://example.test/sample.txt"
+    assert data["source_url"] == "https://example.test/sample.txt"
     assert output_dir.exists()
     assert (output_dir / "sample.txt").read_bytes() == b"hello world"
 
@@ -751,6 +777,152 @@ async def test_ndp_stage_resource_surfaces_curl_timeout(
     assert "operation timed out" in data["error"]["details"]["stderr"]
 
 
+@pytest.mark.asyncio
+async def test_ndp_query_arcgis_features_filters_bbox_and_writes_output(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """ArcGIS FeatureServer resources should be queryable as compact evidence."""
+
+    calls: list[dict[str, Any]] = []
+
+    class FakeResponse:
+        url = "https://example.test/FeatureServer/0/query?f=json"
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, Any]:
+            return {
+                "geometryType": "esriGeometryPoint",
+                "fields": [{"name": "IncidentName"}, {"name": "DailyAcres"}, {"name": "Updated"}],
+                "features": [
+                    {
+                        "attributes": {
+                            "IncidentName": "TEST",
+                            "DailyAcres": 12.5,
+                            "Updated": 1780550400000,
+                            "Start": 1780546800000,
+                        },
+                        "geometry": {"x": -117.1, "y": 32.8},
+                    }
+                ],
+            }
+
+    def fake_get(url: str, **kwargs: Any) -> FakeResponse:
+        calls.append({"url": url, **kwargs})
+        return FakeResponse()
+
+    monkeypatch.setattr(ndp_module.requests, "get", fake_get)
+    output = tmp_path / "features.json"
+
+    async with Client(ndp_server) as client:
+        result = await client.call_tool(
+            "query_arcgis_features",
+            {
+                "feature_service_url": "https://example.test/FeatureServer",
+                "layer_id": 0,
+                "where": "DailyAcres > 0",
+                "min_lon": -118,
+                "min_lat": 32,
+                "max_lon": -116,
+                "max_lat": 34,
+                "output_path": str(output),
+            },
+        )
+
+    data = _parse_result(result)
+    assert data["ok"] is True
+    assert data["feature_count"] == 1
+    assert data["features"][0]["geometry"] == {"x": -117.1, "y": 32.8}
+    assert data["features"][0]["properties"]["Updated"] == 1780550400000
+    assert data["features"][0]["properties"]["Updated_iso"] == "2026-06-04T05:20:00Z"
+    assert data["features"][0]["properties"]["Start_iso"] == "2026-06-04T04:20:00Z"
+    assert output.exists()
+    persisted_properties = json.loads(output.read_text(encoding="utf-8"))["features"][0][
+        "properties"
+    ]
+    assert persisted_properties["IncidentName"] == "TEST"
+    assert persisted_properties["Updated_iso"] == "2026-06-04T05:20:00Z"
+    assert calls[0]["url"] == "https://example.test/FeatureServer/0/query"
+    assert calls[0]["params"]["where"] == "DailyAcres > 0"
+    assert calls[0]["params"]["geometryType"] == "esriGeometryEnvelope"
+
+
+@pytest.mark.asyncio
+async def test_ndp_profile_csv_resource_reports_numeric_state_space(tmp_path: Path) -> None:
+    """CSV profiling should return samples, columns, and numeric ranges."""
+
+    csv_path = tmp_path / "weather.csv"
+    csv_path.write_text(
+        "Date,Hour (PST),Air Temp (C),Wind Speed (m/s),Station\n"
+        "6/1/2026,0100,18.5,2.0,Fresno\n"
+        "6/1/2026,0200,20.5,3.5,Fresno\n"
+        "6/1/2026,0300,,4.5,Fresno\n",
+        encoding="utf-8",
+    )
+
+    async with Client(ndp_server) as client:
+        result = await client.call_tool(
+            "profile_csv_resource",
+            {"filepath": str(csv_path), "max_rows": 10},
+        )
+
+    data = _parse_result(result)
+    assert data["ok"] is True
+    assert data["columns"] == ["Date", "Hour (PST)", "Air Temp (C)", "Wind Speed (m/s)", "Station"]
+    assert data["numeric_summary"]["Air Temp (C)"]["count"] == 2
+    assert data["numeric_summary"]["Air Temp (C)"]["max"] == 20.5
+    assert data["numeric_summary"]["Wind Speed (m/s)"]["mean"] == pytest.approx(10.0 / 3.0)
+    assert data["sample_rows"][0]["Station"] == "Fresno"
+
+
+@pytest.mark.asyncio
+async def test_ndp_plot_csv_timeseries_creates_png_and_rejects_missing_columns(
+    tmp_path: Path,
+) -> None:
+    """CSV plotting should create real PNGs and surface schema mistakes."""
+
+    csv_path = tmp_path / "weather.csv"
+    csv_path.write_text(
+        "Date,Air Temp (C),Wind Speed (m/s)\n"
+        "6/1/2026,18.5,2.0\n"
+        "6/2/2026,24.0,4.0\n",
+        encoding="utf-8",
+    )
+    output = tmp_path / "weather.png"
+
+    async with Client(ndp_server) as client:
+        result = await client.call_tool(
+            "plot_csv_timeseries",
+            {
+                "filepath": str(csv_path),
+                "x_column": "Date",
+                "y_columns": ["Air Temp (C)", "Wind Speed (m/s)"],
+                "output_path": str(output),
+                "title": "Weather",
+            },
+        )
+        missing = await client.call_tool(
+            "plot_csv_timeseries",
+            {
+                "filepath": str(csv_path),
+                "x_column": "Missing",
+                "y_columns": "Air Temp (C)",
+                "output_path": str(tmp_path / "missing.png"),
+            },
+        )
+
+    data = _parse_result(result)
+    assert data["ok"] is True
+    assert data["rows_plotted"] == 2
+    assert output.exists()
+    assert output.read_bytes().startswith(b"\x89PNG")
+    missing_data = _parse_result(missing)
+    assert missing_data["error"]["code"] == "csv_plot_unknown_columns"
+    assert missing_data["error"]["details"]["missing_columns"] == ["Missing"]
+
+
 def test_list_capabilities_reports_ndp_server():
     """Context capability summaries should identify the NDP server owner."""
     caps = gateway_module.list_capabilities()
@@ -758,6 +930,11 @@ def test_list_capabilities_reports_ndp_server():
     ndp_caps = [cap for cap in caps if cap["name"].startswith("ndp_")]
     assert ndp_caps
     assert {cap["server"] for cap in ndp_caps} == {"ndp"}
+    assert {
+        "ndp_query_arcgis_features",
+        "ndp_profile_csv_resource",
+        "ndp_plot_csv_timeseries",
+    }.issubset({cap["name"] for cap in ndp_caps})
 
     sac_caps = [cap for cap in caps if cap["name"].startswith("sac_")]
     assert sac_caps

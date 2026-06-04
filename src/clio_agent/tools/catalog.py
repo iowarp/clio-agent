@@ -95,6 +95,24 @@ TOOL_CATALOG: dict[str, ToolCatalogEntry] = {
         {"catalog", "ndp", "download", "staging"},
         visible_to={"data"},
     ),
+    "ndp_query_arcgis_features": _entry(
+        "ndp_query_arcgis_features",
+        "ndp_catalog",
+        {"arcgis", "catalog", "feature-server", "geospatial", "ndp"},
+        visible_to={"data", "analysis", "visualization"},
+    ),
+    "ndp_profile_csv_resource": _entry(
+        "ndp_profile_csv_resource",
+        "ndp_catalog",
+        {"catalog", "csv", "ndp", "profile", "weather"},
+        visible_to={"data", "analysis"},
+    ),
+    "ndp_plot_csv_timeseries": _entry(
+        "ndp_plot_csv_timeseries",
+        "ndp_catalog",
+        {"catalog", "csv", "ndp", "plot", "visualization"},
+        visible_to={"analysis", "visualization"},
+    ),
     "sac_inspect_archive": _entry(
         "sac_inspect_archive",
         "sac_format",

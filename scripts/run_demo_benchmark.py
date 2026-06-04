@@ -33,6 +33,13 @@ _REAL_ORCHESTRATOR_FORBIDDEN_SOURCES = ("guard", "user_agent_keyword", "recovery
 _MARKETPLACE_COMPLEX_MIN_EXPERT_DEPTH = 3
 _MARKETPLACE_COMPLEX_MIN_BRANCH_COUNT = 2
 _MARKETPLACE_COMPLEX_REQUIRED_CASES = 3
+_ARTIFACT_SUFFIXES = (".png", ".json", ".geojson", ".csv")
+_ARTIFACT_PATH_RE = re.compile(
+    r"[A-Za-z]:\\[^\n\r\"'`]+?\.(?:png|json|geojson|csv)"
+    r"|(?<![\w.-])/(?:[^\s,\"'`]|\\ )+?\.(?:png|json|geojson|csv)"
+    r"|(?<![\w.-])(?:\.?[\w.-]+/)+(?:[^\s,\"'`]|\\ )+?\.(?:png|json|geojson|csv)",
+    re.I,
+)
 _SEMANTIC_REGRESSION_REQUIRED_PROOFS = {
     "no_shortcuts": "no deterministic or keyword-forced route sources",
     "root_delegation": "root Agent delegates through declared experts",
@@ -767,22 +774,46 @@ def _partial_error(message: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def _artifact_paths(message: dict[str, Any]) -> list[str]:
+    def _artifact_strings(value: Any, *, trusted: bool = False) -> list[str]:
+        if isinstance(value, str):
+            return _ARTIFACT_PATH_RE.findall(value)
+        if isinstance(value, dict):
+            paths: list[str] = []
+            for key, item in value.items():
+                key_text = str(key).lower()
+                if "url" in key_text or key_text in {"resource_name", "resource"}:
+                    continue
+                item_trusted = trusted or any(
+                    token in key_text
+                    for token in ("artifact", "output", "plot", "path", "file")
+                )
+                if item_trusted:
+                    paths.extend(_artifact_strings(item, trusted=True))
+                elif isinstance(item, (dict, list)):
+                    paths.extend(_artifact_strings(item, trusted=False))
+            return paths
+        if isinstance(value, list):
+            paths = []
+            for item in value:
+                paths.extend(_artifact_strings(item, trusted=trusted))
+            return paths
+        return []
+
     candidates: list[str] = []
     for row in _tools(message):
+        candidates.extend(_artifact_strings(row.get("args") or row.get("arguments") or {}))
         result = row.get("result")
         if isinstance(result, str):
-            candidates.extend(re.findall(r"[A-Za-z]:\\[^\n\r]+?\.png|/[^\s]+?\.png", result))
+            candidates.extend(_ARTIFACT_PATH_RE.findall(result))
         elif isinstance(result, dict):
-            for value in result.values():
-                if isinstance(value, str) and value.endswith(".png"):
-                    candidates.append(value)
-    candidates.extend(
-        re.findall(r"[A-Za-z]:\\[^\n\r]+?\.png|/[^\s]+?\.png", _message_text(message))
-    )
+            candidates.extend(_artifact_strings(result))
+    candidates.extend(_ARTIFACT_PATH_RE.findall(_message_text(message)))
     deduped: list[str] = []
     for candidate in candidates:
         path = _clean_path_candidate(candidate)
         if not path or path.startswith("//") or re.match(r"^[a-z]+://", path, re.I):
+            continue
+        if re.match(r"^(stations|resources)/", path, re.I):
             continue
         if path not in deduped:
             deduped.append(path)
@@ -811,7 +842,8 @@ def _path_like_strings(value: Any) -> list[str]:
 
 def _clean_path_candidate(path: str) -> str:
     """Trim punctuation commonly attached to prose path references."""
-    return path.strip().strip(".,;:)\"'")
+    cleaned = path.strip().strip(",;:)\"'")
+    return cleaned[:-1] if cleaned.endswith(".") else cleaned
 
 
 def _data_file_paths(prompt: str, tools: list[dict[str, Any]]) -> list[str]:
@@ -3338,6 +3370,115 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             ),
         ),
         DemoCase(
+            case_id="marketplace_ndp_current_wildfire_features",
+            title="Marketplace NDP current wildfire feature query",
+            category="marketplace-ndp",
+            session_group="marketplace_ndp_wildfire",
+            agent_blueprint_id="ndp-environmental-hazards",
+            expected_agent=("main", "catalog", "geospatial", "visualization"),
+            expected_tool_prefixes=("ndp_",),
+            expected_tools=("ndp_search_datasets", "ndp_get_dataset_details", "ndp_query_arcgis_features"),
+            expected_handoff_agents=("catalog", "geospatial"),
+            expected_terms=("USA Current Wildfires", "FeatureServer", "feature"),
+            min_expert_depth=2,
+            min_branch_count=1,
+            min_artifacts=1,
+            timeout_s=720.0,
+            forbidden_route_sources=_REAL_ORCHESTRATOR_FORBIDDEN_SOURCES,
+            complexity_tags=("marketplace", "ndp", "wildfire", "arcgis", "agent-blueprint"),
+            prompt=(
+                "Using the active NDP environmental hazards agent, build a live current-wildfire "
+                "situational snapshot for California. Search the NDP catalog for USA Current "
+                "Wildfires, inspect the dataset details, query the ArcGIS FeatureServer for "
+                "current incident features with POOState = 'US-CA' or a California bbox, and "
+                "persist compact feature evidence to .clio-agent-artifacts/ndp/current_wildfires_ca.json. "
+                "Report source URLs, feature count, incident names/acres when available, and caveats."
+            ),
+            expected=(
+                "CLIO activates the NDP environmental hazards marketplace blueprint, discovers "
+                "the USA Current Wildfires NDP dataset, queries the live ArcGIS FeatureServer, "
+                "and writes durable feature evidence."
+            ),
+            why=(
+                "Covers live NDP geospatial semantics for the fire-spread collaborator path "
+                "without embedding a fire-specific native expert."
+            ),
+        ),
+        DemoCase(
+            case_id="marketplace_ndp_california_warnings_features",
+            title="Marketplace NDP California NWS warning feature query",
+            category="marketplace-ndp",
+            session_group="marketplace_ndp_warnings",
+            agent_blueprint_id="ndp-environmental-hazards",
+            expected_agent=("main", "catalog", "geospatial", "visualization"),
+            expected_tool_prefixes=("ndp_",),
+            expected_tools=("ndp_search_datasets", "ndp_get_dataset_details", "ndp_query_arcgis_features"),
+            expected_handoff_agents=("geospatial",),
+            expected_terms=("NWS", "warning", "FeatureServer"),
+            min_expert_depth=2,
+            min_branch_count=1,
+            min_artifacts=1,
+            timeout_s=720.0,
+            forbidden_route_sources=_REAL_ORCHESTRATOR_FORBIDDEN_SOURCES,
+            complexity_tags=("marketplace", "ndp", "weather", "warnings", "arcgis", "agent-blueprint"),
+            prompt=(
+                "Using the active NDP environmental hazards agent, search NDP for California "
+                "NWS watches and warnings, inspect the dataset details, query its ArcGIS "
+                "FeatureServer layer for up to 15 active warning/watch features intersecting "
+                "California or using the dataset layer URL, and persist compact evidence to "
+                ".clio-agent-artifacts/ndp/california_nws_warnings.json. Summarize event, "
+                "severity, affected area, start/end timing, source URL, and data caveats."
+            ),
+            expected=(
+                "CLIO discovers the NDP California NWS warning layer, queries the live "
+                "FeatureServer, and saves compact geospatial warning evidence."
+            ),
+            why=(
+                "Provides a second live geospatial hazard workflow that can be retargeted "
+                "during the meeting without changing CLIO code."
+            ),
+        ),
+        DemoCase(
+            case_id="marketplace_ndp_cimis_weather_profile_plot",
+            title="Marketplace NDP CIMIS weather CSV profile and plot",
+            category="marketplace-ndp",
+            session_group="marketplace_ndp_cimis",
+            agent_blueprint_id="ndp-environmental-hazards",
+            expected_agent=("main", "catalog", "weather_analysis", "visualization"),
+            expected_tool_prefixes=("ndp_",),
+            expected_tools=(
+                "ndp_search_datasets",
+                "ndp_stage_resource",
+                "ndp_profile_csv_resource",
+                "ndp_plot_csv_timeseries",
+            ),
+            expected_handoff_agents=("weather_analysis", "visualization"),
+            expected_terms=("CIMIS", "Air Temp", ".png"),
+            min_expert_depth=2,
+            min_branch_count=1,
+            min_artifacts=1,
+            timeout_s=900.0,
+            forbidden_route_sources=_REAL_ORCHESTRATOR_FORBIDDEN_SOURCES,
+            complexity_tags=("marketplace", "ndp", "weather", "csv", "artifact", "agent-blueprint"),
+            prompt=(
+                "Using the active NDP environmental hazards agent, search NDP for CIMIS "
+                "Hourly Data - Multiple Stations, inspect dataset details, stage the Fresno "
+                "State station CSV rather than the combined archive, profile the CSV, and "
+                "create a PNG time-series artifact at .clio-agent-artifacts/ndp/cimis_fresno_weather.png "
+                "using Date on the x-axis and Air Temp (C), Rel Hum (%), and Wind Speed (m/s) "
+                "as y columns. Report staged path, row count, numeric ranges, source URL, and "
+                "what the plot can and cannot prove for fire-weather context."
+            ),
+            expected=(
+                "CLIO stages a live NDP CIMIS station CSV, profiles actual weather columns, "
+                "and creates a verified PNG artifact from the staged data."
+            ),
+            why=(
+                "Covers live NDP resource staging plus tabular analysis and visualization for "
+                "fire-weather collaboration questions."
+            ),
+        ),
+        DemoCase(
             case_id="marketplace_mcp_calculator_scope",
             title="Marketplace MCP descriptor scope",
             category="marketplace-mcp",
@@ -3665,6 +3806,9 @@ _BENCHMARK_LANES: dict[str, tuple[str, ...]] = {
         "marketplace_format_bridge_integrity",
         "marketplace_terrain_pointcloud_suitability",
         "marketplace_seismic_waveform_review",
+        "marketplace_ndp_current_wildfire_features",
+        "marketplace_ndp_california_warnings_features",
+        "marketplace_ndp_cimis_weather_profile_plot",
     ),
     "semantic_regression": (
         "reasoning_cross_file_triage_nanoagents",

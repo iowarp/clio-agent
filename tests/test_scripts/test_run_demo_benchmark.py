@@ -915,6 +915,32 @@ def test_remote_png_urls_do_not_count_as_local_artifacts(tmp_path: Path) -> None
     assert bench._artifact_paths(message) == [str(png)]
 
 
+def test_relative_json_and_geojson_paths_count_as_durable_artifacts(tmp_path: Path) -> None:
+    message = _message(
+        text=(
+            "Persisted compact evidence to .clio-agent-artifacts/ndp/current_wildfires_ca.json "
+            "and map features to outputs/hazards.geojson."
+        ),
+        tools=[
+            {
+                "name": "ndp_query_arcgis_features",
+                "args": {"output_path": "run/evidence/from_args.geojson"},
+                "result": {
+                    "output_path": str(tmp_path / "feature_evidence.json"),
+                    "source_url": "https://example.org/FeatureServer",
+                },
+            }
+        ],
+    )
+
+    assert bench._artifact_paths(message) == [
+        "run/evidence/from_args.geojson",
+        str(tmp_path / "feature_evidence.json"),
+        ".clio-agent-artifacts/ndp/current_wildfires_ca.json",
+        "outputs/hazards.geojson",
+    ]
+
+
 def test_expected_terms_can_match_tool_and_handoff_evidence() -> None:
     message = _message(
         text="Reference has two contigs and expected variant consequences.",

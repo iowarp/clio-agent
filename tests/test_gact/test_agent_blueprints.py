@@ -293,6 +293,43 @@ def test_blueprint_runtime_signature_preserves_fields_and_normalizes_structured_
     assert "delegation" not in signature.output_fields
 
 
+def test_blueprint_runtime_signature_preserves_declared_field_types() -> None:
+    signature = _blueprint_runtime_signature(
+        AgentDef(
+            id="typed",
+            source="expert_pack",
+            title="Typed",
+            signature={
+                "inputs": {
+                    "question": {"description": "User request", "type": "string"},
+                    "limit": {"description": "Maximum rows", "type": "integer"},
+                    "bbox": {"description": "GeoJSON-like bbox", "type": "array"},
+                },
+                "outputs": [
+                    {"name": "answer", "description": "Final answer", "type": "str"},
+                    {"name": "score", "description": "Quality score", "type": "float"},
+                    {"name": "metadata", "description": "Structured metadata", "type": "dict"},
+                    {"name": "needs_review", "description": "Review flag", "type": "bool"},
+                ],
+            },
+            structured_outputs={
+                "evidence": False,
+                "artifacts": False,
+                "errors": False,
+                "delegation": False,
+                "expert_handoffs": False,
+            },
+        )
+    )
+
+    assert signature.__annotations__["question"] is str
+    assert signature.__annotations__["limit"] is int
+    assert signature.__annotations__["bbox"] is list
+    assert signature.__annotations__["score"] is float
+    assert signature.__annotations__["metadata"] is dict
+    assert signature.__annotations__["needs_review"] is bool
+
+
 def test_blueprint_runtime_signature_defaults_empty_declarations_to_question_and_answer() -> None:
     signature = _blueprint_runtime_signature(
         AgentDef(id="data", source="expert_pack", title="Data")
