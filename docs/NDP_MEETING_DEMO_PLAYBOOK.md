@@ -49,30 +49,86 @@ uv run python scripts/run_demo_benchmark.py \
   --lane marketplace_agents
 ```
 
-## Demo 1: Geographic EarthScope Seismic
+## Demo 1: EarthScope Seismic Post-Analysis
 
-Live prompt:
+### Rehearsal Prompt That Ran
+
+This is the prompt that previously produced a passing rehearsal artifact:
 
 ```text
 Using the active seismic waveform review agent, explore seismic activity over the last 7 days around the San Diego, California area. Start with NDP catalog discovery for relevant seismic waveform data; if NDP staging is blocked, recover with regional EarthScope discovery from the requested geography, inspect the staged SAC waveform, compute trace statistics, and produce a PNG plot artifact without using stale local files.
 ```
 
-Flexible variants:
+### Post-Analysis
 
-- `...around Los Angeles, California`
-- `...around Anchorage, Alaska`
-- `...around 32.7157, -117.1611`
+This run should not be counted as a clean public benchmark pass. It proved that
+CLIO could execute a marketplace blueprint, call NDP/EarthScope/SAC tools, stage
+data, compute trace statistics, and generate a PNG artifact. It did not prove
+the intended geographic EarthScope semantics.
 
-What to watch:
+Problems found after review:
 
-- Blueprint: `seismic-waveform-review`
-- Route: `main -> data -> ndp_catalog`, `main -> analysis -> sac_format`,
-  `main -> visualization`
-- Tools: `ndp_search_datasets`, `ndp_get_dataset_details`,
-  `ndp_stage_resource`, `sac_discover_earthscope_region_waveform`,
-  `sac_inspect_archive`, `sac_compute_trace_statistics`, `sac_plot_traces`
+- The prompt was over-specified. It named the active agent, NDP, EarthScope,
+  SAC, recovery behavior, statistics, PNG output, and stale-file constraint.
+  That makes it a scripted workflow check, not a natural collaborator request.
+- Geography was handled in the wrong layer. The SAC/EarthScope tool resolved
+  `San Diego` through built-in location hints instead of receiving a region
+  object from a generic geospatial expert.
+- SAC was treated as part of the discovery semantics. SAC is a waveform file
+  format; it should be an optional format-analysis stage after region, event,
+  station, and channel discovery are already correct.
+- The run did not prove a `geospatial -> earthscope_catalog ->
+  seismic_analysis -> visualization` hierarchy. It mostly proved the older
+  `main -> data/ndp_catalog -> analysis/sac_format -> visualization` path.
+- The successful artifact was not enough. A PNG only demonstrates that a
+  waveform was plotted; it does not prove the region, dataset, event/station
+  selection, or provenance semantics are correct.
+- The case was too narrow. A real benchmark should tolerate changing the city,
+  state, or explicit coordinates without relying on a San Diego-specific path.
 
-Verified rehearsal:
+### Corrected Benchmark Prompt
+
+The prompt we should use after the review is:
+
+```text
+Explore recent seismic activity around the San Diego area. Resolve the requested geography, find public EarthScope or earthquake catalog evidence, analyze the events and station context, and produce an artifact suitable for discussion.
+```
+
+Flexible variants should be valid without changing the prompt structure:
+
+- `Explore recent seismic activity around Los Angeles. Resolve the requested geography...`
+- `Explore recent seismic activity around Anchorage. Resolve the requested geography...`
+- `Explore recent seismic activity around 32.7157, -117.1611. Resolve the requested geography...`
+
+### Corrected Benchmark Semantics
+
+The corrected agent should prove this shape:
+
+- `main`: owns the collaborator request and merges evidence.
+- `geospatial`: input is a natural region, state, city, bbox, or explicit
+  lat/lon; output is a provenance-bearing region object with center, bbox or
+  radius, source, confidence, and warnings.
+- `earthscope_catalog`: consumes the resolved region object and queries
+  EarthScope/USGS event, station, or channel metadata. It should return
+  CSV/tabular evidence where available.
+- `seismic_analysis`: analyzes event distribution, magnitudes, depths,
+  station/channel suitability, time coverage, uncertainty, and data limits.
+- `visualization`: produces event/station maps or other discussion artifacts.
+- `waveform_format`: optional leaf-stage. It may inspect SAC or another
+  waveform format only after discovery/staging semantics are correct.
+
+The run should fail the benchmark if:
+
+- a domain-specific SAC/EarthScope tool resolves place names internally;
+- the answer jumps straight from city name to one waveform plot;
+- the final answer cannot cite region, event/station/channel, and artifact
+  provenance from the trace;
+- the city or region is changed and the workflow only works for the rehearsed
+  San Diego path;
+- the trace lacks distinct geospatial, catalog, analysis, and visualization
+  evidence.
+
+### Rehearsal Evidence
 
 - JSONL: `tmp/ndp-meeting-seismic/marketplace_seismic_live.jsonl`
 - Report: `tmp/ndp-meeting-seismic/marketplace_seismic_live.md`
@@ -81,8 +137,9 @@ Verified rehearsal:
 - Direct regional evidence also produced
   `tmp/ndp-meeting-seismic/san_diego_regional_waveform.png`.
 
-Caveat: this discovers and inspects public waveform data. It is not an
-earthquake forecast or hazard assessment.
+This evidence remains useful as runtime proof only. It is not a pass claim for
+the corrected benchmark. The agent still needs to be rebuilt around the
+geospatial -> EarthScope catalog -> seismic analysis hierarchy.
 
 ## Demo 2: Current Wildfires In California
 
