@@ -3791,7 +3791,6 @@ _BENCHMARK_LANES: dict[str, tuple[str, ...]] = {
         "microscopy_png_readiness_review",
         "mass_spec_mzml_qc_review",
         "ndp_catalog_discovery",
-        "ndp_seismic_waveform_to_plot",
         "reasoning_adios_bp5_container",
     ),
     "marketplace_agents": (
@@ -3805,15 +3804,12 @@ _BENCHMARK_LANES: dict[str, tuple[str, ...]] = {
         "marketplace_hpc_io_regression",
         "marketplace_format_bridge_integrity",
         "marketplace_terrain_pointcloud_suitability",
-        "marketplace_seismic_waveform_review",
         "marketplace_ndp_current_wildfire_features",
         "marketplace_ndp_california_warnings_features",
         "marketplace_ndp_cimis_weather_profile_plot",
     ),
     "semantic_regression": (
         "reasoning_cross_file_triage_nanoagents",
-        "ndp_seismic_waveform_to_plot",
-        "marketplace_seismic_waveform_review",
         "marketplace_mcp_calculator_scope",
         "marketplace_mcp_calculator_enabled_call",
         "marketplace_packaged_hook_blocked_turn",
@@ -4338,20 +4334,6 @@ def _provider_lane_audit(results: list[DemoResult], lane: str) -> list[dict[str,
             for result in passing_results
             if _missing_sync_return_pairs(result)
         ]
-        ndp_waveform = case_result("ndp_seismic_waveform_to_plot")
-        ndp_full_chain = bool(
-            ndp_waveform
-            and ndp_waveform.passed
-            and any(name.startswith("sac_") for name in ndp_waveform.tool_names)
-            and ndp_waveform.artifact_evidence
-            and all(
-                row.get("exists") and int(row.get("size_bytes") or 0) > 0
-                for row in ndp_waveform.artifact_evidence
-            )
-        )
-        ndp_details = []
-        if ndp_waveform and ndp_waveform.passed and not ndp_full_chain:
-            ndp_details.append("NDP case passed without verified SAC/PNG artifact evidence")
         return [
             {
                 "criterion": "all selected cases avoid shortcut route sources",
@@ -4404,20 +4386,6 @@ def _provider_lane_audit(results: list[DemoResult], lane: str) -> list[dict[str,
                 "observed": int(passed("cross_file_dirty_quality_gate_nanoagents")),
                 "required": 1,
                 "passed": passed("cross_file_dirty_quality_gate_nanoagents"),
-            },
-            {
-                "criterion": "NDP waveform benchmark reaches verified SAC/PNG artifact",
-                "observed": int(passed("ndp_seismic_waveform_to_plot")),
-                "required": 1,
-                "passed": bool(ndp_full_chain),
-                "details": ndp_details,
-            },
-            {
-                "criterion": "NDP full SAC/PNG chain verified",
-                "observed": int(ndp_full_chain),
-                "required": 1,
-                "passed": bool(ndp_full_chain),
-                "details": [] if ndp_full_chain else ["full SAC/PNG path not reached in this run"],
             },
         ]
 

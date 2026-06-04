@@ -170,7 +170,7 @@ Until this exists, a benchmark can prove static nested hierarchy at arbitrary
 depth, but cannot honestly claim full marketplace-defined DSPy expert
 semantics. Cases that should wait for or exercise this feature include:
 
-- `benchmark/case01-genomics-cohort-qc/`
+- `benchmark/case05-genomics-cohort-qc/`
 - DFT or per-run convergence audit if added to the final 12.
 - Any regional/station or catalog-candidate fan-out case.
 - Multi-file validation cases that should be marketplace-pack driven rather

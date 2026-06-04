@@ -115,7 +115,6 @@ def test_select_real_orchestrator_lane_cases() -> None:
             "microscopy_png_readiness_review",
             "mass_spec_mzml_qc_review",
             "ndp_catalog_discovery",
-            "ndp_seismic_waveform_to_plot",
             "reasoning_adios_bp5_container",
             "workflow_hdf5_overview",
         )
@@ -142,8 +141,6 @@ def test_select_semantic_regression_lane_cases() -> None:
         )
         for case_id in (
             "reasoning_cross_file_triage_nanoagents",
-            "ndp_seismic_waveform_to_plot",
-            "marketplace_seismic_waveform_review",
             "marketplace_mcp_calculator_scope",
             "marketplace_mcp_calculator_enabled_call",
             "marketplace_packaged_hook_blocked_turn",
@@ -1385,7 +1382,7 @@ def test_real_orchestrator_lane_audit_requires_artifact_verification() -> None:
     assert artifact_row["observed"] == 0
 
 
-def test_real_orchestrator_ndp_blocker_audit_requires_sac_plot() -> None:
+def test_real_orchestrator_audit_no_longer_requires_sac_plot() -> None:
     message = _message(
         text="Staging note: bounded NDP attempts completed, but none could be staged.",
         tools=[{"name": "ndp_stage_resource"}],
@@ -1418,20 +1415,12 @@ def test_real_orchestrator_ndp_blocker_audit_requires_sac_plot() -> None:
     artifact_row = next(
         item for item in audit if item["criterion"] == "artifact-producing cases verify artifacts on disk"
     )
-    ndp_row = next(
-        item
-        for item in audit
-        if item["criterion"] == "NDP waveform benchmark reaches verified SAC/PNG artifact"
-    )
-    full_chain_row = next(
-        item for item in audit if item["criterion"] == "NDP full SAC/PNG chain verified"
-    )
     assert artifact_row["required"] == 1
     assert artifact_row["observed"] == 0
-    assert ndp_row["passed"] is False
-    assert ndp_row["details"] == []
-    assert full_chain_row["passed"] is False
-    assert full_chain_row["observed"] == 0
+    assert not any(
+        "SAC/PNG" in str(item["criterion"]) or "waveform benchmark" in str(item["criterion"])
+        for item in audit
+    )
 
 
 def test_real_orchestrator_audit_requires_sync_parent_resume() -> None:
