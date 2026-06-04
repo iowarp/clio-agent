@@ -63,11 +63,6 @@ class _ExpertStreamingAgent(dspy.Module):
         super().__init__()
         self.chat_agent = object()
         self.answer_synthesizer = object()
-        self.data_expert = SimpleNamespace(agent=object())
-        self.analysis_expert = SimpleNamespace(agent=object())
-        self.visualization_expert = SimpleNamespace(
-            agent=SimpleNamespace(extract=SimpleNamespace(predict=object()))
-        )
 
     def forward(
         self,
@@ -334,19 +329,10 @@ def test_build_stream_listeners_binds_known_predictors_explicitly() -> None:
     assert [listener.signature_field_name for listener in listeners] == [
         "answer",
         "answer",
-        "analysis",
-        "recommendations",
-        "analysis",
-        "recommendations",
-        "visualization_description",
-        "file_path",
     ]
     assert all(listener.predict is not None for listener in listeners)
     assert listeners[0].predict is agent.chat_agent
     assert listeners[1].predict is agent.answer_synthesizer
-    assert listeners[2].predict is agent.data_expert.agent
-    assert listeners[4].predict is agent.analysis_expert.agent
-    assert listeners[6].predict is agent.visualization_expert.agent.extract.predict
 
 
 async def test_expert_stream_responses_emit_live_field_chunks(
@@ -406,9 +392,7 @@ async def test_expert_stream_responses_emit_live_field_chunks(
     assert captured["is_async_program"] is False
     listeners = captured["stream_listeners"]
     assert all(listener.predict is not None for listener in listeners)
-    assert {"analysis", "recommendations"}.issubset(
-        {listener.signature_field_name for listener in listeners}
-    )
+    assert {listener.signature_field_name for listener in listeners} == {"answer"}
 
 
 async def test_stream_failure_after_delta_raises_instead_of_sync_fallback(

@@ -210,6 +210,71 @@ def test_sync_mcp_tool_executor_uses_late_global_hooks():
         executor.close()
 
 
+def test_sync_mcp_tool_executor_repairs_unique_missing_file_arg(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+):
+    """A model path typo should repair to one unique same-basename allowed-root file."""
+    good = tmp_path / "data" / "pathogen_reference.fasta"
+    good.parent.mkdir()
+    good.write_text(">chrA\nACGT\n", encoding="utf-8")
+    monkeypatch.setenv("CLIO_ALLOWED_ROOTS", str(tmp_path))
+
+    fake_client = FakeClient()
+    executor = SyncMCPToolExecutor(
+        object(),
+        timeout=1.0,
+        client_factory=lambda _: fake_client,
+    )
+    observed: list[tuple[str, dict[str, Any], str | None, str | None]] = []
+
+    try:
+        set_global_tool_observer(
+            lambda name, args, phase, error: observed.append((name, dict(args), phase, error))
+        )
+        result = executor.call_tool(
+            "fake_echo",
+            {"filepath": str(tmp_path / "typo" / "pathogen_reference.fasta")},
+        )
+    finally:
+        set_global_tool_observer(None)
+        executor.close()
+
+    assert str(good.resolve()) in result
+    assert observed == [
+        ("fake_echo", {"filepath": str(good.resolve())}, "started", None),
+        ("fake_echo", {"filepath": str(good.resolve())}, "completed", None),
+    ]
+
+
+def test_sync_mcp_tool_executor_does_not_repair_ambiguous_missing_file_arg(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+):
+    """Ambiguous same-basename matches stay untouched instead of guessing."""
+    first = tmp_path / "a" / "sample.fasta"
+    second = tmp_path / "b" / "sample.fasta"
+    first.parent.mkdir()
+    second.parent.mkdir()
+    first.write_text(">a\nACGT\n", encoding="utf-8")
+    second.write_text(">b\nTGCA\n", encoding="utf-8")
+    monkeypatch.setenv("CLIO_ALLOWED_ROOTS", str(tmp_path))
+
+    fake_client = FakeClient()
+    executor = SyncMCPToolExecutor(
+        object(),
+        timeout=1.0,
+        client_factory=lambda _: fake_client,
+    )
+
+    try:
+        result = executor.call_tool("fake_echo", {"filepath": str(tmp_path / "typo/sample.fasta")})
+    finally:
+        executor.close()
+
+    assert str(tmp_path / "typo/sample.fasta") in result
+    assert str(first.resolve()) not in result
+    assert str(second.resolve()) not in result
+
+
 def test_sync_mcp_tool_executor_reports_cooperative_cancel_after_tool_result():
     """Cancellation after a tool returns should not publish normal success telemetry."""
     fake_client = FakeClient()

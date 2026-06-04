@@ -233,6 +233,13 @@ def parse_expert_file(
     commands = _list_field(meta, "commands")
     capability_refs = _capability_refs_from_meta(meta)
     keywords = _list_field(meta, "keywords", "tags")
+    module = _module_from_meta(meta)
+    signature = _mapping_field(meta, "signature")
+    structured_outputs = _mapping_field(meta, "structured_outputs", "structured-outputs")
+    fanout = _mapping_field(meta, "fanout")
+    module_kind = str(module.get("kind") or "predict").strip().lower()
+    if module_kind not in {"predict", "chain_of_thought", "react"}:
+        errors.append(f"unsupported module.kind: {module_kind}")
     for field_name, values in {
         "tools": tools,
         "skills": skills,
@@ -300,6 +307,10 @@ def parse_expert_file(
             meta.get("model") or meta.get("default_model") or defaults.get("model") or ""
         ).strip(),
         parameters=_parameters_from_meta(meta),
+        module=module,
+        signature=signature,
+        structured_outputs=structured_outputs,
+        fanout=fanout,
         tools=tools,
         skills=skills,
         commands=commands,
@@ -479,6 +490,16 @@ def _parse_frontmatter(text: str) -> tuple[dict[str, Any], str]:
             break
     if end < 0:
         return {}, text
+    frontmatter = "\n".join(lines[1:end])
+    body = "\n".join(lines[end + 1 :]).strip()
+    try:
+        import yaml  # noqa: PLC0415
+
+        parsed = yaml.safe_load(frontmatter) or {}
+        if isinstance(parsed, dict):
+            return {str(key): value for key, value in parsed.items()}, body
+    except Exception:  # noqa: BLE001
+        pass
     meta: dict[str, Any] = {}
     cur_key = ""
     cur_map = ""
@@ -527,7 +548,7 @@ def _parse_frontmatter(text: str) -> tuple[dict[str, Any], str]:
         else:
             meta[key] = []
             cur_key = key
-    return meta, "\n".join(lines[end + 1 :]).strip()
+    return meta, body
 
 
 def _parse_yamlish(text: str) -> dict[str, Any]:
@@ -676,6 +697,23 @@ def _parameters_from_meta(meta: dict[str, Any]) -> dict[str, Any]:
     if isinstance(nested, dict):
         params.update(nested)
     return params
+
+
+def _module_from_meta(meta: dict[str, Any]) -> dict[str, Any]:
+    module = _mapping_field(meta, "module")
+    if not module:
+        module = {}
+    kind = str(
+        module.get("kind")
+        or meta.get("module_kind")
+        or meta.get("module.kind")
+        or "predict"
+    ).strip().lower()
+    out = {str(k): v for k, v in module.items()}
+    out["kind"] = kind
+    if "max_iters" not in out and meta.get("max_iters") is not None:
+        out["max_iters"] = meta.get("max_iters")
+    return out
 
 
 def _cycle_ids(parent_by_child: dict[str, str]) -> set[str]:

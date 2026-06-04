@@ -46,12 +46,16 @@ function Warn ($m) { Write-Host "!! $m"  -ForegroundColor Yellow }
 function Err  ($m) { Write-Host "xx $m"  -ForegroundColor Red }
 
 # Test-Health returns $true when the server answers /v1/health.
+# CLIO returns 503 for a reachable server whose dependencies still need
+# user configuration, such as first-run LM provider selection. Treat that
+# as "server is up" so the TUI can surface and resolve the configuration.
 function Test-Health {
     try {
         $r = Invoke-WebRequest -Uri "http://127.0.0.1:$Port/v1/health" -UseBasicParsing -TimeoutSec 1
-        return ($r.StatusCode -eq 200)
+        return ($r.StatusCode -eq 200 -or $r.StatusCode -eq 503)
     } catch {
-        return $false
+        $status = $_.Exception.Response.StatusCode.value__
+        return ($status -eq 503)
     }
 }
 

@@ -60,9 +60,6 @@ from clio_agent.errors import (
     RoutingError,
     ToolError,
 )
-from clio_agent.experts import AnalysisExpert, DataExpert, VisualizationExpert
-from clio_agent.experts.ndp_expert import NDPExpert
-from clio_agent.experts.sac_format_expert import SAC_SUFFIXES, SACFormatExpert
 from clio_agent.harness import (
     SPECIAL_ROUTE_TARGETS,
     RouteDecision,
@@ -107,6 +104,7 @@ SCIENTIFIC_FILE_SUFFIXES = {
     ".png",
     ".mzml",
 }
+SAC_SUFFIXES = {".sac", ".tar", ".tgz", ".gz"}
 PLANNER_HIDDEN_TOOL_NAMES = {"fs_read_file", "fs_apply_edit_write"}
 
 
@@ -176,9 +174,6 @@ class ClioAgent(dspy.Module):
     Attributes:
         action_planner: DSPy Predict module with AgentActionSignature
         chat_agent: DSPy Predict module with ChatAgentSignature
-        data_expert: DataExpert instance with native HDF5 tools
-        analysis_expert: AnalysisExpert instance with native Parquet/CSV tools
-        visualization_expert: VisualizationExpert instance with matplotlib tools
         arc: ARC Memory instance
         context_retriever: Context retrieval module
         registry: Agent registry for discovery
@@ -188,11 +183,11 @@ class ClioAgent(dspy.Module):
         >>> agent = ClioAgent()
         >>> result = agent(question="Optimize my HDF5 file", session_id="session-123")
         >>> print(result.answer)
-        >>> print(result.selected_expert)  # "data", "analysis", "visualization", "chat", or "none"
+        >>> print(result.selected_expert)  # "chat", "utility", or tool-owner metadata
     """
 
     def __init__(self, verbose: bool = False, data_dir: str = ".clio_agent"):
-        """Initialize ClioAgent with planner, ChatAgent, and all experts.
+        """Initialize ClioAgent with planner, chat, tool execution, and runtime storage.
 
         Args:
             verbose: If True, print reasoning and decisions
@@ -255,340 +250,9 @@ class ClioAgent(dspy.Module):
         # Shared MCP executor: one explicit sync boundary for CLI/API thread calls.
         self.tool_executor = create_sync_tool_executor(gateway)
 
-        # DataExpert: native deterministic HDF5 tools with optional DSPy synthesis
-        self.data_expert = DataExpert(
-            arc_memory=self.arc,
-            tool_executor=self.tool_executor,
-        )
-
-        # AnalysisExpert: native deterministic Parquet/CSV tools with optional DSPy synthesis
-        self.analysis_expert = AnalysisExpert(
-            arc_memory=self.arc,
-            tool_executor=self.tool_executor,
-        )
-        self.ndp_catalog_expert = NDPExpert(tool_executor=self.tool_executor)
-        self.sac_format_expert = SACFormatExpert(tool_executor=self.tool_executor)
-
-        # VisualizationExpert: ReAct with matplotlib chart tools
-        self.visualization_expert = VisualizationExpert(arc_memory=self.arc)
-
-        # Register all experts in registry
-        self.registry.register_agent(
-            "data",
-            self.data_expert,
-            AgentCapability(
-                keywords=[
-                    "hdf5",
-                    "adios",
-                    "bp5",
-                    "compression",
-                    "chunking",
-                    "data",
-                    "io",
-                    "catalog",
-                ],
-                description=(
-                    "Data acquisition, discovery, staging, and I/O manager. Owns the "
-                    "first phase for finding, ranking, downloading, or staging external "
-                    "datasets before analysis or visualization. Delegates external "
-                    "catalogs and data-format discovery to nested data experts."
-                ),
-                tools=[
-                    "hdf5_list_datasets",
-                    "hdf5_analyze_dataset",
-                    "hdf5_check_compression",
-                    "hdf5_optimize_chunking",
-                    "hdf5_analyze_file",
-                    "adios_inspect_file",
-                    "adios_inspect_variables",
-                    "adios_inspect_profiling",
-                ],
-                specialization="data_io",
-                metadata={
-                    "file_suffixes": [".h5", ".hdf5", ".bp", ".bp4", ".bp5"],
-                    "delegates_to": ["ndp_catalog", "sac_format"],
-                },
-            ),
-        )
-
-        self.registry.register_agent(
-            "ndp_catalog",
-            self.ndp_catalog_expert,
-            AgentCapability(
-                keywords=[
-                    "ndp",
-                    "national data platform",
-                    "earthscope",
-                    "catalog",
-                    "dataset discovery",
-                    "resource",
-                    "staging",
-                ],
-                description=(
-                    "Nested data expert for National Data Platform and EarthScope-style "
-                    "dataset discovery, metadata inspection, resource ranking, and "
-                    "bounded staging."
-                ),
-                tools=[
-                    "ndp_list_organizations",
-                    "ndp_search_datasets",
-                    "ndp_get_dataset_details",
-                    "ndp_stage_resource",
-                ],
-                specialization="data_catalog",
-                parent_id="data",
-                source="builtin_nested",
-                metadata={
-                    "provider": "ndp",
-                    "future_model_boundary": True,
-                },
-            ),
-        )
-
-        self.registry.register_agent(
-            "analysis",
-            self.analysis_expert,
-            AgentCapability(
-                keywords=[
-                    "parquet",
-                    "statistics",
-                    "schema",
-                    "profiling",
-                    "analysis",
-                    "data quality",
-                    "csv",
-                ],
-                description=(
-                    "Statistical analysis, data profiling, data quality triage, and "
-                    "cross-file scientific review expert for already available local "
-                    "data. Does not own external dataset discovery or staging; those "
-                    "phases belong to data first."
-                ),
-                tools=[
-                    "parquet_analyze_schema",
-                    "parquet_query_data",
-                    "parquet_compute_statistics",
-                    "csv_read_table",
-                ],
-                specialization="data_analysis",
-                metadata={
-                    "file_suffixes": [".parquet", ".csv"],
-                    "coordinated_file_suffixes": [
-                        ".h5",
-                        ".hdf5",
-                        ".bp",
-                        ".bp4",
-                        ".bp5",
-                        ".parquet",
-                        ".csv",
-                        ".sac",
-                        ".tar",
-                    ],
-                    "delegates_to": ["sac_format"],
-                },
-            ),
-        )
-
-        self.registry.register_agent(
-            "sac_format",
-            self.sac_format_expert,
-            AgentCapability(
-                keywords=["sac", "waveform", "trace", "seismology", "seismic"],
-                description=(
-                    "Nested format expert for SAC waveform archives. Inspects SAC members, "
-                    "computes trace statistics, and can provide plot-ready trace outputs."
-                ),
-                tools=[
-                    "sac_inspect_archive",
-                    "sac_fetch_earthscope_waveform",
-                    "sac_compute_trace_statistics",
-                    "sac_plot_traces",
-                ],
-                specialization="data_format",
-                parent_id="analysis",
-                source="builtin_nested",
-                metadata={
-                    "file_suffixes": [".sac", ".tar", ".tgz", ".gz"],
-                    "format": "sac",
-                    "future_model_boundary": True,
-                },
-            ),
-        )
-
-        self.registry.register_agent(
-            "visualization",
-            self.visualization_expert,
-            AgentCapability(
-                keywords=[
-                    "plot",
-                    "chart",
-                    "histogram",
-                    "scatter",
-                    "visualization",
-                    "graph",
-                ],
-                description=(
-                    "Scientific data visualization expert for producing artifacts from "
-                    "already available local data or analysis summaries. Does not own "
-                    "dataset discovery, staging, or quantitative analysis prerequisites."
-                ),
-                tools=[
-                    "plot_histogram",
-                    "plot_bar_chart",
-                    "plot_scatter",
-                    "plot_summary",
-                ],
-                specialization="data_visualization",
-                metadata={"file_suffixes": [".parquet", ".csv", ".sac", ".tar"]},
-            ),
-        )
-
-        self.registry.register_agent(
-            "genomics",
-            self,
-            AgentCapability(
-                keywords=[
-                    "genomics",
-                    "genome",
-                    "sequence",
-                    "fasta",
-                    "variant",
-                    "vcf",
-                    "mutation",
-                    "sample",
-                ],
-                description=(
-                    "Genomics review expert for small FASTA references and VCF variant files. "
-                    "Uses sequence composition and variant-summary tools before synthesis."
-                ),
-                tools=[
-                    "genomics_inspect_fasta",
-                    "genomics_summarize_vcf",
-                ],
-                specialization="genomics",
-                metadata={
-                    "file_suffixes": [".fa", ".fasta", ".fna", ".vcf"],
-                    "coordinated_file_suffixes": [".fa", ".fasta", ".fna", ".vcf"],
-                },
-            ),
-        )
-
-        self.registry.register_agent(
-            "materials",
-            self,
-            AgentCapability(
-                keywords=[
-                    "materials",
-                    "material",
-                    "crystal",
-                    "crystallography",
-                    "structure",
-                    "cif",
-                    "unit cell",
-                    "space group",
-                    "atom site",
-                    "density",
-                ],
-                description=(
-                    "Materials/crystallography expert for CIF structure files. Uses "
-                    "unit-cell, formula, species, and atom-site inspection before synthesis."
-                ),
-                tools=["materials_inspect_cif"],
-                specialization="materials",
-                metadata={
-                    "file_suffixes": [".cif"],
-                    "coordinated_file_suffixes": [".cif"],
-                },
-            ),
-        )
-
-        self.registry.register_agent(
-            "geospatial",
-            self,
-            AgentCapability(
-                keywords=[
-                    "geospatial",
-                    "geojson",
-                    "spatial",
-                    "geometry",
-                    "map",
-                    "coordinates",
-                    "bbox",
-                    "bounding box",
-                    "feature",
-                    "polygon",
-                ],
-                description=(
-                    "Geospatial expert for GeoJSON feature collections. Uses feature, "
-                    "geometry, property, and coordinate-bounds inspection before synthesis."
-                ),
-                tools=["geospatial_inspect_geojson"],
-                specialization="geospatial",
-                metadata={
-                    "file_suffixes": [".geojson"],
-                    "coordinated_file_suffixes": [".geojson"],
-                },
-            ),
-        )
-
-        self.registry.register_agent(
-            "imaging",
-            self,
-            AgentCapability(
-                keywords=[
-                    "imaging",
-                    "image",
-                    "microscopy",
-                    "micrograph",
-                    "png",
-                    "intensity",
-                    "foreground",
-                    "segmentation",
-                    "region",
-                    "pixel",
-                ],
-                description=(
-                    "Scientific image expert for PNG microscopy-style fixtures. Uses image "
-                    "dimensions, intensity, foreground, and region inspection before synthesis."
-                ),
-                tools=["imaging_inspect_png"],
-                specialization="imaging",
-                metadata={
-                    "file_suffixes": [".png"],
-                    "coordinated_file_suffixes": [".png"],
-                },
-            ),
-        )
-
-        self.registry.register_agent(
-            "mass_spec",
-            self,
-            AgentCapability(
-                keywords=[
-                    "mass spectrometry",
-                    "mass-spec",
-                    "mzml",
-                    "proteomics",
-                    "spectra",
-                    "spectrum",
-                    "ms level",
-                    "peptide",
-                    "m/z",
-                    "ion current",
-                ],
-                description=(
-                    "Mass spectrometry expert for mzML spectra files. Uses spectrum counts, "
-                    "MS levels, m/z ranges, peak counts, and ion-current inspection before synthesis."
-                ),
-                tools=["mass_spec_inspect_mzml"],
-                specialization="mass_spectrometry",
-                metadata={
-                    "file_suffixes": [".mzml"],
-                    "coordinated_file_suffixes": [".mzml"],
-                },
-            ),
-        )
-
+        # Core no longer installs domain experts into the Python registry.
+        # Default and baseline agents are blueprint programs loaded through
+        # the pinned registry bootstrap path.
         self.registry.register_agent(
             "utility",
             self,
@@ -604,33 +268,8 @@ class ClioAgent(dspy.Module):
             ),
         )
 
-        # Load active variants for each expert (if any)
-        try:
-            from clio_agent.optimizer.variants import VariantManager
-
-            vm = VariantManager(self.arc)
-            for agent_id, expert_attr in [
-                ("data", "data_expert"),
-                ("analysis", "analysis_expert"),
-                ("visualization", "visualization_expert"),
-            ]:
-                active = vm.get_active_variant(agent_id)
-                if active and Path(active.file_path).exists():
-                    try:
-                        vm.load_variant(getattr(self, expert_attr), active.variant_id)
-                        if self.verbose:
-                            print(f"[ClioAgent] Loaded variant {active.variant_id} for {agent_id}")
-                    except Exception as e:
-                        if self.verbose:
-                            print(
-                                f"[ClioAgent] Warning: Could not load variant for {agent_id}: {e}"
-                            )
-        except Exception as e:
-            if self.verbose:
-                print(f"[ClioAgent] Warning: Variant loading failed: {e}")
-
         if self.verbose:
-            print(f"[ClioAgent] Registered {self.registry.get_agent_count()} experts")
+            print(f"[ClioAgent] Registered {self.registry.get_agent_count()} runtime agents")
             print(f"[ClioAgent] ARC Memory initialized at {data_dir}/arc")
             print(f"[ClioAgent] LSM Tree initialized at {data_dir}/arc/lsm")
 
@@ -1897,493 +1536,37 @@ class ClioAgent(dspy.Module):
         trace: RunTrace,
         session_context: str = "",
     ) -> tuple[str, str, Any, dict[str, Any] | None]:
-        """Execute one planner-selected expert delegation."""
-        if expert_id not in self.registry.list_agents():
-            error = ExpertError(
-                f"Unknown expert selected by planner: {expert_id}",
-                details=self._recovery_details(
-                    expert=expert_id,
-                    available=self.registry.list_agents(),
-                ),
-            ).to_dict()
-            return "none", "", None, error
+        """Reject native expert delegation from the direct core runtime.
 
-        expert_question = self._question_with_file_context(question, file_context)
-        expert_context = self._expert_dispatch_context(
-            file_context=file_context,
-            session_context=session_context,
-        )
+        Domain experts are registry-loaded Agent Blueprint programs in the
+        GACT runtime. The direct ``ClioAgent`` core can still execute concrete
+        tools and synthesize answers from observations, but it no longer owns
+        a privileged Python expert dispatch path.
+        """
+        del question, file_context, session_context
         dispatch_id = self._dispatch_target_for_expert(expert_id)
-        try:
-            with dspy.context(lm=self._main_lm, adapter=self._dspy_adapter):
-                if dispatch_id == "data":
-                    started = time.time()
-                    expert_result = self._call_with_transient_provider_retries(
-                        "expert_data",
-                        lambda: self.data_expert(
-                            question=expert_question,
-                            file_context=expert_context,
-                        ),
-                    )
-                    self._record_expert_handoff(
-                        trace,
-                        expert_id=expert_id,
-                        dispatch_target=dispatch_id,
-                        stage="planner_dispatch",
-                        input_summary=expert_question,
-                        result=expert_result,
-                        duration_ms=(time.time() - started) * 1000,
-                    )
-                    self._merge_expert_provenance(trace, expert_result)
-                    answer = (
-                        f"{expert_result.analysis}\n\n"
-                        f"Recommendations:\n{expert_result.recommendations}"
-                    )
-                    return expert_id, answer, expert_result, None
-
-                if dispatch_id == "analysis":
-                    started = time.time()
-                    expert_result = self._call_with_transient_provider_retries(
-                        "expert_analysis",
-                        lambda: self.analysis_expert(
-                            question=expert_question,
-                            file_context=expert_context,
-                        ),
-                    )
-                    self._record_expert_handoff(
-                        trace,
-                        expert_id=expert_id,
-                        dispatch_target=dispatch_id,
-                        stage="planner_dispatch",
-                        input_summary=expert_question,
-                        result=expert_result,
-                        duration_ms=(time.time() - started) * 1000,
-                    )
-                    self._merge_expert_provenance(trace, expert_result)
-                    answer = (
-                        f"{expert_result.analysis}\n\n"
-                        f"Recommendations:\n{expert_result.recommendations}"
-                    )
-                    return expert_id, answer, expert_result, None
-
-                if dispatch_id == "ndp_catalog":
-                    started = time.time()
-                    expert_result = self._call_with_transient_provider_retries(
-                        "expert_ndp_catalog",
-                        lambda: self.ndp_catalog_expert(
-                            question=expert_question,
-                            file_context=expert_context,
-                        ),
-                    )
-                    self._record_expert_handoff(
-                        trace,
-                        expert_id=expert_id,
-                        dispatch_target=dispatch_id,
-                        stage="planner_dispatch",
-                        input_summary=expert_question,
-                        result=expert_result,
-                        duration_ms=(time.time() - started) * 1000,
-                    )
-                    self._merge_expert_provenance(trace, expert_result)
-                    answer = (
-                        f"{expert_result.analysis}\n\n"
-                        f"Recommendations:\n{expert_result.recommendations}"
-                    )
-                    return expert_id, answer, expert_result, None
-
-                if dispatch_id == "sac_format":
-                    started = time.time()
-                    expert_result = self._call_with_transient_provider_retries(
-                        "expert_sac_format",
-                        lambda: self.sac_format_expert(
-                            question=expert_question,
-                            file_context=expert_context,
-                        ),
-                    )
-                    self._record_expert_handoff(
-                        trace,
-                        expert_id=expert_id,
-                        dispatch_target=dispatch_id,
-                        stage="planner_dispatch",
-                        input_summary=expert_question,
-                        result=expert_result,
-                        duration_ms=(time.time() - started) * 1000,
-                    )
-                    self._merge_expert_provenance(trace, expert_result)
-                    answer = (
-                        f"{expert_result.analysis}\n\n"
-                        f"Recommendations:\n{expert_result.recommendations}"
-                    )
-                    return expert_id, answer, expert_result, None
-
-                if dispatch_id == "genomics":
-                    started = time.time()
-                    paths = extract_file_paths(
-                        expert_question,
-                        expert_context,
-                        {".fa", ".fasta", ".fna", ".vcf"},
-                    )
-                    fasta_paths = [
-                        path
-                        for path in paths
-                        if Path(str(path)).suffix.lower() in {".fa", ".fasta", ".fna"}
-                    ]
-                    vcf_paths = [
-                        path for path in paths if Path(str(path)).suffix.lower() == ".vcf"
-                    ]
-                    observations: list[str] = []
-                    if fasta_paths:
-                        fasta_result = self._execute_tool_action(
-                            "genomics_inspect_fasta",
-                            {"filepath": str(fasta_paths[0])},
-                            trace,
-                            question=expert_question,
-                            file_context=expert_context,
-                        )
-                        observations.append(
-                            "FASTA: " + json.dumps(compact_tool_result(fasta_result, max_text=900))
-                        )
-                    if vcf_paths:
-                        vcf_result = self._execute_tool_action(
-                            "genomics_summarize_vcf",
-                            {"filepath": str(vcf_paths[0])},
-                            trace,
-                            question=expert_question,
-                            file_context=expert_context,
-                        )
-                        observations.append(
-                            "VCF: " + json.dumps(compact_tool_result(vcf_result, max_text=900))
-                        )
-                    if not observations:
-                        return (
-                            expert_id,
-                            "",
-                            None,
-                            RoutingError(
-                                "The genomics expert needs a FASTA, FNA, FA, or VCF file path.",
-                                details=self._recovery_details(
-                                    expert=expert_id,
-                                    next_action=(
-                                        "Provide at least one FASTA/FNA/FA or VCF file under "
-                                        "the allowed workspace roots."
-                                    ),
-                                ),
-                            ).to_dict(),
-                        )
-                    answer = (
-                        "Genomics review:\n"
-                        + "\n\n".join(observations)
-                        + "\n\nRecommendations:\n"
-                        "- Review PASS variants with high-impact EFFECT labels first.\n"
-                        "- Compare variant positions against the named contigs before downstream use."
-                    )
-                    expert_result = dspy.Prediction(
-                        analysis=answer,
-                        recommendations="Validate high-impact calls and confirm sample provenance.",
-                        metadata={"expert": "genomics", "paths": [str(path) for path in paths]},
-                    )
-                    self._record_expert_handoff(
-                        trace,
-                        expert_id=expert_id,
-                        dispatch_target=dispatch_id,
-                        stage="planner_dispatch",
-                        input_summary=expert_question,
-                        result=expert_result,
-                        duration_ms=(time.time() - started) * 1000,
-                    )
-                    return expert_id, answer, expert_result, None
-
-                if dispatch_id == "materials":
-                    started = time.time()
-                    paths = extract_file_paths(expert_question, expert_context, {".cif"})
-                    material_observations: list[str] = []
-                    if paths:
-                        cif_result = self._execute_tool_action(
-                            "materials_inspect_cif",
-                            {"filepath": str(paths[0])},
-                            trace,
-                            question=expert_question,
-                            file_context=expert_context,
-                        )
-                        material_observations.append(
-                            "CIF: " + json.dumps(compact_tool_result(cif_result, max_text=1000))
-                        )
-                    if not material_observations:
-                        return (
-                            expert_id,
-                            "",
-                            None,
-                            RoutingError(
-                                "The materials expert needs a CIF file path.",
-                                details=self._recovery_details(
-                                    expert=expert_id,
-                                    next_action=(
-                                        "Provide at least one CIF file under the allowed "
-                                        "workspace roots."
-                                    ),
-                                ),
-                            ).to_dict(),
-                        )
-                    answer = (
-                        "Materials structure review:\n"
-                        + "\n\n".join(material_observations)
-                        + "\n\nRecommendations:\n"
-                        "- Verify the space group and unit-cell parameters against provenance.\n"
-                        "- Confirm occupancies/species before simulation or collaborator handoff."
-                    )
-                    expert_result = dspy.Prediction(
-                        analysis=answer,
-                        recommendations="Validate symmetry, occupancies, and structure provenance.",
-                        metadata={"expert": "materials", "paths": [str(path) for path in paths]},
-                    )
-                    self._record_expert_handoff(
-                        trace,
-                        expert_id=expert_id,
-                        dispatch_target=dispatch_id,
-                        stage="planner_dispatch",
-                        input_summary=expert_question,
-                        result=expert_result,
-                        duration_ms=(time.time() - started) * 1000,
-                    )
-                    return expert_id, answer, expert_result, None
-
-                if dispatch_id == "geospatial":
-                    started = time.time()
-                    paths = extract_file_paths(expert_question, expert_context, {".geojson"})
-                    geospatial_observations: list[str] = []
-                    if paths:
-                        geojson_result = self._execute_tool_action(
-                            "geospatial_inspect_geojson",
-                            {"filepath": str(paths[0])},
-                            trace,
-                            question=expert_question,
-                            file_context=expert_context,
-                        )
-                        geospatial_observations.append(
-                            "GeoJSON: "
-                            + json.dumps(compact_tool_result(geojson_result, max_text=1000))
-                        )
-                    if not geospatial_observations:
-                        return (
-                            expert_id,
-                            "",
-                            None,
-                            RoutingError(
-                                "The geospatial expert needs a GeoJSON file path.",
-                                details=self._recovery_details(
-                                    expert=expert_id,
-                                    next_action=(
-                                        "Provide at least one GeoJSON file under the allowed "
-                                        "workspace roots."
-                                    ),
-                                ),
-                            ).to_dict(),
-                        )
-                    answer = (
-                        "Geospatial data review:\n"
-                        + "\n\n".join(geospatial_observations)
-                        + "\n\nRecommendations:\n"
-                        "- Verify coordinate reference system assumptions before map overlay.\n"
-                        "- Check property completeness for features used in downstream analysis."
-                    )
-                    expert_result = dspy.Prediction(
-                        analysis=answer,
-                        recommendations="Validate CRS assumptions, bounds, and feature properties.",
-                        metadata={"expert": "geospatial", "paths": [str(path) for path in paths]},
-                    )
-                    self._record_expert_handoff(
-                        trace,
-                        expert_id=expert_id,
-                        dispatch_target=dispatch_id,
-                        stage="planner_dispatch",
-                        input_summary=expert_question,
-                        result=expert_result,
-                        duration_ms=(time.time() - started) * 1000,
-                    )
-                    return expert_id, answer, expert_result, None
-
-                if dispatch_id == "imaging":
-                    started = time.time()
-                    paths = extract_file_paths(expert_question, expert_context, {".png"})
-                    image_observations: list[str] = []
-                    if paths:
-                        image_result = self._execute_tool_action(
-                            "imaging_inspect_png",
-                            {"filepath": str(paths[0])},
-                            trace,
-                            question=expert_question,
-                            file_context=expert_context,
-                        )
-                        image_observations.append(
-                            "PNG: " + json.dumps(compact_tool_result(image_result, max_text=1000))
-                        )
-                    if not image_observations:
-                        return (
-                            expert_id,
-                            "",
-                            None,
-                            RoutingError(
-                                "The imaging expert needs a PNG file path.",
-                                details=self._recovery_details(
-                                    expert=expert_id,
-                                    next_action=(
-                                        "Provide at least one PNG file under the allowed "
-                                        "workspace roots."
-                                    ),
-                                ),
-                            ).to_dict(),
-                        )
-                    answer = (
-                        "Scientific image review:\n"
-                        + "\n\n".join(image_observations)
-                        + "\n\nRecommendations:\n"
-                        "- Verify acquisition scale and channel meaning before quantitative use.\n"
-                        "- Check foreground segmentation assumptions before downstream analysis."
-                    )
-                    expert_result = dspy.Prediction(
-                        analysis=answer,
-                        recommendations=(
-                            "Validate acquisition metadata, foreground threshold, and region evidence."
-                        ),
-                        metadata={"expert": "imaging", "paths": [str(path) for path in paths]},
-                    )
-                    self._record_expert_handoff(
-                        trace,
-                        expert_id=expert_id,
-                        dispatch_target=dispatch_id,
-                        stage="planner_dispatch",
-                        input_summary=expert_question,
-                        result=expert_result,
-                        duration_ms=(time.time() - started) * 1000,
-                    )
-                    return expert_id, answer, expert_result, None
-
-                if dispatch_id == "mass_spec":
-                    started = time.time()
-                    paths = extract_file_paths(expert_question, expert_context, {".mzml"})
-                    mzml_observations: list[str] = []
-                    if paths:
-                        mzml_result = self._execute_tool_action(
-                            "mass_spec_inspect_mzml",
-                            {"filepath": str(paths[0])},
-                            trace,
-                            question=expert_question,
-                            file_context=expert_context,
-                        )
-                        mzml_observations.append(
-                            "mzML: " + json.dumps(compact_tool_result(mzml_result, max_text=1000))
-                        )
-                        qc_sentence = _mass_spec_qc_sentence(mzml_result)
-                        if qc_sentence:
-                            mzml_observations.append(qc_sentence)
-                    if not mzml_observations:
-                        return (
-                            expert_id,
-                            "",
-                            None,
-                            RoutingError(
-                                "The mass spectrometry expert needs an mzML file path.",
-                                details=self._recovery_details(
-                                    expert=expert_id,
-                                    next_action=(
-                                        "Provide at least one mzML file under the allowed "
-                                        "workspace roots."
-                                    ),
-                                ),
-                            ).to_dict(),
-                        )
-                    answer = (
-                        "Mass spectrometry data review:\n"
-                        + "\n\n".join(mzml_observations)
-                        + "\n\nRecommendations:\n"
-                        "- Verify instrument/acquisition metadata before peptide search.\n"
-                        "- Check MS-level balance, peak counts, and TIC consistency before handoff."
-                    )
-                    expert_result = dspy.Prediction(
-                        analysis=answer,
-                        recommendations=(
-                            "Validate acquisition metadata, MS levels, m/z coverage, and TIC evidence."
-                        ),
-                        metadata={"expert": "mass_spec", "paths": [str(path) for path in paths]},
-                    )
-                    self._record_expert_handoff(
-                        trace,
-                        expert_id=expert_id,
-                        dispatch_target=dispatch_id,
-                        stage="planner_dispatch",
-                        input_summary=expert_question,
-                        result=expert_result,
-                        duration_ms=(time.time() - started) * 1000,
-                    )
-                    return expert_id, answer, expert_result, None
-
-                if dispatch_id == "utility":
-                    return (
-                        expert_id,
-                        "",
-                        None,
-                        RoutingError(
-                            "Utility requests must call a concrete tool such as shell_bash.",
-                            details=self._recovery_details(
-                                expert=expert_id,
-                                next_action="Select action='tool' with tool='shell_bash'.",
-                            ),
-                        ).to_dict(),
-                    )
-
-                started = time.time()
-                expert_result = self._call_with_transient_provider_retries(
-                    "expert_visualization",
-                    lambda: self.visualization_expert(
-                        question=expert_question,
-                        file_context=expert_context,
-                    ),
-                )
-                self._record_expert_handoff(
-                    trace,
-                    expert_id=expert_id,
-                    dispatch_target=dispatch_id,
-                    stage="planner_dispatch",
-                    input_summary=expert_question,
-                    result=expert_result,
-                    duration_ms=(time.time() - started) * 1000,
-                )
-                self._merge_expert_provenance(trace, expert_result)
-            description = self._coerce_text(
-                getattr(expert_result, "visualization_description", "")
-            ).strip()
-            file_path = self._coerce_text(getattr(expert_result, "file_path", "")).strip()
-            answer = f"Visualization: {description}\n\nFile: {file_path}".strip()
-            error_info = getattr(expert_result, "error_info", None)
-            if not isinstance(error_info, dict):
-                error_info = None
-            return (
-                expert_id,
-                answer,
-                expert_result,
-                error_info,
-            )
-        except CancellationError:
-            raise
-        except Exception as exc:
-            self._record_expert_handoff(
-                trace,
-                expert_id=expert_id,
+        self._record_expert_handoff(
+            trace,
+            expert_id=expert_id,
+            dispatch_target=dispatch_id,
+            stage="planner_dispatch",
+            input_summary="native expert dispatch rejected",
+            status="failure",
+            error="native expert dispatch is disabled",
+        )
+        error = ExpertError(
+            "Native Python expert dispatch has been removed from CLIO core.",
+            details=self._recovery_details(
+                expert=expert_id,
                 dispatch_target=dispatch_id,
-                stage="planner_dispatch",
-                input_summary=expert_question,
-                status="failure",
-                error=str(exc),
-            )
-            error = ExpertError(
-                f"The {expert_id} expert encountered an issue processing your request.",
-                details=self._recovery_details(
-                    expert=expert_id,
-                    dispatch_target=dispatch_id,
-                    original_error=str(exc),
+                next_action=(
+                    "Activate a registry Agent Blueprint for expert behavior, or call a concrete "
+                    "tool directly through the runtime substrate."
                 ),
-            ).to_dict()
-            return expert_id, "", None, error
+                available=self.registry.list_agents(),
+            ),
+        ).to_dict()
+        return "none", "", None, error
 
     def _dispatch_target_for_expert(self, expert_id: str) -> str:
         """Return the executable expert target for a registered expert id."""
@@ -3120,17 +2303,18 @@ class ClioAgent(dspy.Module):
         return set(self.tool_executor.get_tool_names()) | set(self._visualization_tool_map())
 
     def _visualization_tool_map(self) -> dict[str, dspy.Tool]:
-        """Return local visualization tools keyed by their stable names."""
-        return {
-            tool.name: tool
-            for tool in getattr(self.visualization_expert, "_tools", [])
-            if hasattr(tool, "name")
-        }
+        """Return local visualization tools keyed by their stable names.
+
+        Visualization is no longer exposed as a native Python expert. Chart
+        tools may still arrive through the generic tool executor or through a
+        registry-loaded blueprint pack.
+        """
+        return {}
 
     def _selected_expert_for_tool(self, tool_name: str) -> str:
         """Resolve a tool's owning expert from the registered capability table."""
         owner = tool_owner(tool_name)
-        if owner and owner in self.registry.list_agents():
+        if owner:
             return owner
         for agent_id in self.registry.list_agents():
             caps = self.registry.get_capabilities(agent_id)
@@ -4718,16 +3902,6 @@ class ClioAgent(dspy.Module):
         """Clean shutdown of ClioAgent resources."""
         if self.verbose:
             print("[ClioAgent] Shutting down...")
-
-        for attr in ("data_expert", "analysis_expert", "visualization_expert"):
-            expert = getattr(self, attr, None)
-            close = getattr(expert, "close", None)
-            if callable(close):
-                try:
-                    close()
-                except Exception as e:
-                    if self.verbose:
-                        print(f"[ClioAgent] Warning: failed to close {attr}: {e}")
 
         self.lsm.close()
 

@@ -1,8 +1,8 @@
 """CLIO-BBBBBBBBBB10: tests for /v1/agents + /v1/catalog/tools.
 
-Exercises the CLIO to GACT translator that exposes the built-in tier-2
-specialists as AgentDef rows with specialization + keywords populated,
-and the flattened tool catalog under /v1/catalog/tools.
+Exercises the CLIO to GACT translator that exposes registry-loaded Agent
+Blueprint experts and dynamic skill/user agents as AgentDef rows, plus the
+flattened tool catalog under /v1/catalog/tools.
 """
 
 from __future__ import annotations
@@ -52,8 +52,11 @@ def test_list_agents_tier_filter(client: TestClient) -> None:
     assert len(rows) >= 4
     for row in rows:
         assert row["tier"] == 2, row
-        assert row["specialization"], f"tier-2 agent {row['id']} missing specialization"
         assert row["keywords"], f"tier-2 agent {row['id']} has no keywords"
+        if row["metadata"].get("agent_blueprint_id"):
+            assert row["metadata"]["definition_kind"] == "agent_blueprint"
+        else:
+            assert row["specialization"], f"tier-2 dynamic agent {row['id']} missing specialization"
 
 
 def test_list_agents_tier_one_only(client: TestClient) -> None:
@@ -86,7 +89,7 @@ def test_list_agents_includes_known_experts(client: TestClient) -> None:
 
     resp = client.get("/v1/agents?tier=2")
     ids = {r["id"] for r in resp.json()["agents"]}
-    for expected in {"data", "analysis", "visualization", "utility"}:
+    for expected in {"data", "analysis", "visualization"}:
         assert expected in ids, f"expected tier-2 agent {expected!r}; got {ids}"
 
 

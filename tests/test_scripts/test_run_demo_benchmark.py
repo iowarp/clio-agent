@@ -672,6 +672,52 @@ def test_route_graph_summary_preserves_sync_delegation_returns() -> None:
     assert bench._missing_sync_return_pairs(result) == []
 
 
+def test_semantic_completed_delegation_rehydrates_parent_resume() -> None:
+    message = _message(route_source="agent_blueprint")
+    result = bench.DemoResult(
+        case=bench.DemoCase(
+            case_id="marketplace_hpc_io_regression",
+            title="hpc",
+            category="test",
+            prompt="prompt",
+            why="why",
+            expected="expected",
+            session_group="test",
+            agent_blueprint_id="hpc-io-regression",
+            expected_handoff_agents=("baseline_ingest",),
+        ),
+        session_id="sess_test",
+        elapsed_s=1.0,
+        message=message,
+        provider={},
+        agent_blueprint={"active_agent_blueprint_id": "hpc-io-regression"},
+        semantic_events=[
+            {
+                "event_type": "blueprint.delegation.started",
+                "actor": {"agent_id": "trace_ingest"},
+                "subject": {"agent_id": "baseline_ingest"},
+                "payload": {},
+            },
+            {
+                "event_type": "blueprint.delegation.completed",
+                "actor": {"agent_id": "baseline_ingest"},
+                "subject": {"agent_id": "trace_ingest"},
+                "payload": {},
+            },
+        ],
+    )
+
+    handoffs = result.expert_handoffs
+
+    assert {
+        "agent_id": "trace_ingest",
+        "stage": "parent.resumed",
+        "resumed_from": "baseline_ingest",
+        "inferred_from": "delegation.completed",
+    }.items() <= handoffs[-1].items()
+    assert bench._missing_sync_return_pairs(result) == []
+
+
 def test_data_file_paths_ignore_scientific_slash_terms(tmp_path) -> None:
     mzml = tmp_path / "proteomics_qc.mzML"
     prompt = f"Review {mzml}. Include m/z coverage and intensity/TIC evidence."

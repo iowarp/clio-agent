@@ -703,7 +703,10 @@ def test_post_message_prompt_user_agent_executes_registered_agent(
         "source": "user",
         "title": "Reviewer",
         "execution_mode": "prompt_agent",
+        "module": {},
         "tools": [],
+        "structured_outputs": {},
+        "fanout": {},
         "prompt": {
             "source": "agent_definition",
             "has_system_prompt": True,
@@ -1119,7 +1122,10 @@ def test_post_message_tool_user_agent_executes_registered_agent(
         "source": "user",
         "title": "Tool Reviewer",
         "execution_mode": "tool_agent",
+        "module": {},
         "tools": ["fs_read_file"],
+        "structured_outputs": {},
+        "fanout": {},
         "prompt": {
             "source": "agent_definition",
             "has_system_prompt": True,

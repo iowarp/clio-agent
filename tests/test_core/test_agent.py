@@ -35,10 +35,14 @@ class TestClioAgent:
         assert hasattr(agent, "chat_agent")
         agent.shutdown()
 
-    def test_has_data_expert(self):
-        """Test ClioAgent has data_expert component."""
+    def test_does_not_have_native_domain_experts(self):
+        """Test ClioAgent does not expose native domain expert components."""
         agent = ClioAgent()
-        assert hasattr(agent, "data_expert")
+        assert not hasattr(agent, "data_expert")
+        assert not hasattr(agent, "analysis_expert")
+        assert not hasattr(agent, "visualization_expert")
+        assert not hasattr(agent, "ndp_catalog_expert")
+        assert not hasattr(agent, "sac_format_expert")
         agent.shutdown()
 
     def test_has_arc_memory(self):
@@ -61,23 +65,23 @@ class TestClioAgent:
         assert hasattr(agent, "registry")
         agent.shutdown()
 
-    def test_expert_registry_all(self):
-        """Test that built-in experts are registered."""
+    def test_core_registry_has_no_domain_experts(self):
+        """Test that built-in domain experts are not registered by core."""
         agent = ClioAgent()
         agents = agent.registry.list_agents()
-        assert "data" in agents
-        assert "analysis" in agents
-        assert "visualization" in agents
         assert "utility" in agents
+        assert "data" not in agents
+        assert "analysis" not in agents
+        assert "visualization" not in agents
         agent.shutdown()
 
-    def test_expert_capabilities(self):
-        """Test expert capabilities are loaded."""
+    def test_utility_capabilities_are_loaded(self):
+        """Test runtime utility capabilities are loaded."""
         agent = ClioAgent()
-        cap = agent.registry.get_capabilities("data")
+        cap = agent.registry.get_capabilities("utility")
         assert cap is not None
         assert cap.description is not None
-        assert "hdf5" in cap.keywords
+        assert "shell" in cap.keywords
         agent.shutdown()
 
     def test_arc_stats(self):

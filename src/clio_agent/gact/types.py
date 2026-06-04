@@ -72,9 +72,9 @@ class CapabilityFlags(BaseModel):
     session_sharing: bool = False
     session_export: bool = False
     session_summary: bool = (
-        False  # POST /sessions/{id}/summarize — user-facing TLDR (distinct from compact)
+        False  # POST /sessions/{id}/summarize - user-facing TLDR (distinct from compact)
     )
-    attachments_upload: bool = False  # POST /sessions/{id}/attachments — base64 byte upload
+    attachments_upload: bool = False  # POST /sessions/{id}/attachments - base64 byte upload
     multimodal_image_parts: bool = False  # POST /messages accepts/preserves image parts
     cost_tracking: bool = False
     thinking_blocks: bool = False
@@ -110,9 +110,6 @@ class CapabilityFlags(BaseModel):
     x_clio_semantic_trace_detail: str = ""
     x_clio_hook_backend: str = ""
     x_clio_hook_events: dict[str, Any] = Field(default_factory=dict)
-    x_clio_files_content: bool = (
-        False  # GET /sessions/{id}/context/files/content — base64-JSON byte previews
-    )
     x_clio_capability_gaps: dict[str, dict[str, Any]] = Field(default_factory=dict)
 
 
@@ -468,8 +465,8 @@ class Part(BaseModel):
     text: str = ""
 
     # image (CLIO extension for multimodal user content). A client may send
-    # data or url; the server preserves the fields on the
-    # transcript and validates provider support before scheduling the turn.
+    # data or url; the server preserves the fields on the transcript and
+    # validates provider support before scheduling the turn.
     data: Optional[str] = None
     url: Optional[str] = None
     media_type: Optional[str] = None
@@ -574,8 +571,8 @@ class PostMessageRequest(BaseModel):
     def extract_text(self) -> str:
         """Return the user-visible text payload.
 
-        Preference order: text parts joined in order, falling back to the legacy
-        ``text`` field when the caller used the simpler shape.
+        Preference order: text parts joined in order, falling back to the
+        legacy ``text`` field when the caller used the simpler shape.
         """
 
         text_parts: list[str] = []
@@ -635,6 +632,10 @@ class AgentDef(BaseModel):
     default_provider: str = ""
     default_model: str = ""
     parameters: dict[str, Any] = Field(default_factory=dict)
+    module: dict[str, Any] = Field(default_factory=dict)
+    signature: dict[str, Any] = Field(default_factory=dict)
+    structured_outputs: dict[str, Any] = Field(default_factory=dict)
+    fanout: dict[str, Any] = Field(default_factory=dict)
     tools: list[str] = Field(default_factory=list)
     skills: list[str] = Field(default_factory=list)
     commands: list[str] = Field(default_factory=list)
@@ -644,9 +645,7 @@ class AgentDef(BaseModel):
     validation_errors: list[str] = Field(default_factory=list)
 
     # v0.2 — multi-tier routing
-    # 0 = untagged, 1 = root/orchestrator, 2+ = declared hierarchy depth.
-    # Runtime-spawned nanoagents are an execution mode, not a fixed tier.
-    tier: int = 0
+    tier: int = 0  # 0 = untagged, 1 = orchestrator, 2 = specialist, 3 = nanoagent
     specialization: str = ""
     keywords: list[str] = Field(default_factory=list)
 

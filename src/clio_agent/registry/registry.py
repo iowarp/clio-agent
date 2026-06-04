@@ -5,10 +5,9 @@ capability-based routing for ClioAgent's 3-tier agent hierarchy.
 
 Example:
     >>> from clio_agent.registry import AgentRegistry, AgentCapability
-    >>> from clio_agent.experts.data_expert import DataExpert
     >>>
     >>> registry = AgentRegistry()
-    >>> expert = DataExpert()
+    >>> blueprint_agent = object()
     >>>
     >>> capabilities = AgentCapability(
     ...     keywords=["hdf5", "parquet", "compression"],
@@ -17,8 +16,8 @@ Example:
     ...     specialization="data_io"
     ... )
     >>>
-    >>> registry.register_agent("data_expert", expert, capabilities)
-    >>> agent = registry.get_agent("data_expert")
+    >>> registry.register_agent("data_blueprint", blueprint_agent, capabilities)
+    >>> agent = registry.get_agent("data_blueprint")
     >>> matching = registry.find_agents_by_keyword("hdf5")
 """
 
@@ -83,16 +82,16 @@ class AgentRegistry:
 
     Example:
         >>> registry = AgentRegistry()
-        >>> expert = DataExpert()
+        >>> blueprint_agent = object()
         >>> caps = AgentCapability(
         ...     keywords=["hdf5", "data"],
         ...     description="Data I/O expert",
         ...     tools=["hdf5_analyze"],
         ...     specialization="data_io"
         ... )
-        >>> registry.register_agent("data_expert", expert, caps)
+        >>> registry.register_agent("data_blueprint", blueprint_agent, caps)
         >>> agents = registry.list_agents()
-        >>> ['data_expert']
+        >>> ['data_blueprint']
     """
 
     def __init__(self):
@@ -116,14 +115,14 @@ class AgentRegistry:
             ValueError: If agent_id already exists or is invalid
 
         Example:
-            >>> expert = DataExpert()
+            >>> blueprint_agent = object()
             >>> caps = AgentCapability(
             ...     keywords=["hdf5"],
             ...     description="HDF5 expert",
             ...     tools=["hdf5_analyze"],
             ...     specialization="data_io"
             ... )
-            >>> registry.register_agent("data_expert", expert, caps)
+            >>> registry.register_agent("data_blueprint", blueprint_agent, caps)
         """
         if not agent_id or not isinstance(agent_id, str):
             raise ValueError(f"Invalid agent_id: {agent_id}")

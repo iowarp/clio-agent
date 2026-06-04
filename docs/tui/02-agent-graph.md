@@ -17,23 +17,23 @@ USER INPUT (question, session_id)
   |       explicit file paths in the question win
   |       otherwise CLIO reuses the most recent scientific file in session history
   |
-  |-- 3. Plan next action
-  |       DSPy planner returns exactly one JSON action:
-  |         - {"action":"tool", ...}
-  |         - {"action":"expert", "expert":"data|analysis|visualization", ...}
-  |         - {"action":"answer", ...}
-  |         - {"action":"none", ...}
+  |-- 3. Plan next action or resolve selected session agent
+  |       Core CLIO can still plan tool/answer actions.
+  |       GACT sessions may instead select an Agent Blueprint expert loaded
+  |       from the registry/marketplace store.
   |
   |-- 4. Execute selected action
-  |       "tool"   -> direct tool call through the MCP gateway
-  |       "expert" -> Data / Analysis / Visualization expert
-  |       "answer" -> chat answer via ChatAgentSignature
-  |       "none"   -> planner explanation, or routing_error
+  |       "tool"      -> direct tool call through the MCP gateway
+  |       "blueprint" -> compile selected Agent Blueprint node by module.kind
+  |       "answer"    -> chat answer via ChatAgentSignature
+  |       "none"      -> planner explanation, or routing_error
   |
-  |       Expert inner flow:
-  |         - DataExpert / AnalysisExpert use DSPy ReAct with MCP tools.
-  |         - VisualizationExpert uses registered plotting tools.
-  |         - Tool results are surfaced through trace/tool metadata.
+  |       Blueprint expert inner flow:
+  |         - `module.kind: predict` -> dspy.Predict
+  |         - `module.kind: chain_of_thought` -> dspy.ChainOfThought
+  |         - `module.kind: react` -> dspy.ReAct with scoped tools and
+  |           generated child-expert tools
+  |         - Structured outputs normalize answer/evidence/artifacts/errors/delegation.
   |
   |-- 5. Store invocation, conversation, routing decision, and metrics
   |
@@ -73,7 +73,7 @@ USER INPUT (question, session_id)
 | Planner action | Runtime behavior |
 |---|---|
 | `tool` | Calls a listed MCP/visualization tool and records the observation. |
-| `expert` | Delegates to `data`, `analysis`, or `visualization` after file compatibility checks. |
+| `blueprint` | Runs the selected registry Agent Blueprint expert and records blueprint/module/provider provenance. |
 | `answer` | Runs the chat answer path for conversation, capability, or safety-style responses. |
 | `none` | Requires a meaningful planner explanation; missing explanations surface as `routing_error`. |
 
@@ -82,8 +82,9 @@ The planner sees registered expert/tool capabilities built from the Registry (`r
 ## State-Surface Summary
 
 ```text
-agent.registry.list_agents()            -> ["data", "analysis", "visualization"]
-agent.registry.get_capabilities("data") -> AgentCapability(keywords, tools, ...)
+GET /v1/agents                           -> active registry and Agent Blueprint rows
+agent.registry.list_agents()             -> core/runtime registry rows
+blueprint metadata                       -> id, version, scope, definition_path, install commit
 agent.arc.get_conversation(session_id)  -> Conversation | None
 agent.arc.get_cache_stats()             -> {hits, misses, hit_rate}
 agent.arc.get_invocations_by_agent(id)  -> [Invocation, ...]

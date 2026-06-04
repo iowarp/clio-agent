@@ -32,65 +32,13 @@ from clio_agent.tools.catalog import TOOL_CATALOG
 
 _BLUEPRINT_ROOT_NAME = "AGENT.md"
 _BLUEPRINT_ID_RE = r"^[A-Za-z0-9_.-]+$"
-_BLUEPRINT_FORMAT_V1 = "agent-blueprint-v1"
-_SUPPORTED_BLUEPRINT_FIELDS = {
-    "id",
-    "name",
-    "version",
-    "title",
-    "description",
-    "root_expert",
-    "root",
-    "default_expert",
-    "default_root_expert",
-    "blueprint",
-    "defaults",
-    "requires",
-    "compatibility",
-    "install",
-    "includes",
-}
-_SUPPORTED_EXPERT_FIELDS = {
-    "id",
-    "name",
-    "title",
-    "description",
-    "parent_id",
-    "parent",
-    "tier",
-    "specialization",
-    "keywords",
-    "tags",
-    "tools",
-    "allowed_tools",
-    "allowed-tools",
-    "skills",
-    "commands",
-    "capability_refs",
-    "capabilities",
-    "prompt_id",
-    "prompt_profile",
-    "profile",
-    "provider",
-    "default_provider",
-    "model",
-    "default_model",
-    "parameters",
-    "enabled",
-    "fallback_tier",
-    "model_fallback",
-    "delegation_policy",
-    "module",
-    "dspy",
-    "signature",
-    "structured_outputs",
-    "structured-outputs",
-    "fanout",
-    "fan_out",
-    "fan-out",
-    "metadata_route_type",
-    "metadata_future_model_boundary",
-}
+DEFAULT_REGISTRY_URL = "git@github.com:JaimeCernuda/clio-agent-marketplace.git"
+DEFAULT_REGISTRY_REF = "main"
+DEFAULT_REGISTRY_COMMIT = "5aa5d6f566cf542bc32c7bccf963fd765f803caf"
+DEFAULT_AGENT_BLUEPRINT_ID = "data-semantics"
+DEFAULT_REGISTRY_SUBMODULE_PATH = "external/clio-agent-marketplace"
+_DEFAULT_BOOTSTRAP_ENV = "CLIO_AGENT_DISABLE_DEFAULT_REGISTRY_BOOTSTRAP"
+_DEFAULT_BOOTSTRAP_TIMEOUT_S = 20
 
 
 @dataclass
@@ -105,7 +53,6 @@ class AgentBlueprintDefinition:
     root_expert: str = ""
     enabled: bool = True
     validation_errors: list[str] = field(default_factory=list)
-    validation_warnings: list[str] = field(default_factory=list)
     defaults: dict[str, Any] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
 
@@ -121,14 +68,48 @@ def agent_blueprint_roots(home: Path, cwd: Path) -> list[tuple[Path, str]]:
     base = os.environ.get("XDG_CONFIG_HOME")
     config_root = Path(base) / "clio-agent" if base else home / ".config" / "clio-agent"
     return [
-        (builtin_agent_blueprints_root(), "builtin"),
         (config_root / "agent-blueprints", "global"),
         (cwd / ".clio" / "agent-blueprints", "workspace"),
     ]
 
 
 def builtin_agent_blueprints_root() -> Path:
+    """Return the retired pre-#629 in-repo blueprint root.
+
+    Kept only for migration diagnostics. Runtime discovery intentionally does
+    not include this path; default agents must be installed from the pinned
+    default registry and therefore carry registry install provenance.
+    """
+
     return Path(__file__).resolve().parents[1] / "agent_blueprints" / "builtin"
+
+
+def default_registry_metadata() -> dict[str, str]:
+    """Return the pinned default registry bootstrap contract."""
+
+    return {
+        "source": DEFAULT_REGISTRY_URL,
+        "ref": DEFAULT_REGISTRY_REF,
+        "commit": DEFAULT_REGISTRY_COMMIT,
+        "default_agent_blueprint_id": DEFAULT_AGENT_BLUEPRINT_ID,
+        "submodule_path": DEFAULT_REGISTRY_SUBMODULE_PATH,
+    }
+
+
+def default_registry_install_source() -> str:
+    """Return the preferred local source for the pinned default registry.
+
+    Development checkouts may carry the marketplace as a git submodule. When
+    present, use it as the install source so first-run bootstrap does not depend
+    on network access. Packaged installs without the submodule still clone the
+    pinned registry URL.
+    """
+
+    repo_root = Path(__file__).resolve().parents[3]
+    submodule = repo_root / DEFAULT_REGISTRY_SUBMODULE_PATH
+    if submodule.is_dir():
+        return str(submodule)
+    return DEFAULT_REGISTRY_URL
 
 
 def discover_agent_blueprints(
@@ -136,8 +117,11 @@ def discover_agent_blueprints(
     home: Path | None = None,
     cwd: Path | None = None,
 ) -> list[AgentBlueprintDefinition]:
+    home = home or Path.home()
+    cwd = cwd or Path(os.getcwd())
+    bootstrap_diagnostic = ensure_default_registry_bootstrap(home=home, cwd=cwd)
     blueprints: list[AgentBlueprintDefinition] = []
-    for root, scope in agent_blueprint_roots(home or Path.home(), cwd or Path(os.getcwd())):
+    for root, scope in agent_blueprint_roots(home, cwd):
         if not root.exists() or not root.is_dir():
             continue
         candidates: list[Path] = []
@@ -148,7 +132,73 @@ def discover_agent_blueprints(
         )
         for candidate in candidates:
             blueprints.append(parse_agent_blueprint_root(candidate, scope=scope))
+    if bootstrap_diagnostic and not any(row.id == DEFAULT_AGENT_BLUEPRINT_ID for row in blueprints):
+        install_root = _install_root(home=home, cwd=cwd, scope="global") / DEFAULT_AGENT_BLUEPRINT_ID
+        blueprints.append(
+            AgentBlueprintDefinition(
+                id=DEFAULT_AGENT_BLUEPRINT_ID,
+                version="",
+                title="Default registry Agent Blueprint",
+                description="Pinned default registry bootstrap did not produce an installed blueprint.",
+                scope="global",
+                root=install_root,
+                root_path=install_root / _BLUEPRINT_ROOT_NAME,
+                enabled=False,
+                validation_errors=[bootstrap_diagnostic],
+                metadata={
+                    "layout": "agent_blueprint",
+                    "install": default_registry_metadata(),
+                    "bootstrap": {"status": "failed", "diagnostic": bootstrap_diagnostic},
+                },
+            )
+        )
     return blueprints
+
+
+def ensure_default_registry_bootstrap(
+    *,
+    home: Path | None = None,
+    cwd: Path | None = None,
+) -> str:
+    """Install the pinned default registry snapshot if the default agent is absent.
+
+    Returns an empty string on success or when bootstrap is disabled, otherwise
+    a human-readable diagnostic. Discovery surfaces the diagnostic as a disabled
+    blueprint row instead of silently falling back to bundled domain experts.
+    """
+
+    if str(os.environ.get(_DEFAULT_BOOTSTRAP_ENV) or "").strip().lower() in {"1", "true", "yes", "on"}:
+        return ""
+    home = home or Path.home()
+    cwd = cwd or Path(os.getcwd())
+    root = _install_root(home=home, cwd=cwd, scope="global") / DEFAULT_AGENT_BLUEPRINT_ID
+    if (root / _BLUEPRINT_ROOT_NAME).exists():
+        metadata = read_install_metadata(root)
+        installed_commit = str(metadata.get("commit") or "").strip()
+        if installed_commit == DEFAULT_REGISTRY_COMMIT:
+            return ""
+        if installed_commit:
+            return (
+                f"default registry pin mismatch for {DEFAULT_AGENT_BLUEPRINT_ID}: "
+                f"expected {DEFAULT_REGISTRY_COMMIT}, found {installed_commit}"
+            )
+        return f"default registry install metadata missing pinned commit for {DEFAULT_AGENT_BLUEPRINT_ID}"
+    try:
+        install_agent_blueprint(
+            source=default_registry_install_source(),
+            scope="global",
+            cwd=cwd,
+            home=home,
+            ref=DEFAULT_REGISTRY_REF,
+            blueprint_id=DEFAULT_AGENT_BLUEPRINT_ID,
+            pinned_commit=DEFAULT_REGISTRY_COMMIT,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return (
+            "unable to install pinned default registry "
+            f"{DEFAULT_REGISTRY_URL}@{DEFAULT_REGISTRY_COMMIT}: {exc}"
+        )
+    return ""
 
 
 def parse_agent_blueprint_root(root: Path, *, scope: str) -> AgentBlueprintDefinition:
@@ -188,40 +238,9 @@ def parse_agent_blueprint_root(root: Path, *, scope: str) -> AgentBlueprintDefin
         errors.append("missing required blueprint field: id")
     elif not re.fullmatch(_BLUEPRINT_ID_RE, blueprint_id):
         errors.append("invalid blueprint id; use letters, numbers, dots, underscores, and hyphens")
-    warnings: list[str] = []
-    raw_blueprint = meta.get("blueprint")
-    blueprint_meta = raw_blueprint if isinstance(raw_blueprint, dict) else {}
-    declared_format = str(blueprint_meta.get("format") or meta.get("format") or "").strip()
-    strict_v1 = declared_format == _BLUEPRINT_FORMAT_V1
-    if raw_blueprint is not None and not isinstance(raw_blueprint, dict):
-        errors.append("blueprint field must be a mapping")
-    if declared_format and declared_format != _BLUEPRINT_FORMAT_V1:
-        errors.append(f"unsupported blueprint format: {declared_format}")
-    if not declared_format:
-        warnings.append("compatibility mode: declare blueprint.format: agent-blueprint-v1 for the 1.0 contract")
-    if strict_v1 and not str(meta.get("version") or "").strip():
-        errors.append("missing required blueprint field: version")
-    elif not str(meta.get("version") or "").strip():
-        warnings.append("missing recommended blueprint field: version")
-    if strict_v1 and not str(meta.get("title") or "").strip():
-        errors.append("missing required blueprint field: title")
-    if strict_v1 and not str(meta.get("root_expert") or meta.get("root") or meta.get("default_expert") or meta.get("default_root_expert") or "").strip():
-        errors.append("missing required blueprint field: root_expert")
-    if "root" in meta or "default_expert" in meta or "default_root_expert" in meta:
-        warnings.append("legacy root expert alias used; prefer root_expert")
     raw_defaults = meta.get("defaults")
-    if raw_defaults is not None and not isinstance(raw_defaults, dict):
-        errors.append("defaults field must be a mapping")
     defaults = raw_defaults if isinstance(raw_defaults, dict) else {}
-    raw_requires = meta.get("requires")
-    if raw_requires is not None and not isinstance(raw_requires, dict):
-        errors.append("requires field must be a mapping")
-    requirements = raw_requires if isinstance(raw_requires, dict) else {}
-    includes = _list_field(meta, "includes")
-    errors.extend(_validate_blueprint_includes(path.parent, includes))
-    for field_name in sorted(set(meta) - _SUPPORTED_BLUEPRINT_FIELDS):
-        if not field_name.startswith("x_"):
-            warnings.append(f"unknown blueprint field ignored: {field_name}")
+    requirements = meta.get("requires") if isinstance(meta.get("requires"), dict) else {}
     install_metadata = read_install_metadata(path.parent)
     return AgentBlueprintDefinition(
         id=blueprint_id,
@@ -240,19 +259,19 @@ def parse_agent_blueprint_root(root: Path, *, scope: str) -> AgentBlueprintDefin
         ).strip(),
         enabled=not errors,
         validation_errors=errors,
-        validation_warnings=warnings,
         defaults={str(k): v for k, v in defaults.items()},
         metadata={
             "layout": "agent_blueprint",
             "body": body.strip(),
-            "format": declared_format or "compatibility",
-            "strict_v1": strict_v1,
             "compatibility": meta.get("compatibility") if isinstance(meta.get("compatibility"), dict) else {},
             "requires": requirements,
-            "includes": includes,
-            "blueprint": blueprint_meta,
+            "includes": _list_field(meta, "includes"),
+            "blueprint": meta.get("blueprint") if isinstance(meta.get("blueprint"), dict) else {},
             "install": install_metadata
             or (meta.get("install") if isinstance(meta.get("install"), dict) else {}),
+            "default_registry": default_registry_metadata()
+            if blueprint_id == DEFAULT_AGENT_BLUEPRINT_ID
+            else {},
         },
     )
 
@@ -279,44 +298,21 @@ def load_agent_blueprints(
 def validate_agent_blueprint_path(path: Path, *, scope: str = "session") -> dict[str, Any]:
     blueprint = parse_agent_blueprint_root(path, scope=scope)
     mcp_descriptors = load_mcp_descriptors(blueprint.root, scope=scope, blueprint_id=blueprint.id)
-    hook_descriptors = load_hook_descriptors(
-        blueprint.root,
-        scope=scope,
-        blueprint_id=blueprint.id,
-    )
+    hook_descriptors = load_hook_descriptors(blueprint.root, scope=scope, blueprint_id=blueprint.id)
     rows = _validate_agent_tool_references(
-        _validate_blueprint_v1_agents(
-            validate_agent_hierarchy(_load_blueprint_agents(blueprint), blueprint=blueprint),
-            blueprint=blueprint,
-        ),
+        validate_agent_hierarchy(_load_blueprint_agents(blueprint), blueprint=blueprint),
         mcp_descriptors=mcp_descriptors,
     )
     errors = list(blueprint.validation_errors)
-    warnings = list(blueprint.validation_warnings)
+    warnings: list[str] = []
     for row in rows:
         errors.extend(f"{row.id}: {error}" for error in row.validation_errors)
-        warnings.extend(
-            f"{row.id}: {warning}"
-            for warning in row.metadata.get("validation_warnings", [])
-            if isinstance(warning, str)
-        )
     for descriptor in mcp_descriptors:
         errors.extend(f"{descriptor.get('id', 'mcp')}: {error}" for error in descriptor.get("validation_errors", []))
-        warnings.extend(
-            f"{descriptor.get('id', 'mcp')}: {warning}"
-            for warning in descriptor.get("validation_warnings", [])
-            if isinstance(warning, str)
-        )
+        warnings.extend(f"{descriptor.get('id', 'mcp')}: {warning}" for warning in descriptor.get("validation_warnings", []))
     for descriptor in hook_descriptors:
-        errors.extend(
-            f"{descriptor.get('id', 'hook')}: {error}"
-            for error in descriptor.get("validation_errors", [])
-        )
-        warnings.extend(
-            f"{descriptor.get('id', 'hook')}: {warning}"
-            for warning in descriptor.get("validation_warnings", [])
-            if isinstance(warning, str)
-        )
+        errors.extend(f"{descriptor.get('id', 'hook')}: {error}" for error in descriptor.get("validation_errors", []))
+        warnings.extend(f"{descriptor.get('id', 'hook')}: {warning}" for warning in descriptor.get("validation_warnings", []))
     return {
         "agent_blueprint": blueprint.to_wire(),
         "agents": [row.model_dump(exclude_none=True) for row in rows],
@@ -367,122 +363,6 @@ def validate_agent_hierarchy(
             )
         )
     return out
-
-
-def _validate_blueprint_v1_agents(
-    rows: list[AgentDef],
-    *,
-    blueprint: AgentBlueprintDefinition,
-) -> list[AgentDef]:
-    strict_v1 = bool(blueprint.metadata.get("strict_v1"))
-    out: list[AgentDef] = []
-    for row in rows:
-        errors = list(row.validation_errors)
-        warnings: list[str] = []
-        path_raw = str(row.metadata.get("definition_path") or row.metadata.get("expert_path") or "")
-        meta: dict[str, Any] = {}
-        if path_raw:
-            try:
-                meta, _ = _parse_frontmatter(Path(path_raw).read_text(encoding="utf-8"))
-            except OSError:
-                meta = {}
-        if strict_v1 and not str(meta.get("title") or "").strip():
-            errors.append("missing required expert field: title")
-        if strict_v1 and "tier" not in meta:
-            errors.append("missing required expert field: tier")
-        if strict_v1 and row.tier > 1 and not str(meta.get("parent_id") or meta.get("parent") or "").strip():
-            errors.append("tier > 1 experts must declare parent_id")
-        if not str(meta.get("description") or "").strip():
-            warnings.append("missing recommended expert field: description")
-        if "parent" in meta:
-            warnings.append("legacy parent alias used; prefer parent_id")
-        for field_name in sorted(set(meta) - _SUPPORTED_EXPERT_FIELDS):
-            if field_name.startswith("param_") or field_name.startswith("metadata_") or field_name.startswith("x_"):
-                continue
-            warnings.append(f"unknown expert field ignored: {field_name}")
-        errors.extend(_validate_dspy_semantics(row))
-        if row.skills:
-            warnings.append("skills are resolved at runtime from pack, workspace, and global skill roots")
-        metadata = dict(row.metadata)
-        if warnings:
-            metadata["validation_warnings"] = warnings
-        out.append(
-            row.model_copy(
-                update={
-                    "metadata": metadata,
-                    "enabled": row.enabled and not errors,
-                    "validation_errors": errors,
-                }
-            )
-        )
-    return out
-
-
-_SUPPORTED_DSPY_MODULE_KINDS = {
-    "prompt",
-    "predict",
-    "chain_of_thought",
-    "chain-of-thought",
-    "cot",
-    "react",
-    "router",
-    "reducer",
-    "retry_refine",
-    "retry-refine",
-    "bounded_worker",
-    "bounded-worker",
-}
-
-
-def _validate_dspy_semantics(row: AgentDef) -> list[str]:
-    """Return validation errors for blueprint-declared DSPy semantics metadata.
-
-    This validates the first file-backed contract for #629. The runtime does
-    not execute these declarations yet, but packs should be able to declare
-    them without being treated as unknown frontmatter.
-    """
-
-    errors: list[str] = []
-    dspy_meta = row.metadata.get("dspy")
-    if dspy_meta is not None and not isinstance(dspy_meta, dict):
-        return ["dspy metadata must be a mapping"]
-    dspy_map = dspy_meta if isinstance(dspy_meta, dict) else {}
-    module = dspy_map.get("module")
-    if module is not None and not isinstance(module, dict):
-        errors.append("dspy.module must be a mapping")
-    module_map = module if isinstance(module, dict) else {}
-    module_kind = str(module_map.get("kind") or "").strip()
-    if module_kind and module_kind not in _SUPPORTED_DSPY_MODULE_KINDS:
-        errors.append(f"unsupported dspy.module.kind: {module_kind}")
-    signature = dspy_map.get("signature")
-    if signature is not None and not isinstance(signature, dict):
-        errors.append("dspy.signature must be a mapping")
-    signature_map = signature if isinstance(signature, dict) else {}
-    for field_name in ("inputs", "outputs"):
-        value = signature_map.get(field_name)
-        if value is not None and not isinstance(value, list):
-            errors.append(f"dspy.signature.{field_name} must be a list")
-    structured_outputs = row.metadata.get("structured_outputs")
-    if structured_outputs is not None and not isinstance(structured_outputs, dict):
-        errors.append("structured_outputs must be a mapping")
-    fanout = row.metadata.get("fanout")
-    if fanout is not None and not isinstance(fanout, dict):
-        errors.append("fanout must be a mapping")
-    fanout_map = fanout if isinstance(fanout, dict) else {}
-    for int_field in ("max_items", "concurrency"):
-        value = fanout_map.get(int_field)
-        if value in (None, ""):
-            continue
-        if value is None:
-            continue
-        try:
-            parsed = int(value)
-        except (TypeError, ValueError):
-            errors.append(f"fanout.{int_field} must be a positive integer")
-            continue
-        if parsed < 1:
-            errors.append(f"fanout.{int_field} must be a positive integer")
-    return errors
 
 
 _MEMORY_TOOL_NAMES = {
@@ -784,6 +664,7 @@ def install_agent_blueprint(
     home: Path | None = None,
     ref: str = "",
     blueprint_id: str = "",
+    pinned_commit: str = "",
 ) -> dict[str, Any]:
     home = home or Path.home()
     install_root = _install_root(home=home, cwd=cwd, scope=scope)
@@ -804,6 +685,8 @@ def install_agent_blueprint(
                 ).strip()
             except Exception:
                 commit = ""
+            if pinned_commit and commit and commit != pinned_commit:
+                raise ValueError(f"registry pin mismatch: expected {pinned_commit}, found {commit}")
         else:
             source_kind = "git"
             clone_target = tmp_path / "repo"
@@ -811,12 +694,50 @@ def install_agent_blueprint(
             if ref:
                 cmd.extend(["--branch", ref])
             cmd.extend([source, str(clone_target)])
-            subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            env = {
+                **os.environ,
+                "GIT_TERMINAL_PROMPT": "0",
+                "GIT_SSH_COMMAND": "ssh -o BatchMode=yes",
+            }
+            subprocess.run(
+                cmd,
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=_DEFAULT_BOOTSTRAP_TIMEOUT_S,
+                env=env,
+            )
             resolved_source = clone_target
             commit = subprocess.check_output(
                 ["git", "-C", str(clone_target), "rev-parse", "HEAD"],
                 text=True,
             ).strip()
+            if pinned_commit and commit != pinned_commit:
+                subprocess.run(
+                    ["git", "-C", str(clone_target), "fetch", "--depth", "1", "origin", pinned_commit],
+                    check=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    timeout=_DEFAULT_BOOTSTRAP_TIMEOUT_S,
+                    env=env,
+                )
+                subprocess.run(
+                    ["git", "-C", str(clone_target), "checkout", "--detach", pinned_commit],
+                    check=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    timeout=_DEFAULT_BOOTSTRAP_TIMEOUT_S,
+                    env=env,
+                )
+                commit = subprocess.check_output(
+                    ["git", "-C", str(clone_target), "rev-parse", "HEAD"],
+                    text=True,
+                ).strip()
+            if pinned_commit and commit != pinned_commit:
+                raise ValueError(f"registry pin mismatch: expected {pinned_commit}, found {commit}")
         candidates = _install_candidates(resolved_source, blueprint_id=blueprint_id)
         if not candidates:
             raise ValueError("source contains no Agent Blueprint folders with AGENT.md")
@@ -834,6 +755,7 @@ def install_agent_blueprint(
                 "source_kind": source_kind,
                 "ref": ref,
                 "commit": commit,
+                "pinned_commit": pinned_commit,
                 "installed_at": datetime.now(UTC).isoformat(),
                 "checksum": _tree_checksum(dest),
                 "scope": scope,
@@ -931,83 +853,40 @@ def _tree_checksum(root: Path) -> str:
     return digest.hexdigest()
 
 
-def _reserved_blueprint_markdown(path: Path) -> bool:
-    parts = set(path.parts)
-    return (
-        path.name == _BLUEPRINT_ROOT_NAME
-        or "prompts" in parts
-        or "commands" in parts
-        or "skills" in parts
-        or "tools" in parts
-        or "profiles" in parts
-    )
-
-
-def _path_within(root: Path, path: Path) -> bool:
-    try:
-        path.resolve().relative_to(root.resolve())
-    except ValueError:
-        return False
-    return True
-
-
-def _include_target(root: Path, include: str) -> Path | None:
-    include = include.strip()
-    if not include:
-        return None
-    path = Path(include)
-    if path.is_absolute():
-        return None
-    candidate = root / path
-    return candidate if _path_within(root, candidate) else None
-
-
-def _expert_markdown_files(path: Path) -> list[Path]:
-    if path.is_file():
-        return [path] if path.suffix == ".md" and not _reserved_blueprint_markdown(path) else []
-    if path.is_dir():
-        return sorted(
-            child
-            for child in path.rglob("*.md")
-            if child.is_file() and not _reserved_blueprint_markdown(child)
-        )
-    return []
-
-
-def _validate_blueprint_includes(root: Path, includes: list[str]) -> list[str]:
-    errors: list[str] = []
-    for include in includes:
-        target = _include_target(root, include)
-        if target is None:
-            errors.append(f"include path must be pack-local: {include}")
-            continue
-        if not target.exists():
-            errors.append(f"include path not found: {include}")
-            continue
-        if not _expert_markdown_files(target):
-            errors.append(f"include path contains no expert markdown files: {include}")
-    return errors
-
-
-def _blueprint_expert_files(blueprint: AgentBlueprintDefinition) -> list[tuple[Path, str]]:
-    expert_root = blueprint.root / "experts"
-    files = dict.fromkeys(
-        _expert_markdown_files(expert_root if expert_root.is_dir() else blueprint.root),
-        "",
-    )
-    for include in blueprint.metadata.get("includes", []) or []:
-        if not isinstance(include, str):
-            continue
-        target = _include_target(blueprint.root, include)
-        if target is None or not target.exists():
-            continue
-        for path in _expert_markdown_files(target):
-            files.setdefault(path, include)
-    return sorted(files.items(), key=lambda item: str(item[0]))
-
-
 def _load_blueprint_agents(blueprint: AgentBlueprintDefinition) -> list[AgentDef]:
-    files = _blueprint_expert_files(blueprint)
+    expert_root = blueprint.root / "experts"
+    search_roots = [expert_root if expert_root.is_dir() else blueprint.root]
+    included_roots: dict[Path, str] = {}
+    root_resolved = blueprint.root.resolve()
+    for raw_include in blueprint.metadata.get("includes") or []:
+        include_path = (blueprint.root / str(raw_include)).resolve()
+        try:
+            include_path.relative_to(root_resolved)
+        except ValueError:
+            continue
+        if include_path.exists():
+            search_roots.append(include_path)
+            included_roots[include_path] = str(raw_include)
+    seen: set[Path] = set()
+    files: list[Path] = []
+    for search_root in search_roots:
+        candidates = [search_root] if search_root.is_file() else sorted(search_root.rglob("*.md"))
+        for path in candidates:
+            normalized = path.resolve()
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            relative = "/" + normalized.relative_to(root_resolved).as_posix()
+            if (
+                path.name == _BLUEPRINT_ROOT_NAME
+                or "/prompts/" in relative
+                or "/commands/" in relative
+                or "/skills/" in relative
+                or "/tools/" in relative
+                or "/profiles/" in relative
+            ):
+                continue
+            files.append(path)
     pack = ExpertPackDefinition(
         id=blueprint.id,
         version=blueprint.version,
@@ -1021,33 +900,31 @@ def _load_blueprint_agents(blueprint: AgentBlueprintDefinition) -> list[AgentDef
         defaults=dict(blueprint.defaults),
         metadata={"default_root_expert": blueprint.root_expert, "layout": "agent_blueprint"},
     )
-    rows: list[AgentDef] = []
-    for path, include in files:
-        row = parse_expert_file(path, scope=blueprint.scope, pack=pack)
-        if include:
-            row = row.model_copy(
-                update={
-                    "metadata": {
-                        **row.metadata,
-                        "agent_blueprint_include": include,
-                        "agent_blueprint_expert_source": "include",
-                    }
-                }
-            )
-        rows.append(row)
+    rows = [parse_expert_file(path, scope=blueprint.scope, pack=pack) for path in files]
     out: list[AgentDef] = []
     for row in rows:
+        row_path = Path(str(row.metadata.get("definition_path") or "")).resolve()
+        include_source = ""
+        for include_root, raw_include in included_roots.items():
+            try:
+                row_path.relative_to(include_root)
+            except ValueError:
+                continue
+            include_source = raw_include
+            break
         metadata = {
             **row.metadata,
             "agent_blueprint_id": blueprint.id,
             "agent_blueprint_version": blueprint.version,
             "agent_blueprint_title": blueprint.title,
             "agent_blueprint_scope": blueprint.scope,
-            "agent_blueprint_root": str(blueprint.root),
             "agent_blueprint_root_expert": blueprint.root_expert,
             "agent_blueprint_definition_path": str(blueprint.root_path),
             "definition_kind": "agent_blueprint",
+            "install": dict(blueprint.metadata.get("install") or {}),
         }
+        if include_source:
+            metadata["agent_blueprint_include"] = include_source
         out.append(row.model_copy(update={"metadata": metadata}))
     if not out:
         out.append(

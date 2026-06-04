@@ -179,9 +179,23 @@ class DemoResult:
     def expert_handoffs(self) -> list[dict[str, Any]]:
         """Return expert handoff provenance metadata."""
         handoffs = _expert_handoffs(self.message)
-        if handoffs:
-            return handoffs
-        return _semantic_handoffs(self.semantic_events)
+        semantic_handoffs = _semantic_handoffs(self.semantic_events)
+        if not handoffs:
+            return semantic_handoffs
+        seen: set[tuple[str, str, str, str]] = set()
+        merged: list[dict[str, Any]] = []
+        for row in [*handoffs, *semantic_handoffs]:
+            key = (
+                str(row.get("agent_id") or ""),
+                str(row.get("parent_id") or ""),
+                str(row.get("stage") or ""),
+                str(row.get("resumed_from") or ""),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(row)
+        return merged
 
     @property
     def handoff_agent_ids(self) -> list[str]:
@@ -652,8 +666,12 @@ def _semantic_handoffs(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Recover delegation provenance rows from semantic events."""
 
     handoffs: list[dict[str, Any]] = []
+    explicit_resumes: set[tuple[str, str]] = set()
+    completed_returns: list[tuple[str, str]] = []
     for row in events:
         event_type = str(row.get("event_type") or "")
+        if event_type.startswith("blueprint.delegation."):
+            event_type = event_type.removeprefix("blueprint.")
         if not event_type.startswith("delegation."):
             continue
         payload = _semantic_payload(row)
@@ -676,10 +694,16 @@ def _semantic_handoffs(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
             agent_id = str(payload.get("agent_id") or actor.get("agent_id") or "")
             parent_id = str(payload.get("parent_id") or "")
             stage = str(payload.get("stage") or "parent.resumed")
+            resumed_from = str(payload.get("resumed_from") or subject.get("agent_id") or "")
+            if agent_id and resumed_from:
+                explicit_resumes.add((agent_id, resumed_from))
         else:
             continue
         if not agent_id:
             continue
+        resumed_from = str(payload.get("resumed_from") or subject.get("agent_id") or "")
+        if stage in {"delegate.completed", "delegate.failed"} and parent_id:
+            completed_returns.append((parent_id, agent_id))
         handoffs.append(
             {
                 "agent_id": agent_id,
@@ -689,8 +713,25 @@ def _semantic_handoffs(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "status": str(payload.get("status") or row.get("status") or ""),
                 "delegation_lifecycle": str(payload.get("delegation_lifecycle") or "sync"),
                 "dispatch_target": str(payload.get("dispatch_target") or agent_id),
-                "resumed_from": str(payload.get("resumed_from") or subject.get("agent_id") or ""),
+                "resumed_from": resumed_from,
                 "telemetry_source": "semantic_event",
+            }
+        )
+    for parent_id, child_id in completed_returns:
+        if (parent_id, child_id) in explicit_resumes:
+            continue
+        handoffs.append(
+            {
+                "agent_id": parent_id,
+                "parent_id": "",
+                "return_to": "",
+                "stage": "parent.resumed",
+                "status": "completed",
+                "delegation_lifecycle": "sync",
+                "dispatch_target": parent_id,
+                "resumed_from": child_id,
+                "telemetry_source": "semantic_event",
+                "inferred_from": "delegation.completed",
             }
         )
     return handoffs
@@ -2850,7 +2891,7 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             session_group="materials",
             expected_agent="materials",
             expected_tools=("materials_inspect_cif",),
-            expected_terms=("SrTiO3", "P m -3 m", "Sr", "Ti", "O"),
+            expected_terms=("SrTiO3", "Pm-3m", "Sr", "Ti", "O"),
             timeout_s=620.0,
             forbidden_route_sources=_REAL_ORCHESTRATOR_FORBIDDEN_SOURCES,
             complexity_tags=("materials", "crystallography", "cif", "new-domain"),
@@ -3046,7 +3087,7 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
                 "crystal_structure",
                 "symmetry_quality",
             ),
-            expected_terms=("SrTiO3", "P m -3 m"),
+            expected_terms=("SrTiO3", "Pm-3m"),
             min_expert_depth=_MARKETPLACE_COMPLEX_MIN_EXPERT_DEPTH,
             min_branch_count=_MARKETPLACE_COMPLEX_MIN_BRANCH_COUNT,
             timeout_s=620.0,

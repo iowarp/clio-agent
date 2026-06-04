@@ -91,13 +91,15 @@ Recommendations:
 ## Expert Routing Logic
 
 ### Active (v0.2.0)
-Registry-based capability matching:
-- "HDF5 optimization" → DataExpert (Native)
-- "SLURM job" → HPCExpert (Native/Planned)
-- "Research papers" → ResearchExpert (Native/Planned)
-- Mixed query → Sequential or parallel experts
+Registry-loaded Agent Blueprint capability matching:
+- "HDF5 optimization" → active registry blueprint expert with scoped HDF5 tools
+- "SLURM job" → installed/planned registry blueprint expert
+- "Research papers" → installed/planned registry blueprint expert
+- Mixed query → declared blueprint delegation, fanout, or sequential runtime tools
 
-I dynamically discover agents registered in `src/clio_agent/registry/`.
+I dynamically discover Agent Blueprints installed from the pinned marketplace
+or user registry sources. CLIO core does not ship privileged native domain
+expert classes.
 
 ---
 

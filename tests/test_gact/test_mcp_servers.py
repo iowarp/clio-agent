@@ -23,8 +23,9 @@ def test_mcp_servers_lists_known_namespaces(client: TestClient) -> None:
     rows = {s["name"]: s for s in body.get("servers", [])}
     if "error" in body:
         pytest.skip(f"gateway introspection unavailable: {body['error']}")
+    assert "hdf5" in rows
+    assert "parquet" in rows
     for name in ("hdf5", "parquet"):
-        assert name in rows
         row = rows[name]
         assert row["status"] == "ready"
         assert row["transport"] == "in_process"

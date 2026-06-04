@@ -220,10 +220,14 @@ def _emit_semantic_event(
 ) -> dict[str, Any]:
     """Emit one semantic event if the app has the semantic sink wired."""
 
-    sink = getattr(app.state, "semantic_event_sink", None)
+    state = getattr(app, "state", None)
+    sink = getattr(state, "semantic_event_sink", None)
     if sink is None:
         return {}
-    sess = app.state.sessions.get(sid) if hasattr(app.state, "sessions") else None
+    if state is not None and hasattr(state, "sessions"):
+        sess = state.sessions.get(sid)
+    else:
+        sess = None
     workspace_id = str(getattr(sess, "workspace_id", "") or "")
     event = SemanticEvent(
         event_type=event_type,
@@ -569,32 +573,7 @@ _EXECUTABLE_SESSION_AGENT_IDS = {
     "",
     "main",
     "default",
-    "data",
-    "analysis",
-    "visualization",
 }
-
-# Prompt-registry id for the user-facing session summary (TLDR). The default
-# entry is registered as a packaged built-in prompt
-# (``clio_agent/prompt_packs/builtin/session_summarize.md``) so it is editable
-# and profile-aware through CLIO's prompt registry / external prompt-pack
-# system. POST /v1/sessions/{sid}/summarize resolves it at request time and
-# only uses ``_SESSION_SUMMARIZE_FALLBACK_PROMPT`` below when the registry has
-# no usable entry, so a missing/broken prompt never 500s the route.
-_SESSION_SUMMARIZE_PROMPT_ID = "session_summarize"
-_SESSION_SUMMARIZE_FALLBACK_PROMPT = (
-    "Write a concise, user-facing summary (a TLDR) of the following CLIO "
-    "conversation for a human who wants to catch up quickly. This summary is "
-    "informational only and does NOT replace the transcript.\n\n"
-    "Rules:\n"
-    "- Open with a 1-2 sentence high-level TLDR of what the session is about "
-    "and what it accomplished.\n"
-    "- Then give short bullets for the key points, decisions, and any concrete "
-    "results or artifacts (file paths, dataset names, metrics) that appear.\n"
-    "- Note unresolved questions or next steps if the transcript has them.\n"
-    "- Be faithful to the transcript; do not invent details that are not present.\n"
-    "- Keep it readable and compact; prefer bullets over long prose."
-)
 
 
 class _UnsupportedSessionAgent(RuntimeError):
@@ -640,43 +619,11 @@ class _TurnTimedOut(RuntimeError):
 def _gact_turn_timeout_s() -> float:
     """Return the per-turn timeout in seconds; <=0 disables the watchdog."""
 
-    raw = os.environ.get("CLIO_GACT_TURN_TIMEOUT_S", "300").strip()
+    raw = os.environ.get("CLIO_GACT_TURN_TIMEOUT_S", "900").strip()
     try:
         return float(raw)
     except ValueError:
-        return 300.0
-
-
-def _mcp_reconnect_timeout_s() -> float:
-    """Return the MCP reconnect/probe timeout in seconds.
-
-    Bounds the connect + ``list_tools`` round-trip in
-    ``POST /v1/mcp/servers/{sid}/reconnect`` so a hung MCP server cannot
-    block the route indefinitely. Defaults to 15s (a sensible ceiling for
-    a stdio spawn + first tool listing) and is overridable via
-    ``CLIO_GACT_MCP_RECONNECT_TIMEOUT_S``. A non-positive or unparseable
-    value falls back to the 15s default rather than disabling the guard."""
-
-    raw = os.environ.get("CLIO_GACT_MCP_RECONNECT_TIMEOUT_S", "15").strip()
-    try:
-        value = float(raw)
-    except ValueError:
-        return 15.0
-    return value if value > 0 else 15.0
-
-
-def _mcp_trust_always_enabled() -> bool:
-    """Return whether local dev MCP descriptors may be trusted by default."""
-
-    raw = os.environ.get("CLIO_GACT_MCP_TRUST_ALWAYS", "true").strip().lower()
-    return raw not in {"0", "false", "no", "off", "disabled"}
-
-
-def _hook_trust_always_enabled() -> bool:
-    """Return whether packaged Blueprint hooks may be trusted by default."""
-
-    raw = os.environ.get("CLIO_GACT_HOOK_TRUST_ALWAYS", "true").strip().lower()
-    return raw not in {"0", "false", "no", "off", "disabled"}
+        return 900.0
 
 
 def _keyword_user_agent_routing_enabled() -> bool:
@@ -1041,9 +988,7 @@ def _memory_search_response(
         metadata={
             "scope": "cross_session" if include_cross_session else "session",
             "workspace_id": active_workspace_id,
-            "workspace_scope": "global"
-            if active_workspace_id == GLOBAL_WORKSPACE_ID
-            else "workspace",
+            "workspace_scope": "global" if active_workspace_id == GLOBAL_WORKSPACE_ID else "workspace",
             "limit": limit,
         },
     )
@@ -1099,13 +1044,7 @@ def _memory_tool_audit(
     if not hasattr(app.state, "memory_tool_audit"):
         app.state.memory_tool_audit = []
     app.state.memory_tool_audit.append(row)
-    app.state.bus.publish(
-        Event(
-            type=f"{tool_name}.{'denied' if status == 'denied' else 'completed'}",
-            session_id=session_id,
-            payload=row,
-        )
-    )
+    app.state.bus.publish(Event(type=f"{tool_name}.{'denied' if status == 'denied' else 'completed'}", session_id=session_id, payload=row))
     return row
 
 
@@ -1538,7 +1477,9 @@ def _merge_agent_def_rows(rows: list["AgentDef"]) -> list["AgentDef"]:
                 {
                     "source": prior.source,
                     "scope": str(
-                        prior.metadata.get("expert_scope") or prior.metadata.get("pack_scope") or ""
+                        prior.metadata.get("expert_scope")
+                        or prior.metadata.get("pack_scope")
+                        or ""
                     ),
                     "pack_id": str(prior.metadata.get("pack_id") or ""),
                     "definition_path": str(
@@ -1550,7 +1491,9 @@ def _merge_agent_def_rows(rows: list["AgentDef"]) -> list["AgentDef"]:
             )
         current = {
             "source": row.source,
-            "scope": str(row.metadata.get("expert_scope") or row.metadata.get("pack_scope") or ""),
+            "scope": str(
+                row.metadata.get("expert_scope") or row.metadata.get("pack_scope") or ""
+            ),
             "pack_id": str(row.metadata.get("pack_id") or ""),
             "definition_path": str(
                 row.metadata.get("definition_path") or row.metadata.get("expert_path") or ""
@@ -1594,9 +1537,20 @@ def _agent_definition_is_agent_blueprint(agent_def: "AgentDef") -> bool:
     """Return whether an AgentDef came from an Agent Blueprint graph."""
 
     metadata = agent_def.metadata if isinstance(agent_def.metadata, Mapping) else {}
-    return bool(
-        metadata.get("agent_blueprint_id") or metadata.get("definition_kind") == "agent_blueprint"
-    )
+    return bool(metadata.get("agent_blueprint_id") or metadata.get("definition_kind") == "agent_blueprint")
+
+
+def _legacy_native_expert_runtime_enabled() -> bool:
+    return os.environ.get("CLIO_AGENT_ENABLE_LEGACY_NATIVE_EXPERTS", "").lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def _agent_definition_uses_blueprint_runtime(agent_def: "AgentDef") -> bool:
+    return _agent_definition_is_agent_blueprint(agent_def) and not _legacy_native_expert_runtime_enabled()
 
 
 def _runtime_workspace_catalog_cwd(
@@ -1628,7 +1582,15 @@ def _runtime_active_agent_blueprint_id(app: "FastAPI", session_id: str = "") -> 
     metadata = getattr(sess, "metadata", {}) or {}
     if not isinstance(metadata, Mapping):
         return ""
-    return str(metadata.get("active_agent_blueprint_id") or "").strip()
+    explicit = str(metadata.get("active_agent_blueprint_id") or "").strip()
+    if explicit:
+        return explicit
+    if _legacy_native_expert_runtime_enabled():
+        return ""
+    cwd = _runtime_workspace_catalog_cwd(app, session_id=session_id)
+    if any(row.id == DEFAULT_AGENT_BLUEPRINT_ID and row.enabled for row in discover_agent_blueprints(cwd=cwd)):
+        return DEFAULT_AGENT_BLUEPRINT_ID
+    return ""
 
 
 def _runtime_active_agent_blueprint_path(app: "FastAPI", session_id: str = "") -> Path | None:
@@ -1683,6 +1645,10 @@ def _runtime_apply_session_agent_overlay(
         "skills",
         "commands",
         "parameters",
+        "module",
+        "signature",
+        "structured_outputs",
+        "fanout",
         "enabled",
     }
     out: list[AgentDef] = []
@@ -1773,13 +1739,6 @@ def _resolve_runtime_dynamic_agent(
     workspace_id: str = "",
     prompt_registry: PromptRegistry | None = None,
 ) -> "AgentDef | None":
-    if prompt_registry is None and session_id:
-        prompt_registry_factory = getattr(app.state, "prompt_registry_for_request", None)
-        prompt_registry = (
-            prompt_registry_factory(session_id=session_id, workspace_id=workspace_id)
-            if callable(prompt_registry_factory)
-            else None
-        )
     if session_id:
         for row in _runtime_active_agent_blueprint_rows(
             app,
@@ -1788,21 +1747,8 @@ def _resolve_runtime_dynamic_agent(
             prompt_registry=prompt_registry,
         ):
             if row.id == agent_id and row.enabled:
-                return _apply_declared_skill_resolution(
-                    app,
-                    row,
-                    session_id=session_id,
-                    workspace_id=workspace_id,
-                )
-    resolved = _resolve_dynamic_agent(app, agent_id, prompt_registry=prompt_registry)
-    if resolved is None:
-        return None
-    return _apply_declared_skill_resolution(
-        app,
-        resolved,
-        session_id=session_id,
-        workspace_id=workspace_id,
-    )
+                return row
+    return _resolve_dynamic_agent(app, agent_id, prompt_registry=prompt_registry)
 
 
 def _agent_prompt_request(agent_def: "AgentDef") -> tuple[str, str]:
@@ -2164,34 +2110,6 @@ def _runtime_dynamic_agent_children_context(
     return "\n".join(lines)
 
 
-def _declared_skill_prompt_context(agent_def: "AgentDef") -> str:
-    """Render resolved expert-declared skill bodies for runtime prompts."""
-
-    metadata = agent_def.metadata if isinstance(agent_def.metadata, Mapping) else {}
-    resolved = metadata.get("resolved_skills")
-    if not isinstance(resolved, list):
-        return ""
-    parts: list[str] = []
-    for row in resolved:
-        if not isinstance(row, Mapping):
-            continue
-        body = str(row.get("body") or row.get("system_prompt") or "").strip()
-        if not body:
-            continue
-        skill_id = str(row.get("id") or "").strip()
-        title = str(row.get("title") or skill_id).strip()
-        source_path = str(row.get("source_path") or "").strip()
-        heading = f"Skill: {title or skill_id}"
-        if skill_id and title != skill_id:
-            heading += f" ({skill_id})"
-        if source_path:
-            heading += f"\nSource: {source_path}"
-        parts.append(f"{heading}\n{body}")
-    if not parts:
-        return ""
-    return "Expert-declared skills loaded for this turn:\n\n" + "\n\n".join(parts)
-
-
 def _dynamic_parent_resume_prompt(
     original_request: str,
     parent_agent: "AgentDef",
@@ -2339,8 +2257,6 @@ def _delegation_continuation_policy_contract(
         and not any(isinstance(raw_policy, Mapping) for raw_policy in raw_policies)
         and any(params.get(key) for key in ("next_expert", "required_next_expert", "target_expert"))
     ):
-        # The dependency-free markdown frontmatter parser supports flat maps and
-        # may flatten a single nested list-of-maps policy under parameters.
         source_policy = ""
         first_item = str(raw_policies[0] or "").strip() if raw_policies else ""
         if first_item.lower().startswith("id:"):
@@ -2663,6 +2579,10 @@ def _dynamic_answer_has_pending_child_work(answer: str) -> bool:
     pending_terms = (
         "next step",
         "should next",
+        "delegating",
+        "delegate",
+        "route to",
+        "route through",
         "still need",
         "needs to",
         "need to",
@@ -2680,18 +2600,6 @@ def _dynamic_answer_has_pending_child_work(answer: str) -> bool:
         "unable to",
         "requires a",
         "requires an",
-        "delegate to",
-        "delegating",
-        "delegated to",
-        "route to",
-        "routing to",
-        "coordinate through",
-        "coordinate with",
-        "handoff to",
-        "hand off to",
-        "child expert",
-        "child experts",
-        "expert_handoffs",
         "blocker",
         "blocked",
         "recover",
@@ -2705,6 +2613,26 @@ def _dynamic_answer_has_pending_child_work(answer: str) -> bool:
     return any(term in text for term in pending_terms)
 
 
+def _dynamic_answer_is_delegation_placeholder(answer: str) -> bool:
+    """Return true when parent prose describes unfinished delegation instead of a result."""
+
+    text = " ".join(answer.casefold().split())
+    if not text:
+        return False
+    placeholder_terms = (
+        "executing returned delegation continuation contract",
+        "executing current expert continuation policy",
+        "delegating to",
+        "i am delegating",
+        "i will delegate",
+        "next step",
+        "proceeding to",
+        "routing to",
+        "route to",
+    )
+    return any(term in text for term in placeholder_terms)
+
+
 def _dynamic_agent_runtime_provenance(
     app: "FastAPI",
     agent_def: "AgentDef",
@@ -2714,57 +2642,32 @@ def _dynamic_agent_runtime_provenance(
     """Return non-secret provenance for the dynamic agent used this turn."""
 
     active_model = _active_lm_model_ref(app)
-    prompt_id, prompt_profile = _agent_prompt_request(agent_def)
-    prompt_resolution = (
-        dict(agent_def.metadata.get("prompt_resolution") or {})
-        if isinstance(agent_def.metadata, Mapping)
-        else {}
-    )
     provider_id = agent_def.default_provider or active_model.get("provider_id", "")
     model_id = agent_def.default_model or active_model.get("model_id", "")
-    provider_source = "global_active"
-    if agent_def.default_provider:
-        provider_source = (
-            "prompt_resolution"
-            if prompt_resolution.get("provider") == agent_def.default_provider
-            else "agent_default"
-        )
-    model_source = "global_active"
-    if agent_def.default_model:
-        model_source = (
-            "prompt_resolution"
-            if prompt_resolution.get("model") == agent_def.default_model
-            else "agent_default"
-        )
-    prompt_payload: dict[str, Any] = {
-        "source": "agent_definition",
-        "has_system_prompt": bool(agent_def.system_prompt.strip()),
-    }
-    if prompt_id:
-        prompt_payload["id"] = prompt_id
-    if prompt_profile:
-        prompt_payload["profile"] = prompt_profile
-    if prompt_resolution:
-        prompt_payload["resolution"] = prompt_resolution
     payload: dict[str, Any] = {
         "kind": "dynamic_agent",
         "agent_id": agent_def.id,
         "source": agent_def.source,
         "title": agent_def.title,
         "execution_mode": execution_mode,
+        "module": dict(agent_def.module),
         "tools": list(agent_def.tools),
-        "prompt": prompt_payload,
+        "structured_outputs": dict(agent_def.structured_outputs),
+        "fanout": dict(agent_def.fanout),
+        "prompt": {
+            "source": "agent_definition",
+            "has_system_prompt": bool(agent_def.system_prompt.strip()),
+        },
         "model": {
             "provider_id": provider_id,
             "model_id": model_id,
-            "provider_source": provider_source,
-            "model_source": model_source,
+            "provider_source": (
+                "agent_default" if agent_def.default_provider else "global_active"
+            ),
+            "model_source": "agent_default" if agent_def.default_model else "global_active",
             "fallback_to_global": not (agent_def.default_provider and agent_def.default_model),
         },
     }
-    skill_resolution = agent_def.metadata.get("skill_resolution")
-    if isinstance(skill_resolution, Mapping):
-        payload["skill_resolution"] = dict(skill_resolution)
     blueprint_id = str(agent_def.metadata.get("agent_blueprint_id") or "").strip()
     if blueprint_id:
         payload["agent_blueprint"] = {
@@ -2784,17 +2687,7 @@ def _dynamic_agent_runtime_provenance(
             {
                 "parent_id": agent_def.parent_id,
                 "skills": list(agent_def.skills),
-                "resolved_skills": [
-                    {
-                        "id": str(row.get("id") or ""),
-                        "scope": str(row.get("scope") or ""),
-                        "source_path": str(row.get("source_path") or ""),
-                    }
-                    for row in agent_def.metadata.get("resolved_skills", [])
-                    if isinstance(row, Mapping)
-                ],
                 "commands": list(agent_def.commands),
-                "parameters": _redact_runtime_provenance_value(dict(agent_def.parameters)),
                 "pack": {
                     "id": str(agent_def.metadata.get("pack_id") or ""),
                     "version": str(agent_def.metadata.get("pack_version") or ""),
@@ -2815,227 +2708,6 @@ def _dynamic_agent_runtime_provenance(
     return payload
 
 
-def _runtime_workspace_provenance(app: "FastAPI", sess: Any) -> dict[str, Any]:
-    """Return non-secret workspace/storage scope provenance for one turn."""
-
-    workspace_id = str(getattr(sess, "workspace_id", "") or "")
-    ws = app.state.workspaces.get(workspace_id) if workspace_id else None
-    storage_root = resolve_workspace_storage_root(ws) if ws is not None else None
-    return {
-        "workspace_id": workspace_id,
-        "root_path": str(getattr(ws, "root_path", "") or ""),
-        "storage_root": str(storage_root or ""),
-        "scope": "global" if workspace_id == GLOBAL_WORKSPACE_ID else "workspace",
-    }
-
-
-def _mcp_tool_runtime_provenance(
-    app: "FastAPI",
-    declared_tools: list[str],
-) -> list[dict[str, Any]]:
-    """Return enabled MCP provenance for declared tools used by a dynamic expert."""
-
-    requested = {str(tool).strip() for tool in declared_tools if str(tool).strip()}
-    if not requested:
-        return []
-    rows: list[dict[str, Any]] = []
-    for server_id, info in (getattr(app.state, "external_mcp_servers", {}) or {}).items():
-        if not isinstance(info, Mapping):
-            continue
-        matched = []
-        for tool in info.get("tools") or []:
-            if not isinstance(tool, Mapping):
-                continue
-            name = str(tool.get("name") or tool.get("id") or "").strip()
-            if name in requested:
-                matched.append(
-                    {
-                        "id": str(tool.get("id") or name),
-                        "name": name,
-                        "status": str(tool.get("status") or ""),
-                        "enabled": bool(tool.get("enabled")),
-                    }
-                )
-        if not matched:
-            continue
-        rows.append(
-            {
-                "server_id": str(server_id),
-                "descriptor_id": str(info.get("descriptor_id") or ""),
-                "agent_blueprint_id": str(info.get("agent_blueprint_id") or ""),
-                "status": str(info.get("status") or ""),
-                "transport": str(info.get("transport") or ""),
-                "tools": matched,
-                "trust": dict(info.get("trust") or {}),
-                "install": dict(info.get("install") or {}),
-                "runtime": dict(info.get("runtime") or {}),
-                "env_policy": dict(info.get("env_policy") or {}),
-                "verification": dict(info.get("verification") or {}),
-            }
-        )
-    return rows
-
-
-_SECRET_PROVENANCE_KEY_RE = re.compile(r"(secret|token|password|api[_-]?key|credential)", re.IGNORECASE)
-
-
-def _redact_runtime_provenance_value(value: Any, *, depth: int = 0) -> Any:
-    """Return a JSON-safe, non-secret parameter value for runtime provenance."""
-
-    if depth > 6:
-        return str(value)
-    if isinstance(value, Mapping):
-        redacted: dict[str, Any] = {}
-        for raw_key, raw_value in value.items():
-            key = str(raw_key)
-            if _SECRET_PROVENANCE_KEY_RE.search(key):
-                redacted[key] = "<redacted>"
-            else:
-                redacted[key] = _redact_runtime_provenance_value(raw_value, depth=depth + 1)
-        return redacted
-    if isinstance(value, list):
-        return [_redact_runtime_provenance_value(item, depth=depth + 1) for item in value]
-    if isinstance(value, tuple):
-        return [_redact_runtime_provenance_value(item, depth=depth + 1) for item in value]
-    if isinstance(value, (str, int, float, bool)) or value is None:
-        return value
-    return str(value)
-
-
-def _turn_runtime_provenance(
-    app: "FastAPI",
-    sess: Any,
-    *,
-    turn_id: str,
-    trace_id: str,
-    user_message_id: str,
-    assistant_message_id: str,
-    selected_agent: str,
-    route_source: str,
-    route_reason: str,
-    agent_runtime: Mapping[str, Any],
-    active_agent_def: "AgentDef | None",
-    prompt_resolution: Mapping[str, Any],
-    expert_handoffs: list[dict[str, Any]],
-    tools_called: list[dict[str, Any]],
-    context_file_provenance: Mapping[str, Any],
-    memory_search_metadata: Mapping[str, Any],
-    error_info: Optional[ErrorInfo],
-) -> dict[str, Any]:
-    """Assemble the benchmark-facing provenance contract for one assistant turn."""
-
-    declared_tools_source = (
-        active_agent_def.tools
-        if active_agent_def is not None
-        else agent_runtime.get("tools", [])
-    )
-    declared_tools = [str(tool) for tool in declared_tools_source if str(tool).strip()]
-    declared_skills = (
-        list(active_agent_def.skills)
-        if active_agent_def is not None
-        else list(agent_runtime.get("skills", []))
-    )
-    declared_commands = (
-        list(active_agent_def.commands)
-        if active_agent_def is not None
-        else list(agent_runtime.get("commands", []))
-    )
-    prompt_payload = dict(agent_runtime.get("prompt") or {})
-    if active_agent_def is not None:
-        prompt_payload.setdefault("id", active_agent_def.prompt_id)
-        prompt_payload.setdefault("profile", active_agent_def.prompt_profile)
-    expert_payload = {
-        "id": str(getattr(active_agent_def, "id", "") or agent_runtime.get("agent_id") or selected_agent),
-        "source": str(getattr(active_agent_def, "source", "") or agent_runtime.get("source") or ""),
-        "title": str(getattr(active_agent_def, "title", "") or agent_runtime.get("title") or ""),
-        "tier": getattr(active_agent_def, "tier", 0) if active_agent_def is not None else 0,
-        "parent_id": str(getattr(active_agent_def, "parent_id", "") or agent_runtime.get("parent_id") or ""),
-        "execution_mode": str(agent_runtime.get("execution_mode") or ""),
-    }
-    observed_tool_names = [
-        str(row.get("name") or row.get("tool") or "")
-        for row in tools_called
-        if isinstance(row, Mapping) and str(row.get("name") or row.get("tool") or "").strip()
-    ]
-    delegation_events = [
-        {
-            "stage": str(row.get("stage") or ""),
-            "status": str(row.get("status") or ""),
-            "agent_id": str(row.get("agent_id") or row.get("delegate_to") or ""),
-            "parent_id": str(row.get("parent_id") or ""),
-            "return_to": str(row.get("return_to") or ""),
-            "delegation_lifecycle": str(row.get("delegation_lifecycle") or ""),
-            "depth": int(row.get("depth") or 0),
-            "execution_mode": str(row.get("execution_mode") or ""),
-            "duration_ms": row.get("duration_ms", 0),
-        }
-        for row in expert_handoffs
-        if isinstance(row, Mapping)
-    ]
-    memory_policy = {
-        "default_scope": "session",
-        "workspace_policy": "same_workspace_requires_explicit_intent",
-        "global_policy": "global_requires_explicit_scope",
-        "search_performed": bool(memory_search_metadata),
-    }
-    payload: dict[str, Any] = {
-        "schema_version": "clio.runtime_provenance.v1",
-        "turn": {
-            "turn_id": turn_id,
-            "trace_id": trace_id,
-            "user_message_id": user_message_id,
-            "assistant_message_id": assistant_message_id,
-        },
-        "workspace": _runtime_workspace_provenance(app, sess),
-        "agent": {
-            "selected_agent": selected_agent,
-            "route_source": route_source,
-            "route_reason": route_reason,
-            "expert": expert_payload,
-            "runtime": dict(agent_runtime),
-        },
-        "blueprint": dict(agent_runtime.get("agent_blueprint") or {}),
-        "provider": dict(agent_runtime.get("model") or {}),
-        "prompt": {
-            **prompt_payload,
-            "resolution": dict(prompt_resolution),
-        },
-        "tools": {
-            "declared": declared_tools,
-            "observed": observed_tool_names,
-            "calls": list(tools_called),
-            "mcp": _mcp_tool_runtime_provenance(app, declared_tools),
-        },
-        "commands": {
-            "declared": declared_commands,
-            "observed": [],
-        },
-        "skills": {
-            "declared": declared_skills,
-            "resolved": list(agent_runtime.get("resolved_skills", [])),
-            "resolution": dict(agent_runtime.get("skill_resolution") or {}),
-        },
-        "delegation": {
-            "lifecycle": "sync" if delegation_events else "",
-            "events": delegation_events,
-        },
-        "memory": {
-            "policy": memory_policy,
-            "search": dict(memory_search_metadata),
-        },
-        "context": {
-            "files": dict(context_file_provenance),
-        },
-        "artifacts": [],
-        "errors": (
-            [error_info.model_dump(exclude_none=True)]
-            if error_info is not None
-            else []
-        ),
-    }
-    return payload
-
-
 def _delegated_expert_agent_id(row: Mapping[str, Any]) -> str:
     """Return the requested delegated expert id from a handoff row."""
 
@@ -3047,12 +2719,7 @@ def _delegated_expert_agent_id(row: Mapping[str, Any]) -> str:
 
 
 def _delegated_expert_prompt(row: Mapping[str, Any], fallback: str) -> str:
-    """Build the child prompt for a synchronous expert delegation.
-
-    Model-authored handoff rows are often intentionally brief. Preserve that task
-    text, but also pass a compact slice of the parent evidence so children keep
-    concrete paths, identifiers, and tool results without seeing unbounded state.
-    """
+    """Build the child prompt for a synchronous expert delegation."""
 
     fallback = fallback.strip()
     for key in ("question", "input", "prompt", "request"):
@@ -3073,6 +2740,143 @@ def _delegated_expert_prompt(row: Mapping[str, Any], fallback: str) -> str:
     return fallback
 
 
+def _active_lm_supports_vision(app: "FastAPI") -> bool:
+    """Return whether the active provider transport can carry image parts."""
+
+    cfg = _effective_lm_config(app)
+    if "supports_vision" in cfg:
+        return bool(cfg.get("supports_vision"))
+    return str(cfg.get("provider") or "") in {"openai", "anthropic"}
+
+
+def _agent_accepts_images(agent: Any) -> bool:
+    """Return whether agent.forward can receive native image inputs."""
+
+    forward = getattr(agent, "forward", None)
+    if not callable(forward):
+        return False
+    try:
+        params = inspect.signature(forward).parameters
+    except (TypeError, ValueError):
+        return False
+    if "images" in params:
+        return True
+    return any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
+
+
+def _image_part_error(
+    *,
+    session_id: str,
+    image_count: int,
+    provider: Mapping[str, Any],
+) -> ErrorEnvelope:
+    provider_id = str(provider.get("provider") or provider.get("provider_id") or "")
+    model_id = str(provider.get("model") or provider.get("model_id") or "")
+    return ErrorEnvelope(
+        error=ErrorInfo(
+            error="unsupported_multimodal_image",
+            message=(
+                "The active LM provider cannot receive image message parts. "
+                "Switch to a vision-capable direct provider or remove the image."
+            ),
+            details={
+                "session_id": session_id,
+                "image_part_count": image_count,
+                "provider": provider_id,
+                "model": model_id,
+                "supports_vision": False,
+                "recovery_actions": [
+                    "switch_to_openai_or_anthropic",
+                    "remove_image_part",
+                    "attach_image_as_context_file_for_tool_inspection",
+                ],
+            },
+            recoverable=True,
+        )
+    )
+
+
+def _user_message_parts(
+    *,
+    request_parts: list["Part"],
+    user_text: str,
+) -> list["Part"]:
+    """Return transcript parts for a user turn, preserving image parts."""
+
+    if not request_parts:
+        return [Part(id=_new_part_id(), type="text", text=user_text)]
+    parts: list[Part] = []
+    has_text = False
+    for part in request_parts:
+        if part.type not in {"text", "image"}:
+            continue
+        metadata = dict(part.metadata)
+        if part.type == "image":
+            metadata.setdefault("clio_multimodal", "preserved")
+        copied = part.model_copy(
+            update={
+                "id": part.id or _new_part_id(),
+                "metadata": metadata,
+            }
+        )
+        if copied.type == "text" and copied.text:
+            has_text = True
+        parts.append(copied)
+    if not has_text and user_text:
+        parts.insert(0, Part(id=_new_part_id(), type="text", text=user_text))
+    return parts or [Part(id=_new_part_id(), type="text", text=user_text)]
+
+
+def _image_part_summaries(parts: list["Part"]) -> list[dict[str, Any]]:
+    """Return bounded metadata for image parts without logging raw base64."""
+
+    rows: list[dict[str, Any]] = []
+    for index, part in enumerate(parts):
+        if part.type != "image":
+            continue
+        rows.append(
+            {
+                "index": index,
+                "id": part.id,
+                "media_type": part.media_type or part.metadata.get("media_type", ""),
+                "has_data": bool(part.data),
+                "data_length": len(part.data or ""),
+                "url": part.url,
+                "metadata": {
+                    key: value
+                    for key, value in part.metadata.items()
+                    if key not in {"data", "base64", "file"}
+                },
+            }
+        )
+    return rows
+
+
+def _dspy_images_from_parts(parts: list["Part"]) -> list[Any]:
+    """Convert GACT image parts to DSPy image inputs for native vision models."""
+
+    images: list[Any] = []
+    for part in parts:
+        if part.type != "image":
+            continue
+        try:
+            import dspy  # noqa: PLC0415
+
+            if part.url:
+                images.append(dspy.Image(part.url))
+                continue
+            if part.data:
+                data = part.data
+                if data.startswith("data:"):
+                    images.append(dspy.Image(data))
+                    continue
+                media_type = part.media_type or part.metadata.get("media_type") or "image/png"
+                images.append(dspy.Image(f"data:{media_type};base64,{data}"))
+        except Exception:
+            continue
+    return images
+
+
 def _should_execute_delegated_handoff(row: Mapping[str, Any]) -> bool:
     if row.get("execute") is False:
         return False
@@ -3080,6 +2884,106 @@ def _should_execute_delegated_handoff(row: Mapping[str, Any]) -> bool:
         return True
     status = str(row.get("status") or "").strip().lower()
     return status in {"requested", "pending", "delegate", "delegated"}
+
+
+def _contract_match_terms(value: Any) -> list[str]:
+    if value in (None, ""):
+        return []
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, list | tuple | set):
+        return [str(item) for item in value if str(item).strip()]
+    return [str(value)]
+
+
+def _contract_terms_match(text: str, terms: list[str], match_mode: str) -> bool:
+    if not terms:
+        return True
+    normalized = text.lower()
+    hits = [term.lower() in normalized for term in terms]
+    return all(hits) if match_mode == "all" else any(hits)
+
+
+def _local_sac_paths_from_text(text: str) -> list[str]:
+    """Return absolute/expanded local SAC paths mentioned in runtime evidence."""
+
+    paths: list[str] = []
+    seen: set[str] = set()
+    for match in re.finditer(r"(?P<path>(?:~|/)[^\s`'\"<>)\]]+?\.sac)\b", text, flags=re.IGNORECASE):
+        path = match.group("path").strip().rstrip(".,;:")
+        if path not in seen:
+            seen.add(path)
+            paths.append(path)
+    return paths
+
+
+def _append_sac_path_instruction(prompt: str, evidence_text: str, target: str) -> str:
+    if target != "visualization":
+        return prompt
+    paths = _local_sac_paths_from_text(evidence_text)
+    if not paths:
+        return prompt
+    path = paths[-1]
+    instruction = (
+        "\n\nRuntime-selected local SAC path: "
+        f"{path}\nCall sac_plot_traces with this exact filepath. If other evidence mentions "
+        "NDP, OSDF, Pelican, staging limits, or missing remote resources, treat that as "
+        "upstream context only; this local SAC path already exists and is the required "
+        "visualization input."
+    )
+    return f"{prompt}{instruction}"
+
+
+def _continuation_contract_handoffs(
+    agent_def: "AgentDef",
+    *,
+    source_text: str,
+    answer_text: str,
+    completed_outputs: list[str],
+    declared_child_ids: set[str],
+    completed_child_ids: set[str],
+) -> list[dict[str, Any]]:
+    params = agent_def.parameters if isinstance(agent_def.parameters, Mapping) else {}
+    contracts = params.get("continuation_contracts")
+    if not isinstance(contracts, list):
+        return []
+    output_text = "\n\n".join([answer_text, *completed_outputs])
+    rows: list[dict[str, Any]] = []
+    for raw_contract in contracts:
+        if not isinstance(raw_contract, Mapping):
+            continue
+        target = str(raw_contract.get("next_expert") or raw_contract.get("delegate_to") or "").strip()
+        if not target or target not in declared_child_ids or target in completed_child_ids:
+            continue
+        match_mode = str(raw_contract.get("match") or "any").strip().lower()
+        if match_mode not in {"any", "all"}:
+            match_mode = "any"
+        request_terms = _contract_match_terms(raw_contract.get("when_request_contains"))
+        output_terms = _contract_match_terms(raw_contract.get("when_output_contains"))
+        if request_terms and not _contract_terms_match(source_text, request_terms, match_mode):
+            continue
+        if output_terms and not _contract_terms_match(output_text, output_terms, match_mode):
+            continue
+        action = str(raw_contract.get("next_action") or "").strip()
+        prompt = action or source_text
+        prompt = _append_sac_path_instruction(prompt, output_text, target)
+        if output_text.strip():
+            prompt = f"{prompt}\n\nPrior blueprint evidence:\n{output_text.strip()}"
+        raw_flags = raw_contract.get("flags")
+        flags: dict[str, Any] = dict(raw_flags) if isinstance(raw_flags, Mapping) else {}
+        rows.append(
+            {
+                "delegate_to": target,
+                "question": prompt,
+                "status": "requested",
+                "execute": True,
+                "source": "blueprint_continuation_contract",
+                "contract_id": str(raw_contract.get("id") or ""),
+                **flags,
+            }
+        )
+        break
+    return rows
 
 
 def _continuation_contract_handoff_rows(
@@ -3139,6 +3043,37 @@ def _continuation_contract_handoff_rows(
             }
         )
     return handoffs
+
+
+def _next_expert_marker_handoffs(
+    *,
+    source_text: str,
+    completed_outputs: list[str],
+    declared_child_ids: set[str],
+    completed_child_ids: set[str],
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for output in reversed(completed_outputs):
+        target_match = re.search(r"(?im)^\s*NEXT_EXPERT:\s*([A-Za-z0-9_.-]+)\s*$", output)
+        if target_match is None:
+            continue
+        target = target_match.group(1).strip()
+        if target not in declared_child_ids or target in completed_child_ids:
+            continue
+        action_match = re.search(r"(?im)^\s*NEXT_ACTION:\s*(.+?)\s*$", output)
+        action = action_match.group(1).strip() if action_match else source_text
+        action = _append_sac_path_instruction(action, output, target)
+        rows.append(
+            {
+                "delegate_to": target,
+                "question": f"{action}\n\nPrior blueprint evidence:\n{output.strip()}",
+                "status": "requested",
+                "execute": True,
+                "source": "blueprint_next_expert_marker",
+            }
+        )
+        break
+    return rows
 
 
 def _user_agent_param(agent_def: "AgentDef", name: str) -> Any:
@@ -3251,11 +3186,8 @@ def _build_prompt_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> A
                 if app is not None
                 else ""
             )
-            skill_context = _declared_skill_prompt_context(agent_def)
             self.system_prompt = "\n\n".join(
-                part
-                for part in (runtime_text, agent_prompt, skill_context, child_context)
-                if part
+                part for part in (runtime_text, agent_prompt, child_context) if part
             )
             self.has_declared_children = bool(child_context.strip())
             self.answer_synthesizer = dspy.Predict(_prompt_user_agent_signature())
@@ -3495,17 +3427,19 @@ def _dynamic_agent_tools(base_agent: Any, agent_def: "AgentDef") -> list[Any]:
     requested_tools = [str(t).strip() for t in agent_def.tools if str(t).strip()]
     tool_executor = getattr(base_agent, "tool_executor", None)
     if tool_executor is None or not hasattr(tool_executor, "to_dspy_tools"):
-        raise _UnsupportedSessionAgent(
-            agent_def.id,
-            reason="custom_agent_tool_executor_unavailable",
-            tools=requested_tools,
-        )
-
-    available_tools = {
-        str(getattr(tool, "name", "")): tool
-        for tool in list(tool_executor.to_dspy_tools())
-        if getattr(tool, "name", "")
-    }
+        if requested_tools:
+            raise _UnsupportedSessionAgent(
+                agent_def.id,
+                reason="custom_agent_tool_executor_unavailable",
+                tools=requested_tools,
+            )
+        available_tools: dict[str, Any] = {}
+    else:
+        available_tools = {
+            str(getattr(tool, "name", "")): tool
+            for tool in list(tool_executor.to_dspy_tools())
+            if getattr(tool, "name", "")
+        }
     app = _ACTIVE_GACT_APP.get()
     if app is not None:
         available_tools.update(_enabled_external_mcp_dspy_tools(app, requested_tools))
@@ -3521,6 +3455,7 @@ def _dynamic_agent_tools(base_agent: Any, agent_def: "AgentDef") -> list[Any]:
 
 def _tool_names(tools: Iterable[Any]) -> list[str]:
     """Return stable tool names from DSPy tool-like objects."""
+
     names: list[str] = []
     for tool in tools:
         name = str(getattr(tool, "name", "") or "").strip()
@@ -3535,6 +3470,7 @@ def _invalid_tool_selection_from_exception(
     allowed_tools: Iterable[str],
 ) -> str:
     """Extract a rejected tool name from DSPy parser/validation errors."""
+
     allowed = {str(name).strip() for name in allowed_tools if str(name).strip()}
     message = str(exc)
     candidates: list[str] = []
@@ -3564,6 +3500,7 @@ def _emit_invalid_tool_selection_event(
     exc: BaseException,
 ) -> None:
     """Publish blocked invalid-tool selection evidence for live and durable traces."""
+
     allowed = sorted({str(name).strip() for name in allowed_tools if str(name).strip()})
     payload = {
         "agent_id": agent_def.id,
@@ -3622,6 +3559,521 @@ def _tool_user_agent_max_iters(agent_def: "AgentDef") -> int:
     return max_iters
 
 
+def _blueprint_module_kind(agent_def: "AgentDef") -> str:
+    module = agent_def.module if isinstance(agent_def.module, Mapping) else {}
+    kind = str(module.get("kind") or "predict").strip().lower()
+    if kind not in {"predict", "chain_of_thought", "react"}:
+        raise ValueError(f"unsupported module.kind for {agent_def.id!r}: {kind}")
+    return kind
+
+
+def _blueprint_runtime_signature(agent_def: "AgentDef") -> Any:
+    """Build a DSPy Signature from a blueprint's ordered signature fields."""
+
+    import dspy  # noqa: PLC0415
+
+    raw_signature = agent_def.signature if isinstance(agent_def.signature, Mapping) else {}
+    raw_inputs = raw_signature.get("inputs") or raw_signature.get("input") or {}
+    raw_outputs = raw_signature.get("outputs") or raw_signature.get("output") or {}
+
+    def _ordered_fields(value: Any, defaults: list[tuple[str, str]]) -> list[tuple[str, str]]:
+        if isinstance(value, Mapping):
+            mapping_rows = [(str(k), str(v or k)) for k, v in value.items() if str(k).strip()]
+            return mapping_rows or defaults
+        if isinstance(value, list):
+            list_rows: list[tuple[str, str]] = []
+            for item in value:
+                if isinstance(item, Mapping):
+                    name = str(item.get("name") or item.get("id") or "").strip()
+                    if name:
+                        list_rows.append((name, str(item.get("description") or item.get("desc") or name)))
+                else:
+                    name = str(item).strip()
+                    if name:
+                        list_rows.append((name, name))
+            return list_rows or defaults
+        return defaults
+
+    inputs = _ordered_fields(raw_inputs, [("system_prompt", "Runtime instructions"), ("question", "User request")])
+    outputs = _ordered_fields(raw_outputs, [("answer", "User-facing answer")])
+    structured = agent_def.structured_outputs if isinstance(agent_def.structured_outputs, Mapping) else {}
+
+    def _structured_output_enabled(value: Any) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            return value.strip().lower() not in {"false", "0", "no", "off", "disabled"}
+        return value is not False
+
+    for name, desc in {
+        "evidence": "Compact evidence rows supporting the answer",
+        "artifacts": "Artifact paths or identifiers produced by the expert",
+        "errors": "Recoverable runtime errors or missing evidence",
+        "delegation": "Delegation metadata for downstream parent experts",
+        "expert_handoffs": (
+            "JSON array of synchronous child expert delegations. Use [] when no child expert should run."
+        ),
+    }.items():
+        enabled = _structured_output_enabled(structured.get(name, True))
+        if enabled and name not in {field for field, _ in outputs}:
+            outputs.append((name, desc))
+
+    namespace: dict[str, Any] = {"__doc__": f"DSPy signature for Agent Blueprint expert {agent_def.id}."}
+    annotations: dict[str, Any] = {}
+    for name, desc in inputs:
+        annotations[name] = str
+        namespace[name] = dspy.InputField(desc=desc)
+    for name, desc in outputs:
+        annotations[name] = str
+        namespace[name] = dspy.OutputField(desc=desc)
+    namespace["__annotations__"] = annotations
+    return type(f"{agent_def.id.title().replace('-', '').replace('_', '')}BlueprintSignature", (dspy.Signature,), namespace)
+
+
+def _prediction_structured_metadata(result: Any) -> dict[str, Any]:
+    return {
+        key: getattr(result, key)
+        for key in ("evidence", "artifacts", "errors", "delegation")
+        if getattr(result, key, None) not in (None, "")
+    }
+
+
+def _fallback_answer_from_delegation(handoffs: list[dict[str, Any]]) -> str:
+    """Return the latest compact parent-resume output as answer fallback."""
+
+    for row in reversed(handoffs):
+        if str(row.get("stage") or "") != "parent.resumed":
+            continue
+        if str(row.get("status") or "") not in {"", "completed"}:
+            continue
+        text = str(row.get("output_summary") or "").strip()
+        if text:
+            return text
+    return ""
+
+
+def _blueprint_fanout_config(agent_def: "AgentDef") -> dict[str, Any]:
+    """Normalize the Agent Blueprint fanout declaration."""
+
+    raw = agent_def.fanout if isinstance(agent_def.fanout, Mapping) else {}
+    enabled = raw.get("enabled", bool(raw)) if raw else False
+    if isinstance(enabled, str):
+        enabled = enabled.strip().lower() not in {"", "false", "0", "no", "off", "disabled"}
+    try:
+        max_workers = int(raw.get("max_workers") or raw.get("workers") or raw.get("limit") or 1)
+    except (TypeError, ValueError):
+        max_workers = 1
+    return {
+        "enabled": bool(enabled),
+        "max_workers": max(1, max_workers),
+        "strategy": str(raw.get("strategy") or raw.get("mode") or "declared_children").strip()
+        or "declared_children",
+    }
+
+
+def _coerce_fanout_child_ids(value: Any) -> list[str]:
+    """Coerce a model-supplied child id selection into ordered ids."""
+
+    if value in (None, "", [], ()):
+        return []
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return []
+        if text.startswith("["):
+            try:
+                decoded = json.loads(text)
+            except json.JSONDecodeError:
+                decoded = None
+            if isinstance(decoded, list):
+                return [str(item).strip() for item in decoded if str(item).strip()]
+        return [part.strip() for part in text.split(",") if part.strip()]
+    if isinstance(value, list | tuple):
+        return [str(item).strip() for item in value if str(item).strip()]
+    return [str(value).strip()] if str(value).strip() else []
+
+
+def _build_child_expert_tool(base_agent: Any, parent: "AgentDef", child: "AgentDef") -> Any:
+    """Generate a synchronous child-expert DSPy tool for ReAct blueprint experts."""
+
+    import dspy  # noqa: PLC0415
+
+    def delegate_child(question: str) -> str:
+        app = _ACTIVE_GACT_APP.get()
+        session_id = _ACTIVE_GACT_SESSION_ID.get()
+        if app is None or not session_id:
+            raise RuntimeError("child expert tool requires an active CLIO app/session context")
+        if child.parent_id != parent.id:
+            raise RuntimeError(f"{child.id!r} is not a declared child of {parent.id!r}")
+        _emit_semantic_event(
+            app,
+            session_id,
+            "blueprint.delegation.started",
+            turn_id=_active_semantic_turn_id(),
+            trace_id=_active_semantic_trace_id(),
+            status="running",
+            summary=f"{parent.id} delegated to {child.id}",
+            actor={"agent_id": parent.id, "role": "parent_expert"},
+            subject={"agent_id": child.id, "role": "child_expert"},
+            blueprint={
+                "agent_blueprint_id": parent.metadata.get("agent_blueprint_id") or "",
+                "parent_expert": parent.id,
+                "child_expert": child.id,
+            },
+        )
+        runner = _blueprint_runner_for_agent(child)
+        try:
+            pred = _run_dynamic_agent_compat(runner, base_agent, child, question, session_id, None)
+        except Exception:
+            _emit_semantic_event(
+                app,
+                session_id,
+                "blueprint.delegation.failed",
+                turn_id=_active_semantic_turn_id(),
+                trace_id=_active_semantic_trace_id(),
+                status="failed",
+                summary=f"{parent.id} delegation to {child.id} failed",
+                actor={"agent_id": parent.id, "role": "parent_expert"},
+                subject={"agent_id": child.id, "role": "child_expert"},
+                blueprint={
+                    "agent_blueprint_id": parent.metadata.get("agent_blueprint_id") or "",
+                    "parent_expert": parent.id,
+                    "child_expert": child.id,
+                },
+            )
+            raise
+        output = str(getattr(pred, "answer", "") or "").strip()
+        payload = {
+            "agent_id": child.id,
+            "parent_id": parent.id,
+            "status": "completed",
+            "stage": "delegate.completed",
+            "return_to": parent.id,
+            "return_payload": "compact_result",
+            "output_summary": _compact_dynamic_delegation_output(output),
+            "structured": _prediction_structured_metadata(pred),
+        }
+        _emit_semantic_event(
+            app,
+            session_id,
+            "blueprint.delegation.completed",
+            turn_id=_active_semantic_turn_id(),
+            trace_id=_active_semantic_trace_id(),
+            summary=f"{child.id} returned compact evidence to {parent.id}",
+            actor={"agent_id": child.id, "role": "child_expert"},
+            subject={"agent_id": parent.id, "role": "parent_expert"},
+            blueprint={
+                "agent_blueprint_id": parent.metadata.get("agent_blueprint_id") or "",
+                "parent_expert": parent.id,
+                "child_expert": child.id,
+            },
+            payload={"return_payload": "compact_result"},
+        )
+        return json.dumps(payload, sort_keys=True, default=str)
+
+    safe_child_id = re.sub(r"[^A-Za-z0-9_]+", "_", child.id).strip("_") or "child"
+    delegate_child.__name__ = f"delegate_to_{safe_child_id}"
+    delegate_child.__doc__ = f"Run declared child expert {child.id} synchronously and return compact evidence."
+    return dspy.Tool(
+        func=delegate_child,
+        name=delegate_child.__name__,
+        desc=delegate_child.__doc__,
+        args={"question": {"type": "string", "description": f"Specific task for child expert {child.id}."}},
+    )
+
+
+def _build_fanout_tool(base_agent: Any, parent: "AgentDef", children: list["AgentDef"]) -> Any:
+    """Generate a bounded fanout runtime primitive for blueprint ReAct experts."""
+
+    import dspy  # noqa: PLC0415
+
+    config = _blueprint_fanout_config(parent)
+    max_workers = int(config["max_workers"])
+    children_by_id = {child.id: child for child in children}
+
+    def fanout_to_children(question: str, child_ids: Any = None) -> str:
+        app = _ACTIVE_GACT_APP.get()
+        session_id = _ACTIVE_GACT_SESSION_ID.get()
+        if app is None or not session_id:
+            raise RuntimeError("fanout tool requires an active CLIO app/session context")
+        requested = _coerce_fanout_child_ids(child_ids) or [child.id for child in children]
+        unknown = [child_id for child_id in requested if child_id not in children_by_id]
+        if unknown:
+            raise RuntimeError(f"fanout requested undeclared child experts: {', '.join(unknown)}")
+        selected = [children_by_id[child_id] for child_id in requested[:max_workers]]
+        skipped = requested[max_workers:]
+        _emit_semantic_event(
+            app,
+            session_id,
+            "blueprint.fanout.started",
+            turn_id=_active_semantic_turn_id(),
+            trace_id=_active_semantic_trace_id(),
+            status="running",
+            summary=f"{parent.id} fanout started with {len(selected)} worker(s)",
+            actor={"agent_id": parent.id, "role": "fanout_parent"},
+            subject={"child_agent_ids": [child.id for child in selected]},
+            blueprint={
+                "agent_blueprint_id": parent.metadata.get("agent_blueprint_id") or "",
+                "parent_expert": parent.id,
+                "fanout": config,
+            },
+            payload={"requested_child_agent_ids": requested, "skipped_child_agent_ids": skipped},
+        )
+        results: list[dict[str, Any]] = []
+        status = "completed"
+        for child in selected:
+            try:
+                runner = _blueprint_runner_for_agent(child)
+                pred = _run_dynamic_agent_compat(runner, base_agent, child, question, session_id, None)
+                results.append(
+                    {
+                        "agent_id": child.id,
+                        "status": "completed",
+                        "output_summary": _compact_dynamic_delegation_output(
+                            str(getattr(pred, "answer", "") or "")
+                        ),
+                        "structured": _prediction_structured_metadata(pred),
+                    }
+                )
+            except Exception as exc:  # pragma: no cover - exercised by state-space tests
+                status = "partial_failure"
+                results.append(
+                    {
+                        "agent_id": child.id,
+                        "status": "failed",
+                        "error": str(exc),
+                    }
+                )
+        payload = {
+            "agent_id": parent.id,
+            "status": status,
+            "stage": "fanout.completed",
+            "max_workers": max_workers,
+            "requested_child_agent_ids": requested,
+            "executed_child_agent_ids": [row["agent_id"] for row in results],
+            "skipped_child_agent_ids": skipped,
+            "return_payload": "compact_results",
+            "results": results,
+        }
+        _emit_semantic_event(
+            app,
+            session_id,
+            "blueprint.fanout.completed",
+            turn_id=_active_semantic_turn_id(),
+            trace_id=_active_semantic_trace_id(),
+            status=status,
+            summary=f"{parent.id} fanout completed with {len(results)} result(s)",
+            actor={"agent_id": parent.id, "role": "fanout_parent"},
+            subject={"child_agent_ids": [row["agent_id"] for row in results]},
+            blueprint={
+                "agent_blueprint_id": parent.metadata.get("agent_blueprint_id") or "",
+                "parent_expert": parent.id,
+                "fanout": config,
+            },
+            payload={
+                "executed_child_agent_ids": payload["executed_child_agent_ids"],
+                "skipped_child_agent_ids": skipped,
+                "result_count": len(results),
+            },
+        )
+        return json.dumps(payload, sort_keys=True, default=str)
+
+    fanout_to_children.__name__ = "fanout_to_children"
+    fanout_to_children.__doc__ = (
+        "Run a bounded set of declared child experts and return compact evidence from each."
+    )
+    return dspy.Tool(
+        func=fanout_to_children,
+        name="fanout_to_children",
+        desc=fanout_to_children.__doc__,
+        args={
+            "question": {"type": "string", "description": "Task to run across selected child experts."},
+            "child_ids": {
+                "type": "string",
+                "description": "Optional JSON array or comma-separated declared child expert ids.",
+            },
+        },
+    )
+
+
+def _dynamic_child_expert_tools(base_agent: Any, agent_def: "AgentDef") -> list[Any]:
+    app = _ACTIVE_GACT_APP.get()
+    session_id = _ACTIVE_GACT_SESSION_ID.get()
+    if app is None or not session_id:
+        return []
+    rows = [
+        row
+        for row in _runtime_active_agent_blueprint_rows(app, session_id=session_id)
+        if row.enabled and row.parent_id == agent_def.id
+    ]
+    tools = [_build_child_expert_tool(base_agent, agent_def, child) for child in rows]
+    if rows and _blueprint_fanout_config(agent_def)["enabled"]:
+        tools.append(_build_fanout_tool(base_agent, agent_def, rows))
+    return tools
+
+
+def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
+    """Compile an Agent Blueprint expert into the DSPy module declared by module.kind."""
+
+    import dspy  # noqa: PLC0415
+
+    from clio_agent.config import create_chat_adapter, create_lm  # noqa: PLC0415
+
+    class BlueprintExpertModule(dspy.Module):
+        def __init__(self, base_agent: Any, agent_def: "AgentDef") -> None:
+            super().__init__()
+            self.agent_def = agent_def
+            self.kind = _blueprint_module_kind(agent_def)
+            self.config = _dynamic_agent_lm_config(base_agent, agent_def)
+            self._provider_config = self.config
+            self.signature = _blueprint_runtime_signature(agent_def)
+            if self.kind == "predict":
+                self.program = dspy.Predict(self.signature)
+            elif self.kind == "chain_of_thought":
+                self.program = dspy.ChainOfThought(self.signature)
+            else:
+                tools = [*_dynamic_agent_tools(base_agent, agent_def), *_dynamic_child_expert_tools(base_agent, agent_def)]
+                self.program = dspy.ReAct(
+                    self.signature,
+                    tools=tools,
+                    max_iters=_tool_user_agent_max_iters(agent_def),
+                )
+            agent_prompt = agent_def.system_prompt.strip() or agent_def.description
+            active_app = _ACTIVE_GACT_APP.get()
+            child_context = (
+                _runtime_dynamic_agent_children_context(
+                    active_app,
+                    agent_def,
+                    session_id=_ACTIVE_GACT_SESSION_ID.get(),
+                )
+                if active_app is not None
+                else ""
+            )
+            self.system_prompt = "\n\n".join(part for part in (agent_prompt, child_context) if part)
+            self.has_declared_children = bool(child_context.strip())
+
+        def forward(
+            self,
+            question: str,
+            session_id: str,
+            session_mode: str = "chat",
+            session_edit_mode: str = "diff",
+            cancel_requested: Any | None = None,
+        ) -> Any:
+            del session_mode, session_edit_mode
+            if cancel_requested is not None and cancel_requested():
+                raise _TurnCancelled(
+                    _cancelled_error_info(
+                        session_id,
+                        execution_cancellation="cooperative",
+                        executor_work_may_continue=False,
+                    )
+                )
+            runtime_system_prompt = self.system_prompt
+            active_app = _ACTIVE_GACT_APP.get()
+            active_session_id = _ACTIVE_GACT_SESSION_ID.get()
+            if active_app is not None:
+                runtime_child_context = _runtime_dynamic_agent_children_context(
+                    active_app,
+                    self.agent_def,
+                    session_id=active_session_id,
+                )
+                if runtime_child_context:
+                    if runtime_child_context not in runtime_system_prompt:
+                        runtime_system_prompt = "\n\n".join(
+                            part
+                            for part in (runtime_system_prompt, runtime_child_context)
+                            if part
+                        )
+            kwargs = {"question": question}
+            if "system_prompt" in self.signature.input_fields:
+                kwargs["system_prompt"] = runtime_system_prompt
+            with dspy.context(lm=create_lm(self.config), adapter=create_chat_adapter(self.config)):
+                result = self.program(**kwargs)
+            if cancel_requested is not None and cancel_requested():
+                raise _TurnCancelled(
+                    _cancelled_error_info(
+                        session_id,
+                        execution_cancellation="cooperative",
+                        executor_work_may_continue=False,
+                    )
+                )
+            answer = str(getattr(result, "answer", "") or "").strip()
+            if self.kind == "react":
+                if not answer:
+                    answer = _tool_agent_empty_answer_fallback(
+                        getattr(result, "trajectory", None)
+                    )
+                else:
+                    answer = (
+                        _tool_agent_contradictory_answer_fallback(
+                            answer,
+                            getattr(result, "trajectory", None),
+                        )
+                        or answer
+                    )
+            handoff_rows = _coerce_expert_handoff_rows(getattr(result, "expert_handoffs", None))
+            if not answer and not handoff_rows:
+                return dspy.Prediction(
+                    answer="",
+                    selected_expert=self.agent_def.id,
+                    routing_rationale=(
+                        "Blueprint expert returned an empty answer; CLIO will attempt "
+                        "runtime settlement or declared-child handoff repair."
+                    ),
+                    route_source="agent_blueprint",
+                    session_id=session_id,
+                    expert_handoffs=[],
+                    evidence=getattr(result, "evidence", ""),
+                    artifacts=getattr(result, "artifacts", ""),
+                    errors=getattr(result, "errors", ""),
+                    delegation=getattr(result, "delegation", ""),
+                    trajectory=getattr(result, "trajectory", None),
+                    error_info=None,
+                )
+            return dspy.Prediction(
+                answer=answer,
+                selected_expert=self.agent_def.id,
+                routing_rationale=f"Session selected Agent Blueprint expert {self.agent_def.id!r}.",
+                route_source="agent_blueprint",
+                session_id=session_id,
+                expert_handoffs=handoff_rows,
+                evidence=getattr(result, "evidence", ""),
+                artifacts=getattr(result, "artifacts", ""),
+                errors=getattr(result, "errors", ""),
+                delegation=getattr(result, "delegation", ""),
+                trajectory=getattr(result, "trajectory", None),
+                error_info=None,
+            )
+
+    return BlueprintExpertModule(base_agent, agent_def)
+
+
+def _run_blueprint_dspy_agent(
+    base_agent: Any,
+    agent_def: "AgentDef",
+    question: str,
+    session_id: str,
+    cancel_requested: Any | None = None,
+) -> Any:
+    token = _ACTIVE_GACT_SESSION_ID.set(session_id)
+    try:
+        module = _build_blueprint_dspy_module(base_agent, agent_def)
+        return module(
+            question=question,
+            session_id=session_id,
+            cancel_requested=cancel_requested,
+        )
+    finally:
+        _ACTIVE_GACT_SESSION_ID.reset(token)
+
+
+def _blueprint_runner_for_agent(agent_def: "AgentDef") -> Any:
+    if _agent_definition_uses_blueprint_runtime(agent_def):
+        return _run_blueprint_dspy_agent
+    return _run_tool_user_agent if agent_def.tools else _run_prompt_user_agent
+
+
 def _build_tool_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> Any:
     """Build a DSPy ReAct wrapper for a streamable tool-declaring dynamic agent."""
     import dspy  # noqa: PLC0415
@@ -3652,11 +4104,8 @@ def _build_tool_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> Any
                 if app is not None
                 else ""
             )
-            skill_context = _declared_skill_prompt_context(agent_def)
             self.system_prompt = "\n\n".join(
-                part
-                for part in (runtime_text, agent_prompt, skill_context, child_context)
-                if part
+                part for part in (runtime_text, agent_prompt, child_context) if part
             )
             self.react_agent = dspy.ReAct(
                 _tool_user_agent_signature(),
@@ -3853,7 +4302,6 @@ def _effective_lm_config(app: "FastAPI") -> dict[str, Any]:
         "max_tokens",
         "context_length",
         "thinking_budget",
-        "supports_vision",
     ):
         if not cfg.get(key):
             value = getattr(provider_config, key, None)
@@ -3873,149 +4321,10 @@ def _active_lm_model_ref(app: "FastAPI") -> dict[str, str]:
     return {"provider_id": provider, "model_id": model, "variant": ""}
 
 
-def _active_lm_supports_vision(app: "FastAPI") -> bool:
-    """Return whether the active provider transport can carry image parts."""
-
-    cfg = _effective_lm_config(app)
-    if "supports_vision" in cfg:
-        return bool(cfg.get("supports_vision"))
-    return str(cfg.get("provider") or "") in {"openai", "anthropic"}
-
-
-def _agent_accepts_images(agent: Any) -> bool:
-    """Return whether agent.forward can receive native image inputs."""
-
-    forward = getattr(agent, "forward", None)
-    if not callable(forward):
-        return False
-    try:
-        params = inspect.signature(forward).parameters
-    except (TypeError, ValueError):
-        return False
-    if "images" in params:
-        return True
-    return any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
-
-
-def _image_part_error(
-    *,
-    session_id: str,
-    image_count: int,
-    provider: Mapping[str, Any],
-) -> ErrorEnvelope:
-    provider_id = str(provider.get("provider") or provider.get("provider_id") or "")
-    model_id = str(provider.get("model") or provider.get("model_id") or "")
-    return ErrorEnvelope(
-        error=ErrorInfo(
-            error="unsupported_multimodal_image",
-            message=(
-                "The active LM provider cannot receive image message parts. "
-                "Switch to a vision-capable direct provider or remove the image."
-            ),
-            details={
-                "session_id": session_id,
-                "image_part_count": image_count,
-                "provider": provider_id,
-                "model": model_id,
-                "supports_vision": False,
-                "recovery_actions": [
-                    "switch_to_openai_or_anthropic",
-                    "remove_image_part",
-                    "attach_image_as_context_file_for_tool_inspection",
-                ],
-            },
-            recoverable=True,
-        )
-    )
-
-
 def _model_ref_matches_active(value: Any, app: "FastAPI") -> bool:
     """Return true when a requested model ref exactly matches the active LM."""
 
     return _model_ref_dict(value) == _active_lm_model_ref(app)
-
-
-def _user_message_parts(
-    *,
-    request_parts: list["Part"],
-    user_text: str,
-) -> list["Part"]:
-    """Return transcript parts for a user turn, preserving image parts."""
-
-    if not request_parts:
-        return [Part(id=_new_part_id(), type="text", text=user_text)]
-    parts: list[Part] = []
-    has_text = False
-    for part in request_parts:
-        if part.type not in {"text", "image"}:
-            continue
-        metadata = dict(part.metadata)
-        if part.type == "image":
-            metadata.setdefault("clio_multimodal", "preserved")
-        copied = part.model_copy(
-            update={
-                "id": part.id or _new_part_id(),
-                "metadata": metadata,
-            }
-        )
-        if copied.type == "text" and copied.text:
-            has_text = True
-        parts.append(copied)
-    if not has_text and user_text:
-        parts.insert(0, Part(id=_new_part_id(), type="text", text=user_text))
-    return parts or [Part(id=_new_part_id(), type="text", text=user_text)]
-
-
-def _image_part_summaries(parts: list["Part"]) -> list[dict[str, Any]]:
-    """Return bounded metadata for image parts without logging raw base64."""
-
-    rows: list[dict[str, Any]] = []
-    for index, part in enumerate(parts):
-        if part.type != "image":
-            continue
-        rows.append(
-            {
-                "index": index,
-                "id": part.id,
-                "media_type": part.media_type or part.metadata.get("media_type", ""),
-                "has_data": bool(part.data),
-                "data_length": len(part.data or ""),
-                "url": part.url,
-                "metadata": {
-                    key: value
-                    for key, value in part.metadata.items()
-                    if key not in {"data", "base64", "file"}
-                },
-            }
-        )
-    return rows
-
-
-def _dspy_images_from_parts(parts: list["Part"]) -> list[Any]:
-    """Convert GACT image parts to DSPy image inputs for native vision models."""
-
-    images: list[Any] = []
-    for part in parts:
-        if part.type != "image":
-            continue
-        try:
-            import dspy  # noqa: PLC0415
-
-            if part.url:
-                images.append(dspy.Image(part.url))
-                continue
-            if part.data:
-                data = part.data
-                if data.startswith("data:"):
-                    images.append(dspy.Image(data))
-                    continue
-                media_type = part.media_type or part.metadata.get("media_type") or "image/png"
-                images.append(dspy.Image(f"data:{media_type};base64,{data}"))
-        except Exception:
-            # Keep malformed original image parts in the transcript; omit only
-            # the native model input that DSPy cannot encode.
-            continue
-    return images
 
 
 def _clear_session_model_refs(app: "FastAPI") -> None:
@@ -4104,7 +4413,6 @@ async def _run_turn_in_background(
     rationale = ""
     route_source = ""
     route_reason = ""
-    invocation_agent_id = "orchestrator"
     auto_routed_agent: "AgentDef | None" = None
     agent_runtime: dict[str, Any] = {}
     dynamic_agent_used: "AgentDef | None" = None
@@ -4175,12 +4483,7 @@ async def _run_turn_in_background(
         summary="User turn accepted and CLIO runtime started.",
         actor={"role": "user"},
         subject={"message_id": user_msg.id},
-        payload={
-            "text": user_text,
-            "retry_attempt_id": retry_attempt_id,
-            "image_part_count": len(_image_part_summaries(user_msg.parts)),
-            "native_image_count": len(native_images),
-        },
+        payload={"text": user_text, "retry_attempt_id": retry_attempt_id},
     )
 
     # iowarp/clio-agent#5: prepend any attached context files to the
@@ -4228,21 +4531,7 @@ async def _run_turn_in_background(
     # error_info; the caller sees the hook's reason.
     if context_file_error is None:
         try:
-            from clio_agent.runtime.hooks import (
-                HookInvocationError,
-            )
-            from clio_agent.runtime.hooks import (
-                fire_with_records as _fire_hook_with_records,
-            )
-            from clio_agent.runtime.hooks import (
-                matching_handlers as _matching_hook_handlers,
-            )
-
-            hook_scope = {
-                "session_id": sid,
-                "workspace_id": getattr(sess, "workspace_id", ""),
-                "blueprint_id": _runtime_active_agent_blueprint_id(app, sid),
-            }
+            from clio_agent.runtime.hooks import fire as _fire_hook
 
             _emit_semantic_event(
                 app,
@@ -4254,21 +4543,14 @@ async def _run_turn_in_background(
                 summary="pre_message hook dispatch started.",
                 actor={"hook": "pre_message"},
                 subject={"message_id": user_msg.id},
-                payload={
-                    "input": enriched_text,
-                    "handlers": _matching_hook_handlers(
-                        "pre_message",
-                        hook_scope=hook_scope,
-                        args=(sid, enriched_text),
-                    ),
-                },
+                payload={"input": enriched_text},
             )
-            hook_result = _fire_hook_with_records(
-                "pre_message",
-                sid,
-                enriched_text,
-                hook_scope=hook_scope,
-            )
+            hook_scope = {
+                "session_id": sid,
+                "workspace_id": getattr(sess, "workspace_id", ""),
+                "blueprint_id": _runtime_active_agent_blueprint_id(app, sid),
+            }
+            _fire_hook("pre_message", sid, enriched_text, hook_scope=hook_scope)
             _emit_semantic_event(
                 app,
                 sid,
@@ -4278,10 +4560,9 @@ async def _run_turn_in_background(
                 summary="pre_message hook dispatch completed.",
                 actor={"hook": "pre_message"},
                 subject={"message_id": user_msg.id},
-                payload={"handlers": hook_result.get("handlers", [])},
+                payload={},
             )
-        except (HookInvocationError, PermissionError) as exc:
-            hook_records = getattr(exc, "records", [])
+        except PermissionError as exc:
             _emit_semantic_event(
                 app,
                 sid,
@@ -4292,7 +4573,7 @@ async def _run_turn_in_background(
                 summary="pre_message hook blocked the turn.",
                 actor={"hook": "pre_message"},
                 subject={"message_id": user_msg.id},
-                payload={"error": str(exc), "handlers": hook_records},
+                payload={"error": str(exc)},
             )
             _emit_semantic_event(
                 app,
@@ -4304,7 +4585,7 @@ async def _run_turn_in_background(
                 summary="CLIO turn was blocked by pre_message hook.",
                 actor={"hook": "pre_message"},
                 subject={"message_id": user_msg.id},
-                payload={"error": str(exc), "handlers": hook_records},
+                payload={"error": str(exc)},
             )
             bus.publish(
                 Event(
@@ -4450,7 +4731,7 @@ async def _run_turn_in_background(
             raise _TurnTimedOut(turn_timeout_s) from exc
 
     async def _run_dynamic_agent_sync(agent_def: "AgentDef", prompt: str) -> Any:
-        runner = _run_tool_user_agent if agent_def.tools else _run_prompt_user_agent
+        runner = _blueprint_runner_for_agent(agent_def)
         loop = asyncio.get_running_loop()
         with _gact_app_context(app), _tool_session_context(sid):
             turn_context = contextvars.copy_context()
@@ -4474,17 +4755,15 @@ async def _run_turn_in_background(
         rows: list[dict[str, Any]],
         *,
         source_text: str,
+        completed_child_ids: set[str] | None = None,
+        completed_child_outputs: dict[str, str] | None = None,
         depth: int = 0,
         seen: Optional[set[str]] = None,
-        completed_child_ids: Optional[set[str]] = None,
-        completed_child_outputs: Optional[dict[str, str]] = None,
     ) -> list[dict[str, Any]]:
         if seen is None:
             seen = {parent_agent.id}
-        if completed_child_ids is None:
-            completed_child_ids = set()
-        if completed_child_outputs is None:
-            completed_child_outputs = {}
+        completed_child_ids = completed_child_ids or set()
+        completed_child_outputs = completed_child_outputs or {}
         if depth >= 3:
             return [
                 {
@@ -4499,7 +4778,11 @@ async def _run_turn_in_background(
             ]
 
         executed: list[dict[str, Any]] = []
-        for row in rows:
+        for row in _filter_repeated_successful_sync_handoffs(
+            rows,
+            completed_child_ids,
+            completed_child_outputs,
+        ):
             if not _should_execute_delegated_handoff(row):
                 executed.append(row)
                 continue
@@ -4523,24 +4806,6 @@ async def _run_turn_in_background(
                         "agent_id": target_id,
                         "status": "failed",
                         "error": "delegate_not_available",
-                        "parent_id": parent_agent.id,
-                        "depth": depth,
-                    }
-                )
-                continue
-            if _completed_child_repeat_blocked(
-                row,
-                completed_child_ids,
-                completed_child_outputs,
-            ):
-                executed.append(
-                    {
-                        **row,
-                        "agent_id": target.id,
-                        "status": "skipped",
-                        "stage": "delegate.skipped",
-                        "skip_reason": "completed_sync_child_already_returned",
-                        "delegation_lifecycle": "sync",
                         "parent_id": parent_agent.id,
                         "depth": depth,
                     }
@@ -4573,16 +4838,21 @@ async def _run_turn_in_background(
                 continue
 
             prompt = _delegated_expert_prompt(row, source_text)
-            execution_mode = "tool_agent" if target.tools else "prompt_agent"
-            child_runtime = _dynamic_agent_runtime_provenance(
-                app,
-                target,
-                execution_mode=execution_mode,
+            target_kind = _blueprint_module_kind(target) if _agent_definition_uses_blueprint_runtime(target) else ""
+            execution_mode = (
+                f"blueprint_{target_kind}"
+                if target_kind
+                else ("tool_agent" if target.tools else "prompt_agent")
             )
-            child_prompt_resolution = dict(
-                child_runtime.get("prompt", {}).get("resolution") or {}
-            )
-            child_provider = dict(child_runtime.get("model") or {})
+            is_blueprint_delegation = bool(target_kind)
+            delegation_event_prefix = "blueprint.delegation" if is_blueprint_delegation else "delegation"
+            delegation_blueprint = {
+                "pack_id": str(target.metadata.get("pack_id") or ""),
+                "pack_version": str(target.metadata.get("pack_version") or ""),
+                "agent_blueprint_id": str(target.metadata.get("agent_blueprint_id") or ""),
+                "parent_expert": parent_agent.id,
+                "child_expert": target.id,
+            }
             started_at = time.perf_counter()
             started_row = {
                 **row,
@@ -4595,29 +4865,21 @@ async def _run_turn_in_background(
                 "delegation_lifecycle": "sync",
                 "depth": depth,
                 "execution_mode": execution_mode,
-                "provider": child_provider,
-                "prompt_resolution": child_prompt_resolution,
-                "agent_runtime": child_runtime,
             }
             _emit_semantic_event(
                 app,
                 sid,
-                "delegation.started",
+                f"{delegation_event_prefix}.started",
                 turn_id=turn_id,
                 trace_id=trace_id,
                 status="running",
                 summary=f"{parent_agent.id} delegated sync work to {target.id}.",
                 actor={"agent_id": parent_agent.id, "role": "parent_expert"},
                 subject={"agent_id": target.id, "role": "child_expert"},
-                blueprint={
-                    "pack_id": str(target.metadata.get("pack_id") or ""),
-                    "pack_version": str(target.metadata.get("pack_version") or ""),
-                },
+                blueprint=delegation_blueprint,
                 provider={
-                    "provider_id": child_provider.get("provider_id", ""),
-                    "model_id": child_provider.get("model_id", ""),
-                    "provider_source": child_provider.get("provider_source", ""),
-                    "model_source": child_provider.get("model_source", ""),
+                    "provider_id": target.default_provider,
+                    "model_id": target.default_model,
                 },
                 payload=started_row,
             )
@@ -4642,7 +4904,6 @@ async def _run_turn_in_background(
                         source_text=prompt,
                     )
                 output = str(getattr(pred_child, "answer", "") or "").strip()
-                output_summary = _compact_dynamic_delegation_output(output)
                 if not nested:
                     child_rows = _coerce_expert_handoff_rows(
                         getattr(pred_child, "expert_handoffs", None)
@@ -4651,25 +4912,28 @@ async def _run_turn_in_background(
                         target,
                         child_rows,
                         source_text=prompt,
+                        completed_child_ids=completed_child_ids,
+                        completed_child_outputs=completed_child_outputs,
                         depth=depth + 1,
                         seen={*seen, target.id},
                     )
-                if nested:
-                    resumed_summary = _latest_parent_resumed_output_summary(nested, target.id)
-                    if resumed_summary and not output_summary:
-                        output_summary = resumed_summary
-                        output = resumed_summary
+                if _dynamic_answer_is_delegation_placeholder(output):
+                    output = (
+                        _tool_agent_empty_answer_fallback(
+                            getattr(pred_child, "trajectory", None)
+                        )
+                        or _latest_parent_resumed_output_summary(nested, target.id)
+                        or output
+                    )
+                output_summary = _compact_dynamic_delegation_output(output)
                 completed_row = {
                     **row,
                     "agent_id": target.id,
                     "parent_id": parent_agent.id,
                     "pack_id": str(target.metadata.get("pack_id") or ""),
                     "pack_version": str(target.metadata.get("pack_version") or ""),
-                    "provider_id": child_provider.get("provider_id", ""),
-                    "model_id": child_provider.get("model_id", ""),
-                    "provider": child_provider,
-                    "prompt_resolution": child_prompt_resolution,
-                    "agent_runtime": child_runtime,
+                    "provider_id": target.default_provider,
+                    "model_id": target.default_model,
                     "fallback_warnings": list(target.validation_errors),
                     "status": "completed",
                     "stage": "delegate.completed",
@@ -4686,24 +4950,19 @@ async def _run_turn_in_background(
                 _emit_semantic_event(
                     app,
                     sid,
-                    "delegation.completed",
+                    f"{delegation_event_prefix}.completed",
                     turn_id=turn_id,
                     trace_id=trace_id,
                     summary=f"{target.id} returned a compact result to {parent_agent.id}.",
                     actor={"agent_id": target.id, "role": "child_expert"},
                     subject={"agent_id": parent_agent.id, "role": "parent_expert"},
-                    blueprint={
-                        "pack_id": str(target.metadata.get("pack_id") or ""),
-                        "pack_version": str(target.metadata.get("pack_version") or ""),
+                    blueprint=delegation_blueprint,
+                    provider={
+                        "provider_id": target.default_provider,
+                        "model_id": target.default_model,
                     },
-                provider={
-                    "provider_id": child_provider.get("provider_id", ""),
-                    "model_id": child_provider.get("model_id", ""),
-                    "provider_source": child_provider.get("provider_source", ""),
-                    "model_source": child_provider.get("model_source", ""),
-                },
-                payload=completed_row,
-            )
+                    payload=completed_row,
+                )
                 _append_live_assistant_part(
                     app,
                     sid,
@@ -4715,7 +4974,6 @@ async def _run_turn_in_background(
                     ),
                 )
                 executed.append(completed_row)
-                completed_child_ids.add(target.id)
                 resumed_row = {
                         "agent_id": parent_agent.id,
                         "parent_id": parent_agent.parent_id,
@@ -4731,12 +4989,13 @@ async def _run_turn_in_background(
                 _emit_semantic_event(
                     app,
                     sid,
-                    "delegation.parent_resumed",
+                    f"{delegation_event_prefix}.parent_resumed",
                     turn_id=turn_id,
                     trace_id=trace_id,
                     summary=f"{parent_agent.id} resumed after {target.id}.",
                     actor={"agent_id": parent_agent.id, "role": "parent_expert"},
                     subject={"agent_id": target.id, "role": "child_expert"},
+                    blueprint=delegation_blueprint,
                     payload=resumed_row,
                 )
                 _append_live_assistant_part(
@@ -4759,11 +5018,8 @@ async def _run_turn_in_background(
                         "parent_id": parent_agent.id,
                         "pack_id": str(target.metadata.get("pack_id") or ""),
                         "pack_version": str(target.metadata.get("pack_version") or ""),
-                        "provider_id": child_provider.get("provider_id", ""),
-                        "model_id": child_provider.get("model_id", ""),
-                        "provider": child_provider,
-                        "prompt_resolution": child_prompt_resolution,
-                        "agent_runtime": child_runtime,
+                        "provider_id": target.default_provider,
+                        "model_id": target.default_model,
                         "fallback_warnings": list(target.validation_errors),
                         "status": "failed",
                         "depth": depth,
@@ -4775,25 +5031,20 @@ async def _run_turn_in_background(
                 _emit_semantic_event(
                     app,
                     sid,
-                    "delegation.failed",
+                    f"{delegation_event_prefix}.failed",
                     turn_id=turn_id,
                     trace_id=trace_id,
                     status="failed",
                     summary=f"{target.id} failed during sync delegation.",
                     actor={"agent_id": target.id, "role": "child_expert"},
                     subject={"agent_id": parent_agent.id, "role": "parent_expert"},
-                    blueprint={
-                        "pack_id": str(target.metadata.get("pack_id") or ""),
-                        "pack_version": str(target.metadata.get("pack_version") or ""),
+                    blueprint=delegation_blueprint,
+                    provider={
+                        "provider_id": target.default_provider,
+                        "model_id": target.default_model,
                     },
-                provider={
-                    "provider_id": child_provider.get("provider_id", ""),
-                    "model_id": child_provider.get("model_id", ""),
-                    "provider_source": child_provider.get("provider_source", ""),
-                    "model_source": child_provider.get("model_source", ""),
-                },
-                payload=failed_row,
-            )
+                    payload=failed_row,
+                )
                 _append_live_assistant_part(
                     app,
                     sid,
@@ -4843,7 +5094,10 @@ async def _run_turn_in_background(
                 if repeated_skips:
                     previous_answer = str(getattr(latest_pred, "answer", "") or "").strip()
                     if not previous_answer:
-                        previous_answer = _latest_parent_resumed_output_summary(all_rows, parent_agent.id)
+                        previous_answer = _latest_parent_resumed_output_summary(
+                            all_rows,
+                            parent_agent.id,
+                        )
                         latest_pred = SimpleNamespace(
                             answer=previous_answer,
                             selected_expert=parent_agent.id,
@@ -4881,27 +5135,79 @@ async def _run_turn_in_background(
                         expert_handoffs=self_contract_rows,
                     )
                     continue
-                should_repair_missing_handoff = (
-                    child_context
-                    and missing_handoff_repairs < 2
-                    and (_round == 0 or _dynamic_answer_has_pending_child_work(previous_answer))
+                declared_child_ids = {
+                    row.id
+                    for row in _runtime_active_agent_blueprint_rows(app, session_id=sid)
+                    if row.enabled and row.parent_id == parent_agent.id
+                }
+                completed_rows_so_far = [
+                    row
+                    for row in all_rows
+                    if row.get("status") == "completed" and row.get("stage") == "delegate.completed"
+                ]
+                completed_child_ids = {
+                    str(row.get("agent_id") or row.get("delegate_to") or "")
+                    for row in completed_rows_so_far
+                }
+                completed_outputs = [
+                    str(row.get("output_summary") or "").strip()
+                    for row in completed_rows_so_far
+                    if str(row.get("output_summary") or "").strip()
+                ]
+                executable_rows = _next_expert_marker_handoffs(
+                    source_text=source_text,
+                    completed_outputs=completed_outputs,
+                    declared_child_ids=declared_child_ids,
+                    completed_child_ids=completed_child_ids,
                 )
-                if should_repair_missing_handoff:
-                    missing_handoff_repairs += 1
-                    repair_prompt = (
-                        f"Original user request:\n{source_text}\n\n"
-                        f"Previous non-executable answer from parent expert {parent_agent.id!r}:\n"
-                        f"{previous_answer}\n\n"
-                        f"{child_context}\n\n"
-                        "The previous answer described delegation but did not return executable "
-                        "expert_handoffs. Continue by returning concrete expert_handoffs JSON rows "
-                        "for the next declared child expert that should act. Do not say you will "
-                        "route or delegate unless expert_handoffs contains the requested child call. "
-                        "If no child should run, explain why and return expert_handoffs as []."
+                if not executable_rows:
+                    executable_rows = _continuation_contract_handoffs(
+                        parent_agent,
+                        source_text=source_text,
+                        answer_text=previous_answer,
+                        completed_outputs=completed_outputs,
+                        declared_child_ids=declared_child_ids,
+                        completed_child_ids=completed_child_ids,
                     )
-                    latest_pred = await _run_dynamic_agent_sync(parent_agent, repair_prompt)
-                    continue
-                break
+                if executable_rows:
+                    requested_rows = executable_rows
+                else:
+                    should_repair_missing_handoff = (
+                        child_context
+                        and missing_handoff_repairs < 2
+                        and (_round == 0 or _dynamic_answer_has_pending_child_work(previous_answer))
+                    )
+                    if should_repair_missing_handoff:
+                        missing_handoff_repairs += 1
+                        repair_prompt = (
+                            f"Original user request:\n{source_text}\n\n"
+                            f"Previous non-executable answer from parent expert {parent_agent.id!r}:\n"
+                            f"{previous_answer}\n\n"
+                            f"{child_context}\n\n"
+                            "The previous answer described delegation but did not return executable "
+                            "expert_handoffs. Continue by returning concrete expert_handoffs JSON rows "
+                            "for the next declared child expert that should act. Do not say you will "
+                            "route or delegate unless expert_handoffs contains the requested child call. "
+                            "If no child should run, explain why and return expert_handoffs as []."
+                        )
+                        latest_pred = await _run_dynamic_agent_sync(parent_agent, repair_prompt)
+                        continue
+                    if _dynamic_answer_is_delegation_placeholder(previous_answer):
+                        fallback_answer = _latest_parent_resumed_output_summary(
+                            all_rows,
+                            parent_agent.id,
+                        )
+                        if fallback_answer:
+                            latest_pred = SimpleNamespace(
+                                answer=fallback_answer,
+                                selected_expert=parent_agent.id,
+                                routing_rationale=(
+                                    "non-final delegation placeholder replaced with "
+                                    "completed child evidence"
+                                ),
+                                expert_handoffs=[],
+                            )
+                    break
             executed_rows = await _execute_delegated_experts(
                 parent_agent,
                 requested_rows,
@@ -4956,6 +5262,19 @@ async def _run_turn_in_background(
                     routing_rationale=(
                         "parent resume produced an empty answer; preserving compact "
                         "completed child delegation evidence"
+                    ),
+                    expert_handoffs=[],
+                )
+        final_answer = str(getattr(latest_pred, "answer", "") or "").strip()
+        if _dynamic_answer_is_delegation_placeholder(final_answer):
+            fallback_answer = _latest_parent_resumed_output_summary(all_rows, parent_agent.id)
+            if fallback_answer:
+                latest_pred = SimpleNamespace(
+                    answer=fallback_answer,
+                    selected_expert=parent_agent.id,
+                    routing_rationale=(
+                        "non-final delegation placeholder replaced with completed "
+                        "child evidence at settlement boundary"
                     ),
                     expert_handoffs=[],
                 )
@@ -5020,10 +5339,7 @@ async def _run_turn_in_background(
 
         _refresh_argonne_lm_token(app.state.agent)
 
-        if (
-            active_agent_id not in _EXECUTABLE_SESSION_AGENT_IDS
-            or active_agent_id in active_blueprint_agent_ids
-        ):
+        if active_agent_id not in _EXECUTABLE_SESSION_AGENT_IDS or active_agent_id in active_blueprint_agent_ids:
             prompt_registry_factory = getattr(app.state, "prompt_registry_for_request", None)
             prompt_registry = (
                 prompt_registry_factory(session_id=sid)
@@ -5040,8 +5356,17 @@ async def _run_turn_in_background(
                 raise _UnsupportedSessionAgent(active_agent_id)
             prompt_resolution = dict(dynamic_agent.metadata.get("prompt_resolution") or {})
             dynamic_agent_used = dynamic_agent
-            runner = _run_tool_user_agent if dynamic_agent.tools else _run_prompt_user_agent
-            execution_mode = "tool_agent" if dynamic_agent.tools else "prompt_agent"
+            runner = _blueprint_runner_for_agent(dynamic_agent)
+            dynamic_kind = (
+                _blueprint_module_kind(dynamic_agent)
+                if _agent_definition_uses_blueprint_runtime(dynamic_agent)
+                else ""
+            )
+            execution_mode = (
+                f"blueprint_{dynamic_kind}"
+                if dynamic_kind
+                else ("tool_agent" if dynamic_agent.tools else "prompt_agent")
+            )
             agent_runtime = _dynamic_agent_runtime_provenance(
                 app,
                 dynamic_agent,
@@ -5051,9 +5376,13 @@ async def _run_turn_in_background(
                 session_token = _ACTIVE_GACT_SESSION_ID.set(sid)
                 try:
                     module = (
-                        _build_tool_user_agent_module(app.state.agent, dynamic_agent)
-                        if dynamic_agent.tools
-                        else _build_prompt_user_agent_module(app.state.agent, dynamic_agent)
+                        _build_blueprint_dspy_module(app.state.agent, dynamic_agent)
+                        if _agent_definition_uses_blueprint_runtime(dynamic_agent)
+                        else (
+                            _build_tool_user_agent_module(app.state.agent, dynamic_agent)
+                            if dynamic_agent.tools
+                            else _build_prompt_user_agent_module(app.state.agent, dynamic_agent)
+                        )
                     )
                 finally:
                     _ACTIVE_GACT_SESSION_ID.reset(session_token)
@@ -5085,6 +5414,7 @@ async def _run_turn_in_background(
                     "input": enriched_text,
                     "prompt_resolution": prompt_resolution,
                     "agent_runtime": agent_runtime,
+                    "native_image_count": len(native_images),
                 },
             )
             with _cancellation_checker(cancel_requested), _tool_session_context(sid):
@@ -5097,6 +5427,7 @@ async def _run_turn_in_background(
                         session_mode=getattr(sess, "mode", "chat"),
                         session_edit_mode=getattr(sess, "edit_mode", "diff"),
                         agent_override=module,
+                        images=native_images,
                         cancel_requested=cancel_requested,
                     )
                 )
@@ -5132,12 +5463,12 @@ async def _run_turn_in_background(
                         "input": enriched_text,
                         "prompt_resolution": prompt_resolution,
                         "agent_runtime": agent_runtime,
+                        "native_image_count": len(native_images),
                     },
                 )
                 with _cancellation_checker(cancel_requested), _tool_session_context(sid):
                     loop = asyncio.get_running_loop()
-                    with _gact_app_context(app):
-                        turn_context = contextvars.copy_context()
+                    turn_context = contextvars.copy_context()
                     pred = await _await_turn_work(
                         loop.run_in_executor(
                             None,
@@ -5147,9 +5478,9 @@ async def _run_turn_in_background(
                                 app.state.agent,
                                 dynamic_agent,
                                 enriched_text,
-                                sid,
-                                cancel_requested,
-                            ),
+                            sid,
+                            cancel_requested,
+                        ),
                         ),
                     )
                 _emit_semantic_event(
@@ -5325,11 +5656,7 @@ async def _run_turn_in_background(
             kind_raw = str(ask_user_action.get("kind") or "").strip()
             kind = kind_raw if kind_raw in {"freeform", "choice", "confirmation"} else ""
             if not kind:
-                kind = (
-                    "choice"
-                    if options and not ask_user_action.get("allow_freeform")
-                    else "freeform"
-                )
+                kind = "choice" if options and not ask_user_action.get("allow_freeform") else "freeform"
             question = UserQuestion(
                 id=_new_question_id(),
                 session_id=sid,
@@ -5646,6 +5973,9 @@ async def _run_turn_in_background(
             recoverable=True,
         )
 
+    if error_info is None and not answer_text and expert_handoffs:
+        answer_text = _fallback_answer_from_delegation(expert_handoffs)
+
     # Build assistant parts — routing_decision (v0.2) first when we
     # got a selected_agent, then optional thinking trace, then the
     # text answer, then any file_diffs.
@@ -5852,26 +6182,6 @@ async def _run_turn_in_background(
     live_ids = getattr(app.state, "live_assistant_message_ids", {}) or {}
     live_assistant_msg_id = str(live_ids.get(sid) or "")
     asst_id = streamed_assistant_msg_id or live_assistant_msg_id or _new_message_id("asst")
-    runtime_provenance = _turn_runtime_provenance(
-        app,
-        sess,
-        turn_id=turn_id,
-        trace_id=trace_id,
-        user_message_id=user_msg.id,
-        assistant_message_id=asst_id,
-        selected_agent=selected_agent or invocation_agent_id,
-        route_source=route_source,
-        route_reason=route_reason,
-        agent_runtime=agent_runtime,
-        active_agent_def=dynamic_agent_used,
-        prompt_resolution=prompt_resolution,
-        expert_handoffs=expert_handoffs,
-        tools_called=tools_called,
-        context_file_provenance=context_file_provenance,
-        memory_search_metadata=memory_search_metadata,
-        error_info=error_info,
-    )
-    assistant_metadata["runtime_provenance"] = runtime_provenance
     if streamed_assistant_part_id is not None and answer_text:
         # Replace the routing/text/diff parts list's text part
         # with a stub carrying the streamed part_id, so the final
@@ -6221,18 +6531,7 @@ async def _run_turn_in_background(
     # so user audit code sees the settled assistant + can ship to
     # external systems. Errors are swallowed (post_* contract).
     try:
-        from clio_agent.runtime.hooks import (
-            fire_with_records as _fire_hook_with_records,
-        )
-        from clio_agent.runtime.hooks import (
-            matching_handlers as _matching_hook_handlers,
-        )
-
-        hook_scope = {
-            "session_id": sid,
-            "workspace_id": getattr(sess, "workspace_id", ""),
-            "blueprint_id": _runtime_active_agent_blueprint_id(app, sid),
-        }
+        from clio_agent.runtime.hooks import fire as _fire_hook
 
         _emit_semantic_event(
             app,
@@ -6244,20 +6543,17 @@ async def _run_turn_in_background(
             summary="post_message hook dispatch started.",
             actor={"hook": "post_message"},
             subject={"message_id": assistant_msg.id},
-            payload={
-                "assistant": assistant_msg.model_dump(exclude_none=True),
-                "handlers": _matching_hook_handlers(
-                    "post_message",
-                    hook_scope=hook_scope,
-                    args=(sid, assistant_msg.model_dump(exclude_none=True)),
-                ),
-            },
+            payload={"assistant": assistant_msg.model_dump(exclude_none=True)},
         )
-        hook_result = _fire_hook_with_records(
+        _fire_hook(
             "post_message",
             sid,
             assistant_msg.model_dump(exclude_none=True),
-            hook_scope=hook_scope,
+            hook_scope={
+                "session_id": sid,
+                "workspace_id": getattr(sess, "workspace_id", ""),
+                "blueprint_id": _runtime_active_agent_blueprint_id(app, sid),
+            },
         )
         _emit_semantic_event(
             app,
@@ -6268,7 +6564,7 @@ async def _run_turn_in_background(
             summary="post_message hook dispatch completed.",
             actor={"hook": "post_message"},
             subject={"message_id": assistant_msg.id},
-            payload={"handlers": hook_result.get("handlers", [])},
+            payload={},
         )
     except Exception:  # noqa: BLE001
         _emit_semantic_event(
@@ -6446,7 +6742,9 @@ def _finalize_context_frame(
             frame.setdefault("metadata", {})["turn_error"] = error_info.model_dump(
                 exclude_none=True
             )
-        app.state.bus.publish(Event(type="context.frame.completed", session_id=sid, payload=frame))
+        app.state.bus.publish(
+            Event(type="context.frame.completed", session_id=sid, payload=frame)
+        )
         break
 
 
@@ -7933,39 +8231,6 @@ def _build_stream_listeners(agent: Any, stream_listener_cls: Any) -> list[Any]:
         predict=getattr(agent, "answer_synthesizer", None),
     )
 
-    for expert_name in ("data_expert", "analysis_expert"):
-        expert_predict = getattr(getattr(agent, expert_name, None), "agent", None)
-        _append_stream_listener(
-            listeners,
-            stream_listener_cls,
-            signature_field_name="analysis",
-            predict=expert_predict,
-        )
-        _append_stream_listener(
-            listeners,
-            stream_listener_cls,
-            signature_field_name="recommendations",
-            predict=expert_predict,
-        )
-
-    visualization_extract = getattr(
-        getattr(getattr(agent, "visualization_expert", None), "agent", None),
-        "extract",
-        None,
-    )
-    visualization_predict = getattr(visualization_extract, "predict", None)
-    _append_stream_listener(
-        listeners,
-        stream_listener_cls,
-        signature_field_name="visualization_description",
-        predict=visualization_predict,
-    )
-    _append_stream_listener(
-        listeners,
-        stream_listener_cls,
-        signature_field_name="file_path",
-        predict=visualization_predict,
-    )
     return listeners
 
 
@@ -8030,7 +8295,6 @@ async def _try_streamed_forward(
     emit_chunk,
     session_mode: str = "chat",
     session_edit_mode: str = "diff",
-    images: list[Any] | None = None,
     agent_override: Any | None = None,
     cancel_requested: Any | None = None,
 ) -> Optional[Any]:
@@ -8131,7 +8395,6 @@ async def _try_streamed_forward(
                 session_id=sid,
                 session_mode=session_mode,
                 session_edit_mode=session_edit_mode,
-                images=images or [],
                 cancel_requested=cancel_requested,
             )
         except TypeError:
@@ -8141,7 +8404,6 @@ async def _try_streamed_forward(
                     session_id=sid,
                     session_mode=session_mode,
                     session_edit_mode=session_edit_mode,
-                    images=images or [],
                 )
             except TypeError:
                 stream_iter = streamed(question=enriched_text, session_id=sid)
@@ -8321,11 +8583,7 @@ def _enrich_with_context_files(app: "FastAPI", sid: str, user_text: str) -> str:
         display_path = row.get("display_path") or row.get("path") or path_str
         if not path_str:
             continue
-        for marker in {
-            f"@{display_path}",
-            f"@{row.get('path') or ''}",
-            f"@{Path(display_path).name}",
-        }:
+        for marker in {f"@{display_path}", f"@{row.get('path') or ''}", f"@{Path(display_path).name}"}:
             if marker != "@":
                 user_text = user_text.replace(marker, display_path)
         mode = row.get("mode") or "read"
@@ -8346,9 +8604,7 @@ def _enrich_with_context_files(app: "FastAPI", sid: str, user_text: str) -> str:
         # in _apply_edit_to_disk, plus mode=plan/architect) still
         # protect against unintended writes.
         if mode == "edit" and not p.exists():
-            blocks.append(
-                f"### Context file: {display_path} (mode=edit, target does not exist yet)"
-            )
+            blocks.append(f"### Context file: {display_path} (mode=edit, target does not exist yet)")
             continue
         if not p.exists():
             raise _context_file_access_error(
@@ -8427,9 +8683,7 @@ def _enrich_with_context_files(app: "FastAPI", sid: str, user_text: str) -> str:
     )
 
 
-def _memory_search_request_from_message(
-    message: "Message", user_text: str
-) -> dict[str, Any] | None:
+def _memory_search_request_from_message(message: "Message", user_text: str) -> dict[str, Any] | None:
     raw = message.metadata.get("memory_search") if isinstance(message.metadata, Mapping) else None
     if raw is None and isinstance(message.metadata, Mapping):
         if not message.metadata.get("include_cross_session_memory"):
@@ -8948,32 +9202,25 @@ def _signature_prompt(signature: Any) -> str:
 
 
 def _builtin_agents() -> list[AgentDef]:
-    """Return CLIO's built-in tier-2 experts as AgentDef rows.
+    """Return default registry Agent Blueprint rows, if installed.
 
-    Imports are lazy inside the function because importing
-    clio_agent.experts at module load time pulls in DSPy + the
-    tool bridges — heavy, and we don't want it to explode scaffold
-    tests if DSPy isn't available. Each expert exposes
-    ``get_capabilities()`` returning ``{name, description, keywords,
-    tools}``; we map those onto the GACT AgentDef shape.
-
-    A tier-1 orchestrator row ('main') is synthesised so the TUI
-    can see the full hierarchy; its tools list is empty (the
-    orchestrator dispatches rather than acting itself).
+    The historical in-repo builtin blueprint directory is no longer a runtime
+    source. This function name remains for older call sites, but its rows come
+    from normal Agent Blueprint discovery and retain registry install metadata.
     """
 
     builtin_rows = []
-    for row in load_agent_blueprints(blueprint_id="data-exploration"):
+    for row in load_agent_blueprints(blueprint_id=DEFAULT_AGENT_BLUEPRINT_ID):
         metadata = {
             **row.metadata,
-            "source_blueprint": "builtin",
+            "source_blueprint": "default_registry",
             "routes_to": sorted(_EXPERT_CAPABILITIES)
             if row.id == "main"
             else row.metadata.get("routes_to", []),
         }
         if row.parent_id:
             metadata.setdefault("parent", row.parent_id)
-        builtin_rows.append(row.model_copy(update={"source": "builtin", "metadata": metadata}))
+        builtin_rows.append(row.model_copy(update={"metadata": metadata}))
     return builtin_rows
 
 
@@ -9062,154 +9309,6 @@ def _load_skills_from_disk() -> list[AgentDef]:
     return list(rows.values())
 
 
-def _skill_row_from_file(path: Path, *, root: Path, scope: str, source: str) -> dict[str, Any] | None:
-    """Load one skill definition as runtime instruction material."""
-
-    try:
-        text = path.read_text(encoding="utf-8")
-    except OSError:
-        return None
-    meta, body = _parse_skill_frontmatter(text)
-    skill_id = str(meta.get("name") or meta.get("id") or _default_skill_id(path)).strip()
-    if not skill_id:
-        return None
-    description = str(meta.get("description") or "").strip()
-    if not description:
-        for line in body.splitlines():
-            line = line.strip()
-            if line:
-                description = line[:240]
-                break
-    return {
-        "id": skill_id,
-        "title": str(meta.get("title") or skill_id).strip(),
-        "description": description,
-        "body": body.strip(),
-        "scope": scope,
-        "source": source,
-        "root": str(root),
-        "source_path": str(path),
-        "layout": "skill_md" if path.name.upper() == "SKILL.MD" else "flat_md",
-    }
-
-
-def _find_skill_in_root(
-    skill_id: str,
-    root: Path,
-    *,
-    scope: str,
-    source: str,
-) -> dict[str, Any] | None:
-    if not root.exists() or not root.is_dir():
-        return None
-    for path in _skill_markdown_files(root):
-        row = _skill_row_from_file(path, root=root, scope=scope, source=source)
-        if row is not None and row["id"] == skill_id:
-            return row
-    return None
-
-
-def _declared_skill_search_roots(
-    *,
-    home: Path,
-    cwd: Path,
-    pack_root: Path | None = None,
-) -> list[tuple[Path, str, str]]:
-    """Return skill roots in runtime resolution precedence order."""
-
-    roots: list[tuple[Path, str, str]] = []
-    if pack_root is not None:
-        roots.append((pack_root / "skills", "pack", "agent_blueprint"))
-    roots.extend(
-        [
-            (cwd / ".clio" / "skills", "workspace", "clio"),
-            (cwd / ".claude" / "skills", "workspace", "claude"),
-            (cwd / ".codex" / "skills", "workspace", "codex"),
-            (cwd / ".agents" / "skills", "workspace", "agents"),
-            (home / ".config" / "clio-agent" / "skills", "global", "clio"),
-            (home / ".claude" / "skills", "global", "claude"),
-            (home / ".codex" / "skills", "global", "codex"),
-            (home / ".agents" / "skills", "global", "agents"),
-        ]
-    )
-    return roots
-
-
-def _resolve_declared_skill_rows(
-    agent_def: AgentDef,
-    *,
-    home: Path | None = None,
-    cwd: Path | None = None,
-) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
-    """Resolve an expert's declared skill ids to instruction bodies."""
-
-    requested = [str(item).strip() for item in agent_def.skills if str(item).strip()]
-    if not requested:
-        return [], []
-    metadata = agent_def.metadata if isinstance(agent_def.metadata, Mapping) else {}
-    pack_root_raw = (
-        metadata.get("agent_blueprint_root")
-        or metadata.get("pack_root")
-        or metadata.get("root")
-        or ""
-    )
-    pack_root = Path(str(pack_root_raw)).expanduser() if str(pack_root_raw).strip() else None
-    search_roots = _declared_skill_search_roots(
-        home=home or Path.home(),
-        cwd=cwd or Path(os.getcwd()),
-        pack_root=pack_root,
-    )
-    resolved: list[dict[str, Any]] = []
-    missing: list[dict[str, str]] = []
-    for skill_id in requested:
-        found: dict[str, Any] | None = None
-        for root, scope, source in search_roots:
-            found = _find_skill_in_root(skill_id, root, scope=scope, source=source)
-            if found is not None:
-                break
-        if found is None:
-            missing.append({"id": skill_id, "status": "missing"})
-        else:
-            resolved.append(found)
-    return resolved, missing
-
-
-def _apply_declared_skill_resolution(
-    app: "FastAPI",
-    agent_def: AgentDef,
-    *,
-    session_id: str = "",
-    workspace_id: str = "",
-) -> AgentDef:
-    """Attach expert-declared skill bodies and diagnostics to an agent."""
-
-    if not agent_def.skills:
-        return agent_def
-    cwd = _runtime_workspace_catalog_cwd(app, workspace_id=workspace_id, session_id=session_id)
-    resolved, missing = _resolve_declared_skill_rows(agent_def, cwd=cwd)
-    metadata = dict(agent_def.metadata)
-    metadata["resolved_skills"] = resolved
-    metadata["skill_resolution"] = {
-        "requested": list(agent_def.skills),
-        "resolved": [
-            {
-                "id": str(row.get("id") or ""),
-                "scope": str(row.get("scope") or ""),
-                "source": str(row.get("source") or ""),
-                "source_path": str(row.get("source_path") or ""),
-            }
-            for row in resolved
-        ],
-        "missing": missing,
-    }
-    warnings = list(metadata.get("validation_warnings", []))
-    for row in missing:
-        warnings.append(f"declared skill not found at runtime: {row['id']}")
-    if warnings:
-        metadata["validation_warnings"] = warnings
-    return agent_def.model_copy(update={"metadata": metadata})
-
-
 def _load_command_files_from_disk(
     *,
     home: Path | None = None,
@@ -9220,12 +9319,12 @@ def _load_command_files_from_disk(
     import os
 
     rows: dict[str, dict[str, Any]] = {}
-    search_roots = list(extra_roots or [])
-    search_roots.extend(
+    roots: list[tuple[Path, str, dict[str, Any]]] = [
         (root, source, {})
         for root, source in _command_search_roots(home or Path.home(), cwd or Path(os.getcwd()))
-    )
-    for root, source, extra_metadata in search_roots:
+    ]
+    roots.extend(extra_roots or [])
+    for root, source, extra_metadata in roots:
         if not root.exists() or not root.is_dir():
             continue
         for md in sorted(root.glob("*.md"), key=lambda path: str(path).lower()):
@@ -9274,7 +9373,8 @@ def _load_command_files_from_disk(
                 "status": status,
                 "enabled": enabled,
                 "error": str(
-                    meta.get("error") or ("not_supported" if status == "unsupported" else "")
+                    meta.get("error")
+                    or ("not_supported" if status == "unsupported" else "")
                 ),
                 "disabled_reason": disabled_reason,
                 "agent_id": agent_id,
@@ -9297,14 +9397,16 @@ def _load_command_files_from_disk(
                     meta.get("agent-invocable", meta.get("agent_invocable")),
                     False,
                 ),
-                "argument_hint": str(meta.get("argument-hint") or meta.get("argument_hint") or ""),
+                "argument_hint": str(
+                    meta.get("argument-hint") or meta.get("argument_hint") or ""
+                ),
                 "arguments": meta.get("arguments") or [],
                 "prompt_template": body,
                 "prompt_profile": str(
                     meta.get("prompt-profile") or meta.get("prompt_profile") or ""
                 ),
+                **extra_metadata,
             }
-            command.update(extra_metadata)
             rows.setdefault(command_id, command)
     return list(rows.values())
 
@@ -9489,11 +9591,11 @@ def _tool_visible_to_for_catalog(tool_name: str) -> list[str]:
 from typing import Protocol
 
 from clio_agent.gact.agent_blueprints import (
+    DEFAULT_AGENT_BLUEPRINT_ID,
     discover_agent_blueprints,
     install_agent_blueprint,
     load_agent_blueprint_path,
     load_agent_blueprints,
-    load_hook_descriptors,
     load_mcp_descriptors,
     read_install_metadata,
     uninstall_agent_blueprint,
@@ -9831,8 +9933,7 @@ def build_app(
     cors_origins_env = os.environ.get("CLIO_GACT_CORS_ORIGINS", "").strip()
     if cors_origins_env:
         allow_origins: list[str] = (
-            ["*"]
-            if cors_origins_env == "*"
+            ["*"] if cors_origins_env == "*"
             else [o.strip() for o in cors_origins_env.split(",") if o.strip()]
         )
     else:
@@ -10307,7 +10408,6 @@ def build_app(
                         "handler_counts", {}
                     )
                 ),
-                x_clio_files_content=True,  # GET /v1/sessions/{sid}/context/files/content
                 x_clio_capability_gaps=_capability_gap_metadata(),
             ),
             transports=TransportFlags(events_sse=True, events_websocket=False),
@@ -10378,25 +10478,17 @@ def build_app(
             active_blueprint_root = active_blueprint_path
             if active_blueprint_root is None and active_blueprint_id:
                 active = next(
-                    (
-                        row
-                        for row in discover_agent_blueprints(cwd=cwd)
-                        if row.id == active_blueprint_id
-                    ),
+                    (row for row in discover_agent_blueprints(cwd=cwd) if row.id == active_blueprint_id),
                     None,
                 )
                 active_blueprint_root = active.root if active is not None else None
             if active_blueprint_root is not None and (active_blueprint_root / "prompts").is_dir():
-                sources.append(
-                    PromptSource("session_agent_blueprint", active_blueprint_root / "prompts")
-                )
+                sources.append(PromptSource("session_agent_blueprint", active_blueprint_root / "prompts"))
         active_pack_path = _active_prompt_pack_path(session_id)
         if active_pack_path is not None and (active_pack_path / "prompts").is_dir():
             sources.append(PromptSource("session_pack", active_pack_path / "prompts"))
         if session_id:
-            sources.append(
-                PromptSource("session", prompt_write_root.parent / "session-prompts" / session_id)
-            )
+            sources.append(PromptSource("session", prompt_write_root.parent / "session-prompts" / session_id))
         return sources
 
     def _prompt_write_root_for_request(
@@ -10483,36 +10575,24 @@ def build_app(
         context = _prompt_render_context(app)
         if session_id or workspace_id:
             try:
-                agents = [
-                    row
-                    for row in _agent_rows(session_id=session_id, workspace_id=workspace_id)
-                    if row.enabled
-                ]
+                agents = [row for row in _agent_rows(session_id=session_id, workspace_id=workspace_id) if row.enabled]
                 by_parent: dict[str, list[AgentDef]] = {}
                 for agent in agents:
                     by_parent.setdefault(agent.parent_id or "", []).append(agent)
 
                 def render_tree(parent_id: str = "", depth: int = 0) -> list[str]:
                     lines: list[str] = []
-                    for agent in sorted(
-                        by_parent.get(parent_id, []), key=lambda row: (row.tier, row.id)
-                    ):
+                    for agent in sorted(by_parent.get(parent_id, []), key=lambda row: (row.tier, row.id)):
                         indent = "  " * depth
                         detail = f" - {agent.description}" if agent.description else ""
                         lines.append(f"{indent}- {agent.id}: {agent.title}{detail}")
                         lines.extend(render_tree(agent.id, depth + 1))
                     return lines
 
-                context["agents.available_tree"] = (
-                    "\n".join(render_tree()) or "(no enabled experts)"
-                )
-                context["agents.available_flat"] = (
-                    "\n".join(
-                        f"- {agent.id}: {agent.title}"
-                        for agent in sorted(agents, key=lambda row: row.id)
-                    )
-                    or "(no enabled experts)"
-                )
+                context["agents.available_tree"] = "\n".join(render_tree()) or "(no enabled experts)"
+                context["agents.available_flat"] = "\n".join(
+                    f"- {agent.id}: {agent.title}" for agent in sorted(agents, key=lambda row: row.id)
+                ) or "(no enabled experts)"
             except Exception:
                 pass
             if session_id:
@@ -10527,9 +10607,7 @@ def build_app(
                         pack_id = str(metadata.get("active_expert_pack_id") or "").strip()
                         blueprint_id = str(metadata.get("active_agent_blueprint_id") or "").strip()
                 context["session.active_pack"] = pack_id or "(no active expert pack)"
-                context["session.active_agent_blueprint"] = (
-                    blueprint_id or "(no active agent blueprint)"
-                )
+                context["session.active_agent_blueprint"] = blueprint_id or "(no active agent blueprint)"
                 try:
                     commands = [
                         f"- {row.get('id')}: {row.get('description') or row.get('title')}"
@@ -10538,9 +10616,7 @@ def build_app(
                             cwd=_command_cwd_for_request(session_id),
                         )
                     ]
-                    context["commands.agent_invocable"] = (
-                        "\n".join(commands) or "(no agent-invocable commands)"
-                    )
+                    context["commands.agent_invocable"] = "\n".join(commands) or "(no agent-invocable commands)"
                 except Exception:
                     pass
         return context
@@ -10564,9 +10640,7 @@ def build_app(
         rows = registry.list()
         payload: dict[str, Any] = {
             "prompts": [asdict(row) for row in rows],
-            "sources": [
-                {"scope": source.scope, "root": str(source.root)} for source in registry.sources
-            ],
+            "sources": [{"scope": source.scope, "root": str(source.root)} for source in registry.sources],
         }
         overlay_prompt_sources = _prompt_agent_overlay_for_request(session_id or "")
         if overlay_prompt_sources:
@@ -11801,636 +11875,6 @@ def build_app(
         )
         return row
 
-    @app.post("/v1/sessions/{sid}/attachments")
-    async def upload_attachment(sid: str, request: Request) -> dict[str, Any]:
-        """Upload a file's BYTES into the session workspace and register
-        it as a context file so the agent reads it next turn.
-
-        Body (JSON, base64 — NOT multipart): ``{file: <base64>, filename,
-        mime_type?, mode?}``. base64-in-JSON is deliberate: the CLIO
-        Desktop transports HTTP through a Tauri/ureq bridge that only
-        forwards UTF-8 string bodies (FormData is stringified to
-        "[object FormData]"), and over an SSH tunnel the body must survive
-        that bridge — so multipart cannot work in the shipped desktop.
-
-        Bytes are written under ``{workspace_root}/.clio/attachments/{sid}/``
-        (sandboxed) and registered through the SAME context-file ledger +
-        ``context.file.added`` event as POST /context/files, so the
-        existing read path (_enrich_with_context_files) consumes them with
-        no agent-layer change. This is the only way to get a local file to
-        a REMOTE (ssh) agent — the bytes ride the tunnel and land in the
-        remote workspace."""
-
-        import base64  # noqa: PLC0415
-        import tempfile  # noqa: PLC0415
-
-        from clio_agent.gact.workspace_scope import (  # noqa: PLC0415
-            default_workspace_storage_root,
-        )
-
-        sess = app.state.sessions.get(sid)
-        if sess is None:
-            raise HTTPException(
-                status_code=404,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="not_found",
-                        message=f"session not found: {sid}",
-                        details={"session_id": sid},
-                        recoverable=False,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-
-        try:
-            body = await request.json()
-        except Exception:
-            body = {}
-        if not isinstance(body, dict):
-            body = {}
-
-        mode = body.get("mode") or "read"
-        if mode not in {"read", "pin"}:
-            raise HTTPException(
-                status_code=422,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="bad_request",
-                        message=f"invalid upload mode: {mode!r}; expected read or pin",
-                        details={"field": "mode", "allowed": ["read", "pin"]},
-                        recoverable=True,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-        media_type = str(body.get("media_type") or body.get("mime_type") or "").strip()
-
-        # --- decode bytes (size-capped) ---
-        max_bytes = 25 * 1024 * 1024  # 25 MiB
-        encoded = body.get("file")
-        if not isinstance(encoded, str) or not encoded:
-            raise HTTPException(
-                status_code=422,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="bad_request",
-                        message="missing required field: file (base64 string)",
-                        details={"field": "file"},
-                        recoverable=True,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-        # Reject obviously-oversized payloads on the ENCODED length BEFORE
-        # decoding, so a huge base64 string can never allocate ~25 MiB+ of
-        # decoded bytes just to be thrown away. base64 expands 3 bytes -> 4
-        # chars, so the smallest possible decoded size for an encoded string
-        # of length L (allowing up to 2 padding "=") is (L // 4) * 3 - 2.
-        # If even that minimum already exceeds the cap, the payload cannot
-        # possibly fit — reject without touching base64.b64decode.
-        min_decoded = (len(encoded) // 4) * 3 - 2
-        if min_decoded > max_bytes:
-            raise HTTPException(
-                status_code=413,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="payload_too_large",
-                        message=f"attachment exceeds {max_bytes} bytes",
-                        details={
-                            "max_bytes": max_bytes,
-                            "encoded_length": len(encoded),
-                            "min_decoded_size": min_decoded,
-                        },
-                        recoverable=True,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-        try:
-            data = base64.b64decode(encoded, validate=True)
-        except Exception as exc:  # noqa: BLE001
-            raise HTTPException(
-                status_code=422,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="bad_request",
-                        message=f"file is not valid base64: {type(exc).__name__}",
-                        details={"field": "file"},
-                        recoverable=True,
-                    )
-                ).model_dump(exclude_none=True),
-            ) from exc
-        # Safety net: even with the pre-decode guard above, re-check the
-        # actual decoded length (the estimate is a lower bound, not exact).
-        if len(data) > max_bytes:
-            raise HTTPException(
-                status_code=413,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="payload_too_large",
-                        message=f"attachment exceeds {max_bytes} bytes",
-                        details={"max_bytes": max_bytes, "size": len(data)},
-                        recoverable=True,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-
-        # --- sanitize the filename (THE security boundary) ---
-        # Reduce to a bare basename under BOTH posix and windows separator
-        # semantics so a remote (linux) or local (windows) clio is equally
-        # safe; reject anything that survives as a traversal token.
-        raw_name = str(body.get("filename") or "").strip()
-        candidate = raw_name.replace("\\", "/").rsplit("/", 1)[-1].strip()
-        if "\x00" in candidate or candidate in {"", ".", ".."}:
-            raise HTTPException(
-                status_code=422,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="bad_request",
-                        message=f"invalid attachment filename: {raw_name!r}",
-                        details={"field": "filename"},
-                        recoverable=True,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-        safe_name = candidate
-
-        # --- resolve the sandboxed destination dir ---
-        workspace_id = getattr(sess, "workspace_id", "") or "ws_default"
-        ws = app.state.workspaces.get(workspace_id)
-        if ws is None:
-            raise HTTPException(
-                status_code=404,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="not_found",
-                        message=f"workspace not found: {workspace_id}",
-                        details={"workspace_id": workspace_id},
-                        recoverable=True,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-        root = Path(ws.root_path or os.getcwd()).expanduser().resolve()
-        base = (default_workspace_storage_root(str(root)) / "attachments" / sid).resolve()
-
-        base.mkdir(parents=True, exist_ok=True)
-        stem, suffix = Path(safe_name).stem, Path(safe_name).suffix
-
-        # Defense-in-depth: confine the destination to `base` even though the
-        # filename is already sanitized (the register step re-checks vs root).
-        # CRITICAL: this confinement check MUST complete BEFORE any byte (even
-        # a temp byte) is written to disk — do not move the write block above
-        # this guard. We validate the un-numbered candidate; the collision
-        # suffix below only appends " (N)" within the same already-confined dir.
-        try:
-            (base / safe_name).resolve(strict=False).relative_to(base)
-        except ValueError:
-            raise HTTPException(
-                status_code=403,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="path_outside_workspace",
-                        message="attachment path escapes the attachments dir",
-                        details={"filename": raw_name},
-                        recoverable=False,
-                    )
-                ).model_dump(exclude_none=True),
-            ) from None
-
-        # --- claim a collision-free destination ATOMICALLY ---
-        # Two concurrent uploads of the same filename must not both pick the
-        # same name (a non-atomic `while dest.exists()` probe would TOCTOU-race
-        # and let one overwrite the other). Claim the name by creating it with
-        # O_CREAT|O_EXCL; on EEXIST, advance the " (N)" suffix and retry. The
-        # winner owns an empty placeholder that the atomic replace then fills.
-        counter = 2
-        dest_candidate = base / safe_name
-        while True:
-            try:
-                claim_fd = os.open(
-                    str(dest_candidate), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600
-                )
-            except FileExistsError:
-                dest_candidate = base / f"{stem} ({counter}){suffix}"
-                counter += 1
-                continue
-            os.close(claim_fd)
-            dest = dest_candidate
-            break
-
-        # --- write bytes atomically (only now, after confinement passed) ---
-        # Write to a UNIQUE temp file in the SAME directory so two concurrent
-        # uploads can never share a deterministic ".tmp" name and clobber each
-        # other's bytes mid-write; os.replace then atomically swaps the temp
-        # over the placeholder we claimed above. The temp file is unlinked on
-        # every error path so a failed write never leaks a stray ".tmp".
-        tmp_fd, tmp_name = tempfile.mkstemp(
-            dir=str(base), prefix=f".{stem}.", suffix=f"{suffix}.tmp"
-        )
-        tmp_path = Path(tmp_name)
-        try:
-            with os.fdopen(tmp_fd, "wb") as fh:
-                fh.write(data)
-                fh.flush()
-                os.fsync(fh.fileno())
-            os.replace(tmp_path, dest)
-        except BaseException:
-            for stray in (tmp_path, dest):
-                try:
-                    stray.unlink()
-                except FileNotFoundError:
-                    pass
-            raise
-
-        # --- register through the existing context-file ledger ---
-        # Use os.path.relpath rather than Path.relative_to: on Windows a deep
-        # path makes Path.resolve() emit the "\\?\" extended-length prefix on
-        # one side but not the other, so relative_to() spuriously raises. Both
-        # dest and root point inside the same already-confined tree, so a plain
-        # string-level relpath is correct and prefix-agnostic.
-        rel = os.path.relpath(str(dest), str(root))
-        resolved_info = _resolve_context_attachment_path(
-            sess=sess,
-            raw_path=str(rel),
-            requested_workspace_id=workspace_id,
-        )
-        row = {
-            **resolved_info,
-            "mode": mode,
-            "added_at": datetime.now(timezone.utc).isoformat(),
-            "last_modified": "",
-            "size": dest.stat().st_size,
-            "language": "",
-            "uploaded": True,
-        }
-        if media_type:
-            row["media_type"] = media_type
-            row["mime_type"] = media_type
-        bucket = app.state.context_files.setdefault(sid, {})
-        bucket[row["path"]] = row
-        _flush_context_files(app)
-        app.state.bus.publish(
-            Event(
-                type="context.file.added",
-                session_id=sid,
-                payload={"session_id": sid, "file": row},
-            )
-        )
-        return row
-
-    # ---- GET /v1/sessions/{sid}/context/files/content -----------------
-    # Serve the BYTES of a registered context file (or uploaded
-    # attachment) back to the client, base64-in-JSON. This is the read
-    # counterpart of POST /attachments: the CLIO Desktop transports HTTP
-    # through a Tauri/ureq bridge (and, remotely, an SSH tunnel) that only
-    # forwards UTF-8 string bodies, so raw binary cannot survive the
-    # round-trip — the bytes must ride back as base64 the same way they
-    # were uploaded. /workspaces/{wid}/files/read is text/plain-only and
-    # mangles binary; the desktop needs exact bytes for inline image/PDF
-    # previews. See gap: GACT desktop 1.0 file-content previews.
-
-    # Preview cap: keep an inline preview from streaming an unbounded
-    # blob through base64 (which inflates ~33%) into the desktop. Bounded
-    # by the file policy cap when that is stricter than the 10 MiB default.
-    _FILES_CONTENT_PREVIEW_CAP_BYTES = 10 * 1024 * 1024  # 10 MiB
-
-    # Extension → media type for the common previewable kinds. Anything
-    # not listed falls back to magic-byte sniffing, then to a text-vs-binary
-    # decode probe. Kept deliberately small and explicit (no mimetypes
-    # guessing) so the desktop sees stable, known types.
-    _FILES_CONTENT_EXT_MEDIA_TYPES: dict[str, str] = {
-        # images
-        ".png": "image/png",
-        ".jpg": "image/jpeg",
-        ".jpeg": "image/jpeg",
-        ".gif": "image/gif",
-        ".webp": "image/webp",
-        ".bmp": "image/bmp",
-        ".svg": "image/svg+xml",
-        ".ico": "image/x-icon",
-        # documents
-        ".pdf": "application/pdf",
-        # text / code
-        ".txt": "text/plain; charset=utf-8",
-        ".md": "text/markdown; charset=utf-8",
-        ".markdown": "text/markdown; charset=utf-8",
-        ".rst": "text/plain; charset=utf-8",
-        ".log": "text/plain; charset=utf-8",
-        ".csv": "text/csv; charset=utf-8",
-        ".tsv": "text/tab-separated-values; charset=utf-8",
-        ".json": "application/json; charset=utf-8",
-        ".yaml": "application/yaml; charset=utf-8",
-        ".yml": "application/yaml; charset=utf-8",
-        ".toml": "application/toml; charset=utf-8",
-        ".xml": "application/xml; charset=utf-8",
-        ".html": "text/html; charset=utf-8",
-        ".htm": "text/html; charset=utf-8",
-        ".css": "text/css; charset=utf-8",
-        ".py": "text/x-python; charset=utf-8",
-        ".js": "text/javascript; charset=utf-8",
-        ".mjs": "text/javascript; charset=utf-8",
-        ".ts": "text/x-typescript; charset=utf-8",
-        ".tsx": "text/x-typescript; charset=utf-8",
-        ".jsx": "text/javascript; charset=utf-8",
-        ".go": "text/x-go; charset=utf-8",
-        ".rs": "text/x-rust; charset=utf-8",
-        ".c": "text/x-c; charset=utf-8",
-        ".h": "text/x-c; charset=utf-8",
-        ".cpp": "text/x-c++; charset=utf-8",
-        ".sh": "text/x-shellscript; charset=utf-8",
-        ".sql": "text/x-sql; charset=utf-8",
-    }
-
-    def _sniff_media_type(*, name: str, data: bytes) -> str:
-        """Best-effort media type for a context file's bytes.
-
-        Magic-byte sniffing wins for the few binary kinds we care about
-        (so a renamed ``.png`` is still served as ``image/png``), then the
-        extension map, then a UTF-8 decode probe (decodable → text/plain,
-        otherwise application/octet-stream). Magic bytes take precedence so
-        a mislabeled extension can't trick a preview into rendering binary
-        as text or vice versa.
-        """
-
-        # Magic bytes for the binary kinds the desktop previews.
-        if data[:8] == b"\x89PNG\r\n\x1a\n":
-            return "image/png"
-        if data[:3] == b"\xff\xd8\xff":
-            return "image/jpeg"
-        if data[:6] in (b"GIF87a", b"GIF89a"):
-            return "image/gif"
-        if data[:4] == b"%PDF":
-            return "application/pdf"
-        if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
-            return "image/webp"
-
-        ext = Path(name).suffix.lower()
-        mapped = _FILES_CONTENT_EXT_MEDIA_TYPES.get(ext)
-        if mapped is not None:
-            return mapped
-
-        # No extension hint and no magic match: probe for decodable text.
-        try:
-            data.decode("utf-8")
-        except UnicodeDecodeError:
-            return "application/octet-stream"
-        return "text/plain; charset=utf-8"
-
-    @app.get("/v1/sessions/{sid}/context/files/content")
-    async def get_context_file_content(sid: str, path: str) -> dict[str, Any]:
-        """Return the bytes of a registered context file as base64-in-JSON.
-
-        ``path`` is the file's registered path / display_path / resolved_path
-        (whatever GET /context/files reported). The file MUST already be in
-        the session's context-file ledger — this route does not read
-        arbitrary workspace files (use /workspaces/{wid}/files/read for
-        that). Uploaded attachments are registered context files, so they
-        are served here too.
-
-        Response::
-
-            {"file": {"path", "display_path", "size", "media_type",
-                      "encoding": "base64", "data": "<base64>"}}
-
-        Always base64, symmetric with POST /attachments and safe across the
-        desktop's string-only transport bridge. Errors are the structured
-        envelope: 404 (session/file unknown or gone from disk), 403 (path
-        escapes the workspace), 413 (over the preview cap).
-        """
-
-        import base64  # noqa: PLC0415
-
-        sess = app.state.sessions.get(sid)
-        if sess is None:
-            raise HTTPException(
-                status_code=404,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="not_found",
-                        message=f"session not found: {sid}",
-                        details={"session_id": sid},
-                        recoverable=False,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-
-        raw_path = (path or "").strip()
-        lookup = raw_path[1:].strip() if raw_path.startswith("@") else raw_path
-        if not lookup:
-            raise HTTPException(
-                status_code=422,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="bad_request",
-                        message="missing required query parameter: path",
-                        details={"field": "path"},
-                        recoverable=True,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-
-        # Look the file up in the session's context-file ledger by any of
-        # its registered keys/paths. We only ever serve registered files.
-        bucket = app.state.context_files.get(sid, {})
-        row: dict[str, Any] | None = None
-        normalized = lookup.replace("\\", "/")
-        for key, candidate in bucket.items():
-            candidate_paths = {
-                str(key),
-                str(candidate.get("path") or ""),
-                str(candidate.get("display_path") or ""),
-                str(candidate.get("resolved_path") or ""),
-            }
-            candidate_paths |= {p.replace("\\", "/") for p in candidate_paths}
-            if lookup in candidate_paths or normalized in candidate_paths:
-                row = candidate
-                break
-        if row is None:
-            raise HTTPException(
-                status_code=404,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="not_found",
-                        message=f"context file not registered: {raw_path}",
-                        details={"session_id": sid, "path": raw_path},
-                        recoverable=False,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-
-        resolved_path = str(row.get("resolved_path") or "")
-        display_path = str(row.get("display_path") or row.get("path") or raw_path)
-        registered_path = str(row.get("path") or display_path)
-        workspace_id = str(row.get("workspace_id") or "")
-
-        # Re-validate confinement at read time. The row's resolved_path was
-        # confined when it was added, but re-check vs the (possibly changed)
-        # workspace root so a re-pointed workspace or a doctored ledger can't
-        # be used to read outside the root.
-        #
-        # Confinement invariant (review of GACT desktop 1.0 file previews):
-        # if the row carries a workspace_id at all, the resolved path MUST sit
-        # inside that workspace's root — EVEN IF the registered/display path is
-        # absolute. An absolute registered path with a workspace boundary is no
-        # excuse to escape the root (a re-pointed workspace or a doctored ledger
-        # could otherwise point an absolute path anywhere). Only rows with NO
-        # workspace_id — i.e. no boundary to enforce — may be served from an
-        # absolute registered path as-is. Both ledger lookup keys (path match
-        # and display_path match) funnel through this single check, so neither
-        # can bypass it.
-        try:
-            resolved = Path(resolved_path).resolve(strict=False)
-        except (OSError, ValueError, RuntimeError):
-            raise HTTPException(
-                status_code=404,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="not_found",
-                        message=f"context file not found: {raw_path}",
-                        details={"session_id": sid, "path": raw_path},
-                        recoverable=False,
-                    )
-                ).model_dump(exclude_none=True),
-            ) from None
-
-        if "\x00" in resolved_path:
-            raise HTTPException(
-                status_code=403,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="path_outside_workspace",
-                        message=f"context path is not readable: {raw_path}",
-                        details={"session_id": sid, "path": raw_path},
-                        recoverable=False,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-
-        if workspace_id:
-            # The row claims a workspace boundary: confine to that root,
-            # regardless of whether the registered/display path is absolute.
-            ws = app.state.workspaces.get(workspace_id)
-            if ws is None:
-                # A workspace boundary we cannot resolve a root for — we have
-                # nothing to confine against, so refuse rather than fall back
-                # to serving an arbitrary absolute path.
-                raise HTTPException(
-                    status_code=403,
-                    detail=ErrorEnvelope(
-                        error=ErrorInfo(
-                            error="path_outside_workspace",
-                            message=f"context path escapes workspace: {raw_path}",
-                            details={
-                                "session_id": sid,
-                                "path": raw_path,
-                                "workspace_id": workspace_id,
-                            },
-                            recoverable=False,
-                        )
-                    ).model_dump(exclude_none=True),
-                )
-            try:
-                root = Path(ws.root_path or os.getcwd()).expanduser().resolve()
-                resolved.relative_to(root)
-            except ValueError:
-                raise HTTPException(
-                    status_code=403,
-                    detail=ErrorEnvelope(
-                        error=ErrorInfo(
-                            error="path_outside_workspace",
-                            message=f"context path escapes workspace: {raw_path}",
-                            details={
-                                "session_id": sid,
-                                "path": raw_path,
-                                "workspace_id": workspace_id,
-                            },
-                            recoverable=False,
-                        )
-                    ).model_dump(exclude_none=True),
-                ) from None
-            except (OSError, RuntimeError):
-                raise HTTPException(
-                    status_code=404,
-                    detail=ErrorEnvelope(
-                        error=ErrorInfo(
-                            error="not_found",
-                            message=f"context file not found: {raw_path}",
-                            details={"session_id": sid, "path": raw_path},
-                            recoverable=False,
-                        )
-                    ).model_dump(exclude_none=True),
-                ) from None
-
-        if not resolved.is_file():
-            raise HTTPException(
-                status_code=404,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="not_found",
-                        message=f"context file not found on disk: {raw_path}",
-                        details={
-                            "session_id": sid,
-                            "path": raw_path,
-                            "resolved_path": str(resolved),
-                        },
-                        recoverable=False,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-
-        # Size cap: take the stricter of the preview cap and the file policy.
-        max_bytes = _FILES_CONTENT_PREVIEW_CAP_BYTES
-        try:
-            from clio_agent.tools.file_policy import FileAccessPolicy  # noqa: PLC0415
-
-            policy_cap = FileAccessPolicy.from_mapping(os.environ).max_file_size_bytes
-            if policy_cap > 0:
-                max_bytes = min(max_bytes, policy_cap)
-        except Exception:  # noqa: BLE001
-            pass
-        size = resolved.stat().st_size
-        if size > max_bytes:
-            raise HTTPException(
-                status_code=413,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="payload_too_large",
-                        message=(f"context file exceeds preview cap ({size} > {max_bytes} bytes)"),
-                        details={
-                            "session_id": sid,
-                            "path": raw_path,
-                            "size": size,
-                            "max_bytes": max_bytes,
-                        },
-                        recoverable=True,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-
-        try:
-            data = resolved.read_bytes()
-        except OSError as exc:
-            raise HTTPException(
-                status_code=500,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="internal_error",
-                        message=f"could not read context file: {type(exc).__name__}",
-                        details={"session_id": sid, "path": raw_path},
-                        recoverable=True,
-                    )
-                ).model_dump(exclude_none=True),
-            ) from exc
-
-        media_type = _sniff_media_type(name=registered_path, data=data)
-        return {
-            "file": {
-                "path": registered_path,
-                "display_path": display_path,
-                "size": len(data),
-                "media_type": media_type,
-                "encoding": "base64",
-                "data": base64.b64encode(data).decode("ascii"),
-            }
-        }
-
     @app.delete("/v1/sessions/{sid}/context/files")
     async def remove_context_file(sid: str, request: Request) -> Response:
         """Detach a file by path. 204 whether the path was attached
@@ -12988,7 +12432,10 @@ def build_app(
     ) -> list[dict[str, Any]]:
         allowed: set[str] | None = None
         if agent_id:
-            agent_def = _resolve_runtime_dynamic_agent(agent_id, session_id=session_id)
+            agent_def = _resolve_runtime_dynamic_agent(
+                agent_id,
+                session_id=session_id,
+            )
             allowed = _agent_allowed_command_ids(agent_def) if agent_def is not None else set()
         rows: list[dict[str, Any]] = []
         for command in _all_command_rows(cwd=cwd, extra_roots=extra_roots):
@@ -13028,9 +12475,7 @@ def build_app(
             "status": status,
             "result": result_text,
             "error": error,
-            "command_source": str(
-                command_meta.get("command_source") or command_meta.get("source") or ""
-            ),
+            "command_source": str(command_meta.get("command_source") or command_meta.get("source") or ""),
             "command_path": str(command_meta.get("command_path") or ""),
             "created_at": datetime.now(timezone.utc).isoformat(),
         }
@@ -13155,6 +12600,7 @@ def build_app(
             caller_agent = _resolve_runtime_dynamic_agent(
                 caller_agent_id,
                 session_id=sid,
+                workspace_id=sess.workspace_id,
             )
             allowed_ids = _agent_allowed_command_ids(caller_agent) if caller_agent else set()
             deny_reason = ""
@@ -13194,7 +12640,11 @@ def build_app(
 
         if command_meta.get("source") == "user":
             agent_id = str(command_meta.get("agent_id") or "")
-            agent_def = _resolve_runtime_dynamic_agent(agent_id, session_id=sid)
+            agent_def = _resolve_runtime_dynamic_agent(
+                agent_id,
+                session_id=sid,
+                workspace_id=sess.workspace_id,
+            )
             if agent_def is None:
                 raise HTTPException(
                     status_code=404,
@@ -13251,10 +12701,12 @@ def build_app(
                 agent_id=agent_id,
             )
             with _gact_app_context(app):
-                if agent_def.tools:
-                    pred = _run_tool_user_agent(app.state.agent, agent_def, question, sid)
-                else:
-                    pred = _run_prompt_user_agent(app.state.agent, agent_def, question, sid)
+                pred = _blueprint_runner_for_agent(agent_def)(
+                    app.state.agent,
+                    agent_def,
+                    question,
+                    sid,
+                )
             agent_body_text = str(getattr(pred, "answer", "") or "").strip()
             if not agent_body_text:
                 agent_body_text = f"user command {cmd_id} completed with no answer"
@@ -13510,7 +12962,7 @@ def build_app(
             "metadata": {
                 "provider_kind": preset.provider,
                 "requires_api_key": preset.requires_api_key,
-                "supports_vision": preset.supports_vision,
+                "supports_vision": bool(getattr(preset, "supports_vision", False)),
             },
         }
 
@@ -14299,11 +13751,6 @@ def build_app(
                     "tools_count": len(info.get("tools") or []),
                     "tools": list(info.get("tools") or []),
                     "spec": info.get("spec", {}),
-                    "trust": info.get("trust", {}),
-                    "install": info.get("install", {}),
-                    "runtime": info.get("runtime", {}),
-                    "env_policy": info.get("env_policy", {}),
-                    "verification": info.get("verification", {}),
                 }
             )
         try:
@@ -14967,254 +14414,6 @@ def build_app(
             "summary": summary,
         }
 
-    @app.post("/v1/sessions/{sid}/summarize")
-    async def summarize_session(sid: str, request: Request) -> dict[str, Any]:
-        # Produce a user-facing TLDR of the session for a human catching
-        # up — DISTINCT from /compact. Compaction is context-window
-        # management: it REPLACES the archived transcript with an
-        # evidence-preserving memory. Summarize is informational and
-        # NON-DESTRUCTIVE: it appends a synthetic summary message and
-        # leaves the full transcript intact. The TUI/desktop offers this
-        # as a "summarize session" action gated on the ``session_summary``
-        # capability flag.
-        sess = app.state.sessions.get(sid)
-        if sess is None:
-            raise HTTPException(
-                status_code=404,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="not_found",
-                        message=f"session not found: {sid}",
-                        recoverable=True,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-        ledger = app.state.messages.get(sid, [])
-        if not ledger:
-            return {
-                "session_id": sid,
-                "summarized": False,
-                "reason": "session has no messages to summarize",
-            }
-
-        # Same defensive transcript walk as /compact: attribute access
-        # with a dict fallback for legacy rows, bounded per-part and
-        # overall so pathological tool output can't blow the prompt.
-        def _attr(o, name, default=None):
-            if hasattr(o, name):
-                return getattr(o, name)
-            if isinstance(o, dict):
-                return o.get(name, default)
-            return default
-
-        per_part_limit = 6000
-        transcript_limit = 60000
-        chunks: list[str] = []
-        transcript_chars = 0
-        for m in ledger[-50:]:
-            role = (_attr(m, "role", "user") or "user").upper()
-            for p in _attr(m, "parts", []) or []:
-                txt = _attr(p, "text", "") or ""
-                if len(txt) > per_part_limit:
-                    head_limit = per_part_limit // 2
-                    tail_limit = per_part_limit - head_limit
-                    txt = (
-                        txt[:head_limit]
-                        + "\n[...part truncated for summary...]\n"
-                        + txt[-tail_limit:]
-                    )
-                txt = txt.strip()
-                if not txt:
-                    continue
-                chunk = f"{role}: {txt}"
-                remaining = transcript_limit - transcript_chars
-                if remaining <= 0:
-                    break
-                if len(chunk) > remaining:
-                    chunk = chunk[:remaining] + "\n[...transcript truncated for summary...]"
-                chunks.append(chunk)
-                transcript_chars += len(chunk)
-            if transcript_chars >= transcript_limit:
-                break
-        transcript = "\n".join(chunks)
-        if not transcript.strip():
-            return {
-                "session_id": sid,
-                "summarized": False,
-                "reason": "transcript is empty after part filtering",
-            }
-
-        agent = app.state.agent
-        if agent is None:
-            raise HTTPException(
-                status_code=503,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="agent_unavailable",
-                        message="no LM agent wired; configure one via PUT /v1/providers/lm",
-                        recoverable=True,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-
-        # Optional custom instructions (the desktop's "summarize · custom"
-        # action). ``focus`` is accepted as a fallback alias for parity
-        # with /compact. ``auto`` distinguishes the one-click action from
-        # an instructed one and is recorded for provenance.
-        try:
-            body = await request.json()
-        except Exception:
-            body = {}
-        instructions = (body.get("instructions") or body.get("focus") or "").strip()
-        auto = bool(body.get("auto", False))
-        # ``profile`` lets callers pick a registered behaviour profile for the
-        # summary prompt (the registry is profile-aware); empty selects the
-        # prompt's default profile.
-        profile = str(body.get("profile") or "").strip()
-
-        # Resolve the summary instruction text through CLIO's prompt registry
-        # so it is editable and profile-aware (workspace/session overrides,
-        # external prompt packs). The transcript and any per-request
-        # ``instructions`` are still appended by this route. The hardcoded
-        # ``_SESSION_SUMMARIZE_FALLBACK_PROMPT`` is used ONLY when the registry
-        # has no usable entry, so the route never 500s on a missing prompt.
-        prompt_base = _SESSION_SUMMARIZE_FALLBACK_PROMPT
-        prompt_source = "fallback"
-        prompt_profile = ""
-        try:
-            registry_factory = getattr(
-                app.state, "prompt_registry_for_request", _prompt_registry_for_request
-            )
-            registry = registry_factory(session_id=sid)
-            resolved = registry.resolve(_SESSION_SUMMARIZE_PROMPT_ID, profile=profile)
-            if resolved is not None and (resolved.text or "").strip():
-                prompt_base = resolved.text.strip()
-                prompt_source = resolved.scope or "registry"
-                prompt_profile = resolved.profile
-        except Exception:
-            # Any registry failure (bad on-disk override, IO error) falls back
-            # to the in-code prompt rather than failing the summarize request.
-            prompt_base = _SESSION_SUMMARIZE_FALLBACK_PROMPT
-            prompt_source = "fallback"
-            prompt_profile = ""
-
-        prompt = prompt_base
-        if instructions:
-            prompt += f"\n\nFollow these specific instructions for the summary: {instructions}"
-        prompt += f"\n\n--- transcript ---\n{transcript}\n--- end ---"
-
-        def _summarize_with_provider_retries() -> str:
-            def summarize() -> str:
-                return agent._run_chat_agent(prompt, "")
-
-            retry_call = getattr(agent, "_call_with_transient_provider_retries", None)
-            if callable(retry_call):
-                return retry_call("session_summary", summarize)
-            return summarize()
-
-        try:
-            summary = await asyncio.get_running_loop().run_in_executor(
-                None,
-                _summarize_with_provider_retries,
-            )
-        except Exception as exc:  # noqa: BLE001
-            raise HTTPException(
-                status_code=502,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="upstream_error",
-                        message=f"session summarisation failed: {exc!r}",
-                        recoverable=True,
-                    )
-                ).model_dump(exclude_none=True),
-            ) from exc
-
-        from clio_agent.gact.types import Message, Part, Tokens  # noqa: PLC0415
-
-        event_id = _new_memory_event_id()
-        summarized_at = datetime.now(timezone.utc).isoformat()
-        summary_message = Message(
-            id=f"msg_summary_{uuid.uuid4().hex[:10]}",
-            session_id=sid,
-            role="assistant",
-            created_at=summarized_at,
-            updated_at=summarized_at,
-            parts=[
-                Part(
-                    id=f"part_summary_{uuid.uuid4().hex[:10]}",
-                    type="text",
-                    metadata={
-                        "synthetic": "session_summary",
-                        "memory_event_id": event_id,
-                    },
-                    text="[session summary]\n" + (summary or "").strip(),
-                )
-            ],
-            tokens=Tokens(input=0, output=0, cache_read=0, cache_write=0),
-            cost_usd=0.0,
-            stop_reason="end_turn",
-            metadata={
-                "synthetic": "session_summary",
-                "memory_event_id": event_id,
-            },
-        )
-        # Non-destructive: APPEND the summary; /compact REPLACES, we do not.
-        _replace_session_messages(app, sid, list(ledger) + [summary_message])
-
-        memory_event = {
-            "id": event_id,
-            "version": 1,
-            "type": "session_summary",
-            "session_id": sid,
-            "created_at": summarized_at,
-            "updated_at": summarized_at,
-            "summary_message_id": summary_message.id,
-            "message_count": len(ledger),
-            "summary_chars": len((summary or "")),
-            "transcript_chars": len(transcript),
-            "transcript_limit": transcript_limit,
-            "per_part_limit": per_part_limit,
-            "instructions": instructions,
-            "auto": auto,
-            "prompt_id": _SESSION_SUMMARIZE_PROMPT_ID,
-            "prompt_source": prompt_source,
-            "prompt_profile": prompt_profile,
-            "metadata": {
-                "source": "gact_summarize",
-                "synthetic": "session_summary",
-                "prompt_id": _SESSION_SUMMARIZE_PROMPT_ID,
-                "prompt_source": prompt_source,
-                "prompt_profile": prompt_profile,
-            },
-        }
-        app.state.memory_events.setdefault(sid, []).append(memory_event)
-
-        # Publish so any open SSE stream surfaces the summary.
-        app.state.bus.publish(
-            Event(
-                type="session.summarized",
-                session_id=sid,
-                payload={
-                    "event_id": event_id,
-                    "session_id": sid,
-                    "summary_message_id": summary_message.id,
-                    "summary_chars": len((summary or "")),
-                    "message_count": len(ledger),
-                    "version": 1,
-                },
-            )
-        )
-        return {
-            "session_id": sid,
-            "summarized": True,
-            "event_id": event_id,
-            "summary_message_id": summary_message.id,
-            "summary": summary,
-            "prompt_id": _SESSION_SUMMARIZE_PROMPT_ID,
-            "prompt_source": prompt_source,
-            "prompt_profile": prompt_profile,
-        }
-
     @app.get("/v1/sessions/{sid}/memory/events")
     async def list_session_memory_events(sid: str, limit: int = 50) -> dict[str, Any]:
         sess = app.state.sessions.get(sid)
@@ -15294,219 +14493,6 @@ def build_app(
         )
         installed.pop(sid, None)
         return None
-
-    @app.post("/v1/mcp/servers/{sid}/reconnect")
-    async def reconnect_mcp_server(sid: str) -> dict[str, Any]:
-        """Re-probe a previously-installed external MCP server.
-
-        fastmcp.Client connections are ephemeral (re-created per
-        dispatch), so there is no persistent socket to tear down —
-        reconnect simply re-opens the stored transport spec, re-lists the
-        tools, and updates the registry row in place. Non-destructive, so
-        (unlike DELETE) no permission guard. Bundled in-process servers
-        (mcp_fs/mcp_hdf5/mcp_parquet) are not in the external registry, so
-        they 404 here (they cannot be reconnected)."""
-
-        installed = getattr(app.state, "external_mcp_servers", {}) or {}
-        info = installed.get(sid)
-        if info is None:
-            raise HTTPException(
-                status_code=404,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="not_found",
-                        message=f"no externally-installed MCP server: {sid}",
-                        recoverable=True,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-
-        try:
-            from fastmcp import Client
-            from fastmcp.client.transports import (
-                StdioTransport,
-                StreamableHttpTransport,
-            )
-        except Exception as exc:
-            raise HTTPException(
-                status_code=503,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="dependency_missing",
-                        message=f"fastmcp Client unavailable: {exc!r}",
-                        recoverable=False,
-                    )
-                ).model_dump(exclude_none=True),
-            ) from exc
-
-        # REVIEW FIX (gap-523): validate the stored transport spec BEFORE
-        # touching the registry row or attempting any connection. A
-        # malformed spec — stdio without a command, http/sse without a url,
-        # or an unknown transport — is a client-actionable 4xx
-        # (mcp_spec_invalid), not an unhandled internal exception. We
-        # short-circuit here so the registry row is never left half-updated
-        # by a spec we could never have reconnected anyway.
-        spec = info.get("spec") or {}
-        transport_kind = str(spec.get("transport") or "").lower()
-
-        def _spec_invalid(message: str) -> HTTPException:
-            return HTTPException(
-                status_code=422,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="mcp_spec_invalid",
-                        message=message,
-                        details={"id": sid, "transport": transport_kind, "spec": spec},
-                        recoverable=True,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-
-        if transport_kind == "stdio":
-            command = spec.get("command")
-            if not (isinstance(command, str) and command.strip()):
-                raise _spec_invalid(
-                    f"MCP server {sid} has a stdio transport spec with no "
-                    "'command'; cannot reconnect"
-                )
-            transport = StdioTransport(
-                command=command,
-                args=spec.get("args") or [],
-            )
-        elif transport_kind in {"http", "streamable-http", "sse"}:
-            url = spec.get("url")
-            if not (isinstance(url, str) and url.strip()):
-                raise _spec_invalid(
-                    f"MCP server {sid} has an {transport_kind} transport spec "
-                    "with no 'url'; cannot reconnect"
-                )
-            transport = StreamableHttpTransport(url=url)  # type: ignore[assignment]
-        else:
-            raise _spec_invalid(
-                f"MCP server {sid} has no reconnectable transport spec "
-                f"(transport={transport_kind or 'missing'!r}); expected "
-                "stdio or http"
-            )
-
-        # Re-probe identically to install: open, list tools, close. The
-        # whole connect + list-tools round-trip is bounded by a timeout
-        # (gap-523) so a hung MCP server cannot hang the route.
-        reconnect_timeout = _mcp_reconnect_timeout_s()
-        tool_names: list[str] = []
-        connect_error: Optional[str] = None
-        timed_out = False
-
-        async def _probe() -> list[str]:
-            async with Client(transport) as client:
-                tools = await client.list_tools()
-                return [t.name for t in tools]
-
-        try:
-            tool_names = await asyncio.wait_for(_probe(), timeout=reconnect_timeout)
-        except (asyncio.TimeoutError, TimeoutError):
-            timed_out = True
-        except Exception as exc:  # noqa: BLE001
-            connect_error = repr(exc)
-
-        # REVIEW FIX (gap-523): on timeout, leave the registry row in a
-        # coherent error state — never half-updated. We mark status="error"
-        # with a timeout error message but preserve the previously-known
-        # tool list (a hung probe tells us nothing new about the tools, and
-        # blanking them would discard good data), then surface the timeout
-        # to SSE clients and return a structured 504.
-        if timed_out:
-            timeout_msg = (
-                f"MCP server reconnect timed out after {reconnect_timeout:g}s"
-            )
-            info["status"] = "error"
-            info["error"] = timeout_msg
-            installed[sid] = info  # tools untouched: registry stays consistent
-
-            app.state.bus.publish(
-                Event(
-                    type="mcp.server.error",
-                    session_id="",
-                    payload={
-                        "server_id": sid,
-                        "name": info.get("name", ""),
-                        "status": "error",
-                        "error": timeout_msg,
-                    },
-                )
-            )
-            raise HTTPException(
-                status_code=504,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="mcp_reconnect_timeout",
-                        message=timeout_msg,
-                        details={
-                            "id": sid,
-                            "spec": spec,
-                            "timeout_s": reconnect_timeout,
-                        },
-                        recoverable=True,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-
-        # Update the registry row in place.
-        info["status"] = "ready" if connect_error is None else "error"
-        info["tools"] = tool_names
-        if connect_error:
-            info["error"] = connect_error
-        else:
-            info.pop("error", None)
-        installed[sid] = info
-
-        if connect_error is not None:
-            # Global status event (session_id="" like lm.provider.*).
-            app.state.bus.publish(
-                Event(
-                    type="mcp.server.error",
-                    session_id="",
-                    payload={
-                        "server_id": sid,
-                        "name": info.get("name", ""),
-                        "status": "error",
-                        "error": connect_error,
-                    },
-                )
-            )
-            raise HTTPException(
-                status_code=502,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="upstream_unavailable",
-                        message=f"MCP server reconnect failed: {connect_error}",
-                        details={"id": sid, "spec": spec},
-                        recoverable=True,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-
-        app.state.bus.publish(
-            Event(
-                type="mcp.server.reconnected",
-                session_id="",
-                payload={
-                    "server_id": sid,
-                    "name": info.get("name", ""),
-                    "status": "ready",
-                    "transport": info.get("transport", ""),
-                    "tools": tool_names,
-                },
-            )
-        )
-        return {
-            "id": sid,
-            "name": info.get("name", ""),
-            "status": "ready",
-            "transport": info.get("transport", ""),
-            "tools_count": len(tool_names),
-            "tools": tool_names,
-            "spec": spec,
-        }
 
     @app.get("/v1/mcp/servers/{sid}")
     async def get_mcp_server(sid: str) -> dict[str, Any]:
@@ -15968,7 +14954,9 @@ def build_app(
             "session": Session(**sess.to_wire()).model_dump(exclude_none=True),
             "workspace": (Workspace(**ws.to_wire()).model_dump(exclude_none=True) if ws else None),
             "messages": [m.model_dump(exclude_none=True) for m in msgs],
-            "context_files": [dict(row) for row in app.state.context_files.get(sid, {}).values()],
+            "context_files": [
+                dict(row) for row in app.state.context_files.get(sid, {}).values()
+            ],
         }
 
     @app.post("/v1/sessions/import", response_model=Session)
@@ -16162,19 +15150,19 @@ def build_app(
     ) -> Message:
         now = time.time()
         user_metadata = dict(metadata or {})
-        image_summaries = _image_part_summaries(request_parts or [])
-        if image_summaries:
-            native_model_dispatch = (
-                _active_lm_supports_vision(app)
-                and _agent_accepts_images(app.state.agent)
-                and not turn_agent_id
-            )
-            user_metadata["image_parts"] = image_summaries
+        user_parts = _user_message_parts(
+            request_parts=list(request_parts or []),
+            user_text=user_text,
+        )
+        image_count = sum(1 for part in user_parts if part.type == "image")
+        if image_count:
+            native_dispatch = _agent_accepts_images(app.state.agent)
             user_metadata["multimodal"] = {
-                "image_part_count": len(image_summaries),
+                "image_part_count": image_count,
                 "transcript_preserved": True,
-                "native_model_dispatch": native_model_dispatch,
+                "native_model_dispatch": native_dispatch,
             }
+            user_metadata["image_parts"] = _image_part_summaries(user_parts)
         if turn_agent_id:
             user_metadata["agent_override"] = {
                 "requested_agent_id": turn_agent_id,
@@ -16187,7 +15175,7 @@ def build_app(
             role="user",
             created_at=_iso_from_epoch(now),
             updated_at=_iso_from_epoch(now),
-            parts=_user_message_parts(request_parts=request_parts or [], user_text=user_text),
+            parts=user_parts,
             metadata=user_metadata,
         )
 
@@ -16962,7 +15950,11 @@ def build_app(
                         description=row.get("description", ""),
                         source=row.get("source", "builtin"),
                         status=status,
-                        metadata=({"error": row["error"]} if row.get("error") else {}),
+                        metadata=(
+                            {"error": row["error"]}
+                            if row.get("error")
+                            else {}
+                        ),
                     )
                 )
                 command_ids.add(command_id)
@@ -17018,9 +16010,7 @@ def build_app(
         metadata = getattr(sess, "metadata", {}) or {}
         if not isinstance(metadata, Mapping):
             return ""
-        return str(
-            metadata.get("active_expert_pack_id") or metadata.get("expert_pack_id") or ""
-        ).strip()
+        return str(metadata.get("active_expert_pack_id") or metadata.get("expert_pack_id") or "").strip()
 
     def _active_session_expert_pack_path(session_id: str = "") -> Path | None:
         if not session_id:
@@ -17619,36 +16609,6 @@ def build_app(
             )
         return out
 
-    def _runtime_hook_dir_for_packaged_hooks() -> Path:
-        metadata = getattr(app.state, "runtime_hook_registry_metadata", {}) or {}
-        backend = str(metadata.get("backend") or "")
-        hooks_dir = str(metadata.get("hooks_dir") or "").strip()
-        if backend != "local_python" or not hooks_dir:
-            raise HTTPException(
-                status_code=409,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="hook_backend_unsupported",
-                        message=(
-                            "Agent Blueprint packaged hooks require the local_python "
-                            "runtime hook backend"
-                        ),
-                        details={"backend": backend},
-                        recoverable=True,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-        return Path(hooks_dir).expanduser()
-
-    def _reload_runtime_hook_registry(hooks_dir: Path) -> dict[str, Any]:
-        from clio_agent.runtime.hooks import HookRegistry, install_global_registry  # noqa: PLC0415
-
-        registry = HookRegistry(hooks_dir=hooks_dir)
-        install_global_registry(registry)
-        metadata = registry.metadata() if hasattr(registry, "metadata") else {}
-        app.state.runtime_hook_registry_metadata = metadata
-        return metadata
-
     def _active_session_agent_blueprint_rows(
         session_id: str = "",
         workspace_id: str = "",
@@ -17782,11 +16742,6 @@ def build_app(
                         scope=blueprint.scope,
                         blueprint_id=blueprint.id,
                     ),
-                    "hook_descriptors": load_hook_descriptors(
-                        blueprint.root,
-                        scope=blueprint.scope,
-                        blueprint_id=blueprint.id,
-                    ),
                 }
         raise HTTPException(
             status_code=404,
@@ -17794,10 +16749,7 @@ def build_app(
                 error=ErrorInfo(
                     error="not_found",
                     message=f"agent blueprint not found: {blueprint_id}",
-                    details={
-                        "agent_blueprint_id": blueprint_id,
-                        "workspace_id": workspace_id or "",
-                    },
+                    details={"agent_blueprint_id": blueprint_id, "workspace_id": workspace_id or ""},
                     recoverable=False,
                 )
             ).model_dump(exclude_none=True),
@@ -17909,13 +16861,13 @@ def build_app(
         scope: str = "workspace",
         workspace_id: str = "",
     ) -> dict[str, Any]:
-        if blueprint_id == "data-exploration" and scope == "builtin":
+        if blueprint_id == DEFAULT_AGENT_BLUEPRINT_ID and scope == "global":
             raise HTTPException(
                 status_code=400,
                 detail=ErrorEnvelope(
                     error=ErrorInfo(
                         error="bad_request",
-                        message="built-in agent blueprints cannot be deleted",
+                        message="default registry agent blueprint cannot be deleted",
                         recoverable=False,
                     )
                 ).model_dump(exclude_none=True),
@@ -17949,173 +16901,6 @@ def build_app(
                     )
                 ).model_dump(exclude_none=True),
             ) from exc
-
-    @app.post("/v1/agent-blueprints/{blueprint_id:path}/hooks/{hook_id}/enable")
-    async def enable_agent_blueprint_hook(
-        blueprint_id: str,
-        hook_id: str,
-        req: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        body = req or {}
-        cwd = _workspace_catalog_cwd(workspace_id=str(body.get("workspace_id") or ""))
-        blueprint = next(
-            (row for row in discover_agent_blueprints(cwd=cwd) if row.id == blueprint_id),
-            None,
-        )
-        if blueprint is None:
-            raise HTTPException(
-                status_code=404,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="not_found",
-                        message=f"agent blueprint not found: {blueprint_id}",
-                        recoverable=False,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-        descriptors = load_hook_descriptors(
-            blueprint.root,
-            scope=blueprint.scope,
-            blueprint_id=blueprint.id,
-        )
-        descriptor = next((row for row in descriptors if row["id"] == hook_id), None)
-        if descriptor is None:
-            raise HTTPException(
-                status_code=404,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="not_found",
-                        message=f"hook descriptor not found: {hook_id}",
-                        recoverable=False,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-        if descriptor.get("validation_errors"):
-            raise HTTPException(
-                status_code=400,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="validation_error",
-                        message="hook descriptor is invalid",
-                        details={"validation_errors": descriptor.get("validation_errors", [])},
-                        recoverable=True,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-
-        raw_trust_metadata = descriptor.get("trust")
-        trust_metadata: Mapping[str, Any] = (
-            raw_trust_metadata if isinstance(raw_trust_metadata, Mapping) else {}
-        )
-        trust_policy = str(trust_metadata.get("policy") or "explicit")
-        trust_requested = body.get("trust", body.get("trusted", body.get("trust_always")))
-        explicit_trust = bool(trust_requested)
-        trusted = (
-            explicit_trust
-            or trust_policy in {"trust_always", "always", "trusted"}
-            or _hook_trust_always_enabled()
-        )
-        if not trusted:
-            raise HTTPException(
-                status_code=403,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="hook_untrusted",
-                        message="Packaged hook requires explicit trust before enablement",
-                        details={
-                            "agent_blueprint_id": blueprint_id,
-                            "hook_id": hook_id,
-                            "trust_policy": trust_policy,
-                        },
-                        recoverable=True,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-
-        source = Path(str(descriptor.get("definition_path") or "")).expanduser()
-        hooks_dir = _runtime_hook_dir_for_packaged_hooks()
-        target_dir = hooks_dir / "blueprints" / blueprint_id
-        target_dir.mkdir(parents=True, exist_ok=True)
-        target = target_dir / f"{hook_id}.py"
-        try:
-            source_resolved = source.resolve(strict=True)
-            blueprint_root = blueprint.root.resolve(strict=True)
-            source_resolved.relative_to(blueprint_root)
-            shutil.copy2(source_resolved, target)
-        except ValueError as exc:
-            raise HTTPException(
-                status_code=400,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="validation_error",
-                        message="hook file must be inside the Agent Blueprint root",
-                        recoverable=True,
-                    )
-                ).model_dump(exclude_none=True),
-            ) from exc
-        except OSError as exc:
-            raise HTTPException(
-                status_code=400,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="validation_error",
-                        message=f"failed to install packaged hook: {exc}",
-                        recoverable=True,
-                    )
-                ).model_dump(exclude_none=True),
-            ) from exc
-
-        trust = {
-            "policy": trust_policy,
-            "trusted": trusted,
-            "source": (
-                "request"
-                if explicit_trust
-                else ("descriptor" if trust_policy in {"trust_always", "always", "trusted"} else "config")
-            ),
-        }
-        hook_metadata = {
-            "source": "agent_blueprint",
-            "agent_blueprint_id": blueprint_id,
-            "definition_path": descriptor.get("definition_path") or "",
-            "installed_path": str(target),
-            "checksum": descriptor.get("checksum") or "",
-            "event": descriptor.get("event") or hook_id,
-            "trust": trust,
-            "scope": {"blueprint_id": blueprint_id},
-        }
-        try:
-            target.with_name(f"{target.name}.json").write_text(
-                json.dumps(hook_metadata, sort_keys=True),
-                encoding="utf-8",
-            )
-        except OSError as exc:
-            raise HTTPException(
-                status_code=400,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="validation_error",
-                        message=f"failed to install packaged hook metadata: {exc}",
-                        recoverable=True,
-                    )
-                ).model_dump(exclude_none=True),
-            ) from exc
-
-        registry_metadata = _reload_runtime_hook_registry(hooks_dir)
-        return {
-            "id": f"agent_blueprint_hook_{blueprint_id}_{hook_id}",
-            "hook_id": hook_id,
-            "event": descriptor.get("event") or hook_id,
-            "status": "enabled",
-            "enabled": True,
-            "source": "agent_blueprint",
-            "agent_blueprint_id": blueprint_id,
-            "definition_path": descriptor.get("definition_path") or "",
-            "installed_path": str(target),
-            "checksum": descriptor.get("checksum") or "",
-            "trust": trust,
-            "registry": registry_metadata,
-        }
 
     @app.post("/v1/agent-blueprints/{blueprint_id:path}/mcp/{descriptor_id}/enable")
     async def enable_agent_blueprint_mcp_descriptor(
@@ -18169,36 +16954,6 @@ def build_app(
                     )
                 ).model_dump(exclude_none=True),
             )
-        raw_trust_metadata = descriptor.get("trust")
-        trust_metadata: Mapping[str, Any] = (
-            raw_trust_metadata if isinstance(raw_trust_metadata, Mapping) else {}
-        )
-        trust_policy = str(trust_metadata.get("policy") or "explicit")
-        trust_requested = body.get("trust", body.get("trusted", body.get("trust_always")))
-        explicit_trust = bool(trust_requested)
-        trusted = (
-            explicit_trust
-            or trust_policy in {"trust_always", "always", "trusted"}
-            or _mcp_trust_always_enabled()
-        )
-        if not trusted:
-            raise HTTPException(
-                status_code=403,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="mcp_untrusted",
-                        message=(
-                            "MCP descriptor requires explicit trust before enablement"
-                        ),
-                        details={
-                            "agent_blueprint_id": blueprint_id,
-                            "descriptor_id": descriptor_id,
-                            "trust_policy": trust_policy,
-                        },
-                        recoverable=True,
-                    )
-                ).model_dump(exclude_none=True),
-            )
         sid = f"agent_blueprint_mcp_{blueprint_id}_{descriptor_id}"
         if not hasattr(app.state, "external_mcp_servers"):
             app.state.external_mcp_servers = {}
@@ -18209,18 +16964,6 @@ def build_app(
             spec["args"] = list(descriptor.get("args") or [])
         if descriptor.get("url"):
             spec["url"] = descriptor["url"]
-        for key in ("install", "runtime", "env_policy", "verification"):
-            if descriptor.get(key):
-                spec[key] = descriptor[key]
-        spec["trust"] = {
-            "policy": trust_policy,
-            "trusted": trusted,
-            "source": (
-                "request"
-                if explicit_trust
-                else ("descriptor" if trust_policy in {"trust_always", "always", "trusted"} else "config")
-            ),
-        }
         declared_tools: list[dict[str, Any]] = [
             {
                 **tool,
@@ -18323,11 +17066,6 @@ def build_app(
             "source": "agent_blueprint",
             "agent_blueprint_id": blueprint_id,
             "descriptor_id": descriptor_id,
-            "trust": spec["trust"],
-            "install": descriptor.get("install") or {},
-            "runtime": descriptor.get("runtime") or {},
-            "env_policy": descriptor.get("env_policy") or {},
-            "verification": descriptor.get("verification") or {},
         }
         if connect_error:
             app.state.external_mcp_servers[sid]["error"] = connect_error
@@ -18342,11 +17080,6 @@ def build_app(
             "source": "agent_blueprint",
             "agent_blueprint_id": blueprint_id,
             "descriptor_id": descriptor_id,
-            "trust": spec["trust"],
-            "install": descriptor.get("install") or {},
-            "runtime": descriptor.get("runtime") or {},
-            "env_policy": descriptor.get("env_policy") or {},
-            "verification": descriptor.get("verification") or {},
             **({"error": connect_error} if connect_error else {}),
         }
 
@@ -18372,43 +17105,17 @@ def build_app(
             (row for row in discover_agent_blueprints(cwd=cwd) if row.id == blueprint_id),
             None,
         )
-        blueprint_wire: dict[str, Any] | None = (
-            blueprint.to_wire() if blueprint is not None else None
-        )
-        descriptor_root: Path | None = blueprint.root if blueprint is not None else None
+        blueprint_wire: dict[str, Any] | None = blueprint.to_wire() if blueprint is not None else None
         if blueprint is None and blueprint_path is not None:
             validation = validate_agent_blueprint_path(blueprint_path, scope="session")
             raw_blueprint = validation.get("agent_blueprint")
             blueprint_wire = raw_blueprint if isinstance(raw_blueprint, dict) else None
-            descriptor_root = blueprint_path
-        mcp_descriptors = (
-            load_mcp_descriptors(
-                descriptor_root,
-                scope=str((blueprint_wire or {}).get("scope") or "session"),
-                blueprint_id=blueprint_id,
-            )
-            if descriptor_root is not None and blueprint_id
-            else []
-        )
-        hook_descriptors = (
-            load_hook_descriptors(
-                descriptor_root,
-                scope=str((blueprint_wire or {}).get("scope") or "session"),
-                blueprint_id=blueprint_id,
-            )
-            if descriptor_root is not None and blueprint_id
-            else []
-        )
         return {
             "session_id": sid,
             "workspace_id": getattr(sess, "workspace_id", ""),
             "active_agent_blueprint_id": blueprint_id,
-            "active_agent_blueprint_path": str(blueprint_path)
-            if blueprint_path is not None
-            else "",
+            "active_agent_blueprint_path": str(blueprint_path) if blueprint_path is not None else "",
             "agent_blueprint": blueprint_wire,
-            "mcp_descriptors": mcp_descriptors,
-            "hook_descriptors": hook_descriptors,
             "agent_overlay": _session_agent_overlay(sid),
             "activation": {
                 key: str(value)
@@ -18482,9 +17189,7 @@ def build_app(
                         )
                     ).model_dump(exclude_none=True),
                 )
-            blueprint = next(
-                (row for row in discover_agent_blueprints(cwd=cwd) if row.id == blueprint_id), None
-            )
+            blueprint = next((row for row in discover_agent_blueprints(cwd=cwd) if row.id == blueprint_id), None)
             if blueprint is None:
                 raise HTTPException(
                     status_code=404,
@@ -18519,9 +17224,7 @@ def build_app(
             "active_agent_blueprint_id": str(blueprint_wire.get("id") or ""),
             "active_agent_blueprint_path": str(blueprint_path),
             "agent_blueprint": blueprint_wire,
-            "session": Session(**updated.to_wire()).model_dump(exclude_none=True)
-            if updated
-            else None,
+            "session": Session(**updated.to_wire()).model_dump(exclude_none=True) if updated else None,
         }
 
     @app.get("/v1/sessions/{sid}/agent-overlay")
@@ -18600,9 +17303,7 @@ def build_app(
             "session_id": sid,
             "agent_overlay": dict(overlay),
             "validation": validation,
-            "session": Session(**updated.to_wire()).model_dump(exclude_none=True)
-            if updated
-            else None,
+            "session": Session(**updated.to_wire()).model_dump(exclude_none=True) if updated else None,
         }
 
     @app.post("/v1/sessions/{sid}/agent-overlay/export", status_code=201)
@@ -18865,9 +17566,7 @@ def build_app(
                     "active_expert_pack_id": str(pack_wire.get("id") or ""),
                     "active_expert_pack_version": str(pack_wire.get("version") or ""),
                     "active_expert_pack_scope": "session",
-                    "active_expert_pack_definition_path": str(
-                        pack_wire.get("definition_path") or ""
-                    ),
+                    "active_expert_pack_definition_path": str(pack_wire.get("definition_path") or ""),
                     "active_expert_pack_path": str(Path(pack_path).expanduser()),
                 },
             )
@@ -18878,9 +17577,7 @@ def build_app(
                 "active_expert_pack_id": str(pack_wire.get("id") or ""),
                 "active_expert_pack_path": str(Path(pack_path).expanduser()),
                 "expert_pack": pack_wire,
-                "session": Session(**updated.to_wire()).model_dump(exclude_none=True)
-                if updated
-                else None,
+                "session": Session(**updated.to_wire()).model_dump(exclude_none=True) if updated else None,
             }
         if not pack_id:
             raise HTTPException(
@@ -18922,9 +17619,7 @@ def build_app(
             "workspace_id": getattr(sess, "workspace_id", ""),
             "active_expert_pack_id": pack.id,
             "expert_pack": pack.to_wire(),
-            "session": Session(**updated.to_wire()).model_dump(exclude_none=True)
-            if updated
-            else None,
+            "session": Session(**updated.to_wire()).model_dump(exclude_none=True) if updated else None,
         }
 
     @app.get("/v1/agents", response_model=ListAgentsResponse)
@@ -19176,9 +17871,7 @@ def build_app(
                     mode = str(row.get("mode") or "read")
                     context_files_by_mode[mode] = context_files_by_mode.get(mode, 0) + 1
                 transcript_tokens = sum(_estimate_message_context_tokens(m) for m in messages)
-                context_file_tokens = sum(
-                    _estimate_context_file_tokens(row) for row in context_files
-                )
+                context_file_tokens = sum(_estimate_context_file_tokens(row) for row in context_files)
                 tokens_retained = transcript_tokens + context_file_tokens
                 tokens_budget = 4000
                 pressure, threshold_state, compact_recommended = _context_pressure_state(
@@ -20570,7 +19263,6 @@ def build_app(
             "context_length": req.context_length,
             "thinking_budget": req.thinking_budget,
             "transport": cfg.codex_transport if req.provider == "codex" else None,
-            "supports_vision": cfg.supports_vision,
         }
         _clear_session_model_refs(app)
         # Publish so live SSE subscribers see the swap (TUI updates
@@ -20587,7 +19279,6 @@ def build_app(
                     "max_tokens": req.max_tokens,
                     "context_length": req.context_length,
                     "transport": cfg.codex_transport if req.provider == "codex" else None,
-                    "supports_vision": cfg.supports_vision,
                 },
             )
         )
@@ -20816,8 +19507,6 @@ def build_app(
                         "description": tool.get("description") or "",
                         "server_id": f"mcp_{srv}" if srv else "",
                         "source": "mcp",
-                        "status": "ready",
-                        "enabled": True,
                         "input_schema": tool.get("input_schema") or {},
                         "output_schema": tool.get("output_schema") or {},
                         "permission_default": "ask",
@@ -20897,8 +19586,6 @@ def build_app(
                                 "description": getattr(t, "description", "") or "",
                                 "server_id": sid,
                                 "source": "mcp",
-                                "status": "ready",
-                                "enabled": True,
                                 "input_schema": getattr(t, "inputSchema", None)
                                 or getattr(t, "input_schema", None)
                                 or {},
@@ -20909,8 +19596,6 @@ def build_app(
                                 "owner": _tool_owner_for_catalog(tool_name),
                                 "tags": _tool_tags_for_catalog(tool_name),
                                 "visible_to": _tool_visible_to_for_catalog(tool_name),
-                                "agent_blueprint_id": info.get("agent_blueprint_id") or "",
-                                "descriptor_id": info.get("descriptor_id") or "",
                             }
                         )
                 except Exception as exc:  # noqa: BLE001

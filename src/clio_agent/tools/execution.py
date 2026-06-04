@@ -9,12 +9,14 @@ import logging
 import threading
 from collections.abc import Callable, Mapping
 from contextlib import suppress
+from pathlib import Path
 from typing import Any, Optional, Protocol
 
 import dspy
 from fastmcp import Client
 
 from clio_agent.errors import CancellationError
+from clio_agent.tools.file_policy import FileAccessPolicy
 
 logger = logging.getLogger(__name__)
 
@@ -465,9 +467,11 @@ class SyncMCPToolExecutor:
                     },
                 )
 
+        effective_args = _repair_missing_file_arguments(args)
+
         if permission_gate is not None:
             try:
-                decision = permission_gate(name, dict(args))
+                decision = permission_gate(name, dict(effective_args))
             except Exception as exc:  # noqa: BLE001
                 raise PermissionError(f"permission gate raised: {exc!r}") from exc
             if decision != "allow":
@@ -475,20 +479,20 @@ class SyncMCPToolExecutor:
 
         raise_if_cancelled("tool_call_before")
 
-        notify_tool_observer(tool_observer, name, args, "started", None)
+        notify_tool_observer(tool_observer, name, effective_args, "started", None)
 
         try:
             timeout = self._timeout_for_tool(name)
             result = self._run_coroutine(
-                self._async_executor.call_tool(name, args),
+                self._async_executor.call_tool(name, effective_args),
                 timeout=timeout,
                 action=f"MCP tool {name!r}",
             )
             raise_if_cancelled("tool_call_after")
         except Exception as exc:
-            notify_tool_observer(tool_observer, name, args, "completed", repr(exc))
+            notify_tool_observer(tool_observer, name, effective_args, "completed", repr(exc))
             raise
-        notify_tool_observer(tool_observer, name, args, "completed", None)
+        notify_tool_observer(tool_observer, name, effective_args, "completed", None)
 
         return result
 
@@ -552,6 +556,60 @@ def _result_to_text(result: Any) -> str:
     if isinstance(data, dict):
         return json.dumps(data)
     return str(data)
+
+
+_FILE_ARGUMENT_NAMES = {
+    "file",
+    "filepath",
+    "file_path",
+    "path",
+    "input",
+    "input_path",
+    "source",
+    "source_path",
+}
+
+
+def _repair_missing_file_arguments(args: Mapping[str, Any]) -> dict[str, Any]:
+    """Repair obvious missing file-path typos to a unique allowed-root match.
+
+    Model-generated tool calls occasionally mistype a directory component while
+    preserving the target basename. Retrying a unique basename match under the
+    configured allowed roots keeps the repair inside the existing file policy:
+    no outside-root access, and no ambiguous guessing.
+    """
+
+    repaired = dict(args)
+    try:
+        policy = FileAccessPolicy.from_env()
+    except Exception:
+        return repaired
+
+    for key, value in list(repaired.items()):
+        if key not in _FILE_ARGUMENT_NAMES or not isinstance(value, str) or not value.strip():
+            continue
+        candidate = Path(value).expanduser()
+        if candidate.exists():
+            continue
+        basename = candidate.name
+        if not basename or basename in {".", ".."}:
+            continue
+        matches: list[Path] = []
+        for root in policy.allowed_roots:
+            try:
+                for found in root.rglob(basename):
+                    if found.is_file():
+                        matches.append(found.resolve())
+                        if len(matches) > 1:
+                            break
+            except OSError:
+                continue
+            if len(matches) > 1:
+                break
+        unique = sorted(set(matches))
+        if len(unique) == 1:
+            repaired[key] = str(unique[0])
+    return repaired
 
 
 def _make_dspy_tools(

@@ -40,8 +40,13 @@ warn() { printf "${YELLOW}!!${RESET} %s\n" "$*" >&2; }
 err()  { printf "${RED}xx${RESET} %s\n" "$*" >&2; }
 
 # health returns 0 when the server answers /v1/health on the port.
+# CLIO returns 503 for a reachable server whose dependencies still need
+# user configuration, such as first-run LM provider selection. Treat that
+# as "server is up" so the TUI can surface and resolve the configuration.
 health() {
-  curl -sf -m 1 "http://127.0.0.1:$CLIO_PORT/v1/health" >/dev/null 2>&1
+  local code
+  code="$(curl -sS -m 1 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$CLIO_PORT/v1/health" 2>/dev/null || true)"
+  [[ "$code" = "200" || "$code" = "503" ]]
 }
 
 # server_pid echoes a live server PID (from the pidfile, validated) or
@@ -49,15 +54,15 @@ health() {
 # outside this launcher is still manageable.
 server_pid() {
   local p=""
+  if command -v lsof >/dev/null 2>&1; then
+    p="$(lsof -ti "tcp:$CLIO_PORT" -sTCP:LISTEN 2>/dev/null | head -n1 || true)"
+    if [[ -n "$p" ]]; then echo "$p"; return 0; fi
+  fi
   if [[ -f "$PIDFILE" ]]; then
     p="$(cat "$PIDFILE" 2>/dev/null || true)"
     if [[ -n "$p" ]] && kill -0 "$p" 2>/dev/null; then
       echo "$p"; return 0
     fi
-  fi
-  if command -v lsof >/dev/null 2>&1; then
-    p="$(lsof -ti "tcp:$CLIO_PORT" -sTCP:LISTEN 2>/dev/null | head -n1 || true)"
-    if [[ -n "$p" ]]; then echo "$p"; return 0; fi
   fi
   return 1
 }

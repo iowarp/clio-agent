@@ -7,18 +7,16 @@ expert kicks off in parallel for a sub-task. Each spawn produces a
 ``app._run_turn_in_background``) materialises the spawns as child
 sessions and publishes ``subagent.started/completed`` events.
 
-Usage from inside a Tier-2 expert::
+Usage from a blueprint runtime helper::
 
     from clio_agent.runtime.nanoagent import spawn_many
-    from clio_agent.experts.data_expert import DataExpert
 
     spawns = spawn_many(
-        agent_factory=lambda: DataExpert(),
+        agent_factory=lambda: validator_module,
         items=[
             {"input": {"file": "a.h5"}, "agent_id": "data_validator"},
             {"input": {"file": "b.h5"}, "agent_id": "data_validator"},
         ],
-        question_template="Validate {file}",
     )
     pred.nanoagents_spawned = [s.to_wire() for s in spawns]
 

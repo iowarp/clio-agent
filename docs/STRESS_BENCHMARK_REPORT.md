@@ -2,6 +2,11 @@
 
 Date: 2026-05-21
 
+> Historical report: this predates #629's final registry-only expert runtime.
+> Rows labeled `DataExpert`, `AnalysisExpert`, or `VisualizationExpert` refer
+> to the old local benchmark naming and should be read as historical evidence,
+> not as current native Python expert routes.
+
 This report records what the real-provider benchmark suite currently proves,
 which commands produced the evidence, and which ideas remain outside the
 verified scope.
@@ -15,9 +20,9 @@ end-to-end, not just isolated provider or tool smoke tests.
 | --- | --- | --- |
 | Rich local benchmark datasets | `scripts/create_benchmark_data.py` creates HDF5, clean Parquet, dirty Parquet, CSV, and ADIOS/BP5 benchmark inputs under `tmp/clio-benchmark-data`. | Verified |
 | Real provider execution | Final run used GACT against LM Studio at `http://127.0.0.1:1234/v1`, model `qwopus3.5-9b-v3`. | Verified for local Qwopus |
-| DataExpert | `hdf5_structure` selected `data` and called HDF5 tools. | Verified |
-| AnalysisExpert | `parquet_profile` and `csv_schema` selected `analysis` and called Parquet/CSV tools. | Verified |
-| VisualizationExpert | `visualization_artifact` selected `visualization`, called `plot_summary`, and returned existing PNG artifacts. | Verified |
+| Historical data route | `hdf5_structure` selected `data` and called HDF5 tools. | Verified |
+| Historical analysis route | `parquet_profile` and `csv_schema` selected `analysis` and called Parquet/CSV tools. | Verified |
+| Historical visualization route | `visualization_artifact` selected `visualization`, called `plot_summary`, and returned existing PNG artifacts. | Verified |
 | Natural nano-agent fan-out | `nanoagent_parallel_tool_use` used a human-natural cross-file prompt, created child sessions, and recorded HDF5, Parquet, CSV, and ADIOS/BP5 tool provenance without the user naming nano-agents or tools. | Verified |
 | Multi-turn state | `visualization_artifact` runs after Parquet and CSV turns in the same session and resolves "the Parquet file we just profiled" back to the profiled Parquet file. | Verified |
 | Dirty data quality | `dirty_parquet_quality_review` runs against `facility_measurements_dirty.parquet` and records schema/statistics tool calls. | Verified |

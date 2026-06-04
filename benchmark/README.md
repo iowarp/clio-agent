@@ -23,12 +23,6 @@ semantics, and surfaced-error behavior.
   filled by watched live runs, not by unit-test output.
 - `CURRENT_STATUS.md` - current human-facing benchmark status: what failed,
   what was fixed, what now works, and which stress gaps remain future work.
-- `../docs/PREBENCHMARK_HARDENING_AUDIT.md` - backend hardening matrix for
-  deciding which surfaces are implemented, tested, and still awaiting
-  real-provider proof before 1.0 readiness language.
-- `../docs/DETERMINISTIC_SHORTCUT_AUDIT.md` - classification of deterministic
-  paths that are allowed only as verification, guardrail, or explicit legacy
-  infrastructure.
 - `REAL_PROVIDER_PROMPTS.md` - collaborator-grade prompts and expected behavior.
 - `BENCHMARK_PROMPT_BOOK.md` - concise manual TUI prompt book and pass criteria.
 - `CROSS_DOMAIN_DEMO_RESULTS.md` - human-facing evidence index and acceptance

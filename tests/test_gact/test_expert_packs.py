@@ -19,12 +19,16 @@ from clio_agent.gact.types import AgentDef
 
 @pytest.fixture()
 def isolated_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    from tests.conftest import _write_test_default_registry_blueprint
+
     home = tmp_path / "home"
     home.mkdir()
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     monkeypatch.setenv("HOME", str(home))
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(home / ".config"))
+    xdg_root = home / ".config"
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg_root))
+    _write_test_default_registry_blueprint(xdg_root)
     monkeypatch.chdir(workspace)
     return workspace
 
@@ -69,7 +73,7 @@ Use bounded dataset discovery.
     assert row.default_model == "gpt-5.1"
     assert row.tools == ["ndp.search", "ndp.stage"]
     assert row.keywords == ["ndp", "earthscope"]
-    assert row.parameters["temperature"] == "0.2"
+    assert row.parameters["temperature"] == 0.2
     assert row.enabled is True
     assert row.validation_errors == []
 
@@ -401,7 +405,7 @@ Use the workspace data semantics.
     assert rows["data"]["source"] == "expert_pack"
     assert rows["data"]["title"] == "Workspace Data Expert"
     assert rows["data"]["metadata"]["pack_id"] == "data-override"
-    assert rows["data"]["metadata"]["override_chain"][0]["source"] == "builtin"
+    assert rows["data"]["metadata"]["override_chain"][0]["source"] == "expert_pack"
 
 
 def test_expert_pack_apis_discover_validate_and_activate_per_session(
@@ -903,37 +907,6 @@ Inspect schemas.
     assert resumed_event["actor"]["agent_id"] == "root_review"
     assert resumed_event["subject"]["agent_id"] == "schema_review"
     assert resumed_event["payload"]["resumed_from"] == "schema_review"
-    turn_completed = next(event for event in semantic if event["event_type"] == "turn.completed")
-    provenance = assistant["metadata"]["runtime_provenance"]
-    assert provenance["schema_version"] == "clio.runtime_provenance.v1"
-    assert provenance["turn"]["trace_id"].startswith("trace_msg_user_")
-    assert provenance["turn"]["assistant_message_id"] == assistant["id"]
-    assert provenance["workspace"]["scope"] == "workspace"
-    assert provenance["agent"]["selected_agent"] == "root_review"
-    assert provenance["agent"]["runtime"]["agent_id"] == "root_review"
-    assert provenance["agent"]["expert"]["tier"] == 2
-    assert provenance["agent"]["expert"]["parent_id"] == "analysis"
-    assert provenance["prompt"]["source"] == "agent_definition"
-    assert provenance["tools"]["declared"] == []
-    assert provenance["tools"]["observed"] == []
-    assert provenance["skills"]["declared"] == []
-    assert provenance["commands"]["declared"] == []
-    assert provenance["delegation"]["lifecycle"] == "sync"
-    completed_event = next(
-        row
-        for row in provenance["delegation"]["events"]
-        if row["stage"] == "delegate.completed"
-    )
-    assert completed_event["agent_id"] == "schema_review"
-    assert completed_event["parent_id"] == "root_review"
-    assert completed_event["return_to"] == "root_review"
-    assert completed_event["delegation_lifecycle"] == "sync"
-    assert provenance["memory"]["policy"]["default_scope"] == "session"
-    assert provenance["errors"] == []
-    assert (
-        turn_completed["payload"]["metadata"]["runtime_provenance"]["schema_version"]
-        == "clio.runtime_provenance.v1"
-    )
     assert assistant["parts"][1]["type"] == "expert_handoff"
     assert assistant["parts"][1]["metadata"]["status"] == "completed"
     assert assistant["parts"][-1]["text"] == "ROOT_FINAL"

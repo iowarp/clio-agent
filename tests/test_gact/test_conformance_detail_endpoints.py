@@ -46,7 +46,7 @@ def test_message_detail_returns_stored_message(tmp_path: Path) -> None:
     assert body["role"] == "assistant"
 
 
-def test_agent_detail_returns_builtin_agent(tmp_path: Path) -> None:
+def test_agent_detail_returns_default_registry_agent(tmp_path: Path) -> None:
     client = _client(tmp_path)
 
     resp = client.get("/v1/agents/main")
@@ -54,7 +54,8 @@ def test_agent_detail_returns_builtin_agent(tmp_path: Path) -> None:
     assert resp.status_code == 200
     body = resp.json()
     assert body["id"] == "main"
-    assert body["source"] == "builtin"
+    assert body["source"] == "expert_pack"
+    assert body["metadata"]["source_blueprint"] == "default_registry"
     assert body["title"]
 
 

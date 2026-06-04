@@ -5,10 +5,12 @@
 ## Test surface at a glance
 
 - **test_core/** — agent loop, routing, errors, config, instrumentation, runner, API
-- **test_experts/** — DataExpert, AnalysisExpert, VisualizationExpert (tool wiring + signature shape)
+- **test_gact/test_agent_blueprints.py** — registry bootstrap, Agent Blueprint parsing,
+  DSPy module compilation, child expert tools, and native-expert removal guards
 - **test_tools/** — FastMCP gateway + HDF5 / Parquet servers end-to-end
 - **test_arc/** — memory coverage, context compiler, retrieval, storage tiers
-- **test_integration/** — full `ClioAgent` wiring + multi-expert dispatch
+- **integration-contract / benchmark evidence** — real provider and marketplace
+  deployment checks; unit coverage is not sufficient for release readiness
 
 Fixtures (`conftest.py:1-102`) create real files (HDF5 / Parquet) with deterministic seeds — CLIO uses **real file I/O** in its tests, no mocked backends. Only LM calls get mocked (or skipped with `@skipif(not lm_studio_available())`).
 
@@ -30,12 +32,11 @@ Shape after init:
 ```python
 agent.action_planner                  # DSPy ChainOfThought on AgentActionSignature
 agent.chat_agent                      # DSPy Predict on ChatAgentSignature
-agent.data_expert                     # DataExpert (DSPy ReAct)
-agent.analysis_expert                 # AnalysisExpert
-agent.visualization_expert            # VisualizationExpert
+agent.registry                        # core runtime registry
+# GACT loads Agent Blueprint experts from the registry/marketplace store
+# and compiles them by module.kind at session runtime.
 agent.arc                             # ARCMemory
 agent.lsm                             # LSM tree for metrics
-agent.registry.get_agent_count() == 3 # data / analysis / visualization
 ```
 
 ### Single turn (happy path)
@@ -226,19 +227,20 @@ arc.get_metrics("data")         # latest
 
 ## Routing semantics
 
-- `AgentActionSignature` returns a constrained JSON action. Valid action kinds are `tool`, `expert`, `answer`, and `none`.
-- `expert` actions select one of `data`, `analysis`, or `visualization`; those are the three registry-backed experts, so `registry.get_agent_count() == 3`.
+- `AgentActionSignature` returns a constrained JSON action. Valid action kinds are `tool`, `expert`, `answer`, and `none` for core CLIO planning.
+- GACT session agents may select registry-loaded Agent Blueprint experts instead of a native domain expert path. The active default blueprint currently exposes `main`, `data`, `analysis`, and `visualization` from `data-semantics`.
 - `answer` is the conversational/chat path. It produces normal assistant text without tool execution.
 - `none` means no valid action is available. A missing planner explanation surfaces as `routing_error`; CLIO must not replace it with a canned assistant response.
 - Session `routing_mode` overrides constrain the planner path: `chat` forces the conversational path, `experts` rejects direct `answer`/`none` routes, and `reasoning_only` asks the planner to prefer tool/expert reasoning over deterministic shortcuts.
-- Registry lookup by keyword remains available for discovery, for example `registry.find_agents_by_keyword("hdf5")` returns the data expert.
+- Registry lookup by keyword remains available for discovery. Default/baseline agent provenance should identify the installed blueprint and registry commit.
 
 ## Expert semantics
 
-- `DataExpert._tools` populated from `MCPToolBridge(gateway).to_dspy_tools()` at construction — at least 4 tools expected (`test_data_expert.py:79-93`).
-- Each expert's Signature has a ≥ 500-word docstring that drives LM behaviour (`CLAUDE.md` Rule 4). Don't display this in the TUI.
-- Experts accept a `tool_executor` parameter for testability (`FakeExecutor` with `.to_dspy_tools()`) — useful if the TUI wants to mock out tools for dry-runs.
-- Experts close their executor on `shutdown()` (`test_data_expert.py:142-144`).
+- Agent Blueprint experts compile by declared `module.kind`, not by tool list.
+- Empty blueprint signatures default to `system_prompt`, `question`, and `answer`; structured outputs add evidence/artifacts/errors/delegation/handoff fields.
+- ReAct blueprint experts receive only their declared tools plus generated child-expert tools for declared children.
+- Parent/child delegation emits semantic events and returns compact child evidence to the parent.
+- Native Python domain expert modules are not runtime-importable and must not be used as a fallback.
 
 ## Tool semantics
 

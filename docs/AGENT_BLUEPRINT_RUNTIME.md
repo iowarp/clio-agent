@@ -20,9 +20,9 @@ compatibility path, but the canonical model is:
 - **Session**: an instantiated Agent from an Agent Blueprint, plus session-local
   overlays and memory.
 
-The current built-in Data Exploration/Search Agent is one Agent composed of
-Data, Analysis, Visualization, NDP, SAC/format, chat, and utility experts. It
-should be represented as a built-in Agent Blueprint.
+The default Data Exploration/Search Agent is one Agent composed of Blueprint
+experts. It is loaded from CLIO's pinned default registry snapshot, not from
+bundled domain-agent folders inside this repository.
 
 ## Blueprint Layout
 
@@ -30,7 +30,7 @@ Marketplace repositories contain one or more top-level Blueprint folders:
 
 ```text
 clio-agent-marketplace/
-  data-exploration/
+  data-semantics/
     AGENT.md
     experts/
       root.md
@@ -62,9 +62,9 @@ the body is human-facing documentation.
 
 ```md
 ---
-id: data-exploration
+id: data-semantics
 version: 0.3.0
-title: Data Exploration/Search Agent
+title: Data Semantics Agent
 description: Scientific data discovery, inspection, analysis, and visualization.
 root_expert: root
 compatibility:
@@ -136,8 +136,8 @@ A session has exactly one active Agent Blueprint. Activating a Blueprint
 instantiates the whole Agent for that session. It is not an overlay on the
 default CLIO Agent; it replaces the active session Agent.
 
-The default CLIO Data Exploration/Search Agent remains available by being
-packaged as the built-in Agent Blueprint.
+The default CLIO Data Exploration/Search Agent remains available by bootstrapping
+the pinned default registry snapshot into the normal Agent Blueprint store.
 
 Session activation records:
 
@@ -152,8 +152,10 @@ Runtime catalog resolution for an active session:
 installed Agent Blueprint snapshot -> session overlay
 ```
 
-Global and workspace installations control which Blueprints are available.
-They do not merge into the active Agent unless the user activates one.
+Global and workspace installations control which Blueprints are available. The
+pinned default registry may supply the default active Agent when no explicit
+session Blueprint is selected; other Blueprints do not merge into the active
+Agent unless the user activates one.
 
 ## Expert Communication
 

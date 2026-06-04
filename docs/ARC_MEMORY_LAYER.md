@@ -646,16 +646,16 @@ arc.update_shared_context(
 
 ## Usage Examples
 
-### Example 1: Expert Agent Using ARC
+### Example 1: Blueprint Runtime Using ARC
 
 ```python
 from clio_agent.arc import ARC
-from clio_agent.experts.data_expert import DataExpert
 
-class DataExpertWithARC(DataExpert):
+class BlueprintExpertRuntime:
     def __init__(self):
         super().__init__()
         self.arc = ARC()
+        self.agent_id = "data"
 
     def forward(self, question: str, context: str, session_id: str):
         # Load conversation history from ARC
@@ -663,7 +663,7 @@ class DataExpertWithARC(DataExpert):
 
         # Load relevant context from previous invocations
         past_invocations = self.arc.get_invocations(
-            agent_id="DataExpert",
+            agent_id=self.agent_id,
             limit=5,
         )
 
@@ -674,14 +674,14 @@ class DataExpertWithARC(DataExpert):
                 cached_answer = inv.output.answer
                 return f"Based on previous analysis: {cached_answer}"
 
-        # Execute with optimized prompts (loaded from ARC)
-        result = super().forward(question, context)
+        # Execute the registry-loaded Agent Blueprint DSPy module.
+        result = self.run_blueprint_program(question=question, context=context)
 
         # Store invocation in ARC
         self.arc.store_invocation({
             "trace_id": generate_uuid(),
             "session_id": session_id,
-            "agent_id": "DataExpert",
+            "agent_id": self.agent_id,
             "tier": 2,
             "input": {"query": question, "context": context},
             "output": {"answer": result},

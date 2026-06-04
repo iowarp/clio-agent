@@ -132,6 +132,7 @@ def test_user_agent_command_listed_and_dispatches_to_agent(
         raise AssertionError("prompt-only user command should not use tool runner")
 
     monkeypatch.setattr("clio_agent.gact.app._run_prompt_user_agent", fake_prompt_agent)
+    monkeypatch.setattr("clio_agent.gact.app._run_blueprint_dspy_agent", fake_prompt_agent)
     monkeypatch.setattr("clio_agent.gact.app._run_tool_user_agent", fail_tool_agent)
     c = TestClient(build_app(sessions_path=tmp_path / "s.json", agent=_Agent()))
     c.post(
@@ -212,6 +213,7 @@ def test_workspace_command_file_is_listed_and_dispatches_to_builtin_agent(
         return _Pred(answer="FILE_REVIEW_OK", selected_expert=agent_def.id)
 
     monkeypatch.setattr("clio_agent.gact.app._run_prompt_user_agent", fake_prompt_agent)
+    monkeypatch.setattr("clio_agent.gact.app._run_blueprint_dspy_agent", fake_prompt_agent)
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     monkeypatch.chdir(tmp_path)
     command_dir = tmp_path / ".clio" / "commands"
@@ -266,6 +268,7 @@ def test_agent_invocable_command_planner_visibility_and_allowed_call(
         return _Pred(answer="SUMMARY_OK", selected_expert=agent_def.id)
 
     monkeypatch.setattr("clio_agent.gact.app._run_prompt_user_agent", fake_prompt_agent)
+    monkeypatch.setattr("clio_agent.gact.app._run_blueprint_dspy_agent", fake_prompt_agent)
     monkeypatch.chdir(tmp_path)
     command_dir = tmp_path / ".clio" / "commands"
     command_dir.mkdir(parents=True)

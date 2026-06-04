@@ -28,7 +28,8 @@ Remaining gaps:
 
 - the pack is not yet the complete active Agent for a session;
 - the canonical root is still `clio-pack.yaml`, not Markdown `AGENT.md`;
-- the default CLIO Data Exploration/Search Agent is still mostly code-backed;
+- the default CLIO Data Exploration/Search Agent must come from the pinned
+  default registry snapshot rather than code-backed native experts;
 - some runtime prompt/profile policy text remains in Python;
 - child Expert call boundaries are hardwired to current CLIO registry behavior;
 - MCP descriptors are not yet packaged by Blueprints with safe enablement;
@@ -71,13 +72,14 @@ Required behavior:
 - turn metadata records active Blueprint id/version/source/checksum;
 - generated child-Expert tools are derived from the active graph.
 
-### Phase 3: Built-In Data Exploration/Search Blueprint
+### Phase 3: Default Registry Data Exploration/Search Blueprint
 
-Move the current default Agent into packaged files.
+Move the current default Agent into the pinned default registry repository:
+`git@github.com:JaimeCernuda/clio-agent-marketplace.git`.
 
 Required files:
 
-- built-in `AGENT.md`;
+- registry `data-semantics/AGENT.md`;
 - Expert files for root, chat, data, analysis, visualization, NDP, SAC/format,
   and utility/shell/edit surfaces where supported;
 - prompt/profile files for current planner, answer, chat, and expert behavior;
@@ -86,12 +88,14 @@ Required files:
 Python may retain:
 
 - DSPy signatures/classes;
-- tool executors and native expert implementations;
+- tool executors, generic tools, validators, adapters, and MCP launch code;
 - validators and parsers;
 - provider adapters;
 - compatibility shims.
 
 Python should not retain behavior-bearing system/runtime prompt text.
+Python should not retain privileged native domain-expert routes for the default
+Agent.
 
 ### Phase 4: Prompt/Profile Extraction Cleanup
 

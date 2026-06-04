@@ -1,33 +1,51 @@
 from __future__ import annotations
 
+import importlib.util
 import json
 import subprocess
-import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import dspy
 import pytest
 from fastapi.testclient import TestClient
 
+from clio_agent.agent import ClioAgent
 from clio_agent.gact.agent_blueprints import (
+    DEFAULT_AGENT_BLUEPRINT_ID,
+    DEFAULT_REGISTRY_COMMIT,
+    DEFAULT_REGISTRY_REF,
+    DEFAULT_REGISTRY_URL,
     discover_agent_blueprints,
     load_agent_blueprint_path,
     load_agent_blueprints,
     validate_agent_blueprint_path,
 )
 from clio_agent.gact.app import (
-    _build_prompt_user_agent_module,
+    _ACTIVE_GACT_SESSION_ID,
+    _blueprint_fanout_config,
+    _blueprint_module_kind,
+    _blueprint_runtime_signature,
+    _build_blueprint_dspy_module,
+    _build_child_expert_tool,
+    _build_fanout_tool,
     _builtin_agents,
-    _dynamic_agent_runtime_provenance,
+    _coerce_fanout_child_ids,
+    _continuation_contract_handoffs,
     _dynamic_agent_tools,
+    _dynamic_answer_is_delegation_placeholder,
+    _dynamic_child_expert_tools,
+    _fallback_answer_from_delegation,
     _gact_app_context,
-    _resolve_runtime_dynamic_agent,
+    _gact_turn_timeout_s,
+    _next_expert_marker_handoffs,
+    _prediction_structured_metadata,
+    _run_blueprint_dspy_agent,
     _runtime_dynamic_agent_children_context,
     build_app,
 )
 from clio_agent.gact.types import AgentDef
-from clio_agent.runtime.hooks import install_global_registry
 from tests.test_gact.conftest import complete_turn
 
 
@@ -99,94 +117,1066 @@ REMOTE BLUEPRINT ORCHESTRATOR MARKER.
     )
 
 
-def _write_provider_profile_blueprint(root: Path) -> None:
-    (root / "experts").mkdir(parents=True)
-    (root / "prompts").mkdir()
-    root.joinpath("AGENT.md").write_text(
-        """---
-id: provider-profile-agent
-version: 0.1.0
-title: Provider Profile Agent
-root_expert: root
-blueprint:
-  format: agent-blueprint-v1
----
-Provider/profile provenance test agent.
-""",
+def _write_default_registry_blueprint(home: Path) -> Path:
+    root = home / ".config" / "clio-agent" / "agent-blueprints" / DEFAULT_AGENT_BLUEPRINT_ID
+    _write_blueprint(root, blueprint_id=DEFAULT_AGENT_BLUEPRINT_ID)
+    root.joinpath(".clio-install.md").write_text(
+        "\n".join(
+            [
+                "# CLIO Agent Blueprint install metadata",
+                "",
+                f"source: {DEFAULT_REGISTRY_URL}",
+                "source_kind: git",
+                f"ref: {DEFAULT_REGISTRY_REF}",
+                f"commit: {DEFAULT_REGISTRY_COMMIT}",
+                f"pinned_commit: {DEFAULT_REGISTRY_COMMIT}",
+                "scope: global",
+                "",
+            ]
+        ),
         encoding="utf-8",
     )
+    return root
+
+
+def test_default_registry_agent_blueprint_is_discoverable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    _write_default_registry_blueprint(tmp_path)
+    blueprints = {
+        row.id: row
+        for row in discover_agent_blueprints(home=tmp_path, cwd=tmp_path / "workspace")
+    }
+    agents = {
+        row.id: row
+        for row in load_agent_blueprints(
+            home=tmp_path,
+            cwd=tmp_path / "workspace",
+            blueprint_id=DEFAULT_AGENT_BLUEPRINT_ID,
+        )
+    }
+
+    assert blueprints[DEFAULT_AGENT_BLUEPRINT_ID].scope == "global"
+    assert blueprints[DEFAULT_AGENT_BLUEPRINT_ID].root_expert == "root"
+    assert {"root", "variant"} <= set(agents)
+    assert agents["variant"].metadata["agent_blueprint_id"] == DEFAULT_AGENT_BLUEPRINT_ID
+    assert agents["variant"].metadata["agent_blueprint_scope"] == "global"
+    assert "agent_blueprints/builtin" not in agents["variant"].metadata["definition_path"]
+    assert blueprints[DEFAULT_AGENT_BLUEPRINT_ID].metadata["install"]["commit"] == DEFAULT_REGISTRY_COMMIT
+
+
+def test_builtin_agents_are_loaded_from_default_registry_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    _write_default_registry_blueprint(tmp_path)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    agents = {row.id: row for row in _builtin_agents()}
+
+    assert {"root", "variant"} <= set(agents)
+    assert agents["root"].source == "expert_pack"
+    assert agents["root"].metadata["source_blueprint"] == "default_registry"
+    assert "agent_blueprints/builtin" not in agents["root"].metadata["definition_path"]
+    assert agents["variant"].metadata["install"]["commit"] == DEFAULT_REGISTRY_COMMIT
+
+
+def test_agent_blueprint_module_kind_and_structured_outputs_parse(tmp_path: Path) -> None:
+    root = tmp_path / "react-blueprint"
+    _write_blueprint(root, blueprint_id="react-blueprint")
     root.joinpath("experts", "root.md").write_text(
         """---
 id: root
-title: Root Expert
+title: React Root
 tier: 1
-prompt_id: profile.root
-prompt_profile: heavy
+module:
+  kind: react
+  max_iters: 3
+signature:
+  inputs: question
+  outputs: answer
+structured_outputs:
+  evidence: true
+  artifacts: true
+fanout:
+  max_workers: 2
+tools:
+  - memory_search_sessions
 ---
-Inline root prompt should be composed.
+Coordinate with ReAct.
 """,
         encoding="utf-8",
     )
-    root.joinpath("experts", "analysis.md").write_text(
+
+    rows = {row.id: row for row in load_agent_blueprint_path(root)}
+    assert rows["root"].module["kind"] == "react"
+    assert rows["root"].module["max_iters"] == 3
+    assert rows["root"].signature["inputs"] == "question"
+    assert rows["root"].structured_outputs["evidence"] is True
+    assert rows["root"].fanout["max_workers"] == 2
+
+
+def test_agent_blueprint_loader_expands_pack_local_includes(tmp_path: Path) -> None:
+    root = tmp_path / "included-blueprint"
+    _write_blueprint(root, blueprint_id="included-blueprint")
+    root.joinpath("AGENT.md").write_text(
         """---
-id: analysis
-title: Analysis Expert
-parent_id: root
-tier: 2
-prompt_id: profile.analysis
-prompt_profile: light
+id: included-blueprint
+version: 0.1.0
+title: Included Blueprint
+root_expert: root
+experts:
+  - experts/root.md
+includes:
+  - modules/ndp-collector/experts
 ---
-Inline analysis prompt should be composed.
+Agent with included module experts.
 """,
         encoding="utf-8",
     )
-    root.joinpath("prompts", "profile.root.md").write_text(
+    included = root / "modules" / "ndp-collector" / "experts"
+    included.mkdir(parents=True)
+    included.joinpath("ndp_catalog.md").write_text(
         """---
-id: profile.root
-profile: heavy
-provider: openai
-model: gpt-5.1
+id: ndp_catalog
+title: NDP Catalog
+parent_id: variant
+tier: 3
+module_kind: react
+tools:
+  - ndp_search_datasets
 ---
-Root prompt from blueprint profile.
-""",
-        encoding="utf-8",
-    )
-    root.joinpath("prompts", "profile.analysis.md").write_text(
-        """---
-id: profile.analysis
-profile: light
-provider: anthropic
-model: claude-sonnet-4-20250514
----
-Analysis prompt from blueprint profile.
+Search NDP datasets.
 """,
         encoding="utf-8",
     )
 
+    rows = {row.id: row for row in load_agent_blueprint_path(root)}
 
-def test_builtin_agent_blueprint_is_discoverable() -> None:
-    blueprints = {row.id: row for row in discover_agent_blueprints()}
-    agents = {row.id: row for row in load_agent_blueprints(blueprint_id="data-exploration")}
-
-    assert blueprints["data-exploration"].scope == "builtin"
-    assert blueprints["data-exploration"].root_expert == "main"
-    assert {"main", "data", "analysis", "visualization", "ndp_catalog"} <= set(agents)
-    assert agents["data"].metadata["agent_blueprint_id"] == "data-exploration"
+    assert "ndp_catalog" in rows
+    assert rows["ndp_catalog"].parent_id == "variant"
+    assert rows["ndp_catalog"].metadata["definition_kind"] == "agent_blueprint"
+    assert "modules/ndp-collector/experts/ndp_catalog.md" in rows["ndp_catalog"].metadata["definition_path"]
 
 
-def test_builtin_agents_are_loaded_from_packaged_blueprint() -> None:
-    agents = {row.id: row for row in _builtin_agents()}
-
-    assert {"main", "data", "analysis", "visualization", "ndp_catalog"} <= set(agents)
-    assert agents["main"].metadata["source_blueprint"] == "builtin"
-    assert agents["main"].metadata["definition_path"].endswith(
-        "agent_blueprints/builtin/data-exploration/experts/main.md"
+def test_blueprint_runtime_signature_preserves_fields_and_normalizes_structured_outputs() -> None:
+    agent_def = AgentDef(
+        id="semantic-root",
+        source="expert_pack",
+        title="Semantic Root",
+        signature={
+            "inputs": {
+                "question": "User request",
+                "dataset_summary": "Available dataset summary",
+            },
+            "outputs": {
+                "answer": "User-facing answer",
+                "artifact_plan": "Planned artifact work",
+            },
+        },
+        structured_outputs={
+            "evidence": "true",
+            "artifacts": "false",
+            "errors": True,
+            "delegation": False,
+        },
     )
-    assert agents["main"].system_prompt.startswith("You are CLIO's agent planner.")
-    assert agents["data"].metadata["definition_path"].endswith(
-        "agent_blueprints/builtin/data-exploration/experts/data.md"
+
+    signature = _blueprint_runtime_signature(agent_def)
+
+    assert list(signature.input_fields) == ["question", "dataset_summary"]
+    assert list(signature.output_fields) == ["answer", "artifact_plan", "evidence", "errors", "expert_handoffs"]
+    assert "artifacts" not in signature.output_fields
+    assert "delegation" not in signature.output_fields
+
+
+def test_blueprint_runtime_signature_defaults_empty_declarations_to_question_and_answer() -> None:
+    signature = _blueprint_runtime_signature(
+        AgentDef(id="data", source="expert_pack", title="Data")
     )
-    assert agents["data"].system_prompt.startswith("You are the CLIO Data Expert")
+
+    assert list(signature.input_fields) == ["system_prompt", "question"]
+    assert list(signature.output_fields) == [
+        "answer",
+        "evidence",
+        "artifacts",
+        "errors",
+        "delegation",
+        "expert_handoffs",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("raw_signature", "expected_inputs", "expected_outputs"),
+    [
+        ({}, ["system_prompt", "question"], ["answer"]),
+        ({"inputs": {}, "outputs": {}}, ["system_prompt", "question"], ["answer"]),
+        ({"inputs": [], "outputs": []}, ["system_prompt", "question"], ["answer"]),
+        ({"outputs": {"summary": "Short summary"}}, ["system_prompt", "question"], ["summary"]),
+        (
+            {"inputs": ["question", "file_context"], "outputs": ["answer", "quality_flags"]},
+            ["question", "file_context"],
+            ["answer", "quality_flags"],
+        ),
+        (
+            {
+                "input": [{"name": "question", "description": "User goal"}],
+                "output": [{"id": "answer", "desc": "Final answer"}],
+            },
+            ["question"],
+            ["answer"],
+        ),
+    ],
+)
+def test_blueprint_runtime_signature_field_declaration_matrix(
+    raw_signature: dict[str, Any],
+    expected_inputs: list[str],
+    expected_outputs: list[str],
+) -> None:
+    signature = _blueprint_runtime_signature(
+        AgentDef(
+            id="matrix",
+            source="expert_pack",
+            title="Matrix",
+            signature=raw_signature,
+            structured_outputs={
+                "evidence": False,
+                "artifacts": False,
+                "errors": False,
+                "delegation": False,
+                "expert_handoffs": False,
+            },
+        )
+    )
+
+    assert list(signature.input_fields) == expected_inputs
+    assert list(signature.output_fields) == expected_outputs
+
+
+@pytest.mark.parametrize(
+    ("value", "enabled"),
+    [
+        (True, True),
+        (False, False),
+        ("true", True),
+        ("false", False),
+        ("0", False),
+        ("no", False),
+        ("off", False),
+        ("disabled", False),
+        ("yes", True),
+    ],
+)
+def test_blueprint_structured_output_enablement_matrix(value: Any, enabled: bool) -> None:
+    signature = _blueprint_runtime_signature(
+        AgentDef(
+            id="structured",
+            source="expert_pack",
+            title="Structured",
+            structured_outputs={
+                "evidence": value,
+                "artifacts": False,
+                "errors": False,
+                "delegation": False,
+                "expert_handoffs": False,
+            },
+        )
+    )
+
+    assert ("evidence" in signature.output_fields) is enabled
+
+
+def test_blueprint_module_kind_rejects_unsupported_values() -> None:
+    with pytest.raises(ValueError, match="unsupported module.kind"):
+        _blueprint_module_kind(
+            AgentDef(
+                id="bad",
+                source="expert_pack",
+                title="Bad",
+                module={"kind": "native_python"},
+            )
+        )
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (None, []),
+        ("", []),
+        ("analysis, visualization", ["analysis", "visualization"]),
+        ('["analysis", "visualization"]', ["analysis", "visualization"]),
+        (["analysis", "visualization"], ["analysis", "visualization"]),
+        (("analysis", 7), ["analysis", "7"]),
+    ],
+)
+def test_blueprint_fanout_child_id_coercion_matrix(value: Any, expected: list[str]) -> None:
+    assert _coerce_fanout_child_ids(value) == expected
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ({}, {"enabled": False, "max_workers": 1, "strategy": "declared_children"}),
+        ({"enabled": True, "max_workers": 3}, {"enabled": True, "max_workers": 3, "strategy": "declared_children"}),
+        ({"enabled": "false", "max_workers": 0}, {"enabled": False, "max_workers": 1, "strategy": "declared_children"}),
+        ({"enabled": "yes", "workers": "2", "strategy": "map_reduce"}, {"enabled": True, "max_workers": 2, "strategy": "map_reduce"}),
+    ],
+)
+def test_blueprint_fanout_config_matrix(raw: dict[str, Any], expected: dict[str, Any]) -> None:
+    assert _blueprint_fanout_config(
+        AgentDef(id="root", source="expert_pack", title="Root", fanout=raw)
+    ) == expected
+
+
+def test_gact_turn_timeout_default_and_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("CLIO_GACT_TURN_TIMEOUT_S", raising=False)
+    assert _gact_turn_timeout_s() == 900.0
+
+    monkeypatch.setenv("CLIO_GACT_TURN_TIMEOUT_S", "0.2")
+    assert _gact_turn_timeout_s() == 0.2
+
+    monkeypatch.setenv("CLIO_GACT_TURN_TIMEOUT_S", "not-a-number")
+    assert _gact_turn_timeout_s() == 900.0
+
+
+def test_blueprint_continuation_contract_starts_declared_child_from_request() -> None:
+    rows = _continuation_contract_handoffs(
+        AgentDef(
+            id="main",
+            source="expert_pack",
+            title="Main",
+            parameters={
+                "continuation_contracts": [
+                    {
+                        "id": "start_waveform",
+                        "when_request_contains": ["bounded seismic waveform", "NDP", "SAC", "PNG"],
+                        "match": "all",
+                        "next_expert": "data",
+                        "next_action": "discover waveform data",
+                        "flags": {"DO_NOT_ASK_USER": "true"},
+                    }
+                ]
+            },
+        ),
+        source_text="Find bounded seismic waveform evidence through NDP, recover SAC, and create PNG.",
+        answer_text="I need more details.",
+        completed_outputs=[],
+        declared_child_ids={"data", "analysis"},
+        completed_child_ids=set(),
+    )
+
+    assert rows == [
+        {
+            "delegate_to": "data",
+            "question": "discover waveform data\n\nPrior blueprint evidence:\nI need more details.",
+            "status": "requested",
+            "execute": True,
+            "source": "blueprint_continuation_contract",
+            "contract_id": "start_waveform",
+            "DO_NOT_ASK_USER": "true",
+        }
+    ]
+
+
+def test_blueprint_continuation_contract_requires_terms_and_declared_uncompleted_child() -> None:
+    agent_def = AgentDef(
+        id="main",
+        source="expert_pack",
+        title="Main",
+        parameters={
+            "continuation_contracts": [
+                {
+                    "id": "to_analysis",
+                    "when_output_contains": ["resource_too_large", "no staged local path"],
+                    "match": "all",
+                    "next_expert": "analysis",
+                    "next_action": "run fallback",
+                },
+                {
+                    "id": "to_external",
+                    "when_output_contains": ["resource_too_large"],
+                    "next_expert": "external_agent",
+                },
+            ]
+        },
+    )
+
+    assert not _continuation_contract_handoffs(
+        agent_def,
+        source_text="request",
+        answer_text="resource_too_large only",
+        completed_outputs=[],
+        declared_child_ids={"analysis"},
+        completed_child_ids=set(),
+    )
+    assert not _continuation_contract_handoffs(
+        agent_def,
+        source_text="request",
+        answer_text="resource_too_large; no staged local path",
+        completed_outputs=[],
+        declared_child_ids={"analysis"},
+        completed_child_ids={"analysis"},
+    )
+
+    rows = _continuation_contract_handoffs(
+        agent_def,
+        source_text="request",
+        answer_text="resource_too_large; no staged local path",
+        completed_outputs=[],
+        declared_child_ids={"analysis"},
+        completed_child_ids=set(),
+    )
+
+    assert len(rows) == 1
+    assert rows[0]["delegate_to"] == "analysis"
+    assert rows[0]["source"] == "blueprint_continuation_contract"
+
+
+def test_blueprint_continuation_contract_returns_first_ordered_transition_only() -> None:
+    rows = _continuation_contract_handoffs(
+        AgentDef(
+            id="main",
+            source="expert_pack",
+            title="Main",
+            parameters={
+                "continuation_contracts": [
+                    {
+                        "id": "to_analysis",
+                        "when_output_contains": ["resource_too_large"],
+                        "next_expert": "analysis",
+                    },
+                    {
+                        "id": "to_visualization",
+                        "when_output_contains": [".sac"],
+                        "next_expert": "visualization",
+                    },
+                ]
+            },
+        ),
+        source_text="request",
+        answer_text="resource_too_large and analysis.sac_format mentioned",
+        completed_outputs=[],
+        declared_child_ids={"analysis", "visualization"},
+        completed_child_ids=set(),
+    )
+
+    assert [row["delegate_to"] for row in rows] == ["analysis"]
+
+
+def test_blueprint_continuation_contract_passes_observed_sac_path_to_visualization() -> None:
+    rows = _continuation_contract_handoffs(
+        AgentDef(
+            id="main",
+            source="expert_pack",
+            title="Main",
+            parameters={
+                "continuation_contracts": [
+                    {
+                        "id": "to_visualization",
+                        "when_output_contains": ["Trace statistics", ".sac"],
+                        "match": "all",
+                        "next_expert": "visualization",
+                        "next_action": "plot_sac_traces",
+                    },
+                ]
+            },
+        ),
+        source_text="request",
+        answer_text="NDP still mentions OSDF/Pelican blockers.",
+        completed_outputs=[
+            "Trace statistics computed for "
+            "/home/user/clio/tmp/earthscope_IU_ANMO_00_BHZ.sac; "
+            "older NDP evidence mentions Pelican."
+        ],
+        declared_child_ids={"visualization"},
+        completed_child_ids=set(),
+    )
+
+    assert len(rows) == 1
+    assert rows[0]["delegate_to"] == "visualization"
+    assert "Runtime-selected local SAC path: /home/user/clio/tmp/earthscope_IU_ANMO_00_BHZ.sac" in rows[0]["question"]
+    assert "Call sac_plot_traces with this exact filepath" in rows[0]["question"]
+
+
+def test_blueprint_next_expert_marker_converts_latest_declared_uncompleted_child() -> None:
+    rows = _next_expert_marker_handoffs(
+        source_text="request",
+        completed_outputs=[
+            "NEXT_EXPERT: analysis\nNEXT_ACTION: run_sac_fallback\nresource_too_large",
+            "NEXT_EXPERT: visualization\nNEXT_ACTION: plot_sac_traces /tmp/wave.sac\n/tmp/wave.sac",
+        ],
+        declared_child_ids={"analysis", "visualization"},
+        completed_child_ids={"analysis"},
+    )
+
+    assert len(rows) == 1
+    assert rows[0]["delegate_to"] == "visualization"
+    assert rows[0]["source"] == "blueprint_next_expert_marker"
+    assert "plot_sac_traces /tmp/wave.sac" in rows[0]["question"]
+
+
+def test_blueprint_next_expert_marker_appends_observed_sac_path_when_action_is_generic() -> None:
+    rows = _next_expert_marker_handoffs(
+        source_text="request",
+        completed_outputs=[
+            "Trace statistics\n"
+            "LOCAL_SAC_PATH: /tmp/clio-seismic/earthscope_IU_ANMO.sac\n"
+            "NEXT_EXPERT: visualization\n"
+            "NEXT_ACTION: plot_sac_traces"
+        ],
+        declared_child_ids={"visualization"},
+        completed_child_ids=set(),
+    )
+
+    assert len(rows) == 1
+    assert rows[0]["delegate_to"] == "visualization"
+    assert "Runtime-selected local SAC path: /tmp/clio-seismic/earthscope_IU_ANMO.sac" in rows[0]["question"]
+
+
+def test_blueprint_next_expert_marker_ignores_unknown_or_completed_targets() -> None:
+    assert not _next_expert_marker_handoffs(
+        source_text="request",
+        completed_outputs=["NEXT_EXPERT: shell\nNEXT_ACTION: do unsafe thing"],
+        declared_child_ids={"analysis"},
+        completed_child_ids=set(),
+    )
+    assert not _next_expert_marker_handoffs(
+        source_text="request",
+        completed_outputs=["NEXT_EXPERT: analysis\nNEXT_ACTION: repeat"],
+        declared_child_ids={"analysis"},
+        completed_child_ids={"analysis"},
+    )
+
+
+def test_blueprint_compiler_selects_declared_dspy_module_kind(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[tuple[str, Any, list[Any]]] = []
+
+    class FakePredict:
+        def __init__(self, signature: Any) -> None:
+            calls.append(("predict", signature, []))
+
+    class FakeChainOfThought:
+        def __init__(self, signature: Any) -> None:
+            calls.append(("chain_of_thought", signature, []))
+
+    class FakeReAct:
+        def __init__(self, signature: Any, *, tools: list[Any], max_iters: int) -> None:
+            self.max_iters = max_iters
+            calls.append(("react", signature, tools))
+
+    scoped_tool = dspy.Tool(
+        func=lambda question: f"scoped:{question}",
+        name="scoped_tool",
+        desc="Scoped test tool.",
+        args={"question": {"type": "string"}},
+    )
+    child_tool = dspy.Tool(
+        func=lambda question: f"child:{question}",
+        name="delegate_to_child",
+        desc="Child expert tool.",
+        args={"question": {"type": "string"}},
+    )
+
+    monkeypatch.setattr(dspy, "Predict", FakePredict)
+    monkeypatch.setattr(dspy, "ChainOfThought", FakeChainOfThought)
+    monkeypatch.setattr(dspy, "ReAct", FakeReAct)
+    monkeypatch.setattr(
+        "clio_agent.gact.app._dynamic_agent_lm_config",
+        lambda base_agent, agent_def: SimpleNamespace(provider="openai", model="gpt-5-mini"),
+    )
+    monkeypatch.setattr("clio_agent.gact.app._dynamic_agent_tools", lambda base_agent, agent_def: [scoped_tool])
+    monkeypatch.setattr("clio_agent.gact.app._dynamic_child_expert_tools", lambda base_agent, agent_def: [child_tool])
+
+    base_agent = SimpleNamespace()
+    predict = _build_blueprint_dspy_module(
+        base_agent,
+        AgentDef(id="predictor", source="expert_pack", title="Predictor", module={"kind": "predict"}),
+    )
+    cot = _build_blueprint_dspy_module(
+        base_agent,
+        AgentDef(id="reasoner", source="expert_pack", title="Reasoner", module={"kind": "chain_of_thought"}),
+    )
+    react = _build_blueprint_dspy_module(
+        base_agent,
+        AgentDef(
+            id="reactor",
+            source="expert_pack",
+            title="Reactor",
+            module={"kind": "react"},
+            parameters={"max_iters": 7},
+            tools=["scoped_tool"],
+        ),
+    )
+
+    assert predict.kind == "predict"
+    assert cot.kind == "chain_of_thought"
+    assert react.kind == "react"
+    assert calls[0][0] == "predict"
+    assert calls[1][0] == "chain_of_thought"
+    assert calls[2][0] == "react"
+    assert [tool.name for tool in calls[2][2]] == ["scoped_tool", "delegate_to_child"]
+    assert react.program.max_iters == 7
+
+
+def test_blueprint_runner_uses_dspy_module_call_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[dict[str, Any]] = []
+
+    class FakeBlueprintModule:
+        def __call__(self, **kwargs: Any) -> Any:
+            calls.append(kwargs)
+            return SimpleNamespace(answer="called")
+
+        def forward(self, **kwargs: Any) -> Any:
+            raise AssertionError("blueprint runner must use the DSPy module call path")
+
+    monkeypatch.setattr(
+        "clio_agent.gact.app._build_blueprint_dspy_module",
+        lambda base_agent, agent_def: FakeBlueprintModule(),
+    )
+
+    result = _run_blueprint_dspy_agent(
+        SimpleNamespace(),
+        AgentDef(id="data", source="expert_pack", title="Data"),
+        "prove call path",
+        "sess_test",
+    )
+
+    assert result.answer == "called"
+    assert calls == [
+        {
+            "question": "prove call path",
+            "session_id": "sess_test",
+            "cancel_requested": None,
+        }
+    ]
+
+
+def test_blueprint_module_allows_handoff_only_root_output(monkeypatch: pytest.MonkeyPatch) -> None:
+    class FakeProgram:
+        def __call__(self, **kwargs: Any) -> Any:
+            return SimpleNamespace(
+                answer="",
+                expert_handoffs='[{"agent_id":"reference","parent_id":"main","task":"inspect fasta"}]',
+            )
+
+    class FakePredict:
+        def __init__(self, signature: Any) -> None:
+            self.signature = signature
+
+        def __call__(self, **kwargs: Any) -> Any:
+            return FakeProgram()(**kwargs)
+
+    monkeypatch.setattr(dspy, "Predict", FakePredict)
+    monkeypatch.setattr("clio_agent.config.create_lm", lambda config: object())
+    monkeypatch.setattr("clio_agent.config.create_chat_adapter", lambda config: object())
+    monkeypatch.setattr(
+        "clio_agent.gact.app._dynamic_agent_lm_config",
+        lambda base_agent, agent_def: SimpleNamespace(provider="argonne", model="gpt-oss-120b"),
+    )
+
+    module = _build_blueprint_dspy_module(
+        SimpleNamespace(),
+        AgentDef(id="main", source="expert_pack", title="Main", module={"kind": "predict"}),
+    )
+
+    result = module(question="delegate", session_id="session-123")
+
+    assert result.answer == ""
+    assert result.selected_expert == "main"
+    assert result.route_source == "agent_blueprint"
+    assert result.expert_handoffs == [
+        {"agent_id": "reference", "parent_id": "main", "task": "inspect fasta"}
+    ]
+
+
+def test_blueprint_module_empty_answer_with_children_enters_repair_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeProgram:
+        def __call__(self, **kwargs: Any) -> Any:
+            return SimpleNamespace(answer="", expert_handoffs="")
+
+    class FakePredict:
+        def __init__(self, signature: Any) -> None:
+            self.signature = signature
+
+        def __call__(self, **kwargs: Any) -> Any:
+            return FakeProgram()(**kwargs)
+
+    monkeypatch.setattr(dspy, "Predict", FakePredict)
+    monkeypatch.setattr("clio_agent.config.create_lm", lambda config: object())
+    monkeypatch.setattr("clio_agent.config.create_chat_adapter", lambda config: object())
+    monkeypatch.setattr(
+        "clio_agent.gact.app._dynamic_agent_lm_config",
+        lambda base_agent, agent_def: SimpleNamespace(provider="argonne", model="gpt-oss-120b"),
+    )
+    monkeypatch.setattr(
+        "clio_agent.gact.app._runtime_dynamic_agent_children_context",
+        lambda app, agent_def, session_id="": "Declared child experts available:\n- reference",
+    )
+
+    module = _build_blueprint_dspy_module(
+        SimpleNamespace(),
+        AgentDef(id="main", source="expert_pack", title="Main", module={"kind": "predict"}),
+    )
+
+    token = _ACTIVE_GACT_SESSION_ID.set("session-123")
+    try:
+        with _gact_app_context(SimpleNamespace()):
+            result = module(question="inspect", session_id="session-123")
+    finally:
+        _ACTIVE_GACT_SESSION_ID.reset(token)
+
+    assert result.answer == ""
+    assert result.selected_expert == "main"
+    assert result.route_source == "agent_blueprint"
+    assert result.expert_handoffs == []
+    assert "declared-child handoff repair" in result.routing_rationale
+
+
+def test_blueprint_react_empty_answer_preserves_tool_trajectory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeReact:
+        def __init__(self, signature: Any, *, tools: list[Any], max_iters: int) -> None:
+            self.signature = signature
+            self.tools = tools
+            self.max_iters = max_iters
+
+        def __call__(self, **kwargs: Any) -> Any:
+            return SimpleNamespace(
+                answer="",
+                expert_handoffs="",
+                trajectory={
+                    "observations": [
+                        {
+                            "tool_name": "hdf5_list_datasets",
+                            "result": {"datasets": ["safe_float"], "checksum": "abc123"},
+                        }
+                    ]
+                },
+            )
+
+    monkeypatch.setattr(dspy, "ReAct", FakeReact)
+    monkeypatch.setattr("clio_agent.config.create_lm", lambda config: object())
+    monkeypatch.setattr("clio_agent.config.create_chat_adapter", lambda config: object())
+    monkeypatch.setattr(
+        "clio_agent.gact.app._dynamic_agent_lm_config",
+        lambda base_agent, agent_def: SimpleNamespace(provider="argonne", model="gpt-oss-120b"),
+    )
+    monkeypatch.setattr("clio_agent.gact.app._dynamic_agent_tools", lambda base_agent, agent_def: [])
+    monkeypatch.setattr(
+        "clio_agent.gact.app._dynamic_child_expert_tools",
+        lambda base_agent, agent_def: [],
+    )
+
+    module = _build_blueprint_dspy_module(
+        SimpleNamespace(),
+        AgentDef(id="source_inspect", source="expert_pack", title="Source", module={"kind": "react"}),
+    )
+
+    result = module(question="inspect", session_id="session-123")
+
+    assert "hdf5_list_datasets" in result.answer
+    assert "safe_float" in result.answer
+    assert result.route_source == "agent_blueprint"
+
+
+def test_generated_child_expert_tool_runs_declared_child_and_returns_compact_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = SimpleNamespace()
+    parent = AgentDef(id="root", source="expert_pack", title="Root")
+    child = AgentDef(id="analysis", source="expert_pack", title="Analysis", parent_id="root")
+    calls: list[dict[str, Any]] = []
+
+    def fake_run_dynamic_agent_compat(runner, base_agent, agent_def, question, session_id, cancel_requested):
+        calls.append(
+            {
+                "runner": runner,
+                "agent_id": agent_def.id,
+                "question": question,
+                "session_id": session_id,
+                "cancel_requested": cancel_requested,
+            }
+        )
+        return SimpleNamespace(
+            answer="This is a long child analysis answer with enough detail to summarize.",
+            evidence='[{"claim":"supported"}]',
+            artifacts="",
+            errors="",
+            delegation='{"return_to":"root"}',
+        )
+
+    monkeypatch.setattr("clio_agent.gact.app._blueprint_runner_for_agent", lambda agent_def: "child-runner")
+    monkeypatch.setattr("clio_agent.gact.app._run_dynamic_agent_compat", fake_run_dynamic_agent_compat)
+
+    token = _ACTIVE_GACT_SESSION_ID.set("session-123")
+    try:
+        with _gact_app_context(app):
+            tool = _build_child_expert_tool(SimpleNamespace(), parent, child)
+            payload = json.loads(tool(question="inspect the evidence"))
+    finally:
+        _ACTIVE_GACT_SESSION_ID.reset(token)
+
+    assert tool.name == "delegate_to_analysis"
+    assert calls == [
+        {
+            "runner": "child-runner",
+            "agent_id": "analysis",
+            "question": "inspect the evidence",
+            "session_id": "session-123",
+            "cancel_requested": None,
+        }
+    ]
+    assert payload["agent_id"] == "analysis"
+    assert payload["parent_id"] == "root"
+    assert payload["status"] == "completed"
+    assert payload["return_payload"] == "compact_result"
+    assert payload["structured"] == {
+        "evidence": '[{"claim":"supported"}]',
+        "delegation": '{"return_to":"root"}',
+    }
+    assert "child analysis answer" in payload["output_summary"]
+
+
+def test_generated_child_expert_tool_emits_semantic_delegation_events(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    emitted: list[dict[str, Any]] = []
+
+    class FakeSink:
+        def emit(self, event: Any) -> dict[str, Any]:
+            row = event.to_dict()
+            emitted.append(row)
+            return row
+
+    app = SimpleNamespace(
+        state=SimpleNamespace(
+            semantic_event_sink=FakeSink(),
+            sessions=SimpleNamespace(get=lambda sid: SimpleNamespace(workspace_id="ws_default")),
+            semantic_trace_detail_level="semantic",
+        )
+    )
+    parent = AgentDef(
+        id="root",
+        source="expert_pack",
+        title="Root",
+        metadata={"agent_blueprint_id": "genomics"},
+    )
+    child = AgentDef(id="analysis", source="expert_pack", title="Analysis", parent_id="root")
+
+    monkeypatch.setattr("clio_agent.gact.app._blueprint_runner_for_agent", lambda agent_def: "child-runner")
+    monkeypatch.setattr(
+        "clio_agent.gact.app._run_dynamic_agent_compat",
+        lambda runner, base_agent, agent_def, question, session_id, cancel_requested: SimpleNamespace(
+            answer="delegated answer",
+            evidence="support",
+        ),
+    )
+
+    token = _ACTIVE_GACT_SESSION_ID.set("session-123")
+    try:
+        with _gact_app_context(app):
+            payload = json.loads(
+                _build_child_expert_tool(SimpleNamespace(), parent, child)(question="inspect")
+            )
+    finally:
+        _ACTIVE_GACT_SESSION_ID.reset(token)
+
+    assert payload["status"] == "completed"
+    assert [row["event_type"] for row in emitted] == [
+        "blueprint.delegation.started",
+        "blueprint.delegation.completed",
+    ]
+    assert emitted[0]["blueprint"]["agent_blueprint_id"] == "genomics"
+    assert emitted[1]["payload"]["return_payload"] == "compact_result"
+
+
+def test_blueprint_fanout_tool_enforces_bounds_and_emits_events(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    emitted: list[dict[str, Any]] = []
+
+    class FakeSink:
+        def emit(self, event: Any) -> dict[str, Any]:
+            row = event.to_dict()
+            emitted.append(row)
+            return row
+
+    app = SimpleNamespace(
+        state=SimpleNamespace(
+            semantic_event_sink=FakeSink(),
+            sessions=SimpleNamespace(get=lambda sid: SimpleNamespace(workspace_id="ws_default")),
+            semantic_trace_detail_level="semantic",
+        )
+    )
+    parent = AgentDef(
+        id="root",
+        source="expert_pack",
+        title="Root",
+        fanout={"enabled": True, "max_workers": 2},
+        metadata={"agent_blueprint_id": "genomics"},
+    )
+    children = [
+        AgentDef(id="analysis", source="expert_pack", title="Analysis", parent_id="root"),
+        AgentDef(id="visualization", source="expert_pack", title="Visualization", parent_id="root"),
+        AgentDef(id="quality", source="expert_pack", title="Quality", parent_id="root"),
+    ]
+    calls: list[str] = []
+
+    def fake_run_dynamic_agent_compat(runner, base_agent, agent_def, question, session_id, cancel_requested):
+        calls.append(agent_def.id)
+        return SimpleNamespace(answer=f"{agent_def.id} compact evidence", evidence=f"{agent_def.id}:evidence")
+
+    monkeypatch.setattr("clio_agent.gact.app._blueprint_runner_for_agent", lambda agent_def: "child-runner")
+    monkeypatch.setattr("clio_agent.gact.app._run_dynamic_agent_compat", fake_run_dynamic_agent_compat)
+
+    token = _ACTIVE_GACT_SESSION_ID.set("session-123")
+    try:
+        with _gact_app_context(app):
+            tool = _build_fanout_tool(SimpleNamespace(), parent, children)
+            payload = json.loads(tool(question="inspect", child_ids="analysis,visualization,quality"))
+    finally:
+        _ACTIVE_GACT_SESSION_ID.reset(token)
+
+    assert calls == ["analysis", "visualization"]
+    assert payload["status"] == "completed"
+    assert payload["executed_child_agent_ids"] == ["analysis", "visualization"]
+    assert payload["skipped_child_agent_ids"] == ["quality"]
+    assert [row["event_type"] for row in emitted] == [
+        "blueprint.fanout.started",
+        "blueprint.fanout.completed",
+    ]
+    assert emitted[0]["payload"]["skipped_child_agent_ids"] == ["quality"]
+    assert emitted[1]["payload"]["result_count"] == 2
+
+
+def test_blueprint_fanout_tool_rejects_undeclared_children() -> None:
+    app = SimpleNamespace(
+        state=SimpleNamespace(
+            semantic_event_sink=None,
+            sessions=SimpleNamespace(get=lambda sid: SimpleNamespace(workspace_id="ws_default")),
+        )
+    )
+    parent = AgentDef(
+        id="root",
+        source="expert_pack",
+        title="Root",
+        fanout={"enabled": True, "max_workers": 2},
+    )
+    child = AgentDef(id="analysis", source="expert_pack", title="Analysis", parent_id="root")
+
+    token = _ACTIVE_GACT_SESSION_ID.set("session-123")
+    try:
+        with _gact_app_context(app):
+            tool = _build_fanout_tool(SimpleNamespace(), parent, [child])
+            with pytest.raises(RuntimeError, match="undeclared child"):
+                tool(question="inspect", child_ids='["analysis", "missing"]')
+    finally:
+        _ACTIVE_GACT_SESSION_ID.reset(token)
+
+
+def test_dynamic_child_expert_tools_adds_fanout_only_when_declared(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = SimpleNamespace()
+    parent = AgentDef(
+        id="root",
+        source="expert_pack",
+        title="Root",
+        fanout={"enabled": True, "max_workers": 2},
+    )
+    child = AgentDef(id="analysis", source="expert_pack", title="Analysis", parent_id="root")
+    monkeypatch.setattr(
+        "clio_agent.gact.app._runtime_active_agent_blueprint_rows",
+        lambda app, session_id="": [parent, child],
+    )
+
+    token = _ACTIVE_GACT_SESSION_ID.set("session-123")
+    try:
+        with _gact_app_context(app):
+            tools = _dynamic_child_expert_tools(SimpleNamespace(), parent)
+    finally:
+        _ACTIVE_GACT_SESSION_ID.reset(token)
+
+    assert [tool.name for tool in tools] == ["delegate_to_analysis", "fanout_to_children"]
+
+
+def test_prediction_structured_metadata_omits_empty_values() -> None:
+    result = SimpleNamespace(
+        evidence="evidence rows",
+        artifacts="",
+        errors=None,
+        delegation='{"next":"root"}',
+    )
+
+    assert _prediction_structured_metadata(result) == {
+        "evidence": "evidence rows",
+        "delegation": '{"next":"root"}',
+    }
+
+
+def test_fallback_answer_from_delegation_uses_latest_completed_parent_resume() -> None:
+    assert (
+        _fallback_answer_from_delegation(
+            [
+                {"stage": "parent.resumed", "status": "completed", "output_summary": "first"},
+                {"stage": "delegate.completed", "status": "completed", "output_summary": "child"},
+                {"stage": "parent.resumed", "status": "failed", "output_summary": "bad"},
+                {"stage": "parent.resumed", "status": "completed", "output_summary": "final"},
+            ]
+        )
+        == "final"
+    )
+
+
+def test_delegation_placeholder_answers_are_not_final_results() -> None:
+    assert _dynamic_answer_is_delegation_placeholder(
+        "Executing returned delegation continuation contract."
+    )
+    assert _dynamic_answer_is_delegation_placeholder(
+        "Proceeding to the visual confirmation step."
+    )
+    assert _dynamic_answer_is_delegation_placeholder(
+        "The next step is to run the outlier analysis."
+    )
+    assert not _dynamic_answer_is_delegation_placeholder(
+        "The conversion is safe for downstream visualization with skipped caveats."
+    )
+    assert _fallback_answer_from_delegation([{"stage": "delegate.completed", "output_summary": "child"}]) == ""
+
+
+def test_native_domain_expert_modules_are_not_runtime_importable(tmp_path: Path) -> None:
+    retired_modules = [
+        "clio_agent.experts.data_expert",
+        "clio_agent.experts.analysis_expert",
+        "clio_agent.experts.visualization_expert",
+        "clio_agent.experts.ndp_expert",
+        "clio_agent.experts.sac_format_expert",
+    ]
+
+    for module_name in retired_modules:
+        assert importlib.util.find_spec(module_name) is None
+
+    agent = ClioAgent(data_dir=str(tmp_path / "clio"))
+    try:
+        for attr in (
+            "data_expert",
+            "analysis_expert",
+            "visualization_expert",
+            "ndp_catalog_expert",
+            "sac_format_expert",
+        ):
+            assert not hasattr(agent, attr)
+        assert not {"data", "analysis", "visualization", "ndp_catalog", "sac_format"} & set(
+            agent.registry.list_agents()
+        )
+    finally:
+        agent.shutdown()
 
 
 def test_validate_agent_blueprint_markdown_root(tmp_path: Path) -> None:
@@ -201,355 +1191,6 @@ def test_validate_agent_blueprint_markdown_root(tmp_path: Path) -> None:
     assert rows["root"]["tier"] == 1
     assert rows["variant"]["parent_id"] == "root"
     assert rows["variant"]["tools"] == ["memory_search_sessions"]
-    assert any("compatibility mode" in warning for warning in body["validation_warnings"])
-
-
-def test_agent_blueprint_expert_exposes_dspy_semantics_metadata(tmp_path: Path) -> None:
-    root = tmp_path / "dspy-agent"
-    (root / "experts").mkdir(parents=True)
-    root.joinpath("AGENT.md").write_text(
-        """---
-id: dspy-agent
-version: 0.1.0
-title: DSPy Agent
-root_expert: root
-blueprint:
-  format: agent-blueprint-v1
----
-DSPy agent.
-""",
-        encoding="utf-8",
-    )
-    root.joinpath("experts", "root.md").write_text(
-        """---
-id: root
-title: Root
-description: Root expert.
-tier: 1
-module:
-  kind: react
-signature:
-  id: cohort_qc_review
-  inputs:
-    - question
-    - parent_evidence
-  outputs:
-    - evidence
-    - expert_handoffs
-    - final_answer
-structured_outputs:
-  evidence_fields:
-    - item_id
-    - finding
-    - provenance
-fanout:
-  id: per_sample_qc
-  item_source: files
-  worker: sample_qc
-  max_items: 50
-  concurrency: 4
-  partial_failure: report_and_continue
----
-Coordinate work.
-""",
-        encoding="utf-8",
-    )
-
-    body = validate_agent_blueprint_path(root)
-
-    assert body["enabled"] is True
-    row = {row["id"]: row for row in body["agents"]}["root"]
-    assert row["metadata"]["dspy"] == {
-        "module": {"kind": "react"},
-        "signature": {
-            "id": "cohort_qc_review",
-            "inputs": ["question", "parent_evidence"],
-            "outputs": ["evidence", "expert_handoffs", "final_answer"],
-        },
-    }
-    assert row["metadata"]["structured_outputs"] == {
-        "evidence_fields": ["item_id", "finding", "provenance"]
-    }
-    assert row["metadata"]["fanout"] == {
-        "id": "per_sample_qc",
-        "item_source": "files",
-        "worker": "sample_qc",
-        "max_items": "50",
-        "concurrency": "4",
-        "partial_failure": "report_and_continue",
-    }
-    warnings = "\n".join(body["validation_warnings"])
-    assert "unknown expert field ignored: module" not in warnings
-    assert "unknown expert field ignored: signature" not in warnings
-    assert "unknown expert field ignored: fanout" not in warnings
-
-
-def test_agent_blueprint_dspy_semantics_validation_errors(tmp_path: Path) -> None:
-    root = tmp_path / "bad-dspy-agent"
-    (root / "experts").mkdir(parents=True)
-    root.joinpath("AGENT.md").write_text(
-        """---
-id: bad-dspy-agent
-version: 0.1.0
-title: Bad DSPy Agent
-root_expert: root
-blueprint:
-  format: agent-blueprint-v1
----
-Bad DSPy agent.
-""",
-        encoding="utf-8",
-    )
-    root.joinpath("experts", "root.md").write_text(
-        """---
-id: root
-title: Root
-description: Root expert.
-tier: 1
-module:
-  kind: unsupported_loop
-fanout:
-  max_items: 0
-  concurrency: many
----
-Coordinate work.
-""",
-        encoding="utf-8",
-    )
-
-    body = validate_agent_blueprint_path(root)
-
-    assert body["enabled"] is False
-    errors = "\n".join(body["validation_errors"])
-    assert "root: unsupported dspy.module.kind: unsupported_loop" in errors
-    assert "root: fanout.max_items must be a positive integer" in errors
-    assert "root: fanout.concurrency must be a positive integer" in errors
-
-
-def test_agent_blueprint_v1_contract_rejects_missing_required_manifest_fields(
-    tmp_path: Path,
-) -> None:
-    root = tmp_path / "broken"
-    (root / "experts").mkdir(parents=True)
-    root.joinpath("AGENT.md").write_text(
-        """---
-id: broken
-blueprint:
-  format: agent-blueprint-v1
----
-Broken v1 agent.
-""",
-        encoding="utf-8",
-    )
-    root.joinpath("experts", "root.md").write_text(
-        """---
-id: root
-tier: 1
----
-Coordinate work.
-""",
-        encoding="utf-8",
-    )
-
-    body = validate_agent_blueprint_path(root)
-
-    assert body["enabled"] is False
-    errors = "\n".join(body["validation_errors"])
-    assert "missing required blueprint field: version" in errors
-    assert "missing required blueprint field: title" in errors
-    assert "missing required blueprint field: root_expert" in errors
-    assert "root: missing required expert field: title" in errors
-
-
-def test_agent_blueprint_v1_contract_reports_unknown_fields_and_skill_gap(
-    tmp_path: Path,
-) -> None:
-    root = tmp_path / "agent"
-    (root / "experts").mkdir(parents=True)
-    root.joinpath("AGENT.md").write_text(
-        """---
-id: agent
-version: 1.0.0
-title: Contract Agent
-root_expert: root
-blueprint:
-  format: agent-blueprint-v1
-surprise: ignored
----
-Contract agent.
-""",
-        encoding="utf-8",
-    )
-    root.joinpath("experts", "root.md").write_text(
-        """---
-id: root
-title: Root
-description: Root expert.
-tier: 1
-skills:
-  - pack.local.skill
-unexpected_field: ignored
----
-Coordinate work.
-""",
-        encoding="utf-8",
-    )
-
-    body = validate_agent_blueprint_path(root)
-
-    assert body["enabled"] is True
-    warnings = "\n".join(body["validation_warnings"])
-    assert "unknown blueprint field ignored: surprise" in warnings
-    assert "root: unknown expert field ignored: unexpected_field" in warnings
-    assert "root: skills are resolved at runtime" in warnings
-    rows = {row["id"]: row for row in body["agents"]}
-    assert "validation_warnings" in rows["root"]["metadata"]
-
-
-def test_agent_blueprint_includes_pack_local_expert_subtree(tmp_path: Path) -> None:
-    root = tmp_path / "seismic"
-    (root / "experts").mkdir(parents=True)
-    (root / "modules" / "ndp-collector" / "experts").mkdir(parents=True)
-    root.joinpath("AGENT.md").write_text(
-        """---
-id: seismic
-version: 0.1.0
-title: Seismic Agent
-root_expert: main
-blueprint:
-  format: agent-blueprint-v1
-includes:
-  - modules/ndp-collector/experts
----
-Seismic agent.
-""",
-        encoding="utf-8",
-    )
-    root.joinpath("experts", "main.md").write_text(
-        """---
-id: main
-title: Main
-description: Main expert.
-tier: 1
----
-Coordinate seismic work.
-""",
-        encoding="utf-8",
-    )
-    root.joinpath("experts", "data.md").write_text(
-        """---
-id: data
-title: Data
-description: Data expert.
-tier: 2
-parent_id: main
----
-Own data access.
-""",
-        encoding="utf-8",
-    )
-    root.joinpath("modules", "ndp-collector", "experts", "ndp_catalog.md").write_text(
-        """---
-id: ndp_catalog
-title: NDP Catalog
-description: Catalog child expert.
-tier: 3
-parent_id: data
----
-Search NDP and return compact catalog evidence.
-""",
-        encoding="utf-8",
-    )
-
-    body = validate_agent_blueprint_path(root)
-
-    assert body["enabled"] is True
-    rows = {row["id"]: row for row in body["agents"]}
-    assert set(rows) == {"main", "data", "ndp_catalog"}
-    assert rows["ndp_catalog"]["parent_id"] == "data"
-    assert rows["ndp_catalog"]["metadata"]["agent_blueprint_include"] == "modules/ndp-collector/experts"
-    assert rows["ndp_catalog"]["metadata"]["agent_blueprint_expert_source"] == "include"
-
-    loaded = {row.id: row for row in load_agent_blueprint_path(root)}
-    assert loaded["ndp_catalog"].metadata["agent_blueprint_include"] == "modules/ndp-collector/experts"
-
-
-def test_agent_blueprint_include_validation_rejects_missing_or_empty_path(
-    tmp_path: Path,
-) -> None:
-    root = tmp_path / "broken"
-    (root / "experts").mkdir(parents=True)
-    (root / "modules" / "empty").mkdir(parents=True)
-    root.joinpath("AGENT.md").write_text(
-        """---
-id: broken
-version: 0.1.0
-title: Broken Agent
-root_expert: main
-blueprint:
-  format: agent-blueprint-v1
-includes:
-  - modules/missing
-  - modules/empty
----
-Broken agent.
-""",
-        encoding="utf-8",
-    )
-    root.joinpath("experts", "main.md").write_text(
-        """---
-id: main
-title: Main
-description: Main expert.
-tier: 1
----
-Coordinate work.
-""",
-        encoding="utf-8",
-    )
-
-    body = validate_agent_blueprint_path(root)
-
-    assert body["enabled"] is False
-    errors = "\n".join(body["validation_errors"])
-    assert "include path not found: modules/missing" in errors
-    assert "include path contains no expert markdown files: modules/empty" in errors
-
-
-def test_agent_blueprint_include_validation_rejects_path_escape(tmp_path: Path) -> None:
-    root = tmp_path / "broken"
-    (root / "experts").mkdir(parents=True)
-    root.joinpath("AGENT.md").write_text(
-        """---
-id: broken
-version: 0.1.0
-title: Broken Agent
-root_expert: main
-blueprint:
-  format: agent-blueprint-v1
-includes:
-  - ../outside
----
-Broken agent.
-""",
-        encoding="utf-8",
-    )
-    root.joinpath("experts", "main.md").write_text(
-        """---
-id: main
-title: Main
-description: Main expert.
-tier: 1
----
-Coordinate work.
-""",
-        encoding="utf-8",
-    )
-
-    body = validate_agent_blueprint_path(root)
-
-    assert body["enabled"] is False
-    assert "include path must be pack-local: ../outside" in "\n".join(body["validation_errors"])
 
 
 def test_agent_blueprint_activation_replaces_default_agent_graph(tmp_path: Path) -> None:
@@ -634,135 +1275,6 @@ Coordinate genomics work.
     assert "expert_handoffs JSON array" in context
     assert "{{" not in root.system_prompt
     assert "- variant: Variant Expert" in root.system_prompt
-
-
-def test_agent_blueprint_declared_pack_skill_loads_into_runtime_prompt(
-    tmp_path: Path,
-) -> None:
-    from clio_agent.config import LMProviderConfig
-
-    workspace = tmp_path / "workspace"
-    blueprint = workspace / ".clio" / "agent-blueprints" / "genomics"
-    _write_blueprint(blueprint)
-    blueprint.joinpath("experts", "root.md").write_text(
-        """---
-id: root
-title: Genomics Root
-tier: 1
-skills:
-  - variant_pathogenicity_triage
----
-Coordinate genomics work.
-""",
-        encoding="utf-8",
-    )
-    skill_dir = blueprint / "skills" / "variant_pathogenicity_triage"
-    skill_dir.mkdir(parents=True)
-    skill_dir.joinpath("SKILL.md").write_text(
-        """---
-name: variant_pathogenicity_triage
-title: Variant Pathogenicity Triage
----
-Apply ACMG-style evidence buckets before making any variant interpretation.
-""",
-        encoding="utf-8",
-    )
-    base_agent = SimpleNamespace(
-        _provider_config=LMProviderConfig(
-            provider="openai",
-            model="gpt-test",
-            api_key="test",
-        )
-    )
-    app = build_app(sessions_path=tmp_path / "sessions.json", agent=base_agent)
-
-    with TestClient(app) as client:
-        wid = client.post(
-            "/v1/workspaces",
-            json={
-                "name": "Workspace",
-                "root_path": str(workspace),
-                "storage_root": str(workspace / ".clio"),
-            },
-        ).json()["id"]
-        sid = client.post(
-            "/v1/sessions",
-            json={"title": "genomics", "workspace_id": wid},
-        ).json()["id"]
-        assert client.post(
-            f"/v1/sessions/{sid}/agent-blueprint",
-            json={"blueprint_id": "genomics"},
-        ).status_code == 200
-
-    resolved = _resolve_runtime_dynamic_agent(app, "root", session_id=sid, workspace_id=wid)
-
-    assert resolved is not None
-    skill_resolution = resolved.metadata["skill_resolution"]
-    assert skill_resolution["missing"] == []
-    assert skill_resolution["resolved"][0]["scope"] == "pack"
-    assert skill_resolution["resolved"][0]["id"] == "variant_pathogenicity_triage"
-
-    module = _build_prompt_user_agent_module(base_agent, resolved)
-
-    assert "Expert-declared skills loaded for this turn" in module.system_prompt
-    assert "Apply ACMG-style evidence buckets" in module.system_prompt
-    provenance = _dynamic_agent_runtime_provenance(
-        app,
-        resolved,
-        execution_mode="prompt_agent",
-    )
-    assert provenance["skill_resolution"]["resolved"][0]["scope"] == "pack"
-    assert provenance["resolved_skills"][0]["id"] == "variant_pathogenicity_triage"
-
-
-def test_agent_blueprint_missing_declared_skill_is_runtime_diagnostic(
-    tmp_path: Path,
-) -> None:
-    workspace = tmp_path / "workspace"
-    blueprint = workspace / ".clio" / "agent-blueprints" / "genomics"
-    _write_blueprint(blueprint)
-    blueprint.joinpath("experts", "root.md").write_text(
-        """---
-id: root
-title: Genomics Root
-tier: 1
-skills:
-  - missing_domain_skill
----
-Coordinate genomics work.
-""",
-        encoding="utf-8",
-    )
-    app = build_app(sessions_path=tmp_path / "sessions.json", agent=SimpleNamespace())
-
-    with TestClient(app) as client:
-        wid = client.post(
-            "/v1/workspaces",
-            json={
-                "name": "Workspace",
-                "root_path": str(workspace),
-                "storage_root": str(workspace / ".clio"),
-            },
-        ).json()["id"]
-        sid = client.post(
-            "/v1/sessions",
-            json={"title": "genomics", "workspace_id": wid},
-        ).json()["id"]
-        assert client.post(
-            f"/v1/sessions/{sid}/agent-blueprint",
-            json={"blueprint_id": "genomics"},
-        ).status_code == 200
-
-    resolved = _resolve_runtime_dynamic_agent(app, "root", session_id=sid, workspace_id=wid)
-
-    assert resolved is not None
-    assert resolved.metadata["skill_resolution"]["resolved"] == []
-    assert resolved.metadata["skill_resolution"]["missing"] == [
-        {"id": "missing_domain_skill", "status": "missing"}
-    ]
-    assert "declared skill not found at runtime: missing_domain_skill" in resolved.metadata[
-        "validation_warnings"
-    ]
 
 
 def test_session_agent_overlay_is_session_local(tmp_path: Path) -> None:
@@ -914,7 +1426,7 @@ def test_session_agent_overlay_prompt_provenance_reaches_prompts_and_turn_metada
     async def no_stream(*args, **kwargs):
         return None
 
-    def fake_prompt_runner(base_agent, agent_def, question, session_id, cancel_requested=None):
+    def fake_blueprint_runner(base_agent, agent_def, question, session_id, cancel_requested=None):
         del base_agent, cancel_requested
         calls.append(
             {
@@ -931,10 +1443,11 @@ def test_session_agent_overlay_prompt_provenance_reaches_prompts_and_turn_metada
             routing_rationale="session overlay",
             route_source="agent_blueprint",
             error_info=None,
-        )
+    )
 
     monkeypatch.setattr("clio_agent.gact.app._try_streamed_forward", no_stream)
-    monkeypatch.setattr("clio_agent.gact.app._run_prompt_user_agent", fake_prompt_runner)
+    monkeypatch.delenv("CLIO_AGENT_ENABLE_LEGACY_NATIVE_EXPERTS", raising=False)
+    monkeypatch.setattr("clio_agent.gact.app._run_blueprint_dspy_agent", fake_blueprint_runner)
 
     app = build_app(sessions_path=tmp_path / "sessions.json", agent=SimpleNamespace())
     with TestClient(app) as client:
@@ -986,119 +1499,6 @@ def test_session_agent_overlay_prompt_provenance_reaches_prompts_and_turn_metada
     assert runtime["agent_overlay"]["status"] == "applied"
     assert runtime["agent_overlay"]["fields"] == ["default_model", "system_prompt"]
     assert runtime["prompt"]["source"] == "session_agent_overlay"
-
-
-def test_agent_blueprint_prompt_profile_provider_runtime_provenance(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    blueprint = tmp_path / "provider-profile-agent"
-    _write_provider_profile_blueprint(blueprint)
-    seen: list[dict[str, Any]] = []
-
-    async def no_stream(*args: Any, **kwargs: Any) -> None:
-        return None
-
-    def fake_prompt_runner(
-        base_agent: Any,
-        agent_def: Any,
-        question: str,
-        session_id: str,
-        cancel_requested: Any | None = None,
-    ) -> Any:
-        del base_agent, cancel_requested
-        seen.append(
-            {
-                "agent_id": agent_def.id,
-                "prompt": agent_def.system_prompt,
-                "provider": agent_def.default_provider,
-                "model": agent_def.default_model,
-                "question": question,
-                "session_id": session_id,
-            }
-        )
-        handoffs = (
-            json.dumps(
-                [
-                    {
-                        "delegate_to": "analysis",
-                        "question": "Use the analysis profile.",
-                    }
-                ]
-            )
-            if agent_def.id == "root"
-            else "[]"
-        )
-        return SimpleNamespace(
-            answer=f"{agent_def.id} done",
-            selected_expert=agent_def.id,
-            expert_handoffs=handoffs,
-            routing_rationale="profile provenance",
-            route_source="agent_blueprint",
-            error_info=None,
-        )
-
-    monkeypatch.setattr("clio_agent.gact.app._try_streamed_forward", no_stream)
-    monkeypatch.setattr("clio_agent.gact.app._run_prompt_user_agent", fake_prompt_runner)
-
-    app = build_app(sessions_path=tmp_path / "sessions.json", agent=SimpleNamespace())
-    with TestClient(app) as client:
-        sid = client.post("/v1/sessions", json={"title": "provider profile"}).json()["id"]
-        activated = client.post(
-            f"/v1/sessions/{sid}/agent-blueprint",
-            json={"path": str(blueprint)},
-        )
-        assert activated.status_code == 200, activated.text
-        assistant = complete_turn(client, sid, "prove profile provenance")
-
-    root_call = next(row for row in seen if row["agent_id"] == "root")
-    analysis_call = next(row for row in seen if row["agent_id"] == "analysis")
-    assert root_call["prompt"] == "\n\n".join(
-        (
-            "Root prompt from blueprint profile.",
-            "Agent-specific instructions from this definition:",
-            "Inline root prompt should be composed.",
-        )
-    )
-    assert root_call["provider"] == "openai"
-    assert root_call["model"] == "gpt-5.1"
-    assert analysis_call["prompt"] == "\n\n".join(
-        (
-            "Analysis prompt from blueprint profile.",
-            "Agent-specific instructions from this definition:",
-            "Inline analysis prompt should be composed.",
-        )
-    )
-    assert analysis_call["provider"] == "anthropic"
-    assert analysis_call["model"] == "claude-sonnet-4-20250514"
-
-    root_runtime = assistant["metadata"]["agent_runtime"]
-    assert root_runtime["prompt"]["id"] == "profile.root"
-    assert root_runtime["prompt"]["profile"] == "heavy"
-    assert root_runtime["prompt"]["resolution"]["scope"] == "session_agent_blueprint"
-    assert root_runtime["model"] == {
-        "provider_id": "openai",
-        "model_id": "gpt-5.1",
-        "provider_source": "prompt_resolution",
-        "model_source": "prompt_resolution",
-        "fallback_to_global": False,
-    }
-
-    handoffs = assistant["metadata"]["expert_handoffs"]
-    completed = next(row for row in handoffs if row.get("stage") == "delegate.completed")
-    assert completed["agent_id"] == "analysis"
-    assert completed["prompt_resolution"]["id"] == "profile.analysis"
-    assert completed["prompt_resolution"]["profile"] == "light"
-    assert completed["prompt_resolution"]["scope"] == "session_agent_blueprint"
-    assert completed["provider"] == {
-        "provider_id": "anthropic",
-        "model_id": "claude-sonnet-4-20250514",
-        "provider_source": "prompt_resolution",
-        "model_source": "prompt_resolution",
-        "fallback_to_global": False,
-    }
-    assert completed["agent_runtime"]["prompt"]["profile"] == "light"
-    assert completed["agent_runtime"]["model"]["provider_source"] == "prompt_resolution"
 
 
 def test_agent_blueprint_install_from_local_marketplace(tmp_path: Path) -> None:
@@ -1313,7 +1713,7 @@ def test_active_agent_blueprint_drives_turn_runtime_and_overrides_builtin_ids(
     async def no_stream(*args, **kwargs):
         return None
 
-    def fake_prompt_runner(base_agent, agent_def, question, session_id, cancel_requested=None):
+    def fake_blueprint_runner(base_agent, agent_def, question, session_id, cancel_requested=None):
         del base_agent, cancel_requested
         calls.append(
             {
@@ -1333,7 +1733,8 @@ def test_active_agent_blueprint_drives_turn_runtime_and_overrides_builtin_ids(
         )
 
     monkeypatch.setattr("clio_agent.gact.app._try_streamed_forward", no_stream)
-    monkeypatch.setattr("clio_agent.gact.app._run_prompt_user_agent", fake_prompt_runner)
+    monkeypatch.delenv("CLIO_AGENT_ENABLE_LEGACY_NATIVE_EXPERTS", raising=False)
+    monkeypatch.setattr("clio_agent.gact.app._run_blueprint_dspy_agent", fake_blueprint_runner)
 
     app = build_app(sessions_path=tmp_path / "sessions.json", agent=SimpleNamespace())
     with TestClient(app) as client:
@@ -1381,27 +1782,6 @@ def test_active_agent_blueprint_drives_turn_runtime_and_overrides_builtin_ids(
     assert assistant["metadata"]["agent_runtime"]["agent_id"] == "data"
     assert assistant["metadata"]["agent_runtime"]["source"] == "expert_pack"
     assert assistant["metadata"]["agent_runtime"]["pack"]["id"] == "remote-data"
-    provenance = assistant["metadata"]["runtime_provenance"]
-    assert provenance["schema_version"] == "clio.runtime_provenance.v1"
-    assert provenance["turn"]["user_message_id"].startswith("msg_user_")
-    assert provenance["turn"]["assistant_message_id"] == assistant["id"]
-    assert provenance["workspace"]["workspace_id"] == wid
-    assert provenance["workspace"]["root_path"] == str(workspace)
-    assert provenance["blueprint"]["id"] == "remote-data"
-    assert provenance["agent"]["runtime"]["agent_id"] == "data"
-    assert provenance["agent"]["expert"]["id"] == "data"
-    assert provenance["agent"]["expert"]["tier"] == 1
-    assert set(provenance["provider"]) >= {
-        "provider_id",
-        "model_id",
-        "provider_source",
-        "model_source",
-        "fallback_to_global",
-    }
-    assert provenance["prompt"]["source"] == "agent_definition"
-    assert provenance["tools"]["declared"] == []
-    assert provenance["delegation"]["events"] == []
-    assert provenance["memory"]["policy"]["default_scope"] == "session"
 
 
 def test_agent_blueprint_mcp_descriptor_installs_disabled(tmp_path: Path) -> None:
@@ -1429,150 +1809,6 @@ EarthScope descriptor.
     assert descriptor["enabled"] is False
     assert descriptor["status"] == "disabled"
     assert descriptor["transport"] == "stdio"
-    assert any("disabled until explicitly enabled" in warning for warning in descriptor["validation_warnings"])
-
-
-def test_agent_blueprint_mcp_descriptor_derives_uvx_install_command(
-    tmp_path: Path,
-) -> None:
-    root = tmp_path / "marketplace" / "calc"
-    _write_blueprint(root, blueprint_id="calc")
-    (root / "tools").mkdir()
-    root.joinpath("tools", "calculator.md").write_text(
-        """---
-id: calculator
-name: Calculator MCP
-transport: stdio
-install:
-  method: uvx
-  package: clio-calculator-mcp
-runtime:
-  args:
-    - serve
-tools:
-  - calculator_add
-trust:
-  policy: explicit
-env_policy:
-  secrets: none
-verification:
-  probe: list_tools
----
-Calculator descriptor.
-""",
-        encoding="utf-8",
-    )
-
-    body = validate_agent_blueprint_path(root)
-
-    descriptor = body["mcp_descriptors"][0]
-    assert descriptor["validation_errors"] == []
-    assert descriptor["command"] == "uvx"
-    assert descriptor["args"] == ["clio-calculator-mcp", "serve"]
-    assert descriptor["install"] == {"method": "uvx", "package": "clio-calculator-mcp"}
-    assert descriptor["runtime"] == {"args": ["serve"]}
-    assert descriptor["trust"]["policy"] == "explicit"
-    assert descriptor["env_policy"] == {"secrets": "none"}
-    assert descriptor["verification"] == {"probe": "list_tools"}
-
-
-def test_agent_blueprint_mcp_descriptor_derives_pack_local_launch(
-    tmp_path: Path,
-) -> None:
-    root = tmp_path / "marketplace" / "local-calc"
-    _write_blueprint(root, blueprint_id="local-calc")
-    (root / "tools").mkdir()
-    (root / "mcp").mkdir()
-    (root / "mcp" / "calculator_server.py").write_text(
-        "print('calculator')\n",
-        encoding="utf-8",
-    )
-    root.joinpath("tools", "calculator.md").write_text(
-        """---
-id: calculator
-name: Local Calculator MCP
-transport: stdio
-install:
-  method: pack-local
-  path: mcp/calculator_server.py
-tools:
-  - calculator_add
----
-Calculator descriptor.
-""",
-        encoding="utf-8",
-    )
-
-    body = validate_agent_blueprint_path(root)
-
-    descriptor = body["mcp_descriptors"][0]
-    assert descriptor["validation_errors"] == []
-    assert descriptor["command"] == "python"
-    assert descriptor["args"] == [str(root / "mcp" / "calculator_server.py")]
-
-
-def test_agent_blueprint_mcp_descriptor_rejects_missing_pack_local_launch(
-    tmp_path: Path,
-) -> None:
-    root = tmp_path / "marketplace" / "local-calc"
-    _write_blueprint(root, blueprint_id="local-calc")
-    (root / "tools").mkdir()
-    root.joinpath("tools", "calculator.md").write_text(
-        """---
-id: calculator
-name: Local Calculator MCP
-transport: stdio
-install:
-  method: pack-local
-  path: mcp/missing_server.py
-tools:
-  - calculator_add
----
-Calculator descriptor.
-""",
-        encoding="utf-8",
-    )
-
-    body = validate_agent_blueprint_path(root)
-
-    assert body["enabled"] is False
-    errors = "\n".join(body["validation_errors"])
-    assert "calculator: pack-local MCP launch path not found: mcp/missing_server.py" in errors
-    descriptor = body["mcp_descriptors"][0]
-    assert descriptor["command"] == "python"
-    assert descriptor["args"] == [str(root / "mcp" / "missing_server.py")]
-
-
-def test_agent_blueprint_mcp_descriptor_validates_transport_requirements(
-    tmp_path: Path,
-) -> None:
-    root = tmp_path / "marketplace" / "earth"
-    _write_blueprint(root, blueprint_id="earth")
-    (root / "tools").mkdir()
-    root.joinpath("tools", "stdio.md").write_text(
-        """---
-id: local
-transport: stdio
----
-Missing command.
-""",
-        encoding="utf-8",
-    )
-    root.joinpath("tools", "http.md").write_text(
-        """---
-id: remote
-transport: streamable-http
----
-Missing URL.
-""",
-        encoding="utf-8",
-    )
-
-    body = validate_agent_blueprint_path(root)
-
-    errors = "\n".join(body["validation_errors"])
-    assert "local: stdio MCP descriptors require command" in errors
-    assert "remote: streamable-http MCP descriptors require url" in errors
 
 
 def test_agent_blueprint_mcp_tool_references_require_enablement(tmp_path: Path) -> None:
@@ -1686,374 +1922,6 @@ EarthScope descriptor.
     )
     assert enabled.json()["status"] == "enabled_pending_probe"
     assert any(row["id"] == "agent_blueprint_mcp_earth_earthscope" for row in rows_after)
-
-
-def test_session_agent_blueprint_exposes_mcp_descriptor_scope(tmp_path: Path) -> None:
-    workspace = tmp_path / "workspace"
-    root = workspace / ".clio" / "agent-blueprints" / "calc"
-    _write_blueprint(root, blueprint_id="calc")
-    (root / "tools").mkdir()
-    (root / "mcp").mkdir()
-    (root / "mcp" / "calculator_server.py").write_text("print('ok')\n", encoding="utf-8")
-    root.joinpath("tools", "calculator.md").write_text(
-        """---
-id: calculator
-name: Calculator MCP
-transport: stdio
-install:
-  method: pack-local
-  path: mcp/calculator_server.py
-runtime:
-  args:
-    - serve
-tools:
-  - calculator_add
-trust:
-  policy: explicit
----
-Calculator descriptor.
-""",
-        encoding="utf-8",
-    )
-
-    app = build_app(sessions_path=tmp_path / "sessions.json")
-    with TestClient(app) as client:
-        wid = client.post(
-            "/v1/workspaces",
-            json={
-                "name": "Workspace",
-                "root_path": str(workspace),
-                "storage_root": str(workspace / ".clio"),
-            },
-        ).json()["id"]
-        sid = client.post(
-            "/v1/sessions",
-            json={"title": "blueprint", "workspace_id": wid},
-        ).json()["id"]
-        activated = client.post(
-            f"/v1/sessions/{sid}/agent-blueprint",
-            json={"blueprint_id": "calc"},
-        )
-        body = client.get(f"/v1/sessions/{sid}/agent-blueprint").json()
-
-    assert activated.status_code == 200, activated.text
-    assert body["active_agent_blueprint_id"] == "calc"
-    descriptor = body["mcp_descriptors"][0]
-    assert descriptor["id"] == "calculator"
-    assert descriptor["enabled"] is False
-    assert descriptor["status"] == "disabled"
-    assert descriptor["tools"][0]["name"] == "calculator_add"
-    assert descriptor["tools"][0]["status"] == "disabled"
-    assert descriptor["trust"] == {"policy": "explicit", "trusted": False}
-    assert descriptor["install"] == {
-        "method": "pack-local",
-        "path": "mcp/calculator_server.py",
-    }
-    assert body["hook_descriptors"] == []
-
-
-def test_agent_blueprint_mcp_enable_records_install_and_trust_metadata(
-    tmp_path: Path,
-) -> None:
-    workspace = tmp_path / "workspace"
-    root = workspace / ".clio" / "agent-blueprints" / "calc"
-    _write_blueprint(root, blueprint_id="calc")
-    (root / "tools").mkdir()
-    root.joinpath("tools", "calculator.md").write_text(
-        """---
-id: calculator
-name: Calculator MCP
-transport: stdio
-install:
-  method: uvx
-  package: clio-calculator-mcp
-runtime:
-  args:
-    - serve
-tools:
-  - calculator_add
-trust:
-  policy: explicit
-verification:
-  probe: list_tools
----
-Calculator descriptor.
-""",
-        encoding="utf-8",
-    )
-
-    app = build_app(sessions_path=tmp_path / "sessions.json")
-    with TestClient(app) as client:
-        wid = client.post(
-            "/v1/workspaces",
-            json={
-                "name": "Workspace",
-                "root_path": str(workspace),
-                "storage_root": str(workspace / ".clio"),
-            },
-        ).json()["id"]
-        enabled = client.post(
-            "/v1/agent-blueprints/calc/mcp/calculator/enable",
-            json={"workspace_id": wid, "probe": False, "trust": True},
-        )
-        rows = client.get("/v1/mcp/servers", params={"workspace_id": wid}).json()["servers"]
-
-    assert enabled.status_code == 200, enabled.text
-    body = enabled.json()
-    assert body["spec"]["command"] == "uvx"
-    assert body["spec"]["args"] == ["clio-calculator-mcp", "serve"]
-    assert body["trust"] == {"policy": "explicit", "trusted": True, "source": "request"}
-    assert body["install"] == {"method": "uvx", "package": "clio-calculator-mcp"}
-    assert body["runtime"] == {"args": ["serve"]}
-    assert body["verification"] == {"probe": "list_tools"}
-    listed = next(row for row in rows if row["id"] == "agent_blueprint_mcp_calc_calculator")
-    assert listed["trust"]["trusted"] is True
-    assert listed["install"]["method"] == "uvx"
-
-
-def test_agent_blueprint_mcp_enable_requires_trust_when_config_disables_trust_always(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("CLIO_GACT_MCP_TRUST_ALWAYS", "false")
-    workspace = tmp_path / "workspace"
-    root = workspace / ".clio" / "agent-blueprints" / "earth"
-    _write_blueprint(root, blueprint_id="earth")
-    (root / "tools").mkdir()
-    root.joinpath("tools", "earthscope.md").write_text(
-        """---
-id: earthscope
-name: EarthScope MCP
-transport: stdio
-command: earthscope-mcp
----
-EarthScope descriptor.
-""",
-        encoding="utf-8",
-    )
-
-    app = build_app(sessions_path=tmp_path / "sessions.json")
-    with TestClient(app) as client:
-        wid = client.post(
-            "/v1/workspaces",
-            json={
-                "name": "Workspace",
-                "root_path": str(workspace),
-                "storage_root": str(workspace / ".clio"),
-            },
-        ).json()["id"]
-        denied = client.post(
-            "/v1/agent-blueprints/earth/mcp/earthscope/enable",
-            json={"workspace_id": wid, "probe": False},
-        )
-        allowed = client.post(
-            "/v1/agent-blueprints/earth/mcp/earthscope/enable",
-            json={"workspace_id": wid, "probe": False, "trust": True},
-        )
-
-    assert denied.status_code == 403
-    assert denied.json()["error"]["error"] == "mcp_untrusted"
-    assert allowed.status_code == 200, allowed.text
-    assert allowed.json()["trust"]["source"] == "request"
-
-
-def test_agent_blueprint_packaged_hook_validation_reports_unknown_event(
-    tmp_path: Path,
-) -> None:
-    root = tmp_path / "genomics"
-    _write_blueprint(root)
-    (root / "hooks").mkdir()
-    root.joinpath("hooks", "not_a_hook_event.py").write_text(
-        "def not_a_hook_event():\n    return None\n",
-        encoding="utf-8",
-    )
-
-    body = validate_agent_blueprint_path(root)
-
-    assert body["enabled"] is False
-    assert body["hook_descriptors"][0]["id"] == "not_a_hook_event"
-    assert body["hook_descriptors"][0]["validation_errors"] == [
-        "unsupported hook event: not_a_hook_event"
-    ]
-    assert "not_a_hook_event: unsupported hook event: not_a_hook_event" in body[
-        "validation_errors"
-    ]
-
-
-def test_agent_blueprint_packaged_hook_requires_enablement_and_blueprint_scope(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    class FakeAgent:
-        def forward(self, question: str, session_id: str = "default") -> Any:
-            return SimpleNamespace(answer=f"default handled {question}", error_info=None)
-
-    async def no_stream(*args: Any, **kwargs: Any) -> None:
-        return None
-
-    def fake_prompt_runner(
-        base_agent: Any,
-        agent_def: AgentDef,
-        question: str,
-        session_id: str,
-        cancel_requested: Any = None,
-    ) -> Any:
-        del base_agent, agent_def, session_id, cancel_requested
-        return SimpleNamespace(
-            answer=f"blueprint handled {question}",
-            selected_expert="root",
-            routing_rationale="session blueprint",
-            route_source="agent_blueprint",
-            error_info=None,
-        )
-
-    monkeypatch.setattr("clio_agent.gact.app._try_streamed_forward", no_stream)
-    monkeypatch.setattr("clio_agent.gact.app._run_prompt_user_agent", fake_prompt_runner)
-    monkeypatch.setenv("CLIO_HOOKS_BACKEND", "local_python")
-    monkeypatch.setenv("CLIO_HOOKS_DIR", str(tmp_path / "runtime-hooks"))
-    monkeypatch.setenv("CLIO_GACT_HOOK_TRUST_ALWAYS", "false")
-    monkeypatch.setenv("CLIO_SEMANTIC_TRACE_BACKEND", "file")
-    monkeypatch.setenv("CLIO_SEMANTIC_TRACE_PATH", str(tmp_path / "semantic-traces"))
-    install_global_registry(None)
-
-    workspace = tmp_path / "workspace"
-    root = workspace / ".clio" / "agent-blueprints" / "genomics"
-    _write_blueprint(root)
-    (root / "hooks").mkdir()
-    root.joinpath("hooks", "pre_message.py").write_text(
-        """
-def pre_message(session_id, text):
-    if "BLOCK_ME" in text:
-        raise PermissionError("blocked by packaged blueprint hook")
-""",
-        encoding="utf-8",
-    )
-
-    try:
-        app = build_app(sessions_path=tmp_path / "sessions.json", agent=FakeAgent())
-        with TestClient(app) as client:
-            wid = client.post(
-                "/v1/workspaces",
-                json={
-                    "name": "Workspace",
-                    "root_path": str(workspace),
-                    "storage_root": str(workspace / ".clio"),
-                },
-            ).json()["id"]
-            sid_blueprint = client.post(
-                "/v1/sessions",
-                json={"title": "blueprint", "workspace_id": wid},
-            ).json()["id"]
-            sid_default = client.post(
-                "/v1/sessions",
-                json={"title": "default", "workspace_id": wid},
-            ).json()["id"]
-            assert client.post(
-                f"/v1/sessions/{sid_blueprint}/agent-blueprint",
-                json={"blueprint_id": "genomics"},
-            ).status_code == 200
-
-            detail = client.get(
-                "/v1/agent-blueprints/genomics",
-                params={"workspace_id": wid},
-            ).json()
-            denied = client.post(
-                "/v1/agent-blueprints/genomics/hooks/pre_message/enable",
-                json={"workspace_id": wid},
-            )
-            before_enable = complete_turn(client, sid_blueprint, "BLOCK_ME before enable")
-            enabled = client.post(
-                "/v1/agent-blueprints/genomics/hooks/pre_message/enable",
-                json={"workspace_id": wid, "trust": True},
-            )
-            capabilities = client.get("/v1/capabilities").json()["capabilities"]
-            default_after_enable = complete_turn(client, sid_default, "BLOCK_ME default")
-            blueprint_after_enable = complete_turn(client, sid_blueprint, "allowed after enable")
-            blocked_ack = client.post(
-                f"/v1/sessions/{sid_blueprint}/messages",
-                json={"parts": [{"type": "text", "text": "BLOCK_ME after enable"}]},
-            )
-            assert blocked_ack.status_code == 200, blocked_ack.text
-            blocked_user_message_id = blocked_ack.json()["message_id"]
-            deadline = time.monotonic() + 5.0
-            blocked_session: dict[str, Any] = {}
-            while time.monotonic() < deadline:
-                blocked_session = client.get(f"/v1/sessions/{sid_blueprint}").json()
-                if blocked_session["status"] == "error":
-                    break
-                time.sleep(0.05)
-            messages_after_block = client.get(
-                f"/v1/sessions/{sid_blueprint}/messages"
-            ).json()["messages"]
-            trace_path = tmp_path / "semantic-traces" / f"{sid_blueprint}.semantic.jsonl"
-            trace_rows = [
-                json.loads(line)
-                for line in trace_path.read_text(encoding="utf-8").splitlines()
-            ]
-
-    finally:
-        install_global_registry(None)
-
-    assert detail["hook_descriptors"][0]["id"] == "pre_message"
-    assert detail["hook_descriptors"][0]["enabled"] is False
-    assert denied.status_code == 403
-    assert denied.json()["error"]["error"] == "hook_untrusted"
-    assert before_enable["role"] == "assistant"
-    assert before_enable.get("error_info") is None
-    assert enabled.status_code == 200, enabled.text
-    enabled_body = enabled.json()
-    assert enabled_body["status"] == "enabled"
-    assert enabled_body["trust"] == {
-        "policy": "explicit",
-        "trusted": True,
-        "source": "request",
-    }
-    assert enabled_body["installed_path"].endswith("blueprints/genomics/pre_message.py")
-    installed_path = Path(enabled_body["installed_path"])
-    sidecar = json.loads(
-        installed_path.with_name(f"{installed_path.name}.json").read_text(encoding="utf-8")
-    )
-    assert sidecar["source"] == "agent_blueprint"
-    assert sidecar["agent_blueprint_id"] == "genomics"
-    assert sidecar["definition_path"].endswith("hooks/pre_message.py")
-    assert sidecar["checksum"] == enabled_body["checksum"]
-    assert capabilities["x_clio_hook_events"]["pre_message"] == 1
-    assert default_after_enable["role"] == "assistant"
-    assert default_after_enable.get("error_info") is None
-    assert blueprint_after_enable["role"] == "assistant"
-    assert blueprint_after_enable.get("error_info") is None
-    assert blocked_session["status"] == "error"
-    blocked_index = next(
-        index
-        for index, row in enumerate(messages_after_block)
-        if row["id"] == blocked_user_message_id
-    )
-    assert blocked_index == 0 or messages_after_block[blocked_index - 1]["role"] != "assistant"
-
-    completed_dispatch = next(
-        row
-        for row in trace_rows
-        if row["event_type"] == "hook.invocation.completed"
-        and row["actor"].get("hook") == "pre_message"
-        and row["payload"].get("handlers")
-    )
-    completed_handler = completed_dispatch["payload"]["handlers"][0]
-    assert completed_handler["source"] == "agent_blueprint"
-    assert completed_handler["agent_blueprint_id"] == "genomics"
-    assert completed_handler["definition_path"].endswith("hooks/pre_message.py")
-    assert completed_handler["installed_path"].endswith("blueprints/genomics/pre_message.py")
-    assert completed_handler["checksum"] == enabled_body["checksum"]
-    assert completed_handler["status"] == "completed"
-    blocked_dispatch = next(
-        row
-        for row in trace_rows
-        if row["event_type"] == "hook.pre_message.blocked"
-        and row["payload"].get("handlers")
-    )
-    blocked_handler = blocked_dispatch["payload"]["handlers"][0]
-    assert blocked_handler["source"] == "agent_blueprint"
-    assert blocked_handler["status"] == "blocked"
-    assert blocked_handler["error"] == "blocked by packaged blueprint hook"
 
 
 def test_enabled_agent_blueprint_mcp_descriptor_exposes_declared_tools(tmp_path: Path) -> None:
@@ -2191,88 +2059,9 @@ EarthScope descriptor.
     assert call.json()["content"] == [
         {"type": "text", "text": "earthscope_query:ANMO"}
     ]
-    declared = next(
-        row
-        for row in tools
-        if row["id"] == "earthscope_query"
-        and row.get("source") == "agent_blueprint_mcp_descriptor"
-    )
+    declared = next(row for row in tools if row["id"] == "earthscope_query")
     assert declared["enabled"] is True
     assert declared["status"] == "ready"
-
-
-def test_enabled_pack_local_mcp_descriptor_calls_real_stdio_server(tmp_path: Path) -> None:
-    workspace = tmp_path / "workspace"
-    root = workspace / ".clio" / "agent-blueprints" / "calc"
-    _write_blueprint(root, blueprint_id="calc")
-    (root / "tools").mkdir()
-    (root / "mcp").mkdir()
-    root.joinpath("mcp", "calculator_server.py").write_text(
-        """from __future__ import annotations
-
-from fastmcp import FastMCP
-
-mcp = FastMCP("calculator-smoke")
-
-
-@mcp.tool()
-def calculator_add(a: float, b: float) -> dict[str, float]:
-    return {"a": a, "b": b, "sum": a + b}
-
-
-if __name__ == "__main__":
-    mcp.run(transport="stdio", show_banner=False)
-""",
-        encoding="utf-8",
-    )
-    root.joinpath("tools", "calculator.md").write_text(
-        """---
-id: calculator
-name: Calculator MCP
-transport: stdio
-install:
-  method: pack-local
-  path: mcp/calculator_server.py
-runtime:
-  args:
-    - serve
-tools:
-  - calculator_add
-trust:
-  policy: explicit
----
-Calculator descriptor.
-""",
-        encoding="utf-8",
-    )
-
-    app = build_app(sessions_path=tmp_path / "sessions.json")
-    with TestClient(app) as client:
-        wid = client.post(
-            "/v1/workspaces",
-            json={
-                "name": "Workspace",
-                "root_path": str(workspace),
-                "storage_root": str(workspace / ".clio"),
-            },
-        ).json()["id"]
-        enabled = client.post(
-            "/v1/agent-blueprints/calc/mcp/calculator/enable",
-            json={"workspace_id": wid, "trust": True},
-        )
-        call = client.post(
-            "/v1/mcp/servers/agent_blueprint_mcp_calc_calculator/call",
-            json={"tool": "calculator_add", "args": {"a": 2, "b": 5}},
-        )
-
-    assert enabled.status_code == 200, enabled.text
-    assert enabled.json()["status"] == "ready"
-    assert enabled.json()["tools"][0]["enabled"] is True
-    assert call.status_code == 200, call.text
-    assert call.json()["is_error"] is False
-    assert call.json()["content"] == [
-        {"type": "text", "text": '{"a":2.0,"b":5.0,"sum":7.0}'}
-    ]
 
 
 def test_enabled_agent_blueprint_mcp_tool_reenables_session_expert(

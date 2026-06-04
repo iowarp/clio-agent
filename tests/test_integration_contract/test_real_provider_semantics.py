@@ -25,6 +25,8 @@ from typing import Any
 import httpx
 import pytest
 
+from scripts.create_benchmark_data import create_benchmark_data
+
 from .conftest import _backend, _backend_alive, post_user, turn, wait_for_assistant
 
 pytestmark = [
@@ -79,6 +81,36 @@ def _stream_metadata(message: dict[str, Any]) -> dict[str, Any]:
             metadata.setdefault("part_stream_source", part_md.get("stream_source"))
             metadata.setdefault("part_stream_fallback", part_md.get("stream_fallback"))
     return metadata
+
+
+def _semantic_events_for_completed_turn(
+    http: httpx.Client,
+    session_id: str,
+    assistant_message_id: str,
+    *,
+    timeout: float = 90.0,
+) -> list[dict[str, Any]]:
+    events: list[dict[str, Any]] = []
+    deadline = time.monotonic() + timeout
+    with httpx.stream(
+        "GET",
+        f"{http.base_url}/v1/sessions/{session_id}/events",
+        timeout=timeout,
+    ) as resp:
+        for line in resp.iter_lines():
+            if not line.startswith("data: "):
+                continue
+            env = json.loads(line[len("data: ") :])
+            if env["type"] == "semantic.event":
+                events.append(env["payload"])
+                continue
+            if env["type"] == "message.completed":
+                payload = env.get("payload") or {}
+                if str(payload.get("id") or "") == assistant_message_id or events:
+                    break
+            if time.monotonic() > deadline:
+                break
+    return events
 
 
 def _assert_successful_tool_answer(
@@ -180,6 +212,110 @@ def test_real_provider_hdf5_tool_loop(http: httpx.Client, session_id: str) -> No
         expected_tool_prefix="hdf5_",
         expected_terms=("temperature", "pressure"),
     )
+
+
+def test_real_provider_marketplace_blueprint_delegates_with_provenance(
+    http: httpx.Client,
+    tmp_path: Path,
+) -> None:
+    """A real model must execute a registry-loaded Agent Blueprint
+    hierarchy, not a native expert fallback, for a marketplace FASTA
+    handoff case.
+    """
+
+    manifest = create_benchmark_data(tmp_path / "benchmark-data")
+    dataset = str(Path(manifest["genomics"]["fasta_path"]).resolve())
+    marketplace = Path(
+        os.environ.get(
+            "CLIO_REAL_MARKETPLACE_SOURCE",
+            Path.cwd() / "external" / "clio-agent-marketplace",
+        )
+    ).resolve()
+    if not marketplace.exists():
+        pytest.skip(f"marketplace source not found: {marketplace}")
+
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    workspace = http.post(
+        "/v1/workspaces",
+        json={"name": "marketplace-blueprint-integration", "root_path": str(workspace_root)},
+    )
+    assert workspace.status_code in {200, 201}, workspace.text
+    workspace_id = workspace.json()["id"]
+
+    install = http.post(
+        "/v1/agent-blueprints/install",
+        json={
+            "source": str(marketplace),
+            "scope": "workspace",
+            "workspace_id": workspace_id,
+            "blueprint_id": "genomics-review",
+        },
+    )
+    assert install.status_code == 201, install.text
+
+    session = http.post(
+        "/v1/sessions",
+        json={"title": "marketplace genomics integration", "workspace_id": workspace_id},
+    )
+    assert session.status_code == 200, session.text
+    sid = session.json()["id"]
+    activated = http.post(
+        f"/v1/sessions/{sid}/agent-blueprint",
+        json={"blueprint_id": "genomics-review"},
+    )
+    assert activated.status_code == 200, activated.text
+    active = http.get(f"/v1/sessions/{sid}/agent-blueprint").json()
+    assert active["active_agent_blueprint_id"] == "genomics-review"
+    assert "agent_blueprints/builtin" not in active.get("active_agent_blueprint_path", "")
+
+    agents = http.get("/v1/agents", params={"session_id": sid}).json()["agents"]
+    rows = {row["id"]: row for row in agents}
+    assert {"main", "reference"} <= set(rows)
+    assert rows["reference"]["metadata"]["definition_kind"] == "agent_blueprint"
+    assert rows["reference"]["metadata"]["agent_blueprint_id"] == "genomics-review"
+
+    prompt = (
+        "Using the active genomics review Agent Blueprint, review this FASTA "
+        f"for collaborator handoff: {dataset}. Summarize contigs, composition "
+        "evidence, and what should be verified before variant interpretation."
+    )
+    assistant = turn(http, sid, prompt, timeout=620)
+    _record_case(
+        "marketplace_blueprint_delegation_provenance",
+        http,
+        assistant,
+        prompt=prompt,
+        dataset=dataset,
+        status="observed",
+    )
+
+    assert assistant.get("error_info") is None, assistant.get("error_info")
+    metadata = assistant.get("metadata") or {}
+    runtime = metadata.get("agent_runtime") or {}
+    assert runtime.get("execution_mode") == "blueprint_predict", metadata
+    assert (runtime.get("agent_blueprint") or {}).get("id") == "genomics-review", metadata
+    assert _routing_agent(assistant) == "main", assistant
+    handoffs = metadata.get("expert_handoffs") or []
+    assert any(
+        row.get("agent_id") == "reference"
+        and row.get("parent_id") == "main"
+        and row.get("execution_mode") == "blueprint_react"
+        for row in handoffs
+    ), handoffs
+    assert any(
+        row.get("agent_id") == "reference" and row.get("return_to") == "main"
+        for row in handoffs
+    ), handoffs
+    names = _tool_names(assistant)
+    assert "genomics_inspect_fasta" in names, names
+    text = _text(assistant).lower()
+    assert "chra" in text and "plasmidb" in text, text
+
+    semantic = _semantic_events_for_completed_turn(http, sid, assistant["id"], timeout=120)
+    event_types = {row["event_type"] for row in semantic}
+    assert "blueprint.delegation.started" in event_types, event_types
+    assert "blueprint.delegation.completed" in event_types, event_types
 
 
 def test_real_provider_parquet_tool_loop(http: httpx.Client, session_id: str) -> None:

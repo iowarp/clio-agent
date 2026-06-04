@@ -1,5 +1,5 @@
-"""Tests for ClioAgent expert modules.
+"""Tests for generic expert/runtime support.
 
-Currently only tests DataExpert (HDF5, ADIOS, Parquet optimization).
-Additional expert tests will be added as new experts are implemented.
+Native domain expert modules are retired; domain agents are registry-loaded
+Agent Blueprints.
 """
