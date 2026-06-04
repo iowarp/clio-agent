@@ -164,6 +164,7 @@ keywords:
   - waveform
 tools:
   - sac_inspect_archive
+  - sac_discover_earthscope_region_waveform
   - sac_fetch_earthscope_waveform
   - sac_compute_trace_statistics
   - sac_plot_traces

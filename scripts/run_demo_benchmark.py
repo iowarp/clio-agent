@@ -2796,7 +2796,7 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             session_group="ndp_seismic",
             expected_agent=("data", "analysis", "visualization"),
             expected_tool_prefixes=("sac_",),
-            expected_tools=("sac_fetch_earthscope_waveform",),
+            expected_tools=("sac_discover_earthscope_region_waveform",),
             expected_tool_prefix_groups=(("ndp_", "sac_"), ("ndp_",)),
             expected_handoff_agents=("ndp_catalog", "sac_format"),
             expected_handoff_agent_groups=(),
@@ -2823,16 +2823,17 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
                 "artifact",
             ),
             prompt=(
-                "Find a bounded seismic waveform dataset from a seismological or "
-                "Earth-science organization in the National Data Platform. Choose a usable "
-                "resource, stage it if it is small enough, inspect the waveform content, "
-                "compute representative trace statistics, and produce a plot artifact. If a "
-                "candidate is too large or unavailable, surface that as the result instead "
-                "of inventing a plot."
+                "Explore seismic activity over the last 7 days around the San Diego, "
+                "California area. Start from National Data Platform discovery for relevant "
+                "seismic waveform data. If catalog staging is too large or unavailable, "
+                "resolve the requested geography, discover recent public earthquake and "
+                "EarthScope station evidence, stage a bounded SAC waveform, inspect it, "
+                "compute representative trace statistics, and produce a plot artifact."
             ),
             expected=(
-                "CLIO delegates NDP discovery to ndp_catalog, stages a bounded waveform "
-                "resource, analyzes SAC traces through sac_format, and creates a PNG plot."
+                "CLIO delegates NDP discovery to ndp_catalog, then uses regional "
+                "EarthScope discovery through sac_format when catalog staging is blocked, "
+                "analyzes SAC traces, and creates a PNG plot."
             ),
             why=(
                 "This is the core hierarchical science demo: provider discovery, data "
@@ -3294,7 +3295,7 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             agent_blueprint_id="seismic-waveform-review",
             expected_agent=("data", "analysis", "visualization", "main"),
             expected_tool_prefixes=("ndp_", "sac_"),
-            expected_tools=("sac_fetch_earthscope_waveform",),
+            expected_tools=("sac_discover_earthscope_region_waveform",),
             expected_handoff_agents=("ndp_catalog", "sac_format"),
             expected_terms=("SAC", ".png"),
             min_artifacts=1,
@@ -3318,15 +3319,18 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
                 "artifact",
             ),
             prompt=(
-                "Using the active seismic waveform review agent, find bounded seismic "
-                "waveform evidence through NDP discovery, recover with an alternate SAC "
-                "source if NDP staging is blocked, inspect the waveform, compute trace "
-                "statistics, and produce a PNG plot artifact without using stale local files."
+                "Using the active seismic waveform review agent, explore seismic activity "
+                "over the last 7 days around the San Diego, California area. Start with NDP "
+                "catalog discovery for relevant seismic waveform data; if NDP staging is "
+                "blocked, recover with regional EarthScope discovery from the requested "
+                "geography, inspect the staged SAC waveform, compute trace statistics, and "
+                "produce a PNG plot artifact without using stale local files."
             ),
             expected=(
                 "CLIO runs the seismic-waveform-review marketplace Agent Blueprint, "
-                "surfaces NDP staging blockers, recovers with an observed EarthScope SAC "
-                "path, and creates a verified PNG artifact."
+                "surfaces NDP staging blockers, resolves the requested geography into "
+                "regional EarthScope event/station evidence, stages an observed SAC path, "
+                "and creates a verified PNG artifact."
             ),
             why=(
                 "Proves the marketplace can carry the strongest hierarchical workflow, "

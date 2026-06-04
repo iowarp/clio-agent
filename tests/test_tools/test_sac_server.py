@@ -13,6 +13,7 @@ from pytest import MonkeyPatch
 
 from clio_agent.tools.servers.sac_server import (
     compute_trace_statistics,
+    discover_earthscope_region_waveform,
     fetch_earthscope_waveform,
     inspect_archive,
     plot_traces,
@@ -136,3 +137,113 @@ def test_fetch_earthscope_waveform_stages_valid_sac(
     assert staged_path.exists()
     stats = compute_trace_statistics(str(staged_path))
     assert stats["traces"][0]["npts"] == 20
+
+
+def test_discover_earthscope_region_waveform_stages_recent_regional_sac(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """Regional discovery should resolve a place, find event/station evidence, and stage SAC."""
+
+    class FakeResponse:
+        def __init__(self, *, url: str, payload=None, text: str = "", status_code: int = 200):
+            self.url = url
+            self._payload = payload
+            self.text = text
+            self.status_code = status_code
+
+        def json(self):
+            return self._payload
+
+        def iter_content(self, chunk_size: int):
+            del chunk_size
+            yield _sac_bytes(npts=24)
+
+        def raise_for_status(self) -> None:
+            if self.status_code >= 400:
+                raise AssertionError(f"unexpected HTTP {self.status_code}")
+
+    def fake_get(url, *, params, **kwargs):
+        del kwargs
+        if "earthquake.usgs.gov" in url:
+            assert params["latitude"] == "32.71570"
+            assert params["longitude"] == "-117.16110"
+            return FakeResponse(
+                url=f"{url}?format=geojson",
+                payload={
+                    "features": [
+                        {
+                            "id": "ci-demo",
+                            "properties": {
+                                "time": 1_720_000_000_000,
+                                "mag": 2.5,
+                                "place": "near San Diego",
+                                "url": "https://earthquake.usgs.gov/earthquakes/eventpage/ci-demo",
+                            },
+                            "geometry": {"coordinates": [-117.2, 32.8, 8.0]},
+                        }
+                    ]
+                },
+            )
+        if "fdsnws/station" in url:
+            assert params["format"] == "text"
+            return FakeResponse(
+                url=f"{url}?format=text",
+                text=(
+                    "#Network|Station|Location|Channel|Latitude|Longitude|Elevation|Depth\n"
+                    "CI|SDD||BHZ|32.790|-117.140|100|0\n"
+                ),
+            )
+        if "irisws/timeseries" in url:
+            assert params["net"] == "CI"
+            assert params["sta"] == "SDD"
+            assert params["loc"] == "--"
+            assert params["cha"] == "BHZ"
+            assert params["output"] == "sacbl"
+            return FakeResponse(url=f"{url}?output=sacbl", text="")
+        raise AssertionError(f"unexpected URL {url}")
+
+    monkeypatch.setattr(sac_module.requests, "get", fake_get)
+
+    result = discover_earthscope_region_waveform(
+        location="San Diego, CA",
+        days_back=3,
+        radius_km=100,
+        min_magnitude=1.0,
+        output_dir=str(tmp_path),
+    )
+
+    assert result["staged"] is True
+    assert result["region"]["label"] == "San Diego, CA"
+    assert result["event"]["event_id"] == "ci-demo"
+    assert result["station"]["network"] == "CI"
+    assert Path(result["path"]).exists()
+    stats = compute_trace_statistics(result["path"])
+    assert stats["traces"][0]["npts"] == 24
+
+
+def test_discover_earthscope_region_waveform_reports_geocode_failure(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """Unsupported free-form locations should return an actionable structured error."""
+
+    class FakeResponse:
+        url = "https://geocoding.geo.census.gov/geocoder/locations/onelineaddress"
+        status_code = 200
+
+        def json(self):
+            return {"result": {"addressMatches": []}}
+
+        def raise_for_status(self) -> None:
+            return None
+
+    def fake_get(url, *, params, **kwargs):
+        del url, params, kwargs
+        return FakeResponse()
+
+    monkeypatch.setattr(sac_module.requests, "get", fake_get)
+
+    result = discover_earthscope_region_waveform(location="Somewhere Outside Scope")
+
+    assert result["error"]["code"] == "earthscope_region_discovery_failed"
+    assert "latitude, longitude" in result["error"]["next_action"]

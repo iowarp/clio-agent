@@ -13,8 +13,10 @@ import struct
 import tarfile
 import time
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlencode
 
 import requests
 from fastmcp import FastMCP
@@ -26,6 +28,26 @@ sac_server = FastMCP("sac")
 _SAC_HEADER_BYTES = 632
 _MAX_SAC_BYTES = 8 * 1024 * 1024
 _EARTHSCOPE_TIMESERIES_URL = "https://service.earthscope.org/irisws/timeseries/1/query"
+_EARTHSCOPE_STATION_URL = "https://service.earthscope.org/fdsnws/station/1/query"
+_USGS_EVENT_URL = "https://earthquake.usgs.gov/fdsnws/event/1/query"
+_CENSUS_GEOCODER_URL = "https://geocoding.geo.census.gov/geocoder/locations/onelineaddress"
+_USER_AGENT = "clio-agent/ndp-demo-earthscope"
+_DEFAULT_REGION_RADIUS_KM = 150.0
+
+_US_LOCATION_HINTS: dict[str, tuple[float, float, str]] = {
+    "san diego": (32.7157, -117.1611, "San Diego, CA"),
+    "san diego ca": (32.7157, -117.1611, "San Diego, CA"),
+    "san diego california": (32.7157, -117.1611, "San Diego, CA"),
+    "los angeles": (34.0522, -118.2437, "Los Angeles, CA"),
+    "los angeles ca": (34.0522, -118.2437, "Los Angeles, CA"),
+    "bay area": (37.7749, -122.4194, "San Francisco Bay Area, CA"),
+    "san francisco": (37.7749, -122.4194, "San Francisco, CA"),
+    "seattle": (47.6062, -122.3321, "Seattle, WA"),
+    "anchorage": (61.2181, -149.9003, "Anchorage, AK"),
+    "california": (36.7783, -119.4179, "California"),
+    "alaska": (64.2008, -149.4937, "Alaska"),
+    "washington": (47.7511, -120.7401, "Washington"),
+}
 
 
 @dataclass(frozen=True)
@@ -40,6 +62,43 @@ class SacTrace:
     begin_s: float
     end_s: float
     samples: tuple[float, ...]
+
+
+@dataclass(frozen=True)
+class Region:
+    """A resolved geographic region for public seismic discovery."""
+
+    label: str
+    latitude: float
+    longitude: float
+    source: str
+
+
+@dataclass(frozen=True)
+class SeismicEvent:
+    """Small public event summary from the USGS earthquake API."""
+
+    event_id: str
+    time_utc: str
+    latitude: float
+    longitude: float
+    depth_km: float | None
+    magnitude: float | None
+    place: str
+    url: str
+
+
+@dataclass(frozen=True)
+class StationChannel:
+    """EarthScope channel candidate suitable for SAC waveform fetch."""
+
+    network: str
+    station: str
+    location: str
+    channel: str
+    latitude: float
+    longitude: float
+    distance_km: float
 
 
 def _tool_error(
@@ -63,7 +122,7 @@ def _tool_error(
 
 def _clean_positive_int(value: int | str | None, *, default: int, max_value: int) -> int:
     """Normalize a positive integer tool argument."""
-    if value in (None, ""):
+    if value is None or value == "":
         return default
     try:
         if isinstance(value, int) and not isinstance(value, bool):
@@ -89,6 +148,237 @@ def _clean_token(value: str | None, *, default: str, max_len: int = 16) -> str:
 def _clean_duration(value: int | str | None) -> int:
     """Return a bounded waveform fetch duration in seconds."""
     return _clean_positive_int(value, default=60, max_value=600)
+
+
+def _clean_positive_float(
+    value: float | int | str | None,
+    *,
+    default: float,
+    min_value: float,
+    max_value: float,
+) -> float:
+    """Normalize a bounded positive float tool argument."""
+    if value is None:
+        return default
+    if isinstance(value, str) and not value.strip():
+        return default
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return default
+    if not math.isfinite(parsed):
+        return default
+    return max(min_value, min(parsed, max_value))
+
+
+def _parse_iso_utc(value: str | None) -> datetime:
+    """Parse a small ISO timestamp subset into an aware UTC datetime."""
+    text = str(value or "").strip()
+    if not text:
+        return datetime.now(UTC)
+    normalized = text.replace("Z", "+00:00")
+    parsed = datetime.fromisoformat(normalized)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
+
+
+def _format_earthscope_time(value: datetime) -> str:
+    """Format UTC datetimes as FDSN-compatible timestamps."""
+    return value.astimezone(UTC).replace(microsecond=0).strftime("%Y-%m-%dT%H:%M:%S")
+
+
+def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Return approximate great-circle distance in kilometers."""
+    radius_km = 6371.0
+    phi1 = math.radians(lat1)
+    phi2 = math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dlambda = math.radians(lon2 - lon1)
+    a = math.sin(dphi / 2.0) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2.0) ** 2
+    return radius_km * 2.0 * math.atan2(math.sqrt(a), math.sqrt(max(0.0, 1.0 - a)))
+
+
+def _clean_location_key(value: str) -> str:
+    """Normalize a free-form place label for small built-in location hints."""
+    return re.sub(r"[^a-z0-9]+", " ", value.lower()).strip()
+
+
+def _parse_lat_lon(value: str) -> Region | None:
+    """Resolve explicit latitude/longitude text if present."""
+    match = re.search(
+        r"(?P<lat>[+-]?\d+(?:\.\d+)?)\s*[, ]\s*(?P<lon>[+-]?\d+(?:\.\d+)?)",
+        value,
+    )
+    if not match:
+        return None
+    lat = float(match.group("lat"))
+    lon = float(match.group("lon"))
+    if -90.0 <= lat <= 90.0 and -180.0 <= lon <= 180.0:
+        return Region(label=f"{lat:.4f},{lon:.4f}", latitude=lat, longitude=lon, source="lat_lon")
+    return None
+
+
+def _resolve_region(location: str) -> Region:
+    """Resolve a U.S. place hint or explicit coordinates to a region center."""
+    text = str(location or "").strip()
+    if not text:
+        text = "San Diego, CA"
+    explicit = _parse_lat_lon(text)
+    if explicit:
+        return explicit
+
+    key = _clean_location_key(text)
+    if key in _US_LOCATION_HINTS:
+        lat, lon, label = _US_LOCATION_HINTS[key]
+        return Region(label=label, latitude=lat, longitude=lon, source="builtin_us_hint")
+
+    response = requests.get(
+        _CENSUS_GEOCODER_URL,
+        params={"address": text, "benchmark": "Public_AR_Current", "format": "json"},
+        headers={"User-Agent": _USER_AGENT},
+        timeout=(5, 15),
+    )
+    response.raise_for_status()
+    matches = response.json().get("result", {}).get("addressMatches", [])
+    if not matches:
+        raise ValueError(
+            f"Could not resolve {text!r} to U.S. coordinates. Use a U.S. city/state "
+            "or explicit 'latitude, longitude'."
+        )
+    first = matches[0]
+    coords = first.get("coordinates") or {}
+    lon = float(coords["x"])
+    lat = float(coords["y"])
+    return Region(
+        label=str(first.get("matchedAddress") or text),
+        latitude=lat,
+        longitude=lon,
+        source="census_geocoder",
+    )
+
+
+def _search_recent_events(
+    *,
+    region: Region,
+    radius_km: float,
+    days_back: int,
+    min_magnitude: float,
+    limit: int,
+) -> tuple[list[SeismicEvent], str]:
+    """Search recent public USGS events around a resolved region."""
+    end = datetime.now(UTC)
+    start = end - timedelta(days=days_back)
+    params = {
+        "format": "geojson",
+        "orderby": "time",
+        "limit": str(limit),
+        "latitude": f"{region.latitude:.5f}",
+        "longitude": f"{region.longitude:.5f}",
+        "maxradiuskm": f"{radius_km:.1f}",
+        "minmagnitude": f"{min_magnitude:.1f}",
+        "starttime": start.date().isoformat(),
+        "endtime": end.date().isoformat(),
+    }
+    response = requests.get(
+        _USGS_EVENT_URL,
+        params=params,
+        headers={"User-Agent": _USER_AGENT},
+        timeout=(8, 25),
+    )
+    response.raise_for_status()
+    events: list[SeismicEvent] = []
+    for feature in response.json().get("features", []):
+        props = feature.get("properties") or {}
+        geometry = feature.get("geometry") or {}
+        coordinates = geometry.get("coordinates") or []
+        if len(coordinates) < 2:
+            continue
+        event_time_ms = props.get("time")
+        if event_time_ms is None:
+            continue
+        event_time = datetime.fromtimestamp(float(event_time_ms) / 1000.0, UTC)
+        events.append(
+            SeismicEvent(
+                event_id=str(feature.get("id") or props.get("code") or "unknown"),
+                time_utc=_format_earthscope_time(event_time),
+                latitude=float(coordinates[1]),
+                longitude=float(coordinates[0]),
+                depth_km=float(coordinates[2]) if len(coordinates) > 2 else None,
+                magnitude=float(props["mag"]) if props.get("mag") is not None else None,
+                place=str(props.get("place") or ""),
+                url=str(props.get("url") or ""),
+            )
+        )
+    query_url = f"{_USGS_EVENT_URL}?{urlencode(params)}"
+    return events, query_url
+
+
+def _parse_station_rows(text: str, *, target_lat: float, target_lon: float) -> list[StationChannel]:
+    """Parse FDSN station text rows at channel level."""
+    rows: list[StationChannel] = []
+    for line in text.splitlines():
+        if not line or line.startswith("#"):
+            continue
+        fields = line.split("|")
+        if len(fields) < 7:
+            continue
+        try:
+            network, station, location, channel = fields[0], fields[1], fields[2], fields[3]
+            lat = float(fields[4])
+            lon = float(fields[5])
+        except (ValueError, IndexError):
+            continue
+        if not channel.upper().endswith("Z"):
+            continue
+        rows.append(
+            StationChannel(
+                network=_clean_token(network, default="XX", max_len=8),
+                station=_clean_token(station, default="XXXX", max_len=16),
+                location=_clean_token(location, default="", max_len=8),
+                channel=_clean_token(channel, default="BHZ", max_len=8),
+                latitude=lat,
+                longitude=lon,
+                distance_km=_haversine_km(target_lat, target_lon, lat, lon),
+            )
+        )
+    return sorted(
+        rows, key=lambda item: (item.distance_km, item.network, item.station, item.channel)
+    )
+
+
+def _search_station_channels(
+    *,
+    latitude: float,
+    longitude: float,
+    event_time_utc: str,
+    radius_km: float,
+) -> tuple[list[StationChannel], str]:
+    """Find nearby EarthScope vertical channels available near an event time."""
+    event_time = _parse_iso_utc(event_time_utc)
+    start = event_time - timedelta(minutes=10)
+    end = event_time + timedelta(minutes=10)
+    params = {
+        "format": "text",
+        "level": "channel",
+        "latitude": f"{latitude:.5f}",
+        "longitude": f"{longitude:.5f}",
+        "maxradius": f"{min(radius_km / 111.2, 10.0):.4f}",
+        "channel": "BH?,HH?,EH?",
+        "startbefore": _format_earthscope_time(end),
+        "endafter": _format_earthscope_time(start),
+        "includeavailability": "true",
+        "includerestricted": "false",
+    }
+    response = requests.get(
+        _EARTHSCOPE_STATION_URL,
+        params=params,
+        headers={"User-Agent": _USER_AGENT},
+        timeout=(8, 30),
+    )
+    response.raise_for_status()
+    query_url = f"{_EARTHSCOPE_STATION_URL}?{urlencode(params)}"
+    return _parse_station_rows(response.text, target_lat=latitude, target_lon=longitude), query_url
 
 
 def _safe_stage_filename(*parts: str) -> str:
@@ -375,6 +665,178 @@ def fetch_earthscope_waveform(
     }
 
 
+@sac_server.tool()
+def discover_earthscope_region_waveform(
+    location: str = "San Diego, CA",
+    days_back: int | str | None = 7,
+    radius_km: float | int | str | None = _DEFAULT_REGION_RADIUS_KM,
+    min_magnitude: float | int | str | None = 1.0,
+    duration: int | str | None = 120,
+    output_dir: str | None = None,
+) -> dict[str, Any]:
+    """Discover and stage a bounded EarthScope SAC waveform from a geographic request.
+
+    The workflow resolves a U.S. place or explicit latitude/longitude, searches
+    recent USGS earthquake events around that region, finds nearby EarthScope
+    station channels available near the selected event, and stages a small SAC
+    waveform window for downstream inspection and plotting.
+    """
+
+    days = _clean_positive_int(days_back, default=7, max_value=30)
+    search_radius = _clean_positive_float(
+        radius_km,
+        default=_DEFAULT_REGION_RADIUS_KM,
+        min_value=10.0,
+        max_value=1000.0,
+    )
+    station_radius = min(max(search_radius, 75.0), 500.0)
+    magnitude_floor = _clean_positive_float(
+        min_magnitude,
+        default=1.0,
+        min_value=0.0,
+        max_value=8.0,
+    )
+    seconds = _clean_duration(duration)
+    try:
+        region = _resolve_region(location)
+        events, event_query_url = _search_recent_events(
+            region=region,
+            radius_km=search_radius,
+            days_back=days,
+            min_magnitude=magnitude_floor,
+            limit=8,
+        )
+        if not events and magnitude_floor > 0.0:
+            events, event_query_url = _search_recent_events(
+                region=region,
+                radius_km=search_radius,
+                days_back=days,
+                min_magnitude=0.0,
+                limit=8,
+            )
+        if not events:
+            return _tool_error(
+                code="earthscope_region_no_events",
+                message=(
+                    f"No recent USGS events found near {region.label} within "
+                    f"{search_radius:.0f} km over {days} day(s)."
+                ),
+                next_action=(
+                    "Increase days_back/radius_km, lower min_magnitude, or provide explicit "
+                    "latitude/longitude for another U.S. region."
+                ),
+                details={
+                    "region": region.__dict__,
+                    "event_query_url": event_query_url,
+                    "days_back": days,
+                    "radius_km": search_radius,
+                    "min_magnitude": magnitude_floor,
+                },
+            )
+
+        attempts: list[dict[str, Any]] = []
+        last_station_query_url = ""
+        for event in events[:4]:
+            channels, station_query_url = _search_station_channels(
+                latitude=event.latitude,
+                longitude=event.longitude,
+                event_time_utc=event.time_utc,
+                radius_km=station_radius,
+            )
+            last_station_query_url = station_query_url
+            attempts.append(
+                {
+                    "event_id": event.event_id,
+                    "event_time_utc": event.time_utc,
+                    "candidate_channels": len(channels),
+                    "station_query_url": station_query_url,
+                }
+            )
+            for channel in channels[:8]:
+                start = _format_earthscope_time(
+                    _parse_iso_utc(event.time_utc) - timedelta(seconds=10)
+                )
+                staged = fetch_earthscope_waveform(
+                    network=channel.network,
+                    station=channel.station,
+                    location=channel.location or "--",
+                    channel=channel.channel,
+                    starttime=start,
+                    duration=seconds,
+                    output_dir=output_dir,
+                )
+                attempts.append(
+                    {
+                        "event_id": event.event_id,
+                        "network": channel.network,
+                        "station": channel.station,
+                        "location": channel.location,
+                        "channel": channel.channel,
+                        "distance_km": channel.distance_km,
+                        "status": "error" if "error" in staged else "success",
+                        "message": staged.get("error", {}).get("message", ""),
+                    }
+                )
+                if "error" not in staged:
+                    return {
+                        "staged": True,
+                        "path": staged["path"],
+                        "size_bytes": staged["size_bytes"],
+                        "source": "earthscope_region_discovery",
+                        "region": region.__dict__,
+                        "event": event.__dict__,
+                        "station": channel.__dict__,
+                        "waveform": staged,
+                        "event_query_url": event_query_url,
+                        "station_query_url": station_query_url,
+                        "days_back": days,
+                        "radius_km": search_radius,
+                        "min_magnitude": magnitude_floor,
+                        "duration_s": seconds,
+                        "attempts": attempts[-10:],
+                        "_meta": {
+                            "tool": "discover_earthscope_region_waveform",
+                            "status": "success",
+                        },
+                    }
+
+        return _tool_error(
+            code="earthscope_region_waveform_fetch_failed",
+            message=(
+                f"Found {len(events)} recent event(s) near {region.label}, but no nearby "
+                "EarthScope station/channel produced a valid bounded SAC waveform."
+            ),
+            next_action=(
+                "Increase radius_km/duration, try a different U.S. region, or fetch a "
+                "known station/channel/time directly with sac_fetch_earthscope_waveform."
+            ),
+            details={
+                "region": region.__dict__,
+                "events": [event.__dict__ for event in events[:4]],
+                "event_query_url": event_query_url,
+                "station_query_url": last_station_query_url,
+                "attempts": attempts[-20:],
+            },
+        )
+    except requests.RequestException as exc:
+        return _tool_error(
+            code="earthscope_region_discovery_failed",
+            message=f"Public seismic discovery request failed: {exc}",
+            next_action="Retry with a smaller search radius or explicit latitude/longitude.",
+            details={"location": location},
+        )
+    except (OSError, ValueError, KeyError) as exc:
+        return _tool_error(
+            code="earthscope_region_discovery_failed",
+            message=str(exc),
+            next_action=(
+                "Use a supported U.S. city/state hint or explicit 'latitude, longitude', "
+                "then retry the region waveform discovery."
+            ),
+            details={"location": location},
+        )
+
+
 def _trace_stats(trace: SacTrace) -> dict[str, Any]:
     """Return compact numeric statistics for one trace."""
     samples = trace.samples
@@ -560,6 +1022,7 @@ def plot_traces(
 __all__ = [
     "sac_server",
     "fetch_earthscope_waveform",
+    "discover_earthscope_region_waveform",
     "inspect_archive",
     "compute_trace_statistics",
     "plot_traces",
