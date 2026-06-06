@@ -1599,17 +1599,23 @@ def test_positive_ndp_fallback_replaces_unsupported_scan_limited_final_claims() 
         },
     }
     answer = (
-        "Resource MTA1.CI.LY_.30.csv has a 30-second interval. "
+        "Resource MTA1.CI.LY_.30.csv has 30-second sampling. "
         "Rows examined: 250000 at 30 s cadence. "
         "Missing values: 0% in all required columns. "
+        "`qChannel` is a quality flag where 0 = good. "
+        "Typical GNSS daily solutions have uncertainties of a few mm. "
+        "The CSV contains a continuous time series. "
         "Overall data quality is high."
     )
 
     fallback = _positive_ndp_workflow_state_final_answer_fallback(answer, state)
 
     assert fallback
-    assert "30-second interval" not in fallback
+    assert "30-second sampling" not in fallback
     assert "30 s cadence" not in fallback
+    assert "0 = good" not in fallback
+    assert "Typical GNSS daily solutions" not in fallback
+    assert "continuous time series" not in fallback
     assert "0% missing" not in fallback
     assert "high" not in fallback.casefold()
     assert "rows scanned: 250000" in fallback

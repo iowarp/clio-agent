@@ -2497,6 +2497,97 @@ def test_final_blocker_answer_must_surface_failed_tool_calls() -> None:
     assert result.passed is False
 
 
+def test_earthscope_region_visible_answer_fails_scan_limited_overclaims(tmp_path: Path) -> None:
+    station_csv = tmp_path / "MTA1.CI.LY_.30.csv"
+    station_csv.write_text("time,east,north,up,sigEE,sigNN,sigUU,qChannel\n", encoding="utf-8")
+    png = tmp_path / "MTA1.CI.LY_.30_plot.png"
+    png.write_bytes(b"png")
+    workflow_state = {
+        "workflow_state": {
+            "acquisition": {
+                "status": "staged",
+                "analysis_ready": True,
+                "local_path": str(station_csv),
+                "source_url": "https://example.test/MTA1.CI.LY_.30.csv",
+            },
+            "resource_candidate": {
+                "station_id": "MTA1",
+                "station_distance_km": 0.7,
+                "geographically_grounded": True,
+            },
+            "profile": {
+                "status": "complete",
+                "scan_limited": True,
+                "profile_limited": True,
+                "rows_scanned": 250000,
+                "rows_profiled": 5000,
+                "numeric_summary_rows": 5000,
+                "missing_values": {
+                    "time": 0,
+                    "east": 0,
+                    "north": 0,
+                    "up": 0,
+                    "qChannel": 0,
+                },
+                "missing_values_rows": 5000,
+                "missing_values_scope": "profiled_rows",
+            },
+            "artifact": {
+                "status": "ready",
+                "path": str(png),
+                "kind": "gnss_timeseries_plot",
+            },
+        }
+    }
+    message = _message(
+        text=(
+            "MTA1.CI.LY_.30.csv is a public time-series CSV with "
+            f"30-second sampling. qChannel is a quality flag where 0 = good. "
+            "The CSV contains a continuous time series. "
+            f"Plot: {png}"
+        ),
+        tools=[
+            {"name": "ndp_profile_csv_resource", "ok": True, "result": {"path": str(station_csv)}},
+            {"name": "ndp_plot_csv_timeseries", "ok": True, "result": {"path": str(png)}},
+        ],
+        expert_handoffs=[
+            {
+                "agent_id": "synthesis",
+                "status": "completed",
+                "stage": "delegate.completed",
+                "output_summary": bench.json.dumps(workflow_state),
+            }
+        ],
+    )
+    result = bench.DemoResult(
+        case=bench.DemoCase(
+            case_id="earthscope_scan_limited_overclaim",
+            title="earthscope scan-limited overclaim",
+            category="test",
+            prompt="Explore EarthScope GNSS evidence around Los Angeles.",
+            why="why",
+            expected="expected",
+            session_group="test",
+            agent_blueprint_id="earthscope-gnss-region",
+            expected_tools=("ndp_profile_csv_resource", "ndp_plot_csv_timeseries"),
+            expected_terms=("MTA1",),
+            min_artifacts=1,
+        ),
+        session_id="sess_earthscope_scan_limited_overclaim",
+        elapsed_s=1.0,
+        message=message,
+        provider={"provider": "argonne", "model": "openai/gpt-oss-120b", "api_base": ""},
+        benchmark_lane="marketplace_earthscope",
+        agent_blueprint={"active_agent_blueprint_id": "earthscope-gnss-region"},
+    )
+
+    assert result.passed is False
+    assert (
+        "visible EarthScope answer overclaimed scan-limited profile evidence"
+        in result.failure_reasons()
+    )
+
+
 def test_earthscope_region_station_csv_must_match_requested_radius(tmp_path: Path) -> None:
     catalog = tmp_path / "earthscope_converted_data.csv"
     catalog.write_text(

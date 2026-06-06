@@ -84,6 +84,10 @@ _DATA_FILE_SUFFIXES = {
 _CANONICAL_CASES_BY_ID: dict[str, "DemoCase"] | None = None
 
 
+def _is_earthscope_gnss_blueprint_id(blueprint_id: str) -> bool:
+    return str(blueprint_id or "").startswith("earthscope-gnss-region")
+
+
 @dataclass(frozen=True)
 class DemoCase:
     """One natural-language benchmark/demo prompt."""
@@ -451,7 +455,7 @@ class DemoResult:
         data, but the visible answer collapsed into an artifact-only status.
         """
 
-        if self.case.agent_blueprint_id != "earthscope-gnss-region-depth":
+        if not _is_earthscope_gnss_blueprint_id(self.case.agent_blueprint_id):
             return []
         if not {"ndp_profile_csv_resource", "ndp_plot_csv_timeseries"}.issubset(
             set(self.tool_names)
@@ -515,7 +519,7 @@ class DemoResult:
         truthful.
         """
 
-        if self.case.agent_blueprint_id != "earthscope-gnss-region-depth":
+        if not _is_earthscope_gnss_blueprint_id(self.case.agent_blueprint_id):
             return []
         counts: dict[str, int] = {}
         for tool in self.tools:
@@ -575,7 +579,7 @@ class DemoResult:
     def _earthscope_gnss_station_region_mismatches(self) -> list[str]:
         """Return station CSV region-provenance mismatch diagnostics."""
 
-        if self.case.agent_blueprint_id != "earthscope-gnss-region-depth":
+        if not _is_earthscope_gnss_blueprint_id(self.case.agent_blueprint_id):
             return []
         if "ndp_profile_csv_resource" not in self.tool_names:
             return []
@@ -619,6 +623,38 @@ class DemoResult:
                 )
         return mismatches
 
+    def _earthscope_visible_answer_has_unsupported_scan_limited_claims(self) -> bool:
+        """Return whether final prose overclaims scan-limited EarthScope evidence."""
+
+        if not _is_earthscope_gnss_blueprint_id(self.case.agent_blueprint_id):
+            return False
+        evidence = self._normalize_evidence_match_text(self.expected_evidence_text)
+        if not any(
+            marker in evidence
+            for marker in (
+                "scan limited true",
+                "scan limited",
+                "profile limited true",
+                "profiled rows",
+                "numeric summary rows",
+            )
+        ):
+            return False
+        visible = self._normalize_evidence_match_text(self.observed_excerpt_text)
+        unsupported_patterns = (
+            r"\b\d+\s*second\s+sampling\b",
+            r"\b\d+\s*s\s+sampling\b",
+            r"\b\d+\s*second\s+(?:interval|cadence)\b",
+            r"\b\d+\s*s\s+cadence\b",
+            r"\bqchannel\b[^.]*\b(?:0\s*=\s*good|good|quality\s+flag)\b",
+            r"\btypical\s+gnss\s+(?:daily\s+)?solutions?\b",
+            r"\bcontinuous\s+time(?:\s+series)?\b",
+            r"\b\d+\s*%\s+missing\s+in\s+all\s+columns\b",
+            r"\bmissing\s+values?\s*:\s*0\s*%\b",
+            r"\b(?:high|excellent|good)\s+(?:quality|data|suitability)\b",
+        )
+        return any(re.search(pattern, visible) for pattern in unsupported_patterns)
+
     def failure_reasons(self) -> list[str]:
         """Return human-readable benchmark failure diagnostics."""
 
@@ -627,6 +663,8 @@ class DemoResult:
             reasons.append("visible answer omitted failed tool-call evidence")
         if self._earthscope_gnss_station_resource_outside_requested_region():
             reasons.extend(self._earthscope_gnss_station_region_mismatches())
+        if self._earthscope_visible_answer_has_unsupported_scan_limited_claims():
+            reasons.append("visible EarthScope answer overclaimed scan-limited profile evidence")
         repeated_station_searches = self._earthscope_repeated_station_resource_searches()
         if repeated_station_searches:
             reasons.append(
@@ -673,6 +711,8 @@ class DemoResult:
         if self._user_visible_answer_omits_tool_failures():
             return False
         if self._earthscope_gnss_station_resource_outside_requested_region():
+            return False
+        if self._earthscope_visible_answer_has_unsupported_scan_limited_claims():
             return False
         if self._earthscope_repeated_station_resource_searches():
             return False

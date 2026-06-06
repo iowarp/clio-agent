@@ -3508,9 +3508,16 @@ def _positive_ndp_workflow_state_user_summary(state: Mapping[str, Any]) -> str:
 
 _UNSUPPORTED_SCAN_LIMITED_FINAL_ANSWER_PATTERNS = (
     re.compile(r"\b\d+\s*[- ]?\s*second\s+(?:interval|cadence)\b", re.IGNORECASE),
+    re.compile(r"\b\d+\s*[- ]?\s*second\s+sampling\b", re.IGNORECASE),
+    re.compile(r"\b\d+\s*[- ]?\s*s\s+sampling\b", re.IGNORECASE),
     re.compile(r"\b\d+\s*s\s+cadence\b", re.IGNORECASE),
     re.compile(r"\b\d+\s*%\s+missing\s+in\s+(?:all\s+)?required\s+columns\b", re.IGNORECASE),
+    re.compile(r"\b\d+\s*%\s+missing\s+in\s+all\s+columns\b", re.IGNORECASE),
     re.compile(r"\bmissing\s+values?\s*:\s*\*?\*?\s*0\s*%\b", re.IGNORECASE),
+    re.compile(r"\bqChannel\b[^.\n]*(?:0\s*=\s*good|good|quality\s+flag)", re.IGNORECASE),
+    re.compile(r"\btypical\s+GNSS\s+(?:daily\s+)?solutions?\b", re.IGNORECASE),
+    re.compile(r"\bcontinuous\s+time\b", re.IGNORECASE),
+    re.compile(r"\bcontinuous\s+time[-\s]*series\b", re.IGNORECASE),
     re.compile(r"\b(?:low|high)[^.\n]*(?:consistent|quality|suitability|noise)\b", re.IGNORECASE),
     re.compile(r"\b(?:excellent|high-quality|good data|ready for deformation|suitable for deformation)\b", re.IGNORECASE),
     re.compile(r"\bcovers\s*>\s*\d+\s*%\s+of\s+GNSS\s+stations\b", re.IGNORECASE),
