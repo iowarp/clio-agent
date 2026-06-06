@@ -10632,6 +10632,9 @@ async def _run_turn_in_background(
             if observed:
                 tools_called = _merge_tool_call_rows(tools_called, observed)
         terminal_state = _infer_ndp_workflow_state_from_tool_rows(tools_called)
+        handoff_state = _workflow_state_from_handoff_rows(expert_handoffs)
+        if handoff_state:
+            _merge_workflow_state_mapping(terminal_state, handoff_state)
         terminal_fallback = _ndp_terminal_workflow_state_final_answer_fallback(
             answer_text,
             terminal_state,

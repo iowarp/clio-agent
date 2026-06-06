@@ -1624,6 +1624,65 @@ def test_positive_ndp_fallback_replaces_unsupported_scan_limited_final_claims() 
     assert "Full-file cadence, duration, gaps" in fallback
 
 
+def test_positive_ndp_fallback_uses_handoff_wrapped_workflow_state() -> None:
+    rows = [
+        {
+            "agent_id": "synthesis",
+            "status": "completed",
+            "output_summary": json.dumps(
+                {
+                    "workflow_state": {
+                        "acquisition": {
+                            "status": "staged",
+                            "analysis_ready": True,
+                            "local_path": "/tmp/JPLM.PW.LY_.00.csv",
+                            "source_url": "https://example.test/JPLM.PW.LY_.00.csv",
+                            "required_columns": ["time", "east", "north", "up"],
+                        },
+                        "resource_candidate": {
+                            "station_id": "JPLM",
+                            "station_distance_km": 2.519,
+                            "geographically_grounded": True,
+                        },
+                        "profile": {
+                            "status": "complete",
+                            "columns": ["time", "east", "north", "up", "sigEE"],
+                            "numeric_columns": ["time", "east", "north", "up", "sigEE"],
+                            "rows_scanned": 250000,
+                            "rows_profiled": 5000,
+                            "numeric_summary_rows": 5000,
+                            "scan_limited": True,
+                            "profile_limited": True,
+                            "missing_values": {"time": 0, "east": 0, "north": 0, "up": 0},
+                            "missing_values_rows": 5000,
+                            "missing_values_scope": "profiled_rows",
+                        },
+                        "artifact": {
+                            "path": "/tmp/JPLM.PW.LY_.00_plot.png",
+                            "columns": ["east", "north", "up"],
+                            "status": "ready",
+                        },
+                    }
+                }
+            ),
+        }
+    ]
+    state = _workflow_state_from_handoff_rows(rows)
+
+    fallback = _positive_ndp_workflow_state_final_answer_fallback(
+        "The file contains about 250000 rows from a full scan, "
+        "with no missing values in any column and qChannel 0 = good.",
+        state,
+    )
+
+    assert fallback
+    assert "JPLM" in fallback
+    assert "full scan" not in fallback.casefold()
+    assert "no missing values in any column" not in fallback.casefold()
+    assert "0 = good" not in fallback
+    assert "scope: profiled_rows" in fallback
+
+
 def test_compact_dynamic_delegation_output_sanitizes_scan_limited_evidence() -> None:
     output = "\n".join(
         [
