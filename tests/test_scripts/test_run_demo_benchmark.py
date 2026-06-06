@@ -12,6 +12,7 @@ def _message(
     stream_source: str = "batch",
     route_source: str = "dspy",
     tools: list[dict[str, object]] | None = None,
+    expert_handoffs: list[dict[str, object]] | None = None,
 ) -> dict[str, object]:
     error_info = None
     if error is not None:
@@ -29,7 +30,7 @@ def _message(
             "stream_source": stream_source,
             "stream_fallback": {"reason": "provider_streaming_unsupported"},
             "tools_called": tools or [],
-            "expert_handoffs": [],
+            "expert_handoffs": expert_handoffs or [],
         },
         "error_info": error_info,
         "stop_reason": "cancelled" if error == "cancelled" else "end_turn",
@@ -588,6 +589,9 @@ def test_failed_result_recovers_partial_route_evidence_from_semantic_events() ->
     row = bench._case_row(result)
 
     assert result.passed is False
+    assert result.blocking_error is not None
+    assert result.blocking_error["error"] == "provider_timeout"
+    assert result.failure_reasons() == []
     assert row["selected_agent"] == "main"
     assert row["tool_names"] == ["ndp_search_datasets"]
     assert row["expert_handoffs"][0]["telemetry_source"] == "semantic_event"
@@ -774,6 +778,79 @@ def test_ndp_waveform_case_requires_sac_and_png_path() -> None:
     assert result.passed is False
 
 
+def test_case_row_observed_excerpt_prefers_completed_synthesis_handoff() -> None:
+    message = _message(
+        text="NEXT_EXPERT: analysis NEXT_ACTION: continue orchestration",
+        expert_handoffs=[
+            {
+                "agent_id": "analysis",
+                "status": "completed",
+                "output_summary": "analysis evidence",
+            },
+            {
+                "agent_id": "synthesis",
+                "status": "completed",
+                "output_summary": "final scientific brief",
+            },
+        ],
+    )
+    result = bench.DemoResult(
+        case=bench.DemoCase(
+            case_id="marketplace_earthscope_gnss_region_coordinate_mutation",
+            title="earthscope",
+            category="test",
+            prompt="prompt",
+            why="why",
+            expected="expected",
+            session_group="test",
+        ),
+        session_id="sess_test",
+        elapsed_s=1.0,
+        message=message,
+        provider={"provider": "sophia", "model": "gpt-oss-120b", "api_base": ""},
+        benchmark_lane="marketplace_earthscope",
+    )
+
+    assert result.observed_excerpt_text == "final scientific brief"
+    assert bench._case_row(result)["answer_excerpt"] == "final scientific brief"
+
+
+def test_case_row_prefers_visible_answer_over_internal_handoff_state() -> None:
+    message = _message(
+        text="final clean EarthScope brief",
+        expert_handoffs=[
+            {
+                "agent_id": "synthesis",
+                "status": "completed",
+                "output_summary": (
+                    "final clean EarthScope brief\n\n"
+                    "CLIO typed workflow state:\n"
+                    '{"workflow_state":{"report":{"status":"ready"}}}'
+                ),
+            },
+        ],
+    )
+    result = bench.DemoResult(
+        case=bench.DemoCase(
+            case_id="marketplace_earthscope_gnss_region_depth_topology",
+            title="earthscope",
+            category="test",
+            prompt="prompt",
+            why="why",
+            expected="expected",
+            session_group="test",
+        ),
+        session_id="sess_test",
+        elapsed_s=1.0,
+        message=message,
+        provider={"provider": "sophia", "model": "gpt-oss-120b", "api_base": ""},
+        benchmark_lane="marketplace_earthscope",
+    )
+
+    assert result.observed_excerpt_text == "final clean EarthScope brief"
+    assert "CLIO typed workflow state" not in bench._case_row(result)["answer_excerpt"]
+
+
 def test_nested_expert_handoffs_count_for_case_expectations(tmp_path: Path) -> None:
     png = tmp_path / "waveform.png"
     png.write_bytes(b"png")
@@ -936,6 +1013,218 @@ def test_relative_json_and_geojson_paths_count_as_durable_artifacts(tmp_path: Pa
         ".clio-agent-artifacts/ndp/current_wildfires_ca.json",
         "outputs/hazards.geojson",
     ]
+
+
+def test_compacted_partial_workspace_paths_do_not_count_as_artifacts(tmp_path: Path) -> None:
+    artifact = tmp_path / ".clio" / "artifacts" / "ndp-staging" / "WWMT.CI.LY_.40.csv"
+    artifact.parent.mkdir(parents=True)
+    artifact.write_text("time,east,north,up\n", encoding="utf-8")
+    message = _message(
+        text=(
+            f"Valid staged path: `{artifact}`\n"
+            "[tail]\n"
+            "/.clio/artifacts/ndp-staging/WWMT.CI.LY_.40.csv\n"
+            "io-agent/.clio/artifacts/ndp-staging/WWMT.CI.LY_.40.csv\n"
+        )
+    )
+
+    assert bench._artifact_paths(message) == [str(artifact)]
+
+
+def test_download_url_path_fragments_do_not_count_as_artifacts(tmp_path: Path) -> None:
+    artifact = tmp_path / ".clio" / "artifacts" / "ndp-staging" / "earthscope.csv"
+    artifact.parent.mkdir(parents=True)
+    artifact.write_text("station,lat,lon\n", encoding="utf-8")
+    message = _message(
+        text=(
+            f"Staged station metadata at {artifact}.\n"
+            "Source URL: https://nationaldataplatform.org/catalog/dataset/"
+            "811f0bcc-99e5-455c-bcf6-7c63c2634f41/resource/"
+            "a420cc30-2262-423a-8c63-3ad8d91f2a8f/download/"
+            "earthscope_converted_data.csv\n"
+            "Short download fragment: /download/earthscope_converted_data.csv\n"
+            "UUID download fragment: f2a8f/download/earthscope_converted_data.csv\n"
+            "Compacted fragment: /resource/a420cc30-2262-423a-8c63-3ad8d91f2a8f/"
+            "download/earthscope_converted_data.csv\n"
+            "Relative fragment: resource/a420cc30-2262-423a-8c63-3ad8d91f2a8f/"
+            "download/earthscope_converted_data.csv\n"
+            "Tail fragment: 6-7c63c2634f41/resource/"
+            "a420cc30-2262-423a-8c63-3ad8d91f2a8f/download/"
+            "earthscope_converted_data.csv\n"
+            "Remote path fragment: dec2024/raw_csv/MTA1.CI.LY_.30.csv\n"
+            "Compacted local fragment: clio/artifacts/ndp-staging/MTA1_time_series.png\n"
+        )
+    )
+
+    assert bench._artifact_paths(message) == [str(artifact)]
+
+
+def test_earthscope_station_metadata_csv_counts_as_input_not_artifact(tmp_path: Path) -> None:
+    metadata = tmp_path / ".clio" / "artifacts" / "ndp-staging" / "earthscope_converted_data.csv"
+    station_csv = tmp_path / ".clio" / "artifacts" / "ndp-staging" / "MTA1.CI.LY_.30.csv"
+    png = tmp_path / ".clio" / "artifacts" / "plots" / "MTA1_CI_LY_30_timeseries.png"
+    metadata.parent.mkdir(parents=True)
+    png.parent.mkdir(parents=True, exist_ok=True)
+    metadata.write_text("Site,Latitude,Longitude\nUCSF,37.763,-122.458\n", encoding="utf-8")
+    station_csv.write_text("time,east,north,up\n", encoding="utf-8")
+    png.write_bytes(b"png")
+    message = _message(
+        text=(
+            f"Staged metadata at {metadata}. "
+            f"Staged station CSV at {station_csv}. "
+            f"Generated plot at {png}."
+        ),
+        tools=[
+            {
+                "name": "ndp_stage_resource",
+                "args": {"output_dir": str(metadata.parent)},
+                "result": {"path": str(metadata), "status": "staged"},
+            },
+            {
+                "name": "ndp_filter_earthscope_station_catalog",
+                "args": {"filepath": str(metadata), "latitude": 37.77, "longitude": -122.42},
+                "result": {"path": str(metadata), "within_radius_count": 67},
+            },
+            {
+                "name": "ndp_stage_resource",
+                "args": {"output_dir": str(station_csv.parent)},
+                "result": {"path": str(station_csv), "status": "staged"},
+            },
+            {
+                "name": "ndp_plot_csv_timeseries",
+                "args": {"filepath": str(station_csv), "output_path": str(png)},
+                "result": {"path": str(png), "status": "plotted"},
+            },
+        ],
+    )
+
+    assert bench._artifact_paths(message) == [str(station_csv), str(png)]
+    assert bench._data_file_paths("", message["metadata"]["tools_called"]) == [
+        str(metadata),
+        str(station_csv),
+    ]
+
+
+def test_missing_absolute_tool_output_arg_does_not_count_as_artifact(
+    tmp_path: Path,
+) -> None:
+    csv_path = tmp_path / "station.csv"
+    png_path = tmp_path / "station.png"
+    missing_png = tmp_path / "missing" / "station.png"
+    csv_path.write_text("time,east,north,up\n", encoding="utf-8")
+    png_path.write_bytes(b"png")
+    message = _message(
+        text=f"First tried {missing_png}; generated plot at {png_path}",
+        tools=[
+            {
+                "name": "ndp_plot_csv_timeseries",
+                "args": {
+                    "filepath": str(csv_path),
+                    "output_path": str(missing_png),
+                },
+            },
+            {
+                "name": "ndp_plot_csv_timeseries",
+                "args": {
+                    "filepath": str(csv_path),
+                    "output_path": str(png_path),
+                },
+            },
+        ],
+    )
+
+    tools = message["metadata"]["tools_called"]
+
+    assert bench._artifact_paths(message) == [str(csv_path), str(png_path)]
+    assert bench._data_file_paths("", tools) == [str(csv_path)]
+
+
+def test_coordinate_earthscope_case_accepts_typed_blocker_without_analysis(
+    tmp_path: Path,
+) -> None:
+    artifact = tmp_path / ".clio" / "artifacts" / "ndp-staging" / "earthscope_converted_data.csv"
+    artifact.parent.mkdir(parents=True)
+    artifact.write_text("station,lat,lon\nMTA1,34.0,-118.2\n", encoding="utf-8")
+    workflow_state = {
+        "workflow_state": {
+            "catalog": {"status": "metadata_found"},
+            "acquisition": {
+                "status": "metadata_only",
+                "analysis_ready": False,
+                "metadata_path": str(artifact),
+                "blocker": "staged resource is station metadata, not a GNSS time-series CSV",
+            },
+        }
+    }
+    case = bench._canonical_cases_by_id()[
+        "marketplace_earthscope_gnss_region_coordinate_mutation"
+    ]
+    message = _message(
+        text=(
+            "EarthScope GNSS acquisition blocker: station metadata was staged, "
+            "but no analysis-ready GNSS time-series CSV was available.\n"
+            f"{artifact}\n"
+            f"{workflow_state}"
+        ),
+        tools=[
+            {"name": "ndp_search_datasets", "result": {"datasets": []}},
+            {"name": "ndp_stage_resource", "result": {"local_path": str(artifact)}},
+        ],
+        expert_handoffs=[
+            {
+                "agent_id": "geospatial",
+                "parent_id": "main",
+                "stage": "delegate.completed",
+                "output_summary": '{"workflow_state":{"geospatial":{"status":"resolved"}}}',
+            },
+            {
+                "agent_id": "main",
+                "stage": "parent.resumed",
+                "resumed_from": "geospatial",
+            },
+            {
+                "agent_id": "data",
+                "parent_id": "main",
+                "stage": "delegate.completed",
+                "output_summary": str(workflow_state),
+            },
+            {
+                "agent_id": "ndp_dataset_discovery",
+                "parent_id": "data",
+                "stage": "delegate.completed",
+                "output_summary": '{"workflow_state":{"catalog":{"status":"metadata_found"}}}',
+            },
+            {
+                "agent_id": "earthscope_station_catalog",
+                "parent_id": "data",
+                "stage": "delegate.completed",
+                "output_summary": '{"workflow_state":{"station_catalog":{"status":"ranked_metadata_only"}}}',
+            },
+            {
+                "agent_id": "ndp_resource_resolver",
+                "parent_id": "data",
+                "stage": "delegate.completed",
+                "output_summary": str(workflow_state),
+            },
+            {
+                "agent_id": "synthesis",
+                "parent_id": "main",
+                "stage": "delegate.completed",
+                "output_summary": "Final bounded blocker summary.",
+            },
+        ],
+    )
+    result = bench.DemoResult(
+        case=case,
+        session_id="sess_coordinate_blocker",
+        elapsed_s=1.0,
+        message=message,
+        provider={},
+        agent_blueprint={"active_agent_blueprint_id": "earthscope-gnss-region"},
+    )
+
+    assert "analysis" not in result.handoff_agent_ids
+    assert result.passed
 
 
 def test_expected_terms_can_match_tool_and_handoff_evidence() -> None:
@@ -1192,6 +1481,68 @@ def test_render_report_includes_provider_lane_audit(tmp_path) -> None:
         "types=llm.request.started, tool.selection.invalid, turn.started"
     ) in report
     assert "documented benchmark standard" not in report
+
+
+def test_render_report_surfaces_tool_result_evidence_gaps(tmp_path: Path) -> None:
+    case = bench.DemoCase(
+        case_id="earthscope_trace_review",
+        title="EarthScope trace review",
+        category="marketplace",
+        prompt="Find EarthScope GNSS data for a region.",
+        why="why",
+        expected="expected",
+        session_group="earthscope",
+    )
+    result = bench.DemoResult(
+        case=case,
+        session_id="sess_trace",
+        elapsed_s=1.0,
+        message=_message(
+            text="Staged and analyzed data.",
+            tools=[
+                {
+                    "name": "ndp_stage_resource",
+                    "args": {"dataset_identifier": "dataset-1"},
+                    "ok": True,
+                    "telemetry_source": "live_observer",
+                },
+                {
+                    "name": "ndp_profile_csv_resource",
+                    "args": {"filepath": "station.csv"},
+                    "result": {"columns": ["time", "east", "north", "up"]},
+                    "ok": True,
+                    "telemetry_source": "agent_trajectory",
+                },
+                {
+                    "name": "ndp_search_datasets",
+                    "args": {"search_terms": ["EarthScope"]},
+                    "ok": False,
+                    "error": "TimeoutError",
+                    "telemetry_source": "live_observer",
+                },
+            ],
+        ),
+        provider={"provider": "argonne", "model": "gpt-oss-120b", "api_base": ""},
+        benchmark_lane="marketplace_earthscope",
+    )
+
+    assert result.tool_result_evidence == {
+        "tool_rows": 3,
+        "successful_rows": 2,
+        "failed_rows": 1,
+        "resultful_rows": 1,
+        "review_gap_tools": ["ndp_stage_resource"],
+        "failed_tools": ["ndp_search_datasets"],
+    }
+
+    report = bench._render_report([result], tmp_path / "evidence.jsonl")
+
+    assert "Reviewable scientific tool rows: 3 (2 successful, 1 failed)" in report
+    assert "Successful tool rows with result evidence: 1/2" in report
+    assert "## Tool Result Evidence Review" in report
+    assert "`earthscope_trace_review`: `ndp_stage_resource`" in report
+    assert "Tool result evidence: 1/2 successful rows carry result evidence; 1 failed rows" in report
+    assert "failed tools: ndp_search_datasets" in report
 
 
 def test_forbidden_route_source_fails_real_orchestrator_case() -> None:
@@ -1958,6 +2309,703 @@ def test_case_minimum_hierarchy_thresholds_affect_pass_status() -> None:
     assert row["min_branch_count"] == 2
 
 
+def test_artifact_case_requires_user_visible_png_reference(tmp_path: Path) -> None:
+    png = tmp_path / "WWMT.CI.LY_.40_timeseries.png"
+    png.write_bytes(b"png-bytes")
+    message = _message(
+        text="The region was resolved, but no EarthScope GNSS stations were verified.",
+        tools=[
+            {"name": "ndp_search_datasets"},
+            {"name": "ndp_stage_resource"},
+            {"name": "ndp_profile_csv_resource"},
+            {
+                "name": "ndp_plot_csv_timeseries",
+                "result": {"path": str(png), "status": "ready"},
+            },
+        ],
+        expert_handoffs=[
+            {
+                "agent_id": "synthesis",
+                "status": "completed",
+                "stage": "delegate.completed",
+                "output_summary": f"PNG artifact: {png}",
+            }
+        ],
+    )
+    result = bench.DemoResult(
+        case=bench.DemoCase(
+            case_id="artifact_visibility",
+            title="artifact visibility",
+            category="test",
+            prompt="prompt",
+            why="why",
+            expected="expected",
+            session_group="test",
+            expected_tools=(
+                "ndp_search_datasets",
+                "ndp_stage_resource",
+                "ndp_profile_csv_resource",
+                "ndp_plot_csv_timeseries",
+            ),
+            expected_terms=("png",),
+            min_artifacts=1,
+        ),
+        session_id="sess_artifact_visibility",
+        elapsed_s=1.0,
+        message=message,
+        provider={"provider": "argonne", "model": "openai/gpt-oss-120b", "api_base": ""},
+        benchmark_lane="marketplace_earthscope",
+    )
+
+    assert result.artifact_evidence[0]["exists"] is True
+    assert result.passed is False
+
+
+def test_final_no_data_answer_contradicting_staged_acquisition_fails(tmp_path: Path) -> None:
+    png = tmp_path / "WWMT.CI.LY_.40_timeseries.png"
+    png.write_bytes(b"png-bytes")
+    csv = tmp_path / "WWMT.CI.LY_.40.csv"
+    csv.write_text("time,east,north,up\n2026-01-01,0,0,0\n")
+    message = _message(
+        text=f"No EarthScope GNSS stations or time-series verified. Plot: {png}",
+        tools=[
+            {"name": "ndp_search_datasets"},
+            {"name": "ndp_stage_resource"},
+            {"name": "ndp_profile_csv_resource"},
+            {
+                "name": "ndp_plot_csv_timeseries",
+                "result": {"path": str(png), "status": "ready"},
+            },
+        ],
+        expert_handoffs=[
+            {
+                "agent_id": "synthesis",
+                "status": "completed",
+                "stage": "delegate.completed",
+                "output_summary": (
+                    '{"workflow_state":{"acquisition":{"status":"staged",'
+                    '"analysis_ready":true,"local_path":"'
+                    + str(csv)
+                    + '"},"artifact":{"status":"ready","path":"'
+                    + str(png)
+                    + '"}}}'
+                ),
+            }
+        ],
+    )
+    result = bench.DemoResult(
+        case=bench.DemoCase(
+            case_id="contradictory_acquisition",
+            title="contradictory acquisition",
+            category="test",
+            prompt="prompt",
+            why="why",
+            expected="expected",
+            session_group="test",
+            expected_tools=(
+                "ndp_search_datasets",
+                "ndp_stage_resource",
+                "ndp_profile_csv_resource",
+                "ndp_plot_csv_timeseries",
+            ),
+            expected_terms=("png",),
+            min_artifacts=1,
+        ),
+        session_id="sess_contradictory_acquisition",
+        elapsed_s=1.0,
+        message=message,
+        provider={"provider": "argonne", "model": "openai/gpt-oss-120b", "api_base": ""},
+        benchmark_lane="marketplace_earthscope",
+    )
+
+    assert result.passed is False
+
+
+def test_visible_answer_misstating_verified_artifact_path_fails(tmp_path: Path) -> None:
+    workspace_csv = tmp_path / "workspace" / ".clio" / "artifacts" / "ndp-staging" / "earthscope_converted_data.csv"
+    workspace_csv.parent.mkdir(parents=True)
+    workspace_csv.write_text("Site,Latitude,Longitude\nUCSF,37.763,-122.458\n", encoding="utf-8")
+    wrong_csv = tmp_path / ".clio" / "artifacts" / "ndp-staging" / "earthscope_converted_data.csv"
+    message = _message(
+        text=f"Staged metadata path: {wrong_csv}",
+        tools=[
+            {
+                "name": "ndp_stage_resource",
+                "args": {"output_dir": str(workspace_csv.parent)},
+                "result": {"path": str(workspace_csv), "status": "staged"},
+            }
+        ],
+    )
+    result = bench.DemoResult(
+        case=bench.DemoCase(
+            case_id="artifact_path_integrity",
+            title="artifact path integrity",
+            category="test",
+            prompt="prompt",
+            why="why",
+            expected="expected",
+            session_group="test",
+            expected_tools=("ndp_stage_resource",),
+            expected_terms=("staged",),
+            min_artifacts=1,
+        ),
+        session_id="sess_artifact_path_integrity",
+        elapsed_s=1.0,
+        message=message,
+        provider={"provider": "argonne", "model": "openai/gpt-oss-120b", "api_base": ""},
+        benchmark_lane="marketplace_earthscope",
+    )
+
+    assert result.artifact_evidence[0]["path"] == str(workspace_csv)
+    assert result.passed is False
+
+
+def test_final_blocker_answer_must_surface_failed_tool_calls() -> None:
+    message = _message(
+        text="No concrete station-specific CSV could be staged.",
+        tools=[
+            {"name": "ndp_search_datasets", "ok": True},
+            {"name": "ndp_stage_resource", "ok": True},
+            {"name": "ndp_filter_earthscope_station_catalog", "ok": True},
+            {"name": "ndp_search_datasets", "ok": False},
+        ],
+    )
+    result = bench.DemoResult(
+        case=bench.DemoCase(
+            case_id="hidden_tool_failure",
+            title="hidden tool failure",
+            category="test",
+            prompt="prompt",
+            why="why",
+            expected="expected",
+            session_group="test",
+            expected_tools=(
+                "ndp_search_datasets",
+                "ndp_stage_resource",
+                "ndp_filter_earthscope_station_catalog",
+            ),
+            expected_terms=("CSV",),
+            min_tool_calls=4,
+        ),
+        session_id="sess_hidden_tool_failure",
+        elapsed_s=1.0,
+        message=message,
+        provider={"provider": "argonne", "model": "openai/gpt-oss-120b", "api_base": ""},
+        benchmark_lane="marketplace_earthscope",
+    )
+
+    assert result.passed is False
+
+
+def test_earthscope_region_station_csv_must_match_requested_radius(tmp_path: Path) -> None:
+    catalog = tmp_path / "earthscope_converted_data.csv"
+    catalog.write_text(
+        "Site,Latitude,(deg),Longitude,(deg)\n"
+        "UCSF,37.76296967,-122.45815583\n"
+        "WWMT,33.95531352,-116.65386073\n",
+        encoding="utf-8",
+    )
+    station_csv = tmp_path / "WWMT.CI.LY_.40.csv"
+    station_csv.write_text("time,east,north,up\n2026-01-01,0,0,0\n", encoding="utf-8")
+    png = tmp_path / "WWMT.CI.LY_.40_timeseries.png"
+    png.write_bytes(b"png")
+    message = _message(
+        text=f"Analysis-ready station CSV: {station_csv}\nPlot: {png}",
+        tools=[
+            {"name": "ndp_search_datasets", "ok": True},
+            {"name": "ndp_stage_resource", "ok": True, "result": {"path": str(catalog)}},
+            {"name": "ndp_filter_earthscope_station_catalog", "ok": True},
+            {"name": "ndp_stage_resource", "ok": True, "result": {"path": str(station_csv)}},
+            {"name": "ndp_profile_csv_resource", "ok": True},
+            {"name": "ndp_plot_csv_timeseries", "ok": True, "result": {"output_path": str(png)}},
+        ],
+    )
+    result = bench.DemoResult(
+        case=bench.DemoCase(
+            case_id="earthscope_region_station_mismatch",
+            title="earthscope region station mismatch",
+            category="test",
+            prompt=(
+                "Explore EarthScope GNSS evidence for the region centered at "
+                "37.77 N, 122.42 W with a 75 km radius."
+            ),
+            why="why",
+            expected="expected",
+            session_group="test",
+            agent_blueprint_id="earthscope-gnss-region-depth",
+            expected_tools=(
+                "ndp_search_datasets",
+                "ndp_stage_resource",
+                "ndp_filter_earthscope_station_catalog",
+                "ndp_profile_csv_resource",
+                "ndp_plot_csv_timeseries",
+            ),
+            expected_terms=("Analysis-ready",),
+            min_artifacts=1,
+        ),
+        session_id="sess_earthscope_region_station_mismatch",
+        elapsed_s=1.0,
+        message=message,
+        provider={"provider": "argonne", "model": "openai/gpt-oss-120b", "api_base": ""},
+        benchmark_lane="marketplace_earthscope",
+        agent_blueprint={"active_agent_blueprint_id": "earthscope-gnss-region-depth"},
+    )
+
+    assert result.passed is False
+    assert "outside 75.0 km radius" in result.failure_reasons()[0]
+
+
+def test_earthscope_region_station_filter_must_use_metadata_catalog(tmp_path: Path) -> None:
+    station_csv = tmp_path / "WWMT.CI.LY_.40.csv"
+    station_csv.write_text("time,east,north,up\n2026-01-01,0,0,0\n", encoding="utf-8")
+    png = tmp_path / "WWMT.CI.LY_.40_timeseries.png"
+    png.write_bytes(b"png")
+    message = _message(
+        text=f"Analysis-ready station CSV: {station_csv}\nPlot: {png}",
+        tools=[
+            {"name": "ndp_search_datasets", "ok": True},
+            {"name": "ndp_stage_resource", "ok": True, "result": {"path": str(station_csv)}},
+            {
+                "name": "ndp_filter_earthscope_station_catalog",
+                "ok": True,
+                "args": {
+                    "filepath": str(station_csv),
+                    "latitude": 37.77,
+                    "longitude": -122.42,
+                    "radius_km": 75,
+                },
+            },
+            {"name": "ndp_profile_csv_resource", "ok": True},
+            {"name": "ndp_plot_csv_timeseries", "ok": True, "result": {"output_path": str(png)}},
+        ],
+    )
+    result = bench.DemoResult(
+        case=bench.DemoCase(
+            case_id="earthscope_region_filter_on_station_csv",
+            title="earthscope region filter on station csv",
+            category="test",
+            prompt=(
+                "Explore EarthScope GNSS evidence for the region centered at "
+                "37.77 N, 122.42 W with a 75 km radius."
+            ),
+            why="why",
+            expected="expected",
+            session_group="test",
+            agent_blueprint_id="earthscope-gnss-region-depth",
+            expected_tools=(
+                "ndp_search_datasets",
+                "ndp_stage_resource",
+                "ndp_filter_earthscope_station_catalog",
+                "ndp_profile_csv_resource",
+                "ndp_plot_csv_timeseries",
+            ),
+            expected_terms=("Analysis-ready",),
+            min_artifacts=1,
+        ),
+        session_id="sess_earthscope_region_filter_on_station_csv",
+        elapsed_s=1.0,
+        message=message,
+        provider={"provider": "argonne", "model": "openai/gpt-oss-120b", "api_base": ""},
+        benchmark_lane="marketplace_earthscope",
+        agent_blueprint={"active_agent_blueprint_id": "earthscope-gnss-region-depth"},
+    )
+
+    assert result.passed is False
+    assert "instead of EarthScope station metadata" in result.failure_reasons()[0]
+
+
+def test_earthscope_positive_run_requires_scientific_final_brief(tmp_path: Path) -> None:
+    catalog = tmp_path / "earthscope_converted_data.csv"
+    catalog.write_text(
+        "Site,Latitude,(deg),Longitude,(deg),EllipElev,(m),X,(m),Y,(m),Z,(m),Epoch,(yr),Net,Status\n"
+        "MTA1,34.05522077,-118.24550778,72.6251,0,0,0,2022.7616,SCGN,ACTIVE\n",
+        encoding="utf-8",
+    )
+    station_csv = tmp_path / "MTA1.CI.LY_.30.csv"
+    station_csv.write_text("time,east,north,up,sigEE,sigNN,sigUU\n", encoding="utf-8")
+    png = tmp_path / "MTA1_time_series.png"
+    png.write_bytes(b"png")
+    message = _message(
+        text=(
+            f"The GNSS time-series plot was created from `{station_csv}`. "
+            f"PNG: `{png}`. The plot visualizes 2000 rows."
+        ),
+        tools=[
+            {"name": "ndp_search_datasets", "ok": True},
+            {"name": "ndp_stage_resource", "ok": True, "result": {"path": str(catalog)}},
+            {"name": "ndp_filter_earthscope_station_catalog", "ok": True},
+            {"name": "ndp_stage_resource", "ok": True, "result": {"path": str(station_csv)}},
+            {"name": "ndp_profile_csv_resource", "ok": True},
+            {"name": "ndp_plot_csv_timeseries", "ok": True, "result": {"output_path": str(png)}},
+        ],
+        expert_handoffs=[
+            {
+                "agent_id": "synthesis",
+                "stage": "delegate.completed",
+                "workflow_state": {
+                    "acquisition": {"status": "staged", "analysis_ready": True},
+                    "resource_candidate": {
+                        "station_id": "MTA1",
+                        "station_distance_km": 0.713,
+                        "resource_url": (
+                            "https://ds2.datacollaboratory.org/Earthscope_api_dec2024/"
+                            "raw_csv/MTA1.CI.LY_.30.csv"
+                        ),
+                    },
+                },
+            }
+        ],
+    )
+    result = bench.DemoResult(
+        case=bench.DemoCase(
+            case_id="earthscope_positive_thin_final",
+            title="earthscope positive thin final",
+            category="test",
+            prompt=(
+                "Explore EarthScope GNSS evidence for the region centered at "
+                "34.05 N, 118.25 W with a 75 km radius."
+            ),
+            why="why",
+            expected="expected",
+            session_group="test",
+            agent_blueprint_id="earthscope-gnss-region-depth",
+            expected_tools=(
+                "ndp_search_datasets",
+                "ndp_stage_resource",
+                "ndp_filter_earthscope_station_catalog",
+                "ndp_profile_csv_resource",
+                "ndp_plot_csv_timeseries",
+            ),
+            min_artifacts=1,
+        ),
+        session_id="sess_earthscope_positive_thin_final",
+        elapsed_s=1.0,
+        message=message,
+        provider={"provider": "argonne", "model": "openai/gpt-oss-120b", "api_base": ""},
+        benchmark_lane="marketplace_earthscope",
+        agent_blueprint={"active_agent_blueprint_id": "earthscope-gnss-region-depth"},
+    )
+
+    assert result.passed is False
+    assert "visible EarthScope synthesis omitted" in result.failure_reasons()[0]
+    assert "NDP source URL" in result.failure_reasons()[0]
+    assert "event/data-coverage limitation" in result.failure_reasons()[0]
+
+
+def test_earthscope_positive_scientific_final_brief_passes(tmp_path: Path) -> None:
+    catalog = tmp_path / "earthscope_converted_data.csv"
+    catalog.write_text(
+        "Site,Latitude,(deg),Longitude,(deg),EllipElev,(m),X,(m),Y,(m),Z,(m),Epoch,(yr),Net,Status\n"
+        "MTA1,34.05522077,-118.24550778,72.6251,0,0,0,2022.7616,SCGN,ACTIVE\n",
+        encoding="utf-8",
+    )
+    station_csv = tmp_path / "MTA1.CI.LY_.30.csv"
+    station_csv.write_text("time,east,north,up,sigEE,sigNN,sigUU\n", encoding="utf-8")
+    png = tmp_path / "MTA1_time_series.png"
+    png.write_bytes(b"png")
+    source_url = "https://ds2.datacollaboratory.org/Earthscope_api_dec2024/raw_csv/MTA1.CI.LY_.30.csv"
+    message = _message(
+        text=(
+            "For the 34.05 N, 118.25 W / 75 km region, selected station MTA1 "
+            f"is 0.713 km from the center. Source URL: {source_url}. "
+            f"Staged CSV: `{station_csv}`. Profile: 250000 rows scanned with "
+            "`time`, `east`, `north`, `up`, and uncertainty columns `sigEE`, "
+            f"`sigNN`, `sigUU`. PNG artifact: `{png}`. Event-catalog limitation: "
+            "this run used GNSS station evidence and did not have a live "
+            "earthquake event-catalog tool."
+        ),
+        tools=[
+            {"name": "ndp_search_datasets", "ok": True},
+            {"name": "ndp_stage_resource", "ok": True, "result": {"path": str(catalog)}},
+            {"name": "ndp_filter_earthscope_station_catalog", "ok": True},
+            {"name": "ndp_stage_resource", "ok": True, "result": {"path": str(station_csv)}},
+            {"name": "ndp_profile_csv_resource", "ok": True},
+            {"name": "ndp_plot_csv_timeseries", "ok": True, "result": {"output_path": str(png)}},
+        ],
+        expert_handoffs=[
+            {
+                "agent_id": "synthesis",
+                "stage": "delegate.completed",
+                "workflow_state": {
+                    "acquisition": {"status": "staged", "analysis_ready": True},
+                    "resource_candidate": {
+                        "station_id": "MTA1",
+                        "station_distance_km": 0.713,
+                        "resource_url": source_url,
+                    },
+                },
+            }
+        ],
+    )
+    result = bench.DemoResult(
+        case=bench.DemoCase(
+            case_id="earthscope_positive_full_final",
+            title="earthscope positive full final",
+            category="test",
+            prompt=(
+                "Explore EarthScope GNSS evidence for the region centered at "
+                "34.05 N, 118.25 W with a 75 km radius."
+            ),
+            why="why",
+            expected="expected",
+            session_group="test",
+            agent_blueprint_id="earthscope-gnss-region-depth",
+            expected_tools=(
+                "ndp_search_datasets",
+                "ndp_stage_resource",
+                "ndp_filter_earthscope_station_catalog",
+                "ndp_profile_csv_resource",
+                "ndp_plot_csv_timeseries",
+            ),
+            expected_terms=("MTA1",),
+            min_artifacts=1,
+        ),
+        session_id="sess_earthscope_positive_full_final",
+        elapsed_s=1.0,
+        message=message,
+        provider={"provider": "argonne", "model": "openai/gpt-oss-120b", "api_base": ""},
+        benchmark_lane="marketplace_earthscope",
+        agent_blueprint={"active_agent_blueprint_id": "earthscope-gnss-region-depth"},
+    )
+
+    assert result.failure_reasons() == []
+    assert result.passed is True
+
+
+def test_earthscope_metadata_blocker_fails_repeated_station_search_cycle() -> None:
+    message = _message(
+        text=(
+            "Station metadata was staged and nearby stations were found, but no "
+            "station-specific GNSS CSV could be staged from NDP."
+        ),
+        tools=[
+            {
+                "name": "ndp_search_datasets",
+                "ok": True,
+                "args": {"resource_name": station, "resource_format": "CSV"},
+                "result": {
+                    "datasets": [],
+                    "count": 0,
+                    "search_coverage": {
+                        "domain": "earthscope_gnss",
+                        "station_resource_search": True,
+                        "resource_name": station,
+                        "resource_format": "CSV",
+                    },
+                },
+            }
+            for station in ("UCSF", "SBRB", "UCSF", "MHDL")
+        ],
+    )
+    result = bench.DemoResult(
+        case=bench.DemoCase(
+            case_id="earthscope_repeated_station_search",
+            title="earthscope repeated station search",
+            category="test",
+            prompt=(
+                "Explore EarthScope GNSS evidence for the region centered at "
+                "37.77 N, 122.42 W with a 75 km radius."
+            ),
+            why="why",
+            expected="expected",
+            session_group="test",
+            agent_blueprint_id="earthscope-gnss-region-depth",
+        ),
+        session_id="sess_earthscope_repeated_station_search",
+        elapsed_s=1.0,
+        message=message,
+        provider={"provider": "argonne", "model": "openai/gpt-oss-120b", "api_base": ""},
+        benchmark_lane="marketplace_earthscope",
+        agent_blueprint={"active_agent_blueprint_id": "earthscope-gnss-region-depth"},
+    )
+
+    assert result.passed is False
+    assert "repeated station-resource searches" in result.failure_reasons()[0]
+    assert "UCSF" in result.failure_reasons()[0]
+
+
+def test_earthscope_region_station_csv_requires_metadata_catalog(tmp_path: Path) -> None:
+    station_csv = tmp_path / "UCSF.CI.LY_.40.csv"
+    station_csv.write_text("time,east,north,up\n2026-01-01,0,0,0\n", encoding="utf-8")
+    png = tmp_path / "UCSF.CI.LY_.40_timeseries.png"
+    png.write_bytes(b"png")
+    message = _message(
+        text=f"Analysis-ready station CSV: {station_csv}\nPlot: {png}",
+        tools=[
+            {"name": "ndp_search_datasets", "ok": True},
+            {"name": "ndp_stage_resource", "ok": True, "result": {"path": str(station_csv)}},
+            {"name": "ndp_profile_csv_resource", "ok": True},
+            {"name": "ndp_plot_csv_timeseries", "ok": True, "result": {"output_path": str(png)}},
+        ],
+    )
+    result = bench.DemoResult(
+        case=bench.DemoCase(
+            case_id="earthscope_region_missing_metadata_catalog",
+            title="earthscope region missing metadata catalog",
+            category="test",
+            prompt=(
+                "Explore EarthScope GNSS evidence for the region centered at "
+                "37.77 N, 122.42 W with a 75 km radius."
+            ),
+            why="why",
+            expected="expected",
+            session_group="test",
+            agent_blueprint_id="earthscope-gnss-region-depth",
+            expected_tools=(
+                "ndp_search_datasets",
+                "ndp_stage_resource",
+                "ndp_profile_csv_resource",
+                "ndp_plot_csv_timeseries",
+            ),
+            expected_terms=("Analysis-ready",),
+            min_artifacts=1,
+        ),
+        session_id="sess_earthscope_region_missing_metadata_catalog",
+        elapsed_s=1.0,
+        message=message,
+        provider={"provider": "argonne", "model": "openai/gpt-oss-120b", "api_base": ""},
+        benchmark_lane="marketplace_earthscope",
+        agent_blueprint={"active_agent_blueprint_id": "earthscope-gnss-region-depth"},
+    )
+
+    assert result.passed is False
+    assert "no staged EarthScope station metadata catalog" in result.failure_reasons()[0]
+
+
+def test_earthscope_region_verifier_uses_metadata_data_file_for_station_csv(
+    tmp_path: Path,
+) -> None:
+    catalog = tmp_path / ".clio" / "artifacts" / "ndp-staging" / "earthscope_converted_data.csv"
+    station_csv = tmp_path / ".clio" / "artifacts" / "ndp-staging" / "MTA1.CI.LY_.30.csv"
+    png = tmp_path / ".clio" / "artifacts" / "plot_MTA1.CI.LY_.30.png"
+    catalog.parent.mkdir(parents=True)
+    png.parent.mkdir(parents=True, exist_ok=True)
+    catalog.write_text(
+        "Site,Latitude,(deg),Longitude,(deg)\n"
+        "MTA1,34.05522077,-118.24550778\n",
+        encoding="utf-8",
+    )
+    station_csv.write_text("time,east,north,up\n2026-01-01,0,0,0\n", encoding="utf-8")
+    png.write_bytes(b"png")
+    message = _message(
+        text=f"Analysis-ready station CSV: {station_csv}\nPlot: {png}",
+        tools=[
+            {"name": "ndp_search_datasets", "ok": True},
+            {
+                "name": "ndp_stage_resource",
+                "ok": True,
+                "args": {"output_dir": str(catalog.parent)},
+                "result": {"path": str(catalog)},
+            },
+            {
+                "name": "ndp_filter_earthscope_station_catalog",
+                "ok": True,
+                "args": {
+                    "filepath": str(catalog),
+                    "latitude": 34.05,
+                    "longitude": -118.25,
+                    "radius_km": 75,
+                },
+            },
+            {"name": "ndp_stage_resource", "ok": True, "result": {"path": str(station_csv)}},
+            {"name": "ndp_profile_csv_resource", "ok": True},
+            {"name": "ndp_plot_csv_timeseries", "ok": True, "result": {"output_path": str(png)}},
+        ],
+    )
+    result = bench.DemoResult(
+        case=bench.DemoCase(
+            case_id="earthscope_region_station_match_from_data_files",
+            title="earthscope region station match from data files",
+            category="test",
+            prompt=(
+                "Explore EarthScope GNSS evidence for the region centered at "
+                "34.05 N, 118.25 W with a 75 km radius."
+            ),
+            why="why",
+            expected="expected",
+            session_group="test",
+            agent_blueprint_id="earthscope-gnss-region-depth",
+            expected_tools=(
+                "ndp_search_datasets",
+                "ndp_stage_resource",
+                "ndp_filter_earthscope_station_catalog",
+                "ndp_profile_csv_resource",
+                "ndp_plot_csv_timeseries",
+            ),
+            expected_terms=("Analysis-ready",),
+            min_artifacts=1,
+        ),
+        session_id="sess_earthscope_region_station_match_from_data_files",
+        elapsed_s=1.0,
+        message=message,
+        provider={"provider": "argonne", "model": "openai/gpt-oss-120b", "api_base": ""},
+        benchmark_lane="marketplace_earthscope",
+        agent_blueprint={"active_agent_blueprint_id": "earthscope-gnss-region-depth"},
+    )
+
+    assert str(catalog) not in result.artifacts
+    assert str(catalog) in result.data_files
+    assert result.failure_reasons() == []
+    assert result.passed is True
+
+
+def test_earthscope_region_station_csv_within_radius_passes(tmp_path: Path) -> None:
+    catalog = tmp_path / "earthscope_converted_data.csv"
+    catalog.write_text(
+        "Site,Latitude,(deg),Longitude,(deg)\n"
+        "UCSF,37.76296967,-122.45815583\n"
+        "WWMT,33.95531352,-116.65386073\n",
+        encoding="utf-8",
+    )
+    station_csv = tmp_path / "UCSF.CI.LY_.40.csv"
+    station_csv.write_text("time,east,north,up\n2026-01-01,0,0,0\n", encoding="utf-8")
+    png = tmp_path / "UCSF.CI.LY_.40_timeseries.png"
+    png.write_bytes(b"png")
+    message = _message(
+        text=f"Analysis-ready station CSV: {station_csv}\nPlot: {png}",
+        tools=[
+            {"name": "ndp_search_datasets", "ok": True},
+            {"name": "ndp_stage_resource", "ok": True, "result": {"path": str(catalog)}},
+            {"name": "ndp_filter_earthscope_station_catalog", "ok": True},
+            {"name": "ndp_stage_resource", "ok": True, "result": {"path": str(station_csv)}},
+            {"name": "ndp_profile_csv_resource", "ok": True},
+            {"name": "ndp_plot_csv_timeseries", "ok": True, "result": {"output_path": str(png)}},
+        ],
+    )
+    result = bench.DemoResult(
+        case=bench.DemoCase(
+            case_id="earthscope_region_station_match",
+            title="earthscope region station match",
+            category="test",
+            prompt=(
+                "Explore EarthScope GNSS evidence for the region centered at "
+                "37.77 N, 122.42 W with a 75 km radius."
+            ),
+            why="why",
+            expected="expected",
+            session_group="test",
+            agent_blueprint_id="earthscope-gnss-region-depth",
+            expected_tools=(
+                "ndp_search_datasets",
+                "ndp_stage_resource",
+                "ndp_filter_earthscope_station_catalog",
+                "ndp_profile_csv_resource",
+                "ndp_plot_csv_timeseries",
+            ),
+            expected_terms=("Analysis-ready",),
+            min_artifacts=1,
+        ),
+        session_id="sess_earthscope_region_station_match",
+        elapsed_s=1.0,
+        message=message,
+        provider={"provider": "argonne", "model": "openai/gpt-oss-120b", "api_base": ""},
+        benchmark_lane="marketplace_earthscope",
+        agent_blueprint={"active_agent_blueprint_id": "earthscope-gnss-region-depth"},
+    )
+
+    assert result.passed is True
+
+
 def test_marketplace_canonical_cases_require_nonseismic_complex_hierarchy() -> None:
     cases = {
         case.case_id: case
@@ -1998,6 +3046,34 @@ def test_marketplace_canonical_cases_require_nonseismic_complex_hierarchy() -> N
         "gridding",
         "suitability",
     )
+
+
+def test_earthscope_topology_cases_use_distinct_blueprint_variants() -> None:
+    cases = {
+        case.case_id: case
+        for case in bench._make_cases(bench._canonical_benchmark_manifest())
+    }
+
+    assert (
+        cases["marketplace_earthscope_gnss_region_coordinate_mutation"].agent_blueprint_id
+        == "earthscope-gnss-region"
+    )
+    assert (
+        cases["marketplace_earthscope_gnss_region_width_topology"].agent_blueprint_id
+        == "earthscope-gnss-region-width"
+    )
+    assert (
+        cases["marketplace_earthscope_gnss_region_depth_topology"].agent_blueprint_id
+        == "earthscope-gnss-region-depth"
+    )
+    assert "marketplace_earthscope_gnss_region_width_topology" in bench._BENCHMARK_LANES[
+        "marketplace_earthscope"
+    ]
+    assert "marketplace_earthscope_gnss_region_depth_topology" in bench._BENCHMARK_LANES[
+        "marketplace_earthscope"
+    ]
+    assert cases["marketplace_earthscope_gnss_region_depth_topology"].min_expert_depth >= 9
+    assert cases["marketplace_earthscope_gnss_region_width_topology"].min_branch_count >= 8
 
 
 def test_marketplace_audit_distinguishes_complex_hierarchy_from_smoke() -> None:

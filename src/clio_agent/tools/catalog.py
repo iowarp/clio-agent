@@ -107,6 +107,12 @@ TOOL_CATALOG: dict[str, ToolCatalogEntry] = {
         {"catalog", "csv", "ndp", "profile", "weather"},
         visible_to={"data", "analysis"},
     ),
+    "ndp_filter_earthscope_station_catalog": _entry(
+        "ndp_filter_earthscope_station_catalog",
+        "ndp_catalog",
+        {"catalog", "earthscope", "geospatial", "gnss", "ndp", "station"},
+        visible_to={"data", "analysis"},
+    ),
     "ndp_plot_csv_timeseries": _entry(
         "ndp_plot_csv_timeseries",
         "ndp_catalog",

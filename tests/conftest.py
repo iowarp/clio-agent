@@ -200,8 +200,8 @@ You are the CLIO Utility Expert.
 source: git@github.com:JaimeCernuda/clio-agent-marketplace.git
 source_kind: git
 ref: main
-commit: 5aa5d6f566cf542bc32c7bccf963fd765f803caf
-pinned_commit: 5aa5d6f566cf542bc32c7bccf963fd765f803caf
+commit: 908e013d68a80b1e13d5e7d633309d1f6813d970
+pinned_commit: 908e013d68a80b1e13d5e7d633309d1f6813d970
 scope: global
 """,
         encoding="utf-8",

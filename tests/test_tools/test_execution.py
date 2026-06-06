@@ -9,12 +9,14 @@ from clio_agent.errors import CancellationError
 from clio_agent.tools.execution import (
     AsyncMCPToolExecutor,
     MCPToolBridge,
+    RepeatedToolFailureError,
     SyncMCPToolExecutor,
     create_async_tool_executor,
     create_sync_tool_executor,
     set_global_cancellation_checker,
     set_global_permission_gate,
     set_global_tool_observer,
+    tool_workspace_context,
 )
 
 
@@ -50,6 +52,41 @@ class FakeClient:
         if self.delay:
             await asyncio.sleep(self.delay)
         return SimpleNamespace(data={"name": name, "args": args})
+
+
+class FailingClient(FakeClient):
+    """Fake client that raises configured errors from call_tool."""
+
+    def __init__(self, errors: list[BaseException | None]):
+        super().__init__()
+        self.errors = errors
+        self.calls = 0
+
+    async def call_tool(self, name: str, args: dict[str, Any]):
+        self.calls += 1
+        if self.errors:
+            error = self.errors.pop(0)
+            if error is not None:
+                raise error
+        return SimpleNamespace(data={"name": name, "args": args})
+
+
+class StructuredErrorClient(FakeClient):
+    """Fake client that returns a structured tool error payload."""
+
+    async def call_tool(self, name: str, args: dict[str, Any]):
+        self.started_call = True
+        return SimpleNamespace(
+            data={
+                "error": {
+                    "type": "file_policy",
+                    "code": "parent_not_found",
+                    "message": "Output directory does not exist",
+                },
+                "tool": name,
+                "args": args,
+            }
+        )
 
 
 @pytest.mark.asyncio
@@ -178,6 +215,47 @@ def test_sync_mcp_tool_executor_uses_per_tool_timeout_default():
     assert '"name": "ndp_stage_resource"' in result
 
 
+def test_sync_mcp_tool_executor_applies_workspace_default_staging_dir(tmp_path):
+    """Workspace context should rewrite optional staging paths before MCP execution."""
+    fake_client = FakeClient()
+    executor = SyncMCPToolExecutor(
+        object(),
+        timeout=1.0,
+        client_factory=lambda _: fake_client,
+    )
+
+    try:
+        with tool_workspace_context(tmp_path):
+            result = executor.call_tool("ndp_stage_resource", {"dataset_identifier": "dataset-1"})
+    finally:
+        executor.close()
+
+    expected = str(tmp_path / ".clio" / "artifacts" / "ndp-staging")
+    assert f'"output_dir": "{expected}"' in result
+
+
+def test_sync_mcp_tool_executor_rewrites_disposable_tmp_staging_dir(tmp_path):
+    """Model-selected /tmp staging should not override the active workspace artifact root."""
+    fake_client = FakeClient()
+    executor = SyncMCPToolExecutor(
+        object(),
+        timeout=1.0,
+        client_factory=lambda _: fake_client,
+    )
+
+    try:
+        with tool_workspace_context(tmp_path):
+            result = executor.call_tool(
+                "ndp_stage_resource",
+                {"dataset_identifier": "dataset-1", "output_dir": "/tmp/clio-ndp-staging"},
+            )
+    finally:
+        executor.close()
+
+    expected = str(tmp_path / ".clio" / "artifacts" / "ndp-staging")
+    assert f'"output_dir": "{expected}"' in result
+
+
 def test_sync_mcp_tool_executor_uses_late_global_hooks():
     """Deferred GACT hook install should affect already-built executors."""
     fake_client = FakeClient()
@@ -208,6 +286,148 @@ def test_sync_mcp_tool_executor_uses_late_global_hooks():
         set_global_permission_gate(None)
         set_global_tool_observer(None)
         executor.close()
+
+
+def test_sync_mcp_tool_executor_reports_structured_tool_error_result():
+    """Structured error payloads should be failed telemetry without hiding evidence."""
+    fake_client = StructuredErrorClient()
+    executor = SyncMCPToolExecutor(
+        object(),
+        timeout=1.0,
+        client_factory=lambda _: fake_client,
+    )
+    observed: list[tuple[str, dict[str, Any], str | None, str | None, Any | None]] = []
+
+    try:
+        set_global_tool_observer(
+            lambda name, args, phase, error, result=None: observed.append(
+                (name, dict(args), phase, error, result)
+            )
+        )
+
+        result = executor.call_tool(
+            "ndp_plot_csv_timeseries",
+            {"output_path": "/missing/plot.png"},
+        )
+    finally:
+        set_global_tool_observer(None)
+        executor.close()
+
+    assert '"error"' in result
+    assert fake_client.started_call is True
+    assert observed[0] == (
+        "ndp_plot_csv_timeseries",
+        {"output_path": "/missing/plot.png"},
+        "started",
+        None,
+        None,
+    )
+    assert observed[-1][0] == "ndp_plot_csv_timeseries"
+    assert observed[-1][2] == "completed"
+    assert observed[-1][3] is not None
+    assert "parent_not_found" in observed[-1][3]
+    assert observed[-1][4] == result
+
+
+def test_sync_mcp_tool_executor_bounds_repeated_transient_tool_failures():
+    """Repeated infrastructure failures should become a fast structured blocker."""
+    fake_client = FailingClient([TimeoutError("first timeout"), TimeoutError("second timeout")])
+    executor = SyncMCPToolExecutor(
+        object(),
+        timeout=1.0,
+        client_factory=lambda _: fake_client,
+    )
+    observed: list[tuple[str, dict[str, Any], str | None, str | None]] = []
+
+    try:
+        set_global_tool_observer(
+            lambda name, args, phase, error: observed.append((name, dict(args), phase, error))
+        )
+
+        with pytest.raises(TimeoutError):
+            executor.call_tool("ndp_search_datasets", {"search_terms": ["UCSF"]})
+        with pytest.raises(TimeoutError):
+            executor.call_tool("ndp_search_datasets", {"search_terms": ["SBRU"]})
+        with pytest.raises(RepeatedToolFailureError, match="status='tool_failed'"):
+            executor.call_tool("ndp_search_datasets", {"search_terms": ["MHDL"]})
+    finally:
+        set_global_tool_observer(None)
+        executor.close()
+
+    assert fake_client.calls == 2
+    assert observed[-2] == (
+        "ndp_search_datasets",
+        {"search_terms": ["MHDL"]},
+        "started",
+        None,
+    )
+    assert observed[-1][0] == "ndp_search_datasets"
+    assert observed[-1][2] == "completed"
+    assert observed[-1][3] is not None
+    assert "RepeatedToolFailureError" in observed[-1][3]
+
+
+def test_sync_mcp_tool_executor_does_not_bound_non_transient_errors():
+    """Argument or validation errors should keep reaching the tool for correction."""
+    fake_client = FailingClient(
+        [
+            ValueError("missing required argument"),
+            ValueError("missing required argument"),
+            None,
+        ]
+    )
+    executor = SyncMCPToolExecutor(
+        object(),
+        timeout=1.0,
+        client_factory=lambda _: fake_client,
+    )
+
+    try:
+        with pytest.raises(ValueError, match="missing required argument"):
+            executor.call_tool("fake_echo", {"bad": "one"})
+        with pytest.raises(ValueError, match="missing required argument"):
+            executor.call_tool("fake_echo", {"bad": "two"})
+        result = executor.call_tool("fake_echo", {"value": "fixed"})
+    finally:
+        executor.close()
+
+    assert fake_client.calls == 3
+    assert '"value": "fixed"' in result
+
+
+def test_sync_mcp_tool_executor_clears_transient_failure_count_after_success():
+    """A successful call should reset the transient failure circuit."""
+    fake_client = FailingClient(
+        [
+            TimeoutError("first timeout"),
+            None,
+            TimeoutError("second timeout"),
+            None,
+        ]
+    )
+    executor = SyncMCPToolExecutor(
+        object(),
+        timeout=1.0,
+        client_factory=lambda _: fake_client,
+    )
+
+    try:
+        with pytest.raises(TimeoutError):
+            executor.call_tool("ndp_search_datasets", {"search_terms": ["UCSF"]})
+        assert '"search_terms": ["SBRU"]' in executor.call_tool(
+            "ndp_search_datasets",
+            {"search_terms": ["SBRU"]},
+        )
+        with pytest.raises(TimeoutError):
+            executor.call_tool("ndp_search_datasets", {"search_terms": ["MHDL"]})
+        assert '"search_terms": ["EBMD"]' in executor.call_tool(
+            "ndp_search_datasets",
+            {"search_terms": ["EBMD"]},
+        )
+    finally:
+        executor.close()
+
+    assert fake_client.calls == 4
 
 
 def test_sync_mcp_tool_executor_repairs_unique_missing_file_arg(

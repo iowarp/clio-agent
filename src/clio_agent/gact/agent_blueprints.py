@@ -34,7 +34,7 @@ _BLUEPRINT_ROOT_NAME = "AGENT.md"
 _BLUEPRINT_ID_RE = r"^[A-Za-z0-9_.-]+$"
 DEFAULT_REGISTRY_URL = "git@github.com:JaimeCernuda/clio-agent-marketplace.git"
 DEFAULT_REGISTRY_REF = "main"
-DEFAULT_REGISTRY_COMMIT = "5aa5d6f566cf542bc32c7bccf963fd765f803caf"
+DEFAULT_REGISTRY_COMMIT = "908e013d68a80b1e13d5e7d633309d1f6813d970"
 DEFAULT_AGENT_BLUEPRINT_ID = "data-semantics"
 DEFAULT_REGISTRY_SUBMODULE_PATH = "external/clio-agent-marketplace"
 _DEFAULT_BOOTSTRAP_ENV = "CLIO_AGENT_DISABLE_DEFAULT_REGISTRY_BOOTSTRAP"
@@ -304,7 +304,7 @@ def validate_agent_blueprint_path(path: Path, *, scope: str = "session") -> dict
         mcp_descriptors=mcp_descriptors,
     )
     errors = list(blueprint.validation_errors)
-    warnings: list[str] = []
+    warnings: list[str] = _agent_continuation_contract_warnings(rows)
     for row in rows:
         errors.extend(f"{row.id}: {error}" for error in row.validation_errors)
     for descriptor in mcp_descriptors:
@@ -508,6 +508,75 @@ def _validate_agent_tool_references(
             )
         )
     return out
+
+
+def _validate_agent_continuation_contracts(rows: list[AgentDef]) -> list[AgentDef]:
+    """Require production blueprint continuation to route on typed state.
+
+    Runtime support for text predicates remains for migration/debug fixtures, but
+    marketplace Agent Blueprints should not make prose substring checks their
+    default reliability mechanism.
+    """
+
+    out: list[AgentDef] = []
+    for row in rows:
+        params = row.parameters if isinstance(row.parameters, dict) else {}
+        contracts = params.get("continuation_contracts")
+        errors = list(row.validation_errors)
+        if isinstance(contracts, list):
+            for index, contract in enumerate(contracts):
+                if not isinstance(contract, dict):
+                    continue
+                has_text_predicate = bool(
+                    contract.get("when_request_contains")
+                    or contract.get("when_output_contains")
+                )
+                if not has_text_predicate or bool(contract.get("allow_text_routing")):
+                    continue
+                contract_id = str(contract.get("id") or f"#{index + 1}").strip()
+                errors.append(
+                    "continuation contract "
+                    f"{contract_id!r} uses free-text routing predicates; "
+                    "route on when_state/when_workflow_state or explicit child "
+                    "completion instead, or mark temporary/debug use with "
+                    "allow_text_routing: true"
+                )
+        out.append(
+            row.model_copy(
+                update={
+                    "enabled": row.enabled and not errors,
+                    "validation_errors": errors,
+                }
+            )
+        )
+    return out
+
+
+def _agent_continuation_contract_warnings(rows: list[AgentDef]) -> list[str]:
+    """Return validation warnings for explicitly quarantined legacy routing."""
+
+    warnings: list[str] = []
+    for row in rows:
+        params = row.parameters if isinstance(row.parameters, dict) else {}
+        contracts = params.get("continuation_contracts")
+        if not isinstance(contracts, list):
+            continue
+        for index, contract in enumerate(contracts):
+            if not isinstance(contract, dict):
+                continue
+            has_text_predicate = bool(
+                contract.get("when_request_contains")
+                or contract.get("when_output_contains")
+            )
+            if not has_text_predicate or not bool(contract.get("allow_text_routing")):
+                continue
+            contract_id = str(contract.get("id") or f"#{index + 1}").strip()
+            warnings.append(
+                f"{row.id}: continuation contract {contract_id!r} uses "
+                "allow_text_routing; this is legacy migration routing and "
+                "must not be used as a benchmark reliability mechanism"
+            )
+    return warnings
 
 
 def load_mcp_descriptors(
@@ -942,4 +1011,4 @@ def _load_blueprint_agents(blueprint: AgentBlueprintDefinition) -> list[AgentDef
                 validation_errors=["agent blueprint has no expert Markdown files"],
             )
         )
-    return out
+    return _validate_agent_continuation_contracts(out)

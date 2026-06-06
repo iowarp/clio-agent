@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from clio_agent.gact.app import _make_tool_observer, build_app
+from clio_agent.gact.app import _make_tool_observer, _merge_tool_call_rows, build_app
 
 
 @dataclass
@@ -62,9 +62,46 @@ class _LiveObservedWithPosthocTraceAgent:
                     "ok": True,
                     "duration_ms": 999.0,
                     "cached": True,
+                    "result": {"datasets": ["safe_float"], "checksum": "abc123"},
                 }
             ]
         )
+
+
+class _LiveObservedResultAgent:
+    def forward(self, question: str, session_id: str):
+        from clio_agent.tools.execution import _GLOBAL_TOOL_OBSERVER
+
+        assert _GLOBAL_TOOL_OBSERVER is not None
+        args = {"filepath": "x.h5"}
+        result = {"datasets": ["safe_float"], "checksum": "abc123"}
+        _GLOBAL_TOOL_OBSERVER("hdf5_list_datasets", args, "started", None)
+        _GLOBAL_TOOL_OBSERVER("hdf5_list_datasets", args, "completed", None, result)
+        return _Pred()
+
+
+class _LiveObservedStructuredErrorResultAgent:
+    def forward(self, question: str, session_id: str):
+        from clio_agent.tools.execution import _GLOBAL_TOOL_OBSERVER
+
+        assert _GLOBAL_TOOL_OBSERVER is not None
+        args = {"output_path": "/missing/plot.png"}
+        result = {
+            "error": {
+                "type": "file_policy",
+                "code": "parent_not_found",
+                "message": "Output directory does not exist",
+            }
+        }
+        _GLOBAL_TOOL_OBSERVER("ndp_plot_csv_timeseries", args, "started", None)
+        _GLOBAL_TOOL_OBSERVER(
+            "ndp_plot_csv_timeseries",
+            args,
+            "completed",
+            "parent_not_found: Output directory does not exist",
+            result,
+        )
+        return _Pred()
 
 
 class _ToolRoutingAgent:
@@ -160,6 +197,111 @@ def test_live_observer_upgrades_matching_posthoc_trace_metadata(tmp_path: Path) 
     assert tools_called[0]["telemetry_source"] == "live_observer"
     assert tools_called[0]["duration_ms"] != 999.0
     assert tools_called[0]["cached"] is False
+    assert tools_called[0]["result"] == {"datasets": ["safe_float"], "checksum": "abc123"}
+
+
+def test_live_observer_records_completed_tool_result_evidence(tmp_path: Path) -> None:
+    from .conftest import complete_turn
+
+    app = build_app(
+        sessions_path=tmp_path / "s.json",
+        agent=_LiveObservedResultAgent(),
+    )
+    client = TestClient(app)
+    sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
+    assistant = complete_turn(client, sid, "analyze")
+
+    history = app.state.bus._history.get(sid, [])
+    completed = [e for e in history if e.type == "tool.call.completed"]
+    tools_called = assistant["metadata"]["tools_called"]
+    tool_results = [
+        e.payload["part"]
+        for e in history
+        if e.type == "message.part.added"
+        and e.payload.get("part", {}).get("type") == "tool_result"
+    ]
+
+    assert completed[0].payload["result"] == {
+        "datasets": ["safe_float"],
+        "checksum": "abc123",
+    }
+    assert tools_called[0]["result"] == {
+        "datasets": ["safe_float"],
+        "checksum": "abc123",
+    }
+    assert tool_results[0]["metadata"]["result"] == {
+        "datasets": ["safe_float"],
+        "checksum": "abc123",
+    }
+
+
+def test_live_observer_preserves_failed_structured_tool_result_evidence(tmp_path: Path) -> None:
+    from .conftest import complete_turn
+
+    app = build_app(
+        sessions_path=tmp_path / "s.json",
+        agent=_LiveObservedStructuredErrorResultAgent(),
+    )
+    client = TestClient(app)
+    sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
+    assistant = complete_turn(client, sid, "analyze")
+
+    history = app.state.bus._history.get(sid, [])
+    completed = [e for e in history if e.type == "tool.call.completed"]
+    tools_called = assistant["metadata"]["tools_called"]
+    tool_results = [
+        e.payload["part"]
+        for e in history
+        if e.type == "message.part.added"
+        and e.payload.get("part", {}).get("type") == "tool_result"
+    ]
+
+    expected_result = {
+        "error": {
+            "type": "file_policy",
+            "code": "parent_not_found",
+            "message": "Output directory does not exist",
+        }
+    }
+    assert completed[0].payload["ok"] is False
+    assert completed[0].payload["error"] == "parent_not_found: Output directory does not exist"
+    assert completed[0].payload["result"] == expected_result
+    assert tools_called[0]["ok"] is False
+    assert tools_called[0]["error"] == "parent_not_found: Output directory does not exist"
+    assert tools_called[0]["result"] == expected_result
+    assert tool_results[0]["is_error"] is True
+    assert tool_results[0]["metadata"]["result"] == expected_result
+
+
+def test_tool_call_merge_does_not_attach_success_result_to_failed_attempt() -> None:
+    rows = _merge_tool_call_rows(
+        [
+            {
+                "name": "ndp_get_dataset_details",
+                "call_id": "call_failed",
+                "args": {"dataset_identifier": "abc"},
+                "ok": False,
+                "error": "ClosedResourceError()",
+                "telemetry_source": "live_observer",
+            }
+        ],
+        [
+            {
+                "name": "ndp_get_dataset_details",
+                "args": {"dataset_identifier": "abc"},
+                "ok": True,
+                "result": {"dataset": {"id": "abc", "title": "EarthScope Stations Dataset"}},
+            }
+        ],
+    )
+
+    assert len(rows) == 2
+    assert rows[0]["ok"] is False
+    assert "result" not in rows[0]
+    assert rows[1]["ok"] is True
+    assert rows[1]["result"] == {
+        "dataset": {"id": "abc", "title": "EarthScope Stations Dataset"}
+    }
 
 
 def test_live_tool_observer_emits_route_context_before_tool_part(tmp_path: Path) -> None:

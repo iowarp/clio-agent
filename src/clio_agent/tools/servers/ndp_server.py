@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import csv
 import json
+import math
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -381,20 +383,243 @@ def _global_ckan_package_search(args: dict[str, Any]) -> dict[str, Any]:
     rows = result.get("results") or []
     if not isinstance(rows, list):
         rows = []
-    compacted = [_compact_dataset(row) for row in rows[:4]]
-    return {
-        "datasets": compacted,
-        "count": len(compacted),
-        "total_found": result.get("count", len(compacted)),
-        "server": "global",
-        "_meta": {
-            "tool": "search_datasets",
-            "status": "success",
-            "source": "ckan_package_search",
-            "clio_kit_fallback": True,
+    compacted = [_compact_dataset(row) for row in rows[: min(len(rows), 20)]]
+    compacted, station_filter = _filter_earthscope_station_resource_results(
+        compacted,
+        args,
+    )
+    visible_rows = compacted[:4]
+    return _annotate_search_coverage(
+        {
+            "datasets": visible_rows,
+            "count": len(visible_rows),
+            "total_found": len(compacted) if station_filter else result.get("count", len(compacted)),
+            "server": "global",
+            "_meta": {
+                "tool": "search_datasets",
+                "status": "success",
+                "source": "ckan_package_search",
+                "clio_kit_fallback": True,
+                **({"station_resource_filter": station_filter} if station_filter else {}),
+            },
+            "datasets_truncated": len(compacted) > 4,
         },
-        "datasets_truncated": len(rows) > 4,
+        args,
+    )
+
+
+def _search_term_text(args: dict[str, Any]) -> str:
+    terms: list[str] = []
+    for key in (
+        "search_terms",
+        "search_keys",
+        "filter_list",
+    ):
+        value = args.get(key)
+        if isinstance(value, list):
+            terms.extend(str(item) for item in value if str(item).strip())
+    for key in (
+        "search_term",
+        "dataset_name",
+        "dataset_title",
+        "dataset_description",
+        "resource_name",
+        "resource_description",
+        "resource_url",
+        "resource_format",
+        "owner_org",
+    ):
+        value = args.get(key)
+        if value and str(value).strip():
+            terms.append(str(value).strip())
+    return " ".join(terms).casefold()
+
+
+def _earthscope_station_resource_code(args: dict[str, Any]) -> str:
+    """Return a requested EarthScope station code for precise resource searches."""
+
+    resource_name = str(args.get("resource_name") or "").strip()
+    if str(args.get("resource_format") or "").upper() not in {"", "CSV"}:
+        return ""
+    candidate_texts = [resource_name]
+    for key in ("search_terms", "filter_list"):
+        values = args.get(key)
+        if isinstance(values, list):
+            candidate_texts.extend(str(value) for value in values if value)
+    for key in ("search_term", "dataset_name", "dataset_title"):
+        value = args.get(key)
+        if value:
+            candidate_texts.append(str(value))
+    excluded = {
+        "CSV",
+        "DATA",
+        "GNSS",
+        "GPS",
+        "HTML",
+        "LIST",
+        "PBO",
+        "PNG",
+        "RAW",
+        "SITE",
+        "TIME",
     }
+
+    def station_code(value: object) -> str:
+        token = str(value).split(".", 1)[0].strip().upper()
+        if re.fullmatch(r"[A-Z0-9]{3,5}", token) and token not in excluded:
+            return token
+        return ""
+
+    resource_station = station_code(resource_name)
+    if resource_station:
+        return resource_station
+
+    text = _search_term_text(args)
+    if "earthscope" not in text and "gnss" not in text and "gps" not in text:
+        return ""
+    for value in candidate_texts:
+        if code := station_code(value):
+            return code
+    return ""
+
+
+def _dataset_is_earthscope_station_resource(dataset: dict[str, Any]) -> bool:
+    """Return whether a compact CKAN row looks like a single-station GNSS resource."""
+
+    fields: list[str] = []
+    for key in ("name", "title"):
+        value = dataset.get(key)
+        if value:
+            fields.append(str(value))
+    for key in ("resource_names", "resource_urls"):
+        values = dataset.get(key)
+        if isinstance(values, list):
+            fields.extend(str(value) for value in values if value)
+    for summary in dataset.get("resource_summaries") or []:
+        if isinstance(summary, dict):
+            fields.extend(
+                str(summary.get(key) or "")
+                for key in ("name", "url")
+                if summary.get(key)
+            )
+    station_resource_re = re.compile(
+        r"(^|[/_.-])[A-Z0-9]{3,5}[._-][A-Z0-9]{2}[._-]LY_?[._-][A-Z0-9]{2}"
+        r"(?:[._-]|$)",
+        re.IGNORECASE,
+    )
+    return any(station_resource_re.search(field) for field in fields)
+
+
+def _dataset_matches_earthscope_station_resource(
+    dataset: dict[str, Any],
+    station_code: str,
+) -> bool:
+    """Return whether a compact CKAN row belongs to the requested station."""
+
+    station = re.escape(station_code.upper())
+    pattern = re.compile(rf"(^|[/_.-]){station}([._-]|$)", re.IGNORECASE)
+    fields: list[str] = []
+    for key in ("name", "title"):
+        value = dataset.get(key)
+        if value:
+            fields.append(str(value))
+    for key in ("resource_names", "resource_urls"):
+        values = dataset.get(key)
+        if isinstance(values, list):
+            fields.extend(str(value) for value in values if value)
+    for summary in dataset.get("resource_summaries") or []:
+        if isinstance(summary, dict):
+            fields.extend(
+                str(summary.get(key) or "")
+                for key in ("name", "url")
+                if summary.get(key)
+            )
+    return any(pattern.search(field) for field in fields)
+
+
+def _filter_earthscope_station_resource_results(
+    datasets: list[dict[str, Any]],
+    args: dict[str, Any],
+) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+    """Filter station-specific EarthScope searches to matching station resources."""
+
+    station_code = _earthscope_station_resource_code(args)
+    if not station_code:
+        text = _search_term_text(args)
+        if (
+            ("gnss" not in text and "gps" not in text)
+            or "csv" not in text
+        ):
+            return datasets, None
+        filtered = [
+            dataset
+            for dataset in datasets
+            if not _dataset_is_earthscope_station_resource(dataset)
+        ]
+        if len(filtered) == len(datasets):
+            return datasets, None
+        return filtered, {
+            "input_count": len(datasets),
+            "output_count": len(filtered),
+            "status": "broad_station_resources_suppressed",
+        }
+    filtered = [
+        dataset
+        for dataset in datasets
+        if _dataset_matches_earthscope_station_resource(dataset, station_code)
+    ]
+    return filtered, {
+        "station_code": station_code,
+        "input_count": len(datasets),
+        "output_count": len(filtered),
+        "status": "applied",
+    }
+
+
+def _earthscope_search_coverage(args: dict[str, Any]) -> dict[str, Any]:
+    text = _search_term_text(args)
+    station_code = _earthscope_station_resource_code(args)
+    has_earthscope = "earthscope" in text
+    has_gnss_or_gps = "gnss" in text or "gps" in text
+    has_raw_csv = (
+        "raw_csv" in text
+        or "csv" in text
+        or str(args.get("resource_format") or "").upper() == "CSV"
+    )
+    broad_catalog_searched = has_earthscope and has_gnss_or_gps and has_raw_csv
+    station_resource_search = has_raw_csv and (
+        bool(station_code)
+        or (
+            has_earthscope
+            and (
+                "station" in text
+                or "site" in text
+                or "time" in text
+                or "timeseries" in text
+            )
+        )
+    )
+    return {
+        "domain": "earthscope_gnss",
+        "broad_station_catalog_searched": broad_catalog_searched,
+        "station_resource_search": station_resource_search,
+        "search_terms": args.get("search_terms") or [],
+        "resource_name": args.get("resource_name"),
+        "resource_format": args.get("resource_format"),
+        "station_code": station_code or None,
+        "status": "covered" if broad_catalog_searched or station_resource_search else "incomplete",
+        "next_action": (
+            "Search with EarthScope, GNSS/GPS, and CSV/raw_csv terms before "
+            "claiming no EarthScope station metadata exists."
+            if not broad_catalog_searched and not station_resource_search
+            else ""
+        ),
+    }
+
+
+def _annotate_search_coverage(payload: dict[str, Any], args: dict[str, Any]) -> dict[str, Any]:
+    payload["search_coverage"] = _earthscope_search_coverage(args)
+    return payload
 
 
 def _resource_matches(resource: dict[str, Any], resource_name: str | None) -> bool:
@@ -492,6 +717,25 @@ def _stage_http_resource(
             max_bytes=max_bytes,
         )
     return _stage_requests_resource(url=url, output_path=output_path, max_bytes=max_bytes)
+
+
+def _existing_staged_resource(output_path: Path, *, url: str) -> dict[str, Any] | None:
+    """Return an existing staged artifact for the exact validated output path."""
+
+    if not output_path.is_file():
+        return None
+    size = output_path.stat().st_size
+    if size <= 0:
+        return None
+    return {
+        "staged": True,
+        "path": str(output_path),
+        "size_bytes": size,
+        "url": url,
+        "source_url": url,
+        "method": "existing_file",
+        "cache_hit": True,
+    }
 
 
 def _stage_curl_resource(
@@ -834,6 +1078,89 @@ def _to_float(value: Any) -> float | None:
         return None
 
 
+def _parse_datetime_text(value: Any) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    normalized = text.replace("Z", "+00:00")
+    try:
+        parsed = datetime.fromisoformat(normalized)
+        if parsed.tzinfo is not None:
+            return parsed.astimezone(UTC).replace(tzinfo=None)
+        return parsed
+    except ValueError:
+        pass
+    for fmt in ("%m/%d/%Y", "%Y/%m/%d", "%Y-%m-%d", "%m/%d/%Y %H:%M:%S"):
+        try:
+            return datetime.strptime(text, fmt)  # noqa: DTZ007
+        except ValueError:
+            continue
+    return None
+
+
+def _infer_csv_plot_x_axis(values: list[str]) -> dict[str, Any]:
+    """Infer plot-ready x values and trace metadata from a CSV x column."""
+
+    if not values:
+        return {
+            "kind": "row_index",
+            "values": [],
+            "label": "row index",
+            "parse_success_ratio": 0.0,
+        }
+
+    numeric: list[float | None] = [_to_float(value) for value in values]
+    numeric_values = [value for value in numeric if value is not None and math.isfinite(value)]
+    numeric_ratio = len(numeric_values) / len(values)
+    if numeric_ratio >= 0.8 and numeric_values:
+        median_abs = sorted(abs(value) for value in numeric_values)[len(numeric_values) // 2]
+        if median_abs >= 1_000_000_000_000:
+            datetimes = [
+                datetime.fromtimestamp(value / 1000, UTC).replace(tzinfo=None)
+                if value is not None and math.isfinite(value)
+                else None
+                for value in numeric
+            ]
+            return {
+                "kind": "epoch_milliseconds",
+                "values": datetimes,
+                "label": "time (UTC)",
+                "parse_success_ratio": numeric_ratio,
+            }
+        if median_abs >= 1_000_000_000:
+            datetimes = [
+                datetime.fromtimestamp(value, UTC).replace(tzinfo=None)
+                if value is not None and math.isfinite(value)
+                else None
+                for value in numeric
+            ]
+            return {
+                "kind": "epoch_seconds",
+                "values": datetimes,
+                "label": "time (UTC)",
+                "parse_success_ratio": numeric_ratio,
+            }
+
+    parsed_datetimes = [_parse_datetime_text(value) for value in values]
+    parsed_count = sum(value is not None for value in parsed_datetimes)
+    parsed_ratio = parsed_count / len(values)
+    if parsed_ratio >= 0.8 and parsed_count:
+        return {
+            "kind": "datetime",
+            "values": parsed_datetimes,
+            "label": "time",
+            "parse_success_ratio": parsed_ratio,
+        }
+
+    return {
+        "kind": "categorical",
+        "values": list(range(len(values))),
+        "labels": values,
+        "label": "row index",
+        "parse_success_ratio": max(numeric_ratio, parsed_ratio),
+    }
+
+
 def _csv_numeric_summary(rows: list[dict[str, str]], columns: list[str]) -> dict[str, dict[str, Any]]:
     summary: dict[str, dict[str, Any]] = {}
     for column in columns:
@@ -850,8 +1177,116 @@ def _csv_numeric_summary(rows: list[dict[str, str]], columns: list[str]) -> dict
     return summary
 
 
+def _csv_missing_summary(rows: list[dict[str, str]], columns: list[str]) -> dict[str, int]:
+    return {
+        column: sum(1 for row in rows if not str(row.get(column) or "").strip())
+        for column in columns
+    }
+
+
 def _csv_sample_rows(rows: list[dict[str, str]], limit: int = 3) -> list[dict[str, str]]:
     return rows[: max(0, limit)]
+
+
+def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    radius_km = 6371.0088
+    phi1 = math.radians(lat1)
+    phi2 = math.radians(lat2)
+    d_phi = math.radians(lat2 - lat1)
+    d_lambda = math.radians(lon2 - lon1)
+    a = (
+        math.sin(d_phi / 2) ** 2
+        + math.cos(phi1) * math.cos(phi2) * math.sin(d_lambda / 2) ** 2
+    )
+    return radius_km * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+
+def _earthscope_station_rows(path: Path, *, latitude: float, longitude: float) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    with path.open(newline="", encoding="utf-8-sig") as handle:
+        reader = csv.reader(handle)
+        header = next(reader, None) or []
+        normalized_header = [str(column).strip().casefold() for column in header]
+        header_text = " ".join(normalized_header)
+        if not (
+            normalized_header
+            and normalized_header[0] == "site"
+            and "latitude" in header_text
+            and "longitude" in header_text
+            and "status" in header_text
+        ):
+            raise ValueError(
+                "not an EarthScope station metadata catalog; expected Site, Latitude, "
+                "Longitude, network, and Status columns"
+            )
+        for raw in reader:
+            if len(raw) < 10:
+                continue
+            station = raw[0].strip()
+            lat = _to_float(raw[1])
+            lon = _to_float(raw[2])
+            if not station or lat is None or lon is None:
+                continue
+            network = raw[8].strip() if len(raw) > 8 else ""
+            status = raw[9].strip() if len(raw) > 9 else ""
+            distance_km = _haversine_km(latitude, longitude, lat, lon)
+            station_upper = station.upper()
+            station_lower = station.lower()
+            rows.append(
+                {
+                    "station": station_upper,
+                    "latitude": lat,
+                    "longitude": lon,
+                    "network": network,
+                    "status": status,
+                    "distance_km": round(distance_km, 3),
+                    "suggested_search_terms": [
+                        station_upper,
+                        station_lower,
+                        f"{station_upper} EarthScope GNSS CSV",
+                        f"{station_lower}-ci-ly",
+                    ],
+                    "resource_discovery": {
+                        "status": "search_required",
+                        "reason": (
+                            "Station metadata identifies a nearby station but does "
+                            "not prove a concrete station time-series resource URL."
+                        ),
+                        "search_terms": [
+                            station_upper,
+                            f"{station_upper} EarthScope GNSS CSV",
+                            f"{station_upper}.CI.LY",
+                            f"{station_upper} raw_csv",
+                        ],
+                    },
+                }
+            )
+    return sorted(rows, key=lambda row: (row["distance_km"], row["station"]))
+
+
+def _station_resource_queries(stations: list[dict[str, Any]], *, limit: int = 5) -> list[dict[str, Any]]:
+    queries: list[dict[str, Any]] = []
+    for row in stations[:limit]:
+        station = str(row.get("station") or "").strip().upper()
+        if not station:
+            continue
+        queries.append(
+            {
+                "station": station,
+                "preferred_calls": [
+                    {
+                        "tool": "ndp_search_datasets",
+                        "arguments": {
+                            "resource_name": station,
+                            "resource_format": "CSV",
+                            "server": "global",
+                            "limit": 20,
+                        },
+                    },
+                ],
+            }
+        )
+    return queries
 
 
 def _stage_pelican_resource(
@@ -1148,6 +1583,28 @@ async def search_datasets(
         "limit": _clean_limit(limit),
     }
     cleaned_args = {key: value for key, value in args.items() if value is not None}
+    if cleaned_args.get("server") == "global":
+        try:
+            direct = _global_ckan_package_search(cleaned_args)
+        except Exception as exc:
+            if not _should_try_clio_kit(cleaned_args.get("server", "global")):
+                return _tool_error(
+                    code="ndp_dataset_search_unavailable",
+                    message=f"Could not search global NDP CKAN: {exc}",
+                    next_action=(
+                        "Retry later, set CLIO_KIT_COMMAND or CLIO_KIT_PATH to a "
+                        "working clio-kit launcher, or simplify the search terms."
+                    ),
+                    details={"args": cleaned_args, "clio_kit_skipped": True},
+                )
+        else:
+            meta = direct.get("_meta")
+            if isinstance(meta, dict):
+                meta.pop("clio_kit_fallback", None)
+                meta["ckan_direct"] = True
+            if not _should_try_clio_kit(cleaned_args.get("server", "global")):
+                _annotate_ckan_skip(direct)
+            return direct
     if not _should_try_clio_kit(cleaned_args.get("server", "global")):
         return _annotate_ckan_skip(_global_ckan_package_search(cleaned_args))
     clio_kit_result = await _call_clio_kit_ndp_tool(
@@ -1155,11 +1612,11 @@ async def search_datasets(
         cleaned_args,
     )
     if not clio_kit_result.get("error") or cleaned_args.get("server") != "global":
-        return clio_kit_result
+        return _annotate_search_coverage(clio_kit_result, cleaned_args)
     try:
         direct = _global_ckan_package_search(cleaned_args)
     except Exception:
-        return clio_kit_result
+        return _annotate_search_coverage(clio_kit_result, cleaned_args)
     direct["_meta"]["clio_kit_error"] = clio_kit_result["error"]
     return direct
 
@@ -1195,6 +1652,62 @@ async def stage_resource(
     resources are reported as unsupported unless a future Pelican-backed staging
     tool is added; CLIO must not pretend those bytes were staged.
     """
+
+    direct_url = dataset_identifier.strip()
+    if direct_url.lower().startswith(("http://", "https://")):
+        try:
+            max_stage_bytes = _clean_max_bytes(max_bytes)
+            destination_dir = Path(output_dir or Path.cwd() / "tmp" / "clio-ndp-staging")
+            destination_dir.mkdir(parents=True, exist_ok=True)
+            filename_source = resource_name or Path(direct_url.split("?", 1)[0]).name
+            filename = _safe_filename(filename_source, default="ndp-resource")
+            output_path = validate_write_path(
+                str(destination_dir / filename),
+                field="output_path",
+            )
+        except FilePolicyError as exc:
+            return exc.to_result()
+
+        existing = _existing_staged_resource(output_path, url=direct_url)
+        if existing is not None:
+            existing.update(
+                {
+                    "dataset_id": "",
+                    "dataset_name": "",
+                    "dataset_title": "",
+                    "resource_name": filename,
+                    "selected_resource_name": filename,
+                    "selected_resource_url": direct_url,
+                    "_meta": {
+                        "tool": "stage_resource",
+                        "status": "success",
+                        "source": "direct_url",
+                        "cache_hit": True,
+                    },
+                }
+            )
+            return existing
+
+        result = _stage_http_resource(
+            url=direct_url,
+            output_path=output_path,
+            max_bytes=max_stage_bytes,
+        )
+        if result.get("error"):
+            return result
+        result.update(
+            {
+                "dataset_id": "",
+                "dataset_name": "",
+                "dataset_title": "",
+                "resource_name": filename,
+                "selected_resource_name": filename,
+                "selected_resource_url": direct_url,
+                "source_url": direct_url,
+                "_meta": {"tool": "stage_resource", "status": "success", "source": "direct_url"},
+            }
+        )
+        return result
 
     dataset = await _dataset_details(
         dataset_identifier,
@@ -1253,6 +1766,21 @@ async def stage_resource(
         output_path = validate_write_path(str(destination_dir / filename), field="output_path")
     except FilePolicyError as exc:
         return exc.to_result()
+
+    existing = _existing_staged_resource(output_path, url=url)
+    if existing is not None:
+        existing.update(
+            {
+                "dataset_id": dataset.get("id"),
+                "dataset_name": dataset.get("name"),
+                "dataset_title": dataset.get("title"),
+                "resource_name": resource.get("name"),
+                "selected_resource_name": resource.get("name"),
+                "selected_resource_url": url,
+                "_meta": {"tool": "stage_resource", "status": "success", "cache_hit": True},
+            }
+        )
+        return existing
 
     resource_size_bytes = _parse_resource_size_bytes(
         resource.get("size") or resource.get("resSize")
@@ -1411,17 +1939,128 @@ def profile_csv_resource(
             details={"filepath": filepath},
         )
     numeric = _csv_numeric_summary(rows, columns)
+    missing = _csv_missing_summary(rows, columns)
+    rows_profiled = len(rows)
     return {
         "ok": True,
         "path": str(path),
         "size_bytes": path.stat().st_size,
         "columns": columns,
         "column_count": len(columns),
+        "rows_examined": row_count,
+        "rows_profiled": rows_profiled,
         "rows_scanned": row_count,
+        "numeric_summary_rows": rows_profiled,
+        "row_scan_cap": _MAX_CSV_PROFILE_ROWS,
         "scan_limited": row_count >= _MAX_CSV_PROFILE_ROWS,
+        "profile_limited": row_count > rows_profiled,
         "numeric_summary": numeric,
+        "missing_values": missing,
+        "missing_values_rows": rows_profiled,
+        "missing_values_scope": "profiled_rows",
         "sample_rows": _csv_sample_rows(rows),
         "_meta": {"tool": "profile_csv_resource", "status": "success"},
+    }
+
+
+@ndp_server.tool()
+def filter_earthscope_station_catalog(
+    filepath: str,
+    latitude: float | str,
+    longitude: float | str,
+    radius_km: float | str = 50.0,
+    limit: int | str = 10,
+) -> dict[str, Any]:
+    """Find nearby EarthScope GNSS stations from a staged station metadata CSV."""
+
+    path = Path(filepath).expanduser()
+    if not path.exists() or not path.is_file():
+        return _tool_error(
+            code="station_catalog_missing",
+            message="The staged EarthScope station metadata CSV path does not exist.",
+            next_action="Run ndp_stage_resource for the EarthScope station metadata CSV first.",
+            details={"filepath": filepath},
+        )
+    lat = _to_float(latitude)
+    lon = _to_float(longitude)
+    radius = _to_float(radius_km)
+    if lat is None or lon is None or radius is None:
+        return _tool_error(
+            code="station_catalog_invalid_geometry",
+            message="Latitude, longitude, and radius_km must be numeric.",
+            next_action="Use the geospatial expert's typed center coordinates.",
+            details={"latitude": latitude, "longitude": longitude, "radius_km": radius_km},
+        )
+    try:
+        row_limit = max(1, min(int(limit or 10), 50))
+    except (TypeError, ValueError):
+        row_limit = 10
+    try:
+        rows = _earthscope_station_rows(path, latitude=lat, longitude=lon)
+    except (OSError, csv.Error, UnicodeDecodeError, ValueError) as exc:
+        if "not an earthscope station metadata catalog" in str(exc).casefold():
+            return {
+                "ok": True,
+                "path": str(path),
+                "center": {"latitude": lat, "longitude": lon},
+                "radius_km": radius,
+                "catalog_applicable": False,
+                "resource_kind": "station_timeseries_csv",
+                "station_count": 0,
+                "within_radius_count": 0,
+                "stations": [],
+                "analysis_ready": True,
+                "next_action": (
+                    "Do not filter this file as station metadata. Treat it as a "
+                    "staged station time-series CSV and continue with profiling or plotting."
+                ),
+                "_meta": {
+                    "tool": "filter_earthscope_station_catalog",
+                    "status": "not_applicable",
+                },
+            }
+        return _tool_error(
+            code="station_catalog_parse_failed",
+            message=f"Could not parse the EarthScope station metadata CSV: {exc}",
+            next_action="Verify the resource is the EarthScope station metadata CSV.",
+            details={"filepath": filepath},
+        )
+    within_radius = [row for row in rows if row["distance_km"] <= radius]
+    selected = within_radius[:row_limit]
+    resource_queries = _station_resource_queries(selected)
+    return {
+        "ok": True,
+        "path": str(path),
+        "center": {"latitude": lat, "longitude": lon},
+        "radius_km": radius,
+        "station_count": len(rows),
+        "within_radius_count": len(within_radius),
+        "stations": selected,
+        "nearest_station": selected[0] if selected else (rows[0] if rows else None),
+        "analysis_ready": False,
+        "resource_discovery": {
+            "status": "search_required" if selected else "no_station_candidates",
+            "station_resource_queries": resource_queries,
+            "search_terms": list(
+                dict.fromkeys(
+                    term
+                    for row in selected[:5]
+                    for term in row.get("resource_discovery", {}).get("search_terms", [])
+                    if str(term).strip()
+                )
+            ),
+            "reason": (
+                "Nearby station metadata was found, but station-specific GNSS "
+                "time-series CSV resources still need live NDP discovery."
+                if selected
+                else "No nearby stations were returned by the station metadata filter."
+            ),
+        },
+        "next_action": (
+            "Search NDP for a concrete station time-series CSV using the returned "
+            "station_resource_queries preferred_calls, then stage that station-specific resource."
+        ),
+        "_meta": {"tool": "filter_earthscope_station_catalog", "status": "success"},
     }
 
 
@@ -1430,7 +2069,7 @@ def plot_csv_timeseries(
     filepath: str,
     x_column: str,
     y_columns: list[str] | str,
-    output_path: str,
+    output_path: str | None = None,
     max_rows: int | str | None = 2000,
     title: str | None = None,
 ) -> dict[str, Any]:
@@ -1454,10 +2093,28 @@ def plot_csv_timeseries(
             message="At least one y column is required for a CSV plot.",
             next_action="Inspect the CSV columns, then call plot_csv_timeseries with numeric y columns.",
         )
+    default_output = path.with_name(f"{path.stem}_plot.png")
+    output_path_corrected = False
+    output_path_warning = ""
+    candidate_output = Path(output_path).expanduser() if output_path else default_output
+    if ".clio" in path.parts and candidate_output.parent != path.parent:
+        output_path_corrected = True
+        output_path_warning = (
+            "Output path was kept beside the staged source CSV to preserve workspace "
+            "artifact provenance."
+        )
+        candidate_output = default_output
     try:
-        output = validate_write_path(output_path, field="output_path")
-    except FilePolicyError as exc:
-        return exc.to_result()
+        output = validate_write_path(str(candidate_output), field="output_path", create_parent=True)
+    except FilePolicyError:
+        if not output_path:
+            raise
+        output_path_corrected = True
+        output_path_warning = (
+            "Requested output path was outside allowed roots; wrote beside the staged source CSV "
+            "instead."
+        )
+        output = validate_write_path(str(default_output), field="output_path", create_parent=True)
     try:
         row_limit = max(1, min(int(max_rows or 2000), _MAX_CSV_PROFILE_ROWS))
         columns, rows, _ = _read_csv_rows(path, max_rows=row_limit)
@@ -1478,6 +2135,7 @@ def plot_csv_timeseries(
         )
 
     x_values = [row.get(x_column, "") for row in rows]
+    x_axis = _infer_csv_plot_x_axis(x_values)
     series: dict[str, list[float | None]] = {
         column: [_to_float(row.get(column)) for row in rows] for column in selected_y
     }
@@ -1494,21 +2152,38 @@ def plot_csv_timeseries(
         import matplotlib
 
         matplotlib.use("Agg")
+        import matplotlib.dates as mdates  # noqa: PLC0415
         import matplotlib.pyplot as plt  # noqa: PLC0415
 
         output.parent.mkdir(parents=True, exist_ok=True)
         fig, ax = plt.subplots(figsize=(10, 4.8))
-        indices = list(range(len(x_values)))
+        x_plot_values = x_axis["values"]
+        valid_x = [value is not None for value in x_plot_values]
         for column, values in plotted.items():
-            y = [float("nan") if value is None else value for value in values]
-            ax.plot(indices, y, linewidth=1.2, label=column)
-        tick_count = min(8, len(x_values))
-        if tick_count:
-            step = max(1, len(x_values) // tick_count)
-            tick_positions = list(range(0, len(x_values), step))[:tick_count]
-            ax.set_xticks(tick_positions)
-            ax.set_xticklabels([x_values[index] for index in tick_positions], rotation=35, ha="right")
-        ax.set_xlabel(x_column)
+            xy = [
+                (x_value, value)
+                for x_value, value, ok in zip(x_plot_values, values, valid_x, strict=False)
+                if ok
+            ]
+            x_series = [item[0] for item in xy]
+            y_series = [float("nan") if item[1] is None else item[1] for item in xy]
+            ax.plot(x_series, y_series, linewidth=1.2, label=column)
+        if x_axis["kind"] in {"epoch_milliseconds", "epoch_seconds", "datetime"}:
+            locator = mdates.AutoDateLocator(minticks=4, maxticks=8)
+            ax.xaxis.set_major_locator(locator)
+            ax.xaxis.set_major_formatter(mdates.ConciseDateFormatter(locator))
+            fig.autofmt_xdate(rotation=30, ha="right")
+        else:
+            tick_count = min(8, len(x_values))
+            if tick_count:
+                step = max(1, len(x_values) // tick_count)
+                tick_positions = list(range(0, len(x_values), step))[:tick_count]
+                tick_labels = x_axis.get("labels", x_values)
+                ax.set_xticks(tick_positions)
+                ax.set_xticklabels(
+                    [tick_labels[index] for index in tick_positions], rotation=35, ha="right"
+                )
+        ax.set_xlabel(f"{x_column} ({x_axis['label']})")
         ax.set_ylabel(", ".join(plotted))
         ax.set_title(title or path.name)
         ax.grid(alpha=0.25)
@@ -1521,16 +2196,26 @@ def plot_csv_timeseries(
             code="csv_plot_failed",
             message=f"Could not create CSV plot artifact: {exc}",
             next_action="Inspect the selected columns and output path, then retry.",
-            details={"filepath": filepath, "output_path": output_path},
+            details={"filepath": filepath, "output_path": str(output)},
         )
 
-    return {
+    result = {
         "ok": True,
         "path": str(path),
         "output_path": str(output),
         "output_size_bytes": output.stat().st_size,
         "x_column": x_column,
+        "x_axis": {
+            "kind": x_axis["kind"],
+            "label": x_axis["label"],
+            "parse_success_ratio": x_axis["parse_success_ratio"],
+        },
         "y_columns": sorted(plotted),
         "rows_plotted": len(x_values),
         "_meta": {"tool": "plot_csv_timeseries", "status": "success"},
     }
+    if output_path_corrected:
+        result["output_path_corrected"] = True
+        result["requested_output_path"] = output_path
+        result["warning"] = output_path_warning
+    return result

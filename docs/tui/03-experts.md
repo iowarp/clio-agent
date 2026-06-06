@@ -23,7 +23,7 @@ The default baseline comes from the pinned marketplace registry:
 |---|---|
 | Registry | `git@github.com:JaimeCernuda/clio-agent-marketplace.git` |
 | Ref | `main` |
-| Commit | `5aa5d6f566cf542bc32c7bccf963fd765f803caf` |
+| Commit | `908e013d68a80b1e13d5e7d633309d1f6813d970` |
 | Submodule | `external/clio-agent-marketplace` |
 | Default blueprint | `data-semantics` |
 

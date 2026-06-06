@@ -1826,7 +1826,7 @@ class ClioAgent(dspy.Module):
             result = {"error": normalize_tool_error(exc, tool=tool_name, code="tool_exception")}
             notify_global_tool_observer(tool_name, args, "completed", repr(exc))
         else:
-            notify_global_tool_observer(tool_name, args, "completed", None)
+            notify_global_tool_observer(tool_name, args, "completed", None, result)
         duration_ms = (time.time() - start) * 1000
         self._record_tool_call(tool_name, args, result, duration_ms)
         return result
@@ -3365,7 +3365,7 @@ class ClioAgent(dspy.Module):
         except Exception as exc:
             notify_global_tool_observer(name, params, "completed", repr(exc))
             raise
-        notify_global_tool_observer(name, params, "completed", None)
+        notify_global_tool_observer(name, params, "completed", None, result)
         duration_ms = (time.time() - start) * 1000
         self._record_tool_call(name, params, result, duration_ms)
         return result

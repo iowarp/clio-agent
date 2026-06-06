@@ -281,7 +281,7 @@ def parse_expert_file(
     fanout = _mapping_field(meta, "fanout", "fan_out", "fan-out")
     if fanout:
         metadata["fanout"] = fanout
-    enabled_meta = str(meta.get("enabled") or "true").strip().lower()
+    enabled_meta = str(meta["enabled"] if "enabled" in meta else "true").strip().lower()
     enabled = enabled_meta not in {"false", "0", "no", "off"} and not errors
     return AgentDef(
         id=expert_id,

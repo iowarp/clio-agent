@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import contextvars
 import json
 import logging
 import threading
 from collections.abc import Callable, Mapping
-from contextlib import suppress
+from contextlib import contextmanager, suppress
 from pathlib import Path
-from typing import Any, Optional, Protocol
+from typing import Any, Iterator, Optional, Protocol
 
 import dspy
 from fastmcp import Client
@@ -48,10 +49,30 @@ ClientFactory = Callable[[Any], MCPClientProtocol]
 # (or any other harness) sets these once and every SyncMCPToolExecutor
 # consults them at call time. None means "no-op".
 _GLOBAL_PERMISSION_GATE: Optional[Callable[[str, Mapping[str, Any]], str]] = None
-_GLOBAL_TOOL_OBSERVER: Optional[
-    Callable[[str, Mapping[str, Any], Optional[str], Optional[str]], None]
-] = None
+_GLOBAL_TOOL_INTERCEPTOR: Optional[Callable[[str, Mapping[str, Any]], Any | None]] = None
+ToolObserver = Callable[
+    [str, Mapping[str, Any], Optional[str], Optional[str], Any | None],
+    None,
+]
+LegacyToolObserver = Callable[[str, Mapping[str, Any], Optional[str], Optional[str]], None]
+
+_GLOBAL_TOOL_OBSERVER: Optional[ToolObserver | LegacyToolObserver] = None
 _GLOBAL_CANCELLATION_CHECKER: Optional[Callable[[], bool]] = None
+_ACTIVE_TOOL_WORKSPACE_ROOT: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "clio_active_tool_workspace_root",
+    default="",
+)
+
+
+@contextmanager
+def tool_workspace_context(root: str | Path | None) -> Iterator[None]:
+    """Bind the active session workspace root for default tool artifacts."""
+
+    token = _ACTIVE_TOOL_WORKSPACE_ROOT.set(str(root or ""))
+    try:
+        yield
+    finally:
+        _ACTIVE_TOOL_WORKSPACE_ROOT.reset(token)
 
 
 def set_global_permission_gate(
@@ -64,7 +85,7 @@ def set_global_permission_gate(
 
 
 def set_global_tool_observer(
-    observer: Optional[Callable[[str, Mapping[str, Any], Optional[str], Optional[str]], None]],
+    observer: Optional[ToolObserver | LegacyToolObserver],
 ) -> None:
     """Install a process-global tool-call observer. Pass None to disable."""
 
@@ -72,19 +93,35 @@ def set_global_tool_observer(
     _GLOBAL_TOOL_OBSERVER = observer
 
 
+def set_global_tool_interceptor(
+    interceptor: Optional[Callable[[str, Mapping[str, Any]], Any | None]],
+) -> None:
+    """Install a process-global preflight tool interceptor. Pass None to disable."""
+
+    global _GLOBAL_TOOL_INTERCEPTOR
+    _GLOBAL_TOOL_INTERCEPTOR = interceptor
+
+
 def notify_tool_observer(
-    observer: Optional[Callable[[str, Mapping[str, Any], Optional[str], Optional[str]], None]],
+    observer: Optional[ToolObserver | LegacyToolObserver],
     name: str,
     args: Mapping[str, Any],
     phase: str,
     error: str | None = None,
+    result: Any | None = None,
 ) -> None:
     """Notify a tool observer, swallowing observer failures."""
 
     if observer is None:
         return
     try:
-        observer(name, dict(args), phase, error)
+        if result is None:
+            observer(name, dict(args), phase, error)  # type: ignore[misc]
+        else:
+            try:
+                observer(name, dict(args), phase, error, result)  # type: ignore[misc]
+            except TypeError:
+                observer(name, dict(args), phase, error)  # type: ignore[misc]
     except Exception:
         pass
 
@@ -94,10 +131,42 @@ def notify_global_tool_observer(
     args: Mapping[str, Any],
     phase: str,
     error: str | None = None,
+    result: Any | None = None,
 ) -> None:
     """Notify the process-global tool observer, swallowing observer failures."""
 
-    notify_tool_observer(_GLOBAL_TOOL_OBSERVER, name, args, phase, error)
+    notify_tool_observer(_GLOBAL_TOOL_OBSERVER, name, args, phase, error, result)
+
+
+def _structured_tool_result_error(result: Any) -> str | None:
+    """Return an error string when a tool returns a structured error payload."""
+
+    decoded = result
+    if isinstance(result, str):
+        stripped = result.strip()
+        if stripped.startswith("{") and '"error"' in stripped:
+            with suppress(json.JSONDecodeError, TypeError):
+                decoded = json.loads(stripped)
+    if isinstance(decoded, Mapping):
+        error = decoded.get("error")
+        if error:
+            if isinstance(error, Mapping):
+                code = str(error.get("code") or error.get("type") or "tool_error")
+                message = str(error.get("message") or "").strip()
+                return f"{code}: {message}" if message else code
+            return str(error)
+        status = str(decoded.get("status") or "").strip().lower()
+        if status in {"error", "failed", "failure"}:
+            message = str(decoded.get("message") or decoded.get("detail") or "").strip()
+            return f"status={status}: {message}" if message else f"status={status}"
+        if decoded.get("ok") is False:
+            message = str(decoded.get("message") or decoded.get("detail") or "").strip()
+            return f"ok=false: {message}" if message else "ok=false"
+    elif isinstance(decoded, str):
+        normalized = decoded.strip().casefold()
+        if normalized.startswith("error:"):
+            return decoded.strip()
+    return None
 
 
 def set_global_cancellation_checker(checker: Optional[Callable[[], bool]]) -> None:
@@ -150,8 +219,18 @@ class SyncToolExecutor(Protocol):
 ToolExecutor = SyncToolExecutor
 
 DEFAULT_TOOL_TIMEOUTS: dict[str, float] = {
+    "ndp_search_datasets": 75.0,
+    "ndp_get_dataset_details": 75.0,
     "ndp_stage_resource": 720.0,
+    "ndp_filter_earthscope_station_catalog": 75.0,
+    "ndp_profile_csv_resource": 75.0,
+    "ndp_plot_gnss_timeseries": 75.0,
 }
+REPEATED_TRANSIENT_FAILURE_LIMIT = 2
+
+
+class RepeatedToolFailureError(RuntimeError):
+    """Raised when a tool keeps failing with transient infrastructure errors."""
 
 
 def _clean_tool_timeouts(tool_timeouts: Mapping[str, float] | None) -> dict[str, float]:
@@ -164,6 +243,26 @@ def _clean_tool_timeouts(tool_timeouts: Mapping[str, float] | None) -> dict[str,
     if invalid:
         raise ValueError(f"tool timeouts must be positive: {sorted(invalid)}")
     return cleaned
+
+
+def _is_transient_tool_error(error_text: str) -> bool:
+    """Return whether an error indicates infrastructure/service instability."""
+
+    lowered = error_text.lower()
+    transient_terms = (
+        "closedresourceerror",
+        "connectionreseterror",
+        "connectionerror",
+        "connecterror",
+        "readtimeout",
+        "timeout",
+        "timed out",
+        "temporarily unavailable",
+        "service unavailable",
+        "server disconnected",
+        "brokenpipeerror",
+    )
+    return any(term in lowered for term in transient_terms)
 
 
 def create_async_tool_executor(
@@ -344,9 +443,7 @@ class SyncMCPToolExecutor:
         tool_timeouts: Mapping[str, float] | None = None,
         client_factory: ClientFactory | None = None,
         permission_gate: Optional[Callable[[str, Mapping[str, Any]], str]] = None,
-        tool_observer: Optional[
-            Callable[[str, Mapping[str, Any], Optional[str], Optional[str]], None]
-        ] = None,
+        tool_observer: Optional[ToolObserver | LegacyToolObserver] = None,
     ):
         if timeout <= 0:
             raise ValueError("timeout must be positive")
@@ -376,6 +473,8 @@ class SyncMCPToolExecutor:
         # ("started") and AFTER ("completed", error?) every tool
         # invocation. Same global-fallback story.
         self._tool_observer = tool_observer
+        self._failure_lock = threading.Lock()
+        self._consecutive_transient_failures: dict[str, tuple[int, str]] = {}
         self._closed = False
         self._close_lock = threading.Lock()
 
@@ -443,9 +542,10 @@ class SyncMCPToolExecutor:
              PermissionError; the ReAct loop sees the traceback in
              the tool_result and reports it back as the assistant
              answer.
-          2. ``tool_observer(name, args, phase, error?)`` —
+          2. ``tool_observer(name, args, phase, error?, result?)`` —
              non-blocking notifications of "started" + "completed"
-             so the GACT layer can publish tool.call.* events.
+             so the GACT layer can publish tool.call.* events and bounded
+             returned evidence.
         """
 
         if self._closed:
@@ -467,7 +567,10 @@ class SyncMCPToolExecutor:
                     },
                 )
 
-        effective_args = _repair_missing_file_arguments(args)
+        effective_args = _workspace_default_tool_arguments(
+            name,
+            _repair_missing_file_arguments(args),
+        )
 
         if permission_gate is not None:
             try:
@@ -478,6 +581,20 @@ class SyncMCPToolExecutor:
                 raise PermissionError(f"tool call {name!r} denied by permission gate")
 
         raise_if_cancelled("tool_call_before")
+
+        circuit_error = self._repeated_transient_failure_error(name)
+        if circuit_error is not None:
+            notify_tool_observer(tool_observer, name, effective_args, "started", None)
+            notify_tool_observer(tool_observer, name, effective_args, "completed", circuit_error)
+            raise RepeatedToolFailureError(circuit_error)
+
+        tool_interceptor = _GLOBAL_TOOL_INTERCEPTOR
+        if tool_interceptor is not None:
+            intercepted = tool_interceptor(name, dict(effective_args))
+            if intercepted is not None:
+                notify_tool_observer(tool_observer, name, effective_args, "started", None)
+                notify_tool_observer(tool_observer, name, effective_args, "completed", None, intercepted)
+                return intercepted
 
         notify_tool_observer(tool_observer, name, effective_args, "started", None)
 
@@ -490,11 +607,56 @@ class SyncMCPToolExecutor:
             )
             raise_if_cancelled("tool_call_after")
         except Exception as exc:
-            notify_tool_observer(tool_observer, name, effective_args, "completed", repr(exc))
+            error_text = repr(exc)
+            self._record_tool_failure(name, error_text)
+            notify_tool_observer(tool_observer, name, effective_args, "completed", error_text)
             raise
-        notify_tool_observer(tool_observer, name, effective_args, "completed", None)
+        structured_error = _structured_tool_result_error(result)
+        if structured_error:
+            self._record_tool_failure(name, structured_error)
+            notify_tool_observer(
+                tool_observer,
+                name,
+                effective_args,
+                "completed",
+                structured_error,
+                result,
+            )
+        else:
+            self._record_tool_success(name)
+            notify_tool_observer(tool_observer, name, effective_args, "completed", None, result)
 
         return result
+
+    def _repeated_transient_failure_error(self, name: str) -> str | None:
+        """Return a structured error when the tool circuit should stay open."""
+
+        with self._failure_lock:
+            count, last_error = self._consecutive_transient_failures.get(name, (0, ""))
+        if count < REPEATED_TRANSIENT_FAILURE_LIMIT:
+            return None
+        return (
+            f"RepeatedToolFailureError(tool={name!r}, consecutive_failures={count}, "
+            f"last_error={last_error!r}, status='tool_failed', "
+            "message='tool call skipped after repeated transient failures; "
+            "return structured blocker evidence instead of retrying broad variants')"
+        )
+
+    def _record_tool_failure(self, name: str, error_text: str) -> None:
+        """Track consecutive transient failures for bounded tool retries."""
+
+        with self._failure_lock:
+            if not _is_transient_tool_error(error_text):
+                self._consecutive_transient_failures.pop(name, None)
+                return
+            count, _last_error = self._consecutive_transient_failures.get(name, (0, ""))
+            self._consecutive_transient_failures[name] = (count + 1, error_text)
+
+    def _record_tool_success(self, name: str) -> None:
+        """Clear repeated-failure state after a successful tool call."""
+
+        with self._failure_lock:
+            self._consecutive_transient_failures.pop(name, None)
 
     def _timeout_for_tool(self, name: str) -> float:
         """Return the effective timeout for a single tool invocation."""
@@ -612,6 +774,35 @@ def _repair_missing_file_arguments(args: Mapping[str, Any]) -> dict[str, Any]:
     return repaired
 
 
+def _workspace_default_tool_arguments(name: str, args: Mapping[str, Any]) -> dict[str, Any]:
+    """Apply workspace-owned artifact defaults for tools with optional paths."""
+
+    workspace_root = _ACTIVE_TOOL_WORKSPACE_ROOT.get().strip()
+    if not workspace_root:
+        return dict(args)
+    root = Path(workspace_root).expanduser()
+    tool_name = name.rsplit(".", 1)[-1]
+    out = dict(args)
+    output_dir = str(out.get("output_dir") or "").strip()
+    output_path = Path(output_dir).expanduser() if output_dir else None
+    uses_disposable_tmp = bool(
+        output_path
+        and output_path.is_absolute()
+        and (
+            output_path == Path("/tmp")
+            or Path("/tmp") in output_path.parents
+        )
+    )
+    if tool_name == "ndp_stage_resource" and (not output_dir or uses_disposable_tmp):
+        out["output_dir"] = str(root / ".clio" / "artifacts" / "ndp-staging")
+    elif tool_name in {
+        "sac_fetch_earthscope_waveform",
+        "sac_discover_earthscope_region_waveform",
+    } and (not output_dir or uses_disposable_tmp):
+        out["output_dir"] = str(root / ".clio" / "artifacts" / "sac-staging")
+    return out
+
+
 def _make_dspy_tools(
     mcp_tools: Mapping[str, Any],
     call_tool: Callable[[str, Mapping[str, Any]], str],
@@ -651,6 +842,7 @@ __all__ = [
     "AsyncMCPToolExecutor",
     "AsyncToolExecutor",
     "MCPToolBridge",
+    "RepeatedToolFailureError",
     "SyncMCPToolExecutor",
     "SyncToolExecutor",
     "ToolExecutor",
@@ -660,5 +852,7 @@ __all__ = [
     "notify_tool_observer",
     "set_global_cancellation_checker",
     "set_global_permission_gate",
+    "set_global_tool_interceptor",
     "set_global_tool_observer",
+    "tool_workspace_context",
 ]

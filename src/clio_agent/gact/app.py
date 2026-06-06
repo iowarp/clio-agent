@@ -39,7 +39,7 @@ import threading
 import time
 import uuid
 from collections.abc import Iterable, Mapping
-from contextlib import asynccontextmanager, contextmanager, nullcontext
+from contextlib import asynccontextmanager, contextmanager, nullcontext, suppress
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -89,14 +89,39 @@ _ACTIVE_GACT_TRACE_ID: contextvars.ContextVar[str] = contextvars.ContextVar(
     "clio_gact_active_trace_id",
     default="",
 )
+_ACTIVE_CHILD_TOOL_COMPLETIONS: contextvars.ContextVar[list[dict[str, str]] | None] = (
+    contextvars.ContextVar(
+        "clio_gact_active_child_tool_completions",
+        default=None,
+    )
+)
+_ACTIVE_BLUEPRINT_TOOL_ROWS: contextvars.ContextVar[list[dict[str, Any]] | None] = (
+    contextvars.ContextVar(
+        "clio_gact_active_blueprint_tool_rows",
+        default=None,
+    )
+)
 
 
 @contextmanager
 def _tool_session_context(sid: str) -> Iterator[None]:
     """Bind GACT tool hooks to the session driving the current turn."""
+    from clio_agent.tools.execution import tool_workspace_context  # noqa: PLC0415
+
+    workspace_root = ""
+    app = _ACTIVE_GACT_APP.get()
+    app_state = getattr(app, "state", None) if app is not None else None
+    if app_state is not None:
+        sessions = getattr(app_state, "sessions", None)
+        workspaces = getattr(app_state, "workspaces", None)
+        sess = sessions.get(sid) if sessions is not None else None
+        workspace_id = str(getattr(sess, "workspace_id", "") or "") if sess is not None else ""
+        ws = workspaces.get(workspace_id) if workspaces is not None and workspace_id else None
+        workspace_root = str(getattr(ws, "root_path", "") or "")
     token = _ACTIVE_TOOL_SESSION_ID.set(sid)
     try:
-        yield
+        with tool_workspace_context(workspace_root):
+            yield
     finally:
         _ACTIVE_TOOL_SESSION_ID.reset(token)
 
@@ -659,6 +684,19 @@ class _TurnTimedOut(RuntimeError):
     def __init__(self, timeout_s: float) -> None:
         super().__init__(f"agent turn exceeded {timeout_s:g}s timeout")
         self.timeout_s = timeout_s
+
+
+class _BlueprintTerminalWorkflowState(BaseException):
+    """Raised internally when a blueprint tool observation settles a workflow.
+
+    DSPy ReAct treats normal tool exceptions as recoverable observations, so a
+    terminal typed workflow state needs to bypass that catch path and settle at
+    the blueprint module boundary.
+    """
+
+    def __init__(self, result: Mapping[str, Any]) -> None:
+        super().__init__("blueprint tool returned terminal workflow state")
+        self.result = dict(result)
 
 
 def _gact_turn_timeout_s() -> float:
@@ -2058,6 +2096,151 @@ def _handoff_is_continuation_contract(row: Mapping[str, Any]) -> bool:
     return "continuation" in source
 
 
+def _blueprint_enforces_child_contract_order(agent_def: "AgentDef") -> bool:
+    params = agent_def.parameters if isinstance(agent_def.parameters, Mapping) else {}
+    raw_value = params.get("enforce_child_contract_order")
+    if isinstance(raw_value, bool):
+        return raw_value
+    return str(raw_value or "").strip().lower() in _REPEAT_HANDOFF_TRUE_VALUES
+
+
+def _contract_next_child_ids_for_outputs(
+    parent: "AgentDef",
+    *,
+    completed_outputs: list[str],
+    completed_child_ids: set[str],
+    declared_child_ids: set[str],
+) -> set[str]:
+    rows = _continuation_contract_handoffs(
+        parent,
+        source_text="",
+        answer_text="",
+        completed_outputs=completed_outputs,
+        declared_child_ids=declared_child_ids,
+        completed_child_ids=completed_child_ids,
+    )
+    return {
+        str(row.get("delegate_to") or row.get("agent_id") or "").strip()
+        for row in rows
+        if str(row.get("delegate_to") or row.get("agent_id") or "").strip()
+    }
+
+
+def _tool_derived_contract_evidence_for_prediction(pred: Any) -> list[str]:
+    """Return contract evidence derived from tool observations, not model prose."""
+
+    state: dict[str, Any] = {}
+    trajectory_state = _infer_ndp_workflow_state_from_trajectory(
+        getattr(pred, "trajectory", None),
+    )
+    if trajectory_state:
+        _merge_workflow_state_mapping(state, trajectory_state)
+    for row in getattr(pred, "tools_called", None) or []:
+        if isinstance(row, Mapping):
+            _merge_workflow_state_mapping(
+                state,
+                _infer_workflow_state_from_tool_call_row(row),
+            )
+    _reconcile_workflow_state(state)
+    if not state:
+        return []
+    return [_workflow_state_payload(state)]
+
+
+def _agent_has_continuation_contracts(agent_def: "AgentDef") -> bool:
+    params = agent_def.parameters if isinstance(agent_def.parameters, Mapping) else {}
+    return isinstance(params.get("continuation_contracts"), list)
+
+
+def _filter_child_handoffs_by_contract_order(
+    parent: "AgentDef",
+    requested_rows: list[dict[str, Any]],
+    *,
+    completed_outputs: list[str],
+    current_tool_outputs: list[str] | None = None,
+    completed_child_ids: set[str],
+    declared_child_ids: set[str],
+) -> list[dict[str, Any]]:
+    """Skip model-requested child calls that violate a parent's workflow contract."""
+
+    if not _blueprint_enforces_child_contract_order(parent):
+        return requested_rows
+    allowed_next_ids = _contract_next_child_ids_for_outputs(
+        parent,
+        completed_outputs=[*completed_outputs, *(current_tool_outputs or [])],
+        completed_child_ids=completed_child_ids,
+        declared_child_ids=declared_child_ids,
+    )
+    filtered: list[dict[str, Any]] = []
+    for row in requested_rows:
+        target_id = _delegated_expert_agent_id(row)
+        if not target_id or target_id not in declared_child_ids:
+            filtered.append(row)
+            continue
+        if target_id in allowed_next_ids:
+            filtered.append(row)
+            continue
+        filtered.append(
+            {
+                **row,
+                "agent_id": target_id,
+                "status": "skipped",
+                "stage": "delegate.skipped",
+                "skip_reason": "child_contract_order_violation",
+                "allowed_next_children": sorted(allowed_next_ids),
+                "delegation_lifecycle": "sync",
+            }
+        )
+    return filtered
+
+
+def _seed_child_tool_completions_from_resume_prompt(
+    question: str,
+    declared_child_ids: set[str],
+) -> list[dict[str, str]]:
+    """Recover completed child evidence from CLIO's parent-resume prompt."""
+
+    completions: list[dict[str, str]] = []
+    active: dict[str, str] | None = None
+    active_lines: list[str] = []
+    in_results = False
+
+    def flush_active() -> None:
+        nonlocal active, active_lines
+        if active is not None:
+            active["output_summary"] = "\n".join(active_lines).strip()
+            completions.append(active)
+        active = None
+        active_lines = []
+
+    for raw_line in question.splitlines():
+        line = raw_line.strip()
+        if line.startswith("Returned child expert results for parent expert"):
+            in_results = True
+            continue
+        if not in_results:
+            continue
+        if line.startswith("Continue from these results."):
+            break
+        if not line.startswith("- "):
+            if active is not None:
+                active_lines.append(raw_line.rstrip())
+            continue
+        maybe_child_id = line[2:].split(":", 1)[0].strip()
+        if maybe_child_id not in declared_child_ids:
+            if active is not None:
+                active_lines.append(raw_line.rstrip())
+            continue
+        flush_active()
+        if ": status=completed" not in line:
+            continue
+        result = line.split("result=", 1)[1].strip() if "result=" in line else ""
+        active = {"agent_id": maybe_child_id, "output_summary": ""}
+        active_lines = [result] if result else []
+    flush_active()
+    return completions
+
+
 def _completed_child_repeat_blocked(
     row: Mapping[str, Any],
     completed_child_ids: set[str],
@@ -2168,7 +2351,12 @@ def _dynamic_parent_resume_prompt(
             continue
         agent_id = str(row.get("agent_id") or row.get("delegate_to") or "")
         status = str(row.get("status") or "")
-        summary = str(row.get("output_summary") or row.get("summary") or "").strip()
+        summary = str(
+            row.get("return_output_summary")
+            or row.get("output_summary")
+            or row.get("summary")
+            or ""
+        ).strip()
         children = row.get("children")
         child_note = ""
         if isinstance(children, list) and children:
@@ -2330,6 +2518,12 @@ def _delegation_continuation_policy_contract(
     for index, raw_policy in enumerate(raw_policies):
         if not isinstance(raw_policy, Mapping):
             continue
+        if (
+            (raw_policy.get("when_request_contains") or raw_policy.get("when_output_contains"))
+            and not bool(raw_policy.get("allow_text_routing"))
+            and not _user_agent_bool_param(agent_def, "allow_legacy_text_continuation")
+        ):
+            continue
         matches, matched_terms = _delegation_policy_matches(raw_policy, output)
         if not matches:
             continue
@@ -2378,11 +2572,26 @@ def _iter_delegation_return_rows(rows: list[dict[str, Any]]) -> Iterator[dict[st
 def _compact_dynamic_delegation_output(output: str, *, limit: int = 2200) -> str:
     """Compact child output while retaining exact evidence needed by parents."""
 
-    text = output.strip()
+    raw_text = output.strip()
+    state_blocks = _compact_workflow_state_blocks(raw_text)
+    text = _sanitize_dynamic_delegation_model_evidence(raw_text)
+    display_text = _strip_embedded_workflow_state_evidence(text)
+    has_scan_limited_state = any(
+        token in block
+        for block in state_blocks
+        for token in ('"scan_limited": true', '"profile_limited": true')
+    )
+    if has_scan_limited_state:
+        return "Retained typed workflow state:\n" + "\n".join(state_blocks)
     if len(text) <= limit:
-        return text
-    evidence_index = _compact_exact_evidence_index(text)
-    contract_lines = _compact_delegation_contract_lines(text)
+        if state_blocks and state_blocks[0] not in display_text:
+            return (
+                f"{display_text.rstrip()}\n\n"
+                f"Retained typed workflow state:\n{state_blocks[0]}"
+            )
+        return display_text
+    evidence_index = _compact_exact_evidence_index(display_text)
+    contract_lines = _compact_delegation_contract_lines(display_text)
     stat_lines: list[str] = []
     stat_terms = (
         "trace",
@@ -2401,11 +2610,13 @@ def _compact_dynamic_delegation_output(output: str, *, limit: int = 2200) -> str
         "station",
         "channel",
     )
-    for raw_line in text.splitlines():
+    for raw_line in display_text.splitlines():
         line = " ".join(raw_line.strip().split())
         if not line:
             continue
         lowered = line.lower()
+        if _scan_limited_line_has_unsupported_record_claim(line):
+            continue
         if any(term in lowered for term in stat_terms):
             if line not in stat_lines:
                 stat_lines.append(line)
@@ -2414,6 +2625,8 @@ def _compact_dynamic_delegation_output(output: str, *, limit: int = 2200) -> str
     retained_blocks: list[str] = []
     if evidence_index:
         retained_blocks.append(evidence_index)
+    if state_blocks:
+        retained_blocks.append("Retained typed workflow state:\n" + "\n".join(state_blocks))
     if contract_lines:
         retained_blocks.append(
             "Retained delegation continuation contracts:\n"
@@ -2424,14 +2637,415 @@ def _compact_dynamic_delegation_output(output: str, *, limit: int = 2200) -> str
     retained = "\n\n".join(retained_blocks)
     head_limit = max(800, limit // 2)
     tail_limit = max(500, limit - head_limit - len(retained) - 120)
-    head = text[:head_limit].rstrip()
-    tail = text[-tail_limit:].lstrip() if tail_limit > 0 else ""
+    head = display_text[:head_limit].rstrip()
+    tail = display_text[-tail_limit:].lstrip() if tail_limit > 0 else ""
     pieces = [head, "[...delegation output truncated; exact evidence retained below...]"]
     if retained:
         pieces.append(retained)
     if tail:
         pieces.append("[tail]\n" + tail)
     return "\n\n".join(pieces)
+
+
+_SCAN_LIMITED_EVIDENCE_TOKENS = (
+    "earthscope",
+    "gnss",
+    "rows_scanned",
+    "rows scanned",
+    "scan_limited",
+    "scan limited",
+    "scan-limited",
+)
+
+_SCAN_LIMITED_UNSUPPORTED_RECORD_PATTERNS = (
+    re.compile(
+        r"(?P<prefix>[,(]\s*)?(?:active,\s*)?"
+        r"(?P<claim>\d+(?:\.\d+)?\s*(?:hz|hertz)\s+sampling)"
+        r"(?P<suffix>\s*[),])?",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"(?P<prefix>[,(]\s*)?(?P<claim>\d+(?:\.\d+)?\s*(?:s|sec|secs|second|seconds)\s+cadence)"
+        r"(?P<suffix>\s*[),])?",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"(?P<prefix>[,(]\s*)?(?P<claim>two[-\s]?week\s+record)(?P<suffix>\s*[),])?",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"(?P<prefix>[,(]\s*)?(?P<claim>(?:GNSS\s+)?\d+(?:\.\d+)?[-\s]*(?:Hz|hertz)\s+time[-\s]*series)(?P<suffix>\s*[),])?",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"(?P<prefix>[,(]\s*)?(?P<claim>high[-\s]*rate\s*\(\s*\d+(?:\.\d+)?\s*(?:Hz|hertz)\s*\)\s*3[-\s]*D\s+position\s+time[-\s]*series)(?P<suffix>\s*[),])?",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"(?P<prefix>[,(]\s*)?(?P<claim>[≈~]?\s*\d+(?:\.\d+)?\s*days?\s+at\s+\d+(?:\.\d+)?\s*(?:Hz|hertz))(?P<suffix>\s*[),])?",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"(?P<prefix>[,(]\s*)?(?P<claim>full\s+record)(?P<suffix>\s*[),])?",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\bthe\s+full\s+record\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"(?P<prefix>[,(]\s*)?(?P<claim>no\s+large\s+data\s+gaps)(?P<suffix>\s*[),])?",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"(?P<prefix>[,(]\s*)?(?P<claim>per[-\s]?epoch\s+noise)(?P<suffix>\s*[),])?",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"(?P<prefix>[,(]\s*)?(?P<claim>(?:low|high)[-\s]*rate[^.\n;]*(?:<=|>=|≤|≥|<|>)?\s*1\s*(?:Hz|hertz)[^.\n;]*)(?P<suffix>\s*[),])?",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"(?P<prefix>[,(]\s*)?(?P<claim>sub[-\s]?centi(?:meter|metre)\s+precision)(?P<suffix>\s*[),])?",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"(?P<prefix>[,(]\s*)?(?P<claim>[≈~]?\s*\d+(?:\.\d+)?\s*(?:h|hr|hrs|hour|hours)\s+of\s+data)(?P<suffix>\s*[),])?",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"(?im)^\s*\|?\s*(?:Temporal\s+cadence|Sampled\s+time\s+span)\s*\|.*$",
+    ),
+    re.compile(
+        r"(?im)^\s*[-*]?\s*Cadence:\s*[^.\n;]*$",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"(?im)^\s*[-*]?\s*(?:\*\*)?Sampling\s+cadence(?:\*\*)?\s*:\s*[^.\n;]*$",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"(?P<prefix>[,(]\s*)?(?P<claim>(?:the\s+)?CSV\s+shows\s+(?:a\s+)?[^.\n;]*(?:Hz|hertz|1000\s*ms)[^.\n;]*)(?P<suffix>\s*[),])?",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"(?P<prefix>[,(]\s*)?(?P<claim>(?:only\s+)?\d+(?:\.\d+)?\s*(?:Hz|hertz)\s+public\s+(?:cadence|streams?))(?P<suffix>\s*[),])?",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"(?im)^\s*\|?\s*(?:\*\*)?Sampling\s+cadence(?:\*\*)?\s*\|.*$",
+    ),
+    re.compile(
+        r"(?P<prefix>[,(]\s*)?(?P<claim>[~≈]?\s*\d+(?:\.\d+)?\s*(?:Hz|hertz)\s*\([^)\n]*(?:ms|millisecond|second|sec)[^)\n]*\)\s*over\s+the\s+scanned\s+interval[^.\n;]*)(?P<suffix>\s*[),])?",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"(?P<prefix>[,(]\s*)?(?P<claim>\d+(?:\.\d+)?\s*(?:s|sec|secs|second|seconds)\s*\(\s*[≈~]?\s*\d+(?:\.\d+)?\s*(?:h|hr|hrs|hour|hours)\s*\))(?P<suffix>\s*[),])?",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"(?im)^\s*\|?\s*(?:\*\*)?Overall\s+data\s+quality(?:\*\*)?\s*\|.*(?:high|excellent|suitable|ready).*?$",
+    ),
+    re.compile(
+        r"(?im)^\s*\|?\s*(?:\*\*)?Scan[-\s]*limited\s+profile(?:\*\*)?\s*\|.*(?:no immediate issues|acceptable for quick check).*?$",
+    ),
+    re.compile(
+        r"(?im)^.*(?:meets all required format and quality criteria|suitable for immediate GNSS|excellent candidate for displacement/velocity analysis).*$",
+    ),
+    re.compile(
+        r"(?im)^\s*(?:[-*]\s*)?(?:No\s+missing\s+data\s+were\s+found|No\s+missing\s+values\s+were\s+detected).*?$",
+    ),
+    re.compile(
+        r"(?im)^.*(?:Estimated\s+cadence|Temporal\s+density)\s*:\s*[^.\n]*(?:Hz|hertz).*?$",
+    ),
+    re.compile(
+        r"(?im)^.*(?:Noise\s+level|Overall\s+suitability|Data\s+completeness)\s*:\s*.*?$",
+    ),
+    re.compile(
+        r"(?im)^.*Region\s+definition\s+derived\s+from\s+[^.\n]*(?:USGS|UNAVCO|PBO|SCEC)[^.\n]*.*?$",
+    ),
+    re.compile(
+        r"(?im)^.*(?:full[-\s]?record\s+gaps|long[-\s]?term\s+cadence).*?$",
+    ),
+    re.compile(
+        r"(?im)^.*(?:Station\s+suitability|Overall\s+suitability|optimal\s+spatial\s+coverage).*?$",
+    ),
+    re.compile(
+        r"(?im)^.*(?:Time\s+coverage|continuous\s*\(|no\s+obvious\s+gaps|quality\s+flag\s+qChannel\s+consistent).*?$",
+    ),
+    re.compile(
+        r"(?im)^.*(?:Missing\s+values\s*:\s*0\s*%|all\s+required\s+fields\s+present).*?$",
+    ),
+    re.compile(
+        r"(?im)^.*(?:acceptable\s+for\s+regional\s+deformation|meets\s+quality\s+criteria|ready\s+for\s+downstream\s+modeling).*?$",
+    ),
+    re.compile(
+        r"(?im)^.*(?:high[\s\-\u2010-\u2015]?quality|gap[\s\-\u2010-\u2015]?free|coverage\s+rating|sufficient\s+for\s+basin|Assessment\s+note).*?$",
+    ),
+)
+
+
+def _scan_limited_substitution(match: re.Match[str]) -> str:
+    prefix = match.groupdict().get("prefix") or ""
+    suffix = match.groupdict().get("suffix") or ""
+    if prefix.startswith("(") and suffix.endswith(")"):
+        return ""
+    if prefix.startswith(","):
+        return ""
+    return ""
+
+
+def _sanitize_scan_limited_model_evidence(text: str) -> str:
+    """Remove unsupported record-wide claims from scan-limited model summaries."""
+
+    if not text:
+        return ""
+    lowered = text.casefold()
+    if not any(token in lowered for token in _SCAN_LIMITED_EVIDENCE_TOKENS):
+        return text
+    sanitized = text
+    for pattern in _SCAN_LIMITED_UNSUPPORTED_RECORD_PATTERNS:
+        sanitized = pattern.sub(_scan_limited_substitution, sanitized)
+    sanitized = re.sub(r"\(\s*;\s*", "(", sanitized)
+    sanitized = re.sub(r"\(\s*,\s*", "(", sanitized)
+    sanitized = re.sub(r",\s*,", ",", sanitized)
+    sanitized = re.sub(r"\(\s*\)", "", sanitized)
+    sanitized = re.sub(r"\s{2,}", " ", sanitized)
+    if sanitized != text and "full-file cadence/duration/gap quality was not verified" not in sanitized:
+        sanitized = (
+            f"{sanitized.rstrip()}\n"
+            "Scan-limited profile note: full-file cadence/duration/gap quality was not verified."
+        )
+    return sanitized
+
+
+def _scan_limited_line_has_unsupported_record_claim(line: str) -> bool:
+    """Return true when a retained evidence line still carries scan-limited overclaims."""
+
+    if not line:
+        return False
+    lowered = line.casefold()
+    if not any(token in lowered for token in _SCAN_LIMITED_EVIDENCE_TOKENS):
+        # The compactor often flattens a whole child answer into one line. Treat
+        # scan-limited-adjacent QC/cadence/provenance phrases as unsafe even if
+        # the line lost the explicit scan-limited token.
+        return any(
+            token in lowered
+            for token in (
+                "estimated cadence",
+                "temporal density",
+                "overall suitability",
+                "noise level",
+                "data completeness",
+                "region definition derived from usgs",
+                "pbo station coverage",
+            )
+        )
+    if any(
+        token in lowered
+        for token in (
+            "assessment note",
+            "coverage rating",
+            "gap-free",
+            "gap‑free",
+            "high-quality",
+            "high‑quality",
+            "quality criteria",
+            "ready for downstream",
+            "sufficient for basin",
+        )
+    ):
+        return True
+    return any(pattern.search(line) for pattern in _SCAN_LIMITED_UNSUPPORTED_RECORD_PATTERNS)
+
+
+_UNVERIFIED_GEOSPATIAL_PROSE_PATTERN = re.compile(
+    r"\((?=[^)]*(?:USGS|UNAVCO|EarthScope))"
+    r"[^)]*(?:definition|footprints?|catalogue|catalog|high\s+confidence)[^)]*\)",
+    re.IGNORECASE,
+)
+_UNVERIFIED_GEOSPATIAL_PROVENANCE_LINE_PATTERN = re.compile(
+    r"(?P<prefix>\b(?:Provenance|Method):\s*)"
+    r"(?P<claim>[^.\n]*(?:USGS|UNAVCO|EarthScope|SCEC)[^.\n]*"
+    r"(?:boundary|description|model|extent|definition|footprints?|catalogue|catalog|polygon)[^.\n]*)",
+    re.IGNORECASE,
+)
+_UNVERIFIED_GEOSPATIAL_JSON_PROVENANCE_PATTERN = re.compile(
+    r'(?P<prefix>"provenance"\s*:\s*")(?P<claim>[^"\n]*(?:USGS|UNAVCO|EarthScope|SCEC|PBO\s+GNSS)[^"\n]*)"',
+    re.IGNORECASE,
+)
+_UNVERIFIED_GEOSPATIAL_CONFIDENCE_PATTERN = re.compile(
+    r"\bhigh\s+confidence,\s*model[-\s]*derived\s+prior\b",
+    re.IGNORECASE,
+)
+
+
+def _sanitize_unverified_geospatial_model_evidence(text: str) -> str:
+    """Remove named-source geospatial provenance from model-only summaries."""
+
+    if not text:
+        return ""
+    sanitized = _UNVERIFIED_GEOSPATIAL_PROSE_PATTERN.sub(
+        "(model-derived geography; no source/geocoder tool evidence retained)",
+        text,
+    )
+    sanitized = _UNVERIFIED_GEOSPATIAL_PROVENANCE_LINE_PATTERN.sub(
+        r"\g<prefix>model-derived geography; no source/geocoder tool evidence retained",
+        sanitized,
+    )
+    sanitized = _UNVERIFIED_GEOSPATIAL_JSON_PROVENANCE_PATTERN.sub(
+        r'\g<prefix>model_geographic_prior"',
+        sanitized,
+    )
+    sanitized = _UNVERIFIED_GEOSPATIAL_CONFIDENCE_PATTERN.sub(
+        "model-derived prior; no source/geocoder tool evidence retained",
+        sanitized,
+    )
+    return sanitized
+
+
+_UNVERIFIED_EVENT_CONTEXT_NO_EVENTS_PATTERN = re.compile(
+    r"\bno\s+(?:seismic\s+or\s+deformation\s+)?events\s+(?:have\s+been\s+)?(?:detected|recorded|catalog(?:ed|ued))\b",
+    re.IGNORECASE,
+)
+_UNVERIFIED_EVENT_CONTEXT_CATALOG_GENERATION_PATTERN = re.compile(
+    r"\*\*Catalog generation:\*\*\s*\*\*Not yet performed\*\*\s*[–-]\s*"
+    r"[^.\n]*(?:no\s+events)[^.\n]*[.\n]?",
+    re.IGNORECASE,
+)
+_UNVERIFIED_EVENT_CONTEXT_NO_EVENTS_CAN_BE_CATALOGED_PATTERN = re.compile(
+    r"\bno\s+events\s+can\s+be\s+catalog(?:ed|ued)\b",
+    re.IGNORECASE,
+)
+_UNVERIFIED_EVENT_CONTEXT_ZERO_EVENTS_PATTERN = re.compile(
+    r"\b(?:catalog\s+)?(?:contains|lists)\s+(?:zero|no)\s+events\b|\bzero\s+events\b",
+    re.IGNORECASE,
+)
+
+
+def _sanitize_unverified_event_context_model_evidence(text: str) -> str:
+    """Avoid converting a missing event-catalog tool into a no-events claim."""
+
+    if not text:
+        return ""
+    lowered = text.casefold()
+    if "no live event catalog tool" not in lowered and "no_live_event_catalog_tool" not in lowered:
+        return text
+    sanitized = _UNVERIFIED_EVENT_CONTEXT_CATALOG_GENERATION_PATTERN.sub(
+        "**Catalog generation:** **Blocked** - no live event-catalog tool was available in this pack.\n",
+        text,
+    )
+    sanitized = _UNVERIFIED_EVENT_CONTEXT_NO_EVENTS_PATTERN.sub(
+        "no live event-catalog evidence was available",
+        sanitized,
+    )
+    sanitized = _UNVERIFIED_EVENT_CONTEXT_NO_EVENTS_CAN_BE_CATALOGED_PATTERN.sub(
+        "no event catalog can be verified",
+        sanitized,
+    )
+    sanitized = _UNVERIFIED_EVENT_CONTEXT_ZERO_EVENTS_PATTERN.sub(
+        "no live event-catalog evidence was available",
+        sanitized,
+    )
+    return sanitized
+
+
+def _sanitize_dynamic_delegation_model_evidence(text: str) -> str:
+    """Sanitize retained model prose before it becomes parent evidence."""
+
+    text = _sanitize_unverified_geospatial_model_evidence(text)
+    text = _sanitize_scan_limited_model_evidence(text)
+    text = _sanitize_unverified_event_context_model_evidence(text)
+    return text
+
+
+def _strip_embedded_workflow_state_evidence(text: str) -> str:
+    """Remove raw machine-state blocks before building human evidence snippets."""
+
+    if not text:
+        return ""
+    retained: list[str] = []
+    skipping_state_list = False
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        lowered = line.casefold()
+        if not line:
+            skipping_state_list = False
+            retained.append(raw_line)
+            continue
+        if "workflow_state" in lowered:
+            skipping_state_list = True
+            continue
+        if skipping_state_list and line.startswith(("-", "{")) and any(
+            token in lowered
+            for token in (
+                '"acquisition"',
+                '"resource_candidate"',
+                '"profile"',
+                '"artifact"',
+                '"visualization"',
+                '"station_catalog"',
+            )
+        ):
+            continue
+        skipping_state_list = False
+        retained.append(raw_line)
+    return "\n".join(retained).strip()
+
+
+def _user_facing_dynamic_evidence_summary(output: str) -> str:
+    """Remove machine-retained evidence scaffolding from a user-facing fallback answer."""
+
+    text = output.strip()
+    if not text:
+        return ""
+    marker_positions = [
+        index
+        for marker in (
+            "[...delegation output truncated; exact evidence retained below...]",
+            "[exact retained evidence index]",
+            "Retained typed workflow state:",
+            "Retained delegation continuation contracts:",
+            "Retained numeric/trace evidence:",
+            "CLIO typed workflow state:",
+            "CLIO merged nested typed workflow state:",
+            "CLIO inferred typed tool state:",
+            "CLIO inferred typed tool state from tool observations:",
+        )
+        if (index := text.find(marker)) >= 0
+    ]
+    if not marker_positions:
+        return text
+    visible = text[: min(marker_positions)].rstrip()
+    lines = visible.splitlines()
+    while lines and _looks_like_truncated_user_facing_tail(lines[-1]):
+        lines.pop()
+    return "\n".join(lines).rstrip()
+
+
+def _looks_like_truncated_user_facing_tail(line: str) -> bool:
+    """Return whether a line is likely an unfinished fragment before compact evidence."""
+
+    stripped = line.strip()
+    if not stripped:
+        return True
+    if stripped in {"**Ev", "Ev", "**Evidence", "Evidence"}:
+        return True
+    if stripped.startswith("**") and not stripped.endswith("**") and len(stripped) <= 40:
+        return True
+    if stripped.endswith(("**", "`")):
+        return False
+    return False
+
+
+def _compact_workflow_state_blocks(text: str, *, limit: int = 8) -> list[str]:
+    """Return reconciled typed state before output head/tail truncation."""
+
+    state = _workflow_state_from_outputs([text])
+    if not state:
+        return []
+    block = json.dumps({"workflow_state": state}, sort_keys=True, default=str)
+    return [block][:limit]
 
 
 def _latest_parent_resumed_output_summary(
@@ -2457,6 +3071,40 @@ def _latest_parent_resumed_output_summary(
     return latest
 
 
+def _latest_delegation_output_summary(rows: list[dict[str, Any]]) -> str:
+    """Return the latest completed delegated child output from nested rows."""
+
+    latest = ""
+    for row in _iter_delegation_return_rows(rows):
+        summary = str(row.get("output_summary") or row.get("summary") or "").strip()
+        if summary:
+            latest = summary
+    return latest
+
+
+def _append_nested_workflow_state(output: str, rows: list[dict[str, Any]]) -> str:
+    """Append typed state found in nested completed child rows to a parent return."""
+
+    outputs = [
+        str(row.get("output_summary") or row.get("summary") or "").strip()
+        for row in _iter_delegation_return_rows(rows)
+        if str(row.get("output_summary") or row.get("summary") or "").strip()
+    ]
+    state = _workflow_state_from_outputs(outputs)
+    _merge_workflow_state_mapping(state, _workflow_state_from_handoff_rows(rows))
+    for tool_row in _tool_calls_from_handoff_rows(rows):
+        _merge_inferred_workflow_state(
+            state,
+            _infer_workflow_state_from_tool_call_row(tool_row),
+        )
+    if not state:
+        return output
+    block = _workflow_state_payload(state)
+    if block in output:
+        return output
+    return f"{output.rstrip()}\n\nCLIO merged nested typed workflow state:\n{block}"
+
+
 def _latest_completed_artifact_output_summary(rows: list[dict[str, Any]]) -> str:
     """Return the latest completed child output that contains final artifact evidence."""
 
@@ -2475,6 +3123,50 @@ def _latest_completed_artifact_output_summary(rows: list[dict[str, Any]]) -> str
         if isinstance(children, list):
             stack.extend(child for child in children if isinstance(child, dict))
     return latest
+
+
+def _latest_completed_child_output_summary(
+    rows: list[dict[str, Any]],
+    child_ids: Iterable[str],
+) -> str:
+    """Return the latest completed output from one of the named child experts."""
+
+    target_ids = {str(child_id).strip() for child_id in child_ids if str(child_id).strip()}
+    if not target_ids:
+        return ""
+    latest = ""
+    for row in _iter_delegation_return_rows(rows):
+        if (
+            str(row.get("stage") or "") == "delegate.completed"
+            and str(row.get("status") or "") in {"", "completed"}
+            and str(row.get("agent_id") or row.get("delegate_to") or "").strip() in target_ids
+        ):
+            summary = str(row.get("output_summary") or row.get("summary") or "").strip()
+            if summary:
+                latest = summary
+    return latest
+
+
+def _latest_final_child_output_summary(rows: list[dict[str, Any]]) -> str:
+    """Return completed synthesis/final-report output when a parent finalizes poorly."""
+
+    return _latest_completed_child_output_summary(
+        rows,
+        ("synthesis", "final", "final_report", "report", "summary"),
+    )
+
+
+def _bubbled_child_evidence_output_summary(
+    rows: list[dict[str, Any]],
+    parent_id: str,
+    declared_child_ids: Iterable[str],
+) -> str:
+    """Return the best child-subtree result for strict-depth parent completion."""
+
+    return _latest_parent_resumed_output_summary(
+        rows,
+        parent_id,
+    ) or _latest_completed_child_output_summary(rows, declared_child_ids)
 
 
 def _is_empty_dynamic_agent_answer_error(exc: Exception) -> bool:
@@ -2543,6 +3235,10 @@ def _tool_agent_empty_answer_fallback(trajectory: Any, *, max_items: int = 6) ->
 
     if not trajectory:
         return ""
+    state = _infer_ndp_workflow_state_from_trajectory(trajectory)
+    summary = _workflow_state_user_fallback_summary(state)
+    if summary:
+        return summary
 
     evidence: list[tuple[str, Any]] = []
 
@@ -2591,6 +3287,277 @@ def _tool_agent_empty_answer_fallback(trajectory: Any, *, max_items: int = 6) ->
     return "\n".join(lines)
 
 
+def _workflow_state_user_fallback_summary(state: Mapping[str, Any]) -> str:
+    """Return concise user-facing prose for known typed workflow terminal states."""
+
+    acquisition = state.get("acquisition")
+    resource_discovery = state.get("resource_discovery")
+    station_catalog = state.get("station_catalog")
+    if not isinstance(acquisition, Mapping):
+        return ""
+    if acquisition.get("status") != "metadata_only" or acquisition.get("analysis_ready") is not False:
+        return ""
+
+    lines: list[str] = []
+    metadata_path = str(acquisition.get("metadata_path") or "").strip()
+    source_url = str(acquisition.get("source_url") or "").strip()
+    blocker = str(acquisition.get("blocker") or "").strip()
+    lines.append("Staged EarthScope station metadata, but no analysis-ready station time-series CSV was staged.")
+    if metadata_path:
+        lines.append(f"Metadata CSV: `{metadata_path}`")
+    if source_url:
+        lines.append(f"Metadata source: {source_url}")
+    if isinstance(station_catalog, Mapping):
+        candidate_count = station_catalog.get("candidate_count")
+        radius_km = station_catalog.get("radius_km")
+        center = station_catalog.get("center")
+        center_text = ""
+        if isinstance(center, Mapping):
+            lat = center.get("latitude")
+            lon = center.get("longitude")
+            if lat is not None and lon is not None:
+                try:
+                    lat_value = float(lat)
+                    lon_value = float(lon)
+                    lat_suffix = "N" if lat_value >= 0 else "S"
+                    lon_suffix = "E" if lon_value >= 0 else "W"
+                    center_text = (
+                        f" around {abs(lat_value):g} {lat_suffix}, "
+                        f"{abs(lon_value):g} {lon_suffix}"
+                    )
+                except (TypeError, ValueError):
+                    center_text = f" around {lat}, {lon}"
+        if candidate_count is not None:
+            radius_text = f" within {radius_km} km" if radius_km is not None else ""
+            lines.append(f"Station metadata found {candidate_count} nearby station candidates{radius_text}{center_text}.")
+        stations = station_catalog.get("stations")
+        if isinstance(stations, list) and stations:
+            station_ids = [
+                str(station.get("station") or "").strip()
+                for station in stations
+                if isinstance(station, Mapping) and str(station.get("station") or "").strip()
+            ][:5]
+            if station_ids:
+                lines.append("Nearest station candidates searched/considered: " + ", ".join(station_ids) + ".")
+    if isinstance(resource_discovery, Mapping):
+        searched = resource_discovery.get("searched_station_ids")
+        if isinstance(searched, list) and searched:
+            station_ids = [str(item).strip() for item in searched if str(item).strip()]
+            if station_ids:
+                lines.append("Station-specific NDP searches were attempted for: " + ", ".join(station_ids) + ".")
+        status = str(resource_discovery.get("status") or "").strip()
+        if status == "search_exhausted":
+            lines.append("Resource discovery status: search exhausted for the ranked nearby station set.")
+    if blocker:
+        lines.append(f"Current blocker: {blocker}")
+    lines.append("No GNSS profiling or visualization was run because acquisition remained metadata-only.")
+    return "\n".join(lines)
+
+
+def _positive_ndp_workflow_state_user_summary(state: Mapping[str, Any]) -> str:
+    """Return a visible brief for completed NDP/EarthScope typed workflow state."""
+
+    acquisition = state.get("acquisition")
+    if not isinstance(acquisition, Mapping):
+        return ""
+    if (
+        acquisition.get("status") != "staged"
+        or acquisition.get("analysis_ready") is not True
+    ):
+        return ""
+    local_path = str(acquisition.get("local_path") or acquisition.get("path") or "").strip()
+    if not local_path:
+        return ""
+
+    resource_candidate = state.get("resource_candidate")
+    if not isinstance(resource_candidate, Mapping):
+        resource_candidate = {}
+    station_catalog = state.get("station_catalog")
+    if not isinstance(station_catalog, Mapping):
+        station_catalog = {}
+    profile = state.get("profile")
+    if not isinstance(profile, Mapping):
+        profile = {}
+    visualization = state.get("visualization")
+    if not isinstance(visualization, Mapping):
+        visualization = {}
+    artifact = state.get("artifact")
+    if not isinstance(artifact, Mapping):
+        artifact = {}
+
+    station_id = _station_id_from_station_csv_state(acquisition, resource_candidate)
+    station_match = _station_catalog_match_for_candidate(station_catalog, station_id)
+    source_url = str(
+        acquisition.get("source_url")
+        or resource_candidate.get("resource_url")
+        or ""
+    ).strip()
+    plot_path = str(
+        visualization.get("path")
+        or visualization.get("png_path")
+        or visualization.get("output_path")
+        or artifact.get("path")
+        or artifact.get("png_path")
+        or artifact.get("output_path")
+        or ""
+    ).strip()
+
+    lines: list[str] = ["EarthScope GNSS acquisition, profiling, and visualization completed."]
+
+    center = station_catalog.get("center")
+    radius_km = station_catalog.get("radius_km")
+    if isinstance(center, Mapping):
+        lat = center.get("latitude")
+        lon = center.get("longitude")
+        if lat is not None and lon is not None:
+            region = f"requested region centered at {lat}, {lon}"
+            if radius_km is not None:
+                region += f" with a {radius_km} km radius"
+            lines.append(f"Region: {region}.")
+    elif radius_km is not None:
+        lines.append(f"Region: requested station search radius {radius_km} km.")
+
+    if station_id:
+        station_bits = [f"selected station `{station_id}`"]
+        if isinstance(station_match, Mapping):
+            distance = station_match.get("distance_km")
+            network = str(station_match.get("network") or "").strip()
+            status = str(station_match.get("status") or "").strip()
+            if distance is not None:
+                station_bits.append(f"{distance} km from the requested center")
+            if network:
+                station_bits.append(f"network `{network}`")
+            if status:
+                station_bits.append(f"status `{status}`")
+        elif resource_candidate.get("geographically_grounded") is True:
+            distance = resource_candidate.get("station_distance_km")
+            if distance is not None:
+                station_bits.append(f"{distance} km from the requested center")
+            station_bits.append("matched against the filtered station catalog")
+        lines.append("Station provenance: " + "; ".join(station_bits) + ".")
+
+    lines.append(f"Staged CSV: `{local_path}`.")
+    if source_url:
+        lines.append(f"NDP source URL: {source_url}")
+
+    if profile:
+        columns = profile.get("columns")
+        numeric_columns = profile.get("numeric_columns")
+        rows_scanned = profile.get("rows_scanned")
+        rows_profiled = profile.get("rows_profiled") or profile.get("numeric_summary_rows")
+        profile_bits: list[str] = []
+        if rows_scanned is not None:
+            profile_bits.append(f"rows scanned: {rows_scanned}")
+        if rows_profiled is not None:
+            profile_bits.append(f"rows profiled for numeric summary: {rows_profiled}")
+        if isinstance(columns, list) and columns:
+            shown = ", ".join(f"`{column}`" for column in columns[:10])
+            suffix = "..." if len(columns) > 10 else ""
+            profile_bits.append(f"columns: {shown}{suffix}")
+        if isinstance(numeric_columns, list) and numeric_columns:
+            shown = ", ".join(f"`{column}`" for column in numeric_columns[:10])
+            suffix = "..." if len(numeric_columns) > 10 else ""
+            profile_bits.append(f"numeric/uncertainty-capable columns: {shown}{suffix}")
+        if profile_bits:
+            lines.append("Profile evidence: " + "; ".join(profile_bits) + ".")
+        missing_values = profile.get("missing_values")
+        missing_scope = str(profile.get("missing_values_scope") or "").strip()
+        missing_rows = profile.get("missing_values_rows")
+        if isinstance(missing_values, Mapping) and missing_scope == "profiled_rows":
+            required_columns = acquisition.get("required_columns")
+            if not isinstance(required_columns, list):
+                required_columns = ["time", "east", "north", "up"]
+            scoped_counts = {
+                str(column): missing_values.get(str(column))
+                for column in required_columns
+                if str(column) in missing_values
+            }
+            if scoped_counts:
+                lines.append(
+                    "Missing-value evidence: "
+                    f"{scoped_counts} over {missing_rows} profiled rows "
+                    "(scope: profiled_rows, not full-file completeness)."
+                )
+
+    if plot_path:
+        plot_columns = artifact.get("columns")
+        if isinstance(plot_columns, list) and plot_columns:
+            lines.append(
+                "Visualization: "
+                f"`{plot_path}` plotting {', '.join(f'`{column}`' for column in plot_columns)}."
+            )
+        else:
+            lines.append(f"Visualization: `{plot_path}`.")
+
+    lines.append(
+        "Limitation: this run used the EarthScope GNSS station/time-series evidence "
+        "available through NDP; interpret recency and coverage from the staged CSV "
+        "and profile evidence above. Full-file cadence, duration, gaps, missing-value "
+        "completeness, and quality/suitability criteria were not verified unless "
+        "explicitly listed above."
+    )
+    event_context = state.get("event_context")
+    if isinstance(event_context, Mapping) and event_context:
+        lines.append(
+            "Event context: "
+            "included only to the extent shown in typed event-context evidence; "
+            "do not treat missing event-catalog evidence as evidence of no events."
+        )
+    return "\n".join(lines)
+
+
+_UNSUPPORTED_SCAN_LIMITED_FINAL_ANSWER_PATTERNS = (
+    re.compile(r"\b\d+\s*[- ]?\s*second\s+(?:interval|cadence)\b", re.IGNORECASE),
+    re.compile(r"\b\d+\s*s\s+cadence\b", re.IGNORECASE),
+    re.compile(r"\b\d+\s*%\s+missing\s+in\s+(?:all\s+)?required\s+columns\b", re.IGNORECASE),
+    re.compile(r"\bmissing\s+values?\s*:\s*\*?\*?\s*0\s*%\b", re.IGNORECASE),
+    re.compile(r"\b(?:low|high)[^.\n]*(?:consistent|quality|suitability|noise)\b", re.IGNORECASE),
+    re.compile(r"\b(?:excellent|high-quality|good data|ready for deformation|suitable for deformation)\b", re.IGNORECASE),
+    re.compile(r"\bcovers\s*>\s*\d+\s*%\s+of\s+GNSS\s+stations\b", re.IGNORECASE),
+)
+
+
+def _ndp_answer_has_unsupported_scan_limited_claims(
+    answer: str,
+    state: Mapping[str, Any],
+) -> bool:
+    if not answer.strip() or not _profile_has_scan_limited_scope(state):
+        return False
+    return any(pattern.search(answer) for pattern in _UNSUPPORTED_SCAN_LIMITED_FINAL_ANSWER_PATTERNS)
+
+
+def _positive_ndp_workflow_state_final_answer_fallback(
+    answer: str,
+    state: Mapping[str, Any],
+) -> str:
+    """Replace thin successful NDP prose that drops completed typed evidence."""
+
+    fallback = _positive_ndp_workflow_state_user_summary(state)
+    if not fallback:
+        return ""
+    normalized = answer.casefold()
+    if not normalized.strip():
+        return fallback
+    if _ndp_answer_has_unsupported_scan_limited_claims(answer, state):
+        return fallback
+    required_markers = (
+        "source url",
+        "http",
+        "station",
+        "km",
+        "profile",
+        "rows scanned",
+        "uncertainty",
+        "limitation",
+    )
+    present = sum(1 for marker in required_markers if marker in normalized)
+    cites_csv = ".csv" in normalized
+    cites_plot = ".png" in normalized
+    if cites_csv and cites_plot and present >= 5:
+        return ""
+    return fallback
+
+
 _CONTRADICTORY_MISSING_INPUT_TERMS = (
     "does not exist",
     "file does not exist",
@@ -2637,6 +3604,2250 @@ def _tool_agent_contradictory_answer_fallback(
     )
 
 
+_NDP_TERMINAL_CONTINUATION_RE = re.compile(
+    r"\b(next action|next step|continue|should|would|need to|must)\b"
+    r".{0,180}\b(search|ndp_search_datasets|station[- ]resource|station[- ]specific)\b",
+    flags=re.IGNORECASE | re.DOTALL,
+)
+
+
+def _ndp_terminal_workflow_state_final_answer_fallback(
+    answer: str,
+    state: Mapping[str, Any],
+) -> str:
+    """Replace stale NDP prose that contradicts terminal typed workflow state."""
+
+    acquisition = state.get("acquisition")
+    resource_discovery = state.get("resource_discovery")
+    if not isinstance(acquisition, Mapping) or not isinstance(resource_discovery, Mapping):
+        return ""
+    if (
+        str(resource_discovery.get("status") or "").strip() != "search_exhausted"
+        or acquisition.get("analysis_ready") is not False
+    ):
+        return ""
+    fallback = _workflow_state_user_fallback_summary(state)
+    if not fallback:
+        return ""
+    normalized = answer.casefold()
+    if not normalized.strip():
+        return fallback
+    terminal_markers = (
+        "search exhausted",
+        "search_exhausted",
+        "metadata-only",
+        "metadata only",
+        "no analysis-ready",
+        "no gnss profiling",
+        "station-specific ndp searches were attempted",
+    )
+    already_terminal = any(marker in normalized for marker in terminal_markers)
+    proposes_same_run_search = bool(_NDP_TERMINAL_CONTINUATION_RE.search(answer)) or (
+        "ndp_search_datasets" in normalized
+    )
+    claims_downstream_success = any(
+        marker in normalized
+        for marker in (
+            "png artifact",
+            "plot artifact",
+            "visualization was produced",
+            "profiling was run",
+            "analysis-ready csv is staged",
+            "analysis ready csv is staged",
+        )
+    )
+    if already_terminal and not proposes_same_run_search and not claims_downstream_success:
+        return ""
+    return fallback
+
+
+_EARTHSCOPE_METADATA_RESOURCE_NAMES = {"earthscope_converted_data.csv"}
+
+
+def _first_regex_group(pattern: str, text: str, group: str) -> str:
+    match = re.search(pattern, text, flags=re.IGNORECASE)
+    if not match:
+        return ""
+    return str(match.group(group) or "").strip()
+
+
+def _infer_ndp_workflow_state_from_tool_evidence(output: str) -> dict[str, Any]:
+    """Derive typed acquisition state from NDP tool evidence, not model prose."""
+
+    text = output.strip()
+    lowered = text.casefold()
+    if "ndp" not in lowered and "earthscope" not in lowered:
+        return {}
+    resource_name = _first_regex_group(
+        r'"(?:selected_)?resource_name"\s*:\s*"(?P<value>[^"]+)"',
+        text,
+        "value",
+    )
+    if not resource_name:
+        resource_name = _first_regex_group(
+            r"(?:resource|resource name)\s*[:|-]\s*`?(?P<value>[\w. _-]+?\.csv)`?(?:\s|$)",
+            text,
+            "value",
+        )
+    resource_key = Path(resource_name.strip()).name.casefold()
+    path = _first_regex_group(r'"path"\s*:\s*"(?P<value>[^"]+\.csv)"', text, "value")
+    if not path:
+        path = _first_regex_group(r"`(?P<value>(?:/|~)[^`]+\.csv)`", text, "value")
+    source_url = _first_regex_group(
+        r'"(?:selected_resource_url|source_url|url)"\s*:\s*"(?P<value>https?://[^"]+)"',
+        text,
+        "value",
+    )
+    if not source_url:
+        source_url = _first_regex_group(r"(?P<value>https?://\S+?\.csv)", text, "value")
+    dataset_id = _first_regex_group(r'"dataset_id"\s*:\s*"(?P<value>[^"]+)"', text, "value")
+    dataset_name = _first_regex_group(r'"dataset_name"\s*:\s*"(?P<value>[^"]+)"', text, "value")
+    if resource_key in _EARTHSCOPE_METADATA_RESOURCE_NAMES or any(
+        name in lowered for name in _EARTHSCOPE_METADATA_RESOURCE_NAMES
+    ):
+        metadata_path = path if Path(path).name.casefold() in _EARTHSCOPE_METADATA_RESOURCE_NAMES else ""
+        return {
+            "catalog": {"status": "metadata_found"},
+            "resource_candidate": {
+                "status": "metadata_only",
+                "dataset_id": dataset_id,
+                "dataset_name": dataset_name,
+                "resource_name": resource_name or "earthscope_converted_data.csv",
+                "resource_url": source_url,
+            },
+            "acquisition": {
+                "status": "metadata_only",
+                "analysis_ready": False,
+                "metadata_path": metadata_path,
+                "source_url": source_url,
+                "blocker": "staged resource is station metadata, not a GNSS time-series CSV",
+            },
+        }
+    if (
+        (
+            '"staged": true' in lowered
+            or "staged csv" in lowered
+            or "staged file path" in lowered
+            or "csv (staged)" in lowered
+            or "selected csv (staged)" in lowered
+        )
+        and path.endswith(".csv")
+    ):
+        return {
+            "resource_candidate": {
+                "status": "selected",
+                "dataset_id": dataset_id,
+                "dataset_name": dataset_name,
+                "resource_name": resource_name or Path(path).name,
+                "resource_url": source_url,
+            },
+            "acquisition": {
+                "status": "staged",
+                "analysis_ready": True,
+                "local_path": path,
+                "source_url": source_url,
+                "required_columns": ["time", "east", "north", "up"],
+            },
+        }
+    blocker_is_explicitly_absent = bool(
+        re.search(
+            r"(?im)\bstag(?:e|ing)\s+blocker\s*[:|-]\s*(?:\*?none\*?|null|no\b)",
+            text,
+        )
+    )
+    if (
+        not blocker_is_explicitly_absent
+        and (
+            "staging failed" in lowered
+            or "acquisition blocked" in lowered
+            or "staging blocker" in lowered
+            or "no csv could be staged" in lowered
+            or "no csv staged" in lowered
+            or "no station csv can be staged" in lowered
+            or "no station-specific csv can be staged" in lowered
+            or "could not retrieve" in lowered
+            or "proxy error" in lowered
+            or "502" in lowered
+        )
+        and (source_url or ".csv" in lowered or "csv" in lowered)
+    ):
+        return {
+            "resource_candidate": {
+                "status": "missing",
+                "dataset_id": dataset_id,
+                "dataset_name": dataset_name,
+                "resource_name": resource_name,
+                "resource_url": source_url,
+            },
+            "acquisition": {
+                "status": "blocked",
+                "analysis_ready": False,
+                "source_url": source_url,
+                "blocker": "selected resource could not be staged by NDP tooling",
+            },
+        }
+    return {}
+
+
+def _search_datasets_state_from_mapping(value: Mapping[str, Any]) -> dict[str, Any]:
+    meta = value.get("_meta")
+    meta_tool = str(meta.get("tool") or "") if isinstance(meta, Mapping) else ""
+    if meta_tool != "search_datasets":
+        return {}
+
+    coverage = value.get("search_coverage")
+    if isinstance(coverage, Mapping) and str(coverage.get("status") or "") == "incomplete":
+        return {
+            "catalog": {
+                "status": "search_incomplete",
+                "searches": [dict(coverage)],
+                "candidate_count": value.get("count", 0),
+                "blocker": str(coverage.get("next_action") or "").strip(),
+            },
+            "resource_discovery": {
+                "status": "search_required",
+                "search_terms": ["EarthScope", "GNSS", "GPS", "CSV", "raw_csv"],
+                "reason": str(coverage.get("next_action") or "").strip(),
+            },
+        }
+
+    datasets = value.get("datasets")
+    if not isinstance(datasets, list):
+        return {}
+
+    metadata_candidate: dict[str, Any] = {}
+    csv_candidate: dict[str, Any] = {}
+    for dataset in datasets:
+        if not isinstance(dataset, Mapping):
+            continue
+        resources = dataset.get("resource_summaries")
+        if not isinstance(resources, list):
+            resources = []
+        for resource in resources:
+            if not isinstance(resource, Mapping):
+                continue
+            name = str(resource.get("name") or "").strip()
+            url = str(resource.get("url") or "").strip()
+            format_name = str(resource.get("format") or "").strip().upper()
+            resource_key = Path(name or url).name.casefold()
+            candidate = {
+                "dataset_id": dataset.get("id"),
+                "dataset_name": dataset.get("name") or dataset.get("title"),
+                "resource_name": name or Path(url).name,
+                "resource_url": url,
+            }
+            if resource_key in _EARTHSCOPE_METADATA_RESOURCE_NAMES:
+                metadata_candidate = candidate
+            elif format_name == "CSV" and url.lower().endswith(".csv"):
+                csv_candidate = candidate
+        if csv_candidate:
+            break
+
+    if csv_candidate:
+        return {
+            "catalog": {"status": "candidates_found", "candidate_count": value.get("count", 0)},
+            "resource_candidate": {"status": "selected", **csv_candidate},
+        }
+    if metadata_candidate:
+        return {
+            "catalog": {"status": "metadata_found", "candidate_count": value.get("count", 0)},
+            "resource_candidate": {"status": "metadata_only", **metadata_candidate},
+            "acquisition": {
+                "status": "metadata_only",
+                "analysis_ready": False,
+                "source_url": metadata_candidate.get("resource_url"),
+                "blocker": "station metadata found; station filtering is required before analysis",
+            },
+        }
+
+    total_found = value.get("total_found", value.get("count", 0))
+    try:
+        total = int(total_found)
+    except (TypeError, ValueError):
+        total = 0
+    if total <= 0:
+        if isinstance(coverage, Mapping):
+            resource_format = str(coverage.get("resource_format") or "").strip()
+            search_terms = coverage.get("search_terms")
+            if resource_format or (
+                isinstance(search_terms, list)
+                and any(term not in {"EarthScope", "GNSS", "GPS", "CSV", "raw_csv"} for term in map(str, search_terms))
+            ):
+                reason = str(coverage.get("next_action") or "").strip() or (
+                    "Zero-result constrained catalog search is not enough to prove "
+                    "no EarthScope GNSS candidates; run broad unformatted EarthScope "
+                    "GNSS/GPS CSV/raw_csv discovery before claiming absence."
+                )
+                return {
+                    "catalog": {
+                        "status": "search_incomplete",
+                        "candidate_count": 0,
+                        "searches": [dict(coverage)],
+                        "blocker": reason,
+                    },
+                    "resource_discovery": {
+                        "status": "search_required",
+                        "search_terms": ["EarthScope", "GNSS", "GPS", "CSV", "raw_csv"],
+                        "reason": reason,
+                    },
+                }
+        return {
+            "catalog": {
+                "status": "no_candidates",
+                "candidate_count": 0,
+                "searches": [dict(coverage)] if isinstance(coverage, Mapping) else [],
+            }
+        }
+    return {"catalog": {"status": "partial", "candidate_count": total}}
+
+
+def _infer_ndp_search_state_from_tool_evidence(output: str) -> dict[str, Any]:
+    """Derive NDP catalog search coverage from search_datasets observations."""
+
+    text = output.strip()
+    lowered = text.casefold()
+    if "search_datasets" not in lowered and "search_coverage" not in lowered:
+        return {}
+
+    def visit(value: Any) -> dict[str, Any]:
+        if isinstance(value, Mapping):
+            preview = value.get("preview")
+            if isinstance(preview, str) and preview.strip():
+                for obj in _json_objects_from_text(preview):
+                    state = visit(obj)
+                    if state:
+                        return state
+            state = _search_datasets_state_from_mapping(value)
+            if state:
+                return state
+            for child in value.values():
+                state = visit(child)
+                if state:
+                    return state
+        elif isinstance(value, list):
+            for child in value:
+                state = visit(child)
+                if state:
+                    return state
+        return {}
+
+    for obj in _json_objects_from_text(text):
+        state = visit(obj)
+        if state:
+            return state
+    return {}
+
+
+def _decoded_tool_mapping(value: Any) -> Mapping[str, Any] | None:
+    if isinstance(value, Mapping):
+        return value
+    if isinstance(value, str):
+        with suppress(json.JSONDecodeError, TypeError):
+            decoded = json.loads(value)
+            if isinstance(decoded, Mapping):
+                return decoded
+    return None
+
+
+def _station_ids_from_workflow_state(state: Mapping[str, Any]) -> list[str]:
+    catalog = state.get("station_catalog")
+    if not isinstance(catalog, Mapping):
+        return []
+    stations = catalog.get("stations")
+    if not isinstance(stations, list):
+        return []
+    station_ids: list[str] = []
+    for station in stations:
+        if not isinstance(station, Mapping):
+            continue
+        station_id = str(station.get("station") or "").strip().upper()
+        if station_id:
+            station_ids.append(station_id)
+    return list(dict.fromkeys(station_ids))
+
+
+def _search_call_station_id(
+    *,
+    args: Mapping[str, Any],
+    result: Mapping[str, Any],
+    station_ids: list[str],
+) -> str:
+    candidates: list[str] = []
+    coverage = result.get("search_coverage")
+    if isinstance(coverage, Mapping):
+        for key in ("resource_name", "station", "station_id"):
+            candidates.append(str(coverage.get(key) or ""))
+        terms = coverage.get("search_terms")
+        if isinstance(terms, list):
+            candidates.extend(str(term) for term in terms)
+    for key in ("resource_name", "station", "station_id"):
+        candidates.append(str(args.get(key) or ""))
+    terms = args.get("search_terms")
+    if isinstance(terms, list):
+        candidates.extend(str(term) for term in terms)
+    haystack = " ".join(candidates).upper()
+    for station_id in station_ids:
+        if re.search(rf"(?<![A-Z0-9]){re.escape(station_id)}(?![A-Z0-9])", haystack):
+            return station_id
+    return ""
+
+
+def _search_call_is_station_resource_search(
+    *,
+    args: Mapping[str, Any],
+    result: Mapping[str, Any],
+    station_ids: list[str],
+    station_id: str,
+) -> bool:
+    coverage = result.get("search_coverage")
+    if isinstance(coverage, Mapping) and coverage.get("station_resource_search") is True:
+        return True
+    if station_id:
+        return True
+    resource_format = str(args.get("resource_format") or "").strip().upper()
+    if resource_format != "CSV":
+        return False
+    if not station_ids:
+        return False
+    coverage = result.get("search_coverage")
+    if isinstance(coverage, Mapping):
+        domain = str(coverage.get("domain") or "").strip().lower()
+        search_terms = coverage.get("search_terms")
+        if domain == "earthscope_gnss" and isinstance(search_terms, list):
+            normalized_terms = {str(term).strip().casefold() for term in search_terms}
+            if {"earthscope", "csv"}.issubset(normalized_terms) and (
+                "gnss" in normalized_terms or "gps" in normalized_terms or "raw_csv" in normalized_terms
+            ):
+                return True
+    text = _text_for_tool_evidence({"args": args, "result": result}).upper()
+    return any(re.search(rf"(?<![A-Z0-9]){re.escape(station)}(?![A-Z0-9])", text) for station in station_ids)
+
+
+def _station_resource_search_state_from_rows(
+    rows: list[Mapping[str, Any]],
+    selected: Mapping[str, Any],
+) -> dict[str, Any]:
+    acquisition = selected.get("acquisition")
+    station_ids = _station_ids_from_workflow_state(selected)
+    candidate = selected.get("resource_candidate")
+    analysis_ready = isinstance(acquisition, Mapping) and acquisition.get("analysis_ready") is True
+    if (
+        isinstance(candidate, Mapping)
+        and str(candidate.get("status") or "") in {"selected", "candidate_found", "resource_found"}
+        and str(candidate.get("resource_url") or "").lower().endswith(".csv")
+        and Path(str(candidate.get("resource_name") or candidate.get("resource_url") or "")).name.casefold()
+        not in _EARTHSCOPE_METADATA_RESOURCE_NAMES
+    ):
+        candidate_station_id = _station_id_from_station_csv_state(
+            {
+                "local_path": str(candidate.get("resource_name") or ""),
+                "source_url": str(candidate.get("resource_url") or ""),
+            },
+            candidate,
+        )
+        if candidate_station_id in station_ids:
+            return {}
+        if analysis_ready and not station_ids:
+            return {}
+    elif analysis_ready:
+        return {}
+    if not station_ids:
+        return {}
+
+    attempts: list[dict[str, Any]] = []
+    searched_station_ids: list[str] = []
+    seen_attempt_keys: set[str] = set()
+    duplicate_attempt_count = 0
+    for row in rows:
+        if str(row.get("name") or "").strip() != "ndp_search_datasets":
+            continue
+        args = _decoded_tool_mapping(row.get("args")) or {}
+        result = _decoded_tool_mapping(row.get("result"))
+        if not result:
+            continue
+        station_id = _search_call_station_id(args=args, result=result, station_ids=station_ids)
+        if not _search_call_is_station_resource_search(
+            args=args,
+            result=result,
+            station_ids=station_ids,
+            station_id=station_id,
+        ):
+            continue
+        search_terms = tuple(str(term).strip().casefold() for term in args.get("search_terms") or [])
+        attempt_key = "|".join(
+            (
+                station_id or "",
+                str(args.get("resource_name") or "").strip().casefold(),
+                str(args.get("resource_format") or "").strip().casefold(),
+                ",".join(search_terms),
+            )
+        )
+        if attempt_key in seen_attempt_keys:
+            duplicate_attempt_count += 1
+            continue
+        seen_attempt_keys.add(attempt_key)
+        search_state = _search_datasets_state_from_mapping(result)
+        resource_candidate = search_state.get("resource_candidate")
+        found_candidate = False
+        off_region_candidate = ""
+        if (
+            isinstance(resource_candidate, Mapping)
+            and str(resource_candidate.get("status") or "") == "selected"
+        ):
+            candidate_station_id = _station_id_from_station_csv_state(
+                {
+                    "local_path": str(resource_candidate.get("resource_name") or ""),
+                    "source_url": str(resource_candidate.get("resource_url") or ""),
+                },
+                resource_candidate,
+            )
+            found_candidate = bool(
+                candidate_station_id
+                and candidate_station_id in station_ids
+                and (not station_id or candidate_station_id == station_id)
+            )
+            if candidate_station_id and not found_candidate:
+                off_region_candidate = candidate_station_id
+        if found_candidate:
+            return {}
+        if station_id:
+            searched_station_ids.append(station_id)
+        attempts.append(
+            {
+                "station_id": station_id,
+                "args": dict(args),
+                "result_count": result.get("count", result.get("total_found", 0)),
+                "status": "off_region_candidate_ignored" if off_region_candidate else "no_station_csv_found",
+                "off_region_candidate_station_id": off_region_candidate,
+            }
+        )
+
+    searched_station_ids = list(dict.fromkeys(searched_station_ids))
+    required_station_count = min(5, len(station_ids))
+    if len(searched_station_ids) < required_station_count and len(attempts) < 8:
+        if not attempts:
+            return {}
+        resource_state: dict[str, Any] = {
+            "resource_discovery": {
+                "status": "search_required",
+                "searched_station_ids": searched_station_ids,
+                "search_attempt_count": len(attempts),
+                "remaining_station_ids": [
+                    station for station in station_ids[:required_station_count] if station not in searched_station_ids
+                ],
+                "reason": "station-specific resource searches have not covered the ranked station candidates yet",
+            }
+        }
+        if duplicate_attempt_count:
+            resource_state["resource_discovery"][
+                "duplicate_search_attempt_count"
+            ] = duplicate_attempt_count
+            resource_state["resource_discovery"][
+                "trace_quality"
+            ] = "repeated_station_resource_search"
+        return resource_state
+
+    blocker = (
+        "station-specific NDP searches for the ranked nearby stations did not "
+        "return a concrete GNSS time-series CSV"
+    )
+    resource_discovery: dict[str, Any] = {
+        "status": "search_exhausted",
+        "searched_station_ids": searched_station_ids,
+        "search_attempt_count": len(attempts),
+        "searches": attempts[:12],
+        "blocker": blocker,
+    }
+    if duplicate_attempt_count:
+        resource_discovery["duplicate_search_attempt_count"] = duplicate_attempt_count
+        resource_discovery["trace_quality"] = "repeated_station_resource_search"
+    return {
+        "resource_discovery": resource_discovery,
+        "acquisition": {
+            "status": "metadata_only",
+            "analysis_ready": False,
+            "blocker": blocker,
+        },
+    }
+
+
+def _station_catalog_state_from_mapping(value: Mapping[str, Any]) -> dict[str, Any]:
+    meta = value.get("_meta")
+    meta_tool = str(meta.get("tool") or "") if isinstance(meta, Mapping) else ""
+    stations = value.get("stations")
+    looks_like_station_filter = (
+        meta_tool == "filter_earthscope_station_catalog"
+        or (
+            isinstance(stations, list)
+            and isinstance(value.get("center"), Mapping)
+            and value.get("radius_km") is not None
+            and any(
+                isinstance(station, Mapping)
+                and "station" in station
+                and "distance_km" in station
+                for station in stations[:5]
+            )
+        )
+    )
+    if not looks_like_station_filter or not isinstance(stations, list):
+        return {}
+    if value.get("catalog_applicable") is False:
+        return {
+            "resource_candidate": {
+                "resource_kind": str(value.get("resource_kind") or "station_timeseries_csv"),
+                "catalog_applicable": False,
+            },
+            "acquisition": {
+                "status": "staged",
+                "analysis_ready": bool(value.get("analysis_ready")),
+                "local_path": str(value.get("path") or "").strip(),
+            },
+        }
+    normalized_stations: list[dict[str, Any]] = []
+    search_terms: list[str] = []
+    station_resource_queries: list[dict[str, Any]] = []
+    for raw_station in stations[:20]:
+        if not isinstance(raw_station, Mapping):
+            continue
+        station: dict[str, Any] = {
+            str(key): raw_station[key]
+            for key in (
+                "station",
+                "latitude",
+                "longitude",
+                "network",
+                "status",
+                "distance_km",
+            )
+            if key in raw_station
+        }
+        normalized_stations.append(station)
+        suggested = raw_station.get("suggested_search_terms")
+        if isinstance(suggested, list):
+            search_terms.extend(str(term) for term in suggested if str(term).strip())
+        discovery = raw_station.get("resource_discovery")
+        if isinstance(discovery, Mapping):
+            discovered_terms = discovery.get("search_terms")
+            if isinstance(discovered_terms, list):
+                search_terms.extend(str(term) for term in discovered_terms if str(term).strip())
+    top_level_discovery = value.get("resource_discovery")
+    if isinstance(top_level_discovery, Mapping):
+        discovered_terms = top_level_discovery.get("search_terms")
+        if isinstance(discovered_terms, list):
+            search_terms.extend(str(term) for term in discovered_terms if str(term).strip())
+        raw_queries = top_level_discovery.get("station_resource_queries")
+        if isinstance(raw_queries, list):
+            for raw_query in raw_queries[:10]:
+                if isinstance(raw_query, Mapping):
+                    station_resource_queries.append(dict(raw_query))
+    deduped_terms = list(dict.fromkeys(search_terms))
+    center = value.get("center")
+    station_count = value.get("within_radius_count")
+    if station_count is None:
+        station_count = len(normalized_stations)
+    if normalized_stations:
+        discovery_state = {
+            "status": "search_required",
+            "search_terms": deduped_terms[:32],
+            "station_resource_queries": station_resource_queries[:10],
+            "reason": (
+                "Nearby station metadata was found, but a concrete station time-series "
+                "resource still has to be discovered and staged."
+            ),
+        }
+        station_status = "ranked_metadata_only"
+    else:
+        discovery_state = {
+            "status": "no_station_candidates",
+            "search_terms": deduped_terms[:32],
+            "station_resource_queries": station_resource_queries[:10],
+            "reason": "No nearby stations were returned by the station metadata filter.",
+        }
+        station_status = "no_candidates"
+    return {
+        "acquisition": {
+            "status": "metadata_only",
+            "analysis_ready": False,
+            "metadata_path": str(value.get("path") or "").strip(),
+            "blocker": "staged resource is station metadata, not a GNSS time-series CSV",
+        },
+        "station_catalog": {
+            "status": station_status,
+            "candidate_count": station_count,
+            "stations": normalized_stations,
+            "metadata_only": True,
+            "analysis_ready_resource_count": 0,
+            "center": center if isinstance(center, Mapping) else {},
+            "radius_km": value.get("radius_km"),
+        },
+        "resource_discovery": discovery_state,
+    }
+
+
+def _infer_ndp_station_catalog_state_from_tool_evidence(output: str) -> dict[str, Any]:
+    """Derive station-catalog/resource-discovery state from station filter output."""
+
+    text = output.strip()
+    lowered = text.casefold()
+    if "filter_earthscope_station_catalog" not in lowered and "resource_discovery" not in lowered:
+        return {}
+
+    def visit(value: Any) -> dict[str, Any]:
+        if isinstance(value, Mapping):
+            preview = value.get("preview")
+            if isinstance(preview, str) and preview.strip():
+                for obj in _json_objects_from_text(preview):
+                    state = visit(obj)
+                    if state:
+                        return state
+            state = _station_catalog_state_from_mapping(value)
+            if state:
+                return state
+            for child in value.values():
+                state = visit(child)
+                if state:
+                    return state
+        elif isinstance(value, list):
+            for child in value:
+                state = visit(child)
+                if state:
+                    return state
+        return {}
+
+    for obj in _json_objects_from_text(text):
+        state = visit(obj)
+        if state:
+            return state
+    normalized = text
+    for _ in range(3):
+        normalized = normalized.replace(r"\"", '"').replace(r"\\", "\\")
+    if '"stations"' not in normalized or '"distance_km"' not in normalized:
+        return {}
+    station_matches = list(
+        re.finditer(
+            r'"station"\s*:\s*"(?P<station>[^"]+)".{0,800}?'
+            r'"latitude"\s*:\s*(?P<latitude>-?\d+(?:\.\d+)?).{0,800}?'
+            r'"longitude"\s*:\s*(?P<longitude>-?\d+(?:\.\d+)?).{0,800}?'
+            r'"network"\s*:\s*"(?P<network>[^"]*)".{0,800}?'
+            r'"status"\s*:\s*"(?P<status>[^"]*)".{0,800}?'
+            r'"distance_km"\s*:\s*(?P<distance>-?\d+(?:\.\d+)?)',
+            normalized,
+            flags=re.DOTALL,
+        )
+    )
+    if not station_matches:
+        return {}
+    stations = [
+        {
+            "station": match.group("station"),
+            "latitude": float(match.group("latitude")),
+            "longitude": float(match.group("longitude")),
+            "network": match.group("network"),
+            "status": match.group("status"),
+            "distance_km": float(match.group("distance")),
+        }
+        for match in station_matches[:20]
+    ]
+    center_match = re.search(
+        r'"center"\s*:\s*\{.{0,240}?"latitude"\s*:\s*(?P<latitude>-?\d+(?:\.\d+)?).{0,240}?'
+        r'"longitude"\s*:\s*(?P<longitude>-?\d+(?:\.\d+)?)',
+        normalized,
+        flags=re.DOTALL,
+    )
+    radius_match = re.search(r'"radius_km"\s*:\s*(?P<radius>\d+(?:\.\d+)?)', normalized)
+    count_match = re.search(
+        r'"within_radius_count"\s*:\s*(?P<count>\d+)',
+        normalized,
+    )
+    metadata_path = _first_regex_group(
+        r'"path"\s*:\s*"(?P<value>[^"]*earthscope_converted_data\.csv)"',
+        normalized,
+        "value",
+    )
+    return {
+        "acquisition": {
+            "status": "metadata_only",
+            "analysis_ready": False,
+            "metadata_path": metadata_path,
+            "blocker": "staged resource is station metadata, not a GNSS time-series CSV",
+        },
+        "station_catalog": {
+            "status": "ranked_metadata_only",
+            "candidate_count": int(count_match.group("count")) if count_match else len(stations),
+            "stations": stations,
+            "metadata_only": True,
+            "analysis_ready_resource_count": 0,
+            "center": (
+                {
+                    "latitude": float(center_match.group("latitude")),
+                    "longitude": float(center_match.group("longitude")),
+                }
+                if center_match
+                else {}
+            ),
+            "radius_km": float(radius_match.group("radius")) if radius_match else None,
+        },
+        "resource_discovery": {
+            "status": "search_required",
+            "search_terms": [],
+            "station_resource_queries": [],
+            "reason": (
+                "Nearby station metadata was found, but a concrete station time-series "
+                "resource still has to be discovered and staged."
+            ),
+        },
+    }
+
+
+def _profile_state_from_mapping(value: Mapping[str, Any]) -> dict[str, Any]:
+    meta = value.get("_meta")
+    meta_tool = str(meta.get("tool") or "") if isinstance(meta, Mapping) else ""
+    path = str(value.get("path") or value.get("filepath") or "").strip()
+    columns = value.get("columns")
+    rows_scanned = value.get("rows_scanned")
+    if not (
+        meta_tool == "profile_csv_resource"
+        or (
+            path.endswith(".csv")
+            and isinstance(columns, list)
+            and rows_scanned is not None
+            and "numeric_summary" in value
+        )
+    ):
+        return {}
+    normalized_columns = [str(column) for column in columns] if isinstance(columns, list) else []
+    numeric_summary = value.get("numeric_summary")
+    numeric_columns = (
+        [str(column) for column in numeric_summary.keys()]
+        if isinstance(numeric_summary, Mapping)
+        else []
+    )
+    return {
+        "profile": {
+            "status": "complete",
+            "local_path": path,
+            "columns": normalized_columns[:64],
+            "rows_scanned": rows_scanned,
+            "rows_examined": value.get("rows_examined"),
+            "rows_profiled": value.get("rows_profiled"),
+            "numeric_summary_rows": value.get("numeric_summary_rows"),
+            "scan_limited": bool(value.get("scan_limited")),
+            "profile_limited": value.get("profile_limited"),
+            "missing_values": value.get("missing_values"),
+            "missing_values_rows": value.get("missing_values_rows"),
+            "missing_values_scope": value.get("missing_values_scope"),
+            "numeric_columns": numeric_columns[:64],
+        }
+    }
+
+
+def _infer_ndp_profile_state_from_tool_evidence(output: str) -> dict[str, Any]:
+    """Derive typed CSV profile state from NDP profiling tool evidence."""
+
+    text = output.strip()
+    lowered = text.casefold()
+    if (
+        "profile_csv_resource" not in lowered
+        and "numeric_summary" not in lowered
+        and "rows_scanned" not in lowered
+    ):
+        return {}
+
+    def visit(value: Any) -> dict[str, Any]:
+        if isinstance(value, Mapping):
+            state = _profile_state_from_mapping(value)
+            if state:
+                return state
+            for child in value.values():
+                state = visit(child)
+                if state:
+                    return state
+        elif isinstance(value, list):
+            for child in value:
+                state = visit(child)
+                if state:
+                    return state
+        return {}
+
+    for obj in _json_objects_from_text(text):
+        state = visit(obj)
+        if state:
+            return state
+    return {}
+
+
+def _plot_state_from_mapping(value: Mapping[str, Any]) -> dict[str, Any]:
+    meta = value.get("_meta")
+    meta_tool = str(meta.get("tool") or "") if isinstance(meta, Mapping) else ""
+    output_path = str(value.get("output_path") or "").strip()
+    source_path = str(value.get("path") or value.get("filepath") or "").strip()
+    if not (
+        meta_tool == "plot_csv_timeseries"
+        or (
+            output_path.endswith(".png")
+            and "output_size_bytes" in value
+            and "rows_plotted" in value
+        )
+    ):
+        return {}
+    y_columns = value.get("y_columns")
+    return {
+        "artifact": {
+            "status": "ready",
+            "path": output_path,
+            "kind": "gnss_timeseries_plot",
+            "size_bytes": value.get("output_size_bytes"),
+            "columns": [str(column) for column in y_columns] if isinstance(y_columns, list) else [],
+            "rows_plotted": value.get("rows_plotted"),
+        },
+        "visualization": {
+            "status": "complete",
+            "path": output_path,
+            "source_path": source_path,
+        },
+    }
+
+
+def _infer_ndp_plot_state_from_tool_evidence(output: str) -> dict[str, Any]:
+    """Derive typed artifact state from NDP plotting tool evidence."""
+
+    text = output.strip()
+    lowered = text.casefold()
+    if (
+        "plot_csv_timeseries" not in lowered
+        and "output_size_bytes" not in lowered
+        and ".png" not in lowered
+    ):
+        return {}
+
+    def visit(value: Any) -> dict[str, Any]:
+        if isinstance(value, Mapping):
+            state = _plot_state_from_mapping(value)
+            if state:
+                return state
+            for child in value.values():
+                state = visit(child)
+                if state:
+                    return state
+        elif isinstance(value, list):
+            for child in value:
+                state = visit(child)
+                if state:
+                    return state
+        return {}
+
+    for obj in _json_objects_from_text(text):
+        state = visit(obj)
+        if state:
+            return state
+    return {}
+
+
+def _merge_inferred_workflow_state(
+    target: dict[str, Any],
+    incoming: Mapping[str, Any],
+) -> None:
+    for key, value in incoming.items():
+        if isinstance(value, Mapping) and isinstance(target.get(key), dict):
+            _merge_non_empty_mapping(target[key], {str(k): v for k, v in value.items()})
+        else:
+            target[str(key)] = value
+
+
+def _value_has_semantic_content(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, list | tuple | set | dict):
+        return bool(value)
+    return True
+
+
+def _merge_non_empty_mapping(target: dict[str, Any], incoming: Mapping[str, Any]) -> None:
+    """Merge without letting empty model fields erase tool provenance."""
+
+    for raw_key, raw_value in incoming.items():
+        key = str(raw_key)
+        current = target.get(key)
+        if not _value_has_semantic_content(raw_value) and _value_has_semantic_content(current):
+            continue
+        target[key] = raw_value
+
+
+_UNICODE_PATH_HYPHENS = {
+    "\u2010": "-",
+    "\u2011": "-",
+    "\u2012": "-",
+    "\u2013": "-",
+    "\u2014": "-",
+    "\u2212": "-",
+}
+
+
+def _normalize_pathlike_text(value: str) -> str:
+    normalized = value
+    for source, replacement in _UNICODE_PATH_HYPHENS.items():
+        normalized = normalized.replace(source, replacement)
+    return normalized
+
+
+def _normalize_workflow_state_scalar(key: str, value: Any) -> Any:
+    if not isinstance(value, str):
+        return value
+    lowered = key.lower()
+    if any(token in lowered for token in ("path", "url", "filepath", "filename", "resource_name")):
+        return _normalize_pathlike_text(value)
+    return value
+
+
+def _workflow_status_rank(section: str, value: Mapping[str, Any]) -> int:
+    """Return semantic progress rank for workflow-state merge precedence."""
+
+    status = str(value.get("status") or "").strip().lower()
+    if section == "acquisition":
+        local_path = str(value.get("local_path") or value.get("path") or "").strip()
+        if (
+            status == "staged"
+            and value.get("analysis_ready") is True
+            and local_path.startswith(("/", "~"))
+            and not Path(local_path).expanduser().is_file()
+        ):
+            return 1
+        if status == "staged" and value.get("analysis_ready") is True:
+            return 5
+        if status == "staged":
+            return 4
+        if status == "metadata_only":
+            return 3
+        if status in {"blocked", "missing"}:
+            return 2
+        if status:
+            return 1
+        return 0
+    if section == "resource_candidate":
+        if status == "selected":
+            return 4
+        if status == "metadata_only":
+            return 3
+        if status in {"missing", "blocked"}:
+            return 2
+        if status:
+            return 1
+        return 0
+    if section in {"profile", "visualization", "artifact", "network_analysis"}:
+        if status in {"complete", "completed", "created", "plotted"}:
+            return 4
+        if status in {"blocked", "missing"}:
+            return 2
+        if status:
+            return 1
+        return 0
+    if section == "catalog":
+        if status in {"candidates_found", "metadata_found"}:
+            return 3
+        if status == "search_incomplete":
+            return 2
+        if status in {"no_candidates", "blocked"}:
+            return 2
+        if status:
+            return 1
+        return 0
+    if section == "station_catalog":
+        if status in {"ranked", "ranked_metadata_only"}:
+            return 3
+        if status in {"no_candidates", "blocked"}:
+            return 2
+        if status:
+            return 1
+        return 0
+    if section == "resource_discovery":
+        if status in {"resource_found", "candidate_found"}:
+            return 4
+        if status == "search_required":
+            return 3
+        if status in {"search_exhausted", "no_station_candidates", "blocked"}:
+            return 2
+        if status:
+            return 1
+        return 0
+    return 0
+
+
+def _normalize_workflow_state_section(section: str, value: Mapping[str, Any]) -> dict[str, Any]:
+    normalized = {
+        str(k): _normalize_workflow_state_scalar(str(k), v)
+        for k, v in value.items()
+    }
+    if section != "acquisition":
+        return normalized
+    status = str(normalized.get("status") or "").strip().lower()
+    local_path = str(normalized.get("local_path") or normalized.get("path") or "").strip()
+    if normalized.get("analysis_ready") is True and (status != "staged" or not local_path):
+        normalized["analysis_ready"] = False
+        if status in {"blocked", "missing", "metadata_only"}:
+            normalized["status"] = status
+        else:
+            normalized["status"] = "candidate_found"
+        normalized.setdefault(
+            "blocker",
+            "analysis-ready acquisition requires a staged local CSV path",
+        )
+    elif normalized.get("analysis_ready") is True and status == "staged" and local_path:
+        normalized.pop("blocker", None)
+    return normalized
+
+
+_UNVERIFIED_GEOSPATIAL_PROVENANCE_TOKENS = (
+    "usgs",
+    "earthscope",
+    "unavco",
+    "station catalog",
+    "station catalogue",
+    "station footprints",
+    "gnss station",
+)
+
+
+def _sanitize_geospatial_workflow_state(state: dict[str, Any]) -> None:
+    """Prevent no-tool geospatial resolution from claiming named data provenance."""
+
+    for section in ("geospatial", "region"):
+        value = state.get(section)
+        if not isinstance(value, dict):
+            continue
+        provenance = str(value.get("provenance") or "").strip()
+        if not provenance:
+            continue
+        lowered = provenance.casefold()
+        if not any(token in lowered for token in _UNVERIFIED_GEOSPATIAL_PROVENANCE_TOKENS):
+            continue
+        value["provenance"] = "model_geographic_prior"
+        warning = "geospatial provenance was model-derived; no geocoder/source tool was called"
+        warnings = value.get("warnings")
+        if isinstance(warnings, list):
+            if warning not in warnings:
+                warnings.append(warning)
+        elif warnings in (None, "", False):
+            value["warnings"] = [warning]
+        else:
+            value["warnings"] = [str(warnings), warning]
+
+
+def _event_catalog_state_requires_capability_blocker(value: Mapping[str, Any]) -> bool:
+    status = str(value.get("status") or "").strip().casefold()
+    resource_status = str(value.get("resource_status") or value.get("event_catalog_resource_status") or "").strip().casefold()
+    if status == "metadata_found" and resource_status in {"missing", "unavailable", "blocked"}:
+        return True
+    reason = " ".join(
+        str(value.get(key) or "")
+        for key in ("reason", "blocker", "description", "message")
+    ).casefold()
+    if status in {"blocked", "missing", "unavailable", "partial"} and any(
+        token in reason
+        for token in (
+            "no live event",
+            "no seismic event data",
+            "only gnss",
+            "no event-specific",
+            "event catalog tool",
+            "event-catalog tool",
+        )
+    ):
+        return True
+    limitations = value.get("limitations")
+    if isinstance(limitations, list):
+        normalized = {str(item).strip().casefold() for item in limitations}
+        if "no_live_event_catalog_tool" in normalized or "no live event catalog tool" in normalized:
+            return True
+    return False
+
+
+def _sanitize_event_context_workflow_state(state: dict[str, Any]) -> None:
+    """Normalize no-tool event claims into a blocked capability-gap state."""
+
+    for key in ("event_catalog", "event_catalog_capability"):
+        value = state.get(key)
+        if not isinstance(value, Mapping) or not _event_catalog_state_requires_capability_blocker(value):
+            continue
+        state["event_context"] = _event_context_capability_blocker_state()
+        state.pop(key, None)
+
+
+def _profile_has_scan_limited_scope(state: Mapping[str, Any]) -> bool:
+    profile = state.get("profile")
+    if not isinstance(profile, Mapping):
+        return False
+    if profile.get("scan_limited") is True or profile.get("profile_limited") is True:
+        return True
+    rows_scanned = profile.get("rows_scanned") or profile.get("rows_examined")
+    rows_profiled = profile.get("rows_profiled") or profile.get("numeric_summary_rows")
+    try:
+        return int(rows_scanned) > int(rows_profiled)
+    except (TypeError, ValueError):
+        return False
+
+
+def _mapping_has_explicit_quality_criteria(value: Mapping[str, Any]) -> bool:
+    criteria_keys = {
+        "quality_criteria",
+        "suitability_criteria",
+        "qc_decoding",
+        "qc_decoded",
+        "noise_criteria",
+        "fitness_criteria",
+    }
+    return any(key in value and _value_has_semantic_content(value.get(key)) for key in criteria_keys)
+
+
+def _sanitize_station_quality_mapping(value: dict[str, Any], *, profile_scan_limited: bool) -> None:
+    if not profile_scan_limited:
+        return
+    if not _mapping_has_explicit_quality_criteria(value):
+        for key in (
+            "cadence",
+            "cadence_estimated",
+            "cadence_hz",
+            "cadence_hz_estimated",
+            "completeness",
+            "data_completeness",
+            "coverage_days",
+            "coverage",
+            "coverage_rating",
+            "duration_days",
+            "missing_values_percent",
+            "notes",
+            "quality_consistent",
+            "rating",
+            "suitability",
+            "time_coverage_days",
+            "overall_quality",
+            "data_quality",
+            "quality",
+            "noise_level",
+            "ready_for_deformation",
+        ):
+            value.pop(key, None)
+    if isinstance(value.get("missing_values"), bool):
+        value.pop("missing_values", None)
+
+
+def _sanitize_scan_limited_workflow_state(state: dict[str, Any]) -> None:
+    """Remove unsupported QC/completeness shortcuts from typed scan-limited state."""
+
+    profile_scan_limited = _profile_has_scan_limited_scope(state)
+    if not profile_scan_limited:
+        return
+    selected_station = state.get("selected_station")
+    if isinstance(selected_station, dict):
+        _sanitize_station_quality_mapping(selected_station, profile_scan_limited=True)
+    assessment = state.get("assessment")
+    if isinstance(assessment, dict):
+        _sanitize_station_quality_mapping(assessment, profile_scan_limited=True)
+        nested_station = assessment.get("selected_station")
+        if isinstance(nested_station, dict):
+            _sanitize_station_quality_mapping(nested_station, profile_scan_limited=True)
+        nested_quality = assessment.get("data_quality")
+        if isinstance(nested_quality, dict) and not _mapping_has_explicit_quality_criteria(assessment):
+            for key in (
+                "cadence",
+                "cadence_estimated",
+                "cadence_hz",
+                "cadence_hz_estimated",
+                "missing_values",
+                "noise",
+                "noise_level",
+                "overall_quality",
+                "quality",
+                "suitability",
+                "temporal_density",
+            ):
+                nested_quality.pop(key, None)
+            if not nested_quality:
+                assessment.pop("data_quality", None)
+
+
+def _event_context_capability_blocker_state() -> dict[str, Any]:
+    return {
+        "status": "blocked",
+        "blocker": "no live event catalog tool available in this pack",
+        "verified_event_count": None,
+        "limitations": ["no_live_event_catalog_tool"],
+        "next_action": (
+            "add or call a live earthquake/event catalog tool for event counts, "
+            "magnitudes, and dates"
+        ),
+    }
+
+
+def _filter_event_context_authority_state(state: Mapping[str, Any]) -> dict[str, Any]:
+    """Keep event-catalog expert state focused on typed event-context evidence."""
+
+    event_context = state.get("event_context")
+    if isinstance(event_context, Mapping):
+        return {"event_context": dict(event_context)}
+
+    for key in ("event_catalog", "event_catalog_capability"):
+        value = state.get(key)
+        if isinstance(value, Mapping) and _event_catalog_state_requires_capability_blocker(value):
+            return {"event_context": _event_context_capability_blocker_state()}
+
+    catalog = state.get("catalog")
+    if isinstance(catalog, Mapping):
+        status = str(catalog.get("status") or "").strip().casefold()
+        if status in {"metadata_found", "metadata_only"}:
+            return {"event_context": _event_context_capability_blocker_state()}
+
+    return {"event_context": _event_context_capability_blocker_state()}
+
+
+def _merge_workflow_state_mapping(target: dict[str, Any], incoming: Mapping[str, Any]) -> None:
+    """Merge typed workflow state while preserving progressed semantic state."""
+
+    for raw_key, raw_value in incoming.items():
+        key = str(raw_key)
+        if key == "provenance" and isinstance(raw_value, Mapping):
+            provenance_state = {
+                str(provenance_key): provenance_value
+                for provenance_key, provenance_value in raw_value.items()
+                if str(provenance_key) != "provenance" and isinstance(provenance_value, Mapping)
+            }
+            if provenance_state:
+                _merge_workflow_state_mapping(target, provenance_state)
+        if isinstance(raw_value, Mapping):
+            incoming_value = _normalize_workflow_state_section(key, raw_value)
+            current = target.get(key)
+            if isinstance(current, Mapping):
+                incoming_rank = _workflow_status_rank(key, incoming_value)
+                current_rank = _workflow_status_rank(key, current)
+                if incoming_rank < current_rank:
+                    continue
+                merged = dict(current)
+                if (
+                    key == "resource_candidate"
+                    and current.get("geographically_grounded") is True
+                    and incoming_value.get("geographically_grounded") is False
+                ):
+                    incoming_value = dict(incoming_value)
+                    incoming_value.pop("geographically_grounded", None)
+                _merge_non_empty_mapping(merged, incoming_value)
+                target[key] = merged
+            else:
+                target[key] = incoming_value
+        else:
+            target[key] = raw_value
+
+
+def _station_id_from_station_csv_state(
+    acquisition: Mapping[str, Any],
+    candidate: Mapping[str, Any] | None,
+) -> str:
+    """Return an EarthScope-style station id from staged station CSV state."""
+
+    station_id = str((candidate or {}).get("station_id") or "").strip()
+    if station_id:
+        return station_id.upper()
+    values = [
+        str((candidate or {}).get("resource_name") or ""),
+        str((candidate or {}).get("resource_url") or ""),
+        str(acquisition.get("local_path") or acquisition.get("path") or ""),
+        str(acquisition.get("source_url") or ""),
+    ]
+    for value in values:
+        basename = Path(value).name
+        if basename.casefold() in _EARTHSCOPE_METADATA_RESOURCE_NAMES:
+            continue
+        match = re.match(r"(?P<station>[A-Za-z0-9]{3,5})\.[A-Za-z0-9]{2}\.", basename)
+        if match:
+            return match.group("station").upper()
+    return ""
+
+
+def _state_is_station_timeseries_acquisition(
+    acquisition: Mapping[str, Any],
+    candidate: Mapping[str, Any] | None,
+) -> bool:
+    """Return true when staged acquisition looks like a station time-series CSV."""
+
+    names = [
+        str((candidate or {}).get("resource_name") or ""),
+        str((candidate or {}).get("resource_url") or ""),
+        str(acquisition.get("local_path") or acquisition.get("path") or ""),
+        str(acquisition.get("source_url") or ""),
+    ]
+    for value in names:
+        basename = Path(value).name.casefold()
+        if not basename.endswith(".csv"):
+            continue
+        if basename in _EARTHSCOPE_METADATA_RESOURCE_NAMES:
+            continue
+        if re.match(r"[a-z0-9]{3,5}\.[a-z0-9]{2}\.", basename):
+            return True
+    return False
+
+
+def _station_catalog_match_for_candidate(
+    station_catalog: Any,
+    station_id: str,
+) -> Mapping[str, Any] | None:
+    if not station_id or not isinstance(station_catalog, Mapping):
+        return None
+    stations = station_catalog.get("stations")
+    if not isinstance(stations, list):
+        return None
+    for station in stations:
+        if not isinstance(station, Mapping):
+            continue
+        current = str(station.get("station") or station.get("id") or "").strip().upper()
+        if current == station_id:
+            return station
+    return None
+
+
+def _requires_station_geographic_provenance(state: Mapping[str, Any]) -> bool:
+    """Return true when regional EarthScope work must prove station geography."""
+
+    for key in ("geospatial", "geography", "region"):
+        geospatial = state.get(key)
+        if isinstance(geospatial, Mapping):
+            status = str(geospatial.get("status") or "").strip().lower()
+            if status == "resolved":
+                return True
+            if any(
+                name in geospatial
+                for name in (
+                    "center",
+                    "coordinates",
+                    "center_lat",
+                    "center_lon",
+                    "latitude",
+                    "longitude",
+                    "radius_km",
+                    "bbox",
+                )
+            ):
+                return True
+    if isinstance(state.get("station_catalog"), Mapping):
+        return True
+    selected_station = state.get("selected_station")
+    if isinstance(selected_station, Mapping) and str(selected_station.get("csv_path") or "").strip():
+        return True
+    if str(state.get("type") or "").strip().lower() == "geospatial" and isinstance(
+        state.get("region"),
+        Mapping,
+    ):
+        return True
+    return False
+
+
+def _reconcile_workflow_state(state: dict[str, Any]) -> None:
+    """Apply cross-section invariants that single-section normalization cannot see."""
+
+    _sanitize_geospatial_workflow_state(state)
+    _sanitize_event_context_workflow_state(state)
+    _sanitize_scan_limited_workflow_state(state)
+    acquisition = state.get("acquisition")
+    candidate = state.get("resource_candidate")
+    if not isinstance(acquisition, dict):
+        return
+    acquisition_status = str(acquisition.get("status") or "").strip().lower()
+    if acquisition_status == "metadata_only":
+        candidate_status = (
+            str(candidate.get("status") or "").strip().lower()
+            if isinstance(candidate, Mapping)
+            else ""
+        )
+        candidate_url = (
+            str(
+                candidate.get("resource_url")
+                or candidate.get("selected_resource_url")
+                or candidate.get("source_url")
+                or ""
+            ).strip()
+            if isinstance(candidate, Mapping)
+            else ""
+        )
+        if (
+            candidate_status
+            in {
+                "available",
+                "candidate_found",
+                "metadata_confirmed",
+                "ready",
+                "selected",
+            }
+            and candidate_url.lower().startswith(("http://", "https://"))
+            and _state_is_station_timeseries_acquisition(acquisition, candidate)
+        ):
+            acquisition["status"] = "candidate_found"
+            acquisition["analysis_ready"] = False
+            acquisition.setdefault(
+                "blocker",
+                "station CSV candidate exists but no local CSV was staged",
+            )
+            return
+        if isinstance(candidate, dict):
+            candidate["status"] = "metadata_only"
+            metadata_path = str(acquisition.get("metadata_path") or "").strip()
+            if metadata_path:
+                candidate["resource_name"] = Path(metadata_path).name
+            source_url = str(acquisition.get("source_url") or "").strip()
+            if source_url:
+                candidate["resource_url"] = source_url
+            for stale_key in (
+                "dataset_id",
+                "dataset_name",
+                "dataset_title",
+                "station_id",
+                "station_distance_km",
+                "geographically_grounded",
+            ):
+                candidate.pop(stale_key, None)
+        return
+    if acquisition_status == "staged" or acquisition.get("analysis_ready") is True:
+        if _state_is_station_timeseries_acquisition(
+            acquisition,
+            candidate if isinstance(candidate, Mapping) else None,
+        ):
+            candidate_mapping = candidate if isinstance(candidate, Mapping) else {}
+            station_id = _station_id_from_station_csv_state(acquisition, candidate_mapping)
+            selected_station = state.get("selected_station")
+            if (
+                station_id
+                and isinstance(selected_station, dict)
+                and not str(selected_station.get("station_id") or "").strip()
+            ):
+                selected_station["station_id"] = station_id
+            match = _station_catalog_match_for_candidate(
+                state.get("station_catalog"),
+                station_id,
+            )
+            if match is not None and candidate_mapping.get("geographically_grounded") is not True:
+                if isinstance(candidate, dict):
+                    candidate["station_id"] = station_id
+                    candidate["geographically_grounded"] = True
+                    if "distance_km" in match:
+                        candidate["station_distance_km"] = match.get("distance_km")
+        if (
+            acquisition.get("analysis_ready") is True
+            and _requires_station_geographic_provenance(state)
+            and _state_is_station_timeseries_acquisition(
+                acquisition,
+                candidate if isinstance(candidate, Mapping) else None,
+            )
+        ):
+            candidate_mapping = candidate if isinstance(candidate, Mapping) else {}
+            if candidate_mapping.get("geographically_grounded") is not True:
+                station_id = _station_id_from_station_csv_state(acquisition, candidate_mapping)
+                acquisition["analysis_ready"] = False
+                acquisition["blocker"] = (
+                    "staged station CSV lacks geographic provenance from the "
+                    "filtered station metadata for the requested region"
+                    if not isinstance(state.get("station_catalog"), Mapping)
+                    else "staged station CSV does not match the filtered station metadata for the requested region"
+                )
+                if isinstance(candidate, dict):
+                    candidate["geographically_grounded"] = False
+                    if station_id:
+                        candidate["station_id"] = station_id
+                return
+        if acquisition.get("analysis_ready") is True:
+            acquisition.pop("blocker", None)
+            resource_discovery = state.get("resource_discovery")
+            if isinstance(resource_discovery, dict):
+                discovery_status = str(resource_discovery.get("status") or "").strip().lower()
+                if discovery_status == "search_required":
+                    resource_discovery["status"] = "resource_found"
+                    resource_discovery.setdefault(
+                        "reason",
+                        "analysis-ready station resource has been staged",
+                    )
+        return
+    if not isinstance(candidate, Mapping):
+        return
+    candidate_status = str(candidate.get("status") or "").strip().lower()
+    if candidate_status not in {
+        "available",
+        "candidate_found",
+        "metadata_confirmed",
+        "ready",
+        "selected",
+    }:
+        return
+    candidate_url = str(
+        candidate.get("resource_url")
+        or candidate.get("selected_resource_url")
+        or candidate.get("source_url")
+        or ""
+    ).strip()
+    candidate_urls = candidate.get("resource_urls")
+    has_candidate_url = candidate_url.lower().startswith(("http://", "https://"))
+    if isinstance(candidate_urls, list | tuple):
+        has_candidate_url = has_candidate_url or any(
+            str(url).strip().lower().startswith(("http://", "https://"))
+            for url in candidate_urls
+        )
+    if not has_candidate_url:
+        return
+    acquisition["status"] = "candidate_found"
+    acquisition["analysis_ready"] = False
+    acquisition.setdefault(
+        "blocker",
+        "station CSV candidate exists but no local CSV was staged",
+    )
+
+
+def _infer_workflow_state_from_tool_evidence(output: str) -> dict[str, Any]:
+    state: dict[str, Any] = {}
+    _merge_inferred_workflow_state(
+        state,
+        _infer_ndp_search_state_from_tool_evidence(output),
+    )
+    _merge_inferred_workflow_state(
+        state,
+        _infer_ndp_workflow_state_from_tool_evidence(output),
+    )
+    _merge_inferred_workflow_state(
+        state,
+        _infer_ndp_station_catalog_state_from_tool_evidence(output),
+    )
+    _merge_inferred_workflow_state(
+        state,
+        _infer_ndp_profile_state_from_tool_evidence(output),
+    )
+    _merge_inferred_workflow_state(
+        state,
+        _infer_ndp_plot_state_from_tool_evidence(output),
+    )
+    _reconcile_workflow_state(state)
+    return state
+
+
+def _append_inferred_workflow_state(output: str) -> str:
+    """Append machine-readable state inferred from tool evidence."""
+
+    state = _infer_workflow_state_from_tool_evidence(output)
+    if not state:
+        return output
+    block = json.dumps({"workflow_state": state}, sort_keys=True)
+    if block in output:
+        return output
+    return f"{output.rstrip()}\n\nCLIO inferred typed tool state:\n{block}"
+
+
+def _ndp_workflow_state_score(state: Mapping[str, Any]) -> int:
+    acquisition = state.get("acquisition")
+    if not isinstance(acquisition, Mapping):
+        return 0
+    if acquisition.get("status") == "staged" and acquisition.get("analysis_ready") is True:
+        return 3
+    if acquisition.get("status") == "metadata_only":
+        return 2
+    if acquisition.get("status") in {"blocked", "missing"}:
+        return 1
+    return 0
+
+
+def _trajectory_evidence_values(trajectory: Any, *, max_items: int = 32) -> list[Any]:
+    values: list[Any] = []
+
+    def collect(value: Any) -> None:
+        if len(values) >= max_items:
+            return
+        if _tool_result_is_error(value):
+            return
+        values.append(value)
+
+    def visit(value: Any) -> None:
+        if len(values) >= max_items:
+            return
+        if isinstance(value, Mapping):
+            for key, child in value.items():
+                normalized_key = str(key).lower()
+                if any(token in normalized_key for token in _TOOL_TRAJECTORY_EVIDENCE_KEYS):
+                    collect(child)
+                if isinstance(child, Mapping | list | tuple):
+                    visit(child)
+            return
+        if isinstance(value, list | tuple):
+            for item in value:
+                visit(item)
+
+    visit(trajectory)
+    return values
+
+
+_TRAJECTORY_TOOL_NAME_KEYS = ("tool_name", "tool", "name")
+_TRAJECTORY_TOOL_ARGS_KEYS = ("tool_args", "args", "arguments", "params")
+_TRAJECTORY_TOOL_RESULT_KEYS = (
+    "observation",
+    "result",
+    "output",
+    "response",
+    "tool_result",
+    "tool_output",
+)
+
+
+def _trajectory_key_index(key: str, prefixes: tuple[str, ...]) -> str | None:
+    normalized = key.strip().lower()
+    for prefix in prefixes:
+        if normalized == prefix:
+            return ""
+        match = re.fullmatch(rf"(?:step_)?(?P<idx>\d+)_{re.escape(prefix)}", normalized)
+        if match:
+            return str(match.group("idx"))
+        match = re.fullmatch(rf"{re.escape(prefix)}_(?P<idx>\d+)", normalized)
+        if match:
+            return str(match.group("idx"))
+    return None
+
+
+def _extract_tools_called_from_trajectory(
+    trajectory: Any,
+    *,
+    max_items: int = 32,
+    max_result_chars: int = 12000,
+) -> list[dict[str, Any]]:
+    """Recover bounded tool-call evidence from DSPy ReAct trajectories.
+
+    DSPy versions and adapters vary in trajectory shape. This intentionally
+    accepts the common indexed mapping form (`tool_name_0`, `tool_args_0`,
+    `observation_0`) and nested/list step forms while preserving enough result
+    evidence for post-run scientific audit.
+    """
+
+    rows: list[dict[str, Any]] = []
+
+    def bounded_result(value: Any) -> Any:
+        preview = _tool_result_preview(value)
+        if len(preview) <= max_result_chars:
+            return value
+        return {
+            "preview": preview[:max_result_chars].rstrip(),
+            "truncated": True,
+            "original_chars": len(preview),
+        }
+
+    def append_row(row: Mapping[str, Any]) -> None:
+        if len(rows) >= max_items:
+            return
+        name = str(row.get("name") or row.get("tool") or "").strip()
+        result = row.get("result")
+        args = row.get("args")
+        if not name and result is None:
+            return
+        out: dict[str, Any] = {}
+        if name:
+            out["name"] = name
+        if args is not None:
+            out["args"] = args
+        if result is not None:
+            out["result"] = bounded_result(result)
+            out["ok"] = not _tool_result_is_error(result)
+        out.setdefault("telemetry_source", "agent_trajectory")
+        rows.append(out)
+
+    def visit(value: Any) -> None:
+        if len(rows) >= max_items:
+            return
+        if isinstance(value, Mapping):
+            # Direct step row: {"tool_name": ..., "tool_args": ..., "observation": ...}
+            direct: dict[str, Any] = {}
+            for key in _TRAJECTORY_TOOL_NAME_KEYS:
+                if key in value:
+                    direct["name"] = value[key]
+                    break
+            for key in _TRAJECTORY_TOOL_ARGS_KEYS:
+                if key in value:
+                    direct["args"] = value[key]
+                    break
+            for key in _TRAJECTORY_TOOL_RESULT_KEYS:
+                if key in value:
+                    direct["result"] = value[key]
+                    break
+            if direct:
+                append_row(direct)
+                for raw_key, child in value.items():
+                    normalized_key = str(raw_key).lower()
+                    if (
+                        _trajectory_key_index(normalized_key, _TRAJECTORY_TOOL_NAME_KEYS)
+                        is not None
+                        or _trajectory_key_index(normalized_key, _TRAJECTORY_TOOL_ARGS_KEYS)
+                        is not None
+                        or _trajectory_key_index(normalized_key, _TRAJECTORY_TOOL_RESULT_KEYS)
+                        is not None
+                    ):
+                        continue
+                    if isinstance(child, Mapping | list | tuple):
+                        visit(child)
+                return
+
+            # Indexed flat row: {"step_0_tool_name": ..., "step_0_observation": ...}
+            indexed: dict[str, dict[str, Any]] = {}
+            for raw_key, child in value.items():
+                key = str(raw_key)
+                name_index = _trajectory_key_index(key, _TRAJECTORY_TOOL_NAME_KEYS)
+                if name_index is not None:
+                    indexed.setdefault(name_index, {})["name"] = child
+                    continue
+                args_index = _trajectory_key_index(key, _TRAJECTORY_TOOL_ARGS_KEYS)
+                if args_index is not None:
+                    indexed.setdefault(args_index, {})["args"] = child
+                    continue
+                result_index = _trajectory_key_index(key, _TRAJECTORY_TOOL_RESULT_KEYS)
+                if result_index is not None:
+                    indexed.setdefault(result_index, {})["result"] = child
+                    continue
+                if isinstance(child, Mapping | list | tuple):
+                    visit(child)
+            for index in sorted(indexed, key=lambda item: int(item) if item.isdigit() else -1):
+                append_row(indexed[index])
+            return
+        if isinstance(value, list | tuple):
+            for child in value:
+                visit(child)
+
+    visit(trajectory)
+    return rows
+
+
+def _text_for_tool_evidence(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    try:
+        return json.dumps(value, sort_keys=True, default=str)
+    except TypeError:
+        return str(value)
+
+
+def _tool_evidence_texts(value: Any, *, max_items: int = 12) -> list[str]:
+    """Return likely evidence strings from nested tool result wrappers."""
+
+    texts: list[str] = []
+    seen: set[str] = set()
+
+    def add(text: str) -> None:
+        stripped = text.strip()
+        if not stripped or stripped in seen or len(texts) >= max_items:
+            return
+        seen.add(stripped)
+        texts.append(stripped)
+
+    def visit(item: Any) -> None:
+        if len(texts) >= max_items:
+            return
+        add(_text_for_tool_evidence(item))
+        decoded = item
+        if isinstance(item, str):
+            with suppress(json.JSONDecodeError, TypeError):
+                decoded = json.loads(item)
+        if isinstance(decoded, Mapping):
+            for key in ("preview", "result", "output", "response", "tool_result"):
+                child = decoded.get(key)
+                if isinstance(child, str | Mapping | list | tuple):
+                    visit(child)
+        elif isinstance(decoded, list | tuple):
+            for child in decoded:
+                if isinstance(child, str | Mapping | list | tuple):
+                    visit(child)
+
+    visit(value)
+    return texts
+
+
+def _infer_workflow_state_from_tool_call_row(row: Mapping[str, Any]) -> dict[str, Any]:
+    """Derive typed state from a recovered tool call plus its observation."""
+
+    name = str(row.get("name") or "").strip()
+    args = row.get("args")
+    result = row.get("result")
+    if name == "ndp_filter_earthscope_station_catalog":
+        for text in _tool_evidence_texts(result):
+            state = _infer_ndp_station_catalog_state_from_tool_evidence(text)
+            if state:
+                return state
+        return {}
+    if name in {"ndp_profile_csv_resource", "ndp_plot_csv_timeseries"}:
+        for text in _tool_evidence_texts(result):
+            state = _infer_workflow_state_from_tool_evidence(text)
+            if state:
+                return state
+        return {}
+    if name != "ndp_stage_resource" or not isinstance(args, Mapping):
+        return {}
+    if row.get("ok") is False or _tool_result_is_error(result):
+        return {}
+    if isinstance(result, str):
+        with suppress(json.JSONDecodeError, TypeError):
+            decoded_result = json.loads(result)
+            if isinstance(decoded_result, Mapping):
+                result = decoded_result
+    if not isinstance(result, Mapping):
+        return {}
+
+    path = str(
+        result.get("path")
+        or result.get("local_path")
+        or result.get("filepath")
+        or ""
+    ).strip()
+    if not path.endswith(".csv"):
+        return {}
+    resource_name = str(
+        result.get("resource_name")
+        or args.get("resource_name")
+        or Path(path).name
+    ).strip()
+    dataset_identifier = str(args.get("dataset_identifier") or "").strip()
+    dataset_id = str(
+        result.get("dataset_id")
+        or (dataset_identifier if not dataset_identifier.startswith(("http://", "https://")) else "")
+    ).strip()
+    source_url = str(
+        result.get("source_url")
+        or result.get("resource_url")
+        or result.get("url")
+        or (dataset_identifier if dataset_identifier.startswith(("http://", "https://")) else "")
+    ).strip()
+    resource_key = Path(resource_name or path).name.casefold()
+    if resource_key in _EARTHSCOPE_METADATA_RESOURCE_NAMES:
+        return {
+            "catalog": {"status": "metadata_found"},
+            "resource_candidate": {
+                "status": "metadata_only",
+                "dataset_id": dataset_id,
+                "dataset_name": str(result.get("dataset_name") or "").strip(),
+                "resource_name": resource_name or Path(path).name,
+                "resource_url": source_url,
+            },
+            "acquisition": {
+                "status": "metadata_only",
+                "analysis_ready": False,
+                "metadata_path": path,
+                "source_url": source_url,
+                "blocker": "staged resource is station metadata, not a GNSS time-series CSV",
+            },
+        }
+    return {
+        "resource_candidate": {
+            "status": "selected",
+            "dataset_id": dataset_id,
+            "dataset_name": str(result.get("dataset_name") or "").strip(),
+            "resource_name": resource_name or Path(path).name,
+            "resource_url": source_url,
+        },
+        "acquisition": {
+            "status": "staged",
+            "analysis_ready": True,
+            "local_path": path,
+            "source_url": source_url,
+            "required_columns": ["time", "east", "north", "up"],
+        },
+    }
+
+
+def _infer_ndp_workflow_state_from_trajectory(trajectory: Any) -> dict[str, Any]:
+    """Derive typed acquisition state from successful ReAct tool observations."""
+
+    selected: dict[str, Any] = {}
+    selected_score = 0
+    rows = _extract_tools_called_from_trajectory(trajectory)
+    for row in rows:
+        state = _infer_workflow_state_from_tool_call_row(row)
+        if not state:
+            continue
+        acquisition = state.get("acquisition")
+        state_without_acquisition = {
+            key: value for key, value in state.items() if key != "acquisition"
+        }
+        _merge_inferred_workflow_state(selected, state_without_acquisition)
+        if isinstance(acquisition, Mapping):
+            score = _ndp_workflow_state_score(state)
+            if score >= selected_score:
+                selected["acquisition"] = dict(acquisition)
+                for companion_key in ("resource_candidate", "catalog"):
+                    companion_value = state.get(companion_key)
+                    if isinstance(companion_value, Mapping):
+                        existing = selected.get(companion_key)
+                        if isinstance(existing, Mapping):
+                            merged = dict(existing)
+                            _merge_non_empty_mapping(merged, companion_value)
+                            selected[companion_key] = merged
+                        else:
+                            selected[companion_key] = dict(companion_value)
+                selected_score = score
+    for value in _trajectory_evidence_values(trajectory):
+        state = _infer_workflow_state_from_tool_evidence(_text_for_tool_evidence(value))
+        if not state:
+            continue
+        acquisition = state.get("acquisition")
+        state_without_acquisition = {
+            key: value for key, value in state.items() if key != "acquisition"
+        }
+        _merge_inferred_workflow_state(selected, state_without_acquisition)
+        if isinstance(acquisition, Mapping):
+            score = _ndp_workflow_state_score(state)
+            if score >= selected_score:
+                existing_acquisition = selected.get("acquisition")
+                if isinstance(existing_acquisition, Mapping) and score == selected_score:
+                    merged_acquisition = dict(existing_acquisition)
+                    _merge_non_empty_mapping(merged_acquisition, acquisition)
+                    selected["acquisition"] = merged_acquisition
+                else:
+                    selected["acquisition"] = dict(acquisition)
+                for companion_key in ("resource_candidate", "catalog"):
+                    companion_value = state.get(companion_key)
+                    if isinstance(companion_value, Mapping):
+                        existing = selected.get(companion_key)
+                        if isinstance(existing, Mapping):
+                            merged = dict(existing)
+                            _merge_non_empty_mapping(merged, companion_value)
+                            selected[companion_key] = merged
+                        else:
+                            selected[companion_key] = dict(companion_value)
+                selected_score = score
+    search_state = _station_resource_search_state_from_rows(rows, selected)
+    if search_state:
+        acquisition = search_state.get("acquisition")
+        state_without_acquisition = {
+            key: value for key, value in search_state.items() if key != "acquisition"
+        }
+        _merge_inferred_workflow_state(selected, state_without_acquisition)
+        if isinstance(acquisition, Mapping):
+            score = _ndp_workflow_state_score(search_state)
+            if score >= selected_score:
+                existing_acquisition = selected.get("acquisition")
+                if isinstance(existing_acquisition, Mapping) and score == selected_score:
+                    merged_acquisition = dict(existing_acquisition)
+                    _merge_non_empty_mapping(merged_acquisition, acquisition)
+                    selected["acquisition"] = merged_acquisition
+                else:
+                    selected["acquisition"] = dict(acquisition)
+                selected_score = score
+    _reconcile_workflow_state(selected)
+    return selected
+
+
+def _infer_ndp_workflow_state_from_tool_rows(rows: list[Mapping[str, Any]]) -> dict[str, Any]:
+    """Derive typed NDP workflow state from normalized tool-call rows."""
+
+    selected: dict[str, Any] = {}
+    selected_score = 0
+    for row in rows:
+        prior_state = row.get("workflow_state")
+        if isinstance(prior_state, Mapping):
+            _merge_inferred_workflow_state(selected, prior_state)
+        state = _infer_workflow_state_from_tool_call_row(row)
+        if not state:
+            continue
+        acquisition = state.get("acquisition")
+        state_without_acquisition = {
+            key: value for key, value in state.items() if key != "acquisition"
+        }
+        _merge_inferred_workflow_state(selected, state_without_acquisition)
+        if isinstance(acquisition, Mapping):
+            score = _ndp_workflow_state_score(state)
+            if score >= selected_score:
+                existing_acquisition = selected.get("acquisition")
+                if isinstance(existing_acquisition, Mapping) and score == selected_score:
+                    merged_acquisition = dict(existing_acquisition)
+                    _merge_non_empty_mapping(merged_acquisition, acquisition)
+                    selected["acquisition"] = merged_acquisition
+                else:
+                    selected["acquisition"] = dict(acquisition)
+                for companion_key in ("resource_candidate", "catalog"):
+                    companion_value = state.get(companion_key)
+                    if isinstance(companion_value, Mapping):
+                        existing = selected.get(companion_key)
+                        if isinstance(existing, Mapping):
+                            merged = dict(existing)
+                            _merge_non_empty_mapping(merged, companion_value)
+                            selected[companion_key] = merged
+                        else:
+                            selected[companion_key] = dict(companion_value)
+                selected_score = score
+    search_state = _station_resource_search_state_from_rows(rows, selected)
+    if search_state:
+        acquisition = search_state.get("acquisition")
+        state_without_acquisition = {
+            key: value for key, value in search_state.items() if key != "acquisition"
+        }
+        _merge_inferred_workflow_state(selected, state_without_acquisition)
+        if isinstance(acquisition, Mapping):
+            score = _ndp_workflow_state_score(search_state)
+            if score >= selected_score:
+                existing_acquisition = selected.get("acquisition")
+                if isinstance(existing_acquisition, Mapping) and score == selected_score:
+                    merged_acquisition = dict(existing_acquisition)
+                    _merge_non_empty_mapping(merged_acquisition, acquisition)
+                    selected["acquisition"] = merged_acquisition
+                else:
+                    selected["acquisition"] = dict(acquisition)
+    _reconcile_workflow_state(selected)
+    return selected
+
+
+def _augment_ndp_search_result_with_runtime_state(
+    result: Any,
+    rows: list[Mapping[str, Any]],
+) -> Any:
+    """Attach immediate typed workflow feedback to NDP search observations."""
+
+    if not isinstance(result, Mapping):
+        return result
+    state = _infer_ndp_workflow_state_from_tool_rows(rows)
+    if not state:
+        return result
+    resource_discovery = state.get("resource_discovery")
+    if not isinstance(resource_discovery, Mapping):
+        return result
+    status = str(resource_discovery.get("status") or "").strip()
+    if status not in {"search_required", "search_exhausted"}:
+        return result
+    augmented = dict(result)
+    runtime = dict(augmented.get("clio_runtime") or {})
+    runtime["workflow_state"] = state
+    if status == "search_exhausted":
+        runtime["next_action"] = (
+            "Stop calling ndp_search_datasets for this station set. Return the "
+            "metadata-only acquisition blocker with resource_discovery.status="
+            "search_exhausted unless a concrete station CSV has already been staged."
+        )
+        runtime["terminal"] = True
+    else:
+        remaining = resource_discovery.get("remaining_station_ids")
+        runtime["next_action"] = (
+            "Continue only with the remaining ranked station-resource CSV searches: "
+            + ", ".join(str(item) for item in remaining or [])
+        )
+        runtime["terminal"] = False
+    augmented["clio_runtime"] = runtime
+    return augmented
+
+
+def _prior_staged_ndp_resource_result(
+    args: Mapping[str, Any],
+    rows: list[Mapping[str, Any]],
+) -> dict[str, Any] | None:
+    """Return a typed already-staged result for duplicate station CSV staging."""
+
+    prior_state = _infer_ndp_workflow_state_from_tool_rows(rows)
+    acquisition = prior_state.get("acquisition")
+    if not isinstance(acquisition, Mapping):
+        return None
+    if str(acquisition.get("status") or "").strip() != "staged":
+        return None
+    if acquisition.get("analysis_ready") is not True:
+        return None
+    local_path = str(acquisition.get("local_path") or "").strip()
+    source_url = str(acquisition.get("source_url") or "").strip()
+    if not local_path or not source_url or not local_path.endswith(".csv"):
+        return None
+    if Path(local_path).name.casefold() in _EARTHSCOPE_METADATA_RESOURCE_NAMES:
+        return None
+
+    resource_candidate = prior_state.get("resource_candidate")
+    resource_name = ""
+    dataset_id = ""
+    dataset_name = ""
+    selected_url = source_url
+    if isinstance(resource_candidate, Mapping):
+        resource_name = str(resource_candidate.get("resource_name") or "").strip()
+        dataset_id = str(resource_candidate.get("dataset_id") or "").strip()
+        dataset_name = str(resource_candidate.get("dataset_name") or "").strip()
+        selected_url = str(resource_candidate.get("resource_url") or source_url).strip()
+    expected_names = {
+        value.casefold()
+        for value in (resource_name, Path(local_path).name)
+        if value
+    }
+    requested_name = str(args.get("resource_name") or "").strip().casefold()
+    requested_identifier = str(args.get("dataset_identifier") or "").strip()
+    requested_index = args.get("resource_index")
+
+    name_matches = not requested_name or requested_name in expected_names
+    identifier_matches = (
+        not requested_identifier
+        or requested_identifier == dataset_id
+        or requested_identifier == source_url
+        or requested_identifier == selected_url
+    )
+    index_matches = requested_index in (None, 0, "0") or requested_name in expected_names
+    if not (name_matches and identifier_matches and index_matches):
+        return None
+
+    size_bytes: Any = acquisition.get("size_bytes")
+    for row in rows:
+        if str(row.get("name") or "") != "ndp_stage_resource":
+            continue
+        result = row.get("result")
+        if isinstance(result, str):
+            with suppress(json.JSONDecodeError, TypeError):
+                result = json.loads(result)
+        if not isinstance(result, Mapping):
+            continue
+        row_path = str(result.get("path") or result.get("local_path") or "").strip()
+        row_url = str(
+            result.get("source_url")
+            or result.get("selected_resource_url")
+            or result.get("url")
+            or ""
+        ).strip()
+        if row_path == local_path or row_url in {source_url, selected_url}:
+            if result.get("size_bytes") is not None:
+                size_bytes = result.get("size_bytes")
+            if not dataset_id:
+                dataset_id = str(result.get("dataset_id") or "").strip()
+            if not dataset_name:
+                dataset_name = str(result.get("dataset_name") or "").strip()
+            if not resource_name:
+                resource_name = str(result.get("resource_name") or Path(local_path).name).strip()
+            selected_url = str(result.get("selected_resource_url") or selected_url).strip()
+            break
+
+    return {
+        "staged": True,
+        "path": local_path,
+        "local_path": local_path,
+        "source_url": source_url,
+        "url": selected_url or source_url,
+        "selected_resource_url": selected_url or source_url,
+        "size_bytes": size_bytes,
+        "dataset_id": dataset_id,
+        "dataset_name": dataset_name,
+        "resource_name": resource_name or Path(local_path).name,
+        "selected_resource_name": resource_name or Path(local_path).name,
+        "_meta": {
+            "tool": "stage_resource",
+            "status": "skipped",
+            "reason": "duplicate_station_resource_stage",
+            "cache_hit": True,
+        },
+        "clio_runtime": {
+            "workflow_state": prior_state,
+            "terminal": False,
+            "next_action": (
+                "Reuse the existing acquisition.local_path and continue to analysis, "
+                "visualization, or synthesis. Do not call ndp_stage_resource again "
+                "for this same station CSV."
+            ),
+        },
+    }
+
+
+def _append_inferred_workflow_state_from_trajectory(output: str, trajectory: Any) -> str:
+    """Append machine-readable state inferred from ReAct tool observations."""
+
+    state = _infer_ndp_workflow_state_from_trajectory(trajectory)
+    if not state:
+        return output
+    block = json.dumps({"workflow_state": state}, sort_keys=True)
+    if block in output:
+        return output
+    return f"{output.rstrip()}\n\nCLIO inferred typed tool state from tool observations:\n{block}"
+
+
 def _dynamic_answer_has_pending_child_work(answer: str) -> bool:
     """Return true when a resumed parent answer appears to leave child work pending."""
 
@@ -2648,6 +5859,19 @@ def _dynamic_answer_has_pending_child_work(answer: str) -> bool:
         "delegate",
         "route to",
         "route through",
+        "forwarded to",
+        "forwarded the request",
+        "will request the",
+        "we will request",
+        "pending",
+        "request the data child",
+        "request the analysis child",
+        "request the visualization child",
+        "request the synthesis child",
+        "until the child returns",
+        "until the child expert returns",
+        "no further action is required",
+        "earlier response already fulfills",
         "still need",
         "needs to",
         "need to",
@@ -2690,8 +5914,20 @@ def _dynamic_answer_is_delegation_placeholder(answer: str) -> bool:
         "delegating to",
         "i am delegating",
         "i will delegate",
+        "will request the",
+        "we will request",
+        "request the data child",
+        "request the analysis child",
+        "request the visualization child",
+        "request the synthesis child",
+        "forwarded to",
+        "forwarded the request",
+        "until the child returns",
+        "until the child expert returns",
+        "earlier response already fulfills",
         "next step",
         "proceeding to",
+        "returned compact evidence",
         "routing to",
         "route to",
     )
@@ -2803,6 +6039,41 @@ def _delegated_expert_prompt(row: Mapping[str, Any], fallback: str) -> str:
                 )
             )
     return fallback
+
+
+def _append_accumulated_workflow_state_context(prompt: str, state: Mapping[str, Any]) -> str:
+    """Attach durable typed state to child prompts without relying on prose."""
+
+    if not state:
+        return prompt
+    block = (
+        "Accumulated typed workflow state from prior CLIO tool evidence "
+        "(authoritative; use this before local prose summaries):\n"
+        f"{json.dumps({'workflow_state': state}, sort_keys=True, default=str)}"
+    )
+    if block in prompt:
+        return prompt
+    return "\n\n".join(part for part in (prompt.strip(), block) if part)
+
+
+def _append_session_workflow_state_context(
+    app: Any,
+    session_id: str,
+    prompt: str,
+) -> str:
+    """Attach accumulated session tool state to a delegated expert prompt."""
+
+    ledger = getattr(getattr(app, "state", None), "tool_call_ledger", None)
+    if not isinstance(ledger, dict):
+        return prompt
+    rows = ledger.get(session_id)
+    if not isinstance(rows, list):
+        return prompt
+    prior_rows = [row for row in rows if isinstance(row, Mapping)]
+    state = _infer_ndp_workflow_state_from_tool_rows(prior_rows)
+    if not state:
+        return prompt
+    return _append_accumulated_workflow_state_context(prompt, state)
 
 
 def _active_lm_supports_vision(app: "FastAPI") -> bool:
@@ -2943,11 +6214,13 @@ def _dspy_images_from_parts(parts: list["Part"]) -> list[Any]:
 
 
 def _should_execute_delegated_handoff(row: Mapping[str, Any]) -> bool:
+    status = str(row.get("status") or "").strip().lower()
+    if status in {"skipped", "failed", "cancelled", "completed"}:
+        return False
     if row.get("execute") is False:
         return False
     if row.get("execute") is True or row.get("delegate_to") or row.get("target_agent_id"):
         return True
-    status = str(row.get("status") or "").strip().lower()
     return status in {"requested", "pending", "delegate", "delegated"}
 
 
@@ -2966,6 +6239,251 @@ def _contract_terms_match(text: str, terms: list[str], match_mode: str) -> bool:
         return True
     normalized = text.lower()
     hits = [term.lower() in normalized for term in terms]
+    return all(hits) if match_mode == "all" else any(hits)
+
+
+def _json_objects_from_text(text: str) -> list[Any]:
+    """Extract JSON objects embedded in model/tool evidence without trusting prose."""
+
+    stripped = text.strip()
+    objects: list[Any] = []
+    decoder = json.JSONDecoder()
+    if stripped.startswith(("{", "[")):
+        try:
+            objects.append(json.loads(stripped))
+            return objects
+        except json.JSONDecodeError:
+            pass
+    index = 0
+    while index < len(text):
+        if text[index] not in "{[":
+            index += 1
+            continue
+        try:
+            value, end = decoder.raw_decode(text[index:])
+        except json.JSONDecodeError:
+            index += 1
+            continue
+        objects.append(value)
+        index += max(end, 1)
+    return objects
+
+
+def _merge_workflow_state_from_value(value: Any, state: dict[str, Any]) -> None:
+    if isinstance(value, str):
+        text = value.strip()
+        if text.startswith(("{", "[")):
+            for nested in _json_objects_from_text(text):
+                _merge_workflow_state_from_value(nested, state)
+        return
+    if isinstance(value, list):
+        for item in value:
+            _merge_workflow_state_from_value(item, state)
+        return
+    if not isinstance(value, Mapping):
+        return
+    for key in ("workflow_state", "semantic_state", "state"):
+        nested = value.get(key)
+        if isinstance(nested, Mapping):
+            _merge_workflow_state_mapping(state, nested)
+    structured = value.get("structured")
+    if isinstance(structured, Mapping):
+        for nested in structured.values():
+            _merge_workflow_state_from_value(nested, state)
+    for key, nested in value.items():
+        if key in {"workflow_state", "semantic_state", "state", "structured"}:
+            continue
+        if isinstance(nested, Mapping):
+            if str(key) == "provenance":
+                _merge_workflow_state_mapping(state, nested)
+            _merge_workflow_state_mapping(state, {str(key): nested})
+
+
+def _workflow_state_from_outputs(completed_outputs: list[str]) -> dict[str, Any]:
+    state: dict[str, Any] = {}
+    for output in completed_outputs:
+        for obj in _json_objects_from_text(output):
+            _merge_workflow_state_from_value(obj, state)
+    _reconcile_workflow_state(state)
+    return state
+
+
+def _workflow_state_payload(state: Mapping[str, Any]) -> str:
+    """Return a parseable workflow-state payload for prompts and compact rows."""
+
+    return json.dumps({"workflow_state": state}, sort_keys=True, default=str)
+
+
+_BLUEPRINT_WORKFLOW_STATE_AUTHORITIES: dict[str, set[str]] = {
+    "geospatial": {"geospatial", "region", "center", "bbox"},
+    "seismic_event_catalog": {"event_context"},
+}
+
+
+def _filter_workflow_state_for_blueprint_authority(
+    agent_id: str,
+    state: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Drop model-authored workflow sections outside an expert's responsibility."""
+
+    allowed = _BLUEPRINT_WORKFLOW_STATE_AUTHORITIES.get(str(agent_id or "").strip())
+    if not allowed:
+        return dict(state)
+    if str(agent_id or "").strip() == "seismic_event_catalog":
+        return _filter_event_context_authority_state(state)
+    return {str(key): value for key, value in state.items() if str(key) in allowed}
+
+
+def _workflow_state_from_handoff_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Return durable typed state stored on handoff rows and nested tool rows."""
+
+    state: dict[str, Any] = {}
+
+    def visit(row: Any) -> None:
+        if not isinstance(row, Mapping):
+            return
+        raw_state = row.get("workflow_state")
+        if isinstance(raw_state, Mapping):
+            _merge_workflow_state_mapping(state, raw_state)
+        for output_key in ("output_summary", "summary"):
+            output = str(row.get(output_key) or "").strip()
+            if output:
+                _merge_workflow_state_mapping(state, _workflow_state_from_outputs([output]))
+        for call in row.get("tools_called") or []:
+            if isinstance(call, Mapping):
+                _merge_workflow_state_mapping(
+                    state,
+                    _infer_workflow_state_from_tool_call_row(call),
+                )
+        for child in row.get("children") or []:
+            visit(child)
+
+    for row in rows:
+        visit(row)
+    _reconcile_workflow_state(state)
+    return state
+
+
+def _failed_child_delegation_workflow_state(
+    *,
+    prompt: str,
+    child_agent_id: str,
+    parent_agent_id: str,
+    error: str,
+    message: str,
+    tools_called: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Build typed state for a child failure without discarding prior evidence."""
+
+    state = _workflow_state_from_outputs([prompt])
+    for tool_row in tools_called:
+        _merge_workflow_state_mapping(
+            state,
+            _infer_workflow_state_from_tool_call_row(tool_row),
+        )
+    _reconcile_workflow_state(state)
+    state["delegation"] = {
+        "status": "failed",
+        "failed_child": child_agent_id,
+        "parent": parent_agent_id,
+        "error": error,
+        "message": message,
+    }
+    acquisition = state.get("acquisition")
+    if isinstance(acquisition, dict) and acquisition.get("analysis_ready") is not True:
+        acquisition["status"] = "blocked"
+        acquisition["analysis_ready"] = False
+        acquisition["blocker"] = (
+            f"child expert {child_agent_id!r} failed before completing acquisition: {error}"
+        )
+    resource_discovery = state.get("resource_discovery")
+    if isinstance(resource_discovery, dict):
+        resource_discovery["status"] = "child_failed"
+        resource_discovery["blocker"] = (
+            f"child expert {child_agent_id!r} failed before completing resource discovery"
+        )
+        resource_discovery["next_action"] = (
+            "retry the child expert after provider availability is restored"
+        )
+    return state
+
+
+def _failed_child_delegation_output_summary(
+    *,
+    child_agent_id: str,
+    parent_agent_id: str,
+    error: str,
+    message: str,
+    workflow_state: Mapping[str, Any],
+) -> str:
+    """Return compact parent-consumable text for a failed child expert."""
+
+    return (
+        f"Child expert {child_agent_id!r} failed while delegated from "
+        f"{parent_agent_id!r}: {error}. {message}\n\n"
+        f"CLIO durable typed workflow state:\n{_workflow_state_payload(workflow_state)}"
+    )
+
+
+def _state_path_value(state: Mapping[str, Any], path: str) -> Any:
+    current: Any = state
+    for part in path.split("."):
+        if isinstance(current, Mapping) and part in current:
+            current = current[part]
+        else:
+            return None
+    return current
+
+
+def _workflow_state_has_existing_staged_path(state: Mapping[str, Any]) -> bool:
+    acquisition = state.get("acquisition")
+    if not isinstance(acquisition, Mapping):
+        return True
+    status = str(acquisition.get("status") or "").strip().lower()
+    if status != "staged" or acquisition.get("analysis_ready") is not True:
+        return True
+    local_path = str(acquisition.get("local_path") or acquisition.get("path") or "").strip()
+    if not local_path.startswith(("/", "~")):
+        return True
+    return Path(local_path).expanduser().is_file()
+
+
+def _state_predicate_hit(actual: Any, expected: Any) -> bool:
+    if isinstance(expected, Mapping):
+        if "exists" in expected:
+            return (actual is not None) is bool(expected.get("exists"))
+        if "equals" in expected:
+            return _state_predicate_hit(actual, expected.get("equals"))
+        if "in" in expected and isinstance(expected.get("in"), list | tuple | set):
+            return any(_state_predicate_hit(actual, item) for item in expected["in"])
+        if "not" in expected:
+            return not _state_predicate_hit(actual, expected.get("not"))
+    if isinstance(expected, list | tuple | set):
+        return any(_state_predicate_hit(actual, item) for item in expected)
+    if isinstance(actual, bool):
+        if isinstance(expected, str):
+            return actual is (expected.strip().lower() in {"1", "true", "yes", "on"})
+        return actual is bool(expected)
+    return str(actual).strip().lower() == str(expected).strip().lower()
+
+
+def _state_predicates_match(
+    state: Mapping[str, Any],
+    predicates: Mapping[str, Any],
+    match_mode: str,
+) -> bool:
+    if not predicates:
+        return True
+    if (
+        not _workflow_state_has_existing_staged_path(state)
+        and str(predicates.get("acquisition.status") or "").strip().lower() == "staged"
+        and _state_predicate_hit(predicates.get("acquisition.analysis_ready"), True)
+    ):
+        return False
+    hits = [
+        _state_predicate_hit(_state_path_value(state, str(path)), expected)
+        for path, expected in predicates.items()
+    ]
     return all(hits) if match_mode == "all" else any(hits)
 
 
@@ -3012,37 +6530,78 @@ def _continuation_contract_handoffs(
     contracts = params.get("continuation_contracts")
     if not isinstance(contracts, list):
         return []
-    output_text = "\n\n".join([answer_text, *completed_outputs])
+    # A parent answer emitted before mandatory continuation has run is not
+    # evidence. Only completed child outputs should drive follow-up contracts or
+    # be forwarded as prior blueprint evidence. The exception is CLIO-appended
+    # typed state inferred from tool observations; that is tool evidence, not
+    # free-form model prose, and ReAct experts need it to continue from their
+    # own tool results.
+    output_text = "\n\n".join(completed_outputs)
+    workflow_state_inputs = [source_text, *completed_outputs]
+    if "CLIO inferred typed tool state" in answer_text:
+        workflow_state_inputs.append(answer_text)
+    workflow_state = _workflow_state_from_outputs(workflow_state_inputs)
     rows: list[dict[str, Any]] = []
     for raw_contract in contracts:
         if not isinstance(raw_contract, Mapping):
             continue
         target = str(raw_contract.get("next_expert") or raw_contract.get("delegate_to") or "").strip()
-        if not target or target not in declared_child_ids or target in completed_child_ids:
+        raw_flags = raw_contract.get("flags")
+        flags: dict[str, Any] = dict(raw_flags) if isinstance(raw_flags, Mapping) else {}
+        if not target or target not in declared_child_ids:
+            continue
+        if target in completed_child_ids and not _handoff_allows_repeat(flags):
             continue
         match_mode = str(raw_contract.get("match") or "any").strip().lower()
         if match_mode not in {"any", "all"}:
             match_mode = "any"
         request_terms = _contract_match_terms(raw_contract.get("when_request_contains"))
         output_terms = _contract_match_terms(raw_contract.get("when_output_contains"))
+        completed_child_terms = _contract_match_terms(
+            raw_contract.get("when_child_completed")
+            or raw_contract.get("when_completed_child")
+            or raw_contract.get("after_child")
+        )
+        if completed_child_terms:
+            child_hits = [term in completed_child_ids for term in completed_child_terms]
+            if match_mode == "all":
+                if not all(child_hits):
+                    continue
+            elif not any(child_hits):
+                continue
+        state_predicates = raw_contract.get("when_state") or raw_contract.get("when_workflow_state")
+        if not isinstance(state_predicates, Mapping):
+            state_predicates = raw_contract.get("when_semantic_state")
+        if not isinstance(state_predicates, Mapping):
+            state_predicates = {}
         if request_terms and not _contract_terms_match(source_text, request_terms, match_mode):
             continue
         if output_terms and not _contract_terms_match(output_text, output_terms, match_mode):
             continue
+        if state_predicates and not _state_predicates_match(workflow_state, state_predicates, match_mode):
+            continue
         action = str(raw_contract.get("next_action") or "").strip()
         prompt = action or source_text
         prompt = _append_sac_path_instruction(prompt, output_text, target)
+        if workflow_state:
+            prompt = (
+                f"{prompt}\n\nPrior structured blueprint state:\n"
+                f"{json.dumps(workflow_state, sort_keys=True, default=str)}"
+            )
         if output_text.strip():
             prompt = f"{prompt}\n\nPrior blueprint evidence:\n{output_text.strip()}"
-        raw_flags = raw_contract.get("flags")
-        flags: dict[str, Any] = dict(raw_flags) if isinstance(raw_flags, Mapping) else {}
+        source = (
+            "blueprint_typed_state_continuation_contract"
+            if (state_predicates or completed_child_terms) and not (request_terms or output_terms)
+            else "blueprint_continuation_contract"
+        )
         rows.append(
             {
                 "delegate_to": target,
                 "question": prompt,
                 "status": "requested",
                 "execute": True,
-                "source": "blueprint_continuation_contract",
+                "source": source,
                 "contract_id": str(raw_contract.get("id") or ""),
                 **flags,
             }
@@ -3062,9 +6621,17 @@ def _continuation_contract_handoff_rows(
     """Build executable child handoffs from returned continuation contracts."""
 
     handoffs: list[dict[str, Any]] = []
+    allow_legacy_text_continuation = _user_agent_bool_param(
+        parent_agent,
+        "allow_legacy_text_continuation",
+    )
     for row in _iter_delegation_return_rows(rows):
         summary = str(row.get("output_summary") or row.get("summary") or "").strip()
-        contract = _delegation_continuation_contract(summary)
+        contract = (
+            _delegation_continuation_contract(summary)
+            if allow_legacy_text_continuation
+            else {}
+        )
         origin = str(row.get("agent_id") or row.get("delegate_to") or "").strip()
         origin_agent = _resolve_runtime_dynamic_agent(app, origin, session_id=session_id) if origin else None
         if not contract.get("next_expert"):
@@ -3141,6 +6708,10 @@ def _next_expert_marker_handoffs(
     return rows
 
 
+def _agent_allows_legacy_text_continuation(agent_def: "AgentDef") -> bool:
+    return _user_agent_bool_param(agent_def, "allow_legacy_text_continuation")
+
+
 def _user_agent_param(agent_def: "AgentDef", name: str) -> Any:
     """Return one user-agent generation parameter, if present."""
     params = agent_def.parameters if isinstance(agent_def.parameters, Mapping) else {}
@@ -3156,6 +6727,22 @@ def _user_agent_int_param(agent_def: "AgentDef", name: str, default: int) -> int
         return int(value)
     except (TypeError, ValueError) as exc:
         raise ValueError(f"user agent parameter {name!r} must be an integer") from exc
+
+
+def _user_agent_bool_param(agent_def: "AgentDef", name: str, default: bool = False) -> bool:
+    """Parse a boolean user-agent parameter."""
+
+    value = _user_agent_param(agent_def, name)
+    if value in (None, ""):
+        return default
+    if isinstance(value, bool):
+        return value
+    normalized = str(value).strip().lower()
+    if normalized in {"1", "true", "yes", "on", "allow", "allowed"}:
+        return True
+    if normalized in {"0", "false", "no", "off", "deny", "denied"}:
+        return False
+    return default
 
 
 def _user_agent_float_param(agent_def: "AgentDef", name: str, default: float) -> float:
@@ -3394,15 +6981,22 @@ async def _call_enabled_external_mcp_tool(
             except Exception:
                 pass
         raise
+    content = getattr(result, "content", None) or []
+    result_text = "\n".join(str(getattr(part, "text", part)) for part in content)
+    if not result_text:
+        data = getattr(result, "data", None)
+        result_text = (
+            json.dumps(data, sort_keys=True, default=str)
+            if isinstance(data, Mapping)
+            else str(data if data is not None else result)
+        )
     if tool_observer is not None:
         try:
-            tool_observer(observer_name, dict(tool_args), "completed", None)
+            tool_observer(observer_name, dict(tool_args), "completed", None, result_text)
         except Exception:
             pass
-
-    content = getattr(result, "content", None) or []
     if content:
-        return "\n".join(str(getattr(part, "text", part)) for part in content)
+        return result_text
     data = getattr(result, "data", None)
     if data is not None:
         return json.dumps(data, default=str) if isinstance(data, Mapping) else str(data)
@@ -3489,6 +7083,7 @@ def _enabled_external_mcp_dspy_tools(app: Any, requested_tools: list[str]) -> di
 
 def _dynamic_agent_tools(base_agent: Any, agent_def: "AgentDef") -> list[Any]:
     """Resolve the exact DSPy tools a tool-declaring dynamic agent may use."""
+
     requested_tools = [str(t).strip() for t in agent_def.tools if str(t).strip()]
     tool_executor = getattr(base_agent, "tool_executor", None)
     if tool_executor is None or not hasattr(tool_executor, "to_dspy_tools"):
@@ -3515,7 +7110,206 @@ def _dynamic_agent_tools(base_agent: Any, agent_def: "AgentDef") -> list[Any]:
             reason="custom_agent_tools_unavailable",
             tools=missing_tools,
         )
-    return [available_tools[name] for name in requested_tools]
+    return [_recording_blueprint_tool(available_tools[name]) for name in requested_tools]
+
+
+def _recording_blueprint_tool(tool: Any) -> Any:
+    """Wrap a DSPy tool so blueprint ReAct predictions retain tool evidence."""
+
+    import dspy  # noqa: PLC0415
+
+    name = str(getattr(tool, "name", "") or "").strip()
+    desc = str(getattr(tool, "desc", "") or getattr(tool, "__doc__", "") or name)
+    args = getattr(tool, "args", None) or {}
+
+    def call_tool(**kwargs: Any) -> Any:
+        started_at = time.perf_counter()
+        rows = _ACTIVE_BLUEPRINT_TOOL_ROWS.get()
+        if rows is not None and name == "ndp_stage_resource":
+            prior_rows = [row for row in rows if isinstance(row, Mapping)]
+            result = _prior_staged_ndp_resource_result(kwargs, prior_rows)
+            if result is not None:
+                rows.append(
+                    {
+                        "name": name,
+                        "args": dict(kwargs),
+                        "ok": True,
+                        "duration_ms": (time.perf_counter() - started_at) * 1000,
+                        "result": _bounded_tool_call_result(result),
+                        "telemetry_source": "blueprint_react_tool_wrapper",
+                        "skipped": True,
+                    }
+                )
+                return result
+        if rows is not None and name == "ndp_search_datasets":
+            prior_rows = [row for row in rows if isinstance(row, Mapping)]
+            prior_state = _infer_ndp_workflow_state_from_tool_rows(prior_rows)
+            resource_discovery = prior_state.get("resource_discovery")
+            station_ids = _station_ids_from_workflow_state(prior_state)
+            searched_station_ids: list[str] = []
+            if isinstance(resource_discovery, Mapping):
+                searched_station_ids = [
+                    str(station).strip().upper()
+                    for station in resource_discovery.get("searched_station_ids") or []
+                    if str(station).strip()
+                ]
+            requested_station_id = _search_call_station_id(
+                args=kwargs,
+                result={},
+                station_ids=station_ids,
+            )
+            if (
+                isinstance(resource_discovery, Mapping)
+                and str(resource_discovery.get("status") or "") == "search_required"
+                and station_ids
+                and (
+                    (requested_station_id and requested_station_id in searched_station_ids)
+                    or (
+                        not requested_station_id
+                        and str(kwargs.get("resource_format") or "").strip().upper() == "CSV"
+                    )
+                )
+            ):
+                remaining_station_ids = [
+                    station
+                    for station in station_ids[: min(5, len(station_ids))]
+                    if station not in searched_station_ids
+                ]
+                result = {
+                    "datasets": [],
+                    "count": 0,
+                    "total_found": 0,
+                    "server": kwargs.get("server") or "global",
+                    "_meta": {
+                        "tool": "search_datasets",
+                        "status": "skipped",
+                        "reason": (
+                            "duplicate_station_resource_search"
+                            if requested_station_id
+                            else "broad_station_resource_search_after_station_catalog"
+                        ),
+                    },
+                    "search_coverage": {
+                        "domain": "earthscope_gnss",
+                        "status": "skipped",
+                        "station_resource_search": False,
+                        "search_terms": kwargs.get("search_terms") or [],
+                        "resource_name": kwargs.get("resource_name"),
+                        "resource_format": kwargs.get("resource_format"),
+                        "station_code": requested_station_id or None,
+                    },
+                    "clio_runtime": {
+                        "workflow_state": prior_state,
+                        "next_action": (
+                            "Search only the remaining ranked station IDs "
+                            f"({', '.join(remaining_station_ids)}) for concrete station CSV "
+                            "resources, or return the metadata-only acquisition blocker if no "
+                            "unsearched ranked stations remain."
+                        ),
+                        "terminal": not remaining_station_ids,
+                    },
+                }
+                rows.append(
+                    {
+                        "name": name,
+                        "args": dict(kwargs),
+                        "ok": True,
+                        "duration_ms": (time.perf_counter() - started_at) * 1000,
+                        "result": _bounded_tool_call_result(result),
+                        "telemetry_source": "blueprint_react_tool_wrapper",
+                        "skipped": True,
+                    }
+                )
+                if result["clio_runtime"]["terminal"] is True:
+                    raise _BlueprintTerminalWorkflowState(result)
+                return result
+            if (
+                isinstance(resource_discovery, Mapping)
+                and str(resource_discovery.get("status") or "") == "search_exhausted"
+            ):
+                result = {
+                    "datasets": [],
+                    "count": 0,
+                    "total_found": 0,
+                    "server": kwargs.get("server") or "global",
+                    "_meta": {
+                        "tool": "search_datasets",
+                        "status": "skipped",
+                        "reason": "resource_discovery_search_exhausted",
+                    },
+                    "search_coverage": {
+                        "domain": "earthscope_gnss",
+                        "status": "skipped",
+                        "station_resource_search": False,
+                        "search_terms": kwargs.get("search_terms") or [],
+                        "resource_name": kwargs.get("resource_name"),
+                        "resource_format": kwargs.get("resource_format"),
+                        "station_code": None,
+                    },
+                }
+                result = _augment_ndp_search_result_with_runtime_state(result, prior_rows)
+                rows.append(
+                    {
+                        "name": name,
+                        "args": dict(kwargs),
+                        "ok": True,
+                        "duration_ms": (time.perf_counter() - started_at) * 1000,
+                        "result": _bounded_tool_call_result(result),
+                        "telemetry_source": "blueprint_react_tool_wrapper",
+                        "skipped": True,
+                    }
+                )
+                if result.get("clio_runtime", {}).get("terminal") is True:
+                    raise _BlueprintTerminalWorkflowState(result)
+                return result
+        try:
+            result = tool(**kwargs)
+        except BaseException as exc:  # noqa: BLE001
+            if isinstance(exc, _BlueprintTerminalWorkflowState):
+                raise
+            if rows is not None:
+                rows.append(
+                    {
+                        "name": name,
+                        "args": dict(kwargs),
+                        "ok": False,
+                        "duration_ms": (time.perf_counter() - started_at) * 1000,
+                        "error": str(exc),
+                        "telemetry_source": "blueprint_react_tool_wrapper",
+                    }
+                )
+            raise
+        row_result = _bounded_tool_call_result(result)
+        if rows is not None and name == "ndp_search_datasets":
+            prior_rows = [row for row in rows if isinstance(row, Mapping)]
+            runtime_row = {
+                "name": name,
+                "args": dict(kwargs),
+                "ok": not _tool_result_is_error(result),
+                "result": row_result,
+                "telemetry_source": "blueprint_react_tool_wrapper",
+            }
+            result = _augment_ndp_search_result_with_runtime_state(
+                result,
+                [*prior_rows, runtime_row],
+            )
+            row_result = _bounded_tool_call_result(result)
+        if rows is not None:
+            rows.append(
+                {
+                    "name": name,
+                    "args": dict(kwargs),
+                    "ok": not _tool_result_is_error(result),
+                    "duration_ms": (time.perf_counter() - started_at) * 1000,
+                    "result": row_result,
+                    "telemetry_source": "blueprint_react_tool_wrapper",
+                }
+            )
+        return result
+
+    call_tool.__name__ = name
+    call_tool.__doc__ = desc
+    return dspy.Tool(func=call_tool, name=name, desc=desc, args=args)
 
 
 def _tool_names(tools: Iterable[Any]) -> list[str]:
@@ -3527,6 +7321,126 @@ def _tool_names(tools: Iterable[Any]) -> list[str]:
         if name:
             names.append(name)
     return names
+
+
+def _adapter_tool_intent_from_exception(
+    exc: BaseException,
+    *,
+    allowed_tools: Iterable[str],
+) -> dict[str, Any] | None:
+    """Recover a typed tool intent emitted where DSPy expected final fields."""
+
+    allowed = {str(name).strip() for name in allowed_tools if str(name).strip()}
+    if not allowed:
+        return None
+    message = str(exc)
+    if "tool_name" not in message or "tool_args" not in message:
+        return None
+    for obj in _json_objects_from_text(message):
+        if not isinstance(obj, Mapping):
+            continue
+        tool_name = str(obj.get("tool_name") or obj.get("name") or "").strip()
+        if tool_name not in allowed:
+            continue
+        tool_args = obj.get("tool_args") or obj.get("args") or obj.get("arguments") or {}
+        if not isinstance(tool_args, Mapping):
+            tool_args = {}
+        return {"tool_name": tool_name, "tool_args": dict(tool_args)}
+    return None
+
+
+def _call_recovered_dspy_tool(tool: Any, args: Mapping[str, Any]) -> Any:
+    """Call a DSPy tool recovered from malformed ReAct adapter output."""
+
+    if callable(tool):
+        return tool(**dict(args))
+    func = getattr(tool, "func", None)
+    if callable(func):
+        return func(**dict(args))
+    raise TypeError(f"tool is not callable: {getattr(tool, 'name', '<unknown>')}")
+
+
+def _recover_blueprint_react_tool_intent(
+    *,
+    tools: Iterable[Any],
+    exc: BaseException,
+) -> Any | None:
+    """Execute a scoped ReAct tool intent that was emitted in final-output form."""
+
+    import dspy  # noqa: PLC0415
+
+    tools_by_name = {
+        str(getattr(tool, "name", "") or "").strip(): tool
+        for tool in tools
+        if str(getattr(tool, "name", "") or "").strip()
+    }
+    intent = _adapter_tool_intent_from_exception(
+        exc,
+        allowed_tools=tools_by_name.keys(),
+    )
+    if intent is None:
+        return None
+    tool_name = str(intent["tool_name"])
+    tool_args = dict(intent["tool_args"])
+    started_at = time.perf_counter()
+    try:
+        result = _call_recovered_dspy_tool(tools_by_name[tool_name], tool_args)
+        ok = not _tool_result_is_error(result)
+        error = _tool_result_preview(result) if ok is False else None
+    except BaseException as tool_exc:  # noqa: BLE001
+        result = None
+        ok = False
+        error = str(tool_exc)
+    duration_ms = int((time.perf_counter() - started_at) * 1000)
+    tool_row: dict[str, Any] = {
+        "name": tool_name,
+        "args": tool_args,
+        "result": result,
+        "ok": ok,
+        "duration_ms": duration_ms,
+        "telemetry_source": "react_adapter_tool_intent_recovery",
+    }
+    if error:
+        tool_row["error"] = error
+    workflow_state: dict[str, Any] = {}
+    _merge_inferred_workflow_state(
+        workflow_state,
+        _infer_workflow_state_from_tool_call_row(tool_row),
+    )
+    _reconcile_workflow_state(workflow_state)
+    preview = _tool_result_preview(result).strip()
+    status = "succeeded" if ok else "failed"
+    answer_parts = [
+        (
+            "Recovered a malformed ReAct tool intent that was emitted as final "
+            f"JSON and executed scoped tool `{tool_name}`; tool execution {status}."
+        )
+    ]
+    if error:
+        answer_parts.append(f"Tool error: {error}")
+    if preview:
+        answer_parts.append(f"Tool result:\n{preview}")
+    if workflow_state:
+        answer_parts.append(
+            "CLIO inferred typed tool state from recovered tool intent:\n"
+            f"{_workflow_state_payload(workflow_state)}"
+        )
+    trajectory = {
+        "step_0_tool_name": tool_name,
+        "step_0_tool_args": tool_args,
+        "step_0_observation": result,
+    }
+    return dspy.Prediction(
+        answer="\n\n".join(answer_parts),
+        workflow_state=workflow_state,
+        evidence=preview,
+        artifacts="",
+        errors=error or "",
+        delegation="",
+        trajectory=trajectory,
+        tools_called=[tool_row],
+        expert_handoffs=[],
+    )
 
 
 def _invalid_tool_selection_from_exception(
@@ -3714,6 +7628,7 @@ def _blueprint_runtime_signature(agent_def: "AgentDef") -> Any:
         return value is not False
 
     for name, desc in {
+        "workflow_state": "Typed semantic workflow state used for blueprint continuation routing",
         "evidence": "Compact evidence rows supporting the answer",
         "artifacts": "Artifact paths or identifiers produced by the expert",
         "errors": "Recoverable runtime errors or missing evidence",
@@ -3741,9 +7656,32 @@ def _blueprint_runtime_signature(agent_def: "AgentDef") -> Any:
 def _prediction_structured_metadata(result: Any) -> dict[str, Any]:
     return {
         key: getattr(result, key)
-        for key in ("evidence", "artifacts", "errors", "delegation")
+        for key in ("workflow_state", "evidence", "artifacts", "errors", "delegation")
         if getattr(result, key, None) not in (None, "")
     }
+
+
+def _append_prediction_workflow_state(output: str, result: Any) -> str:
+    """Append a blueprint prediction's first-class workflow_state output."""
+
+    raw_state = getattr(result, "workflow_state", None)
+    if raw_state in (None, ""):
+        return output
+    if isinstance(raw_state, str):
+        text = raw_state.strip()
+        if not text:
+            return output
+        block = text
+    else:
+        payload = (
+            raw_state
+            if isinstance(raw_state, Mapping) and "workflow_state" in raw_state
+            else {"workflow_state": raw_state}
+        )
+        block = json.dumps(payload, sort_keys=True, default=str)
+    if block in output:
+        return output
+    return f"{output.rstrip()}\n\nCLIO typed workflow state:\n{block}".strip()
 
 
 def _fallback_answer_from_delegation(handoffs: list[dict[str, Any]]) -> str:
@@ -3758,6 +7696,24 @@ def _fallback_answer_from_delegation(handoffs: list[dict[str, Any]]) -> str:
         if text:
             return text
     return ""
+
+
+def _completed_row_contract_evidence(row: Mapping[str, Any]) -> str:
+    """Return compact text plus durable typed state for continuation checks."""
+
+    parts: list[str] = []
+    summary = str(
+        row.get("return_output_summary")
+        or row.get("output_summary")
+        or row.get("summary")
+        or ""
+    ).strip()
+    if summary:
+        parts.append(summary)
+    workflow_state = row.get("workflow_state")
+    if isinstance(workflow_state, Mapping) and workflow_state:
+        parts.append(f"CLIO durable typed workflow state:\n{_workflow_state_payload(workflow_state)}")
+    return "\n\n".join(parts).strip()
 
 
 def _blueprint_fanout_config(agent_def: "AgentDef") -> dict[str, Any]:
@@ -3806,6 +7762,9 @@ def _build_child_expert_tool(base_agent: Any, parent: "AgentDef", child: "AgentD
 
     import dspy  # noqa: PLC0415
 
+    def completion_context_key(session_id: str) -> tuple[str, str]:
+        return (session_id, parent.id)
+
     def delegate_child(question: str) -> str:
         app = _ACTIVE_GACT_APP.get()
         session_id = _ACTIVE_GACT_SESSION_ID.get()
@@ -3813,6 +7772,117 @@ def _build_child_expert_tool(base_agent: Any, parent: "AgentDef", child: "AgentD
             raise RuntimeError("child expert tool requires an active CLIO app/session context")
         if child.parent_id != parent.id:
             raise RuntimeError(f"{child.id!r} is not a declared child of {parent.id!r}")
+        turn_completed_key = (
+            session_id,
+            _active_semantic_turn_id(),
+            parent.id,
+            child.id,
+        )
+        app_state = getattr(app, "state", None)
+        turn_completed = getattr(app_state, "child_tool_completed_by_turn", None)
+        active_completions = _ACTIVE_CHILD_TOOL_COMPLETIONS.get()
+        if active_completions is None:
+            completion_contexts = getattr(app_state, "child_tool_completion_contexts", None)
+            if isinstance(completion_contexts, dict):
+                stored = completion_contexts.get(completion_context_key(session_id))
+                if isinstance(stored, list):
+                    active_completions = stored
+
+        def completed_child_payload(output_summary: str) -> str:
+            return json.dumps(
+                {
+                    "agent_id": child.id,
+                    "parent_id": parent.id,
+                    "status": "completed",
+                    "stage": "delegate.completed",
+                    "return_to": parent.id,
+                    "return_payload": "compact_result",
+                    "repeat_ignored": True,
+                    "output_summary": output_summary,
+                },
+                sort_keys=True,
+                default=str,
+            )
+
+        if _blueprint_enforces_child_contract_order(parent):
+            if active_completions is None:
+                active_completions = []
+            completed_child_ids = {
+                row["agent_id"]
+                for row in active_completions
+                if row.get("agent_id")
+            }
+            completed_outputs = [
+                evidence
+                for row in active_completions
+                if (evidence := _completed_row_contract_evidence(row))
+            ]
+            declared_child_ids = {
+                row.id
+                for row in _runtime_active_agent_blueprint_rows(app, session_id=session_id)
+                if row.enabled and row.parent_id == parent.id
+            }
+            allowed_child_ids = _contract_next_child_ids_for_outputs(
+                parent,
+                completed_outputs=completed_outputs,
+                completed_child_ids=completed_child_ids,
+                declared_child_ids=declared_child_ids,
+            )
+            if (
+                _agent_has_continuation_contracts(parent)
+                and child.id not in allowed_child_ids
+                and child.id not in completed_child_ids
+            ):
+                allowed = ", ".join(sorted(allowed_child_ids))
+                reason = (
+                    f"child expert {child.id!r} is not currently authorized by "
+                    f"typed continuation contracts for parent {parent.id!r}; "
+                    f"allowed next child: {allowed or '<none>'}"
+                )
+                return json.dumps(
+                    {
+                        "agent_id": child.id,
+                        "parent_id": parent.id,
+                        "status": "skipped",
+                        "stage": "delegate.skipped",
+                        "skip_reason": "child_contract_precondition_unmet",
+                        "allowed_next_children": sorted(allowed_child_ids),
+                        "output_summary": reason,
+                    },
+                    sort_keys=True,
+                    default=str,
+                )
+            if isinstance(turn_completed, set) and turn_completed_key in turn_completed:
+                prior_output = ""
+                for row in reversed(active_completions):
+                    if row.get("agent_id") == child.id and row.get("output_summary"):
+                        prior_output = str(row.get("output_summary") or "")
+                        break
+                if not prior_output:
+                    prior_output = (
+                        f"child expert {child.id!r} already completed for parent "
+                        f"{parent.id!r} in this turn"
+                    )
+                if child.id not in allowed_child_ids:
+                    return completed_child_payload(prior_output)
+            if child.id in completed_child_ids:
+                prior_output = ""
+                for row in reversed(active_completions):
+                    if row.get("agent_id") == child.id and row.get("output_summary"):
+                        prior_output = str(row.get("output_summary") or "")
+                        break
+                if child.id not in allowed_child_ids:
+                    return completed_child_payload(prior_output)
+            if (
+                allowed_child_ids
+                and child.id not in allowed_child_ids
+                and _agent_has_continuation_contracts(parent)
+            ):
+                allowed = ", ".join(sorted(allowed_child_ids))
+                raise RuntimeError(
+                    f"child expert {child.id!r} is not the next contract-allowed "
+                    f"child for parent {parent.id!r}; allowed next child: {allowed or '<none>'}"
+                )
         _emit_semantic_event(
             app,
             session_id,
@@ -3829,9 +7899,28 @@ def _build_child_expert_tool(base_agent: Any, parent: "AgentDef", child: "AgentD
                 "child_expert": child.id,
             },
         )
+        ledger_start = 0
+        ledger = getattr(app_state, "tool_call_ledger", None)
+        if isinstance(ledger, dict):
+            session_rows = ledger.get(session_id)
+            if isinstance(session_rows, list):
+                ledger_start = len(session_rows)
         runner = _blueprint_runner_for_agent(child)
+        delegated_question = _append_session_workflow_state_context(
+            app,
+            session_id,
+            question,
+        )
         try:
-            pred = _run_dynamic_agent_compat(runner, base_agent, child, question, session_id, None)
+            with _tool_session_context(session_id):
+                pred = _run_dynamic_agent_compat(
+                    runner,
+                    base_agent,
+                    child,
+                    delegated_question,
+                    session_id,
+                    None,
+                )
         except Exception:
             _emit_semantic_event(
                 app,
@@ -3851,6 +7940,43 @@ def _build_child_expert_tool(base_agent: Any, parent: "AgentDef", child: "AgentD
             )
             raise
         output = str(getattr(pred, "answer", "") or "").strip()
+        output = _append_prediction_workflow_state(output, pred)
+        output = _append_inferred_workflow_state(output)
+        output = _append_inferred_workflow_state_from_trajectory(
+            output,
+            getattr(pred, "trajectory", None),
+        )
+        tools_called = _extract_tools_called(pred)
+        if isinstance(ledger, dict):
+            session_rows = ledger.get(session_id)
+            if isinstance(session_rows, list) and len(session_rows) > ledger_start:
+                tools_called = _merge_tool_call_rows(
+                    tools_called,
+                    [
+                        dict(row)
+                        for row in session_rows[ledger_start:]
+                        if isinstance(row, Mapping)
+                    ],
+                )
+        workflow_state = _workflow_state_from_outputs([output])
+        for tool_row in tools_called:
+            _merge_workflow_state_mapping(
+                workflow_state,
+                _infer_workflow_state_from_tool_call_row(tool_row),
+            )
+        _merge_workflow_state_mapping(
+            workflow_state,
+            _station_resource_search_state_from_rows(tools_called, workflow_state),
+        )
+        _reconcile_workflow_state(workflow_state)
+        if workflow_state:
+            state_block = _workflow_state_payload(workflow_state)
+            if state_block not in output:
+                output = (
+                    f"{output.rstrip()}\n\n"
+                    f"CLIO durable typed workflow state:\n{state_block}"
+                )
+        compact_output = _compact_dynamic_delegation_output(output)
         payload = {
             "agent_id": child.id,
             "parent_id": parent.id,
@@ -3858,9 +7984,26 @@ def _build_child_expert_tool(base_agent: Any, parent: "AgentDef", child: "AgentD
             "stage": "delegate.completed",
             "return_to": parent.id,
             "return_payload": "compact_result",
-            "output_summary": _compact_dynamic_delegation_output(output),
+            "output_summary": compact_output,
+            "workflow_state": workflow_state,
+            "tools_called": tools_called,
             "structured": _prediction_structured_metadata(pred),
         }
+        if active_completions is not None:
+            active_completions.append(
+                {
+                    "agent_id": child.id,
+                    "output_summary": compact_output,
+                    "workflow_state": workflow_state,
+                    "tools_called": tools_called,
+                }
+            )
+        if _blueprint_enforces_child_contract_order(parent) and app_state is not None:
+            turn_completed = getattr(app_state, "child_tool_completed_by_turn", None)
+            if not isinstance(turn_completed, set):
+                turn_completed = set()
+                app_state.child_tool_completed_by_turn = turn_completed
+            turn_completed.add(turn_completed_key)
         _emit_semantic_event(
             app,
             session_id,
@@ -4035,12 +8178,14 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
             self.config = _dynamic_agent_lm_config(base_agent, agent_def)
             self._provider_config = self.config
             self.signature = _blueprint_runtime_signature(agent_def)
+            self.tools: list[Any] = []
             if self.kind == "predict":
                 self.program = dspy.Predict(self.signature)
             elif self.kind == "chain_of_thought":
                 self.program = dspy.ChainOfThought(self.signature)
             else:
                 tools = [*_dynamic_agent_tools(base_agent, agent_def), *_dynamic_child_expert_tools(base_agent, agent_def)]
+                self.tools = tools
                 self.program = dspy.ReAct(
                     self.signature,
                     tools=tools,
@@ -4096,8 +8241,98 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
             kwargs = {"question": question}
             if "system_prompt" in self.signature.input_fields:
                 kwargs["system_prompt"] = runtime_system_prompt
-            with dspy.context(lm=create_lm(self.config), adapter=create_chat_adapter(self.config)):
-                result = self.program(**kwargs)
+            child_completion_token = None
+            child_completion_context_key: tuple[str, str] | None = None
+            if self.kind == "react" and _blueprint_enforces_child_contract_order(self.agent_def):
+                declared_child_ids: set[str] = set()
+                if active_app is not None:
+                    declared_child_ids = {
+                        row.id
+                        for row in _runtime_active_agent_blueprint_rows(
+                            active_app,
+                            session_id=active_session_id,
+                        )
+                        if row.enabled and row.parent_id == self.agent_def.id
+                    }
+                seeded_completions = _seed_child_tool_completions_from_resume_prompt(
+                    question,
+                    declared_child_ids,
+                )
+                child_completion_token = _ACTIVE_CHILD_TOOL_COMPLETIONS.set(seeded_completions)
+                if active_app is not None and active_session_id:
+                    contexts = getattr(active_app.state, "child_tool_completion_contexts", None)
+                    if not isinstance(contexts, dict):
+                        contexts = {}
+                        active_app.state.child_tool_completion_contexts = contexts
+                    child_completion_context_key = (active_session_id, self.agent_def.id)
+                    contexts[child_completion_context_key] = seeded_completions
+            blueprint_tool_rows: list[dict[str, Any]] = []
+            if self.kind == "react":
+                prior_workflow_state = _workflow_state_from_outputs(
+                    [question, runtime_system_prompt]
+                )
+                if prior_workflow_state:
+                    blueprint_tool_rows.append(
+                        {
+                            "name": "clio_prior_workflow_state",
+                            "args": {},
+                            "ok": True,
+                            "result": {},
+                            "workflow_state": prior_workflow_state,
+                            "telemetry_source": "blueprint_react_context_seed",
+                        }
+                    )
+            blueprint_tool_rows_token = (
+                _ACTIVE_BLUEPRINT_TOOL_ROWS.set(blueprint_tool_rows)
+                if self.kind == "react"
+                else None
+            )
+            try:
+                with dspy.context(lm=create_lm(self.config), adapter=create_chat_adapter(self.config)):
+                    try:
+                        result = self.program(**kwargs)
+                    except _BlueprintTerminalWorkflowState as terminal_exc:
+                        terminal_state = (
+                            terminal_exc.result.get("clio_runtime", {}).get("workflow_state", {})
+                        )
+                        workflow_state_text = (
+                            _workflow_state_payload(terminal_state)
+                            if isinstance(terminal_state, Mapping)
+                            else ""
+                        )
+                        result = dspy.Prediction(
+                            answer=_workflow_state_user_fallback_summary(terminal_state)
+                            if isinstance(terminal_state, Mapping)
+                            else "The workflow reached a terminal typed state.",
+                            workflow_state=workflow_state_text,
+                            evidence=json.dumps(terminal_exc.result, sort_keys=True, default=str),
+                            artifacts="",
+                            errors="",
+                            delegation="",
+                            trajectory=None,
+                            tools_called=[],
+                        )
+                    except Exception as exc:
+                        recovered = (
+                            _recover_blueprint_react_tool_intent(
+                                tools=self.tools,
+                                exc=exc,
+                            )
+                            if self.kind == "react"
+                            else None
+                        )
+                        if recovered is None:
+                            raise
+                        result = recovered
+            finally:
+                if blueprint_tool_rows_token is not None:
+                    _ACTIVE_BLUEPRINT_TOOL_ROWS.reset(blueprint_tool_rows_token)
+                if child_completion_context_key is not None and active_app is not None:
+                    contexts = getattr(active_app.state, "child_tool_completion_contexts", None)
+                    if isinstance(contexts, dict):
+                        contexts.pop(child_completion_context_key, None)
+                if child_completion_token is not None:
+                    _ACTIVE_CHILD_TOOL_COMPLETIONS.reset(child_completion_token)
             if cancel_requested is not None and cancel_requested():
                 raise _TurnCancelled(
                     _cancelled_error_info(
@@ -4107,7 +8342,13 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                     )
                 )
             answer = str(getattr(result, "answer", "") or "").strip()
+            tools_called: list[dict[str, Any]] = []
             if self.kind == "react":
+                tools_called = _extract_tools_called_from_trajectory(
+                    getattr(result, "trajectory", None)
+                )
+                if blueprint_tool_rows:
+                    tools_called = _merge_tool_call_rows(tools_called, blueprint_tool_rows)
                 if not answer:
                     answer = _tool_agent_empty_answer_fallback(
                         getattr(result, "trajectory", None)
@@ -4120,6 +8361,11 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                         )
                         or answer
                     )
+                answer = _append_inferred_workflow_state(answer)
+                answer = _append_inferred_workflow_state_from_trajectory(
+                    answer,
+                    getattr(result, "trajectory", None),
+                )
             handoff_rows = _coerce_expert_handoff_rows(getattr(result, "expert_handoffs", None))
             if not answer and not handoff_rows:
                 return dspy.Prediction(
@@ -4132,11 +8378,13 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                     route_source="agent_blueprint",
                     session_id=session_id,
                     expert_handoffs=[],
+                    workflow_state=getattr(result, "workflow_state", ""),
                     evidence=getattr(result, "evidence", ""),
                     artifacts=getattr(result, "artifacts", ""),
                     errors=getattr(result, "errors", ""),
                     delegation=getattr(result, "delegation", ""),
                     trajectory=getattr(result, "trajectory", None),
+                    tools_called=tools_called,
                     error_info=None,
                 )
             return dspy.Prediction(
@@ -4146,11 +8394,13 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                 route_source="agent_blueprint",
                 session_id=session_id,
                 expert_handoffs=handoff_rows,
+                workflow_state=getattr(result, "workflow_state", ""),
                 evidence=getattr(result, "evidence", ""),
                 artifacts=getattr(result, "artifacts", ""),
                 errors=getattr(result, "errors", ""),
                 delegation=getattr(result, "delegation", ""),
                 trajectory=getattr(result, "trajectory", None),
+                tools_called=tools_called,
                 error_info=None,
             )
 
@@ -4288,6 +8538,9 @@ def _build_tool_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> Any
                 )
             if not answer:
                 raise RuntimeError(f"user agent {self.agent_def.id!r} returned an empty answer")
+            tools_called = _extract_tools_called_from_trajectory(
+                getattr(result, "trajectory", None)
+            )
             return dspy.Prediction(
                 answer=answer,
                 selected_expert=self.agent_def.id,
@@ -4298,6 +8551,7 @@ def _build_tool_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> Any
                     getattr(result, "expert_handoffs", None)
                 ),
                 trajectory=getattr(result, "trajectory", None),
+                tools_called=tools_called,
                 error_info=None,
             )
 
@@ -4346,6 +8600,15 @@ def _run_tool_user_agent(
 
 def _tool_call_event_key(call: Mapping[str, Any]) -> tuple[str, str]:
     """Return a stable identity for de-duplicating tool telemetry events."""
+    call_id = str(call.get("call_id") or "").strip()
+    if call_id:
+        return "__call_id__", call_id
+    return _tool_call_name_args_key(call)
+
+
+def _tool_call_name_args_key(call: Mapping[str, Any]) -> tuple[str, str]:
+    """Return a tool-name/arguments identity for posthoc trajectory rows."""
+
     name = str(call.get("name") or call.get("tool") or "")
     args = call.get("args")
     if args is None:
@@ -4357,6 +8620,158 @@ def _tool_call_event_key(call: Mapping[str, Any]) -> tuple[str, str]:
     except TypeError:
         encoded_args = str(args or {})
     return name, encoded_args
+
+
+def _tool_call_has_result_evidence(call: Mapping[str, Any]) -> bool:
+    """Return whether a tool-call row carries auditable result evidence."""
+
+    for key in ("result", "observation", "output", "response", "result_preview"):
+        value = call.get(key)
+        if value in (None, "", [], {}):
+            continue
+        return True
+    return False
+
+
+def _bounded_tool_call_result(value: Any, *, max_result_chars: int = 12000) -> Any:
+    """Return a JSON-safe bounded result payload for assistant metadata."""
+
+    preview = _tool_result_preview(value)
+    if len(preview) <= max_result_chars:
+        return value
+    return {
+        "preview": preview[:max_result_chars].rstrip(),
+        "truncated": True,
+        "original_chars": len(preview),
+    }
+
+
+def _normalize_tool_call_row(call: Mapping[str, Any]) -> dict[str, Any]:
+    """Normalize a tool-call row while preserving bounded result evidence."""
+
+    row: dict[str, Any] = {}
+    call_id = str(call.get("call_id") or "").strip()
+    if call_id:
+        row["call_id"] = call_id
+    name = call.get("name") or call.get("tool")
+    if name:
+        row["name"] = str(name)
+    args = call.get("args")
+    if args is None:
+        args = call.get("arguments")
+    if args is None:
+        args = call.get("params")
+    if args is not None:
+        row["args"] = args
+    for key in ("ok", "duration_ms", "cached", "error", "telemetry_source"):
+        if key in call:
+            row[key] = call[key]
+    for key in ("result", "observation", "output", "response", "result_preview"):
+        if key not in call:
+            continue
+        value = call.get(key)
+        if value in (None, "", [], {}):
+            continue
+        if key == "result":
+            row["result"] = _bounded_tool_call_result(value)
+        else:
+            row[key] = _bounded_tool_call_result(value)
+        break
+    if row and "telemetry_source" not in row:
+        row["telemetry_source"] = "posthoc_prediction"
+    return row
+
+
+def _merge_tool_call_rows(
+    primary_rows: list[dict[str, Any]],
+    supplemental_rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Merge tool-call telemetry without dropping richer result evidence."""
+
+    merged: list[dict[str, Any]] = [
+        _normalize_tool_call_row(row) for row in primary_rows if row
+    ]
+    by_key: dict[tuple[str, str], list[int]] = {}
+    by_name_args: dict[tuple[str, str], list[int]] = {}
+    for index, row in enumerate(merged):
+        by_key.setdefault(_tool_call_event_key(row), []).append(index)
+        by_name_args.setdefault(_tool_call_name_args_key(row), []).append(index)
+
+    for raw_supplemental in supplemental_rows:
+        supplemental = _normalize_tool_call_row(raw_supplemental)
+        if not supplemental:
+            continue
+        key = _tool_call_event_key(supplemental)
+        candidate_index: int | None = None
+        supplemental_has_result = _tool_call_has_result_evidence(supplemental)
+        supplemental_ok = supplemental.get("ok")
+        candidate_indexes = list(by_key.get(key, []))
+        if not candidate_indexes and (
+            not supplemental.get("call_id") or not supplemental_has_result
+        ):
+            fallback_indexes = by_name_args.get(_tool_call_name_args_key(supplemental), [])
+            if supplemental_has_result:
+                fallback_indexes = [
+                    index for index in fallback_indexes if merged[index].get("ok") is not False
+                ]
+            if len(fallback_indexes) == 1:
+                candidate_indexes = fallback_indexes
+        for index in candidate_indexes:
+            existing = merged[index]
+            existing_ok = existing.get("ok")
+            if key[0] == "__call_id__":
+                candidate_index = index
+                break
+            if (
+                supplemental_has_result
+                and existing_ok is False
+                and supplemental_ok is not False
+            ):
+                continue
+            if supplemental_has_result and not _tool_call_has_result_evidence(existing):
+                candidate_index = index
+                break
+            if not supplemental_has_result:
+                candidate_index = index
+                break
+        if candidate_index is None:
+            by_key.setdefault(key, []).append(len(merged))
+            by_name_args.setdefault(_tool_call_name_args_key(supplemental), []).append(len(merged))
+            merged.append(supplemental)
+            continue
+
+        existing = merged[candidate_index]
+        for field_name, value in supplemental.items():
+            if field_name in {"result", "observation", "output", "response", "result_preview"}:
+                if not _tool_call_has_result_evidence(existing):
+                    existing[field_name] = value
+                continue
+            if value in (None, "", [], {}):
+                continue
+            if field_name not in existing or existing[field_name] in (None, "", [], {}):
+                existing[field_name] = value
+            elif field_name in {"duration_ms", "cached", "telemetry_source", "ok", "error"}:
+                existing[field_name] = value
+    return merged
+
+
+def _tool_calls_from_handoff_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Return nested child tool-call evidence from delegation rows."""
+
+    tool_rows: list[dict[str, Any]] = []
+
+    def visit(row: Any) -> None:
+        if not isinstance(row, Mapping):
+            return
+        for call in row.get("tools_called") or []:
+            if isinstance(call, Mapping):
+                tool_rows.append(_normalize_tool_call_row(call))
+        for child in row.get("children") or []:
+            visit(child)
+
+    for row in rows:
+        visit(row)
+    return tool_rows
 
 
 def _model_ref_dict(value: Any) -> dict[str, str]:
@@ -4945,7 +9360,11 @@ async def _run_turn_in_background(
                 )
                 continue
 
-            prompt = _delegated_expert_prompt(row, source_text)
+            prompt = _append_session_workflow_state_context(
+                app,
+                sid,
+                _delegated_expert_prompt(row, source_text),
+            )
             target_kind = _blueprint_module_kind(target) if _agent_definition_uses_blueprint_runtime(target) else ""
             execution_mode = (
                 f"blueprint_{target_kind}"
@@ -5001,9 +9420,44 @@ async def _run_turn_in_background(
                     metadata={**started_row, "stream_source": "live"},
                 ),
             )
+            ledger_start = 0
+            ledger = getattr(app.state, "tool_call_ledger", None)
+            if isinstance(ledger, dict):
+                session_rows = ledger.get(sid)
+                if isinstance(session_rows, list):
+                    ledger_start = len(session_rows)
             try:
                 pred_child = await _run_dynamic_agent_sync(target, prompt)
                 duration_ms = int((time.perf_counter() - started_at) * 1000)
+                local_output = str(getattr(pred_child, "answer", "") or "").strip()
+                local_output = _append_prediction_workflow_state(local_output, pred_child)
+                local_tools_called = _extract_tools_called(pred_child)
+                local_output = _append_inferred_workflow_state(local_output)
+                local_output = _append_inferred_workflow_state_from_trajectory(
+                    local_output,
+                    getattr(pred_child, "trajectory", None),
+                )
+                local_workflow_state = _workflow_state_from_outputs([local_output])
+                for tool_row in local_tools_called:
+                    _merge_inferred_workflow_state(
+                        local_workflow_state,
+                        _infer_workflow_state_from_tool_call_row(tool_row),
+                    )
+                _reconcile_workflow_state(local_workflow_state)
+                local_workflow_state = _filter_workflow_state_for_blueprint_authority(
+                    target.id,
+                    local_workflow_state,
+                )
+                if target.id in _BLUEPRINT_WORKFLOW_STATE_AUTHORITIES:
+                    local_output = _user_facing_dynamic_evidence_summary(local_output)
+                if local_workflow_state:
+                    local_state_block = _workflow_state_payload(local_workflow_state)
+                    if local_state_block not in local_output:
+                        local_output = (
+                            f"{local_output.rstrip()}\n\n"
+                            f"CLIO local typed workflow state:\n{local_state_block}"
+                        )
+                local_output_summary = _compact_dynamic_delegation_output(local_output)
                 nested: list[dict[str, Any]] = []
                 if target.source == "expert_pack":
                     pred_child, nested = await _settle_dynamic_agent_delegations(
@@ -5012,6 +9466,7 @@ async def _run_turn_in_background(
                         source_text=prompt,
                     )
                 output = str(getattr(pred_child, "answer", "") or "").strip()
+                output = _append_prediction_workflow_state(output, pred_child)
                 if not nested:
                     child_rows = _coerce_expert_handoff_rows(
                         getattr(pred_child, "expert_handoffs", None)
@@ -5033,6 +9488,89 @@ async def _run_turn_in_background(
                         or _latest_parent_resumed_output_summary(nested, target.id)
                         or output
                     )
+                if nested and _dynamic_answer_has_pending_child_work(output):
+                    output = (
+                        _latest_parent_resumed_output_summary(nested, target.id)
+                        or _latest_delegation_output_summary(nested)
+                        or output
+                    )
+                if nested and (
+                    _user_agent_bool_param(
+                        target,
+                        "bubble_child_evidence_on_completion",
+                    )
+                    or _user_agent_bool_param(
+                        target,
+                        "return_child_evidence_on_completion",
+                    )
+                ):
+                    declared_target_child_ids = {
+                        row.id
+                        for row in _runtime_active_agent_blueprint_rows(
+                            app,
+                            session_id=sid,
+                        )
+                        if row.enabled and row.parent_id == target.id
+                    }
+                    output = (
+                        _bubbled_child_evidence_output_summary(
+                            nested,
+                            target.id,
+                            declared_target_child_ids,
+                        )
+                        or output
+                    )
+                output = _append_inferred_workflow_state(output)
+                output = _append_inferred_workflow_state_from_trajectory(
+                    output,
+                    getattr(pred_child, "trajectory", None),
+                )
+                if nested:
+                    output = _append_nested_workflow_state(output, nested)
+                child_tools_called = _extract_tools_called(pred_child)
+                if isinstance(ledger, dict):
+                    session_rows = ledger.get(sid)
+                    if isinstance(session_rows, list) and len(session_rows) > ledger_start:
+                        child_tools_called = _merge_tool_call_rows(
+                            child_tools_called,
+                            [
+                                dict(row)
+                                for row in session_rows[ledger_start:]
+                                if isinstance(row, Mapping)
+                            ],
+                        )
+                workflow_state = _workflow_state_from_outputs([prompt, output])
+                if nested:
+                    _merge_workflow_state_mapping(
+                        workflow_state,
+                        _workflow_state_from_handoff_rows(nested),
+                    )
+                for tool_row in child_tools_called:
+                    _merge_inferred_workflow_state(
+                        workflow_state,
+                        _infer_workflow_state_from_tool_call_row(tool_row),
+                    )
+                _merge_inferred_workflow_state(
+                    workflow_state,
+                    _station_resource_search_state_from_rows(
+                        child_tools_called,
+                        workflow_state,
+                    ),
+                )
+                _reconcile_workflow_state(workflow_state)
+                workflow_state = _filter_workflow_state_for_blueprint_authority(
+                    target.id,
+                    workflow_state,
+                )
+                if target.id in _BLUEPRINT_WORKFLOW_STATE_AUTHORITIES:
+                    output = _user_facing_dynamic_evidence_summary(output)
+                if workflow_state:
+                    state_block = _workflow_state_payload(workflow_state)
+                    if state_block not in output:
+                        output = (
+                            f"{output.rstrip()}\n\n"
+                            f"CLIO durable typed workflow state:\n{state_block}"
+                        )
                 output_summary = _compact_dynamic_delegation_output(output)
                 completed_row = {
                     **row,
@@ -5053,6 +9591,11 @@ async def _run_turn_in_background(
                     "execution_mode": execution_mode,
                     "input": prompt,
                     "output_summary": output_summary,
+                    "return_output_summary": output_summary,
+                    "local_output_summary": local_output_summary,
+                    "workflow_state": workflow_state,
+                    "local_workflow_state": local_workflow_state,
+                    "tools_called": child_tools_called,
                     "children": nested,
                 }
                 _emit_semantic_event(
@@ -5083,17 +9626,19 @@ async def _run_turn_in_background(
                 )
                 executed.append(completed_row)
                 resumed_row = {
-                        "agent_id": parent_agent.id,
-                        "parent_id": parent_agent.parent_id,
-                        "dispatch_target": parent_agent.id,
-                        "status": "completed",
-                        "stage": "parent.resumed",
-                        "delegation_lifecycle": "sync",
-                        "resumed_from": target.id,
-                        "return_payload": "compact_result",
-                        "depth": depth,
-                        "output_summary": output_summary,
-                    }
+                    "agent_id": parent_agent.id,
+                    "parent_id": parent_agent.parent_id,
+                    "dispatch_target": parent_agent.id,
+                    "status": "completed",
+                    "stage": "parent.resumed",
+                    "delegation_lifecycle": "sync",
+                    "resumed_from": target.id,
+                    "return_payload": "compact_result",
+                    "depth": depth,
+                    "output_summary": output_summary,
+                    "return_output_summary": output_summary,
+                    "workflow_state": workflow_state,
+                }
                 _emit_semantic_event(
                     app,
                     sid,
@@ -5120,6 +9665,37 @@ async def _run_turn_in_background(
             except (_TurnCancelled, _TurnTimedOut):
                 raise
             except Exception as exc:  # noqa: BLE001
+                child_tools_called: list[dict[str, Any]] = []
+                if isinstance(ledger, dict):
+                    session_rows = ledger.get(sid)
+                    if isinstance(session_rows, list) and len(session_rows) > ledger_start:
+                        child_tools_called = _merge_tool_call_rows(
+                            child_tools_called,
+                            [
+                                dict(row)
+                                for row in session_rows[ledger_start:]
+                                if isinstance(row, Mapping)
+                            ],
+                        )
+                error_name = type(exc).__name__
+                error_message = str(exc)
+                workflow_state = _failed_child_delegation_workflow_state(
+                    prompt=prompt,
+                    child_agent_id=target.id,
+                    parent_agent_id=parent_agent.id,
+                    error=error_name,
+                    message=error_message,
+                    tools_called=child_tools_called,
+                )
+                output_summary = _compact_dynamic_delegation_output(
+                    _failed_child_delegation_output_summary(
+                        child_agent_id=target.id,
+                        parent_agent_id=parent_agent.id,
+                        error=error_name,
+                        message=error_message,
+                        workflow_state=workflow_state,
+                    )
+                )
                 failed_row = {
                         **row,
                         "agent_id": target.id,
@@ -5130,11 +9706,15 @@ async def _run_turn_in_background(
                         "model_id": target.default_model,
                         "fallback_warnings": list(target.validation_errors),
                         "status": "failed",
+                        "stage": "delegate.failed",
                         "depth": depth,
                         "duration_ms": int((time.perf_counter() - started_at) * 1000),
                         "execution_mode": execution_mode,
-                        "error": type(exc).__name__,
-                        "message": str(exc),
+                        "error": error_name,
+                        "message": error_message,
+                        "output_summary": output_summary,
+                        "workflow_state": workflow_state,
+                        "tools_called": child_tools_called,
                     }
                 _emit_semantic_event(
                     app,
@@ -5186,12 +9766,47 @@ async def _run_turn_in_background(
             requested_rows = _coerce_expert_handoff_rows(
                 getattr(latest_pred, "expert_handoffs", None)
             )
+            declared_child_ids = {
+                row.id
+                for row in _runtime_active_agent_blueprint_rows(app, session_id=sid)
+                if row.enabled and row.parent_id == parent_agent.id
+            }
+            completed_rows_so_far = [
+                row
+                for row in all_rows
+                if row.get("status") == "completed" and row.get("stage") == "delegate.completed"
+            ]
+            completed_outputs_so_far = [
+                evidence
+                for row in completed_rows_so_far
+                if (evidence := _completed_row_contract_evidence(row))
+            ]
+            requested_rows = _filter_child_handoffs_by_contract_order(
+                parent_agent,
+                requested_rows,
+                completed_outputs=completed_outputs_so_far,
+                current_tool_outputs=_tool_derived_contract_evidence_for_prediction(latest_pred),
+                completed_child_ids=completed_child_ids,
+                declared_child_ids=declared_child_ids,
+            )
             requested_rows = _filter_repeated_successful_sync_handoffs(
                 requested_rows,
                 completed_child_ids,
                 completed_child_outputs,
             )
             executable_rows = [row for row in requested_rows if _should_execute_delegated_handoff(row)]
+            if not completed_child_ids:
+                start_contract_rows = _continuation_contract_handoffs(
+                    parent_agent,
+                    source_text=source_text,
+                    answer_text="",
+                    completed_outputs=[],
+                    declared_child_ids=declared_child_ids,
+                    completed_child_ids=completed_child_ids,
+                )
+                if start_contract_rows:
+                    requested_rows = start_contract_rows
+                    executable_rows = start_contract_rows
             repeated_skips = [
                 row
                 for row in requested_rows
@@ -5258,21 +9873,21 @@ async def _run_turn_in_background(
                     for row in completed_rows_so_far
                 }
                 completed_outputs = [
-                    str(row.get("output_summary") or "").strip()
+                    evidence
                     for row in completed_rows_so_far
-                    if str(row.get("output_summary") or "").strip()
+                    if (evidence := _completed_row_contract_evidence(row))
                 ]
-                executable_rows = _next_expert_marker_handoffs(
+                executable_rows = _continuation_contract_handoffs(
+                    parent_agent,
                     source_text=source_text,
+                    answer_text=previous_answer,
                     completed_outputs=completed_outputs,
                     declared_child_ids=declared_child_ids,
                     completed_child_ids=completed_child_ids,
                 )
-                if not executable_rows:
-                    executable_rows = _continuation_contract_handoffs(
-                        parent_agent,
+                if not executable_rows and _agent_allows_legacy_text_continuation(parent_agent):
+                    executable_rows = _next_expert_marker_handoffs(
                         source_text=source_text,
-                        answer_text=previous_answer,
                         completed_outputs=completed_outputs,
                         declared_child_ids=declared_child_ids,
                         completed_child_ids=completed_child_ids,
@@ -5315,6 +9930,28 @@ async def _run_turn_in_background(
                                 ),
                                 expert_handoffs=[],
                             )
+                    if _user_agent_bool_param(
+                        parent_agent,
+                        "bubble_child_evidence_on_completion",
+                    ) or _user_agent_bool_param(
+                        parent_agent,
+                        "return_child_evidence_on_completion",
+                    ):
+                        bubbled_answer = _bubbled_child_evidence_output_summary(
+                            all_rows,
+                            parent_agent.id,
+                            declared_child_ids,
+                        )
+                        if bubbled_answer and bubbled_answer != previous_answer:
+                            latest_pred = SimpleNamespace(
+                                answer=bubbled_answer,
+                                selected_expert=parent_agent.id,
+                                routing_rationale=(
+                                    "completed child evidence bubbled through "
+                                    "strict depth chain at completion boundary"
+                                ),
+                                expert_handoffs=[],
+                            )
                     break
             executed_rows = await _execute_delegated_experts(
                 parent_agent,
@@ -5345,6 +9982,35 @@ async def _run_turn_in_background(
                 session_id=sid,
                 seen_contracts=seen_continuation_contracts,
             )
+            if not contract_rows:
+                declared_child_ids = {
+                    row.id
+                    for row in _runtime_active_agent_blueprint_rows(app, session_id=sid)
+                    if row.enabled and row.parent_id == parent_agent.id
+                }
+                completed_rows_so_far = [
+                    row
+                    for row in all_rows
+                    if row.get("status") == "completed"
+                    and row.get("stage") == "delegate.completed"
+                ]
+                completed_child_ids = {
+                    str(row.get("agent_id") or row.get("delegate_to") or "")
+                    for row in completed_rows_so_far
+                }
+                completed_outputs = [
+                    evidence
+                    for row in completed_rows_so_far
+                    if (evidence := _completed_row_contract_evidence(row))
+                ]
+                contract_rows = _continuation_contract_handoffs(
+                    parent_agent,
+                    source_text=source_text,
+                    answer_text="",
+                    completed_outputs=completed_outputs,
+                    declared_child_ids=declared_child_ids,
+                    completed_child_ids=completed_child_ids,
+                )
             if contract_rows:
                 latest_pred = SimpleNamespace(
                     answer="Executing returned delegation continuation contract.",
@@ -5353,6 +10019,27 @@ async def _run_turn_in_background(
                     expert_handoffs=contract_rows,
                 )
                 continue
+            if _user_agent_bool_param(
+                parent_agent,
+                "bubble_child_evidence_on_completion",
+            ) or _user_agent_bool_param(
+                parent_agent,
+                "return_child_evidence_on_completion",
+            ):
+                child_answer = _latest_completed_child_output_summary(
+                    all_rows,
+                    declared_child_ids,
+                )
+                if child_answer:
+                    latest_pred = SimpleNamespace(
+                        answer=child_answer,
+                        selected_expert=parent_agent.id,
+                        routing_rationale=(
+                            "completed child evidence bubbled through strict depth chain"
+                        ),
+                        expert_handoffs=[],
+                    )
+                    break
             continuation_prompt = _dynamic_parent_resume_prompt(
                 source_text,
                 parent_agent,
@@ -5376,7 +10063,21 @@ async def _run_turn_in_background(
         final_answer = str(getattr(latest_pred, "answer", "") or "").strip()
         if final_answer and _dynamic_answer_has_pending_child_work(final_answer):
             artifact_answer = _latest_completed_artifact_output_summary(all_rows)
-            if artifact_answer:
+            final_child_answer = _latest_final_child_output_summary(all_rows)
+            if final_child_answer:
+                final_child_answer = _user_facing_dynamic_evidence_summary(final_child_answer)
+                latest_pred = SimpleNamespace(
+                    answer=final_child_answer,
+                    selected_expert=parent_agent.id,
+                    routing_rationale=(
+                        "pending delegation prose replaced with completed final "
+                        "child evidence at settlement boundary"
+                    ),
+                    expert_handoffs=[],
+                )
+                final_answer = final_child_answer
+            elif artifact_answer:
+                artifact_answer = _user_facing_dynamic_evidence_summary(artifact_answer)
                 latest_pred = SimpleNamespace(
                     answer=artifact_answer,
                     selected_expert=parent_agent.id,
@@ -5387,9 +10088,26 @@ async def _run_turn_in_background(
                     expert_handoffs=[],
                 )
                 final_answer = artifact_answer
+            else:
+                fallback_answer = _latest_parent_resumed_output_summary(all_rows, parent_agent.id)
+                if fallback_answer and fallback_answer != final_answer:
+                    fallback_answer = _user_facing_dynamic_evidence_summary(fallback_answer)
+                    latest_pred = SimpleNamespace(
+                        answer=fallback_answer,
+                        selected_expert=parent_agent.id,
+                        routing_rationale=(
+                            "pending delegation prose replaced with latest completed "
+                            "child evidence at settlement boundary"
+                        ),
+                        expert_handoffs=[],
+                    )
+                    final_answer = fallback_answer
         if _dynamic_answer_is_delegation_placeholder(final_answer):
-            fallback_answer = _latest_parent_resumed_output_summary(all_rows, parent_agent.id)
+            fallback_answer = _latest_final_child_output_summary(all_rows)
+            if not fallback_answer:
+                fallback_answer = _latest_parent_resumed_output_summary(all_rows, parent_agent.id)
             if fallback_answer:
+                fallback_answer = _user_facing_dynamic_evidence_summary(fallback_answer)
                 latest_pred = SimpleNamespace(
                     answer=fallback_answer,
                     selected_expert=parent_agent.id,
@@ -5399,6 +10117,33 @@ async def _run_turn_in_background(
                     ),
                     expert_handoffs=[],
                 )
+        final_answer = str(getattr(latest_pred, "answer", "") or "").strip()
+        workflow_state = _workflow_state_from_handoff_rows(all_rows)
+        positive_fallback = _positive_ndp_workflow_state_final_answer_fallback(
+            final_answer,
+            workflow_state,
+        )
+        if positive_fallback:
+            latest_pred = SimpleNamespace(
+                answer=positive_fallback,
+                selected_expert=parent_agent.id,
+                routing_rationale=(
+                    "unsupported scan-limited NDP final claims replaced with "
+                    "typed workflow-state evidence"
+                ),
+                expert_handoffs=[],
+            )
+            final_answer = positive_fallback
+        visible_answer = _user_facing_dynamic_evidence_summary(final_answer)
+        if visible_answer and visible_answer != final_answer:
+            latest_pred = SimpleNamespace(
+                answer=visible_answer,
+                selected_expert=parent_agent.id,
+                routing_rationale=(
+                    "removed retained evidence scaffolding from final dynamic answer"
+                ),
+                expert_handoffs=[],
+            )
         return latest_pred, all_rows
 
     try:
@@ -5867,38 +10612,32 @@ async def _run_turn_in_background(
         raw_handoffs = getattr(pred, "expert_handoffs", None) or []
         if not expert_handoffs:
             expert_handoffs = _coerce_expert_handoff_rows(raw_handoffs)
+        tools_called = _merge_tool_call_rows(
+            tools_called,
+            _tool_calls_from_handoff_rows(expert_handoffs),
+        )
         # Drain the per-session observer ledger so direct-tool short-
         # circuits (HDF5/Parquet/fs experts that bypass ReAct) still
         # report tools_called on the assistant message metadata.
         ledger = getattr(app.state, "tool_call_ledger", None)
         if ledger is not None:
             observed = ledger.pop(sid, [])
-            if observed and not tools_called:
-                tools_called = observed
-            elif observed:
-                # Both populated. Keep the expert's richer row shape, but
-                # upgrade matching rows with live observer timing/provenance
-                # so metadata does not claim the same real call was post-hoc.
-                observed_by_key = {_tool_call_event_key(o): o for o in observed}
-                seen: set[tuple[str, str]] = set()
-                for row in tools_called:
-                    call_key = _tool_call_event_key(row)
-                    seen.add(call_key)
-                    live_row = observed_by_key.get(call_key)
-                    if live_row is None:
-                        continue
-                    for field_name in (
-                        "duration_ms",
-                        "cached",
-                        "telemetry_source",
-                        "ok",
-                        "error",
-                    ):
-                        if field_name in live_row:
-                            row[field_name] = live_row[field_name]
-                for o in observed:
-                    if _tool_call_event_key(o) not in seen:
-                        tools_called.append(o)
+            if observed:
+                tools_called = _merge_tool_call_rows(tools_called, observed)
+        terminal_state = _infer_ndp_workflow_state_from_tool_rows(tools_called)
+        terminal_fallback = _ndp_terminal_workflow_state_final_answer_fallback(
+            answer_text,
+            terminal_state,
+        )
+        if terminal_fallback:
+            answer_text = terminal_fallback
+        else:
+            positive_fallback = _positive_ndp_workflow_state_final_answer_fallback(
+                answer_text,
+                terminal_state,
+            )
+            if positive_fallback:
+                answer_text = positive_fallback
         # iowarp/clio-agent#17 — surface DSPy reasoning as a
         # `thinking` Part. ChainOfThought predictions expose
         # ``.reasoning`` (single string); ReAct exposes
@@ -7654,12 +12393,130 @@ def _make_cancellation_checker(app: "FastAPI"):
     return check
 
 
+def _make_ndp_workflow_tool_interceptor(app: "FastAPI"):
+    """Return structured skip results for NDP calls blocked by typed workflow state."""
+
+    def intercept(name: str, args: Mapping[str, Any]) -> Any | None:
+        tool_name = str(name or "").strip()
+        if tool_name not in {"ndp_search_datasets", "ndp_stage_resource"}:
+            return None
+        sid, _current = _resolve_tool_session(app)
+        if not sid:
+            return None
+        ledger = getattr(app.state, "tool_call_ledger", None)
+        if not isinstance(ledger, dict):
+            return None
+        raw_rows = ledger.get(sid)
+        if not isinstance(raw_rows, list):
+            return None
+        prior_rows = [row for row in raw_rows if isinstance(row, Mapping)]
+        if tool_name == "ndp_stage_resource":
+            return _prior_staged_ndp_resource_result(args, prior_rows)
+        prior_state = _infer_ndp_workflow_state_from_tool_rows(prior_rows)
+        resource_discovery = prior_state.get("resource_discovery")
+        if not isinstance(resource_discovery, Mapping):
+            return None
+        status = str(resource_discovery.get("status") or "").strip()
+        station_ids = _station_ids_from_workflow_state(prior_state)
+        searched_station_ids = [
+            str(station).strip().upper()
+            for station in resource_discovery.get("searched_station_ids") or []
+            if str(station).strip()
+        ]
+        requested_station_id = _search_call_station_id(
+            args=args,
+            result={},
+            station_ids=station_ids,
+        )
+        reason = ""
+        terminal = False
+        if status == "search_exhausted":
+            reason = "resource_discovery_search_exhausted"
+            terminal = True
+        elif (
+            status == "search_required"
+            and station_ids
+            and requested_station_id
+            and requested_station_id in searched_station_ids
+        ):
+            reason = "duplicate_station_resource_search"
+        elif (
+            status == "search_required"
+            and station_ids
+            and not requested_station_id
+            and str(args.get("resource_format") or "").strip().upper() == "CSV"
+        ):
+            reason = "broad_station_resource_search_after_station_catalog"
+        if not reason:
+            return None
+        remaining_station_ids = [
+            station
+            for station in station_ids[: min(5, len(station_ids))]
+            if station not in searched_station_ids
+        ]
+        if status == "search_exhausted":
+            next_action = (
+                "Stop calling ndp_search_datasets for this station set. Return the "
+                "metadata-only acquisition blocker unless a concrete station CSV has "
+                "already been staged."
+            )
+        else:
+            next_action = (
+                "Search only the remaining ranked station IDs "
+                f"({', '.join(remaining_station_ids)}) for concrete station CSV "
+                "resources, or return the metadata-only acquisition blocker if no "
+                "unsearched ranked stations remain."
+            )
+        result = {
+            "datasets": [],
+            "count": 0,
+            "total_found": 0,
+            "server": args.get("server") or "global",
+            "_meta": {
+                "tool": "search_datasets",
+                "status": "skipped",
+                "reason": reason,
+            },
+            "search_coverage": {
+                "domain": "earthscope_gnss",
+                "status": "skipped",
+                "station_resource_search": False,
+                "search_terms": args.get("search_terms") or [],
+                "resource_name": args.get("resource_name"),
+                "resource_format": args.get("resource_format"),
+                "station_code": requested_station_id or None,
+            },
+            "clio_runtime": {
+                "workflow_state": prior_state,
+                "next_action": next_action,
+                "terminal": terminal or not remaining_station_ids,
+            },
+        }
+        active_rows = _ACTIVE_BLUEPRINT_TOOL_ROWS.get()
+        if result["clio_runtime"]["terminal"] is True and isinstance(active_rows, list):
+            active_rows.append(
+                {
+                    "name": name,
+                    "args": dict(args),
+                    "ok": True,
+                    "result": _bounded_tool_call_result(result),
+                    "telemetry_source": "blueprint_react_tool_interceptor",
+                    "skipped": True,
+                }
+            )
+            raise _BlueprintTerminalWorkflowState(result)
+        return result
+
+    return intercept
+
+
 def _install_tool_runtime_hooks(app: "FastAPI") -> None:
     """Install permission, cancellation, and telemetry hooks for tool calls."""
 
     from clio_agent.tools.execution import (  # noqa: PLC0415
         set_global_cancellation_checker,
         set_global_permission_gate,
+        set_global_tool_interceptor,
         set_global_tool_observer,
     )
 
@@ -7672,11 +12529,16 @@ def _install_tool_runtime_hooks(app: "FastAPI") -> None:
     observer = getattr(app.state, "pending_tool_observer", None)
     if observer is None:
         observer = _make_tool_observer(app)
+    interceptor = getattr(app.state, "pending_tool_interceptor", None)
+    if interceptor is None:
+        interceptor = _make_ndp_workflow_tool_interceptor(app)
     set_global_cancellation_checker(checker)
     set_global_permission_gate(gate)
+    set_global_tool_interceptor(interceptor)
     set_global_tool_observer(observer)
     app.state.pending_cancellation_checker = checker
     app.state.pending_permission_gate = gate
+    app.state.pending_tool_interceptor = interceptor
     app.state.pending_tool_observer = observer
     app.state.tool_hooks_installed = True
 
@@ -7846,6 +12708,7 @@ def _make_tool_observer(app: "FastAPI"):
         args: Mapping[str, Any],
         phase: Optional[str],
         error: Optional[str],
+        result: Any | None = None,
     ) -> None:
         sid, _current = _resolve_tool_session(app)
         if not sid:
@@ -7930,6 +12793,11 @@ def _make_tool_observer(app: "FastAPI"):
                 "ui_summary": result_summary,
                 "result_summary": result_summary,
                 **({"error": completion_error} if completion_error else {}),
+                **(
+                    {"result": _bounded_tool_call_result(result)}
+                    if result is not None
+                    else {}
+                ),
                 **cancellation_metadata,
             }
             _emit_semantic_event(
@@ -7951,7 +12819,9 @@ def _make_tool_observer(app: "FastAPI"):
                     payload=payload,
                 )
             )
-            result_text = completion_error or "completed"
+            result_text = completion_error or (
+                _tool_result_preview(result) if result is not None else "completed"
+            )
             _append_live_assistant_part(
                 app,
                 sid,
@@ -7973,6 +12843,11 @@ def _make_tool_observer(app: "FastAPI"):
                     metadata={
                         "stream_source": "live",
                         "telemetry_source": "live_observer",
+                        **(
+                            {"result": _bounded_tool_call_result(result)}
+                            if result is not None
+                            else {}
+                        ),
                         **cancellation_metadata,
                     },
                 ),
@@ -7985,12 +12860,18 @@ def _make_tool_observer(app: "FastAPI"):
                 ledger.setdefault(sid, []).append(
                     {
                         "name": name,
+                        "call_id": call_id,
                         "args": dict(args),
                         "ok": ok,
                         "duration_ms": duration_ms,
                         "cached": False,
                         "telemetry_source": "live_observer",
                         **({"error": completion_error} if completion_error else {}),
+                        **(
+                            {"result": _bounded_tool_call_result(result)}
+                            if result is not None
+                            else {}
+                        ),
                         **cancellation_metadata,
                     }
                 )
@@ -9104,7 +13985,7 @@ def _extract_tools_called(pred: Any) -> list[dict[str, Any]]:
 
         result = get("result")
         if result is not None:
-            row["result"] = result
+            row["result"] = _bounded_tool_call_result(result)
             if "ok" not in row and agent_trace_call:
                 row["ok"] = not (
                     (isinstance(result, dict) and "error" in result)
@@ -9894,11 +14775,13 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
             from clio_agent.tools.execution import (  # noqa: PLC0415
                 set_global_cancellation_checker,
                 set_global_permission_gate,
+                set_global_tool_interceptor,
                 set_global_tool_observer,
             )
 
             set_global_cancellation_checker(None)
             set_global_permission_gate(None)
+            set_global_tool_interceptor(None)
             set_global_tool_observer(None)
         except Exception:  # pragma: no cover - defensive shutdown cleanup
             pass
@@ -14221,7 +19104,17 @@ def build_app(
                 ) from exc
             if tool_observer is not None:
                 try:
-                    tool_observer(observer_name, tool_args, "completed", None)
+                    tool_result_text = "\n".join(
+                        str(item.get("text", item)) for item in content
+                    )
+                    if not tool_result_text:
+                        data = getattr(result, "data", None)
+                        tool_result_text = (
+                            json.dumps(data, sort_keys=True, default=str)
+                            if isinstance(data, Mapping)
+                            else str(data if data is not None else result)
+                        )
+                    tool_observer(observer_name, tool_args, "completed", None, tool_result_text)
                 except Exception:
                     pass
             return {

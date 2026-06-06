@@ -9,7 +9,9 @@ session, and caveat should be captured as evidence.
 from __future__ import annotations
 
 import argparse
+import csv
 import json
+import math
 import os
 import re
 import sys
@@ -165,6 +167,11 @@ class DemoResult:
         return _visible_message_text(self.message)
 
     @property
+    def observed_excerpt_text(self) -> str:
+        """Return the best user-facing completion excerpt for reports."""
+        return _observed_excerpt_text(self)
+
+    @property
     def tools(self) -> list[dict[str, Any]]:
         """Return tool call metadata."""
         tools = _tools(self.message)
@@ -228,6 +235,48 @@ class DemoResult:
         return len(self.tools) + len(self.expert_handoffs) + len(self.child_sessions)
 
     @property
+    def tool_result_evidence(self) -> dict[str, Any]:
+        """Return whether tool metadata carries auditable result evidence.
+
+        Live observer rows prove that a tool lifecycle happened, but they do not
+        necessarily prove what data was returned. Keep this separate from
+        pass/fail so reviewers can inspect trace quality without pretending that
+        every scientific judgment is reducible to a binary gate.
+        """
+
+        rows = [
+            row
+            for row in self.tools
+            if _tool_name(row).startswith(
+                (
+                    "ndp_",
+                    "csv_",
+                    "sac_",
+                    "hdf5_",
+                    "parquet_",
+                    "adios_",
+                    "plot_",
+                )
+            )
+        ]
+        successful = [row for row in rows if row.get("ok") is not False]
+        failed = [row for row in rows if row.get("ok") is False]
+        resultful = [row for row in successful if _tool_row_has_result_evidence(row)]
+        review_gaps = [
+            _tool_name(row)
+            for row in successful
+            if not _tool_row_has_result_evidence(row)
+        ]
+        return {
+            "tool_rows": len(rows),
+            "successful_rows": len(successful),
+            "failed_rows": len(failed),
+            "resultful_rows": len(resultful),
+            "review_gap_tools": review_gaps,
+            "failed_tools": [_tool_name(row) for row in failed],
+        }
+
+    @property
     def blocking_error(self) -> dict[str, Any] | None:
         """Return error_info that should fail or satisfy error-focused cases."""
         return _blocking_error(self.message)
@@ -281,6 +330,10 @@ class DemoResult:
                 "dispatch_target",
                 "input_summary",
                 "output_summary",
+                "return_output_summary",
+                "local_output_summary",
+                "workflow_state",
+                "local_workflow_state",
                 "metadata",
             ):
                 value = handoff.get(key)
@@ -312,6 +365,295 @@ class DemoResult:
         )
         return " ".join(normalized.split()).lower()
 
+    def _user_visible_answer_mentions_verified_artifact(
+        self,
+        verified_artifacts: list[dict[str, Any]],
+    ) -> bool:
+        """Return whether an artifact-producing case cites an artifact to the user."""
+
+        if "ndp_plot_csv_timeseries" not in self.case.expected_tools:
+            return True
+        visible = self._normalize_evidence_match_text(self.observed_excerpt_text)
+        for row in verified_artifacts:
+            path = str(row.get("path") or "")
+            if Path(path).suffix.lower() != ".png":
+                continue
+            stem = self._normalize_evidence_match_text(Path(path).stem)
+            name = self._normalize_evidence_match_text(Path(path).name)
+            if stem and (stem in visible or name in visible):
+                return True
+        return False
+
+    def _user_visible_answer_misstates_verified_artifact_path(
+        self,
+        verified_artifacts: list[dict[str, Any]],
+    ) -> bool:
+        """Return whether visible prose cites a different path for a verified artifact."""
+
+        visible_paths = _artifact_paths({"parts": [{"type": "text", "text": self.observed_excerpt_text}]})
+        if not visible_paths:
+            return False
+        verified_by_name = {
+            Path(str(row.get("path") or "")).name: str(row.get("path") or "")
+            for row in verified_artifacts
+            if row.get("exists") and str(row.get("path") or "")
+        }
+        for visible_path in visible_paths:
+            name = Path(visible_path).name
+            verified_path = verified_by_name.get(name)
+            if not verified_path:
+                continue
+            if str(Path(visible_path).expanduser()) != verified_path:
+                return True
+        return False
+
+    def _user_visible_answer_contradicts_verified_acquisition(self) -> bool:
+        """Return whether the final visible answer negates staged analysis evidence."""
+
+        raw_evidence = self.expected_evidence_text
+        evidence = self._normalize_evidence_match_text(raw_evidence)
+        has_staged_state = any(
+            (
+                "analysis ready true" in evidence,
+                "status staged" in evidence,
+                "gnss timeseries plot" in evidence,
+                bool(re.search(r'"analysis_ready"\s*:\s*true', raw_evidence, re.I)),
+                bool(re.search(r'\\"analysis_ready\\"\s*:\s*true', raw_evidence, re.I)),
+                bool(re.search(r'"status"\s*:\s*"staged"', raw_evidence, re.I)),
+                bool(re.search(r'\\"status\\"\s*:\s*\\"staged\\"', raw_evidence, re.I)),
+                bool(re.search(r'"kind"\s*:\s*"gnss_timeseries_plot"', raw_evidence, re.I)),
+                bool(
+                    re.search(
+                        r'\\"kind\\"\s*:\s*\\"gnss_timeseries_plot\\"',
+                        raw_evidence,
+                        re.I,
+                    )
+                ),
+            )
+        )
+        if not has_staged_state:
+            return False
+        visible = self._normalize_evidence_match_text(self.observed_excerpt_text)
+        contradiction_terms = (
+            "no earthscope gnss stations",
+            "no station specific gnss time series",
+            "no time series verified",
+            "no analysis ready",
+            "none no station specific time series csv could be staged",
+        )
+        return any(term in visible for term in contradiction_terms)
+
+    def _earthscope_positive_answer_brief_gaps(self) -> list[str]:
+        """Return missing final-brief elements for successful EarthScope GNSS runs.
+
+        This is not the benchmark acceptance bar by itself; it encodes a trace
+        review failure mode where the pipeline really acquired/profiled/plotted
+        data, but the visible answer collapsed into an artifact-only status.
+        """
+
+        if self.case.agent_blueprint_id != "earthscope-gnss-region-depth":
+            return []
+        if not {"ndp_profile_csv_resource", "ndp_plot_csv_timeseries"}.issubset(
+            set(self.tool_names)
+        ):
+            return []
+        raw_evidence = self.expected_evidence_text
+        evidence = self._normalize_evidence_match_text(raw_evidence)
+        has_analysis_ready_state = any(
+            (
+                "analysis ready true" in evidence,
+                bool(re.search(r'"analysis_ready"\s*:\s*true', raw_evidence, re.I)),
+                bool(re.search(r'\\"analysis_ready\\"\s*:\s*true', raw_evidence, re.I)),
+            )
+        )
+        if not has_analysis_ready_state:
+            return []
+
+        visible_raw = self.observed_excerpt_text
+        visible = self._normalize_evidence_match_text(visible_raw)
+        station_ids = {
+            _station_id_from_earthscope_csv_path(path)
+            for path in _earthscope_station_csv_artifacts(self.artifact_evidence)
+        }
+        station_ids.discard("")
+
+        gaps: list[str] = []
+        if not any(station_id.lower() in visible for station_id in station_ids):
+            gaps.append("selected station id")
+        if "http" not in visible_raw and "source url" not in visible:
+            gaps.append("NDP source URL")
+        if not (
+            "distance" in visible
+            or re.search(r"\b\d+(?:\.\d+)?\s*km\b", visible_raw, re.I)
+        ):
+            gaps.append("station-region distance/provenance")
+        if not any(
+            term in visible
+            for term in (
+                "rows scanned",
+                "250000",
+                "250 000",
+                "sigee",
+                "signn",
+                "siguu",
+                "uncertainty",
+                "profile",
+            )
+        ):
+            gaps.append("profile or uncertainty evidence")
+        if not any(term in visible for term in ("event", "limitation", "freshness", "coverage")):
+            gaps.append("event/data-coverage limitation")
+        return gaps
+
+    def _earthscope_repeated_station_resource_searches(self) -> list[str]:
+        """Return repeated EarthScope station-resource searches from trace rows.
+
+        A metadata-only blocker is scientifically valid when nearby stations exist
+        but NDP has no concrete station CSV resource for the ranked set. Repeating
+        the same ranked station-resource searches is not valid trace behavior; it
+        indicates the agent lost typed workflow state even if the final answer is
+        truthful.
+        """
+
+        if self.case.agent_blueprint_id != "earthscope-gnss-region-depth":
+            return []
+        counts: dict[str, int] = {}
+        for tool in self.tools:
+            if _tool_name(tool) != "ndp_search_datasets":
+                continue
+            args = tool.get("args") if isinstance(tool.get("args"), dict) else {}
+            result = tool.get("result") if isinstance(tool.get("result"), dict) else {}
+            coverage = (
+                result.get("search_coverage") if isinstance(result, dict) else {}
+            )
+            if not isinstance(coverage, dict):
+                coverage = {}
+            resource_format = str(
+                coverage.get("resource_format") or args.get("resource_format") or ""
+            ).strip()
+            if resource_format.upper() != "CSV":
+                continue
+            station_search = coverage.get("station_resource_search") is True
+            station = str(
+                coverage.get("station_code")
+                or coverage.get("resource_name")
+                or args.get("resource_name")
+                or ""
+            ).strip().upper()
+            if not station or not station_search:
+                continue
+            counts[station] = counts.get(station, 0) + 1
+        return [station for station, count in sorted(counts.items()) if count > 1]
+
+    def _user_visible_answer_omits_tool_failures(self) -> bool:
+        """Return whether failed tool calls were hidden from the visible answer."""
+
+        if not any(tool.get("ok") is False for tool in self.tools):
+            return False
+        visible = self._normalize_evidence_match_text(self.observed_excerpt_text)
+        failure_terms = (
+            "tool failed",
+            "tool failure",
+            "tool error",
+            "search failed",
+            "service failed",
+            "service error",
+            "ndp failed",
+            "ndp error",
+            "unavailable",
+            "timeout",
+            "closedresourceerror",
+            "blocked",
+        )
+        return not any(term in visible for term in failure_terms)
+
+    def _earthscope_gnss_station_resource_outside_requested_region(self) -> bool:
+        """Return whether an analysis-ready EarthScope station CSV is off-region."""
+
+        return bool(self._earthscope_gnss_station_region_mismatches())
+
+    def _earthscope_gnss_station_region_mismatches(self) -> list[str]:
+        """Return station CSV region-provenance mismatch diagnostics."""
+
+        if self.case.agent_blueprint_id != "earthscope-gnss-region-depth":
+            return []
+        if "ndp_profile_csv_resource" not in self.tool_names:
+            return []
+        region = _extract_lat_lon_radius_km(self.case.prompt)
+        if region is None:
+            return []
+        station_csvs = _earthscope_station_csv_artifacts(self.artifact_evidence)
+        invalid_filter_paths = _earthscope_invalid_station_catalog_filter_paths(self.tools)
+        if invalid_filter_paths:
+            return [
+                f"{Path(path).name}: station catalog filter was applied to a station "
+                "time-series CSV instead of EarthScope station metadata"
+                for path in invalid_filter_paths
+            ]
+        station_catalog = _earthscope_station_catalog_rows(
+            [*self.artifacts, *self.data_files],
+        )
+        if not station_catalog:
+            return [
+                f"{Path(path).name}: station CSV was analysis-ready but no staged "
+                "EarthScope station metadata catalog was available to verify region"
+                for path in station_csvs
+            ]
+        lat, lon, radius_km = region
+        mismatches: list[str] = []
+        for path in station_csvs:
+            station_id = _station_id_from_earthscope_csv_path(path)
+            if not station_id:
+                continue
+            station = station_catalog.get(station_id.upper())
+            if station is None:
+                mismatches.append(
+                    f"{Path(path).name}: station {station_id} absent from staged station catalog"
+                )
+                continue
+            distance_km = _haversine_km(lat, lon, station[0], station[1])
+            if distance_km > radius_km:
+                mismatches.append(
+                    f"{Path(path).name}: station {station_id} is {distance_km:.1f} km "
+                    f"from requested center, outside {radius_km:.1f} km radius"
+                )
+        return mismatches
+
+    def failure_reasons(self) -> list[str]:
+        """Return human-readable benchmark failure diagnostics."""
+
+        reasons: list[str] = []
+        if self._user_visible_answer_omits_tool_failures():
+            reasons.append("visible answer omitted failed tool-call evidence")
+        if self._earthscope_gnss_station_resource_outside_requested_region():
+            reasons.extend(self._earthscope_gnss_station_region_mismatches())
+        repeated_station_searches = self._earthscope_repeated_station_resource_searches()
+        if repeated_station_searches:
+            reasons.append(
+                "EarthScope trace repeated station-resource searches after typed "
+                "state should have advanced: " + ", ".join(repeated_station_searches)
+            )
+        if self._user_visible_answer_contradicts_verified_acquisition():
+            reasons.append("visible answer contradicted verified staged acquisition evidence")
+        brief_gaps = self._earthscope_positive_answer_brief_gaps()
+        if brief_gaps:
+            reasons.append(
+                "visible EarthScope synthesis omitted required scientific brief elements: "
+                + ", ".join(brief_gaps)
+            )
+        verified_artifacts = [
+            row
+            for row in self.artifact_evidence
+            if row.get("exists") and int(row.get("size_bytes") or 0) > 0
+        ]
+        if self._user_visible_answer_misstates_verified_artifact_path(verified_artifacts):
+            reasons.append("visible answer cited a different path for a verified artifact")
+        if self.case.min_artifacts and not self._user_visible_answer_mentions_verified_artifact(
+            verified_artifacts,
+        ):
+            reasons.append("visible answer did not cite the produced artifact")
+        return reasons
+
     @property
     def passed(self) -> bool:
         """Return whether this case satisfied its declared expectations."""
@@ -327,6 +669,14 @@ class DemoResult:
         if self.partial_error is not None:
             return False
         if self.blocking_error is not None:
+            return False
+        if self._user_visible_answer_omits_tool_failures():
+            return False
+        if self._earthscope_gnss_station_resource_outside_requested_region():
+            return False
+        if self._earthscope_repeated_station_resource_searches():
+            return False
+        if self._earthscope_positive_answer_brief_gaps():
             return False
         if self.route_source in self.case.forbidden_route_sources:
             return False
@@ -378,6 +728,26 @@ class DemoResult:
             ]
             if len(verified_artifacts) < self.case.min_artifacts:
                 return False
+            if self._user_visible_answer_misstates_verified_artifact_path(
+                verified_artifacts,
+            ):
+                return False
+            if not self._user_visible_answer_mentions_verified_artifact(
+                verified_artifacts,
+            ):
+                return False
+        elif self.artifact_evidence:
+            verified_artifacts = [
+                row
+                for row in self.artifact_evidence
+                if row.get("exists") and int(row.get("size_bytes") or 0) > 0
+            ]
+            if self._user_visible_answer_misstates_verified_artifact_path(
+                verified_artifacts,
+            ):
+                return False
+        if self._user_visible_answer_contradicts_verified_acquisition():
+            return False
         if len(self.child_sessions) < self.case.min_children:
             return False
         if self.case.min_expert_depth and (
@@ -547,6 +917,25 @@ def _visible_message_text(message: dict[str, Any]) -> str:
     )
 
 
+def _observed_excerpt_text(result: DemoResult) -> str:
+    """Prefer final synthesis evidence over intermediate orchestration prose."""
+
+    visible = result.visible_text.strip()
+    if visible and "NEXT_EXPERT:" not in visible:
+        return visible
+
+    for handoff in reversed(result.expert_handoffs):
+        if str(handoff.get("status") or "") != "completed":
+            continue
+        agent_id = str(handoff.get("agent_id") or handoff.get("dispatch_target") or "")
+        if agent_id != "synthesis":
+            continue
+        output = str(handoff.get("output_summary") or "").strip()
+        if output:
+            return output
+    return result.visible_text
+
+
 def _non_telemetry_text(text: str) -> str:
     """Drop CLIO's structured handoff telemetry lines from visible answer text."""
 
@@ -579,6 +968,38 @@ def _routing_decision(message: dict[str, Any]) -> dict[str, Any]:
 def _tools(message: dict[str, Any]) -> list[dict[str, Any]]:
     rows = (message.get("metadata") or {}).get("tools_called") or []
     return rows if isinstance(rows, list) else []
+
+
+def _tool_row_has_result_evidence(row: Mapping[str, Any]) -> bool:
+    """Return whether a tool row includes bounded result/observation evidence."""
+
+    for key in ("result", "observation", "output", "response", "result_preview"):
+        value = row.get(key)
+        if value in (None, "", [], {}):
+            continue
+        return True
+    return False
+
+
+def _tool_row_requires_result_review(row: Mapping[str, Any]) -> bool:
+    """Return whether missing result evidence is meaningful for trace review."""
+
+    if row.get("ok") is False:
+        return False
+    name = _tool_name(row)
+    if not name:
+        return False
+    return name.startswith(
+        (
+            "ndp_",
+            "csv_",
+            "sac_",
+            "hdf5_",
+            "parquet_",
+            "adios_",
+            "plot_",
+        )
+    )
 
 
 def _expert_handoffs(message: dict[str, Any]) -> list[dict[str, Any]]:
@@ -801,26 +1222,99 @@ def _artifact_paths(message: dict[str, Any]) -> list[str]:
 
     candidates: list[str] = []
     for row in _tools(message):
-        candidates.extend(_artifact_strings(row.get("args") or row.get("arguments") or {}))
+        for candidate in _artifact_strings(row.get("args") or row.get("arguments") or {}):
+            path = _clean_path_candidate(candidate)
+            if path.startswith(("/", "~")) and not Path(path).expanduser().exists():
+                continue
+            candidates.append(candidate)
         result = row.get("result")
         if isinstance(result, str):
             candidates.extend(_ARTIFACT_PATH_RE.findall(result))
         elif isinstance(result, dict):
             candidates.extend(_artifact_strings(result))
     candidates.extend(_ARTIFACT_PATH_RE.findall(_message_text(message)))
-    deduped: list[str] = []
+    cleaned_candidates: list[str] = []
+    metadata_input_candidates: list[str] = []
     for candidate in candidates:
         path = _clean_path_candidate(candidate)
-        if not path or path.startswith("//") or re.match(r"^[a-z]+://", path, re.I):
+        if _is_staged_metadata_input_path(path):
+            metadata_input_candidates.append(path)
             continue
-        if re.match(r"^(stations|resources)/", path, re.I):
+        if not _is_valid_artifact_path_candidate(path):
+            continue
+        cleaned_candidates.append(path)
+    existing_basenames = {
+        Path(path).name
+        for path in cleaned_candidates
+        if Path(path).name and Path(path).expanduser().exists()
+    }
+    deduped: list[str] = []
+    for path in cleaned_candidates:
+        basename = Path(path).name
+        if (
+            basename in existing_basenames
+            and not Path(path).expanduser().exists()
+        ):
+            continue
+        if path not in deduped:
+            deduped.append(path)
+    if deduped:
+        return deduped
+    existing_metadata_basenames = {
+        Path(path).name
+        for path in metadata_input_candidates
+        if Path(path).name and Path(path).expanduser().exists()
+    }
+    for path in metadata_input_candidates:
+        basename = Path(path).name
+        if (
+            basename in existing_metadata_basenames
+            and not Path(path).expanduser().exists()
+        ):
             continue
         if path not in deduped:
             deduped.append(path)
     return deduped
 
 
-def _path_like_strings(value: Any) -> list[str]:
+def _is_valid_artifact_path_candidate(path: str) -> bool:
+    """Return whether a regex path candidate is a usable artifact reference."""
+
+    if not path or path.startswith("//") or re.match(r"^[a-z]+://", path, re.I):
+        return False
+    if path.startswith(("/nationaldataplatform.org/", "/catalog/", "/dataset/", "/resource/")):
+        return False
+    if re.match(r"^(?:[a-f0-9-]+/)?download/", path.lstrip("/"), re.I):
+        return False
+    if re.match(r"^(?:earthscope_api_)?dec\d{4}/raw_csv/", path, re.I):
+        return False
+    if re.match(r"^clio/artifacts/", path, re.I):
+        return False
+    if re.match(r"^[^/]+/resource/", path, re.I):
+        return False
+    if re.match(r"^(station|stations|resource|resources)/", path, re.I):
+        return False
+    # Compacted retained evidence can start in the middle of an absolute path,
+    # producing fragments like "/.clio/..." or "io-agent/.clio/...". Those are
+    # not meaningful artifact paths and should not pollute report evidence.
+    if path.startswith("/.clio/"):
+        return False
+    if re.match(r"^[^./][^/]+/\.clio/", path):
+        return False
+    return True
+
+
+def _is_staged_metadata_input_path(path: str) -> bool:
+    """Return whether a staged path is acquisition metadata, not a produced artifact."""
+
+    candidate = Path(_clean_path_candidate(path))
+    return (
+        candidate.name == "earthscope_converted_data.csv"
+        and "ndp-staging" in candidate.parts
+    )
+
+
+def _path_like_strings(value: Any, *, ignored_keys: set[str] | None = None) -> list[str]:
     """Extract path-like strings from nested tool metadata."""
     if isinstance(value, str):
         return re.findall(
@@ -829,13 +1323,17 @@ def _path_like_strings(value: Any) -> list[str]:
         )
     if isinstance(value, dict):
         paths: list[str] = []
-        for item in value.values():
-            paths.extend(_path_like_strings(item))
+        ignored = ignored_keys or set()
+        for key, item in value.items():
+            key_text = str(key).lower()
+            if key_text in ignored:
+                continue
+            paths.extend(_path_like_strings(item, ignored_keys=ignored))
         return paths
     if isinstance(value, list):
         paths = []
         for item in value:
-            paths.extend(_path_like_strings(item))
+            paths.extend(_path_like_strings(item, ignored_keys=ignored_keys))
         return paths
     return []
 
@@ -849,9 +1347,23 @@ def _clean_path_candidate(path: str) -> str:
 def _data_file_paths(prompt: str, tools: list[dict[str, Any]]) -> list[str]:
     """Extract local data/input paths from a prompt and tool argument metadata."""
     candidates = [_clean_path_candidate(path) for path in _path_like_strings(prompt)]
+    ignored_tool_path_keys = {
+        "destination",
+        "destination_dir",
+        "output",
+        "output_dir",
+        "output_file",
+        "output_path",
+        "target",
+        "target_dir",
+        "target_path",
+    }
     for row in tools:
         args = row.get("args") or row.get("arguments") or {}
-        candidates.extend(_clean_path_candidate(path) for path in _path_like_strings(args))
+        candidates.extend(
+            _clean_path_candidate(path)
+            for path in _path_like_strings(args, ignored_keys=ignored_tool_path_keys)
+        )
     deduped: list[str] = []
     for candidate in candidates:
         if not candidate:
@@ -872,6 +1384,116 @@ def _artifact_evidence(artifacts: list[str]) -> list[dict[str, Any]]:
         size_bytes = Path(path).stat().st_size if exists and Path(path).is_file() else 0
         rows.append({"path": path, "exists": exists, "size_bytes": size_bytes})
     return rows
+
+
+def _visualization_artifact_paths(artifacts: list[str]) -> list[str]:
+    """Return generated visualization/report artifacts, not staged input data."""
+
+    visual_suffixes = {".png", ".jpg", ".jpeg", ".svg", ".pdf", ".html"}
+    return [
+        path
+        for path in artifacts
+        if Path(_clean_path_candidate(path)).suffix.lower() in visual_suffixes
+    ]
+
+
+def _extract_lat_lon_radius_km(prompt: str) -> tuple[float, float, float] | None:
+    """Extract a simple regional coordinate/radius target from benchmark prose."""
+
+    coord = re.search(
+        r"centered\s+at\s+([+-]?\d+(?:\.\d+)?)\s*[Nn]\s*,?\s*"
+        r"([+-]?\d+(?:\.\d+)?)\s*[WwEe]",
+        prompt,
+    )
+    radius = re.search(r"([+-]?\d+(?:\.\d+)?)\s*km\s+radius", prompt, re.I)
+    if not coord or not radius:
+        return None
+    lat = float(coord.group(1))
+    lon = float(coord.group(2))
+    lon_suffix = coord.group(0).strip()[-1].lower()
+    if lon_suffix == "w" and lon > 0:
+        lon = -lon
+    return lat, lon, float(radius.group(1))
+
+
+def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Return great-circle distance between two WGS84 points."""
+
+    radius_km = 6371.0
+    phi1 = math.radians(lat1)
+    phi2 = math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dlambda = math.radians(lon2 - lon1)
+    a = (
+        math.sin(dphi / 2) ** 2
+        + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2
+    )
+    return 2 * radius_km * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+
+def _earthscope_station_catalog_rows(artifacts: list[str]) -> dict[str, tuple[float, float]]:
+    """Return station -> lat/lon rows from a staged EarthScope station catalog."""
+
+    rows: dict[str, tuple[float, float]] = {}
+    for raw_path in artifacts:
+        path = Path(_clean_path_candidate(raw_path))
+        if path.name != "earthscope_converted_data.csv" or not path.exists():
+            continue
+        with path.open(newline="", encoding="utf-8-sig") as handle:
+            reader = csv.reader(handle)
+            next(reader, None)
+            for row in reader:
+                if len(row) < 3:
+                    continue
+                try:
+                    rows[row[0].strip().upper()] = (float(row[1]), float(row[2]))
+                except ValueError:
+                    continue
+    return rows
+
+
+def _earthscope_station_csv_artifacts(artifact_evidence: list[dict[str, Any]]) -> list[str]:
+    """Return staged station time-series CSV artifacts, excluding metadata files."""
+
+    paths: list[str] = []
+    for row in artifact_evidence:
+        path = str(row.get("path") or "")
+        name = Path(path).name
+        if not row.get("exists") or Path(path).suffix.lower() != ".csv":
+            continue
+        if name == "earthscope_converted_data.csv":
+            continue
+        if _station_id_from_earthscope_csv_path(path):
+            paths.append(path)
+    return paths
+
+
+def _earthscope_invalid_station_catalog_filter_paths(tools: list[dict[str, Any]]) -> list[str]:
+    """Return station time-series paths incorrectly passed to catalog filtering."""
+
+    invalid: list[str] = []
+    for tool in tools:
+        if str(tool.get("name") or "") != "ndp_filter_earthscope_station_catalog":
+            continue
+        args = tool.get("args") or tool.get("arguments") or {}
+        if not isinstance(args, dict):
+            continue
+        filepath = str(args.get("filepath") or "")
+        if not filepath:
+            continue
+        if Path(filepath).name == "earthscope_converted_data.csv":
+            continue
+        if _station_id_from_earthscope_csv_path(filepath):
+            invalid.append(filepath)
+    return invalid
+
+
+def _station_id_from_earthscope_csv_path(path: str) -> str:
+    """Infer the station ID prefix from an EarthScope raw station CSV filename."""
+
+    name = Path(path).name
+    match = re.match(r"([A-Za-z0-9]+)\.[A-Za-z0-9_]+\.[A-Za-z0-9_]+\.\d+\.csv$", name)
+    return match.group(1).upper() if match else ""
 
 
 def _route_graph(result: DemoResult) -> dict[str, Any]:
@@ -2145,6 +2767,7 @@ def _case_row(result: DemoResult) -> dict[str, Any]:
         "routing_decision": _routing_decision(result.message),
         "tools_called": result.tools,
         "tool_names": result.tool_names,
+        "tool_result_evidence": result.tool_result_evidence,
         "data_files": result.data_files,
         "expert_handoffs": result.expert_handoffs,
         "handoff_agent_ids": result.handoff_agent_ids,
@@ -2194,7 +2817,7 @@ def _case_row(result: DemoResult) -> dict[str, Any]:
         "observed_semantic_proofs": list(_case_observed_semantic_proofs(result)),
         "benchmark_lane": result.benchmark_lane,
         "complexity_score": result.complexity_score,
-        "answer_excerpt": result.visible_text[:1200],
+        "answer_excerpt": result.observed_excerpt_text[:1200],
         "complexity_tags": list(result.case.complexity_tags),
     }
 
@@ -3370,6 +3993,431 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             ),
         ),
         DemoCase(
+            case_id="marketplace_earthscope_gnss_region_review",
+            title="Marketplace EarthScope GNSS region review",
+            category="marketplace-earthscope",
+            session_group="marketplace_earthscope_gnss",
+            agent_blueprint_id="earthscope-gnss-region",
+            expected_agent=("data", "analysis", "visualization", "synthesis", "main"),
+            expected_tool_prefixes=("ndp_",),
+            expected_tools=(
+                "ndp_search_datasets",
+                "ndp_stage_resource",
+                "ndp_profile_csv_resource",
+                "ndp_plot_csv_timeseries",
+            ),
+            expected_handoff_agents=(
+                "data",
+                "geospatial",
+                "ndp_dataset_discovery",
+                "ndp_resource_resolver",
+                "analysis",
+                "gnss_timeseries_analysis",
+                "visualization",
+                "synthesis",
+            ),
+            expected_terms=("EarthScope", "GNSS", ".csv", ".png"),
+            min_artifacts=1,
+            min_tool_calls=4,
+            min_handoff_events=6,
+            min_expert_depth=_MARKETPLACE_COMPLEX_MIN_EXPERT_DEPTH,
+            min_branch_count=_MARKETPLACE_COMPLEX_MIN_BRANCH_COUNT,
+            semantic_proofs=(
+                "marketplace_pack",
+                "root_delegation",
+                "nested_tier3",
+                "sync_parent_return",
+            ),
+            timeout_s=1200.0,
+            forbidden_route_sources=_REAL_ORCHESTRATOR_FORBIDDEN_SOURCES,
+            complexity_tags=(
+                "marketplace",
+                "earthscope",
+                "gnss",
+                "ndp",
+                "agent-blueprint",
+                "artifact",
+                "typed-state",
+            ),
+            prompt=(
+                "Explore recent seismic/geodetic activity around the San Diego "
+                "area. Resolve the requested geography, find public EarthScope/NDP "
+                "GNSS station or station time-series evidence for that region, "
+                "stage a concrete CSV resource when available, analyze the station "
+                "time series and uncertainty columns, produce a PNG artifact from "
+                "the staged CSV when analysis-ready data exists, and explain data "
+                "freshness, coverage, and provenance limitations. Do not use SAC "
+                "waveform files unless the live catalog evidence or user request "
+                "makes waveform data necessary; do not force earthquake/event-"
+                "catalog analysis unless the user explicitly asks for events, "
+                "magnitudes, depths, or epicenters."
+            ),
+            expected=(
+                "CLIO runs the earthscope-gnss-region marketplace Agent Blueprint "
+                "through data, analysis, visualization, and synthesis domains; "
+                "geospatial resolution is explicit before NDP discovery; NDP tools "
+                "stage and profile a station CSV; visualization creates a PNG; the "
+                "final answer cites source URL, local artifacts, station evidence, "
+                "and limitations."
+            ),
+            why=(
+                "Replaces the SAC-first EarthScope demo with the corrected "
+                "geography-driven NDP/EarthScope GNSS workflow and tests typed "
+                "workflow-state continuation rather than benchmark string routing."
+            ),
+        ),
+        DemoCase(
+            case_id="marketplace_earthscope_gnss_region_los_angeles_mutation",
+            title="Marketplace EarthScope GNSS region review, Los Angeles mutation",
+            category="marketplace-earthscope",
+            session_group="marketplace_earthscope_gnss_mutation_la",
+            agent_blueprint_id="earthscope-gnss-region",
+            expected_agent=("data", "analysis", "visualization", "synthesis", "main"),
+            expected_tool_prefixes=("ndp_",),
+            expected_tools=(
+                "ndp_search_datasets",
+                "ndp_stage_resource",
+                "ndp_profile_csv_resource",
+                "ndp_plot_csv_timeseries",
+            ),
+            expected_handoff_agents=(
+                "data",
+                "geospatial",
+                "ndp_dataset_discovery",
+                "ndp_resource_resolver",
+                "analysis",
+                "gnss_timeseries_analysis",
+                "visualization",
+                "synthesis",
+            ),
+            expected_terms=("EarthScope", "GNSS", ".csv", ".png"),
+            min_artifacts=1,
+            min_tool_calls=4,
+            min_handoff_events=6,
+            min_expert_depth=_MARKETPLACE_COMPLEX_MIN_EXPERT_DEPTH,
+            min_branch_count=_MARKETPLACE_COMPLEX_MIN_BRANCH_COUNT,
+            semantic_proofs=(
+                "marketplace_pack",
+                "root_delegation",
+                "nested_tier3",
+                "sync_parent_return",
+            ),
+            timeout_s=1200.0,
+            forbidden_route_sources=_REAL_ORCHESTRATOR_FORBIDDEN_SOURCES,
+            complexity_tags=(
+                "marketplace",
+                "earthscope",
+                "gnss",
+                "ndp",
+                "agent-blueprint",
+                "artifact",
+                "typed-state",
+                "mutation",
+            ),
+            prompt=(
+                "Explore recent seismic or geodetic activity around the Los "
+                "Angeles basin. Resolve the geography without using any San "
+                "Diego-specific hints, find public EarthScope/NDP GNSS station "
+                "or station time-series evidence for that region, stage a "
+                "concrete CSV resource if available, analyze the station time "
+                "series and uncertainty columns, produce a PNG artifact, and "
+                "explain data freshness, coverage, and provenance limitations. "
+                "Do not use SAC waveform files unless live catalog evidence "
+                "makes waveform data necessary; do not force earthquake/event-"
+                "catalog analysis unless the user explicitly asks for events, "
+                "magnitudes, depths, or epicenters."
+            ),
+            expected=(
+                "The same EarthScope GNSS blueprint succeeds when the requested "
+                "geography changes. The trace must include explicit geospatial "
+                "state for Los Angeles, live NDP discovery, staged station CSV "
+                "evidence, profile evidence, visualization, and synthesis without "
+                "depending on San Diego/P475 strings."
+            ),
+            why=(
+                "Prevents a benchmark-specific pass by changing the city while "
+                "requiring the same typed workflow-state and marketplace evidence."
+            ),
+        ),
+        DemoCase(
+            case_id="marketplace_earthscope_gnss_region_coordinate_mutation",
+            title="Marketplace EarthScope GNSS region review, coordinate mutation",
+            category="marketplace-earthscope",
+            session_group="marketplace_earthscope_gnss_mutation_coord",
+            agent_blueprint_id="earthscope-gnss-region",
+            expected_agent=("data", "analysis", "visualization", "synthesis", "main"),
+            expected_tool_prefixes=("ndp_",),
+            expected_handoff_agent_groups=(
+                (
+                    "data",
+                    "geospatial",
+                    "ndp_dataset_discovery",
+                    "earthscope_station_catalog",
+                    "ndp_resource_resolver",
+                    "analysis",
+                    "synthesis",
+                ),
+                (
+                    "data",
+                    "geospatial",
+                    "ndp_dataset_discovery",
+                    "earthscope_station_catalog",
+                    "ndp_resource_resolver",
+                    "synthesis",
+                ),
+            ),
+            expected_term_groups=(
+                ("EarthScope", "GNSS", "analysis_ready", "true"),
+                ("EarthScope", "GNSS", "blocker"),
+            ),
+            min_tool_calls=2,
+            min_handoff_events=5,
+            min_expert_depth=_MARKETPLACE_COMPLEX_MIN_EXPERT_DEPTH,
+            min_branch_count=_MARKETPLACE_COMPLEX_MIN_BRANCH_COUNT,
+            semantic_proofs=(
+                "marketplace_pack",
+                "root_delegation",
+                "nested_tier3",
+                "sync_parent_return",
+            ),
+            timeout_s=1200.0,
+            forbidden_route_sources=_REAL_ORCHESTRATOR_FORBIDDEN_SOURCES,
+            complexity_tags=(
+                "marketplace",
+                "earthscope",
+                "gnss",
+                "ndp",
+                "agent-blueprint",
+                "typed-state",
+                "mutation",
+                "coordinates",
+            ),
+            prompt=(
+                "Explore EarthScope GNSS evidence for the region centered at "
+                "34.05 N, 118.25 W with a 75 km radius. Use the explicit "
+                "coordinates as the geography, search NDP/EarthScope for station "
+                "or station time-series evidence in that region, stage and "
+                "profile a concrete station CSV if available, produce a PNG if "
+                "analysis-ready data is staged, and otherwise synthesize the "
+                "catalog/acquisition blocker without inventing resources."
+            ),
+            expected=(
+                "The geospatial expert preserves explicit coordinate/radius input "
+                "as typed state. The data and analysis branches either complete "
+                "with staged GNSS CSV evidence and a PNG or return a structured "
+                "metadata/acquisition blocker, without falling back to a fixed "
+                "city, station, or filename."
+            ),
+            why=(
+                "Tests coordinate-first spatial semantics and the bounded blocker "
+                "path for mutable geography inputs."
+            ),
+        ),
+        DemoCase(
+            case_id="marketplace_earthscope_gnss_region_width_topology",
+            title="Marketplace EarthScope GNSS region review, width topology",
+            category="marketplace-earthscope",
+            session_group="marketplace_earthscope_gnss_topology_width",
+            agent_blueprint_id="earthscope-gnss-region-width",
+            expected_agent=("main", "visualization", "synthesis"),
+            expected_tool_prefixes=("ndp_",),
+            expected_tools=(
+                "ndp_search_datasets",
+                "ndp_stage_resource",
+                "ndp_profile_csv_resource",
+                "ndp_plot_csv_timeseries",
+            ),
+            expected_handoff_agents=(
+                "geospatial",
+                "ndp_dataset_discovery",
+                "earthscope_station_catalog",
+                "ndp_resource_resolver",
+                "gnss_timeseries_analysis",
+                "station_network_analysis",
+                "visualization",
+                "synthesis",
+            ),
+            expected_terms=("EarthScope", "GNSS", ".csv", ".png"),
+            min_artifacts=1,
+            min_tool_calls=4,
+            min_handoff_events=8,
+            min_expert_depth=8,
+            min_branch_count=8,
+            semantic_proofs=(
+                "marketplace_pack",
+                "root_delegation",
+                "sync_parent_return",
+            ),
+            timeout_s=1200.0,
+            forbidden_route_sources=_REAL_ORCHESTRATOR_FORBIDDEN_SOURCES,
+            complexity_tags=(
+                "marketplace",
+                "earthscope",
+                "gnss",
+                "ndp",
+                "agent-blueprint",
+                "typed-state",
+                "topology",
+                "width",
+            ),
+            prompt=(
+                "Explore EarthScope GNSS evidence for the region centered at "
+                "34.05 N, 118.25 W with a 75 km radius. Use the explicit "
+                "coordinates as the geography, search NDP/EarthScope for station "
+                "or station time-series evidence in that region, stage and "
+                "profile a concrete station CSV if available, produce a PNG if "
+                "analysis-ready data is staged, and otherwise synthesize the "
+                "catalog/acquisition blocker without inventing resources."
+            ),
+            expected=(
+                "The width topology exposes geospatial, discovery, station "
+                "catalog, resource resolution, analysis, visualization, and "
+                "synthesis as direct root children while preserving typed "
+                "workflow-state routing and live NDP evidence."
+            ),
+            why=(
+                "Tests whether a broad orchestrator can coordinate independent "
+                "specialist branches without falling back to fixed city, station, "
+                "or resource-string routing."
+            ),
+        ),
+        DemoCase(
+            case_id="marketplace_earthscope_gnss_region_depth_topology",
+            title="Marketplace EarthScope GNSS region review, depth topology",
+            category="marketplace-earthscope",
+            session_group="marketplace_earthscope_gnss_topology_depth",
+            agent_blueprint_id="earthscope-gnss-region-depth",
+            expected_agent=("main", "visualization", "synthesis"),
+            expected_tool_prefixes=("ndp_",),
+            expected_tools=(
+                "ndp_search_datasets",
+                "ndp_stage_resource",
+                "ndp_profile_csv_resource",
+                "ndp_plot_csv_timeseries",
+            ),
+            expected_handoff_agents=(
+                "geospatial",
+                "ndp_dataset_discovery",
+                "earthscope_station_catalog",
+                "ndp_resource_resolver",
+                "gnss_timeseries_analysis",
+                "station_network_analysis",
+                "visualization",
+                "synthesis",
+            ),
+            expected_terms=("EarthScope", "GNSS", ".csv", ".png"),
+            min_artifacts=1,
+            min_tool_calls=4,
+            min_handoff_events=8,
+            min_expert_depth=9,
+            min_branch_count=8,
+            semantic_proofs=(
+                "marketplace_pack",
+                "root_delegation",
+                "nested_tier3",
+                "sync_parent_return",
+            ),
+            timeout_s=1200.0,
+            forbidden_route_sources=_REAL_ORCHESTRATOR_FORBIDDEN_SOURCES,
+            complexity_tags=(
+                "marketplace",
+                "earthscope",
+                "gnss",
+                "ndp",
+                "agent-blueprint",
+                "typed-state",
+                "topology",
+                "depth",
+            ),
+            prompt=(
+                "Explore EarthScope GNSS evidence for the region centered at "
+                "34.05 N, 118.25 W with a 75 km radius. Use the explicit "
+                "coordinates as the geography, search NDP/EarthScope for station "
+                "or station time-series evidence in that region, stage and "
+                "profile a concrete station CSV if available, produce a PNG if "
+                "analysis-ready data is staged, and otherwise synthesize the "
+                "catalog/acquisition blocker without inventing resources."
+            ),
+            expected=(
+                "The depth topology preserves typed evidence through the chain "
+                "main -> geospatial -> discovery -> station catalog -> resource "
+                "resolver -> GNSS profile -> station network -> "
+                "visualization -> synthesis."
+            ),
+            why=(
+                "Tests whether a long hierarchy can carry structured state and "
+                "artifact evidence without being held together by fixed prompt "
+                "strings or resource names."
+            ),
+        ),
+        DemoCase(
+            case_id="marketplace_earthscope_gnss_region_depth_bay_area_mutation",
+            title="Marketplace EarthScope GNSS region review, depth Bay Area mutation",
+            category="marketplace-earthscope",
+            session_group="marketplace_earthscope_gnss_topology_depth_bay_area",
+            agent_blueprint_id="earthscope-gnss-region-depth",
+            expected_agent=("main", "synthesis"),
+            expected_tool_prefixes=("ndp_",),
+            expected_tools=(
+                "ndp_search_datasets",
+                "ndp_stage_resource",
+                "ndp_filter_earthscope_station_catalog",
+            ),
+            expected_handoff_agents=(
+                "geospatial",
+                "ndp_dataset_discovery",
+                "earthscope_station_catalog",
+                "ndp_resource_resolver",
+            ),
+            expected_term_groups=(
+                ("EarthScope", "GNSS", "blocker"),
+                ("EarthScope", "GNSS", "metadata_only"),
+                ("EarthScope", "GNSS", "analysis_ready", "true", ".png"),
+            ),
+            min_tool_calls=4,
+            min_handoff_events=4,
+            min_expert_depth=4,
+            min_branch_count=3,
+            semantic_proofs=(
+                "marketplace_pack",
+                "root_delegation",
+                "nested_tier3",
+                "sync_parent_return",
+            ),
+            timeout_s=1200.0,
+            forbidden_route_sources=_REAL_ORCHESTRATOR_FORBIDDEN_SOURCES,
+            complexity_tags=(
+                "marketplace",
+                "earthscope",
+                "gnss",
+                "ndp",
+                "agent-blueprint",
+                "typed-state",
+                "topology",
+                "depth",
+                "mutation",
+            ),
+            prompt=(
+                "Explore EarthScope GNSS evidence for the region centered at "
+                "37.77 N, 122.42 W with a 75 km radius. Use the explicit "
+                "coordinates as the geography, search NDP/EarthScope for station "
+                "or station time-series evidence in that region, stage and "
+                "profile a concrete station CSV if available, produce a PNG if "
+                "analysis-ready data is staged, and otherwise synthesize the "
+                "catalog/acquisition blocker without inventing resources."
+            ),
+            expected=(
+                "The depth topology handles a changed coordinate/radius target "
+                "without relying on the Los Angeles r30 station/resource. It "
+                "must either stage and analyze a current Bay Area station CSV or "
+                "return a grounded acquisition blocker from live NDP evidence."
+            ),
+            why=(
+                "Tests mutable geography/resource semantics for the strict depth "
+                "chain after the Los Angeles coordinate/radius r30 acceptance."
+            ),
+        ),
+        DemoCase(
             case_id="marketplace_ndp_current_wildfire_features",
             title="Marketplace NDP current wildfire feature query",
             category="marketplace-ndp",
@@ -3804,9 +4852,23 @@ _BENCHMARK_LANES: dict[str, tuple[str, ...]] = {
         "marketplace_hpc_io_regression",
         "marketplace_format_bridge_integrity",
         "marketplace_terrain_pointcloud_suitability",
+        "marketplace_earthscope_gnss_region_review",
+        "marketplace_earthscope_gnss_region_los_angeles_mutation",
+        "marketplace_earthscope_gnss_region_coordinate_mutation",
+        "marketplace_earthscope_gnss_region_width_topology",
+        "marketplace_earthscope_gnss_region_depth_topology",
+        "marketplace_earthscope_gnss_region_depth_bay_area_mutation",
         "marketplace_ndp_current_wildfire_features",
         "marketplace_ndp_california_warnings_features",
         "marketplace_ndp_cimis_weather_profile_plot",
+    ),
+    "marketplace_earthscope": (
+        "marketplace_earthscope_gnss_region_review",
+        "marketplace_earthscope_gnss_region_los_angeles_mutation",
+        "marketplace_earthscope_gnss_region_coordinate_mutation",
+        "marketplace_earthscope_gnss_region_width_topology",
+        "marketplace_earthscope_gnss_region_depth_topology",
+        "marketplace_earthscope_gnss_region_depth_bay_area_mutation",
     ),
     "semantic_regression": (
         "reasoning_cross_file_triage_nanoagents",
@@ -4105,7 +5167,9 @@ def _stress_audit(results: list[DemoResult]) -> list[dict[str, Any]]:
         if result.child_sessions
         or {"ndp_catalog", "sac_format"}.intersection(result.handoff_agent_ids)
     ]
-    artifact_runs = [result for result in results if result.artifacts]
+    visualization_artifact_runs = [
+        result for result in results if _visualization_artifact_paths(result.artifacts)
+    ]
     expected_errors = [result for result in results if result.outcome == "expected_error"]
     compaction_runs = [
         result
@@ -4144,9 +5208,9 @@ def _stress_audit(results: list[DemoResult]) -> list[dict[str, Any]]:
         },
         {
             "criterion": "at least three visualization artifacts from analyzed data",
-            "observed": len(artifact_runs),
+            "observed": len(visualization_artifact_runs),
             "required": 3,
-            "passed": len(artifact_runs) >= 3,
+            "passed": len(visualization_artifact_runs) >= 3,
         },
         {
             "criterion": "at least two deliberate surfaced-error cases",
@@ -4569,6 +5633,19 @@ def _render_report(results: list[DemoResult], output_jsonl: Path) -> str:
     max_branch = max(results, key=lambda result: result.route_metrics["branch_count"], default=None)
     all_tools = sorted({tool for result in results for tool in result.tool_names if tool})
     all_files = sorted({path for result in results for path in result.data_files})
+    tool_rows_total = sum(result.tool_result_evidence["tool_rows"] for result in results)
+    tool_success_total = sum(
+        result.tool_result_evidence["successful_rows"] for result in results
+    )
+    tool_failed_total = sum(result.tool_result_evidence["failed_rows"] for result in results)
+    tool_resultful_total = sum(
+        result.tool_result_evidence["resultful_rows"] for result in results
+    )
+    tool_result_review_gaps = [
+        (result.case.case_id, tool)
+        for result in results
+        for tool in result.tool_result_evidence["review_gap_tools"]
+    ]
     artifact_rows = [
         row for result in results for row in result.artifact_evidence if row.get("path")
     ]
@@ -4670,6 +5747,18 @@ def _render_report(results: list[DemoResult], output_jsonl: Path) -> str:
             f"- Max expert depth: {_result_metric_label(max_depth, 'expert_depth')}",
             f"- Max branch fanout: {_result_metric_label(max_branch, 'branch_count')}",
             f"- Unique tools used: {', '.join(all_tools) if all_tools else 'none'}",
+            (
+                "- Reviewable scientific tool rows: "
+                f"{tool_rows_total} ({tool_success_total} successful, {tool_failed_total} failed)"
+            ),
+            (
+                "- Successful tool rows with result evidence: "
+                f"{tool_resultful_total}/{tool_success_total}"
+            ),
+            (
+                "- Tool result evidence gaps needing trace review: "
+                f"{len(tool_result_review_gaps)}"
+            ),
             f"- Data/input files referenced: {len(all_files)}",
             f"- Artifacts verified on disk: {len(verified_artifacts)}/{len(artifact_rows)}",
             f"- Root session logs captured: {len(session_logs)}/{len(results)}",
@@ -4713,6 +5802,25 @@ def _render_report(results: list[DemoResult], output_jsonl: Path) -> str:
     )
     if active_blueprints:
         lines.append(f"- Active Agent Blueprints: {', '.join(active_blueprints)}")
+    if tool_result_review_gaps:
+        lines.extend(
+            [
+                "",
+                "## Tool Result Evidence Review",
+                "",
+                (
+                    "These rows prove tool lifecycle or route metadata, but the recorded "
+                    "tool row lacks returned result evidence. Treat them as review prompts, "
+                    "not automatic benchmark failures; inspect session logs, artifacts, "
+                    "and semantic events before accepting the case."
+                ),
+                "",
+            ]
+        )
+        for case_id, tool in tool_result_review_gaps[:24]:
+            lines.append(f"- `{case_id}`: `{tool}`")
+        if len(tool_result_review_gaps) > 24:
+            lines.append(f"- ... {len(tool_result_review_gaps) - 24} more")
     if provider_audit:
         lines.extend(
             [
@@ -4800,6 +5908,21 @@ def _render_report(results: list[DemoResult], output_jsonl: Path) -> str:
     lines.extend(["", "## Best 10 Demo Prompts", ""])
     for rank, result in enumerate(best, start=1):
         tool_text = ", ".join(result.tool_names) or "none"
+        evidence = result.tool_result_evidence
+        tool_result_text = (
+            f"{evidence['resultful_rows']}/{evidence['successful_rows']} successful rows "
+            f"carry result evidence; {evidence['failed_rows']} failed rows"
+        )
+        if evidence["review_gap_tools"]:
+            tool_result_text += (
+                "; review gaps: "
+                + ", ".join(str(tool) for tool in evidence["review_gap_tools"][:8])
+            )
+        if evidence["failed_tools"]:
+            tool_result_text += (
+                "; failed tools: "
+                + ", ".join(str(tool) for tool in evidence["failed_tools"][:8])
+            )
         handoff_text = _handoff_summary(result) or "none"
         artifact_text = ", ".join(result.artifacts) or "none"
         artifact_evidence_text = ", ".join(
@@ -4842,6 +5965,7 @@ def _render_report(results: list[DemoResult], output_jsonl: Path) -> str:
                 ),
                 f"Expert handoffs: {handoff_text}",
                 f"Tools: {tool_text}",
+                f"Tool result evidence: {tool_result_text}",
                 f"Data/input files: {', '.join(result.data_files) or 'none'}",
                 f"Setup turns: {len(result.setup_messages)}",
                 f"Root session messages: {len(result.session_messages)}",
@@ -4865,7 +5989,7 @@ def _render_report(results: list[DemoResult], output_jsonl: Path) -> str:
                 "Observed excerpt:",
                 "",
                 "```text",
-                result.visible_text[:900].strip() or "<no assistant text>",
+                result.observed_excerpt_text[:900].strip() or "<no assistant text>",
                 "```",
                 "",
             ]
@@ -4918,9 +6042,11 @@ def _render_report(results: list[DemoResult], output_jsonl: Path) -> str:
     if failed_results:
         lines.extend(["## Failures To Investigate", ""])
         for result in failed_results:
+            failure_reasons = result.failure_reasons()
             lines.extend(
                 [
                     f"- `{result.case.case_id}`: expected {result.case.expected}",
+                    f"  reason={'; '.join(failure_reasons) or 'benchmark expectation was not satisfied'}",
                     f"  observed agent={result.selected_agent or '-'}, "
                     f"tools={', '.join(result.tool_names) or '-'}, "
                     f"error={result.message.get('error_info')}",
