@@ -149,7 +149,17 @@ read session messages + children as the trace → normalize into agent-test `Run
   enabled). Committed on marketplace `feat/wildfire-smoke-impact-pack`.
   Branch note: `feat/wildfire-smoke-impact-case` now also carries the geo-tool
   wiring merge (case + wiring coexist); `develop` left untouched pending review.
-- **Priority 3 in progress — run-ready.** ALCF auth confirmed working (Globus
+- **Priority 3 — harness up + validated (the suite is ready).** Built the
+  agent-test harness in `benchmark/agenttest/` (CLIO `SUT` + EarthScope driver
+  test + wildfire acceptance test). The EarthScope harness driver test **passes
+  live** (`1 passed in 249s`, cell `argonne_sophia/openai/gpt-oss-120b`),
+  proving the SUT can set provider/model (async LM-ready wait), activate a
+  blueprint, run a live turn, and normalize the trace (7 tools, route
+  `geospatial->data->synthesis`, structured_outputs, artifacts) into a `Run`.
+  Trace convention: `benchmark/<case>/runs/<label>-<cell>.jsonl`. agent-test
+  needs `pytest-xdist` (installed). NEXT = the grind: run the wildfire
+  acceptance test live, read the trace, iterate agent/tool/matchers.
+- (earlier) Priority 3 run-ready details: ALCF auth confirmed working (Globus
   token present, `get_access_token` succeeds). Pack installed into the workspace
   discovery root `.clio/agent-blueprints/wildfire-smoke-impact-review`; CLIO
   discovers it (18 blueprints, alongside `earthscope-gnss-region`). Marketplace
