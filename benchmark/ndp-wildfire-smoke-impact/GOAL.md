@@ -112,5 +112,15 @@ The case prompt is natural and names no expert, tool, or schema:
   `visualization`/`analysis`. 28 unit tests + 1 real-proxy integration test
   pass; ruff clean. The visualization expert can now call
   `geospatial_render_feature_map`.
-- **Next: priority 2** — author the `wildfire-smoke-impact-review` marketplace
-  pack (domain-grouped topology above).
+- **Priority 2 complete (approach C).** Authored marketplace pack
+  `wildfire-smoke-impact-review` (10 experts, domain-grouped) with
+  typed/structural routing only — `when_child_completed` + `structured_outputs`,
+  no free-text contracts (runtime now rejects `when_output_contains`). The
+  visualization expert calls `geospatial_render_feature_map`. Pack validates
+  CLEAN through the agent-blueprint loader (0 errors/warnings, all experts
+  enabled). Committed on marketplace `feat/wildfire-smoke-impact-pack`.
+  Branch note: `feat/wildfire-smoke-impact-case` now also carries the geo-tool
+  wiring merge (case + wiring coexist); `develop` left untouched pending review.
+- **Next: priority 3** — first live run vs ALCF Sophia + live NDP. Needs: pin
+  the pack into the default registry, and ALCF provider auth (likely external
+  blocker to confirm with the user).
