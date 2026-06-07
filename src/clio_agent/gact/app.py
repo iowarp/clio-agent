@@ -5564,8 +5564,21 @@ def _infer_workflow_state_from_tool_call_row(row: Mapping[str, Any]) -> dict[str
                 except (TypeError, ValueError):
                     region_filter = None
 
+            # The inline result is truncated (~10 features); read the full saved
+            # FeatureCollection so fire selection / region filtering sees ALL
+            # active fires, not just the first page.
+            feats_full = feats
+            if out_path:
+                try:
+                    with open(out_path) as _fh:
+                        _doc = json.load(_fh)
+                    if isinstance(_doc, Mapping) and isinstance(_doc.get("features"), list):
+                        feats_full = _doc["features"]
+                except (OSError, ValueError, TypeError):
+                    feats_full = feats
+
             best, best_score = None, -1.0
-            for feat in feats:
+            for feat in feats_full:
                 props = feat.get("properties") if isinstance(feat, Mapping) else None
                 bbox = _bbox_from_geom(feat.get("geometry")) if isinstance(feat, Mapping) else None
                 if not isinstance(props, Mapping) or not (isinstance(bbox, list) and len(bbox) == 4):
