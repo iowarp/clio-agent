@@ -5526,10 +5526,34 @@ def _infer_workflow_state_from_tool_call_row(row: Mapping[str, Any]) -> dict[str
         feats = decoded.get("features") if isinstance(decoded.get("features"), list) else []
         out_path = decoded.get("output_path")
         if any(tok in src for tok in ("perimeter", "wfigs", "fire")):
+            def _bbox_from_geom(geom: Any) -> list[float] | None:
+                if not isinstance(geom, Mapping):
+                    return None
+                bb = geom.get("bbox")
+                if isinstance(bb, list) and len(bb) == 4 and all(isinstance(v, (int, float)) for v in bb):
+                    return [float(v) for v in bb]
+                # fall back to walking coordinates for min/max lon/lat
+                xs: list[float] = []
+                ys: list[float] = []
+
+                def _walk(node: Any) -> None:
+                    if (isinstance(node, list) and len(node) >= 2
+                            and all(isinstance(v, (int, float)) for v in node[:2])):
+                        xs.append(float(node[0]))
+                        ys.append(float(node[1]))
+                    elif isinstance(node, list):
+                        for child in node:
+                            _walk(child)
+
+                _walk(geom.get("coordinates"))
+                if xs and ys:
+                    return [min(xs), min(ys), max(xs), max(ys)]
+                return None
+
             best, best_score = None, -1.0
             for feat in feats:
                 props = feat.get("properties") if isinstance(feat, Mapping) else None
-                bbox = (feat.get("geometry") or {}).get("bbox") if isinstance(feat, Mapping) else None
+                bbox = _bbox_from_geom(feat.get("geometry")) if isinstance(feat, Mapping) else None
                 if not isinstance(props, Mapping) or not (isinstance(bbox, list) and len(bbox) == 4):
                     continue
                 try:
