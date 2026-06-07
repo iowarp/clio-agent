@@ -5490,33 +5490,34 @@ def _infer_workflow_state_from_tool_call_row(row: Mapping[str, Any]) -> dict[str
             return {"region": [float(v) for v in bbox]}
         return {}
     if name == "geospatial_points_in_polygons":
+        # Ground the overlap DATA from the tool (counts + which monitors matched).
+        # The impact DECISION (present? which fire? who is worst affected?) is the
+        # analysis expert's reasoning over this data — not made here.
         decoded = _decode_geo(result)
         if isinstance(decoded, Mapping) and "matched_count" in decoded:
             matched = decoded.get("matched") if isinstance(decoded.get("matched"), list) else []
-            communities = []
+            monitors = []
             for mm in matched[:10]:
                 props = mm.get("properties") if isinstance(mm, Mapping) else {}
                 props = props if isinstance(props, Mapping) else {}
-                communities.append({
+                monitors.append({
                     "name": props.get("name") or props.get("label") or props.get("SiteName")
                             or props.get("AQSID") or f"monitor_{mm.get('index')}",
                     "aqi": props.get("aqi") or props.get("AQI") or props.get("OZONEPM_AQI"),
                 })
-            count = int(decoded.get("matched_count") or 0)
-            # Ground the impact decision in the actual overlap: monitors under the
-            # smoke footprint == downwind impact. >0 is impact; 0 is a genuine null.
             return {
                 "impact_overlap": {
-                    "monitors_under_smoke": count,
+                    "monitors_under_smoke": int(decoded.get("matched_count") or 0),
                     "monitors_total": int(decoded.get("points_total") or 0),
-                },
-                "impact": {"present": count > 0, "affected_communities": communities},
+                    "monitors": monitors,
+                }
             }
         return {}
 
-    # Wildfire acquisition grounding: derive region + selected fire + per-layer
-    # acquisition paths directly from the arcgis query result, so the workflow
-    # does not depend on the small model chaining a separate geography/bbox step.
+    # Wildfire acquisition grounding: record ONLY which layer files were saved
+    # and their feature counts (tool DATA). The agent chooses which fire matters,
+    # derives the region (via the bounding_box tool), and judges impact — the
+    # runtime does not select fires, scope regions, or decide impact here.
     # Scoped to ndp_query_arcgis_features (EarthScope uses ndp_stage_resource).
     if name == "ndp_query_arcgis_features":
         decoded = _decode_geo(result)
@@ -5525,97 +5526,15 @@ def _infer_workflow_state_from_tool_call_row(row: Mapping[str, Any]) -> dict[str
         src = str(decoded.get("source_url") or "").lower()
         feats = decoded.get("features") if isinstance(decoded.get("features"), list) else []
         out_path = decoded.get("output_path")
+        count = int(decoded.get("feature_count") or 0)
+        if not out_path:
+            return {}
         if any(tok in src for tok in ("perimeter", "wfigs", "fire")):
-            def _bbox_from_geom(geom: Any) -> list[float] | None:
-                if not isinstance(geom, Mapping):
-                    return None
-                bb = geom.get("bbox")
-                if isinstance(bb, list) and len(bb) == 4 and all(isinstance(v, (int, float)) for v in bb):
-                    return [float(v) for v in bb]
-                # fall back to walking coordinates for min/max lon/lat
-                xs: list[float] = []
-                ys: list[float] = []
-
-                def _walk(node: Any) -> None:
-                    if (isinstance(node, list) and len(node) >= 2
-                            and all(isinstance(v, (int, float)) for v in node[:2])):
-                        xs.append(float(node[0]))
-                        ys.append(float(node[1]))
-                    elif isinstance(node, list):
-                        for child in node:
-                            _walk(child)
-
-                _walk(geom.get("coordinates"))
-                if xs and ys:
-                    return [min(xs), min(ys), max(xs), max(ys)]
-                return None
-
-            # Optional deterministic region scope: when a target region bbox is
-            # provided (CLIO_WILDFIRE_REGION_BBOX="min_lon,min_lat,max_lon,max_lat"),
-            # only consider fires centered inside it. Lets a caller analyze a
-            # specific region without depending on the model passing a bbox.
-            region_filter: list[float] | None = None
-            raw_filter = os.environ.get("CLIO_WILDFIRE_REGION_BBOX", "").strip()
-            if raw_filter:
-                try:
-                    parts = [float(x) for x in raw_filter.split(",")]
-                    if len(parts) == 4:
-                        region_filter = parts
-                except (TypeError, ValueError):
-                    region_filter = None
-
-            # The inline result is truncated (~10 features); read the full saved
-            # FeatureCollection so fire selection / region filtering sees ALL
-            # active fires, not just the first page.
-            feats_full = feats
-            if out_path:
-                try:
-                    with open(out_path) as _fh:
-                        _doc = json.load(_fh)
-                    if isinstance(_doc, Mapping) and isinstance(_doc.get("features"), list):
-                        feats_full = _doc["features"]
-                except (OSError, ValueError, TypeError):
-                    feats_full = feats
-
-            best, best_score = None, -1.0
-            for feat in feats_full:
-                props = feat.get("properties") if isinstance(feat, Mapping) else None
-                bbox = _bbox_from_geom(feat.get("geometry")) if isinstance(feat, Mapping) else None
-                if not isinstance(props, Mapping) or not (isinstance(bbox, list) and len(bbox) == 4):
-                    continue
-                if region_filter is not None:
-                    cx, cy = (bbox[0] + bbox[2]) / 2.0, (bbox[1] + bbox[3]) / 2.0
-                    if not (region_filter[0] <= cx <= region_filter[2] and region_filter[1] <= cy <= region_filter[3]):
-                        continue
-                try:
-                    acres = float(props.get("poly_GISAcres") or props.get("acres") or 0)
-                    contained = float(props.get("attr_PercentContained") or props.get("percent_contained") or 0)
-                except (TypeError, ValueError):
-                    continue
-                score = acres * (1.0 - min(max(contained, 0.0), 100.0) / 100.0)  # active burning area, not raw size
-                if score > best_score:
-                    best, best_score = (props, bbox), score
-            state: dict[str, Any] = {}
-            if best is not None:
-                props, bbox = best
-                pad = 1.0
-                state["region"] = [round(bbox[0] - pad, 4), round(bbox[1] - pad, 4),
-                                   round(bbox[2] + pad, 4), round(bbox[3] + pad, 4)]
-                state["fire"] = {"selected": {
-                    "name": props.get("attr_IncidentName") or props.get("name"),
-                    "acres": props.get("poly_GISAcres"),
-                    "percent_contained": props.get("attr_PercentContained"),
-                    "county": props.get("attr_POOCounty"),
-                    "state": props.get("attr_POOState"),
-                }}
-            if out_path:
-                state.setdefault("acquisition", {})["fire_path"] = out_path
-            return state
+            return {"acquisition": {"fire_path": out_path, "fire_features": count}}
         if "smoke" in src:
-            return {"acquisition": {"smoke_path": out_path, "smoke_present": bool(feats)}}
+            return {"acquisition": {"smoke_path": out_path, "smoke_present": bool(feats) or count > 0}}
         if any(tok in src for tok in ("airnow", "monitor", "air_now", "aqi")):
-            return {"acquisition": {"monitors_path": out_path,
-                                    "monitors_found": int(decoded.get("feature_count") or 0)}}
+            return {"acquisition": {"monitors_path": out_path, "monitors_found": count}}
         return {}
 
     if name == "ndp_filter_earthscope_station_catalog":
