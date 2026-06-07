@@ -162,3 +162,13 @@ docs/ref/
 /b.py
 /x.py
 scratch/
+
+# benchmark run logs & artifacts (evidence, not source)
+benchmark/**/runs/
+benchmark/**/trace*.jsonl
+benchmark/**/report-*.md
+/tmp/
+tmp/
+/ca_warnings_full.geojson
+/cimis_fresno_weather.png
+/artifacts/

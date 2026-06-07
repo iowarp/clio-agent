@@ -27,16 +27,13 @@ import httpx
 from agent_test import Run, SUT, ToolCall
 
 DEFAULT_BASE_URL = os.environ.get("CLIO_GACT_URL", "http://127.0.0.1:17960").rstrip("/")
-# Default matrix cell: the EarthScope driver provider. provider id matches a row
-# from GET /v1/providers; the underlying LiteLLM kind + api_base are looked up
-# there at bind time, so adding a cell needs no code change.
-DEFAULT_CELLS = [("argonne_sophia", "openai/gpt-oss-120b")]
-
-
-def _cells_from_env() -> list[tuple[str, str]]:
+def _cells_from_env() -> list[tuple[str, str]] | None:
+    """Optional explicit cell list from config, e.g.
+    ``CLIO_AGENTTEST_CELLS="argonne_sophia:openai/gpt-oss-120b,argonne_metis:gpt-oss-120b"``.
+    Returns None when unset so ``cells()`` falls back to live discovery."""
     raw = os.environ.get("CLIO_AGENTTEST_CELLS", "").strip()
     if not raw:
-        return list(DEFAULT_CELLS)
+        return None
     cells: list[tuple[str, str]] = []
     for chunk in raw.split(","):
         chunk = chunk.strip()
@@ -44,7 +41,7 @@ def _cells_from_env() -> list[tuple[str, str]]:
             continue
         provider, _, model = chunk.partition(":")
         cells.append((provider.strip(), model.strip()))
-    return cells or list(DEFAULT_CELLS)
+    return cells or None
 
 
 class ClioAgent(SUT):
@@ -61,7 +58,20 @@ class ClioAgent(SUT):
     # --- agent-test SUT contract -------------------------------------------
 
     def cells(self) -> list[tuple[str, str]]:
-        return _cells_from_env()
+        """Cells are NOT hardcoded. They come from config
+        (``CLIO_AGENTTEST_CELLS``) or are discovered live from the gact
+        provider registry, with each model taken from the provider's
+        server-side ``default_model``. The runner then pins one via
+        ``pytest --provider/--model`` or fans out with ``--matrix``."""
+        explicit = _cells_from_env()
+        if explicit is not None:
+            return explicit
+        try:
+            with httpx.Client(base_url=self._base_url, timeout=5.0) as http:
+                rows = http.get("/v1/providers").json().get("providers", [])
+        except Exception:
+            return []
+        return [(str(r["id"]), str(r.get("default_model") or "")) for r in rows if r.get("id")]
 
     def available(self, provider: str, model: str) -> bool:
         """A cell is runnable when the gact server is reachable and the

@@ -137,6 +137,8 @@ asyncio_mode = "auto"  # CLIO-BBBBBBBBBB13: SSE tests use async httpx
 markers = [
     "integration: marks tests requiring full-stack/external runtime behavior",
     "benchmark: marks long real-provider stress benchmark tests",
+    "real_case: end-to-end live CLIO blueprint case (a tier above unit/integration; needs CLIO_RUN_LIVE=1)",
+    "live: hits a live gact server + external provider (slow; skipped unless CLIO_RUN_LIVE=1)",
 ]
 addopts = [
     "--verbose",
