@@ -1835,6 +1835,29 @@ def query_arcgis_features(
     feature collection for later artifact inspection.
     """
 
+    if not output_path and feature_service_url:
+        # Auto-persist every layer query so downstream bbox/render/overlap always
+        # have a file to resolve — removes the fragile "the model must remember
+        # to pass output_path" link that breaks region/map steps on small models.
+        # Name it from the service so keyword resolution finds it (fire ->
+        # ...perimeters, smoke -> ...smokeforecast, air -> ...air...).
+        try:
+            segments = [s for s in str(feature_service_url).split("/") if s]
+            service_name = ""
+            for index, segment in enumerate(segments):
+                if segment.lower() == "featureserver" and index > 0:
+                    service_name = segments[index - 1]
+                    break
+            if not service_name:
+                service_name = next(
+                    (s for s in reversed(segments) if s and not s.isdigit() and "." not in s),
+                    "features",
+                )
+            safe = re.sub(r"[^a-zA-Z0-9]+", "_", service_name).strip("_").lower() or "features"
+            output_path = f"{safe}.geojson"
+        except Exception:  # noqa: BLE001 - never let auto-naming break the query
+            output_path = None
+
     if output_path:
         # Relocate the saved FeatureCollection into a writable artifact dir so
         # models that pass invented/unwritable paths (e.g. /workspace/x.geojson)
