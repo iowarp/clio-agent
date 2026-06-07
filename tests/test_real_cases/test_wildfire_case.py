@@ -3,7 +3,8 @@
 Encodes the contract from ``benchmark/ndp-wildfire-smoke-impact/GOAL.md``.
 Expected to FAIL until the case is iterated to productive; every failure that a
 trace review (the agent's autonomous job, no human in the loop) explains gets
-frozen here as a tighter matcher.
+frozen here as a tighter matcher. This is the IMPACT case — it requires a
+genuine downwind-impact result. The honest no-impact path is a separate test.
 
 Run live: ``CLIO_RUN_LIVE=1 pytest tests/test_real_cases/test_wildfire_case.py
 --provider argonne_metis``.
@@ -11,6 +12,7 @@ Run live: ``CLIO_RUN_LIVE=1 pytest tests/test_real_cases/test_wildfire_case.py
 
 from __future__ import annotations
 
+import numbers
 from pathlib import Path
 
 import pytest
@@ -22,19 +24,36 @@ PROMPT = Path(CASE_DIR, "prompt.txt").read_text().strip()
 
 
 @matcher
-def selected_by_impact_not_size(run):
-    """The run reached an impact decision and, when impact is present, named a
-    selected fire. Reads the merged typed `workflow_state.impact`, not prose."""
+def region_scoped(run):
+    """A real numeric region bbox was derived (not None, not a template string)."""
+    region = (run.extra.get("workflow_state") or {}).get("region")
+    if not isinstance(region, (list, tuple)) or len(region) != 4:
+        return False
+    return all(isinstance(v, numbers.Number) and not isinstance(v, bool) for v in region)
+
+
+@matcher
+def found_real_impact(run):
+    """Genuine impact: a typed impact decision that is present AND names the
+    selected fire (read from typed workflow_state, not prose)."""
     impact = (run.extra.get("workflow_state") or {}).get("impact") or {}
-    if "present" not in impact:
-        return False  # analysis never emitted a typed impact decision
-    if impact.get("present"):
-        return bool(impact.get("selected_fire"))
-    # A null-impact result is valid ONLY if it was a real overlap evaluation,
-    # not an acquisition/geometry failure dressed up as "no impact".
-    reason = str(impact.get("reason", "")).lower()
-    failureish = ("missing", "fail", "error", "unavailable", "could not", "prevent", "no fire data")
-    return not any(w in reason for w in failureish)
+    return bool(impact.get("present")) and bool(impact.get("selected_fire"))
+
+
+@matcher
+def fused_three_layers(run):
+    """The rendered map actually fused all three layers with real features
+    (fire perimeter + smoke + air-quality), not a single-layer fallback."""
+    for call in run.tool_calls:
+        if call.name == "geospatial_render_feature_map" and isinstance(call.output, dict):
+            layers = call.output.get("layers") or []
+            with_features = [
+                layer for layer in layers
+                if isinstance(layer, dict) and int(layer.get("features", 0) or 0) > 0
+            ]
+            if len(with_features) >= 3:
+                return True
+    return False
 
 
 @pytest.mark.real_case
@@ -51,19 +70,22 @@ def test_wildfire_downwind_impact(agent):
     # Runtime/harness invariants.
     assert run.error is None, run.error
     assert run.extra["blueprint_activated"], run.extra.get("active_agent_blueprint_id")
-
-    # Data pathways: the live feature services were queried.
     assert run.called("ndp_query_arcgis_features"), run.tool_names
 
     # Route: acquisition -> impact analysis -> visualization -> synthesis.
-    assert run.routed_to("data"), run.steps
-    assert run.routed_to("analysis"), run.steps
-    assert run.routed_to("visualization"), run.steps
-    assert run.routed_to("synthesis"), run.steps
+    for expert in ("data", "analysis", "visualization", "synthesis"):
+        assert run.routed_to(expert), run.steps
 
-    # Real deliverable: a layered map PNG was rendered and exists on disk.
+    # Region was genuinely derived and scoped (no None / template-string bbox).
+    assert region_scoped(run), (run.extra.get("workflow_state") or {}).get("region")
+
+    # Genuine downwind impact with a selected fire (not a hollow null).
+    assert found_real_impact(run), (run.extra.get("workflow_state") or {}).get("impact")
+
+    # Real deliverable: a non-empty 3-layer map PNG on disk.
     assert run.called("geospatial_render_feature_map"), run.tool_names
-    assert any(p.endswith(".png") for p in run.extra["artifacts"]), run.extra["artifacts"]
-
-    # Semantics frozen from review.
-    assert selected_by_impact_not_size(run)
+    assert fused_three_layers(run), "map did not fuse all three layers with features"
+    assert any(
+        p.endswith(".png") and Path(p).is_file() and Path(p).stat().st_size > 1024
+        for p in run.extra["artifacts"]
+    ), run.extra["artifacts"]
