@@ -121,6 +121,16 @@ The case prompt is natural and names no expert, tool, or schema:
   enabled). Committed on marketplace `feat/wildfire-smoke-impact-pack`.
   Branch note: `feat/wildfire-smoke-impact-case` now also carries the geo-tool
   wiring merge (case + wiring coexist); `develop` left untouched pending review.
-- **Next: priority 3** — first live run vs ALCF Sophia + live NDP. Needs: pin
-  the pack into the default registry, and ALCF provider auth (likely external
-  blocker to confirm with the user).
+- **Priority 3 in progress — run-ready.** ALCF auth confirmed working (Globus
+  token present, `get_access_token` succeeds). Pack installed into the workspace
+  discovery root `.clio/agent-blueprints/wildfire-smoke-impact-review`; CLIO
+  discovers it (18 blueprints, alongside `earthscope-gnss-region`). Marketplace
+  source: authored in `~/clio-agent-marketplace` (feat/wildfire-smoke-impact-pack);
+  the live marketplace is the `external/clio-agent-marketplace` submodule (on
+  `main`) — pack must also land there/in the submodule for a committed run.
+  Remaining for the first live run: invoke a CLIO session with the wildfire
+  blueprint against ALCF Sophia + live NDP and capture a trace to `runs/`. NOTE:
+  `scripts/run_demo_benchmark.py` is heavily EarthScope-specific
+  (`_is_earthscope_gnss_blueprint_id` gating) — the first wildfire run likely
+  needs a generic invocation path or a runner generalization, not the EarthScope
+  harness as-is.
