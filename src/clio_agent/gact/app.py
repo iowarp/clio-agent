@@ -1071,7 +1071,9 @@ def _memory_search_response(
         metadata={
             "scope": "cross_session" if include_cross_session else "session",
             "workspace_id": active_workspace_id,
-            "workspace_scope": "global" if active_workspace_id == GLOBAL_WORKSPACE_ID else "workspace",
+            "workspace_scope": "global"
+            if active_workspace_id == GLOBAL_WORKSPACE_ID
+            else "workspace",
             "limit": limit,
         },
     )
@@ -1127,7 +1129,13 @@ def _memory_tool_audit(
     if not hasattr(app.state, "memory_tool_audit"):
         app.state.memory_tool_audit = []
     app.state.memory_tool_audit.append(row)
-    app.state.bus.publish(Event(type=f"{tool_name}.{'denied' if status == 'denied' else 'completed'}", session_id=session_id, payload=row))
+    app.state.bus.publish(
+        Event(
+            type=f"{tool_name}.{'denied' if status == 'denied' else 'completed'}",
+            session_id=session_id,
+            payload=row,
+        )
+    )
     return row
 
 
@@ -1560,9 +1568,7 @@ def _merge_agent_def_rows(rows: list["AgentDef"]) -> list["AgentDef"]:
                 {
                     "source": prior.source,
                     "scope": str(
-                        prior.metadata.get("expert_scope")
-                        or prior.metadata.get("pack_scope")
-                        or ""
+                        prior.metadata.get("expert_scope") or prior.metadata.get("pack_scope") or ""
                     ),
                     "pack_id": str(prior.metadata.get("pack_id") or ""),
                     "definition_path": str(
@@ -1574,9 +1580,7 @@ def _merge_agent_def_rows(rows: list["AgentDef"]) -> list["AgentDef"]:
             )
         current = {
             "source": row.source,
-            "scope": str(
-                row.metadata.get("expert_scope") or row.metadata.get("pack_scope") or ""
-            ),
+            "scope": str(row.metadata.get("expert_scope") or row.metadata.get("pack_scope") or ""),
             "pack_id": str(row.metadata.get("pack_id") or ""),
             "definition_path": str(
                 row.metadata.get("definition_path") or row.metadata.get("expert_path") or ""
@@ -1620,7 +1624,9 @@ def _agent_definition_is_agent_blueprint(agent_def: "AgentDef") -> bool:
     """Return whether an AgentDef came from an Agent Blueprint graph."""
 
     metadata = agent_def.metadata if isinstance(agent_def.metadata, Mapping) else {}
-    return bool(metadata.get("agent_blueprint_id") or metadata.get("definition_kind") == "agent_blueprint")
+    return bool(
+        metadata.get("agent_blueprint_id") or metadata.get("definition_kind") == "agent_blueprint"
+    )
 
 
 def _legacy_native_expert_runtime_enabled() -> bool:
@@ -1633,7 +1639,10 @@ def _legacy_native_expert_runtime_enabled() -> bool:
 
 
 def _agent_definition_uses_blueprint_runtime(agent_def: "AgentDef") -> bool:
-    return _agent_definition_is_agent_blueprint(agent_def) and not _legacy_native_expert_runtime_enabled()
+    return (
+        _agent_definition_is_agent_blueprint(agent_def)
+        and not _legacy_native_expert_runtime_enabled()
+    )
 
 
 def _runtime_workspace_catalog_cwd(
@@ -1671,7 +1680,10 @@ def _runtime_active_agent_blueprint_id(app: "FastAPI", session_id: str = "") -> 
     if _legacy_native_expert_runtime_enabled():
         return ""
     cwd = _runtime_workspace_catalog_cwd(app, session_id=session_id)
-    if any(row.id == DEFAULT_AGENT_BLUEPRINT_ID and row.enabled for row in discover_agent_blueprints(cwd=cwd)):
+    if any(
+        row.id == DEFAULT_AGENT_BLUEPRINT_ID and row.enabled
+        for row in discover_agent_blueprints(cwd=cwd)
+    ):
         return DEFAULT_AGENT_BLUEPRINT_ID
     return ""
 
@@ -1777,7 +1789,9 @@ def _runtime_active_agent_blueprint_rows(
     rows = validate_agent_hierarchy(_merge_agent_def_rows(rows))
     render_context = _prompt_render_context(app)
     render_context.update(_agent_rows_prompt_render_context(rows))
-    render_context["session.active_agent_blueprint"] = active_blueprint_id or "(no active agent blueprint)"
+    render_context["session.active_agent_blueprint"] = (
+        active_blueprint_id or "(no active agent blueprint)"
+    )
     render_context["session.active_pack"] = active_blueprint_id or "(no active expert pack)"
     return [
         _apply_prompt_registry_to_agent(
@@ -1897,8 +1911,10 @@ def _agent_rows_prompt_render_context(rows: list["AgentDef"]) -> dict[str, str]:
     return {
         "agents.available_tree": "\n".join(render_tree()) or "(no enabled experts)",
         "agents.available_flat": "\n".join(
-            f"- {agent.id}: {agent.title}" for agent in sorted(enabled_agents, key=lambda row: row.id)
-        ) or "(no enabled experts)",
+            f"- {agent.id}: {agent.title}"
+            for agent in sorted(enabled_agents, key=lambda row: row.id)
+        )
+        or "(no enabled experts)",
     }
 
 
@@ -2331,8 +2347,8 @@ def _runtime_dynamic_agent_children_context(
         )
     lines.append(
         "When a child expert should act, return an expert_handoffs JSON array "
-        "with rows like {\"delegate_to\":\"child_id\",\"question\":\"specific task\","
-        "\"status\":\"requested\"}. CLIO will run that child synchronously, return a "
+        'with rows like {"delegate_to":"child_id","question":"specific task",'
+        '"status":"requested"}. CLIO will run that child synchronously, return a '
         "compact result to this expert, and then ask this expert to continue."
     )
     return "\n".join(lines)
@@ -2495,14 +2511,13 @@ def _delegation_continuation_policy_contract(
         if first_item.lower().startswith("id:"):
             source_policy = first_item.partition(":")[2].strip()
         flags = {
-            str(key): str(value)
-            for key, value in params.items()
-            if str(key).startswith("DO_NOT_")
+            str(key): str(value) for key, value in params.items() if str(key).startswith("DO_NOT_")
         }
         raw_policies = [
             {
                 "id": source_policy,
-                "when_output_contains": params.get("when_output_contains") or params.get("trigger_terms"),
+                "when_output_contains": params.get("when_output_contains")
+                or params.get("trigger_terms"),
                 "match": params.get("match") or params.get("match_mode") or "any",
                 "next_expert": params.get("next_expert")
                 or params.get("required_next_expert")
@@ -2542,7 +2557,11 @@ def _delegation_continuation_policy_contract(
             or ""
         ).strip()
         raw_flags = raw_policy.get("flags") or {}
-        flags = {str(key): str(value) for key, value in raw_flags.items()} if isinstance(raw_flags, Mapping) else {}
+        flags = (
+            {str(key): str(value) for key, value in raw_flags.items()}
+            if isinstance(raw_flags, Mapping)
+            else {}
+        )
         contract: dict[str, Any] = {
             "next_expert": target_id,
             "source": "agent_blueprint_continuation_policy",
@@ -2585,10 +2604,7 @@ def _compact_dynamic_delegation_output(output: str, *, limit: int = 2200) -> str
         return "Retained typed workflow state:\n" + "\n".join(state_blocks)
     if len(text) <= limit:
         if state_blocks and state_blocks[0] not in display_text:
-            return (
-                f"{display_text.rstrip()}\n\n"
-                f"Retained typed workflow state:\n{state_blocks[0]}"
-            )
+            return f"{display_text.rstrip()}\n\nRetained typed workflow state:\n{state_blocks[0]}"
         return display_text
     evidence_index = _compact_exact_evidence_index(display_text)
     contract_lines = _compact_delegation_contract_lines(display_text)
@@ -2633,7 +2649,9 @@ def _compact_dynamic_delegation_output(output: str, *, limit: int = 2200) -> str
             + "\n".join(f"- {line}" for line in contract_lines)
         )
     if stat_lines:
-        retained_blocks.append("Retained numeric/trace evidence:\n" + "\n".join(f"- {line}" for line in stat_lines))
+        retained_blocks.append(
+            "Retained numeric/trace evidence:\n" + "\n".join(f"- {line}" for line in stat_lines)
+        )
     retained = "\n\n".join(retained_blocks)
     head_limit = max(800, limit // 2)
     tail_limit = max(500, limit - head_limit - len(retained) - 120)
@@ -2811,7 +2829,10 @@ def _sanitize_scan_limited_model_evidence(text: str) -> str:
     sanitized = re.sub(r",\s*,", ",", sanitized)
     sanitized = re.sub(r"\(\s*\)", "", sanitized)
     sanitized = re.sub(r"\s{2,}", " ", sanitized)
-    if sanitized != text and "full-file cadence/duration/gap quality was not verified" not in sanitized:
+    if (
+        sanitized != text
+        and "full-file cadence/duration/gap quality was not verified" not in sanitized
+    ):
         sanitized = (
             f"{sanitized.rstrip()}\n"
             "Scan-limited profile note: full-file cadence/duration/gap quality was not verified."
@@ -2976,15 +2997,19 @@ def _strip_embedded_workflow_state_evidence(text: str) -> str:
         if "workflow_state" in lowered:
             skipping_state_list = True
             continue
-        if skipping_state_list and line.startswith(("-", "{")) and any(
-            token in lowered
-            for token in (
-                '"acquisition"',
-                '"resource_candidate"',
-                '"profile"',
-                '"artifact"',
-                '"visualization"',
-                '"station_catalog"',
+        if (
+            skipping_state_list
+            and line.startswith(("-", "{"))
+            and any(
+                token in lowered
+                for token in (
+                    '"acquisition"',
+                    '"resource_candidate"',
+                    '"profile"',
+                    '"artifact"',
+                    '"visualization"',
+                    '"station_catalog"',
+                )
             )
         ):
             continue
@@ -3112,10 +3137,10 @@ def _latest_completed_artifact_output_summary(rows: list[dict[str, Any]]) -> str
     stack = list(rows)
     while stack:
         row = stack.pop(0)
-        if (
-            str(row.get("stage") or "") == "delegate.completed"
-            and str(row.get("status") or "") in {"", "completed"}
-        ):
+        if str(row.get("stage") or "") == "delegate.completed" and str(row.get("status") or "") in {
+            "",
+            "completed",
+        }:
             summary = str(row.get("output_summary") or row.get("summary") or "").strip()
             if re.search(r"(?im)^\s*(?:FINAL_ARTIFACT|ARTIFACT)\s*:", summary):
                 latest = summary
@@ -3295,14 +3320,19 @@ def _workflow_state_user_fallback_summary(state: Mapping[str, Any]) -> str:
     station_catalog = state.get("station_catalog")
     if not isinstance(acquisition, Mapping):
         return ""
-    if acquisition.get("status") != "metadata_only" or acquisition.get("analysis_ready") is not False:
+    if (
+        acquisition.get("status") != "metadata_only"
+        or acquisition.get("analysis_ready") is not False
+    ):
         return ""
 
     lines: list[str] = []
     metadata_path = str(acquisition.get("metadata_path") or "").strip()
     source_url = str(acquisition.get("source_url") or "").strip()
     blocker = str(acquisition.get("blocker") or "").strip()
-    lines.append("Staged EarthScope station metadata, but no analysis-ready station time-series CSV was staged.")
+    lines.append(
+        "Staged EarthScope station metadata, but no analysis-ready station time-series CSV was staged."
+    )
     if metadata_path:
         lines.append(f"Metadata CSV: `{metadata_path}`")
     if source_url:
@@ -3322,14 +3352,15 @@ def _workflow_state_user_fallback_summary(state: Mapping[str, Any]) -> str:
                     lat_suffix = "N" if lat_value >= 0 else "S"
                     lon_suffix = "E" if lon_value >= 0 else "W"
                     center_text = (
-                        f" around {abs(lat_value):g} {lat_suffix}, "
-                        f"{abs(lon_value):g} {lon_suffix}"
+                        f" around {abs(lat_value):g} {lat_suffix}, {abs(lon_value):g} {lon_suffix}"
                     )
                 except (TypeError, ValueError):
                     center_text = f" around {lat}, {lon}"
         if candidate_count is not None:
             radius_text = f" within {radius_km} km" if radius_km is not None else ""
-            lines.append(f"Station metadata found {candidate_count} nearby station candidates{radius_text}{center_text}.")
+            lines.append(
+                f"Station metadata found {candidate_count} nearby station candidates{radius_text}{center_text}."
+            )
         stations = station_catalog.get("stations")
         if isinstance(stations, list) and stations:
             station_ids = [
@@ -3338,19 +3369,31 @@ def _workflow_state_user_fallback_summary(state: Mapping[str, Any]) -> str:
                 if isinstance(station, Mapping) and str(station.get("station") or "").strip()
             ][:5]
             if station_ids:
-                lines.append("Nearest station candidates searched/considered: " + ", ".join(station_ids) + ".")
+                lines.append(
+                    "Nearest station candidates searched/considered: "
+                    + ", ".join(station_ids)
+                    + "."
+                )
     if isinstance(resource_discovery, Mapping):
         searched = resource_discovery.get("searched_station_ids")
         if isinstance(searched, list) and searched:
             station_ids = [str(item).strip() for item in searched if str(item).strip()]
             if station_ids:
-                lines.append("Station-specific NDP searches were attempted for: " + ", ".join(station_ids) + ".")
+                lines.append(
+                    "Station-specific NDP searches were attempted for: "
+                    + ", ".join(station_ids)
+                    + "."
+                )
         status = str(resource_discovery.get("status") or "").strip()
         if status == "search_exhausted":
-            lines.append("Resource discovery status: search exhausted for the ranked nearby station set.")
+            lines.append(
+                "Resource discovery status: search exhausted for the ranked nearby station set."
+            )
     if blocker:
         lines.append(f"Current blocker: {blocker}")
-    lines.append("No GNSS profiling or visualization was run because acquisition remained metadata-only.")
+    lines.append(
+        "No GNSS profiling or visualization was run because acquisition remained metadata-only."
+    )
     return "\n".join(lines)
 
 
@@ -3360,10 +3403,7 @@ def _positive_ndp_workflow_state_user_summary(state: Mapping[str, Any]) -> str:
     acquisition = state.get("acquisition")
     if not isinstance(acquisition, Mapping):
         return ""
-    if (
-        acquisition.get("status") != "staged"
-        or acquisition.get("analysis_ready") is not True
-    ):
+    if acquisition.get("status") != "staged" or acquisition.get("analysis_ready") is not True:
         return ""
     local_path = str(acquisition.get("local_path") or acquisition.get("path") or "").strip()
     if not local_path:
@@ -3388,9 +3428,7 @@ def _positive_ndp_workflow_state_user_summary(state: Mapping[str, Any]) -> str:
     station_id = _station_id_from_station_csv_state(acquisition, resource_candidate)
     station_match = _station_catalog_match_for_candidate(station_catalog, station_id)
     source_url = str(
-        acquisition.get("source_url")
-        or resource_candidate.get("resource_url")
-        or ""
+        acquisition.get("source_url") or resource_candidate.get("resource_url") or ""
     ).strip()
     plot_path = str(
         visualization.get("path")
@@ -3519,7 +3557,10 @@ _UNSUPPORTED_SCAN_LIMITED_FINAL_ANSWER_PATTERNS = (
     re.compile(r"\bcontinuous\s+time\b", re.IGNORECASE),
     re.compile(r"\bcontinuous\s+time[-\s]*series\b", re.IGNORECASE),
     re.compile(r"\b(?:low|high)[^.\n]*(?:consistent|quality|suitability|noise)\b", re.IGNORECASE),
-    re.compile(r"\b(?:excellent|high-quality|good data|ready for deformation|suitable for deformation)\b", re.IGNORECASE),
+    re.compile(
+        r"\b(?:excellent|high-quality|good data|ready for deformation|suitable for deformation)\b",
+        re.IGNORECASE,
+    ),
     re.compile(r"\bcovers\s*>\s*\d+\s*%\s+of\s+GNSS\s+stations\b", re.IGNORECASE),
 )
 
@@ -3530,7 +3571,9 @@ def _ndp_answer_has_unsupported_scan_limited_claims(
 ) -> bool:
     if not answer.strip() or not _profile_has_scan_limited_scope(state):
         return False
-    return any(pattern.search(answer) for pattern in _UNSUPPORTED_SCAN_LIMITED_FINAL_ANSWER_PATTERNS)
+    return any(
+        pattern.search(answer) for pattern in _UNSUPPORTED_SCAN_LIMITED_FINAL_ANSWER_PATTERNS
+    )
 
 
 def _positive_ndp_workflow_state_final_answer_fallback(
@@ -3712,7 +3755,9 @@ def _infer_ndp_workflow_state_from_tool_evidence(output: str) -> dict[str, Any]:
     if resource_key in _EARTHSCOPE_METADATA_RESOURCE_NAMES or any(
         name in lowered for name in _EARTHSCOPE_METADATA_RESOURCE_NAMES
     ):
-        metadata_path = path if Path(path).name.casefold() in _EARTHSCOPE_METADATA_RESOURCE_NAMES else ""
+        metadata_path = (
+            path if Path(path).name.casefold() in _EARTHSCOPE_METADATA_RESOURCE_NAMES else ""
+        )
         return {
             "catalog": {"status": "metadata_found"},
             "resource_candidate": {
@@ -3731,15 +3776,12 @@ def _infer_ndp_workflow_state_from_tool_evidence(output: str) -> dict[str, Any]:
             },
         }
     if (
-        (
-            '"staged": true' in lowered
-            or "staged csv" in lowered
-            or "staged file path" in lowered
-            or "csv (staged)" in lowered
-            or "selected csv (staged)" in lowered
-        )
-        and path.endswith(".csv")
-    ):
+        '"staged": true' in lowered
+        or "staged csv" in lowered
+        or "staged file path" in lowered
+        or "csv (staged)" in lowered
+        or "selected csv (staged)" in lowered
+    ) and path.endswith(".csv"):
         return {
             "resource_candidate": {
                 "status": "selected",
@@ -3878,7 +3920,10 @@ def _search_datasets_state_from_mapping(value: Mapping[str, Any]) -> dict[str, A
             search_terms = coverage.get("search_terms")
             if resource_format or (
                 isinstance(search_terms, list)
-                and any(term not in {"EarthScope", "GNSS", "GPS", "CSV", "raw_csv"} for term in map(str, search_terms))
+                and any(
+                    term not in {"EarthScope", "GNSS", "GPS", "CSV", "raw_csv"}
+                    for term in map(str, search_terms)
+                )
             ):
                 reason = str(coverage.get("next_action") or "").strip() or (
                     "Zero-result constrained catalog search is not enough to prove "
@@ -4023,11 +4068,16 @@ def _search_call_is_station_resource_search(
         if domain == "earthscope_gnss" and isinstance(search_terms, list):
             normalized_terms = {str(term).strip().casefold() for term in search_terms}
             if {"earthscope", "csv"}.issubset(normalized_terms) and (
-                "gnss" in normalized_terms or "gps" in normalized_terms or "raw_csv" in normalized_terms
+                "gnss" in normalized_terms
+                or "gps" in normalized_terms
+                or "raw_csv" in normalized_terms
             ):
                 return True
     text = _text_for_tool_evidence({"args": args, "result": result}).upper()
-    return any(re.search(rf"(?<![A-Z0-9]){re.escape(station)}(?![A-Z0-9])", text) for station in station_ids)
+    return any(
+        re.search(rf"(?<![A-Z0-9]){re.escape(station)}(?![A-Z0-9])", text)
+        for station in station_ids
+    )
 
 
 def _station_resource_search_state_from_rows(
@@ -4042,7 +4092,9 @@ def _station_resource_search_state_from_rows(
         isinstance(candidate, Mapping)
         and str(candidate.get("status") or "") in {"selected", "candidate_found", "resource_found"}
         and str(candidate.get("resource_url") or "").lower().endswith(".csv")
-        and Path(str(candidate.get("resource_name") or candidate.get("resource_url") or "")).name.casefold()
+        and Path(
+            str(candidate.get("resource_name") or candidate.get("resource_url") or "")
+        ).name.casefold()
         not in _EARTHSCOPE_METADATA_RESOURCE_NAMES
     ):
         candidate_station_id = _station_id_from_station_csv_state(
@@ -4080,7 +4132,9 @@ def _station_resource_search_state_from_rows(
             station_id=station_id,
         ):
             continue
-        search_terms = tuple(str(term).strip().casefold() for term in args.get("search_terms") or [])
+        search_terms = tuple(
+            str(term).strip().casefold() for term in args.get("search_terms") or []
+        )
         attempt_key = "|".join(
             (
                 station_id or "",
@@ -4124,7 +4178,9 @@ def _station_resource_search_state_from_rows(
                 "station_id": station_id,
                 "args": dict(args),
                 "result_count": result.get("count", result.get("total_found", 0)),
-                "status": "off_region_candidate_ignored" if off_region_candidate else "no_station_csv_found",
+                "status": "off_region_candidate_ignored"
+                if off_region_candidate
+                else "no_station_csv_found",
                 "off_region_candidate_station_id": off_region_candidate,
             }
         )
@@ -4140,18 +4196,20 @@ def _station_resource_search_state_from_rows(
                 "searched_station_ids": searched_station_ids,
                 "search_attempt_count": len(attempts),
                 "remaining_station_ids": [
-                    station for station in station_ids[:required_station_count] if station not in searched_station_ids
+                    station
+                    for station in station_ids[:required_station_count]
+                    if station not in searched_station_ids
                 ],
                 "reason": "station-specific resource searches have not covered the ranked station candidates yet",
             }
         }
         if duplicate_attempt_count:
-            resource_state["resource_discovery"][
-                "duplicate_search_attempt_count"
-            ] = duplicate_attempt_count
-            resource_state["resource_discovery"][
-                "trace_quality"
-            ] = "repeated_station_resource_search"
+            resource_state["resource_discovery"]["duplicate_search_attempt_count"] = (
+                duplicate_attempt_count
+            )
+            resource_state["resource_discovery"]["trace_quality"] = (
+                "repeated_station_resource_search"
+            )
         return resource_state
 
     blocker = (
@@ -4182,18 +4240,13 @@ def _station_catalog_state_from_mapping(value: Mapping[str, Any]) -> dict[str, A
     meta = value.get("_meta")
     meta_tool = str(meta.get("tool") or "") if isinstance(meta, Mapping) else ""
     stations = value.get("stations")
-    looks_like_station_filter = (
-        meta_tool == "filter_earthscope_station_catalog"
-        or (
-            isinstance(stations, list)
-            and isinstance(value.get("center"), Mapping)
-            and value.get("radius_km") is not None
-            and any(
-                isinstance(station, Mapping)
-                and "station" in station
-                and "distance_km" in station
-                for station in stations[:5]
-            )
+    looks_like_station_filter = meta_tool == "filter_earthscope_station_catalog" or (
+        isinstance(stations, list)
+        and isinstance(value.get("center"), Mapping)
+        and value.get("radius_km") is not None
+        and any(
+            isinstance(station, Mapping) and "station" in station and "distance_km" in station
+            for station in stations[:5]
         )
     )
     if not looks_like_station_filter or not isinstance(stations, list):
@@ -4682,10 +4735,7 @@ def _workflow_status_rank(section: str, value: Mapping[str, Any]) -> int:
 
 
 def _normalize_workflow_state_section(section: str, value: Mapping[str, Any]) -> dict[str, Any]:
-    normalized = {
-        str(k): _normalize_workflow_state_scalar(str(k), v)
-        for k, v in value.items()
-    }
+    normalized = {str(k): _normalize_workflow_state_scalar(str(k), v) for k, v in value.items()}
     if section != "acquisition":
         return normalized
     status = str(normalized.get("status") or "").strip().lower()
@@ -4743,12 +4793,15 @@ def _sanitize_geospatial_workflow_state(state: dict[str, Any]) -> None:
 
 def _event_catalog_state_requires_capability_blocker(value: Mapping[str, Any]) -> bool:
     status = str(value.get("status") or "").strip().casefold()
-    resource_status = str(value.get("resource_status") or value.get("event_catalog_resource_status") or "").strip().casefold()
+    resource_status = (
+        str(value.get("resource_status") or value.get("event_catalog_resource_status") or "")
+        .strip()
+        .casefold()
+    )
     if status == "metadata_found" and resource_status in {"missing", "unavailable", "blocked"}:
         return True
     reason = " ".join(
-        str(value.get(key) or "")
-        for key in ("reason", "blocker", "description", "message")
+        str(value.get(key) or "") for key in ("reason", "blocker", "description", "message")
     ).casefold()
     if status in {"blocked", "missing", "unavailable", "partial"} and any(
         token in reason
@@ -4775,7 +4828,9 @@ def _sanitize_event_context_workflow_state(state: dict[str, Any]) -> None:
 
     for key in ("event_catalog", "event_catalog_capability"):
         value = state.get(key)
-        if not isinstance(value, Mapping) or not _event_catalog_state_requires_capability_blocker(value):
+        if not isinstance(value, Mapping) or not _event_catalog_state_requires_capability_blocker(
+            value
+        ):
             continue
         state["event_context"] = _event_context_capability_blocker_state()
         state.pop(key, None)
@@ -4804,7 +4859,9 @@ def _mapping_has_explicit_quality_criteria(value: Mapping[str, Any]) -> bool:
         "noise_criteria",
         "fitness_criteria",
     }
-    return any(key in value and _value_has_semantic_content(value.get(key)) for key in criteria_keys)
+    return any(
+        key in value and _value_has_semantic_content(value.get(key)) for key in criteria_keys
+    )
 
 
 def _sanitize_station_quality_mapping(value: dict[str, Any], *, profile_scan_limited: bool) -> None:
@@ -4855,7 +4912,9 @@ def _sanitize_scan_limited_workflow_state(state: dict[str, Any]) -> None:
         if isinstance(nested_station, dict):
             _sanitize_station_quality_mapping(nested_station, profile_scan_limited=True)
         nested_quality = assessment.get("data_quality")
-        if isinstance(nested_quality, dict) and not _mapping_has_explicit_quality_criteria(assessment):
+        if isinstance(nested_quality, dict) and not _mapping_has_explicit_quality_criteria(
+            assessment
+        ):
             for key in (
                 "cadence",
                 "cadence_estimated",
@@ -5037,7 +5096,10 @@ def _requires_station_geographic_provenance(state: Mapping[str, Any]) -> bool:
     if isinstance(state.get("station_catalog"), Mapping):
         return True
     selected_station = state.get("selected_station")
-    if isinstance(selected_station, Mapping) and str(selected_station.get("csv_path") or "").strip():
+    if (
+        isinstance(selected_station, Mapping)
+        and str(selected_station.get("csv_path") or "").strip()
+    ):
         return True
     if str(state.get("type") or "").strip().lower() == "geospatial" and isinstance(
         state.get("region"),
@@ -5191,8 +5253,7 @@ def _reconcile_workflow_state(state: dict[str, Any]) -> None:
     has_candidate_url = candidate_url.lower().startswith(("http://", "https://"))
     if isinstance(candidate_urls, list | tuple):
         has_candidate_url = has_candidate_url or any(
-            str(url).strip().lower().startswith(("http://", "https://"))
-            for url in candidate_urls
+            str(url).strip().lower().startswith(("http://", "https://")) for url in candidate_urls
         )
     if not has_candidate_url:
         return
@@ -5469,74 +5530,6 @@ def _infer_workflow_state_from_tool_call_row(row: Mapping[str, Any]) -> dict[str
     name = str(row.get("name") or "").strip()
     args = row.get("args")
     result = row.get("result")
-
-    def _decode_geo(value: Any) -> Any:
-        if isinstance(value, str):
-            with suppress(json.JSONDecodeError, TypeError):
-                return json.loads(value)
-        return value
-
-    # Geo tools: ground typed state in the actual tool result so it does not
-    # depend on the (small) model re-emitting it. Additive + scoped by tool
-    # name; EarthScope never calls these tools, so this cannot regress it.
-    if name == "geospatial_bounding_box":
-        decoded = _decode_geo(result)
-        bbox = decoded.get("bbox") if isinstance(decoded, Mapping) else None
-        if (
-            isinstance(bbox, list)
-            and len(bbox) == 4
-            and all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in bbox)
-        ):
-            return {"region": [float(v) for v in bbox]}
-        return {}
-    if name == "geospatial_points_in_polygons":
-        # Ground the overlap DATA from the tool (counts + which monitors matched).
-        # The impact DECISION (present? which fire? who is worst affected?) is the
-        # analysis expert's reasoning over this data — not made here.
-        decoded = _decode_geo(result)
-        if isinstance(decoded, Mapping) and "matched_count" in decoded:
-            matched = decoded.get("matched") if isinstance(decoded.get("matched"), list) else []
-            monitors = []
-            for mm in matched[:10]:
-                props = mm.get("properties") if isinstance(mm, Mapping) else {}
-                props = props if isinstance(props, Mapping) else {}
-                monitors.append({
-                    "name": props.get("name") or props.get("label") or props.get("SiteName")
-                            or props.get("AQSID") or f"monitor_{mm.get('index')}",
-                    "aqi": props.get("aqi") or props.get("AQI") or props.get("OZONEPM_AQI"),
-                })
-            return {
-                "impact_overlap": {
-                    "monitors_under_smoke": int(decoded.get("matched_count") or 0),
-                    "monitors_total": int(decoded.get("points_total") or 0),
-                    "monitors": monitors,
-                }
-            }
-        return {}
-
-    # Wildfire acquisition grounding: record ONLY which layer files were saved
-    # and their feature counts (tool DATA). The agent chooses which fire matters,
-    # derives the region (via the bounding_box tool), and judges impact — the
-    # runtime does not select fires, scope regions, or decide impact here.
-    # Scoped to ndp_query_arcgis_features (EarthScope uses ndp_stage_resource).
-    if name == "ndp_query_arcgis_features":
-        decoded = _decode_geo(result)
-        if not isinstance(decoded, Mapping) or decoded.get("ok") is False or "error" in decoded:
-            return {}
-        src = str(decoded.get("source_url") or "").lower()
-        feats = decoded.get("features") if isinstance(decoded.get("features"), list) else []
-        out_path = decoded.get("output_path")
-        count = int(decoded.get("feature_count") or 0)
-        if not out_path:
-            return {}
-        if any(tok in src for tok in ("perimeter", "wfigs", "fire")):
-            return {"acquisition": {"fire_path": out_path, "fire_features": count}}
-        if "smoke" in src:
-            return {"acquisition": {"smoke_path": out_path, "smoke_present": bool(feats) or count > 0}}
-        if any(tok in src for tok in ("airnow", "monitor", "air_now", "aqi")):
-            return {"acquisition": {"monitors_path": out_path, "monitors_found": count}}
-        return {}
-
     if name == "ndp_filter_earthscope_station_catalog":
         for text in _tool_evidence_texts(result):
             state = _infer_ndp_station_catalog_state_from_tool_evidence(text)
@@ -5562,22 +5555,19 @@ def _infer_workflow_state_from_tool_call_row(row: Mapping[str, Any]) -> dict[str
         return {}
 
     path = str(
-        result.get("path")
-        or result.get("local_path")
-        or result.get("filepath")
-        or ""
+        result.get("path") or result.get("local_path") or result.get("filepath") or ""
     ).strip()
     if not path.endswith(".csv"):
         return {}
     resource_name = str(
-        result.get("resource_name")
-        or args.get("resource_name")
-        or Path(path).name
+        result.get("resource_name") or args.get("resource_name") or Path(path).name
     ).strip()
     dataset_identifier = str(args.get("dataset_identifier") or "").strip()
     dataset_id = str(
         result.get("dataset_id")
-        or (dataset_identifier if not dataset_identifier.startswith(("http://", "https://")) else "")
+        or (
+            dataset_identifier if not dataset_identifier.startswith(("http://", "https://")) else ""
+        )
     ).strip()
     source_url = str(
         result.get("source_url")
@@ -5832,11 +5822,7 @@ def _prior_staged_ndp_resource_result(
         dataset_id = str(resource_candidate.get("dataset_id") or "").strip()
         dataset_name = str(resource_candidate.get("dataset_name") or "").strip()
         selected_url = str(resource_candidate.get("resource_url") or source_url).strip()
-    expected_names = {
-        value.casefold()
-        for value in (resource_name, Path(local_path).name)
-        if value
-    }
+    expected_names = {value.casefold() for value in (resource_name, Path(local_path).name) if value}
     requested_name = str(args.get("resource_name") or "").strip().casefold()
     requested_identifier = str(args.get("dataset_identifier") or "").strip()
     requested_index = args.get("resource_index")
@@ -6037,9 +6023,7 @@ def _dynamic_agent_runtime_provenance(
         "model": {
             "provider_id": provider_id,
             "model_id": model_id,
-            "provider_source": (
-                "agent_default" if agent_def.default_provider else "global_active"
-            ),
+            "provider_source": ("agent_default" if agent_def.default_provider else "global_active"),
             "model_source": "agent_default" if agent_def.default_model else "global_active",
             "fallback_to_global": not (agent_def.default_provider and agent_def.default_model),
         },
@@ -6055,7 +6039,9 @@ def _dynamic_agent_runtime_provenance(
     overlay = agent_def.metadata.get("agent_blueprint_overlay")
     if isinstance(overlay, Mapping):
         payload["agent_overlay"] = dict(overlay)
-        fields = set(overlay.get("fields") or []) if isinstance(overlay.get("fields"), list) else set()
+        fields = (
+            set(overlay.get("fields") or []) if isinstance(overlay.get("fields"), list) else set()
+        )
         if "system_prompt" in fields:
             payload["prompt"]["source"] = "session_agent_overlay"
     if agent_def.source == "expert_pack":
@@ -6567,7 +6553,9 @@ def _local_sac_paths_from_text(text: str) -> list[str]:
 
     paths: list[str] = []
     seen: set[str] = set()
-    for match in re.finditer(r"(?P<path>(?:~|/)[^\s`'\"<>)\]]+?\.sac)\b", text, flags=re.IGNORECASE):
+    for match in re.finditer(
+        r"(?P<path>(?:~|/)[^\s`'\"<>)\]]+?\.sac)\b", text, flags=re.IGNORECASE
+    ):
         path = match.group("path").strip().rstrip(".,;:")
         if path not in seen:
             seen.add(path)
@@ -6620,7 +6608,9 @@ def _continuation_contract_handoffs(
     for raw_contract in contracts:
         if not isinstance(raw_contract, Mapping):
             continue
-        target = str(raw_contract.get("next_expert") or raw_contract.get("delegate_to") or "").strip()
+        target = str(
+            raw_contract.get("next_expert") or raw_contract.get("delegate_to") or ""
+        ).strip()
         raw_flags = raw_contract.get("flags")
         flags: dict[str, Any] = dict(raw_flags) if isinstance(raw_flags, Mapping) else {}
         if not target or target not in declared_child_ids:
@@ -6653,7 +6643,9 @@ def _continuation_contract_handoffs(
             continue
         if output_terms and not _contract_terms_match(output_text, output_terms, match_mode):
             continue
-        if state_predicates and not _state_predicates_match(workflow_state, state_predicates, match_mode):
+        if state_predicates and not _state_predicates_match(
+            workflow_state, state_predicates, match_mode
+        ):
             continue
         action = str(raw_contract.get("next_action") or "").strip()
         prompt = action or source_text
@@ -6703,12 +6695,12 @@ def _continuation_contract_handoff_rows(
     for row in _iter_delegation_return_rows(rows):
         summary = str(row.get("output_summary") or row.get("summary") or "").strip()
         contract = (
-            _delegation_continuation_contract(summary)
-            if allow_legacy_text_continuation
-            else {}
+            _delegation_continuation_contract(summary) if allow_legacy_text_continuation else {}
         )
         origin = str(row.get("agent_id") or row.get("delegate_to") or "").strip()
-        origin_agent = _resolve_runtime_dynamic_agent(app, origin, session_id=session_id) if origin else None
+        origin_agent = (
+            _resolve_runtime_dynamic_agent(app, origin, session_id=session_id) if origin else None
+        )
         if not contract.get("next_expert"):
             contract = _delegation_continuation_policy_contract(origin_agent, summary)
         target_id = str(contract.get("next_expert") or "").strip()
@@ -7534,9 +7526,7 @@ def _invalid_tool_selection_from_exception(
         r"[`'\"]([^`'\"]+)[`'\"]\s+is\s+not\s+one\s+of\s+\(",
         r"invalid\s+tool\s+[`'\"]?([^`'\"\s,\)]+)",
     ):
-        candidates.extend(
-            match.group(1).strip() for match in re.finditer(pattern, message, re.I)
-        )
+        candidates.extend(match.group(1).strip() for match in re.finditer(pattern, message, re.I))
     for candidate in candidates:
         candidate = candidate.rstrip(".,;:")
         if candidate and candidate not in allowed:
@@ -7621,6 +7611,96 @@ def _blueprint_module_kind(agent_def: "AgentDef") -> str:
     return kind
 
 
+_SCALAR_FIELD_TYPES: dict[str, Any] = {
+    "str": str,
+    "string": str,
+    "text": str,
+    "int": int,
+    "integer": int,
+    "float": float,
+    "number": float,
+    "bool": bool,
+    "boolean": bool,
+    "dict": dict[str, Any],
+    "object": dict[str, Any],
+    "json": dict[str, Any],
+    "list": list[str],
+    "array": list[str],
+}
+
+
+def _is_optional_annotation(annotation: Any) -> bool:
+    """True when ``annotation`` is ``Optional[X]`` / ``X | None``."""
+    import typing  # noqa: PLC0415
+
+    origin = typing.get_origin(annotation)
+    union_types: tuple[Any, ...] = (typing.Union,)
+    try:  # py3.10+ ``X | None`` uses types.UnionType
+        import types as _types  # noqa: PLC0415
+
+        union_types = (typing.Union, _types.UnionType)
+    except Exception:  # noqa: BLE001 - older interpreters
+        pass
+    return origin in union_types and type(None) in typing.get_args(annotation)
+
+
+def _parse_field_annotation(spec: Any, *, model_name: str) -> Any:
+    """Map a pack ``signature`` field 'type' DSL to a real Python annotation.
+
+    Supports scalars (``str``/``int``/``float``/``bool``), ``dict``/``object``/
+    ``json`` (generic JSON object), ``list[...]``/``array[...]``,
+    ``optional[...]``, ``Literal[...]`` (quoted or bare members), and a nested
+    ``object`` with a ``fields:`` sub-mapping (compiled to a Pydantic model). This
+    lets a marketplace expert declare typed outputs (e.g. ``region: list[float]``,
+    ``status: Literal["staged","blocked"]``) that the DSPy adapter forces, parses,
+    and validates -- replacing post-hoc regex inference.
+    """
+    # nested object with declared sub-fields -> generated Pydantic model
+    if isinstance(spec, Mapping) and isinstance(spec.get("fields"), Mapping):
+        from pydantic import BaseModel, create_model  # noqa: PLC0415
+
+        fields: dict[str, Any] = {}
+        for fname, fspec in spec["fields"].items():
+            ann = _parse_field_annotation(
+                fspec if isinstance(fspec, Mapping) else {"type": fspec},
+                model_name=f"{model_name}_{fname}",
+            )
+            default = None if _is_optional_annotation(ann) else ...
+            fields[str(fname)] = (ann, default)
+        return create_model(_sanitize_model_name(model_name), __base__=BaseModel, **fields)
+
+    raw = spec.get("type") if isinstance(spec, Mapping) else spec
+    if raw in (None, ""):
+        return str
+    text = str(raw).strip()
+    low = text.lower()
+
+    match = re.fullmatch(r"optional\[(.+)\]", low)
+    if match:
+        return Optional[_parse_field_annotation({"type": match.group(1)}, model_name=model_name)]
+
+    match = re.fullmatch(r"(?:list|array)\[(.+)\]", low)
+    if match:
+        return list[_parse_field_annotation({"type": match.group(1)}, model_name=model_name)]
+
+    match = re.fullmatch(r"literal\[(.*)\]", text, flags=re.IGNORECASE)
+    if match:
+        members = re.findall(r"\"([^\"]*)\"|'([^']*)'|([^,\s]+)", match.group(1))
+        values = tuple(a or b or c for (a, b, c) in members if (a or b or c))
+        if not values:
+            raise ValueError(f"empty Literal in signature field type: {text!r}")
+        return Literal[values]  # type: ignore[valid-type]
+
+    return _SCALAR_FIELD_TYPES.get(low, str)
+
+
+def _sanitize_model_name(name: str) -> str:
+    cleaned = re.sub(r"[^0-9a-zA-Z_]", "_", str(name)).strip("_") or "Field"
+    if cleaned[0].isdigit():
+        cleaned = f"F_{cleaned}"
+    return f"{cleaned}_model"
+
+
 def _blueprint_runtime_signature(agent_def: "AgentDef") -> Any:
     """Build a DSPy Signature from a blueprint's ordered signature fields."""
 
@@ -7629,27 +7709,6 @@ def _blueprint_runtime_signature(agent_def: "AgentDef") -> Any:
     raw_signature = agent_def.signature if isinstance(agent_def.signature, Mapping) else {}
     raw_inputs = raw_signature.get("inputs") or raw_signature.get("input") or {}
     raw_outputs = raw_signature.get("outputs") or raw_signature.get("output") or {}
-
-    def _field_type(value: Any) -> Any:
-        if value in (None, ""):
-            return str
-        raw = str(value).strip().lower()
-        return {
-            "str": str,
-            "string": str,
-            "text": str,
-            "int": int,
-            "integer": int,
-            "float": float,
-            "number": float,
-            "bool": bool,
-            "boolean": bool,
-            "dict": dict,
-            "object": dict,
-            "json": dict,
-            "list": list,
-            "array": list,
-        }.get(raw, str)
 
     def _field_declaration(name: str, raw: Any) -> tuple[str, str, Any]:
         if isinstance(raw, Mapping):
@@ -7660,7 +7719,11 @@ def _blueprint_runtime_signature(agent_def: "AgentDef") -> Any:
                 or raw.get("help")
                 or name
             )
-            return name, desc, _field_type(raw.get("type") or raw.get("dtype"))
+            # Accept either {type: "..."} or {type, fields: {...}} for nested objects.
+            spec = dict(raw)
+            if "dtype" in spec and "type" not in spec:
+                spec["type"] = spec["dtype"]
+            return name, desc, _parse_field_annotation(spec, model_name=f"{agent_def.id}_{name}")
         return name, str(raw or name), str
 
     def _ordered_fields(
@@ -7669,9 +7732,7 @@ def _blueprint_runtime_signature(agent_def: "AgentDef") -> Any:
     ) -> list[tuple[str, str, Any]]:
         if isinstance(value, Mapping):
             mapping_rows = [
-                _field_declaration(str(k).strip(), v)
-                for k, v in value.items()
-                if str(k).strip()
+                _field_declaration(str(k).strip(), v) for k, v in value.items() if str(k).strip()
             ]
             return mapping_rows or defaults
         if isinstance(value, list):
@@ -7693,7 +7754,9 @@ def _blueprint_runtime_signature(agent_def: "AgentDef") -> Any:
         [("system_prompt", "Runtime instructions", str), ("question", "User request", str)],
     )
     outputs = _ordered_fields(raw_outputs, [("answer", "User-facing answer", str)])
-    structured = agent_def.structured_outputs if isinstance(agent_def.structured_outputs, Mapping) else {}
+    structured = (
+        agent_def.structured_outputs if isinstance(agent_def.structured_outputs, Mapping) else {}
+    )
 
     def _structured_output_enabled(value: Any) -> bool:
         if isinstance(value, bool):
@@ -7716,7 +7779,9 @@ def _blueprint_runtime_signature(agent_def: "AgentDef") -> Any:
         if enabled and name not in {field for field, _, _ in outputs}:
             outputs.append((name, desc, str))
 
-    namespace: dict[str, Any] = {"__doc__": f"DSPy signature for Agent Blueprint expert {agent_def.id}."}
+    namespace: dict[str, Any] = {
+        "__doc__": f"DSPy signature for Agent Blueprint expert {agent_def.id}."
+    }
     annotations: dict[str, Any] = {}
     for name, desc, field_type in inputs:
         annotations[name] = field_type
@@ -7725,7 +7790,11 @@ def _blueprint_runtime_signature(agent_def: "AgentDef") -> Any:
         annotations[name] = field_type
         namespace[name] = dspy.OutputField(desc=desc)
     namespace["__annotations__"] = annotations
-    return type(f"{agent_def.id.title().replace('-', '').replace('_', '')}BlueprintSignature", (dspy.Signature,), namespace)
+    return type(
+        f"{agent_def.id.title().replace('-', '').replace('_', '')}BlueprintSignature",
+        (dspy.Signature,),
+        namespace,
+    )
 
 
 def _prediction_structured_metadata(result: Any) -> dict[str, Any]:
@@ -7778,16 +7847,15 @@ def _completed_row_contract_evidence(row: Mapping[str, Any]) -> str:
 
     parts: list[str] = []
     summary = str(
-        row.get("return_output_summary")
-        or row.get("output_summary")
-        or row.get("summary")
-        or ""
+        row.get("return_output_summary") or row.get("output_summary") or row.get("summary") or ""
     ).strip()
     if summary:
         parts.append(summary)
     workflow_state = row.get("workflow_state")
     if isinstance(workflow_state, Mapping) and workflow_state:
-        parts.append(f"CLIO durable typed workflow state:\n{_workflow_state_payload(workflow_state)}")
+        parts.append(
+            f"CLIO durable typed workflow state:\n{_workflow_state_payload(workflow_state)}"
+        )
     return "\n\n".join(parts).strip()
 
 
@@ -7883,9 +7951,7 @@ def _build_child_expert_tool(base_agent: Any, parent: "AgentDef", child: "AgentD
             if active_completions is None:
                 active_completions = []
             completed_child_ids = {
-                row["agent_id"]
-                for row in active_completions
-                if row.get("agent_id")
+                row["agent_id"] for row in active_completions if row.get("agent_id")
             }
             completed_outputs = [
                 evidence
@@ -8027,11 +8093,7 @@ def _build_child_expert_tool(base_agent: Any, parent: "AgentDef", child: "AgentD
             if isinstance(session_rows, list) and len(session_rows) > ledger_start:
                 tools_called = _merge_tool_call_rows(
                     tools_called,
-                    [
-                        dict(row)
-                        for row in session_rows[ledger_start:]
-                        if isinstance(row, Mapping)
-                    ],
+                    [dict(row) for row in session_rows[ledger_start:] if isinstance(row, Mapping)],
                 )
         workflow_state = _workflow_state_from_outputs([output])
         for tool_row in tools_called:
@@ -8047,10 +8109,7 @@ def _build_child_expert_tool(base_agent: Any, parent: "AgentDef", child: "AgentD
         if workflow_state:
             state_block = _workflow_state_payload(workflow_state)
             if state_block not in output:
-                output = (
-                    f"{output.rstrip()}\n\n"
-                    f"CLIO durable typed workflow state:\n{state_block}"
-                )
+                output = f"{output.rstrip()}\n\nCLIO durable typed workflow state:\n{state_block}"
         compact_output = _compact_dynamic_delegation_output(output)
         payload = {
             "agent_id": child.id,
@@ -8099,12 +8158,19 @@ def _build_child_expert_tool(base_agent: Any, parent: "AgentDef", child: "AgentD
 
     safe_child_id = re.sub(r"[^A-Za-z0-9_]+", "_", child.id).strip("_") or "child"
     delegate_child.__name__ = f"delegate_to_{safe_child_id}"
-    delegate_child.__doc__ = f"Run declared child expert {child.id} synchronously and return compact evidence."
+    delegate_child.__doc__ = (
+        f"Run declared child expert {child.id} synchronously and return compact evidence."
+    )
     return dspy.Tool(
         func=delegate_child,
         name=delegate_child.__name__,
         desc=delegate_child.__doc__,
-        args={"question": {"type": "string", "description": f"Specific task for child expert {child.id}."}},
+        args={
+            "question": {
+                "type": "string",
+                "description": f"Specific task for child expert {child.id}.",
+            }
+        },
     )
 
 
@@ -8150,7 +8216,9 @@ def _build_fanout_tool(base_agent: Any, parent: "AgentDef", children: list["Agen
         for child in selected:
             try:
                 runner = _blueprint_runner_for_agent(child)
-                pred = _run_dynamic_agent_compat(runner, base_agent, child, question, session_id, None)
+                pred = _run_dynamic_agent_compat(
+                    runner, base_agent, child, question, session_id, None
+                )
                 results.append(
                     {
                         "agent_id": child.id,
@@ -8213,7 +8281,10 @@ def _build_fanout_tool(base_agent: Any, parent: "AgentDef", children: list["Agen
         name="fanout_to_children",
         desc=fanout_to_children.__doc__,
         args={
-            "question": {"type": "string", "description": "Task to run across selected child experts."},
+            "question": {
+                "type": "string",
+                "description": "Task to run across selected child experts.",
+            },
             "child_ids": {
                 "type": "string",
                 "description": "Optional JSON array or comma-separated declared child expert ids.",
@@ -8259,7 +8330,10 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
             elif self.kind == "chain_of_thought":
                 self.program = dspy.ChainOfThought(self.signature)
             else:
-                tools = [*_dynamic_agent_tools(base_agent, agent_def), *_dynamic_child_expert_tools(base_agent, agent_def)]
+                tools = [
+                    *_dynamic_agent_tools(base_agent, agent_def),
+                    *_dynamic_child_expert_tools(base_agent, agent_def),
+                ]
                 self.tools = tools
                 self.program = dspy.ReAct(
                     self.signature,
@@ -8309,9 +8383,7 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                 if runtime_child_context:
                     if runtime_child_context not in runtime_system_prompt:
                         runtime_system_prompt = "\n\n".join(
-                            part
-                            for part in (runtime_system_prompt, runtime_child_context)
-                            if part
+                            part for part in (runtime_system_prompt, runtime_child_context) if part
                         )
             kwargs = {"question": question}
             if "system_prompt" in self.signature.input_fields:
@@ -8363,12 +8435,14 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                 else None
             )
             try:
-                with dspy.context(lm=create_lm(self.config), adapter=create_chat_adapter(self.config)):
+                with dspy.context(
+                    lm=create_lm(self.config), adapter=create_chat_adapter(self.config)
+                ):
                     try:
                         result = self.program(**kwargs)
                     except _BlueprintTerminalWorkflowState as terminal_exc:
-                        terminal_state = (
-                            terminal_exc.result.get("clio_runtime", {}).get("workflow_state", {})
+                        terminal_state = terminal_exc.result.get("clio_runtime", {}).get(
+                            "workflow_state", {}
                         )
                         workflow_state_text = (
                             _workflow_state_payload(terminal_state)
@@ -8425,9 +8499,7 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                 if blueprint_tool_rows:
                     tools_called = _merge_tool_call_rows(tools_called, blueprint_tool_rows)
                 if not answer:
-                    answer = _tool_agent_empty_answer_fallback(
-                        getattr(result, "trajectory", None)
-                    )
+                    answer = _tool_agent_empty_answer_fallback(getattr(result, "trajectory", None))
                 else:
                     answer = (
                         _tool_agent_contradictory_answer_fallback(
@@ -8600,9 +8672,7 @@ def _build_tool_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> Any
                 )
             answer = str(getattr(result, "answer", "") or "").strip()
             if not answer:
-                answer = _tool_agent_empty_answer_fallback(
-                    getattr(result, "trajectory", None)
-                )
+                answer = _tool_agent_empty_answer_fallback(getattr(result, "trajectory", None))
             else:
                 answer = (
                     _tool_agent_contradictory_answer_fallback(
@@ -8763,9 +8833,7 @@ def _merge_tool_call_rows(
 ) -> list[dict[str, Any]]:
     """Merge tool-call telemetry without dropping richer result evidence."""
 
-    merged: list[dict[str, Any]] = [
-        _normalize_tool_call_row(row) for row in primary_rows if row
-    ]
+    merged: list[dict[str, Any]] = [_normalize_tool_call_row(row) for row in primary_rows if row]
     by_key: dict[tuple[str, str], list[int]] = {}
     by_name_args: dict[tuple[str, str], list[int]] = {}
     for index, row in enumerate(merged):
@@ -8797,11 +8865,7 @@ def _merge_tool_call_rows(
             if key[0] == "__call_id__":
                 candidate_index = index
                 break
-            if (
-                supplemental_has_result
-                and existing_ok is False
-                and supplemental_ok is not False
-            ):
+            if supplemental_has_result and existing_ok is False and supplemental_ok is not False:
                 continue
             if supplemental_has_result and not _tool_call_has_result_evidence(existing):
                 candidate_index = index
@@ -9440,14 +9504,20 @@ async def _run_turn_in_background(
                 sid,
                 _delegated_expert_prompt(row, source_text),
             )
-            target_kind = _blueprint_module_kind(target) if _agent_definition_uses_blueprint_runtime(target) else ""
+            target_kind = (
+                _blueprint_module_kind(target)
+                if _agent_definition_uses_blueprint_runtime(target)
+                else ""
+            )
             execution_mode = (
                 f"blueprint_{target_kind}"
                 if target_kind
                 else ("tool_agent" if target.tools else "prompt_agent")
             )
             is_blueprint_delegation = bool(target_kind)
-            delegation_event_prefix = "blueprint.delegation" if is_blueprint_delegation else "delegation"
+            delegation_event_prefix = (
+                "blueprint.delegation" if is_blueprint_delegation else "delegation"
+            )
             delegation_blueprint = {
                 "pack_id": str(target.metadata.get("pack_id") or ""),
                 "pack_version": str(target.metadata.get("pack_version") or ""),
@@ -9557,9 +9627,7 @@ async def _run_turn_in_background(
                     )
                 if _dynamic_answer_is_delegation_placeholder(output):
                     output = (
-                        _tool_agent_empty_answer_fallback(
-                            getattr(pred_child, "trajectory", None)
-                        )
+                        _tool_agent_empty_answer_fallback(getattr(pred_child, "trajectory", None))
                         or _latest_parent_resumed_output_summary(nested, target.id)
                         or output
                     )
@@ -9772,25 +9840,25 @@ async def _run_turn_in_background(
                     )
                 )
                 failed_row = {
-                        **row,
-                        "agent_id": target.id,
-                        "parent_id": parent_agent.id,
-                        "pack_id": str(target.metadata.get("pack_id") or ""),
-                        "pack_version": str(target.metadata.get("pack_version") or ""),
-                        "provider_id": target.default_provider,
-                        "model_id": target.default_model,
-                        "fallback_warnings": list(target.validation_errors),
-                        "status": "failed",
-                        "stage": "delegate.failed",
-                        "depth": depth,
-                        "duration_ms": int((time.perf_counter() - started_at) * 1000),
-                        "execution_mode": execution_mode,
-                        "error": error_name,
-                        "message": error_message,
-                        "output_summary": output_summary,
-                        "workflow_state": workflow_state,
-                        "tools_called": child_tools_called,
-                    }
+                    **row,
+                    "agent_id": target.id,
+                    "parent_id": parent_agent.id,
+                    "pack_id": str(target.metadata.get("pack_id") or ""),
+                    "pack_version": str(target.metadata.get("pack_version") or ""),
+                    "provider_id": target.default_provider,
+                    "model_id": target.default_model,
+                    "fallback_warnings": list(target.validation_errors),
+                    "status": "failed",
+                    "stage": "delegate.failed",
+                    "depth": depth,
+                    "duration_ms": int((time.perf_counter() - started_at) * 1000),
+                    "execution_mode": execution_mode,
+                    "error": error_name,
+                    "message": error_message,
+                    "output_summary": output_summary,
+                    "workflow_state": workflow_state,
+                    "tools_called": child_tools_called,
+                }
                 _emit_semantic_event(
                     app,
                     sid,
@@ -9869,7 +9937,9 @@ async def _run_turn_in_background(
                 completed_child_ids,
                 completed_child_outputs,
             )
-            executable_rows = [row for row in requested_rows if _should_execute_delegated_handoff(row)]
+            executable_rows = [
+                row for row in requested_rows if _should_execute_delegated_handoff(row)
+            ]
             if not completed_child_ids:
                 start_contract_rows = _continuation_contract_handoffs(
                     parent_agent,
@@ -10066,8 +10136,7 @@ async def _run_turn_in_background(
                 completed_rows_so_far = [
                     row
                     for row in all_rows
-                    if row.get("status") == "completed"
-                    and row.get("stage") == "delegate.completed"
+                    if row.get("status") == "completed" and row.get("stage") == "delegate.completed"
                 ]
                 completed_child_ids = {
                     str(row.get("agent_id") or row.get("delegate_to") or "")
@@ -10280,7 +10349,10 @@ async def _run_turn_in_background(
 
         _refresh_argonne_lm_token(app.state.agent)
 
-        if active_agent_id not in _EXECUTABLE_SESSION_AGENT_IDS or active_agent_id in active_blueprint_agent_ids:
+        if (
+            active_agent_id not in _EXECUTABLE_SESSION_AGENT_IDS
+            or active_agent_id in active_blueprint_agent_ids
+        ):
             prompt_registry_factory = getattr(app.state, "prompt_registry_for_request", None)
             prompt_registry = (
                 prompt_registry_factory(session_id=sid)
@@ -10419,9 +10491,9 @@ async def _run_turn_in_background(
                                 app.state.agent,
                                 dynamic_agent,
                                 enriched_text,
-                            sid,
-                            cancel_requested,
-                        ),
+                                sid,
+                                cancel_requested,
+                            ),
                         ),
                     )
                 _emit_semantic_event(
@@ -10597,7 +10669,11 @@ async def _run_turn_in_background(
             kind_raw = str(ask_user_action.get("kind") or "").strip()
             kind = kind_raw if kind_raw in {"freeform", "choice", "confirmation"} else ""
             if not kind:
-                kind = "choice" if options and not ask_user_action.get("allow_freeform") else "freeform"
+                kind = (
+                    "choice"
+                    if options and not ask_user_action.get("allow_freeform")
+                    else "freeform"
+                )
             question = UserQuestion(
                 id=_new_question_id(),
                 session_id=sid,
@@ -10945,9 +11021,7 @@ async def _run_turn_in_background(
     }
     live_has_expert_handoff = any(p.type == "expert_handoff" for p in final_live_parts)
     live_tool_calls = {
-        p.call_id: p
-        for p in live_assistant_parts
-        if p.type == "tool_call" and p.call_id
+        p.call_id: p for p in live_assistant_parts if p.type == "tool_call" and p.call_id
     }
     enriched_live_part_ids: set[str] = set()
     for part in live_assistant_parts:
@@ -10994,7 +11068,7 @@ async def _run_turn_in_background(
                 execution_path=execution_path,
             )
         )
-    for handoff in ([] if live_has_expert_handoff else expert_handoffs):
+    for handoff in [] if live_has_expert_handoff else expert_handoffs:
         assistant_parts.append(
             Part(
                 id=_new_part_id(),
@@ -11680,9 +11754,7 @@ def _finalize_context_frame(
             frame.setdefault("metadata", {})["turn_error"] = error_info.model_dump(
                 exclude_none=True
             )
-        app.state.bus.publish(
-            Event(type="context.frame.completed", session_id=sid, payload=frame)
-        )
+        app.state.bus.publish(Event(type="context.frame.completed", session_id=sid, payload=frame))
         break
 
 
@@ -12871,11 +12943,7 @@ def _make_tool_observer(app: "FastAPI"):
                 "ui_summary": result_summary,
                 "result_summary": result_summary,
                 **({"error": completion_error} if completion_error else {}),
-                **(
-                    {"result": _bounded_tool_call_result(result)}
-                    if result is not None
-                    else {}
-                ),
+                **({"result": _bounded_tool_call_result(result)} if result is not None else {}),
                 **cancellation_metadata,
             }
             _emit_semantic_event(
@@ -13667,7 +13735,11 @@ def _enrich_with_context_files(app: "FastAPI", sid: str, user_text: str) -> str:
         display_path = row.get("display_path") or row.get("path") or path_str
         if not path_str:
             continue
-        for marker in {f"@{display_path}", f"@{row.get('path') or ''}", f"@{Path(display_path).name}"}:
+        for marker in {
+            f"@{display_path}",
+            f"@{row.get('path') or ''}",
+            f"@{Path(display_path).name}",
+        }:
             if marker != "@":
                 user_text = user_text.replace(marker, display_path)
         mode = row.get("mode") or "read"
@@ -13688,7 +13760,9 @@ def _enrich_with_context_files(app: "FastAPI", sid: str, user_text: str) -> str:
         # in _apply_edit_to_disk, plus mode=plan/architect) still
         # protect against unintended writes.
         if mode == "edit" and not p.exists():
-            blocks.append(f"### Context file: {display_path} (mode=edit, target does not exist yet)")
+            blocks.append(
+                f"### Context file: {display_path} (mode=edit, target does not exist yet)"
+            )
             continue
         if not p.exists():
             raise _context_file_access_error(
@@ -13767,7 +13841,9 @@ def _enrich_with_context_files(app: "FastAPI", sid: str, user_text: str) -> str:
     )
 
 
-def _memory_search_request_from_message(message: "Message", user_text: str) -> dict[str, Any] | None:
+def _memory_search_request_from_message(
+    message: "Message", user_text: str
+) -> dict[str, Any] | None:
     raw = message.metadata.get("memory_search") if isinstance(message.metadata, Mapping) else None
     if raw is None and isinstance(message.metadata, Mapping):
         if not message.metadata.get("include_cross_session_memory"):
@@ -14462,8 +14538,7 @@ def _load_command_files_from_disk(
                 "status": status,
                 "enabled": enabled,
                 "error": str(
-                    meta.get("error")
-                    or ("not_supported" if status == "unsupported" else "")
+                    meta.get("error") or ("not_supported" if status == "unsupported" else "")
                 ),
                 "disabled_reason": disabled_reason,
                 "agent_id": agent_id,
@@ -14486,9 +14561,7 @@ def _load_command_files_from_disk(
                     meta.get("agent-invocable", meta.get("agent_invocable")),
                     False,
                 ),
-                "argument_hint": str(
-                    meta.get("argument-hint") or meta.get("argument_hint") or ""
-                ),
+                "argument_hint": str(meta.get("argument-hint") or meta.get("argument_hint") or ""),
                 "arguments": meta.get("arguments") or [],
                 "prompt_template": body,
                 "prompt_profile": str(
@@ -15025,7 +15098,8 @@ def build_app(
     cors_origins_env = os.environ.get("CLIO_GACT_CORS_ORIGINS", "").strip()
     if cors_origins_env:
         allow_origins: list[str] = (
-            ["*"] if cors_origins_env == "*"
+            ["*"]
+            if cors_origins_env == "*"
             else [o.strip() for o in cors_origins_env.split(",") if o.strip()]
         )
     else:
@@ -15059,10 +15133,13 @@ def build_app(
     # CLIO-BBBBBBBBBB13: per-session pub/sub. POST /messages
     # publishes; /v1/sessions/{sid}/events subscribers consume.
     app.state.bus = EventBus()
-    app.state.semantic_trace_detail_level = os.environ.get(
-        "CLIO_SEMANTIC_TRACE_DETAIL",
-        DEFAULT_DETAIL_LEVEL,
-    ).strip() or DEFAULT_DETAIL_LEVEL
+    app.state.semantic_trace_detail_level = (
+        os.environ.get(
+            "CLIO_SEMANTIC_TRACE_DETAIL",
+            DEFAULT_DETAIL_LEVEL,
+        ).strip()
+        or DEFAULT_DETAIL_LEVEL
+    )
     app.state.semantic_trace_backend = build_trace_backend(
         session_store_path.parent / "semantic_traces"
     )
@@ -15196,9 +15273,7 @@ def build_app(
             )
         else:
             app.state.runtime_hook_registry_metadata = (
-                _current_registry.metadata()
-                if hasattr(_current_registry, "metadata")
-                else {}
+                _current_registry.metadata() if hasattr(_current_registry, "metadata") else {}
             )
     except Exception:  # pragma: no cover - defensive
         app.state.runtime_hook_registry_metadata = {
@@ -15570,17 +15645,25 @@ def build_app(
             active_blueprint_root = active_blueprint_path
             if active_blueprint_root is None and active_blueprint_id:
                 active = next(
-                    (row for row in discover_agent_blueprints(cwd=cwd) if row.id == active_blueprint_id),
+                    (
+                        row
+                        for row in discover_agent_blueprints(cwd=cwd)
+                        if row.id == active_blueprint_id
+                    ),
                     None,
                 )
                 active_blueprint_root = active.root if active is not None else None
             if active_blueprint_root is not None and (active_blueprint_root / "prompts").is_dir():
-                sources.append(PromptSource("session_agent_blueprint", active_blueprint_root / "prompts"))
+                sources.append(
+                    PromptSource("session_agent_blueprint", active_blueprint_root / "prompts")
+                )
         active_pack_path = _active_prompt_pack_path(session_id)
         if active_pack_path is not None and (active_pack_path / "prompts").is_dir():
             sources.append(PromptSource("session_pack", active_pack_path / "prompts"))
         if session_id:
-            sources.append(PromptSource("session", prompt_write_root.parent / "session-prompts" / session_id))
+            sources.append(
+                PromptSource("session", prompt_write_root.parent / "session-prompts" / session_id)
+            )
         return sources
 
     def _prompt_write_root_for_request(
@@ -15667,24 +15750,36 @@ def build_app(
         context = _prompt_render_context(app)
         if session_id or workspace_id:
             try:
-                agents = [row for row in _agent_rows(session_id=session_id, workspace_id=workspace_id) if row.enabled]
+                agents = [
+                    row
+                    for row in _agent_rows(session_id=session_id, workspace_id=workspace_id)
+                    if row.enabled
+                ]
                 by_parent: dict[str, list[AgentDef]] = {}
                 for agent in agents:
                     by_parent.setdefault(agent.parent_id or "", []).append(agent)
 
                 def render_tree(parent_id: str = "", depth: int = 0) -> list[str]:
                     lines: list[str] = []
-                    for agent in sorted(by_parent.get(parent_id, []), key=lambda row: (row.tier, row.id)):
+                    for agent in sorted(
+                        by_parent.get(parent_id, []), key=lambda row: (row.tier, row.id)
+                    ):
                         indent = "  " * depth
                         detail = f" - {agent.description}" if agent.description else ""
                         lines.append(f"{indent}- {agent.id}: {agent.title}{detail}")
                         lines.extend(render_tree(agent.id, depth + 1))
                     return lines
 
-                context["agents.available_tree"] = "\n".join(render_tree()) or "(no enabled experts)"
-                context["agents.available_flat"] = "\n".join(
-                    f"- {agent.id}: {agent.title}" for agent in sorted(agents, key=lambda row: row.id)
-                ) or "(no enabled experts)"
+                context["agents.available_tree"] = (
+                    "\n".join(render_tree()) or "(no enabled experts)"
+                )
+                context["agents.available_flat"] = (
+                    "\n".join(
+                        f"- {agent.id}: {agent.title}"
+                        for agent in sorted(agents, key=lambda row: row.id)
+                    )
+                    or "(no enabled experts)"
+                )
             except Exception:
                 pass
             if session_id:
@@ -15699,7 +15794,9 @@ def build_app(
                         pack_id = str(metadata.get("active_expert_pack_id") or "").strip()
                         blueprint_id = str(metadata.get("active_agent_blueprint_id") or "").strip()
                 context["session.active_pack"] = pack_id or "(no active expert pack)"
-                context["session.active_agent_blueprint"] = blueprint_id or "(no active agent blueprint)"
+                context["session.active_agent_blueprint"] = (
+                    blueprint_id or "(no active agent blueprint)"
+                )
                 try:
                     commands = [
                         f"- {row.get('id')}: {row.get('description') or row.get('title')}"
@@ -15708,7 +15805,9 @@ def build_app(
                             cwd=_command_cwd_for_request(session_id),
                         )
                     ]
-                    context["commands.agent_invocable"] = "\n".join(commands) or "(no agent-invocable commands)"
+                    context["commands.agent_invocable"] = (
+                        "\n".join(commands) or "(no agent-invocable commands)"
+                    )
                 except Exception:
                     pass
         return context
@@ -15732,7 +15831,9 @@ def build_app(
         rows = registry.list()
         payload: dict[str, Any] = {
             "prompts": [asdict(row) for row in rows],
-            "sources": [{"scope": source.scope, "root": str(source.root)} for source in registry.sources],
+            "sources": [
+                {"scope": source.scope, "root": str(source.root)} for source in registry.sources
+            ],
         }
         overlay_prompt_sources = _prompt_agent_overlay_for_request(session_id or "")
         if overlay_prompt_sources:
@@ -17567,7 +17668,9 @@ def build_app(
             "status": status,
             "result": result_text,
             "error": error,
-            "command_source": str(command_meta.get("command_source") or command_meta.get("source") or ""),
+            "command_source": str(
+                command_meta.get("command_source") or command_meta.get("source") or ""
+            ),
             "command_path": str(command_meta.get("command_path") or ""),
             "created_at": datetime.now(timezone.utc).isoformat(),
         }
@@ -17632,9 +17735,7 @@ def build_app(
         # Accept "clear" or "/clear"; the TUI sends both shapes.
         cmd_id = cmd if cmd.startswith("/") else "/" + cmd
         cwd, extra_roots = _command_context_for_request(sid)
-        commands_by_id = {
-            c["id"]: c for c in _all_command_rows(cwd=cwd, extra_roots=extra_roots)
-        }
+        commands_by_id = {c["id"]: c for c in _all_command_rows(cwd=cwd, extra_roots=extra_roots)}
         command_meta = commands_by_id.get(cmd_id)
         if command_meta is None:
             raise HTTPException(
@@ -19182,9 +19283,7 @@ def build_app(
                 ) from exc
             if tool_observer is not None:
                 try:
-                    tool_result_text = "\n".join(
-                        str(item.get("text", item)) for item in content
-                    )
+                    tool_result_text = "\n".join(str(item.get("text", item)) for item in content)
                     if not tool_result_text:
                         data = getattr(result, "data", None)
                         tool_result_text = (
@@ -20056,9 +20155,7 @@ def build_app(
             "session": Session(**sess.to_wire()).model_dump(exclude_none=True),
             "workspace": (Workspace(**ws.to_wire()).model_dump(exclude_none=True) if ws else None),
             "messages": [m.model_dump(exclude_none=True) for m in msgs],
-            "context_files": [
-                dict(row) for row in app.state.context_files.get(sid, {}).values()
-            ],
+            "context_files": [dict(row) for row in app.state.context_files.get(sid, {}).values()],
         }
 
     @app.post("/v1/sessions/import", response_model=Session)
@@ -21052,11 +21149,7 @@ def build_app(
                         description=row.get("description", ""),
                         source=row.get("source", "builtin"),
                         status=status,
-                        metadata=(
-                            {"error": row["error"]}
-                            if row.get("error")
-                            else {}
-                        ),
+                        metadata=({"error": row["error"]} if row.get("error") else {}),
                     )
                 )
                 command_ids.add(command_id)
@@ -21112,7 +21205,9 @@ def build_app(
         metadata = getattr(sess, "metadata", {}) or {}
         if not isinstance(metadata, Mapping):
             return ""
-        return str(metadata.get("active_expert_pack_id") or metadata.get("expert_pack_id") or "").strip()
+        return str(
+            metadata.get("active_expert_pack_id") or metadata.get("expert_pack_id") or ""
+        ).strip()
 
     def _active_session_expert_pack_path(session_id: str = "") -> Path | None:
         if not session_id:
@@ -21308,7 +21403,9 @@ def build_app(
     ) -> dict[str, Any]:
         errors: list[dict[str, Any]] = []
         diagnostics: list[dict[str, Any]] = []
-        base_rows = _base_session_agent_blueprint_rows(session_id=session_id, workspace_id=workspace_id)
+        base_rows = _base_session_agent_blueprint_rows(
+            session_id=session_id, workspace_id=workspace_id
+        )
         base_ids = {row.id for row in base_rows}
         agents = overlay.get("agents")
         if not base_rows:
@@ -21365,7 +21462,9 @@ def build_app(
                 )
             if "tools" in raw_patch:
                 raw_tools = raw_patch.get("tools")
-                if not isinstance(raw_tools, list) or any(not isinstance(item, str) for item in raw_tools):
+                if not isinstance(raw_tools, list) or any(
+                    not isinstance(item, str) for item in raw_tools
+                ):
                     _overlay_validation_error(
                         errors,
                         code="invalid_tools",
@@ -21403,8 +21502,22 @@ def build_app(
                         agent_id=agent_id,
                         field="default_provider",
                     )
-            for string_field in ("title", "description", "system_prompt", "prompt_id", "prompt_profile", "default_provider", "default_model", "parent_id", "specialization"):
-                if string_field in raw_patch and raw_patch.get(string_field) is not None and not isinstance(raw_patch.get(string_field), str):
+            for string_field in (
+                "title",
+                "description",
+                "system_prompt",
+                "prompt_id",
+                "prompt_profile",
+                "default_provider",
+                "default_model",
+                "parent_id",
+                "specialization",
+            ):
+                if (
+                    string_field in raw_patch
+                    and raw_patch.get(string_field) is not None
+                    and not isinstance(raw_patch.get(string_field), str)
+                ):
                     _overlay_validation_error(
                         errors,
                         code="invalid_field_type",
@@ -21415,7 +21528,9 @@ def build_app(
             for list_field in ("keywords", "skills", "commands"):
                 if list_field in raw_patch:
                     value = raw_patch.get(list_field)
-                    if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
+                    if not isinstance(value, list) or any(
+                        not isinstance(item, str) for item in value
+                    ):
                         _overlay_validation_error(
                             errors,
                             code="invalid_field_type",
@@ -21484,7 +21599,9 @@ def build_app(
             return (cwd or Path.cwd()) / ".clio" / "agent-blueprints"
         if scope == "global":
             base = os.environ.get("XDG_CONFIG_HOME")
-            config_root = Path(base) / "clio-agent" if base else Path.home() / ".config" / "clio-agent"
+            config_root = (
+                Path(base) / "clio-agent" if base else Path.home() / ".config" / "clio-agent"
+            )
             return config_root / "agent-blueprints"
         raise ValueError("scope must be workspace or global")
 
@@ -21543,7 +21660,7 @@ def build_app(
         manifest = [
             "---",
             f"id: {_frontmatter_scalar(blueprint_id)}",
-            "version: \"0.1.0\"",
+            'version: "0.1.0"',
             f"title: {_frontmatter_scalar(title or blueprint_id)}",
             f"root_expert: {_frontmatter_scalar(root_expert)}",
             "---",
@@ -21622,9 +21739,8 @@ def build_app(
                 if tool_name not in descriptor_tools or tool_name in enabled_tools:
                     continue
                 descriptor_id = descriptor_tools[tool_name]
-                message = (
-                    f"MCP tool requires explicit enablement: {tool_name}"
-                    + (f" (descriptor: {descriptor_id})" if descriptor_id else "")
+                message = f"MCP tool requires explicit enablement: {tool_name}" + (
+                    f" (descriptor: {descriptor_id})" if descriptor_id else ""
                 )
                 if message not in errors:
                     errors.append(message)
@@ -21853,7 +21969,9 @@ def build_app(
         if (root / "AGENT.md").exists():
             candidates.append(root)
         if root.is_dir():
-            candidates.extend(sorted(path for path in root.iterdir() if (path / "AGENT.md").exists()))
+            candidates.extend(
+                sorted(path for path in root.iterdir() if (path / "AGENT.md").exists())
+            )
         rows: list[dict[str, Any]] = []
         for candidate in candidates:
             parsed = parse_agent_blueprint_root(candidate, scope="marketplace")
@@ -21958,7 +22076,11 @@ def build_app(
         if bool(req.get("refresh", True)):
             row = _refresh_agent_blueprint_source(row)
             row["updated_at"] = datetime.now(timezone.utc).isoformat()
-        rows = [existing for existing in _load_agent_blueprint_sources() if existing.get("id") != source_id]
+        rows = [
+            existing
+            for existing in _load_agent_blueprint_sources()
+            if existing.get("id") != source_id
+        ]
         rows.append(row)
         _save_agent_blueprint_sources(rows)
         return {"source": row}
@@ -22035,7 +22157,10 @@ def build_app(
                 error=ErrorInfo(
                     error="not_found",
                     message=f"agent blueprint not found: {blueprint_id}",
-                    details={"agent_blueprint_id": blueprint_id, "workspace_id": workspace_id or ""},
+                    details={
+                        "agent_blueprint_id": blueprint_id,
+                        "workspace_id": workspace_id or "",
+                    },
                     recoverable=False,
                 )
             ).model_dump(exclude_none=True),
@@ -22078,11 +22203,7 @@ def build_app(
                     ).model_dump(exclude_none=True),
                 )
         source = str(
-            req.get("source")
-            or req.get("url")
-            or req.get("path")
-            or source_row.get("source")
-            or ""
+            req.get("source") or req.get("url") or req.get("path") or source_row.get("source") or ""
         ).strip()
         if not source:
             raise HTTPException(
@@ -22329,7 +22450,9 @@ def build_app(
                             **declared,
                             "id": tool_name,
                             "name": tool_name,
-                            "description": getattr(live_tool, "description", "") or declared.get("description") or "",
+                            "description": getattr(live_tool, "description", "")
+                            or declared.get("description")
+                            or "",
                             "status": "ready",
                             "enabled": True,
                             "server_id": sid,
@@ -22365,7 +22488,9 @@ def build_app(
                             "agent_blueprint_id": blueprint_id,
                         }
                     )
-                status = "ready" if tools and any(tool.get("enabled") for tool in tools) else "no_tools"
+                status = (
+                    "ready" if tools and any(tool.get("enabled") for tool in tools) else "no_tools"
+                )
             except Exception as exc:  # noqa: BLE001
                 connect_error = repr(exc)
                 status = "error"
@@ -22418,7 +22543,9 @@ def build_app(
             (row for row in discover_agent_blueprints(cwd=cwd) if row.id == blueprint_id),
             None,
         )
-        blueprint_wire: dict[str, Any] | None = blueprint.to_wire() if blueprint is not None else None
+        blueprint_wire: dict[str, Any] | None = (
+            blueprint.to_wire() if blueprint is not None else None
+        )
         if blueprint is None and blueprint_path is not None:
             validation = validate_agent_blueprint_path(blueprint_path, scope="session")
             raw_blueprint = validation.get("agent_blueprint")
@@ -22427,7 +22554,9 @@ def build_app(
             "session_id": sid,
             "workspace_id": getattr(sess, "workspace_id", ""),
             "active_agent_blueprint_id": blueprint_id,
-            "active_agent_blueprint_path": str(blueprint_path) if blueprint_path is not None else "",
+            "active_agent_blueprint_path": str(blueprint_path)
+            if blueprint_path is not None
+            else "",
             "agent_blueprint": blueprint_wire,
             "agent_overlay": _session_agent_overlay(sid),
             "activation": {
@@ -22473,9 +22602,7 @@ def build_app(
                     ).model_dump(exclude_none=True),
                 )
             blueprint_wire = validation["agent_blueprint"]
-            install_root = Path(
-                str(blueprint_wire.get("root") or blueprint_path)
-            ).expanduser()
+            install_root = Path(str(blueprint_wire.get("root") or blueprint_path)).expanduser()
             activation_metadata = _agent_blueprint_activation_metadata(
                 blueprint_wire=blueprint_wire,
                 install_root=install_root,
@@ -22502,7 +22629,9 @@ def build_app(
                         )
                     ).model_dump(exclude_none=True),
                 )
-            blueprint = next((row for row in discover_agent_blueprints(cwd=cwd) if row.id == blueprint_id), None)
+            blueprint = next(
+                (row for row in discover_agent_blueprints(cwd=cwd) if row.id == blueprint_id), None
+            )
             if blueprint is None:
                 raise HTTPException(
                     status_code=404,
@@ -22537,7 +22666,9 @@ def build_app(
             "active_agent_blueprint_id": str(blueprint_wire.get("id") or ""),
             "active_agent_blueprint_path": str(blueprint_path),
             "agent_blueprint": blueprint_wire,
-            "session": Session(**updated.to_wire()).model_dump(exclude_none=True) if updated else None,
+            "session": Session(**updated.to_wire()).model_dump(exclude_none=True)
+            if updated
+            else None,
         }
 
     @app.get("/v1/sessions/{sid}/agent-overlay")
@@ -22616,11 +22747,15 @@ def build_app(
             "session_id": sid,
             "agent_overlay": dict(overlay),
             "validation": validation,
-            "session": Session(**updated.to_wire()).model_dump(exclude_none=True) if updated else None,
+            "session": Session(**updated.to_wire()).model_dump(exclude_none=True)
+            if updated
+            else None,
         }
 
     @app.post("/v1/sessions/{sid}/agent-overlay/export", status_code=201)
-    async def export_session_agent_overlay(sid: str, req: dict[str, Any] | None = None) -> dict[str, Any]:
+    async def export_session_agent_overlay(
+        sid: str, req: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
         sess = app.state.sessions.get(sid)
         if sess is None:
             raise HTTPException(
@@ -22711,11 +22846,14 @@ def build_app(
                     )
                 ).model_dump(exclude_none=True),
             )
-        export_root = _agent_blueprint_export_root(
-            scope=scope,
-            session_id=sid,
-            workspace_id=workspace_id,
-        ) / blueprint_id
+        export_root = (
+            _agent_blueprint_export_root(
+                scope=scope,
+                session_id=sid,
+                workspace_id=workspace_id,
+            )
+            / blueprint_id
+        )
         if export_root.exists() and not bool(body.get("overwrite", False)):
             raise HTTPException(
                 status_code=409,
@@ -22879,7 +23017,9 @@ def build_app(
                     "active_expert_pack_id": str(pack_wire.get("id") or ""),
                     "active_expert_pack_version": str(pack_wire.get("version") or ""),
                     "active_expert_pack_scope": "session",
-                    "active_expert_pack_definition_path": str(pack_wire.get("definition_path") or ""),
+                    "active_expert_pack_definition_path": str(
+                        pack_wire.get("definition_path") or ""
+                    ),
                     "active_expert_pack_path": str(Path(pack_path).expanduser()),
                 },
             )
@@ -22890,7 +23030,9 @@ def build_app(
                 "active_expert_pack_id": str(pack_wire.get("id") or ""),
                 "active_expert_pack_path": str(Path(pack_path).expanduser()),
                 "expert_pack": pack_wire,
-                "session": Session(**updated.to_wire()).model_dump(exclude_none=True) if updated else None,
+                "session": Session(**updated.to_wire()).model_dump(exclude_none=True)
+                if updated
+                else None,
             }
         if not pack_id:
             raise HTTPException(
@@ -22932,7 +23074,9 @@ def build_app(
             "workspace_id": getattr(sess, "workspace_id", ""),
             "active_expert_pack_id": pack.id,
             "expert_pack": pack.to_wire(),
-            "session": Session(**updated.to_wire()).model_dump(exclude_none=True) if updated else None,
+            "session": Session(**updated.to_wire()).model_dump(exclude_none=True)
+            if updated
+            else None,
         }
 
     @app.get("/v1/agents", response_model=ListAgentsResponse)
@@ -23184,7 +23328,9 @@ def build_app(
                     mode = str(row.get("mode") or "read")
                     context_files_by_mode[mode] = context_files_by_mode.get(mode, 0) + 1
                 transcript_tokens = sum(_estimate_message_context_tokens(m) for m in messages)
-                context_file_tokens = sum(_estimate_context_file_tokens(row) for row in context_files)
+                context_file_tokens = sum(
+                    _estimate_context_file_tokens(row) for row in context_files
+                )
                 tokens_retained = transcript_tokens + context_file_tokens
                 tokens_budget = 4000
                 pressure, threshold_state, compact_recommended = _context_pressure_state(

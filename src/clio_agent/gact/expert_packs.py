@@ -105,7 +105,11 @@ def load_expert_packs(
                 prior = rows[row.id]
                 chain.append(
                     {
-                        "scope": str(prior.metadata.get("expert_scope") or prior.metadata.get("pack_scope") or ""),
+                        "scope": str(
+                            prior.metadata.get("expert_scope")
+                            or prior.metadata.get("pack_scope")
+                            or ""
+                        ),
                         "pack_id": str(prior.metadata.get("pack_id") or ""),
                         "definition_path": str(
                             prior.metadata.get("definition_path")
@@ -117,7 +121,9 @@ def load_expert_packs(
             row_chain = [
                 *overrides.get(row.id, []),
                 {
-                    "scope": str(row.metadata.get("expert_scope") or row.metadata.get("pack_scope") or ""),
+                    "scope": str(
+                        row.metadata.get("expert_scope") or row.metadata.get("pack_scope") or ""
+                    ),
                     "pack_id": str(row.metadata.get("pack_id") or ""),
                     "definition_path": str(
                         row.metadata.get("definition_path") or row.metadata.get("expert_path") or ""
@@ -262,7 +268,9 @@ def parse_expert_file(
                 "pack_version": pack.version,
                 "pack_scope": pack.scope,
                 "pack_title": pack.title,
-                "pack_definition_path": str(pack.manifest_path) if pack.manifest_path else str(pack.root),
+                "pack_definition_path": str(pack.manifest_path)
+                if pack.manifest_path
+                else str(pack.root),
                 "pack_enabled": pack.enabled,
             }
         )
@@ -298,10 +306,7 @@ def parse_expert_file(
             or ""
         ).strip(),
         default_provider=str(
-            meta.get("provider")
-            or meta.get("default_provider")
-            or defaults.get("provider")
-            or ""
+            meta.get("provider") or meta.get("default_provider") or defaults.get("provider") or ""
         ).strip(),
         default_model=str(
             meta.get("model") or meta.get("default_model") or defaults.get("model") or ""
@@ -366,7 +371,11 @@ def _manifest_packs(root: Path, *, scope: str) -> list[ExpertPackDefinition]:
     candidates: list[Path] = []
     if (root / _MANIFEST_NAME).exists():
         candidates.append(root)
-    candidates.extend(path for path in sorted(root.iterdir()) if path.is_dir() and (path / _MANIFEST_NAME).exists())
+    candidates.extend(
+        path
+        for path in sorted(root.iterdir())
+        if path.is_dir() and (path / _MANIFEST_NAME).exists()
+    )
     packs: list[ExpertPackDefinition] = []
     for pack_root in candidates:
         packs.append(_parse_pack_manifest(pack_root / _MANIFEST_NAME, scope=scope))
@@ -412,7 +421,9 @@ def _parse_pack_manifest(path: Path, *, scope: str) -> ExpertPackDefinition:
         metadata={
             "layout": "manifest_pack",
             "default_root_expert": str(meta.get("default_root_expert") or "").strip(),
-            "compatibility": meta.get("compatibility") if isinstance(meta.get("compatibility"), dict) else {},
+            "compatibility": meta.get("compatibility")
+            if isinstance(meta.get("compatibility"), dict)
+            else {},
         },
     )
 
@@ -473,7 +484,9 @@ def _expert_files(root: Path) -> list[Path]:
         [
             path
             for path in root.rglob("*.md")
-            if path.is_file() and "/prompts/" not in path.as_posix() and "/commands/" not in path.as_posix()
+            if path.is_file()
+            and "/prompts/" not in path.as_posix()
+            and "/commands/" not in path.as_posix()
         ],
         key=lambda path: str(path).lower(),
     )
@@ -639,9 +652,9 @@ def _dspy_semantics_from_meta(meta: dict[str, Any]) -> dict[str, Any]:
     if "kind" in raw_dspy and "kind" not in module:
         module["kind"] = str(raw_dspy["kind"]).strip()
     if "inputs" in signature:
-        signature["inputs"] = _coerce_string_list(signature["inputs"])
+        signature["inputs"] = _coerce_signature_fields(signature["inputs"])
     if "outputs" in signature:
-        signature["outputs"] = _coerce_string_list(signature["outputs"])
+        signature["outputs"] = _coerce_signature_fields(signature["outputs"])
     out: dict[str, Any] = {}
     if module:
         out["module"] = module
@@ -655,6 +668,34 @@ def _coerce_string_list(value: Any) -> Any:
         return [str(item).strip() for item in value if str(item).strip()]
     if isinstance(value, str):
         return [item.strip() for item in value.strip("[]").split(",") if item.strip()]
+    return value
+
+
+def _coerce_signature_fields(value: Any) -> Any:
+    """Normalize a signature ``inputs``/``outputs`` declaration while PRESERVING
+    per-field typing.
+
+    A field may be declared three ways and each must survive so the runtime can
+    build typed DSPy ``OutputField``s (e.g. ``region: list[float]``,
+    ``status: Literal[...]``, a nested ``object``):
+
+    - mapping form ``{name: {description, type, fields}}`` -> kept verbatim,
+    - list form ``[{name, type, ...}, "bare_name", ...]`` -> dict rows kept,
+      bare names default to ``str``,
+    - bare CSV/string ``"a, b, c"`` -> list of names (each defaults to ``str``).
+    """
+    if isinstance(value, dict):
+        return {str(k): v for k, v in value.items()}
+    if isinstance(value, list):
+        rows: list[Any] = []
+        for item in value:
+            if isinstance(item, dict):
+                rows.append({str(k): v for k, v in item.items()})
+            elif str(item).strip():
+                rows.append(str(item).strip())
+        return rows
+    if isinstance(value, str):
+        return [s.strip() for s in value.strip("[]").split(",") if s.strip()]
     return value
 
 
@@ -703,12 +744,11 @@ def _module_from_meta(meta: dict[str, Any]) -> dict[str, Any]:
     module = _mapping_field(meta, "module")
     if not module:
         module = {}
-    kind = str(
-        module.get("kind")
-        or meta.get("module_kind")
-        or meta.get("module.kind")
-        or "predict"
-    ).strip().lower()
+    kind = (
+        str(module.get("kind") or meta.get("module_kind") or meta.get("module.kind") or "predict")
+        .strip()
+        .lower()
+    )
     out = {str(k): v for k, v in module.items()}
     out["kind"] = kind
     if "max_iters" not in out and meta.get("max_iters") is not None:
