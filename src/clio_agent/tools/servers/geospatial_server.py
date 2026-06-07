@@ -165,15 +165,42 @@ async def render_feature_map(
         Dict with ``status``, ``output_path``, ``bounds``, ``basemap``, and
         per-layer feature counts, or an ``error`` dict if rendering failed.
     """
+    resolved = [_resolve_layer_geojson(layer) for layer in (layers or [])]
+    renderable = [layer for layer in resolved if _layer_is_renderable(layer)]
+    dropped = [str(layer.get("name") or "?") for layer in resolved if not _layer_is_renderable(layer)]
+    if not renderable:
+        return {
+            "error": "No renderable layers: every layer's geojson was missing or unresolvable.",
+            "code": "geo_no_layers",
+            "dropped_layers": dropped,
+        }
     args: dict[str, Any] = {
-        "layers": [_resolve_layer_geojson(layer) for layer in (layers or [])],
+        "layers": renderable,
         "output_path": _safe_artifact_path(output_path),
         "title": title,
         "basemap": basemap,
     }
     if bbox is not None:
         args["bbox"] = bbox
-    return await call_clio_kit_tool("geo", "render_feature_map", args)
+    result = await call_clio_kit_tool("geo", "render_feature_map", args)
+    if dropped and isinstance(result, dict):
+        result["dropped_layers"] = dropped  # surface partial-map honesty
+    return result
+
+
+def _layer_is_renderable(layer: dict[str, Any]) -> bool:
+    """A layer renders if its geojson is inline JSON or an existing file path."""
+    from pathlib import Path
+
+    gj = layer.get("geojson")
+    if isinstance(gj, (dict, list)):
+        return True
+    if isinstance(gj, str):
+        text = gj.strip()
+        if text[:1] in ("{", "["):
+            return True
+        return Path(text).is_file()
+    return False
 
 
 def _resolve_layer_geojson(layer: dict[str, Any]) -> dict[str, Any]:
