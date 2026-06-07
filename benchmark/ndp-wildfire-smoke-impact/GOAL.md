@@ -113,21 +113,40 @@ read session messages + children as the trace → normalize into agent-test `Run
 - marketplace: `feat/wildfire-smoke-impact-pack`.
 - Rebase `develop`/`main` into open branches after each merge.
 
-## Done criteria
+## Done criteria (hard — ALL must hold; this is a grind, not a one-shot)
 
-- `geo` MCP merged in clio-kit with passing tests.
-- `wildfire-smoke-impact-review` pack in the marketplace, loadable through the
-  normal registry/blueprint path (no privileged native experts).
-- At least one reviewed live ALCF Sophia + live NDP run that:
-  selects an impact-driven fire, fuses fire + smoke + AirNow, renders a verified
-  non-empty map whose layers match the briefed claims, and produces an audited
-  synthesis with caveats.
-- At least one reviewed run of the contained / no-significant-impact path that
-  correctly returns a null-impact answer instead of forcing a map.
-- At least one mutated-geography run (different city/region) passing the same
-  review bar, proving no benchmark-string dependence.
-- Regression tests cover the selector and feature-handling state space.
-- This `README.md` reflects the accepted contract; `runs/` holds the evidence.
+Provider for the whole grind: `argonne_metis` / `gpt-oss-120b` (the guardrail
+cell). Each run writes a trace to `runs/`; the agent reads every accepted run's
+trace (no human in the loop) and records a one-line verdict.
+
+1. **Reliability, not one lucky pass.** `test_wildfire_case.py` passes live on
+   `argonne_metis`/`gpt-oss-120b` at a **measured pass rate ≥ 0.8 over ≥ 10
+   sampled live runs** (use agent-test `@sample`; report the Wilson interval,
+   and the interval's lower bound must be ≥ 0.6). One green run is NOT done.
+2. **Generalizes across geography.** The same bar (≥ 0.8 over ≥ 10 runs) holds
+   for **≥ 3 distinct regions** (e.g. Los Angeles, the Bay Area, and one
+   non-California region), via mutated prompts — proving no city/string
+   dependence. Traces for all three in `runs/`.
+3. **Honest null-impact path.** At least one region/time with no fire putting
+   smoke over monitored population returns a **correct null-impact answer (no
+   forced map)**, asserted by a dedicated test — passing at ≥ 0.8 over ≥ 10 runs.
+4. **Structured matchers at EarthScope parity.** The wildfire matchers read
+   *structured* evidence, never synthesis prose: impact-selected fire's smoke
+   overlaps monitored population (smoke ∩ AirNow from tool output), region
+   derived on-region, a **non-empty** map PNG on disk, and the full
+   `data → analysis → visualization → synthesis` route. Each must be proven
+   (offline, against a real trace) to FAIL a tampered/bad run, like the
+   EarthScope on-region matcher.
+5. **The matcher suite grew from review.** Every distinct failure found by trace
+   review during the grind is encoded as a new matcher/assertion. A
+   `runs/REVIEW_LOG.md` lists each discovered failure → the matcher that now
+   guards it (must have ≥ 5 entries; a grind that found nothing to harden did
+   not really grind).
+6. **No regressions.** `geo` MCP tests green; the EarthScope real-case test
+   still passes its bar; `pytest -m "not integration and not real_case"` green
+   (excluding the one known pre-existing failure).
+7. **Spec + provenance.** This folder's `README.md` reflects the accepted
+   contract; everything pushed to the feature branches as JaimeCernuda.
 
 ## Status
 
