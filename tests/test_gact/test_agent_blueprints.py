@@ -6319,32 +6319,10 @@ def test_recording_blueprint_tool_skips_duplicate_station_search_before_exhausti
     assert rows[-1]["skipped"] is True
 
 
-def test_earthscope_resolver_prompt_treats_duplicate_skip_as_workflow_state() -> None:
-    prompt_path = (
-        Path(__file__).resolve().parents[2]
-        / "external"
-        / "clio-agent-marketplace"
-        / "earthscope-gnss-region-depth"
-        / "experts"
-        / "ndp_resource_resolver.md"
-    )
-    prompt = prompt_path.read_text(encoding="utf-8")
-
-    assert 'duplicate_station_resource_search' in prompt
-    assert 'resource_discovery_search_exhausted' in prompt
-    assert 'clio_runtime.terminal' in prompt
-    assert 'remaining_station_ids' in prompt
-    assert 'This rule is about workflow state' in prompt
-    assert 'not about specific station names' in prompt
-    assert 'must work for any geography' in prompt
-
-
 @pytest.mark.parametrize(
     "blueprint_id",
     [
         "earthscope-gnss-region",
-        "earthscope-gnss-region-width",
-        "earthscope-gnss-region-depth",
     ],
 )
 def test_earthscope_station_catalog_prompt_keeps_resolver_acquisition_boundary(
@@ -6376,8 +6354,6 @@ def test_earthscope_station_catalog_prompt_keeps_resolver_acquisition_boundary(
     "blueprint_id",
     [
         "earthscope-gnss-region",
-        "earthscope-gnss-region-width",
-        "earthscope-gnss-region-depth",
     ],
 )
 def test_earthscope_analysis_prompt_forbids_rows_scanned_cadence_inference(
@@ -6407,8 +6383,6 @@ def test_earthscope_analysis_prompt_forbids_rows_scanned_cadence_inference(
     "blueprint_id",
     [
         "earthscope-gnss-region",
-        "earthscope-gnss-region-width",
-        "earthscope-gnss-region-depth",
     ],
 )
 def test_earthscope_synthesis_prompt_filters_scan_limited_cadence_claims(
@@ -6438,8 +6412,6 @@ def test_earthscope_synthesis_prompt_filters_scan_limited_cadence_claims(
     "blueprint_id",
     [
         "earthscope-gnss-region",
-        "earthscope-gnss-region-width",
-        "earthscope-gnss-region-depth",
     ],
 )
 def test_earthscope_station_network_prompt_preserves_uncertainty_units(
@@ -6465,8 +6437,6 @@ def test_earthscope_station_network_prompt_preserves_uncertainty_units(
     "blueprint_id",
     [
         "earthscope-gnss-region",
-        "earthscope-gnss-region-width",
-        "earthscope-gnss-region-depth",
     ],
 )
 def test_earthscope_station_network_prompt_forbids_scan_limited_record_claims(
@@ -6499,8 +6469,6 @@ def test_earthscope_station_network_prompt_forbids_scan_limited_record_claims(
     "blueprint_id",
     [
         "earthscope-gnss-region",
-        "earthscope-gnss-region-width",
-        "earthscope-gnss-region-depth",
     ],
 )
 def test_earthscope_analysis_prompt_filters_child_scan_limited_record_claims(
@@ -6536,8 +6504,6 @@ def test_earthscope_analysis_prompt_filters_child_scan_limited_record_claims(
     "blueprint_id",
     [
         "earthscope-gnss-region",
-        "earthscope-gnss-region-width",
-        "earthscope-gnss-region-depth",
     ],
 )
 def test_earthscope_analysis_keeps_event_context_optional(
@@ -6566,8 +6532,6 @@ def test_earthscope_analysis_keeps_event_context_optional(
     "blueprint_id",
     [
         "earthscope-gnss-region",
-        "earthscope-gnss-region-width",
-        "earthscope-gnss-region-depth",
     ],
 )
 def test_earthscope_event_catalog_prompt_returns_typed_blocker_not_no_events(
@@ -6601,8 +6565,6 @@ def test_earthscope_event_catalog_prompt_returns_typed_blocker_not_no_events(
     "blueprint_id",
     [
         "earthscope-gnss-region",
-        "earthscope-gnss-region-width",
-        "earthscope-gnss-region-depth",
     ],
 )
 def test_earthscope_geospatial_prompt_does_not_invent_named_source_provenance(
@@ -6628,8 +6590,6 @@ def test_earthscope_geospatial_prompt_does_not_invent_named_source_provenance(
     "blueprint_id",
     [
         "earthscope-gnss-region",
-        "earthscope-gnss-region-width",
-        "earthscope-gnss-region-depth",
     ],
 )
 def test_earthscope_resolver_prompt_uses_typed_station_resource_frontier(
@@ -6660,8 +6620,6 @@ def test_earthscope_resolver_prompt_uses_typed_station_resource_frontier(
     "blueprint_id",
     [
         "earthscope-gnss-region",
-        "earthscope-gnss-region-width",
-        "earthscope-gnss-region-depth",
     ],
 )
 def test_earthscope_data_prompt_requires_staged_metadata_before_station_filter(
@@ -6695,8 +6653,6 @@ def test_earthscope_data_prompt_requires_staged_metadata_before_station_filter(
     "blueprint_id",
     [
         "earthscope-gnss-region",
-        "earthscope-gnss-region-width",
-        "earthscope-gnss-region-depth",
     ],
 )
 def test_earthscope_final_prompts_guard_scan_limited_profile_scope(

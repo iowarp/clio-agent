@@ -34,7 +34,8 @@ _BLUEPRINT_ROOT_NAME = "AGENT.md"
 _BLUEPRINT_ID_RE = r"^[A-Za-z0-9_.-]+$"
 DEFAULT_REGISTRY_URL = "git@github.com:JaimeCernuda/clio-agent-marketplace.git"
 DEFAULT_REGISTRY_REF = "main"
-DEFAULT_REGISTRY_COMMIT = "908e013d68a80b1e13d5e7d633309d1f6813d970"
+# Empty commit => follow the registry ref (main) HEAD instead of a frozen pin.
+DEFAULT_REGISTRY_COMMIT = ""
 DEFAULT_AGENT_BLUEPRINT_ID = "data-semantics"
 DEFAULT_REGISTRY_SUBMODULE_PATH = "external/clio-agent-marketplace"
 _DEFAULT_BOOTSTRAP_ENV = "CLIO_AGENT_DISABLE_DEFAULT_REGISTRY_BOOTSTRAP"
@@ -171,16 +172,21 @@ def ensure_default_registry_bootstrap(
         return ""
     home = home or Path.home()
     cwd = cwd or Path(os.getcwd())
+    pinned = DEFAULT_REGISTRY_COMMIT.strip()
     root = _install_root(home=home, cwd=cwd, scope="global") / DEFAULT_AGENT_BLUEPRINT_ID
     if (root / _BLUEPRINT_ROOT_NAME).exists():
+        # HEAD-following mode (no pinned commit): any installed snapshot is
+        # acceptable; we track the registry ref rather than a frozen commit.
+        if not pinned:
+            return ""
         metadata = read_install_metadata(root)
         installed_commit = str(metadata.get("commit") or "").strip()
-        if installed_commit == DEFAULT_REGISTRY_COMMIT:
+        if installed_commit == pinned:
             return ""
         if installed_commit:
             return (
                 f"default registry pin mismatch for {DEFAULT_AGENT_BLUEPRINT_ID}: "
-                f"expected {DEFAULT_REGISTRY_COMMIT}, found {installed_commit}"
+                f"expected {pinned}, found {installed_commit}"
             )
         return f"default registry install metadata missing pinned commit for {DEFAULT_AGENT_BLUEPRINT_ID}"
     try:
@@ -191,12 +197,13 @@ def ensure_default_registry_bootstrap(
             home=home,
             ref=DEFAULT_REGISTRY_REF,
             blueprint_id=DEFAULT_AGENT_BLUEPRINT_ID,
-            pinned_commit=DEFAULT_REGISTRY_COMMIT,
+            pinned_commit=pinned,
         )
     except Exception as exc:  # noqa: BLE001
+        target = pinned or DEFAULT_REGISTRY_REF
         return (
-            "unable to install pinned default registry "
-            f"{DEFAULT_REGISTRY_URL}@{DEFAULT_REGISTRY_COMMIT}: {exc}"
+            "unable to install default registry "
+            f"{DEFAULT_REGISTRY_URL}@{target}: {exc}"
         )
     return ""
 
