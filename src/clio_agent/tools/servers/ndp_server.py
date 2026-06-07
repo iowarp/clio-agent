@@ -1835,6 +1835,17 @@ def query_arcgis_features(
     feature collection for later artifact inspection.
     """
 
+    if output_path:
+        # Relocate the saved FeatureCollection into a writable artifact dir so
+        # models that pass invented/unwritable paths (e.g. /workspace/x.geojson)
+        # still produce a real file the renderer can read.
+        _root = Path(os.environ.get("CLIO_ARTIFACTS_ROOT") or (Path.cwd() / ".clio" / "artifacts" / "geo"))
+        _root.mkdir(parents=True, exist_ok=True)
+        _name = Path(str(output_path)).name or "features.geojson"
+        if not _name.lower().endswith((".geojson", ".json")):
+            _name += ".geojson"
+        output_path = str((_root / _name).resolve())
+
     try:
         limit = max(1, min(int(max_features or 25), _MAX_ARCGIS_FEATURES))
         params: dict[str, Any] = {
