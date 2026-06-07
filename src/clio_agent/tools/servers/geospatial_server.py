@@ -262,3 +262,31 @@ def _safe_artifact_path(requested: str) -> str:
     if not name.lower().endswith(".png"):
         name += ".png"
     return str((root / name).resolve())
+
+
+@geospatial_server.tool()
+async def points_in_polygons(
+    points_geojson: str,
+    polygons_geojson: str,
+    buffer_km: float = 0.0,
+    point_label_fields: list[str] | None = None,
+) -> dict[str, Any]:
+    """Spatial overlap: which GeoJSON points fall within (optionally buffered) polygons.
+
+    Agent story: Use this to *compute* impact instead of guessing — e.g. which
+    AirNow monitor points lie inside the smoke-forecast polygons. Pass the saved
+    layer files (bare filenames resolve in the artifact dir); get back the
+    matched points with their properties and a matched_count.
+
+    Runs in the separate clio-kit ``geo`` MCP.
+    """
+    points = _resolve_layer_geojson({"geojson": points_geojson, "name": "points"})["geojson"]
+    polys = _resolve_layer_geojson({"geojson": polygons_geojson, "name": "polygons"})["geojson"]
+    args: dict[str, Any] = {
+        "points_geojson": points,
+        "polygons_geojson": polys,
+        "buffer_km": buffer_km,
+    }
+    if point_label_fields is not None:
+        args["point_label_fields"] = point_label_fields
+    return await call_clio_kit_tool("geo", "points_in_polygons", args)

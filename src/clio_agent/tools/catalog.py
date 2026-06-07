@@ -180,6 +180,12 @@ TOOL_CATALOG: dict[str, ToolCatalogEntry] = {
         {"geospatial", "geojson", "map", "visualization", "render"},
         visible_to={"visualization", "analysis"},
     ),
+    "geospatial_points_in_polygons": _entry(
+        "geospatial_points_in_polygons",
+        "geospatial",
+        {"geospatial", "geojson", "overlap", "spatial-join", "analysis"},
+        visible_to={"analysis", "downwind_impact"},
+    ),
     "terrain_dem_terrain": _entry(
         "terrain_dem_terrain",
         "terrain_derivation",
