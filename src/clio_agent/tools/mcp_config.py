@@ -1,53 +1,62 @@
-"""Standard MCP server declarations (Claude-Code-style ``mcpServers``).
+"""Standard MCP server declarations — low-friction, human-writable.
 
 clio-agent core does not hardcode domain tool servers. Domain/case tools are
-ordinary MCP servers — our in-home ones live in clio-kit and are consumed like
-any installable MCP — declared by name -> transport, exactly like Claude Code:
+ordinary MCP servers (our in-home ones live in clio-kit, consumed like any
+installable MCP). A marketplace pack declares the servers it needs right in its
+``AGENT.md`` frontmatter, as a simple ``name: <command-or-url>`` map — no JSON,
+no nested objects required:
 
-    {
-      "mcpServers": {
-        "ndp": {"command": "uvx", "args": ["--from", "clio-kit", "clio-kit", "mcp-server", "ndp"]},
-        "notion": {"type": "http", "url": "https://mcp.notion.com/mcp"}
-      }
-    }
+    mcp_servers:
+      ndp: uvx clio-kit run ndp
+      geo: uvx clio-kit run geo --basemap
+      notion: https://mcp.notion.com/mcp
 
-A marketplace pack declares the servers it needs in a sibling ``mcp.json``; a
-user/site may add or override servers at ``~/.config/clio-agent/mcp.json`` (user)
-or ``<cwd>/.clio/mcp.json`` (workspace). Precedence (highest wins, by name):
-workspace > user > pack > built-in defaults — matching Claude Code's scope model.
+The value is either a **command string** (shlex-split into command + args; stdio)
+or an **http(s) URL**. ``${VAR}`` / ``${VAR:-default}`` expansion is supported.
+For the rare case that needs env vars or headers, a mapping value is also
+accepted (``{command, args, env}`` or ``{url, headers}``), but the string form is
+the documented, default surface.
 
-This module is dependency-free parsing only; ``transport_for`` is the single
-FastMCP-specific glue that turns a spec into a transport the existing
-``execution.py`` machinery already accepts.
+Scopes (highest precedence wins, merged by name): workspace
+``<cwd>/.clio/mcp.yaml`` > user ``<config>/clio-agent/mcp.yaml`` > pack
+``AGENT.md`` frontmatter ``mcp_servers:`` > built-in defaults (fs/shell/web).
+
+This module is parsing only; ``transport_for`` is the single FastMCP glue that
+turns a spec into a transport the existing ``execution.py`` machinery accepts.
 """
 
 from __future__ import annotations
 
-import json
 import os
 import re
+import shlex
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Literal
 
+import yaml
+
 __all__ = [
     "MCPServerSpec",
     "MCPConfigError",
+    "BUILTIN_SERVER_NAMES",
     "expand_env",
-    "spec_from_entry",
+    "spec_from_declaration",
+    "specs_from_mapping",
     "load_mcp_servers",
     "transport_for",
 ]
 
-# Names reserved for clio-agent's built-in universal defaults (always present).
+# clio-agent's built-in universal defaults (always present, not declarations).
 BUILTIN_SERVER_NAMES = frozenset({"fs", "shell", "web"})
 
 _ENV_PATTERN = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(:-([^}]*))?\}")
+_URL_PREFIXES = ("http://", "https://")
 
 
 class MCPConfigError(ValueError):
-    """A declaration could not be parsed (kept on the spec, not raised globally)."""
+    """A declaration could not be parsed (recorded on the spec, not raised)."""
 
 
 @dataclass(frozen=True)
@@ -72,11 +81,7 @@ class MCPServerSpec:
 
 
 def expand_env(value: str, *, env: Mapping[str, str] | None = None) -> str:
-    """Expand ``${VAR}`` and ``${VAR:-default}`` against ``env`` (default os.environ).
-
-    Raises ``MCPConfigError`` if a ``${VAR}`` with no default is unset — matching
-    Claude Code's "config fails to parse on missing required var" behavior.
-    """
+    """Expand ``${VAR}`` and ``${VAR:-default}``; raise if a required var is unset."""
     source = os.environ if env is None else env
 
     def _sub(match: re.Match[str]) -> str:
@@ -100,30 +105,50 @@ def _expand_map(values: Mapping[str, Any], *, env: Mapping[str, str] | None) -> 
     return {str(k): expand_env(str(v), env=env) for k, v in values.items()}
 
 
-def spec_from_entry(
-    name: str,
-    entry: Mapping[str, Any],
-    *,
-    source: str = "",
-    env: Mapping[str, str] | None = None,
+def _spec_from_string(
+    name: str, value: str, *, source: str, env: Mapping[str, str] | None
 ) -> MCPServerSpec:
-    """Normalize one ``mcpServers`` entry into an ``MCPServerSpec``.
+    """The default form: a command string (stdio) or an http(s) URL."""
+    errors: list[str] = []
+    try:
+        text = expand_env(value, env=env).strip()
+    except MCPConfigError as exc:
+        return MCPServerSpec(
+            name=name, transport="stdio", source=source, validation_errors=(str(exc),)
+        )
 
-    Parse/validation problems are recorded in ``validation_errors`` (the server is
-    returned but marked unusable) rather than raised, so one bad entry never
-    breaks the whole config.
-    """
+    if text.startswith(_URL_PREFIXES):
+        return MCPServerSpec(name=name, transport="http", url=text, source=source)
+
+    parts = shlex.split(text)
+    if not parts:
+        errors.append("empty MCP command/url declaration")
+        return MCPServerSpec(
+            name=name, transport="stdio", source=source, validation_errors=tuple(errors)
+        )
+    return MCPServerSpec(
+        name=name,
+        transport="stdio",
+        command=parts[0],
+        args=tuple(parts[1:]),
+        source=source,
+    )
+
+
+def _spec_from_mapping(
+    name: str, entry: Mapping[str, Any], *, source: str, env: Mapping[str, str] | None
+) -> MCPServerSpec:
+    """Advanced form (only when env/headers/timeout are needed)."""
     errors: list[str] = []
     declared = str(entry.get("type") or "").strip().lower()
     has_command = bool(entry.get("command"))
     has_url = bool(entry.get("url"))
-
-    if declared in {"http", "streamable-http", "sse"} or (
-        not declared and has_url and not has_command
-    ):
-        transport: Literal["stdio", "http"] = "http"
-    else:
-        transport = "stdio"
+    transport: Literal["stdio", "http"] = (
+        "http"
+        if declared in {"http", "streamable-http", "sse"}
+        or (not declared and has_url and not has_command)
+        else "stdio"
+    )
 
     command = ""
     args: tuple[str, ...] = ()
@@ -136,8 +161,10 @@ def spec_from_entry(
             if not command:
                 errors.append("stdio MCP server requires a 'command'")
             raw_args = entry.get("args") or []
-            if not isinstance(raw_args, Sequence) or isinstance(raw_args, (str, bytes)):
-                errors.append("'args' must be a list")
+            if isinstance(raw_args, str):
+                raw_args = shlex.split(raw_args)
+            elif not isinstance(raw_args, Sequence):
+                errors.append("'args' must be a list or string")
                 raw_args = []
             args = _expand_seq(raw_args, env=env)
             raw_env = entry.get("env") or {}
@@ -157,100 +184,110 @@ def spec_from_entry(
     except MCPConfigError as exc:
         errors.append(str(exc))
 
-    timeout_raw = entry.get("timeout")
     timeout_ms: int | None = None
-    if timeout_raw is not None:
+    if entry.get("timeout") is not None:
         try:
-            timeout_ms = int(timeout_raw)
+            timeout_ms = int(entry["timeout"])
         except (TypeError, ValueError):
             errors.append("'timeout' must be an integer (milliseconds)")
 
     return MCPServerSpec(
-        name=str(name),
+        name=name,
         transport=transport,
         command=command,
         args=args,
         env=env_map,
         url=url,
         headers=headers,
-        always_load=bool(entry.get("alwaysLoad", False)),
+        always_load=bool(entry.get("alwaysLoad") or entry.get("always_load") or False),
         timeout_ms=timeout_ms,
         source=source,
         validation_errors=tuple(errors),
     )
 
 
-def _read_mcp_json(path: Path) -> dict[str, Any]:
+def spec_from_declaration(
+    name: str,
+    value: Any,
+    *,
+    source: str = "",
+    env: Mapping[str, str] | None = None,
+) -> MCPServerSpec:
+    """Normalize one ``mcp_servers`` value (string command/url, or mapping)."""
+    if isinstance(value, str):
+        return _spec_from_string(name, value, source=source, env=env)
+    if isinstance(value, Mapping):
+        return _spec_from_mapping(name, value, source=source, env=env)
+    return MCPServerSpec(
+        name=name,
+        transport="stdio",
+        source=source,
+        validation_errors=(f"unsupported mcp_servers value for {name!r}: {type(value).__name__}",),
+    )
+
+
+def specs_from_mapping(
+    servers: Mapping[str, Any],
+    *,
+    source: str,
+    env: Mapping[str, str] | None = None,
+) -> dict[str, MCPServerSpec]:
+    """Build specs from a ``name -> declaration`` mapping (e.g. AGENT.md frontmatter)."""
+    return {
+        str(name): spec_from_declaration(str(name), value, source=source, env=env)
+        for name, value in servers.items()
+    }
+
+
+def _read_mcp_yaml(path: Path) -> dict[str, Any]:
     if not path.is_file():
         return {}
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except (OSError, yaml.YAMLError):
         return {}
-    servers = data.get("mcpServers") if isinstance(data, Mapping) else None
+    servers = data.get("mcp_servers") if isinstance(data, Mapping) else None
     return {str(k): v for k, v in servers.items()} if isinstance(servers, Mapping) else {}
-
-
-def _specs_from_file(
-    path: Path, source: str, *, env: Mapping[str, str] | None
-) -> dict[str, MCPServerSpec]:
-    out: dict[str, MCPServerSpec] = {}
-    for name, entry in _read_mcp_json(path).items():
-        if isinstance(entry, Mapping):
-            out[name] = spec_from_entry(name, entry, source=source, env=env)
-    return out
 
 
 def load_mcp_servers(
     *,
     home: Path | None = None,
     cwd: Path | None = None,
-    pack_roots: Sequence[Path] = (),
+    pack_servers: Mapping[str, Mapping[str, Any]] = (),  # type: ignore[assignment]
     env: Mapping[str, str] | None = None,
 ) -> dict[str, MCPServerSpec]:
     """Discover + merge declared MCP servers across all scopes.
 
-    Precedence (highest wins, merged whole by name, Claude-Code-style):
-    workspace ``<cwd>/.clio/mcp.json`` > user ``<home>/.config/clio-agent/mcp.json``
-    > each pack ``<pack_root>/mcp.json``. Built-in ``fs``/``shell``/``web`` are
-    provided directly by core and are not part of this map.
+    Precedence (highest wins, merged whole by name): workspace
+    ``<cwd>/.clio/mcp.yaml`` > user ``<config>/clio-agent/mcp.yaml`` > pack
+    frontmatter (``pack_servers`` = ``{pack_id: {name: declaration}}``). Built-in
+    ``fs``/``shell``/``web`` are provided by core, not part of this map.
     """
     home = home or Path.home()
     cwd = cwd or Path.cwd()
     lookup = env if env is not None else os.environ
     merged: dict[str, MCPServerSpec] = {}
 
-    # lowest precedence first; later writes override earlier by name
-    for root in pack_roots:
-        for name, spec in _specs_from_file(
-            Path(root) / "mcp.json", f"pack:{Path(root).name}", env=env
-        ).items():
-            merged[name] = spec
+    # lowest precedence first
+    for pack_id, servers in dict(pack_servers).items():
+        if isinstance(servers, Mapping):
+            merged.update(specs_from_mapping(servers, source=f"pack:{pack_id}", env=env))
     config_home = Path(lookup.get("XDG_CONFIG_HOME") or (home / ".config"))
-    for name, spec in _specs_from_file(
-        config_home / "clio-agent" / "mcp.json", "user", env=env
-    ).items():
-        merged[name] = spec
-    for name, spec in _specs_from_file(cwd / ".clio" / "mcp.json", "workspace", env=env).items():
-        merged[name] = spec
+    for name, value in _read_mcp_yaml(config_home / "clio-agent" / "mcp.yaml").items():
+        merged[name] = spec_from_declaration(name, value, source="user", env=env)
+    for name, value in _read_mcp_yaml(cwd / ".clio" / "mcp.yaml").items():
+        merged[name] = spec_from_declaration(name, value, source="workspace", env=env)
 
-    # Reserved names never silently shadow the built-in defaults' identity.
     return {n: replace(s, name=n) for n, s in merged.items()}
 
 
 def transport_for(spec: MCPServerSpec) -> Any:
-    """Turn a spec into the ``server`` argument FastMCP's ``Client`` accepts.
-
-    The single FastMCP-specific glue — generalizes the old clio-kit-only
-    ``clio_kit_transport``: a declared stdio command becomes a ``StdioTransport``;
-    an http url is passed through (FastMCP ``Client`` accepts an http(s) URL).
-    """
+    """Turn a spec into the ``server`` arg FastMCP's ``Client`` accepts."""
     if spec.transport == "stdio":
         from fastmcp.client.transports import StdioTransport  # noqa: PLC0415
 
         return StdioTransport(
-            command=spec.command,
-            args=list(spec.args),
-            env=dict(spec.env) or None,
+            command=spec.command, args=list(spec.args), env=dict(spec.env) or None
         )
     return spec.url
