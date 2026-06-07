@@ -1901,7 +1901,21 @@ def query_arcgis_features(
         )
 
     collection = _arcgis_feature_collection(features)
-    output = _write_json_output(output_path, collection)
+    # The compact collection above is for agent traces (geometry is summarized).
+    # For a saved file, fetch native GeoJSON so downstream renderers get real
+    # geometry instead of bbox/point summaries.
+    output: dict[str, Any] = {}
+    if output_path:
+        geo_collection = collection
+        try:
+            geo_resp = requests.get(query_url, params={**params, "f": "geojson"}, timeout=30)
+            geo_resp.raise_for_status()
+            candidate = geo_resp.json()
+            if isinstance(candidate, dict) and candidate.get("type") == "FeatureCollection":
+                geo_collection = candidate
+        except (requests.RequestException, ValueError):
+            geo_collection = collection
+        output = _write_json_output(output_path, geo_collection)
     if output.get("error"):
         return output
     raw_fields = decoded.get("fields") if isinstance(decoded, dict) else []
