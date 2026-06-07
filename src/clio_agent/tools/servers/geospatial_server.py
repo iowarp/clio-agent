@@ -1,4 +1,4 @@
-"""Geospatial file inspection tools for small GeoJSON fixtures."""
+"""Geospatial inspection and map-rendering tools."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ from typing import Any
 
 from fastmcp import FastMCP
 
+from clio_agent.tools.clio_kit_bridge import call_clio_kit_tool
 from clio_agent.tools.file_policy import FilePolicyError, validate_read_path
 
 geospatial_server = FastMCP("geospatial")
@@ -127,3 +128,49 @@ def inspect_geojson(filepath: str, max_features: int = 25) -> dict[str, Any]:
         return exc.to_result()
     except Exception as exc:
         return {"error": str(exc)}
+
+
+@geospatial_server.tool()
+async def render_feature_map(
+    layers: list[dict[str, Any]],
+    output_path: str = "map.png",
+    title: str = "",
+    basemap: bool = True,
+    bbox: list[float] | None = None,
+) -> dict[str, Any]:
+    """Render GeoJSON layers (polygons/lines/points) into one map PNG.
+
+    Agent story: Use this when an analysis has assembled spatial features —
+    fire perimeters, hazard polygons, monitoring stations, regions — and the
+    user wants to *see* them together on a map. Pass each result set as a layer
+    of GeoJSON with a style; get back one basemap image. This is the spatial
+    counterpart to the CSV/timeseries plotters.
+
+    Rendering runs in the separate clio-kit ``geo`` MCP, so its geospatial
+    dependencies stay out of CLIO core.
+
+    Args:
+        layers: Ordered layers (later draw on top). Each is a dict with
+            ``geojson`` (FeatureCollection/Feature/geometry/list/JSON/path),
+            optional ``name``, and optional ``style`` supporting ``facecolor``,
+            ``edgecolor``, ``alpha``, ``linewidth``, ``color``, ``markersize``,
+            ``zorder``, ``color_by``, ``scale`` (``"epa_aqi"`` or a colormap
+            name), ``category_colors``, and ``legend``.
+        output_path: Destination PNG path.
+        title: Figure title.
+        basemap: Add a web-tile basemap (needs network; degrades gracefully).
+        bbox: Optional view window ``[min_lon, min_lat, max_lon, max_lat]``.
+
+    Returns:
+        Dict with ``status``, ``output_path``, ``bounds``, ``basemap``, and
+        per-layer feature counts, or an ``error`` dict if rendering failed.
+    """
+    args: dict[str, Any] = {
+        "layers": layers,
+        "output_path": output_path,
+        "title": title,
+        "basemap": basemap,
+    }
+    if bbox is not None:
+        args["bbox"] = bbox
+    return await call_clio_kit_tool("geo", "render_feature_map", args)
