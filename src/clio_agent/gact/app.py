@@ -5492,11 +5492,25 @@ def _infer_workflow_state_from_tool_call_row(row: Mapping[str, Any]) -> dict[str
     if name == "geospatial_points_in_polygons":
         decoded = _decode_geo(result)
         if isinstance(decoded, Mapping) and "matched_count" in decoded:
+            matched = decoded.get("matched") if isinstance(decoded.get("matched"), list) else []
+            communities = []
+            for mm in matched[:10]:
+                props = mm.get("properties") if isinstance(mm, Mapping) else {}
+                props = props if isinstance(props, Mapping) else {}
+                communities.append({
+                    "name": props.get("name") or props.get("label") or props.get("SiteName")
+                            or props.get("AQSID") or f"monitor_{mm.get('index')}",
+                    "aqi": props.get("aqi") or props.get("AQI") or props.get("OZONEPM_AQI"),
+                })
+            count = int(decoded.get("matched_count") or 0)
+            # Ground the impact decision in the actual overlap: monitors under the
+            # smoke footprint == downwind impact. >0 is impact; 0 is a genuine null.
             return {
                 "impact_overlap": {
-                    "monitors_under_smoke": int(decoded.get("matched_count") or 0),
+                    "monitors_under_smoke": count,
                     "monitors_total": int(decoded.get("points_total") or 0),
-                }
+                },
+                "impact": {"present": count > 0, "affected_communities": communities},
             }
         return {}
 

@@ -34,10 +34,13 @@ def region_scoped(run):
 
 @matcher
 def found_real_impact(run):
-    """Genuine impact: a typed impact decision that is present AND names the
-    selected fire (read from typed workflow_state, not prose)."""
-    impact = (run.extra.get("workflow_state") or {}).get("impact") or {}
-    return bool(impact.get("present")) and bool(impact.get("selected_fire"))
+    """Genuine impact: a typed impact decision that is present AND a real fire is
+    named — either on the impact object or the grounded `fire.selected` (derived
+    from the live fire query). Read from typed workflow_state, not prose."""
+    ws = run.extra.get("workflow_state") or {}
+    impact = ws.get("impact") or {}
+    named_fire = impact.get("selected_fire") or (ws.get("fire") or {}).get("selected")
+    return bool(impact.get("present")) and bool(named_fire)
 
 
 @matcher
