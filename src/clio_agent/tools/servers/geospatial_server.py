@@ -188,6 +188,8 @@ def _resolve_layer_geojson(layer: dict[str, Any]) -> dict[str, Any]:
     import os
     from pathlib import Path
 
+    import re
+
     gj = layer.get("geojson")
     if not isinstance(gj, str):
         return layer
@@ -196,11 +198,23 @@ def _resolve_layer_geojson(layer: dict[str, Any]) -> dict[str, Any]:
         return layer  # inline JSON
     if Path(text).is_file():
         return layer  # already a usable path
-    if "/" not in text and "\\" not in text:
-        root = Path(os.environ.get("CLIO_ARTIFACTS_ROOT") or (Path.cwd() / ".clio" / "artifacts" / "geo"))
-        candidate = root / text
-        if candidate.is_file():
-            return {**layer, "geojson": str(candidate.resolve())}
+    if "/" in text or "\\" in text:
+        return layer  # explicit (if missing) path — leave for the renderer to report
+    root = Path(os.environ.get("CLIO_ARTIFACTS_ROOT") or (Path.cwd() / ".clio" / "artifacts" / "geo"))
+    if not root.is_dir():
+        return layer
+    candidate = root / text
+    if candidate.is_file():
+        return {**layer, "geojson": str(candidate.resolve())}
+    # Models drift on exact filenames (fire_perimeter vs active_fire_perimeter).
+    # Resolve by keyword from the requested name + the layer name.
+    stem = Path(text).stem.lower()
+    name = str(layer.get("name") or "").lower()
+    keywords = {k for k in re.split(r"[^a-z]+", f"{stem} {name}") if len(k) >= 3}
+    for f in sorted(root.glob("*.geojson")):
+        fl = f.name.lower()
+        if any(k in fl for k in keywords):
+            return {**layer, "geojson": str(f.resolve())}
     return layer
 
 
