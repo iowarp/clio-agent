@@ -23,13 +23,18 @@ PROMPT = Path(CASE_DIR, "prompt.txt").read_text().strip()
 
 @matcher
 def selected_by_impact_not_size(run):
-    """The chosen fire is justified by downwind impact (smoke over monitored
-    population), not acreage. Reads typed state the analysis expert emits;
-    lenient until the state shape is locked in by review."""
-    blob = " ".join(str(s).lower() for s in run.extra.get("structured_outputs", []))
-    if not blob:
-        return False
-    return "impact" in blob or "downwind" in blob or "affected" in blob
+    """The run reached an impact decision and, when impact is present, named a
+    selected fire. Reads the merged typed `workflow_state.impact`, not prose."""
+    impact = (run.extra.get("workflow_state") or {}).get("impact") or {}
+    if "present" not in impact:
+        return False  # analysis never emitted a typed impact decision
+    if impact.get("present"):
+        return bool(impact.get("selected_fire"))
+    # A null-impact result is valid ONLY if it was a real overlap evaluation,
+    # not an acquisition/geometry failure dressed up as "no impact".
+    reason = str(impact.get("reason", "")).lower()
+    failureish = ("missing", "fail", "error", "unavailable", "could not", "prevent", "no fire data")
+    return not any(w in reason for w in failureish)
 
 
 @pytest.mark.real_case

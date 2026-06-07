@@ -291,6 +291,7 @@ class ClioAgent(SUT):
                 structured.append(runtime["structured_outputs"])
         active_id = str(active.get("active_agent_blueprint_id") or "")
         error_info = assistant.get("error_info")
+        workflow_state = self._extract_workflow_state(messages)
         return Run(
             output=self._message_text(assistant),
             steps=steps,
@@ -306,11 +307,59 @@ class ClioAgent(SUT):
                 "stop_reason": str(assistant.get("stop_reason") or ""),
                 "provider": self._provider,
                 "model": self._model,
+                "workflow_state": workflow_state,
                 "structured_outputs": structured,
                 "artifacts": self._artifacts(tool_calls),
                 "trace_path": str(trace_path) if trace_path else "",
             },
         )
+
+    @staticmethod
+    def _extract_workflow_state(messages: list[dict]) -> dict[str, Any]:
+        """Parse the merged typed `workflow_state` the runtime embeds in message
+        text (e.g. 'Retained typed workflow state: {"workflow_state": {...}}').
+        Returns the deepest-merged state seen across messages."""
+        import json as _json
+
+        merged: dict[str, Any] = {}
+        for message in messages:
+            # Scan ALL parts (any type), plus metadata — the merged typed state
+            # is embedded in non-"text" parts the user-facing extractor skips.
+            chunks = []
+            parts = message.get("parts") or message.get("content") or []
+            if isinstance(parts, list):
+                for p in parts:
+                    if isinstance(p, dict) and p.get("text"):
+                        chunks.append(str(p["text"]))
+            meta = message.get("metadata") or {}
+            if meta:
+                chunks.append(_json.dumps(meta, default=str))
+            text = "\n".join(chunks)
+            idx = 0
+            while True:
+                hit = text.find('{"workflow_state"', idx)
+                if hit < 0:
+                    break
+                depth, end = 0, -1
+                for i in range(hit, len(text)):
+                    if text[i] == "{":
+                        depth += 1
+                    elif text[i] == "}":
+                        depth -= 1
+                        if depth == 0:
+                            end = i + 1
+                            break
+                if end < 0:
+                    break
+                try:
+                    obj = _json.loads(text[hit:end])
+                    ws = obj.get("workflow_state")
+                    if isinstance(ws, dict):
+                        merged.update(ws)
+                except _json.JSONDecodeError:
+                    pass
+                idx = end
+        return merged
 
     @staticmethod
     def _artifacts(tool_calls: list[ToolCall]) -> list[str]:
