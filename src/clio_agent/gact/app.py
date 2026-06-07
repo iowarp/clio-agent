@@ -5500,6 +5500,55 @@ def _infer_workflow_state_from_tool_call_row(row: Mapping[str, Any]) -> dict[str
             }
         return {}
 
+    # Wildfire acquisition grounding: derive region + selected fire + per-layer
+    # acquisition paths directly from the arcgis query result, so the workflow
+    # does not depend on the small model chaining a separate geography/bbox step.
+    # Scoped to ndp_query_arcgis_features (EarthScope uses ndp_stage_resource).
+    if name == "ndp_query_arcgis_features":
+        decoded = _decode_geo(result)
+        if not isinstance(decoded, Mapping) or decoded.get("ok") is False or "error" in decoded:
+            return {}
+        src = str(decoded.get("source_url") or "").lower()
+        feats = decoded.get("features") if isinstance(decoded.get("features"), list) else []
+        out_path = decoded.get("output_path")
+        if any(tok in src for tok in ("perimeter", "wfigs", "fire")):
+            best, best_score = None, -1.0
+            for feat in feats:
+                props = feat.get("properties") if isinstance(feat, Mapping) else None
+                bbox = (feat.get("geometry") or {}).get("bbox") if isinstance(feat, Mapping) else None
+                if not isinstance(props, Mapping) or not (isinstance(bbox, list) and len(bbox) == 4):
+                    continue
+                try:
+                    acres = float(props.get("poly_GISAcres") or props.get("acres") or 0)
+                    contained = float(props.get("attr_PercentContained") or props.get("percent_contained") or 0)
+                except (TypeError, ValueError):
+                    continue
+                score = acres * (1.0 - min(max(contained, 0.0), 100.0) / 100.0)  # active burning area, not raw size
+                if score > best_score:
+                    best, best_score = (props, bbox), score
+            state: dict[str, Any] = {}
+            if best is not None:
+                props, bbox = best
+                pad = 1.0
+                state["region"] = [round(bbox[0] - pad, 4), round(bbox[1] - pad, 4),
+                                   round(bbox[2] + pad, 4), round(bbox[3] + pad, 4)]
+                state["fire"] = {"selected": {
+                    "name": props.get("attr_IncidentName") or props.get("name"),
+                    "acres": props.get("poly_GISAcres"),
+                    "percent_contained": props.get("attr_PercentContained"),
+                    "county": props.get("attr_POOCounty"),
+                    "state": props.get("attr_POOState"),
+                }}
+            if out_path:
+                state.setdefault("acquisition", {})["fire_path"] = out_path
+            return state
+        if "smoke" in src:
+            return {"acquisition": {"smoke_path": out_path, "smoke_present": bool(feats)}}
+        if any(tok in src for tok in ("airnow", "monitor", "air_now", "aqi")):
+            return {"acquisition": {"monitors_path": out_path,
+                                    "monitors_found": int(decoded.get("feature_count") or 0)}}
+        return {}
+
     if name == "ndp_filter_earthscope_station_catalog":
         for text in _tool_evidence_texts(result):
             state = _infer_ndp_station_catalog_state_from_tool_evidence(text)
