@@ -167,10 +167,29 @@ async def render_feature_map(
     """
     args: dict[str, Any] = {
         "layers": layers,
-        "output_path": output_path,
+        "output_path": _safe_artifact_path(output_path),
         "title": title,
         "basemap": basemap,
     }
     if bbox is not None:
         args["bbox"] = bbox
     return await call_clio_kit_tool("geo", "render_feature_map", args)
+
+
+def _safe_artifact_path(requested: str) -> str:
+    """Force the render output into a writable workspace artifact dir.
+
+    Models routinely invent unwritable absolute paths (e.g. ``/workspace/x.png``).
+    The render runs in a separate clio-kit subprocess, so the path must be an
+    absolute, writable location. We keep the caller's *filename* but relocate it
+    under the artifact root (``CLIO_ARTIFACTS_ROOT`` or ``<cwd>/.clio/artifacts/geo``).
+    """
+    import os
+    from pathlib import Path
+
+    root = Path(os.environ.get("CLIO_ARTIFACTS_ROOT") or (Path.cwd() / ".clio" / "artifacts" / "geo"))
+    root.mkdir(parents=True, exist_ok=True)
+    name = Path(str(requested or "map.png")).name or "map.png"
+    if not name.lower().endswith(".png"):
+        name += ".png"
+    return str((root / name).resolve())

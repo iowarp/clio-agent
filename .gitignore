@@ -164,7 +164,9 @@ docs/ref/
 scratch/
 
 # benchmark run logs & artifacts (evidence, not source)
-benchmark/**/runs/
+benchmark/**/runs/*
+!benchmark/**/runs/
+!benchmark/**/runs/REVIEW_LOG.md
 benchmark/**/trace*.jsonl
 benchmark/**/report-*.md
 /tmp/

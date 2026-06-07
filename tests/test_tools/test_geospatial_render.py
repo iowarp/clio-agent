@@ -60,7 +60,9 @@ async def test_render_forwards_args_to_clio_kit(monkeypatch: pytest.MonkeyPatch)
 
     assert captured["server"] == "geo"
     assert captured["tool"] == "render_feature_map"
-    assert captured["args"]["output_path"] == "out.png"
+    # output_path is relocated into the writable artifact root, filename kept.
+    assert captured["args"]["output_path"].endswith("out.png")
+    assert "artifacts" in captured["args"]["output_path"]
     assert captured["args"]["title"] == "T"
     assert captured["args"]["basemap"] is False
     assert "bbox" not in captured["args"]  # omitted when not provided
