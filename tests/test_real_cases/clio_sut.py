@@ -75,7 +75,12 @@ class ClioAgent(SUT):
 
     def available(self, provider: str, model: str) -> bool:
         """A cell is runnable when the gact server is reachable and the
-        provider exists (and, for argonne, a Globus token is cached)."""
+        provider is usable. agent-test treats False as 'skip (blank)', not a
+        failure, so unconfigured cells (no API key, no Globus token) drop out of
+        ``--matrix`` cleanly instead of erroring at bind time.
+
+        Usability = the provider's ``is_authenticated`` from the registry, plus a
+        live Globus-token check for argonne (whose token isn't reflected there)."""
         try:
             with httpx.Client(base_url=self._base_url, timeout=5.0) as http:
                 # A 503 here just means no LM is wired yet (bind fixes that);
@@ -94,7 +99,7 @@ class ClioAgent(SUT):
                 return bool(argonne_auth.tokens_exist())
             except Exception:
                 return False
-        return True
+        return bool(row.get("is_authenticated"))
 
     def bind(self, provider: str, model: str, overrides: dict[str, Any] | None = None) -> "ClioAgent":
         """Configure the live LM for this cell. This is the model-iteration
@@ -173,9 +178,11 @@ class ClioAgent(SUT):
     def _resolve_trace_path(self, spec: dict[str, Any]) -> Path | None:
         """SUT-owned bootup semantic: where trace logs go.
 
-        Convention: traces land in ``<case_dir>/runs/<label>-<provider>.jsonl``
-        so per-cell matrix runs never collide. An explicit ``trace_path`` wins;
-        if neither is given, no trace is written.
+        Convention: traces land in
+        ``<case_dir>/runs/<label>-<provider>-<model>.jsonl`` so per-cell matrix
+        runs never collide (different models on the same provider get distinct
+        files). An explicit ``trace_path`` wins; if neither is given, no trace is
+        written.
         """
         if spec.get("trace_path"):
             return Path(str(spec["trace_path"]))
@@ -183,7 +190,8 @@ class ClioAgent(SUT):
         if not case_dir:
             return None
         label = str(spec.get("run_label") or "run")
-        cell = (self._provider or "cell").replace("/", "_")
+        cell = "-".join(part for part in (self._provider, self._model) if part) or "cell"
+        cell = cell.replace("/", "_").replace(":", "_")
         return Path(str(case_dir)) / "runs" / f"{label}-{cell}.jsonl"
 
     # --- recipe helpers -----------------------------------------------------
