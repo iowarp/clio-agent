@@ -1,0 +1,323 @@
+"""CLIO agent-test SUT.
+
+Defines *how to run CLIO* for agent-test: set the provider/model (so the model
+matrix works), activate an Agent Blueprint, send a prompt to the live gact
+server, and normalize the resulting session trace into an agent-test ``Run``.
+
+Tests stay declarative: they pass the runtime semantics (provider, model,
+blueprint, prompt) and assert on the ``Run``. Everything about *driving* CLIO
+lives here.
+
+Runtime knobs (env):
+  CLIO_GACT_URL          base URL of a running gact server (default :17960)
+  CLIO_AGENTTEST_CELLS   "provider:model,provider:model" cells() override
+The blueprint, marketplace source, workdir, and timeout are passed per call via
+the ``agent.run({...})`` input dict.
+"""
+
+from __future__ import annotations
+
+import os
+import time
+from pathlib import Path
+from typing import Any
+
+import httpx
+
+from agent_test import Run, SUT, ToolCall
+
+DEFAULT_BASE_URL = os.environ.get("CLIO_GACT_URL", "http://127.0.0.1:17960").rstrip("/")
+# Default matrix cell: the EarthScope driver provider. provider id matches a row
+# from GET /v1/providers; the underlying LiteLLM kind + api_base are looked up
+# there at bind time, so adding a cell needs no code change.
+DEFAULT_CELLS = [("argonne_sophia", "openai/gpt-oss-120b")]
+
+
+def _cells_from_env() -> list[tuple[str, str]]:
+    raw = os.environ.get("CLIO_AGENTTEST_CELLS", "").strip()
+    if not raw:
+        return list(DEFAULT_CELLS)
+    cells: list[tuple[str, str]] = []
+    for chunk in raw.split(","):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        provider, _, model = chunk.partition(":")
+        cells.append((provider.strip(), model.strip()))
+    return cells or list(DEFAULT_CELLS)
+
+
+class ClioAgent(SUT):
+    """Drives a live CLIO gact server through one blueprint turn."""
+
+    name = "clio"
+
+    def __init__(self) -> None:
+        self._base_url = DEFAULT_BASE_URL
+        self._provider = ""
+        self._model = ""
+        self._overrides: dict[str, Any] = {}
+
+    # --- agent-test SUT contract -------------------------------------------
+
+    def cells(self) -> list[tuple[str, str]]:
+        return _cells_from_env()
+
+    def available(self, provider: str, model: str) -> bool:
+        """A cell is runnable when the gact server is reachable and the
+        provider exists (and, for argonne, a Globus token is cached)."""
+        try:
+            with httpx.Client(base_url=self._base_url, timeout=5.0) as http:
+                # A 503 here just means no LM is wired yet (bind fixes that);
+                # only a transport failure means the server is unreachable.
+                http.get("/v1/health")
+                rows = http.get("/v1/providers").json().get("providers", [])
+        except Exception:
+            return False
+        row = next((r for r in rows if r.get("id") == provider), None)
+        if row is None:
+            return False
+        if str(row.get("metadata", {}).get("provider_kind") or "").startswith("argonne"):
+            try:
+                from clio_agent.providers import argonne_auth
+
+                return bool(argonne_auth.tokens_exist())
+            except Exception:
+                return False
+        return True
+
+    def bind(self, provider: str, model: str, overrides: dict[str, Any] | None = None) -> "ClioAgent":
+        """Configure the live LM for this cell. This is the model-iteration
+        seam: provider/model come from the matrix, not the test body."""
+        self._provider, self._model, self._overrides = provider, model, dict(overrides or {})
+        with httpx.Client(base_url=self._base_url, timeout=120.0) as http:
+            http.get("/v1/health")  # reachability; 503 == "no LM yet", which we are about to fix
+            rows = http.get("/v1/providers").json().get("providers", [])
+            row = next((r for r in rows if r.get("id") == provider), None)
+            if row is None:
+                raise RuntimeError(f"unknown provider cell: {provider!r}")
+            kind = str(row.get("metadata", {}).get("provider_kind") or provider)
+            payload = {
+                "provider": kind,
+                "api_base": str(row.get("api_base") or ""),
+                "model": model or str(row.get("default_model") or ""),
+                "api_key": os.environ.get("CLIO_LM_API_KEY", "x"),
+                "temperature": float(self._overrides.get("temperature", 1.0)),
+                "max_tokens": int(self._overrides.get("max_tokens", 32000)),
+            }
+            if "system_prompt" in self._overrides:
+                payload["system_prompt"] = self._overrides["system_prompt"]
+            http.put("/v1/providers/lm", json=payload, timeout=180.0).raise_for_status()
+            self._wait_lm_ready(http, timeout_s=float(self._overrides.get("bind_timeout_s", 120.0)))
+        return self
+
+    def _wait_lm_ready(self, http: httpx.Client, *, timeout_s: float) -> None:
+        """LM wiring is async after PUT; wait until it reports ready so the
+        first turn does not race a 503 ('no ClioAgent wired')."""
+        deadline = time.monotonic() + timeout_s
+        last = ""
+        while time.monotonic() < deadline:
+            info = http.get("/v1/providers/lm").json()
+            state = str(info.get("state") or "")
+            last = state or str(info.get("status_message") or "")
+            if state == "ready":
+                return
+            if state == "error":
+                raise RuntimeError(f"LM provider failed to configure: {info.get('error') or info}")
+            time.sleep(1.0)
+        raise TimeoutError(f"LM provider not ready in {timeout_s:g}s (last state: {last!r})")
+
+    def invoke(self, input: Any) -> Run:
+        """Run one blueprint turn and normalize the trace into a Run.
+
+        input: {"task": str, "blueprint_id": str, "marketplace_source"?: str,
+                "workdir"?: str, "timeout_s"?: float, "trace_path"?: str}
+        """
+        spec = input if isinstance(input, dict) else {"task": str(input)}
+        prompt = str(spec.get("task") or spec.get("prompt") or "")
+        blueprint_id = str(spec.get("blueprint_id") or "")
+        workdir = str(spec.get("workdir") or Path.cwd())
+        timeout_s = float(spec.get("timeout_s", 600.0))
+
+        with httpx.Client(base_url=self._base_url, timeout=200.0) as http:
+            workspace_id = self._ensure_workspace(http, Path(workdir))
+            if spec.get("marketplace_source"):
+                http.post(
+                    "/v1/agent-blueprints/install",
+                    json={"source": spec["marketplace_source"], "scope": "workspace", "workspace_id": workspace_id},
+                    timeout=180.0,
+                ).raise_for_status()
+            session_id = self._create_session(http, workspace_id, blueprint_id)
+            assistant = self._post_turn(http, session_id, prompt, timeout_s)
+            messages = http.get(f"/v1/sessions/{session_id}/messages").json()["messages"]
+            children = [r for r in http.get("/v1/sessions").json()["sessions"]
+                        if r.get("parent_session_id") == session_id]
+            active = http.get(f"/v1/sessions/{session_id}/agent-blueprint").json()
+
+        trace_path = self._resolve_trace_path(spec)
+        run = self._to_run(assistant, messages, children, active, session_id, blueprint_id, trace_path)
+        if trace_path:
+            self._dump_trace(trace_path, run, messages, children, active)
+        return run
+
+    def _resolve_trace_path(self, spec: dict[str, Any]) -> Path | None:
+        """SUT-owned bootup semantic: where trace logs go.
+
+        Convention: traces land in ``<case_dir>/runs/<label>-<provider>.jsonl``
+        so per-cell matrix runs never collide. An explicit ``trace_path`` wins;
+        if neither is given, no trace is written.
+        """
+        if spec.get("trace_path"):
+            return Path(str(spec["trace_path"]))
+        case_dir = spec.get("case_dir")
+        if not case_dir:
+            return None
+        label = str(spec.get("run_label") or "run")
+        cell = (self._provider or "cell").replace("/", "_")
+        return Path(str(case_dir)) / "runs" / f"{label}-{cell}.jsonl"
+
+    # --- recipe helpers -----------------------------------------------------
+
+    def _ensure_workspace(self, http: httpx.Client, root: Path) -> str:
+        target = str(root.expanduser().resolve())
+        for row in http.get("/v1/workspaces").json().get("workspaces", []):
+            if str(row.get("root_path") or "") == target:
+                return str(row.get("id") or "")
+        created = http.post("/v1/workspaces", json={
+            "name": "agent-test", "root_path": target, "storage_root": str(Path(target) / ".clio")})
+        created.raise_for_status()
+        return str(created.json().get("id") or "")
+
+    def _create_session(self, http: httpx.Client, workspace_id: str, blueprint_id: str) -> str:
+        created = http.post("/v1/sessions", json={"title": "agent-test", "workspace_id": workspace_id})
+        created.raise_for_status()
+        session_id = created.json()["id"]
+        if blueprint_id:
+            http.post(f"/v1/sessions/{session_id}/agent-blueprint",
+                      json={"blueprint_id": blueprint_id}).raise_for_status()
+        return session_id
+
+    def _post_turn(self, http: httpx.Client, session_id: str, prompt: str, timeout_s: float) -> dict[str, Any]:
+        ack = http.post(f"/v1/sessions/{session_id}/messages",
+                        json={"parts": [{"type": "text", "text": prompt}]})
+        ack.raise_for_status()
+        user_id = ack.json()["message_id"]
+        deadline = time.monotonic() + timeout_s
+        while time.monotonic() < deadline:
+            messages = http.get(f"/v1/sessions/{session_id}/messages").json()["messages"]
+            for index, message in enumerate(messages):
+                if message.get("id") == user_id:
+                    if index > 0 and messages[index - 1].get("role") == "assistant":
+                        assistant = messages[index - 1]
+                        if str(assistant.get("stop_reason") or "") or assistant.get("error_info") is not None:
+                            return assistant
+                    break
+            time.sleep(1.0)
+        raise TimeoutError(f"assistant turn did not settle in {timeout_s:g}s")
+
+    # --- normalization ------------------------------------------------------
+
+    @staticmethod
+    def _message_text(message: dict[str, Any]) -> str:
+        parts = message.get("parts") or message.get("content") or []
+        if isinstance(parts, str):
+            return parts
+        out = []
+        for part in parts:
+            if isinstance(part, dict) and part.get("type") in (None, "text"):
+                out.append(str(part.get("text") or ""))
+        return "\n".join(t for t in out if t)
+
+    def _to_run(self, assistant: dict, messages: list[dict], children: list[dict],
+                active: dict, session_id: str, blueprint_id: str, trace_path: Path | None = None) -> Run:
+        import json as _json
+
+        tool_calls: list[ToolCall] = []
+        steps: list[list[str]] = []
+        cost = 0.0
+        structured: list[dict] = []
+        for message in reversed(messages):  # oldest-first
+            if message.get("role") != "assistant":
+                continue
+            cost += float(message.get("cost_usd") or 0.0)
+            meta = message.get("metadata") or {}
+            for tool in (meta.get("tools_called") or []):
+                if not isinstance(tool, dict):
+                    continue
+                result = tool.get("result")
+                if isinstance(result, str):
+                    try:
+                        result = _json.loads(result)
+                    except _json.JSONDecodeError:
+                        pass
+                tool_calls.append(ToolCall(
+                    name=str(tool.get("name") or ""),
+                    args=tool.get("args") if isinstance(tool.get("args"), dict) else {},
+                    output=result,
+                ))
+            handoffs = [str(h.get("agent_id") or h.get("to") or h.get("delegate_to") or "")
+                        for h in (meta.get("expert_handoffs") or []) if isinstance(h, dict)]
+            handoffs = [h for h in handoffs if h]
+            if handoffs:
+                steps.append(handoffs)
+            runtime = meta.get("agent_runtime") or {}
+            if isinstance(runtime.get("structured_outputs"), dict):
+                structured.append(runtime["structured_outputs"])
+        active_id = str(active.get("active_agent_blueprint_id") or "")
+        error_info = assistant.get("error_info")
+        return Run(
+            output=self._message_text(assistant),
+            steps=steps,
+            tool_calls=tool_calls,
+            usage={"cost_usd": cost, "steps": sum(len(t) for t in steps)},
+            error=str(error_info) if error_info else None,
+            extra={
+                "session_id": session_id,
+                "blueprint_id": blueprint_id,
+                "active_agent_blueprint_id": active_id,
+                "blueprint_activated": active_id == blueprint_id,
+                "child_session_ids": [str(c.get("id")) for c in children],
+                "stop_reason": str(assistant.get("stop_reason") or ""),
+                "provider": self._provider,
+                "model": self._model,
+                "structured_outputs": structured,
+                "artifacts": self._artifacts(tool_calls),
+                "trace_path": str(trace_path) if trace_path else "",
+            },
+        )
+
+    @staticmethod
+    def _artifacts(tool_calls: list[ToolCall]) -> list[str]:
+        """Collect produced artifact paths from tool outputs (e.g. the rendered
+        map's ``output_path``), keeping only ones that exist on disk."""
+        paths: list[str] = []
+        for call in tool_calls:
+            out = call.output
+            if not isinstance(out, dict):
+                continue
+            for key in ("output_path", "artifact", "path", "png", "plot_path", "map_artifact"):
+                value = out.get(key)
+                if isinstance(value, str) and value:
+                    paths.append(value)
+        seen: set[str] = set()
+        result: list[str] = []
+        for p in paths:
+            if p in seen:
+                continue
+            seen.add(p)
+            if Path(p).is_file():
+                result.append(p)
+        return result
+
+    def _dump_trace(self, path: str, run: Run, messages: list, children: list, active: dict) -> None:
+        import json
+
+        out = Path(path)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        with out.open("w", encoding="utf-8") as fh:
+            fh.write(json.dumps({"record": "run", "run": run.to_dict()}, default=str) + "\n")
+            fh.write(json.dumps({"record": "agent_blueprint", "active": active}, default=str) + "\n")
+            for child in children:
+                fh.write(json.dumps({"record": "child_session", "child": child}, default=str) + "\n")
+            for message in messages:
+                fh.write(json.dumps({"record": "message", "message": message}, default=str) + "\n")
