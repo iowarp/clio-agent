@@ -5550,12 +5550,30 @@ def _infer_workflow_state_from_tool_call_row(row: Mapping[str, Any]) -> dict[str
                     return [min(xs), min(ys), max(xs), max(ys)]
                 return None
 
+            # Optional deterministic region scope: when a target region bbox is
+            # provided (CLIO_WILDFIRE_REGION_BBOX="min_lon,min_lat,max_lon,max_lat"),
+            # only consider fires centered inside it. Lets a caller analyze a
+            # specific region without depending on the model passing a bbox.
+            region_filter: list[float] | None = None
+            raw_filter = os.environ.get("CLIO_WILDFIRE_REGION_BBOX", "").strip()
+            if raw_filter:
+                try:
+                    parts = [float(x) for x in raw_filter.split(",")]
+                    if len(parts) == 4:
+                        region_filter = parts
+                except (TypeError, ValueError):
+                    region_filter = None
+
             best, best_score = None, -1.0
             for feat in feats:
                 props = feat.get("properties") if isinstance(feat, Mapping) else None
                 bbox = _bbox_from_geom(feat.get("geometry")) if isinstance(feat, Mapping) else None
                 if not isinstance(props, Mapping) or not (isinstance(bbox, list) and len(bbox) == 4):
                     continue
+                if region_filter is not None:
+                    cx, cy = (bbox[0] + bbox[2]) / 2.0, (bbox[1] + bbox[3]) / 2.0
+                    if not (region_filter[0] <= cx <= region_filter[2] and region_filter[1] <= cy <= region_filter[3]):
+                        continue
                 try:
                     acres = float(props.get("poly_GISAcres") or props.get("acres") or 0)
                     contained = float(props.get("attr_PercentContained") or props.get("percent_contained") or 0)
