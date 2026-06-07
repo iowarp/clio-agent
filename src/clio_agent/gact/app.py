@@ -5469,6 +5469,37 @@ def _infer_workflow_state_from_tool_call_row(row: Mapping[str, Any]) -> dict[str
     name = str(row.get("name") or "").strip()
     args = row.get("args")
     result = row.get("result")
+
+    def _decode_geo(value: Any) -> Any:
+        if isinstance(value, str):
+            with suppress(json.JSONDecodeError, TypeError):
+                return json.loads(value)
+        return value
+
+    # Geo tools: ground typed state in the actual tool result so it does not
+    # depend on the (small) model re-emitting it. Additive + scoped by tool
+    # name; EarthScope never calls these tools, so this cannot regress it.
+    if name == "geospatial_bounding_box":
+        decoded = _decode_geo(result)
+        bbox = decoded.get("bbox") if isinstance(decoded, Mapping) else None
+        if (
+            isinstance(bbox, list)
+            and len(bbox) == 4
+            and all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in bbox)
+        ):
+            return {"region": [float(v) for v in bbox]}
+        return {}
+    if name == "geospatial_points_in_polygons":
+        decoded = _decode_geo(result)
+        if isinstance(decoded, Mapping) and "matched_count" in decoded:
+            return {
+                "impact_overlap": {
+                    "monitors_under_smoke": int(decoded.get("matched_count") or 0),
+                    "monitors_total": int(decoded.get("points_total") or 0),
+                }
+            }
+        return {}
+
     if name == "ndp_filter_earthscope_station_catalog":
         for text in _tool_evidence_texts(result):
             state = _infer_ndp_station_catalog_state_from_tool_evidence(text)
