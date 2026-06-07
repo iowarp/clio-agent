@@ -44,6 +44,7 @@ __all__ = [
     "expand_env",
     "spec_from_declaration",
     "specs_from_mapping",
+    "resolve_expert_servers",
     "load_mcp_servers",
     "transport_for",
 ]
@@ -237,6 +238,46 @@ def specs_from_mapping(
         str(name): spec_from_declaration(str(name), value, source=source, env=env)
         for name, value in servers.items()
     }
+
+
+def resolve_expert_servers(
+    global_specs: Mapping[str, MCPServerSpec],
+    selection: Any,
+    *,
+    env: Mapping[str, str] | None = None,
+    source: str = "expert",
+) -> dict[str, MCPServerSpec]:
+    """Resolve the MCP servers a single expert gets in its context.
+
+    Two-level model: ``AGENT.md`` declares the pack-global servers (``global_specs``);
+    each expert's frontmatter ``mcp_servers`` then says which it wants locally:
+
+    - a **list of names** -> pick those from ``global_specs`` (an undeclared name
+      is recorded as a validation error, not silently dropped),
+    - a **mapping** ``name -> command/url`` -> expert-LOCAL servers (added to, or
+      overriding by name, the global set for this expert only).
+
+    An expert that declares no ``mcp_servers`` simply gets nothing extra; its
+    fine-grained tool visibility still comes from its ``tools:`` list.
+    """
+    out: dict[str, MCPServerSpec] = {}
+    if isinstance(selection, Mapping):
+        return specs_from_mapping(selection, source=source, env=env)
+    if isinstance(selection, (list, tuple)):
+        for raw in selection:
+            name = str(raw).strip()
+            if not name:
+                continue
+            if name in global_specs:
+                out[name] = global_specs[name]
+            else:
+                out[name] = MCPServerSpec(
+                    name=name,
+                    transport="stdio",
+                    source=source,
+                    validation_errors=(f"expert references undeclared mcp server {name!r}",),
+                )
+    return out
 
 
 def _read_mcp_yaml(path: Path) -> dict[str, Any]:

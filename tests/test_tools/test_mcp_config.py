@@ -9,6 +9,7 @@ from clio_agent.tools.mcp_config import (
     MCPConfigError,
     expand_env,
     load_mcp_servers,
+    resolve_expert_servers,
     spec_from_declaration,
     specs_from_mapping,
     transport_for,
@@ -88,6 +89,23 @@ def test_load_precedence_frontmatter_user_workspace(tmp_path):
     assert servers["ndp"].source == "workspace"
     assert servers["geo"].command == "pack-geo"  # only in pack frontmatter
     assert servers["weather"].command == "user-weather"
+
+
+def test_resolve_expert_servers_select_and_local():
+    glob = specs_from_mapping(
+        {"ndp": "uvx clio-kit run ndp", "geo": "uvx clio-kit run geo"}, source="pack:p"
+    )
+    # per-expert SELECT from global by name
+    sel = resolve_expert_servers(glob, ["geo"])
+    assert set(sel) == {"geo"} and sel["geo"].command == "uvx"
+    # undeclared name -> recorded error, not silent
+    bad = resolve_expert_servers(glob, ["nope"])
+    assert not bad["nope"].usable
+    # per-expert LOCAL declaration (mapping) adds/overrides for that expert only
+    local = resolve_expert_servers(glob, {"private": "uvx my-private-mcp"})
+    assert local["private"].command == "uvx" and local["private"].args == ("my-private-mcp",)
+    # no declaration -> nothing extra
+    assert resolve_expert_servers(glob, None) == {}
 
 
 def test_transport_for():
