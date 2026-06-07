@@ -149,26 +149,6 @@ TOOL_CATALOG: dict[str, ToolCatalogEntry] = {
         {"seismic", "sac", "waveform", "visualization", "plot"},
         visible_to={"visualization"},
     ),
-    "genomics_inspect_fasta": _entry(
-        "genomics_inspect_fasta",
-        "genomics",
-        {"genomics", "fasta", "sequence", "inspect"},
-    ),
-    "genomics_summarize_vcf": _entry(
-        "genomics_summarize_vcf",
-        "genomics",
-        {"genomics", "vcf", "variants", "sequence", "analysis"},
-    ),
-    "genomics_vcf_cohort_qc": _entry(
-        "genomics_vcf_cohort_qc",
-        "genomics",
-        {"genomics", "vcf", "cohort", "qc", "samples", "heterozygosity"},
-    ),
-    "materials_inspect_cif": _entry(
-        "materials_inspect_cif",
-        "materials",
-        {"materials", "crystallography", "cif", "structure", "inspect"},
-    ),
     "geospatial_inspect_geojson": _entry(
         "geospatial_inspect_geojson",
         "geospatial",
@@ -203,37 +183,6 @@ TOOL_CATALOG: dict[str, ToolCatalogEntry] = {
         "terrain_derivation",
         {"geospatial", "terrain", "lidar", "point-cloud", "gridding"},
         visible_to={"data", "analysis"},
-    ),
-    "hpc_parse_darshan_text": _entry(
-        "hpc_parse_darshan_text",
-        "hpc",
-        {"hpc", "darshan", "io", "trace", "parse", "performance"},
-    ),
-    "hpc_compare_darshan_traces": _entry(
-        "hpc_compare_darshan_traces",
-        "hpc",
-        {"hpc", "darshan", "io", "trace", "regression", "diff", "performance"},
-    ),
-    "format_convert_hdf5_to_parquet": _entry(
-        "format_convert_hdf5_to_parquet",
-        "format_bridge",
-        {"scientific-data", "format", "conversion", "hdf5", "parquet", "integrity"},
-        visible_to={"data", "analysis"},
-    ),
-    "imaging_inspect_png": _entry(
-        "imaging_inspect_png",
-        "imaging",
-        {"imaging", "microscopy", "png", "image", "inspect"},
-    ),
-    "mass_spec_inspect_mzml": _entry(
-        "mass_spec_inspect_mzml",
-        "mass_spec",
-        {"mass-spectrometry", "mzml", "proteomics", "spectra", "inspect"},
-    ),
-    "mass_spec_lfq_differential_abundance": _entry(
-        "mass_spec_lfq_differential_abundance",
-        "mass_spec",
-        {"mass-spectrometry", "proteomics", "lfq", "differential", "abundance"},
     ),
     "plot_histogram": _entry(
         "plot_histogram", "visualization", {"visualization", "plot", "histogram"}

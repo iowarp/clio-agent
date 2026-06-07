@@ -7621,11 +7621,14 @@ _SCALAR_FIELD_TYPES: dict[str, Any] = {
     "number": float,
     "bool": bool,
     "boolean": bool,
-    "dict": dict[str, Any],
-    "object": dict[str, Any],
-    "json": dict[str, Any],
-    "list": list[str],
-    "array": list[str],
+    # Bare collections stay UNTYPED (a generic ``array`` may hold numbers, so
+    # defaulting to list[str] would mis-coerce). Element typing is opt-in via the
+    # ``list[float]`` / ``list[str]`` DSL form.
+    "dict": dict,
+    "object": dict,
+    "json": dict,
+    "list": list,
+    "array": list,
 }
 
 
