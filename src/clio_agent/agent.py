@@ -108,18 +108,6 @@ SAC_SUFFIXES = {".sac", ".tar", ".tgz", ".gz"}
 PLANNER_HIDDEN_TOOL_NAMES = {"fs_read_file", "fs_apply_edit_write"}
 
 
-def _mass_spec_qc_sentence(result: Any) -> str:
-    """Return readable mass-spec QC wording from an mzML tool result."""
-    if not isinstance(result, Mapping):
-        return ""
-    ms_levels = result.get("ms_levels")
-    ms_level_text = json.dumps(ms_levels, sort_keys=True) if isinstance(ms_levels, Mapping) else "{}"
-    tic_total = result.get("total_ion_current_total", result.get("tic_total", 0))
-    tic_max = result.get("total_ion_current_max", result.get("tic_max", 0))
-    return (
-        f"MS level distribution: {ms_level_text}. "
-        f"Total ion current evidence: total={tic_total}, max={tic_max}."
-    )
 _ROUTING_MODE_OVERRIDE: contextvars.ContextVar[str] = contextvars.ContextVar(
     "clio_routing_mode_override",
     default="",
