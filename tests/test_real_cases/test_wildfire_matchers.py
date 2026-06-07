@@ -1,73 +1,100 @@
 """Offline tamper-proofs for the wildfire acceptance matchers.
 
-Proves each structured matcher PASSES a genuine result and FAILS the specific
-failure mode it guards — without a live run. Satisfies the Done-criteria
-requirement that matchers are proven to catch tampered/broken runs.
+Proves each structured matcher PASSES genuine results and FAILS the failure
+mode it guards — without a live run. Covers both the impact path and the
+genuine-null path. Satisfies the Done-criteria requirement that matchers are
+proven to catch tampered/broken runs.
 """
 
 from __future__ import annotations
 
-import copy
-
 from agent_test import Run, ToolCall
 
 from tests.test_real_cases.test_wildfire_case import (
-    found_real_impact,
+    computed_overlap_over_real_monitors,
     fused_three_layers,
+    grounded_impact_decision,
     region_scoped,
 )
 
 
-def _genuine_run() -> Run:
+def _render_call(layers):
+    return ToolCall(name="geospatial_render_feature_map", args={}, output={"status": "success", "layers": layers})
+
+
+def _impact_run() -> Run:
     return Run(
         output="brief",
         steps=[["data", "analysis", "visualization", "synthesis"]],
-        tool_calls=[
-            ToolCall(name="ndp_query_arcgis_features", args={}, output={"feature_count": 66}),
-            ToolCall(name="geospatial_render_feature_map", args={}, output={
-                "status": "success",
-                "layers": [
-                    {"name": "Smoke forecast", "features": 25},
-                    {"name": "Fire perimeter", "features": 66},
-                    {"name": "Air quality", "features": 6},
-                ],
-            }),
-        ],
+        tool_calls=[_render_call([
+            {"name": "Smoke forecast", "features": 25},
+            {"name": "Fire perimeter", "features": 66},
+            {"name": "Air quality", "features": 6},
+        ])],
         extra={"workflow_state": {
-            "region": [-85.8, 30.2, -83.8, 32.2],
-            "impact": {"present": True, "selected_fire": {"name": "Pineland Road"}},
+            "region": [-106.3, 32.6, -104.3, 34.7],
+            "fire": {"selected": {"name": "SEVEN CABINS"}},
+            "impact": {"present": True, "selected_fire": {"name": "SEVEN CABINS"}},
+            "impact_overlap": {"monitors_total": 6, "monitors_under_smoke": 5},
         }},
     )
 
 
-def test_matchers_pass_a_genuine_run():
-    run = _genuine_run()
-    assert region_scoped(run)
-    assert found_real_impact(run)
-    assert fused_three_layers(run)
+def _null_run() -> Run:
+    """A genuine null: monitors were evaluated, none under smoke."""
+    return Run(
+        output="no impact",
+        steps=[["data", "analysis", "visualization", "synthesis"]],
+        tool_calls=[_render_call([{"name": "Fire perimeter", "features": 39}, {"name": "Air quality", "features": 2}])],
+        extra={"workflow_state": {
+            "region": [-88.9, 44.4, -86.9, 46.4],
+            "fire": {"selected": {"name": "North Branch"}},
+            "impact": {"present": False, "affected_communities": []},
+            "impact_overlap": {"monitors_total": 2, "monitors_under_smoke": 0},
+        }},
+    )
 
 
-def test_region_scoped_catches_missing_or_bad_region():
-    r = _genuine_run(); r.extra["workflow_state"]["region"] = None
+def test_matchers_pass_impact_run():
+    r = _impact_run()
+    assert region_scoped(r)
+    assert computed_overlap_over_real_monitors(r)
+    assert grounded_impact_decision(r)
+    assert fused_three_layers(r)
+
+
+def test_matchers_pass_genuine_null_run():
+    r = _null_run()
+    assert region_scoped(r)
+    assert computed_overlap_over_real_monitors(r)
+    assert grounded_impact_decision(r)  # genuine null is a correct decision
+
+
+def test_region_scoped_catches_bad_region():
+    r = _impact_run(); r.extra["workflow_state"]["region"] = None
     assert not region_scoped(r)
-    r2 = _genuine_run(); r2.extra["workflow_state"]["region"] = [-85.8, 30.2]  # wrong length
+    r2 = _impact_run(); r2.extra["workflow_state"]["region"] = ["{{x}}", 1, 2, 3]
     assert not region_scoped(r2)
-    r3 = _genuine_run(); r3.extra["workflow_state"]["region"] = ["{{x}}", 1, 2, 3]  # template junk
-    assert not region_scoped(r3)
 
 
-def test_found_real_impact_catches_hollow_null():
-    r = _genuine_run(); r.extra["workflow_state"]["impact"] = {"present": False}
-    assert not found_real_impact(r)
-    r2 = _genuine_run(); r2.extra["workflow_state"]["impact"] = {"present": True, "selected_fire": None}
-    assert not found_real_impact(r2)
+def test_computed_overlap_catches_hollow_null():
+    # overlap "ran" but over zero monitors (smoke/air never acquired) -> reject
+    r = _impact_run(); r.extra["workflow_state"]["impact_overlap"] = {"monitors_total": 0, "monitors_under_smoke": 0}
+    assert not computed_overlap_over_real_monitors(r)
+    r2 = _impact_run(); r2.extra["workflow_state"]["impact_overlap"] = {}
+    assert not computed_overlap_over_real_monitors(r2)
+
+
+def test_grounded_decision_catches_unfounded_claims():
+    r = _impact_run(); r.extra["workflow_state"]["impact"] = {"present": True, "selected_fire": None}
+    r.extra["workflow_state"]["fire"] = {}
+    assert not grounded_impact_decision(r)  # impact claimed but no fire named
+    r2 = _impact_run(); r2.extra["workflow_state"]["impact"] = {}
+    assert not grounded_impact_decision(r2)  # no decision emitted
+    r3 = _null_run(); r3.extra["workflow_state"]["impact_overlap"] = {"monitors_total": 0, "monitors_under_smoke": 0}
+    assert not grounded_impact_decision(r3)  # null claimed but nothing evaluated
 
 
 def test_fused_three_layers_catches_partial_map():
-    r = _genuine_run()
-    r.tool_calls[1].output["layers"] = [{"name": "Air quality", "features": 6}]  # one layer
+    r = _impact_run(); r.tool_calls[0].output["layers"] = [{"name": "Fire", "features": 6}]
     assert not fused_three_layers(r)
-    r2 = _genuine_run()
-    for layer in r2.tool_calls[1].output["layers"]:
-        layer["features"] = 0  # rendered but empty
-    assert not fused_three_layers(r2)

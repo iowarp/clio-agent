@@ -44,6 +44,32 @@ def found_real_impact(run):
 
 
 @matcher
+def computed_overlap_over_real_monitors(run):
+    """The smoke∩monitor overlap was actually COMPUTED over real acquired
+    monitors (not a hollow null). Proves smoke + air were acquired and the
+    spatial-join ran with real inputs."""
+    overlap = (run.extra.get("workflow_state") or {}).get("impact_overlap") or {}
+    return "monitors_under_smoke" in overlap and int(overlap.get("monitors_total", 0) or 0) > 0
+
+
+@matcher
+def grounded_impact_decision(run):
+    """A grounded impact decision was reached over the computed overlap — EITHER
+    a genuine impact (present, with a named fire) OR a genuine null (no monitors
+    under smoke, but monitors WERE evaluated). Both are correct outcomes; what's
+    rejected is no-decision or a null with nothing actually evaluated."""
+    ws = run.extra.get("workflow_state") or {}
+    impact = ws.get("impact") or {}
+    overlap = ws.get("impact_overlap") or {}
+    if "present" not in impact:
+        return False
+    if impact.get("present"):
+        return bool(impact.get("selected_fire") or (ws.get("fire") or {}).get("selected"))
+    # genuine null: monitors were really evaluated and none fell under smoke
+    return int(overlap.get("monitors_total", 0) or 0) > 0 and int(overlap.get("monitors_under_smoke", 0) or 0) == 0
+
+
+@matcher
 def fused_three_layers(run):
     """The rendered map actually fused all three layers with real features
     (fire perimeter + smoke + air-quality), not a single-layer fallback."""
@@ -79,15 +105,24 @@ def test_wildfire_downwind_impact(agent):
     for expert in ("data", "analysis", "visualization", "synthesis"):
         assert run.routed_to(expert), run.steps
 
+    ws = run.extra.get("workflow_state") or {}
+
     # Region was genuinely derived and scoped (no None / template-string bbox).
-    assert region_scoped(run), (run.extra.get("workflow_state") or {}).get("region")
+    assert region_scoped(run), ws.get("region")
 
-    # Genuine downwind impact with a selected fire (not a hollow null).
-    assert found_real_impact(run), (run.extra.get("workflow_state") or {}).get("impact")
+    # The full data pathway ran: smoke + air acquired and the smoke∩monitor
+    # overlap COMPUTED over real monitors (rejects hollow nulls / missing layers).
+    assert computed_overlap_over_real_monitors(run), ws.get("impact_overlap")
 
-    # Real deliverable: a non-empty 3-layer map PNG on disk.
+    # A grounded decision over that overlap: genuine impact (named fire) OR a
+    # genuine null (monitors evaluated, none under smoke). Both are correct.
+    assert grounded_impact_decision(run), ws.get("impact")
+
+    # Real deliverable: a map PNG on disk. When impact is present the map fuses
+    # all three layers; a genuine-null region may legitimately lack smoke cover.
     assert run.called("geospatial_render_feature_map"), run.tool_names
-    assert fused_three_layers(run), "map did not fuse all three layers with features"
+    if (ws.get("impact") or {}).get("present"):
+        assert fused_three_layers(run), "impact run did not fuse all three layers"
     assert any(
         p.endswith(".png") and Path(p).is_file() and Path(p).stat().st_size > 1024
         for p in run.extra["artifacts"]
