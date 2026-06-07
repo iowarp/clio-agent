@@ -17,10 +17,17 @@ from pathlib import Path
 
 import pytest
 
+import os
+
 from agent_test import matcher
 
 CASE_DIR = "benchmark/ndp-wildfire-smoke-impact"
-PROMPT = Path(CASE_DIR, "prompt.txt").read_text().strip()
+# Region-parametrizable: CLIO_WILDFIRE_PROMPT selects a region-variant prompt
+# (prompt_west / prompt_southwest / prompt_southeast) to prove the case
+# generalizes across distinct regions; defaults to the nationwide prompt.
+_PROMPT_FILE = os.environ.get("CLIO_WILDFIRE_PROMPT", "prompt.txt")
+PROMPT = Path(CASE_DIR, _PROMPT_FILE).read_text().strip()
+_RUN_LABEL = "acceptance-" + Path(_PROMPT_FILE).stem.replace("prompt", "").strip("_-") if _PROMPT_FILE != "prompt.txt" else "acceptance"
 
 
 @matcher
@@ -92,7 +99,7 @@ def test_wildfire_downwind_impact(agent):
         "task": PROMPT,
         "blueprint_id": "wildfire-smoke-impact-review",
         "case_dir": CASE_DIR,
-        "run_label": "acceptance",
+        "run_label": _RUN_LABEL,
         "timeout_s": 600,
     })
 
