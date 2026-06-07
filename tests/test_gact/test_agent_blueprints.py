@@ -26,15 +26,10 @@ from clio_agent.gact.app import (
     _ACTIVE_BLUEPRINT_TOOL_ROWS,
     _ACTIVE_CHILD_TOOL_COMPLETIONS,
     _ACTIVE_GACT_SESSION_ID,
-    _append_inferred_workflow_state_from_trajectory,
-    _append_nested_workflow_state,
     _append_prediction_workflow_state,
-    _append_session_workflow_state_context,
-    _augment_ndp_search_result_with_runtime_state,
     _blueprint_fanout_config,
     _blueprint_module_kind,
     _blueprint_runtime_signature,
-    _BlueprintTerminalWorkflowState,
     _bubbled_child_evidence_output_summary,
     _build_blueprint_dspy_module,
     _build_child_expert_tool,
@@ -51,44 +46,25 @@ from clio_agent.gact.app import (
     _dynamic_child_expert_tools,
     _extract_tools_called_from_trajectory,
     _failed_child_delegation_output_summary,
-    _failed_child_delegation_workflow_state,
     _fallback_answer_from_delegation,
-    _filter_child_handoffs_by_contract_order,
     _filter_workflow_state_for_blueprint_authority,
     _gact_app_context,
     _gact_turn_timeout_s,
-    _infer_ndp_plot_state_from_tool_evidence,
-    _infer_ndp_profile_state_from_tool_evidence,
-    _infer_ndp_search_state_from_tool_evidence,
-    _infer_ndp_station_catalog_state_from_tool_evidence,
-    _infer_ndp_workflow_state_from_tool_evidence,
-    _infer_ndp_workflow_state_from_tool_rows,
-    _infer_ndp_workflow_state_from_trajectory,
     _latest_delegation_output_summary,
     _latest_final_child_output_summary,
-    _make_ndp_workflow_tool_interceptor,
     _merge_tool_call_rows,
-    _ndp_terminal_workflow_state_final_answer_fallback,
     _next_expert_marker_handoffs,
-    _positive_ndp_workflow_state_final_answer_fallback,
     _prediction_structured_metadata,
-    _prior_staged_ndp_resource_result,
-    _reconcile_workflow_state,
     _recording_blueprint_tool,
-    _recover_blueprint_react_tool_intent,
     _run_blueprint_dspy_agent,
     _runtime_dynamic_agent_children_context,
     _sanitize_scan_limited_model_evidence,
     _seed_child_tool_completions_from_resume_prompt,
     _should_execute_delegated_handoff,
-    _station_resource_search_state_from_rows,
-    _tool_agent_empty_answer_fallback,
     _tool_calls_from_handoff_rows,
-    _tool_derived_contract_evidence_for_prediction,
     _tool_session_context,
     _user_agent_bool_param,
     _user_facing_dynamic_evidence_summary,
-    _workflow_state_from_handoff_rows,
     _workflow_state_from_outputs,
     build_app,
 )
@@ -244,8 +220,7 @@ def test_default_registry_agent_blueprint_is_discoverable(
     monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
     _write_default_registry_blueprint(tmp_path)
     blueprints = {
-        row.id: row
-        for row in discover_agent_blueprints(home=tmp_path, cwd=tmp_path / "workspace")
+        row.id: row for row in discover_agent_blueprints(home=tmp_path, cwd=tmp_path / "workspace")
     }
     agents = {
         row.id: row
@@ -262,7 +237,10 @@ def test_default_registry_agent_blueprint_is_discoverable(
     assert agents["variant"].metadata["agent_blueprint_id"] == DEFAULT_AGENT_BLUEPRINT_ID
     assert agents["variant"].metadata["agent_blueprint_scope"] == "global"
     assert "agent_blueprints/builtin" not in agents["variant"].metadata["definition_path"]
-    assert blueprints[DEFAULT_AGENT_BLUEPRINT_ID].metadata["install"]["commit"] == DEFAULT_REGISTRY_COMMIT
+    assert (
+        blueprints[DEFAULT_AGENT_BLUEPRINT_ID].metadata["install"]["commit"]
+        == DEFAULT_REGISTRY_COMMIT
+    )
 
 
 def test_builtin_agents_are_loaded_from_default_registry_snapshot(
@@ -291,13 +269,11 @@ def test_agent_blueprint_rejects_free_text_continuation_contracts(tmp_path: Path
 
     assert rows["root"].enabled is False
     assert any(
-        "uses free-text routing predicates" in error
-        for error in rows["root"].validation_errors
+        "uses free-text routing predicates" in error for error in rows["root"].validation_errors
     )
     assert validation["enabled"] is False
     assert any(
-        "root: continuation contract 'prose_gate' uses free-text routing predicates"
-        in error
+        "root: continuation contract 'prose_gate' uses free-text routing predicates" in error
         for error in validation["validation_errors"]
     )
 
@@ -497,7 +473,10 @@ Search NDP datasets.
     assert "ndp_catalog" in rows
     assert rows["ndp_catalog"].parent_id == "variant"
     assert rows["ndp_catalog"].metadata["definition_kind"] == "agent_blueprint"
-    assert "modules/ndp-collector/experts/ndp_catalog.md" in rows["ndp_catalog"].metadata["definition_path"]
+    assert (
+        "modules/ndp-collector/experts/ndp_catalog.md"
+        in rows["ndp_catalog"].metadata["definition_path"]
+    )
 
 
 def test_blueprint_runtime_signature_preserves_fields_and_normalizes_structured_outputs() -> None:
@@ -706,15 +685,27 @@ def test_blueprint_fanout_child_id_coercion_matrix(value: Any, expected: list[st
     ("raw", "expected"),
     [
         ({}, {"enabled": False, "max_workers": 1, "strategy": "declared_children"}),
-        ({"enabled": True, "max_workers": 3}, {"enabled": True, "max_workers": 3, "strategy": "declared_children"}),
-        ({"enabled": "false", "max_workers": 0}, {"enabled": False, "max_workers": 1, "strategy": "declared_children"}),
-        ({"enabled": "yes", "workers": "2", "strategy": "map_reduce"}, {"enabled": True, "max_workers": 2, "strategy": "map_reduce"}),
+        (
+            {"enabled": True, "max_workers": 3},
+            {"enabled": True, "max_workers": 3, "strategy": "declared_children"},
+        ),
+        (
+            {"enabled": "false", "max_workers": 0},
+            {"enabled": False, "max_workers": 1, "strategy": "declared_children"},
+        ),
+        (
+            {"enabled": "yes", "workers": "2", "strategy": "map_reduce"},
+            {"enabled": True, "max_workers": 2, "strategy": "map_reduce"},
+        ),
     ],
 )
 def test_blueprint_fanout_config_matrix(raw: dict[str, Any], expected: dict[str, Any]) -> None:
-    assert _blueprint_fanout_config(
-        AgentDef(id="root", source="expert_pack", title="Root", fanout=raw)
-    ) == expected
+    assert (
+        _blueprint_fanout_config(
+            AgentDef(id="root", source="expert_pack", title="Root", fanout=raw)
+        )
+        == expected
+    )
 
 
 def test_gact_turn_timeout_default_and_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -921,7 +912,10 @@ def test_blueprint_continuation_contract_passes_observed_sac_path_to_visualizati
 
     assert len(rows) == 1
     assert rows[0]["delegate_to"] == "visualization"
-    assert "Runtime-selected local SAC path: /home/user/clio/tmp/earthscope_IU_ANMO_00_BHZ.sac" in rows[0]["question"]
+    assert (
+        "Runtime-selected local SAC path: /home/user/clio/tmp/earthscope_IU_ANMO_00_BHZ.sac"
+        in rows[0]["question"]
+    )
     assert "Call sac_plot_traces with this exact filepath" in rows[0]["question"]
 
 
@@ -1062,9 +1056,7 @@ def test_blueprint_continuation_contract_routes_metadata_only_to_synthesis_not_a
                         "id": "data_blocked_to_synthesis",
                         "when_child_completed": "data",
                         "when_state": {
-                            "acquisition.status": {
-                                "in": ["metadata_only", "blocked", "missing"]
-                            }
+                            "acquisition.status": {"in": ["metadata_only", "blocked", "missing"]}
                         },
                         "match": "all",
                         "next_expert": "synthesis",
@@ -1130,9 +1122,7 @@ def test_blueprint_continuation_contract_routes_analysis_ready_acquisition_to_an
                         "id": "data_blocked_to_synthesis",
                         "when_child_completed": "data",
                         "when_state": {
-                            "acquisition.status": {
-                                "in": ["metadata_only", "blocked", "missing"]
-                            }
+                            "acquisition.status": {"in": ["metadata_only", "blocked", "missing"]}
                         },
                         "match": "all",
                         "next_expert": "synthesis",
@@ -1358,65 +1348,6 @@ def test_event_catalog_authority_empty_state_is_typed_blocker() -> None:
     assert state["event_context"]["limitations"] == ["no_live_event_catalog_tool"]
 
 
-def test_workflow_state_reconcile_sanitizes_unverified_geospatial_provenance() -> None:
-    state: dict[str, Any] = {
-        "geospatial": {
-            "status": "resolved",
-            "center": {"lat": 34.2, "lon": -118.4},
-            "provenance": "USGS basin outline + UNAVCO GNSS station footprints",
-        },
-        "region": {
-            "center": {"lat": 34.2, "lon": -118.4},
-            "provenance": "EarthScope NDP GNSS station catalogue",
-        },
-    }
-
-    _reconcile_workflow_state(state)
-
-    assert state["geospatial"]["provenance"] == "model_geographic_prior"
-    assert state["region"]["provenance"] == "model_geographic_prior"
-    assert "no geocoder/source tool was called" in state["geospatial"]["warnings"][0]
-
-
-def test_workflow_state_reconcile_converts_no_tool_event_catalog_to_blocker() -> None:
-    state: dict[str, Any] = {
-        "event_catalog": {
-            "status": "unavailable",
-            "reason": "No seismic event data present; only GNSS time-series available",
-        }
-    }
-
-    _reconcile_workflow_state(state)
-
-    assert "event_catalog" not in state
-    assert state["event_context"] == {
-        "status": "blocked",
-        "blocker": "no live event catalog tool available in this pack",
-        "verified_event_count": None,
-        "limitations": ["no_live_event_catalog_tool"],
-        "next_action": (
-            "add or call a live earthquake/event catalog tool for event counts, "
-            "magnitudes, and dates"
-        ),
-    }
-
-
-def test_workflow_state_reconcile_converts_missing_event_catalog_resource_to_blocker() -> None:
-    state: dict[str, Any] = {
-        "event_catalog": {
-            "status": "metadata_found",
-            "resource_status": "missing",
-        }
-    }
-
-    _reconcile_workflow_state(state)
-
-    assert "event_catalog" not in state
-    assert state["event_context"]["status"] == "blocked"
-    assert state["event_context"]["verified_event_count"] is None
-    assert state["event_context"]["limitations"] == ["no_live_event_catalog_tool"]
-
-
 def test_scan_limited_model_evidence_sanitizer_removes_unsupported_record_claims() -> None:
     output = """
 Selected GNSS station - VDCY.
@@ -1502,185 +1433,6 @@ Coverage rating: moderate (sufficient for basin-scale analysis).
     assert "sufficient for basin" not in sanitized
     assert "full record" not in sanitized
     assert "full-file cadence/duration/gap quality was not verified" in sanitized
-
-
-def test_workflow_state_reconcile_sanitizes_scan_limited_quality_shortcuts() -> None:
-    state: dict[str, Any] = {
-        "profile": {
-            "status": "complete",
-            "rows_scanned": 250000,
-            "rows_profiled": 5000,
-            "numeric_summary_rows": 5000,
-            "scan_limited": True,
-            "profile_limited": True,
-            "missing_values": {"time": 0, "east": 0},
-            "missing_values_rows": 5000,
-            "missing_values_scope": "profiled_rows",
-        },
-        "selected_station": {
-            "station_id": "MTA1",
-            "columns_ok": True,
-            "missing_values": False,
-            "suitability": "high",
-            "data_quality": "excellent",
-        },
-        "assessment": {
-            "suitability": "high",
-            "coverage": "moderate",
-            "coverage_rating": "moderate",
-            "missing_values_percent": 0,
-            "notes": "high-quality, gap-free data",
-            "quality_consistent": True,
-            "time_coverage_days": 5,
-            "data_quality": {
-                "cadence_hz_estimated": 55,
-                "missing_values": False,
-                "noise_level": "low",
-                "uncertainty_m": {"east": 0.033},
-            },
-            "selected_station": {
-                "station_id": "MTA1",
-                "missing_values": False,
-                "suitability": "high",
-            }
-        },
-    }
-
-    _reconcile_workflow_state(state)
-
-    assert state["profile"]["missing_values_scope"] == "profiled_rows"
-    assert state["profile"]["missing_values_rows"] == 5000
-    assert "missing_values" not in state["selected_station"]
-    assert "suitability" not in state["selected_station"]
-    assert "data_quality" not in state["selected_station"]
-    assert "missing_values" not in state["assessment"]["selected_station"]
-    assert "suitability" not in state["assessment"]["selected_station"]
-    assert "suitability" not in state["assessment"]
-    assert "data_quality" not in state["assessment"]
-    assert "coverage" not in state["assessment"]
-    assert "coverage_rating" not in state["assessment"]
-    assert "missing_values_percent" not in state["assessment"]
-    assert "notes" not in state["assessment"]
-    assert "quality_consistent" not in state["assessment"]
-    assert "time_coverage_days" not in state["assessment"]
-
-
-def test_positive_ndp_fallback_replaces_unsupported_scan_limited_final_claims() -> None:
-    state: dict[str, Any] = {
-        "acquisition": {
-            "status": "staged",
-            "analysis_ready": True,
-            "local_path": "/tmp/MTA1.CI.LY_.30.csv",
-            "source_url": "https://example.test/MTA1.CI.LY_.30.csv",
-            "required_columns": ["time", "east", "north", "up"],
-        },
-        "resource_candidate": {
-            "station_id": "MTA1",
-            "station_distance_km": 0.713,
-            "geographically_grounded": True,
-        },
-        "profile": {
-            "status": "complete",
-            "columns": ["time", "east", "north", "up", "sigEE"],
-            "numeric_columns": ["time", "east", "north", "up", "sigEE"],
-            "rows_scanned": 250000,
-            "rows_profiled": 5000,
-            "numeric_summary_rows": 5000,
-            "scan_limited": True,
-            "profile_limited": True,
-            "missing_values": {"time": 0, "east": 0, "north": 0, "up": 0},
-            "missing_values_rows": 5000,
-            "missing_values_scope": "profiled_rows",
-        },
-        "artifact": {
-            "path": "/tmp/MTA1.CI.LY_.30_plot.png",
-            "columns": ["east", "north", "up"],
-            "status": "ready",
-        },
-    }
-    answer = (
-        "Resource MTA1.CI.LY_.30.csv has 30-second sampling. "
-        "Rows examined: 250000 at 30 s cadence. "
-        "Missing values: 0% in all required columns. "
-        "`qChannel` is a quality flag where 0 = good. "
-        "Typical GNSS daily solutions have uncertainties of a few mm. "
-        "The CSV contains a continuous time series. "
-        "Overall data quality is high."
-    )
-
-    fallback = _positive_ndp_workflow_state_final_answer_fallback(answer, state)
-
-    assert fallback
-    assert "30-second sampling" not in fallback
-    assert "30 s cadence" not in fallback
-    assert "0 = good" not in fallback
-    assert "Typical GNSS daily solutions" not in fallback
-    assert "continuous time series" not in fallback
-    assert "0% missing" not in fallback
-    assert "high" not in fallback.casefold()
-    assert "rows scanned: 250000" in fallback
-    assert "rows profiled for numeric summary: 5000" in fallback
-    assert "scope: profiled_rows" in fallback
-    assert "Full-file cadence, duration, gaps" in fallback
-
-
-def test_positive_ndp_fallback_uses_handoff_wrapped_workflow_state() -> None:
-    rows = [
-        {
-            "agent_id": "synthesis",
-            "status": "completed",
-            "output_summary": json.dumps(
-                {
-                    "workflow_state": {
-                        "acquisition": {
-                            "status": "staged",
-                            "analysis_ready": True,
-                            "local_path": "/tmp/JPLM.PW.LY_.00.csv",
-                            "source_url": "https://example.test/JPLM.PW.LY_.00.csv",
-                            "required_columns": ["time", "east", "north", "up"],
-                        },
-                        "resource_candidate": {
-                            "station_id": "JPLM",
-                            "station_distance_km": 2.519,
-                            "geographically_grounded": True,
-                        },
-                        "profile": {
-                            "status": "complete",
-                            "columns": ["time", "east", "north", "up", "sigEE"],
-                            "numeric_columns": ["time", "east", "north", "up", "sigEE"],
-                            "rows_scanned": 250000,
-                            "rows_profiled": 5000,
-                            "numeric_summary_rows": 5000,
-                            "scan_limited": True,
-                            "profile_limited": True,
-                            "missing_values": {"time": 0, "east": 0, "north": 0, "up": 0},
-                            "missing_values_rows": 5000,
-                            "missing_values_scope": "profiled_rows",
-                        },
-                        "artifact": {
-                            "path": "/tmp/JPLM.PW.LY_.00_plot.png",
-                            "columns": ["east", "north", "up"],
-                            "status": "ready",
-                        },
-                    }
-                }
-            ),
-        }
-    ]
-    state = _workflow_state_from_handoff_rows(rows)
-
-    fallback = _positive_ndp_workflow_state_final_answer_fallback(
-        "The file contains about 250000 rows from a full scan, "
-        "with no missing values in any column and qChannel 0 = good.",
-        state,
-    )
-
-    assert fallback
-    assert "JPLM" in fallback
-    assert "full scan" not in fallback.casefold()
-    assert "no missing values in any column" not in fallback.casefold()
-    assert "0 = good" not in fallback
-    assert "scope: profiled_rows" in fallback
 
 
 def test_compact_dynamic_delegation_output_sanitizes_scan_limited_evidence() -> None:
@@ -1783,90 +1535,6 @@ def test_compact_dynamic_delegation_output_retains_reconciled_workflow_state(
     assert '"status": "missing"' not in compacted
 
 
-def test_compact_dynamic_delegation_output_prefers_scan_limited_typed_state(
-    tmp_path: Path,
-) -> None:
-    staged_path = tmp_path / "MTA1.CI.LY_.30.csv"
-    staged_path.write_text("time,east,north,up\n1,0,0,0\n", encoding="utf-8")
-    output = "\n".join(
-        [
-            "Assessment note: high-quality, gap-free data within 1 km.",
-            "Coverage rating: moderate (sufficient for basin-scale analysis).",
-            json.dumps(
-                {
-                    "workflow_state": {
-                        "acquisition": {
-                            "status": "staged",
-                            "analysis_ready": True,
-                            "local_path": str(staged_path),
-                            "required_columns": ["time", "east", "north", "up"],
-                            "source_url": "https://example.test/MTA1.CI.LY_.30.csv",
-                        },
-                        "profile": {
-                            "status": "complete",
-                            "scan_limited": True,
-                            "profile_limited": True,
-                            "rows_scanned": 250000,
-                            "rows_profiled": 5000,
-                            "missing_values": {
-                                "time": 0,
-                                "east": 0,
-                                "north": 0,
-                                "up": 0,
-                            },
-                            "missing_values_rows": 5000,
-                            "missing_values_scope": "profiled_rows",
-                        },
-                        "assessment": {
-                            "coverage": "moderate",
-                            "notes": "high-quality, gap-free data",
-                        },
-                    }
-                }
-            ),
-            *[f"filler line {index}" for index in range(220)],
-        ]
-    )
-
-    compacted = _compact_dynamic_delegation_output(output, limit=800)
-
-    assert compacted.startswith("Retained typed workflow state:")
-    assert '"scan_limited": true' in compacted
-    assert '"rows_scanned": 250000' in compacted
-    assert '"missing_values_scope": "profiled_rows"' in compacted
-    assert "Assessment note" not in compacted
-    assert "Coverage rating" not in compacted
-    assert "high-quality" not in compacted
-    assert '"coverage"' not in compacted
-    assert '"notes"' not in compacted
-
-
-def test_compact_dynamic_delegation_output_sanitizes_unverified_geospatial_prose() -> None:
-    output = "\n".join(
-        [
-            "Region: circle centered at 34.2, -118.25.",
-            "Region summary: radius 50 km (USGS Los Angeles Basin definition; high confidence).",
-            "Circular region: centre 34.05 N / -118.25 W, radius 50 km (high confidence, model-derived prior).",
-            "Provenance: USGS Los Angeles Basin geomorphology description; SCEC Southern California regional model extents.",
-            "Method: derived from USGS basin boundary polygon, simplified to enclosing circle",
-            '{"workflow_state": {"geospatial": {"provenance": "Derived from PBO GNSS stations and USGS basin definition"}}}',
-            *[f"filler line {index}" for index in range(220)],
-        ]
-    )
-
-    compacted = _compact_dynamic_delegation_output(output, limit=800)
-
-    assert "USGS Los Angeles Basin definition" not in compacted
-    assert "USGS Los Angeles Basin geomorphology" not in compacted
-    assert "SCEC Southern California" not in compacted
-    assert "USGS basin boundary polygon" not in compacted
-    assert "PBO GNSS stations" not in compacted
-    assert "high confidence" not in compacted
-    assert "model_geographic_prior" in compacted
-    assert "model-derived geography" in compacted
-    assert "no source/geocoder tool evidence retained" in compacted
-
-
 def test_compact_dynamic_delegation_output_sanitizes_event_context_no_events_claims() -> None:
     output = "\n".join(
         [
@@ -1903,57 +1571,6 @@ def test_compact_dynamic_delegation_output_sanitizes_event_context_no_events_cla
     assert "no live event-catalog evidence was available" in compacted
     assert '"status": "blocked"' in compacted
     assert '"no_live_event_catalog_tool"' in compacted
-
-
-def test_workflow_state_merge_clears_stale_acquisition_blocker_after_staging(
-    tmp_path: Path,
-) -> None:
-    staged_csv = tmp_path / "MTA1.CI.LY_.30.csv"
-    staged_csv.write_text("time,east,north,up\n2026-01-01,0,0,0\n", encoding="utf-8")
-    state = _workflow_state_from_outputs(
-        [
-            json.dumps(
-                {
-                    "workflow_state": {
-                        "resource_discovery": {
-                            "status": "search_required",
-                            "reason": "station time-series resource still has to be discovered",
-                        },
-                        "acquisition": {
-                            "status": "metadata_only",
-                            "analysis_ready": False,
-                            "blocker": "staged resource is station metadata, not a GNSS time-series CSV",
-                            "metadata_path": "/workspace/earthscope_converted_data.csv",
-                        },
-                    }
-                }
-            ),
-            json.dumps(
-                {
-                    "workflow_state": {
-                        "resource_candidate": {
-                            "status": "selected",
-                            "resource_name": "MTA1.CI.LY_.30.csv",
-                            "resource_url": "https://ds2.example.test/raw_csv/MTA1.CI.LY_.30.csv",
-                        },
-                        "acquisition": {
-                            "status": "staged",
-                            "analysis_ready": True,
-                            "blocker": "staged resource is station metadata, not a GNSS time-series CSV",
-                            "local_path": str(staged_csv),
-                            "source_url": "https://ds2.example.test/raw_csv/MTA1.CI.LY_.30.csv",
-                        },
-                    }
-                }
-            ),
-        ]
-    )
-
-    assert state["acquisition"]["status"] == "staged"
-    assert state["acquisition"]["analysis_ready"] is True
-    assert state["acquisition"]["local_path"] == str(staged_csv)
-    assert "blocker" not in state["acquisition"]
-    assert state["resource_discovery"]["status"] == "resource_found"
 
 
 def test_workflow_state_merge_preserves_non_empty_tool_provenance(tmp_path: Path) -> None:
@@ -2003,524 +1620,13 @@ def test_workflow_state_merge_preserves_non_empty_tool_provenance(tmp_path: Path
     )
 
     assert state["resource_candidate"]["dataset_id"] == "1b0c1b93-f164-4025-bd7b-000252b5ca18"
-    assert state["resource_candidate"]["resource_url"] == "https://ds2.example.test/raw_csv/MTA1.CI.LY_.30.csv"
-    assert state["acquisition"]["source_url"] == "https://ds2.example.test/raw_csv/MTA1.CI.LY_.30.csv"
-
-
-def test_regional_station_csv_requires_filtered_station_metadata_provenance(
-    tmp_path: Path,
-) -> None:
-    staged_csv = tmp_path / "WWMT.CI.LY_.40.csv"
-    staged_csv.write_text("time,east,north,up\n2026-01-01,0,0,0\n", encoding="utf-8")
-
-    state = _workflow_state_from_outputs(
-        [
-            json.dumps(
-                {
-                    "workflow_state": {
-                        "geospatial": {
-                            "status": "resolved",
-                            "region_name": "Bay Area, California",
-                            "center_lat": 37.77,
-                            "center_lon": -122.42,
-                            "radius_km": 75,
-                        },
-                        "resource_candidate": {
-                            "status": "selected",
-                            "resource_name": "WWMT.CI.LY_.40.csv",
-                            "resource_url": "https://ds2.example.test/raw_csv/WWMT.CI.LY_.40.csv",
-                        },
-                        "acquisition": {
-                            "status": "staged",
-                            "analysis_ready": True,
-                            "local_path": str(staged_csv),
-                            "source_url": "https://ds2.example.test/raw_csv/WWMT.CI.LY_.40.csv",
-                        },
-                    }
-                }
-            )
-        ]
+    assert (
+        state["resource_candidate"]["resource_url"]
+        == "https://ds2.example.test/raw_csv/MTA1.CI.LY_.30.csv"
     )
-
-    assert state["acquisition"]["status"] == "staged"
-    assert state["acquisition"]["analysis_ready"] is False
-    assert "filtered station metadata" in state["acquisition"]["blocker"]
-    assert state["resource_candidate"]["station_id"] == "WWMT"
-    assert state["resource_candidate"]["geographically_grounded"] is False
-
-
-def test_regional_station_csv_requires_filtered_metadata_with_geography_state(
-    tmp_path: Path,
-) -> None:
-    """Regression for r94: models may call the resolved region `geography`."""
-
-    staged_csv = tmp_path / "LL01.PW.LY_.00.csv"
-    staged_csv.write_text("time,east,north,up\n2026-01-01,0,0,0\n", encoding="utf-8")
-
-    state = _workflow_state_from_outputs(
-        [
-            json.dumps(
-                {
-                    "workflow_state": {
-                        "geography": {
-                            "type": "Point",
-                            "coordinates": [-118.25, 34.05],
-                            "radius_km": 50,
-                        },
-                        "resource_candidate": {
-                            "status": "selected",
-                            "resource_name": "LL01.PW.LY_.00.csv",
-                            "resource_url": "https://ds2.example.test/raw_csv/LL01.PW.LY_.00.csv",
-                        },
-                        "acquisition": {
-                            "status": "staged",
-                            "analysis_ready": True,
-                            "local_path": str(staged_csv),
-                            "source_url": "https://ds2.example.test/raw_csv/LL01.PW.LY_.00.csv",
-                        },
-                    }
-                }
-            )
-        ]
+    assert (
+        state["acquisition"]["source_url"] == "https://ds2.example.test/raw_csv/MTA1.CI.LY_.30.csv"
     )
-
-    assert state["acquisition"]["analysis_ready"] is False
-    assert "filtered station metadata" in state["acquisition"]["blocker"]
-    assert state["resource_candidate"]["station_id"] == "LL01"
-    assert state["resource_candidate"]["geographically_grounded"] is False
-
-
-def test_regional_station_csv_is_analysis_ready_when_station_metadata_matches(
-    tmp_path: Path,
-) -> None:
-    staged_csv = tmp_path / "UCSF.CI.LY_.40.csv"
-    staged_csv.write_text("time,east,north,up\n2026-01-01,0,0,0\n", encoding="utf-8")
-
-    state = _workflow_state_from_outputs(
-        [
-            json.dumps(
-                {
-                    "workflow_state": {
-                        "geospatial": {
-                            "status": "resolved",
-                            "region_name": "Bay Area, California",
-                            "center_lat": 37.77,
-                            "center_lon": -122.42,
-                            "radius_km": 75,
-                        },
-                        "station_catalog": {
-                            "status": "ranked_metadata_only",
-                            "stations": [
-                                {
-                                    "station": "UCSF",
-                                    "latitude": 37.7637,
-                                    "longitude": -122.4587,
-                                    "distance_km": 3.5,
-                                }
-                            ],
-                        },
-                        "resource_candidate": {
-                            "status": "selected",
-                            "resource_name": "UCSF.CI.LY_.40.csv",
-                            "resource_url": "https://ds2.example.test/raw_csv/UCSF.CI.LY_.40.csv",
-                        },
-                        "acquisition": {
-                            "status": "staged",
-                            "analysis_ready": True,
-                            "local_path": str(staged_csv),
-                            "source_url": "https://ds2.example.test/raw_csv/UCSF.CI.LY_.40.csv",
-                        },
-                    }
-                }
-            )
-        ]
-    )
-
-    assert state["acquisition"]["status"] == "staged"
-    assert state["acquisition"]["analysis_ready"] is True
-    assert "blocker" not in state["acquisition"]
-    assert state["resource_candidate"]["station_id"] == "UCSF"
-    assert state["resource_candidate"]["geographically_grounded"] is True
-    assert state["resource_candidate"]["station_distance_km"] == 3.5
-
-
-def test_later_synthesis_state_cannot_downgrade_tool_grounded_station_csv(
-    tmp_path: Path,
-) -> None:
-    staged_csv = tmp_path / "MTA1.CI.LY_.30.csv"
-    staged_csv.write_text("time,east,north,up\n2026-01-01,0,0,0\n", encoding="utf-8")
-
-    state = _workflow_state_from_outputs(
-        [
-            json.dumps(
-                {
-                    "workflow_state": {
-                        "geospatial": {
-                            "status": "resolved",
-                            "center_lat": 34.05,
-                            "center_lon": -118.25,
-                            "radius_km": 50,
-                        },
-                        "station_catalog": {
-                            "status": "ranked_metadata_only",
-                            "stations": [
-                                {
-                                    "station": "MTA1",
-                                    "latitude": 34.05522077,
-                                    "longitude": -118.24550778,
-                                    "distance_km": 0.713,
-                                }
-                            ],
-                        },
-                        "resource_candidate": {
-                            "status": "selected",
-                            "resource_name": "MTA1.CI.LY_.30.csv",
-                            "resource_url": (
-                                "https://ds2.example.test/raw_csv/MTA1.CI.LY_.30.csv"
-                            ),
-                        },
-                        "acquisition": {
-                            "status": "staged",
-                            "analysis_ready": True,
-                            "local_path": str(staged_csv),
-                            "source_url": (
-                                "https://ds2.example.test/raw_csv/MTA1.CI.LY_.30.csv"
-                            ),
-                        },
-                    }
-                }
-            ),
-            json.dumps(
-                {
-                    "workflow_state": {
-                        "resource_candidate": {
-                            "status": "selected",
-                            "station_id": "MTA1",
-                            "station_distance_km": 0.713,
-                            "resource_name": "MTA1.CI.LY_.30.csv",
-                            "geographically_grounded": False,
-                        },
-                        "acquisition": {
-                            "status": "staged",
-                            "analysis_ready": False,
-                            "local_path": str(staged_csv),
-                            "blocker": (
-                                "staged station CSV lacks geographic provenance "
-                                "from the filtered station metadata for the requested region"
-                            ),
-                        },
-                    }
-                }
-            ),
-        ]
-    )
-
-    assert state["acquisition"]["analysis_ready"] is True
-    assert "blocker" not in state["acquisition"]
-    assert state["resource_candidate"]["station_id"] == "MTA1"
-    assert state["resource_candidate"]["geographically_grounded"] is True
-    assert state["resource_candidate"]["station_distance_km"] == 0.713
-
-
-def test_station_csv_matching_station_metadata_sets_grounded_candidate_without_geospatial(
-    tmp_path: Path,
-) -> None:
-    staged_csv = tmp_path / "MTA1.CI.LY_.30.csv"
-    staged_csv.write_text("time,east,north,up\n2026-01-01,0,0,0\n", encoding="utf-8")
-
-    state = _workflow_state_from_outputs(
-        [
-            json.dumps(
-                {
-                    "workflow_state": {
-                        "station_catalog": {
-                            "status": "ranked_metadata_only",
-                            "stations": [
-                                {
-                                    "station": "MTA1",
-                                    "latitude": 34.046,
-                                    "longitude": -118.25,
-                                    "distance_km": 0.7,
-                                }
-                            ],
-                        },
-                        "resource_candidate": {
-                            "status": "selected",
-                            "resource_name": "MTA1.CI.LY_.30.csv",
-                        },
-                        "acquisition": {
-                            "status": "staged",
-                            "analysis_ready": True,
-                            "local_path": str(staged_csv),
-                        },
-                    }
-                }
-            )
-        ]
-    )
-
-    assert state["acquisition"]["analysis_ready"] is True
-    assert state["resource_candidate"]["station_id"] == "MTA1"
-    assert state["resource_candidate"]["geographically_grounded"] is True
-    assert state["resource_candidate"]["station_distance_km"] == 0.7
-
-
-def test_ndp_trajectory_state_marks_station_csv_grounded_from_filter_and_stage(
-    tmp_path: Path,
-) -> None:
-    staged_csv = tmp_path / "MTA1.CI.LY_.30.csv"
-    staged_csv.write_text("time,east,north,up\n2026-01-01,0,0,0\n", encoding="utf-8")
-
-    state = _infer_ndp_workflow_state_from_trajectory(
-        {
-            "observation_0": {
-                "ok": True,
-                "path": "/workspace/.clio/artifacts/ndp-staging/earthscope_converted_data.csv",
-                "center": {"latitude": 34.05, "longitude": -118.25},
-                "radius_km": 75,
-                "within_radius_count": 1,
-                "stations": [
-                    {
-                        "station": "MTA1",
-                        "latitude": 34.046,
-                        "longitude": -118.25,
-                        "distance_km": 0.7,
-                    }
-                ],
-                "_meta": {"tool": "filter_earthscope_station_catalog", "status": "success"},
-            },
-            "observation_1": {
-                "staged": True,
-                "path": str(staged_csv),
-                "dataset_id": "1b0c1b93-f164-4025-bd7b-000252b5ca18",
-                "dataset_name": "mta1-ci-ly-30",
-                "resource_name": "MTA1.CI.LY_.30.csv",
-                "source_url": "https://ds2.example.test/raw_csv/MTA1.CI.LY_.30.csv",
-            },
-        }
-    )
-
-    assert state["acquisition"]["status"] == "staged"
-    assert state["acquisition"]["analysis_ready"] is True
-    assert state["resource_candidate"]["station_id"] == "MTA1"
-    assert state["resource_candidate"]["geographically_grounded"] is True
-    assert state["resource_candidate"]["station_distance_km"] == 0.7
-
-
-def test_ndp_trajectory_stage_args_preserve_station_resource_provenance(
-    tmp_path: Path,
-) -> None:
-    staged_csv = tmp_path / "MTA1.CI.LY_.30.csv"
-    staged_csv.write_text("time,east,north,up\n2026-01-01,0,0,0\n", encoding="utf-8")
-
-    state = _infer_ndp_workflow_state_from_trajectory(
-        {
-            "step_0_tool_name": "ndp_filter_earthscope_station_catalog",
-            "step_0_observation": {
-                "ok": True,
-                "path": "/workspace/.clio/artifacts/ndp-staging/earthscope_converted_data.csv",
-                "center": {"latitude": 34.05, "longitude": -118.25},
-                "radius_km": 75,
-                "within_radius_count": 1,
-                "stations": [
-                    {
-                        "station": "MTA1",
-                        "latitude": 34.05522077,
-                        "longitude": -118.24550778,
-                        "distance_km": 0.7,
-                    }
-                ],
-                "_meta": {"tool": "filter_earthscope_station_catalog", "status": "success"},
-            },
-            "step_1_tool_name": "ndp_stage_resource",
-            "step_1_tool_args": {
-                "dataset_identifier": "1b0c1b93-f164-4025-bd7b-000252b5ca18",
-                "identifier_type": "id",
-                "resource_name": "MTA1.CI.LY_.30.csv",
-                "server": "global",
-            },
-            "step_1_observation": {
-                "staged": True,
-                "path": str(staged_csv),
-            },
-        }
-    )
-
-    assert state["acquisition"]["status"] == "staged"
-    assert state["acquisition"]["analysis_ready"] is True
-    assert state["acquisition"]["local_path"] == str(staged_csv)
-    assert state["resource_candidate"]["dataset_id"] == "1b0c1b93-f164-4025-bd7b-000252b5ca18"
-    assert state["resource_candidate"]["resource_name"] == "MTA1.CI.LY_.30.csv"
-    assert state["resource_candidate"]["station_id"] == "MTA1"
-    assert state["resource_candidate"]["geographically_grounded"] is True
-    assert state["resource_candidate"]["station_distance_km"] == 0.7
-
-
-def test_delegated_prompt_includes_accumulated_session_workflow_state(
-    tmp_path: Path,
-) -> None:
-    staged_csv = tmp_path / "MTA1.CI.LY_.30.csv"
-    staged_csv.write_text("time,east,north,up\n2026-01-01,0,0,0\n", encoding="utf-8")
-    app = SimpleNamespace(
-        state=SimpleNamespace(
-            tool_call_ledger={
-                "session-123": [
-                    {
-                        "name": "ndp_filter_earthscope_station_catalog",
-                        "args": {
-                            "filepath": "/workspace/.clio/artifacts/ndp-staging/earthscope.csv",
-                            "latitude": 34.05,
-                            "longitude": -118.25,
-                            "radius_km": 75,
-                        },
-                        "result": {
-                            "ok": True,
-                            "path": "/workspace/.clio/artifacts/ndp-staging/earthscope.csv",
-                            "center": {"latitude": 34.05, "longitude": -118.25},
-                            "radius_km": 75,
-                            "within_radius_count": 1,
-                            "stations": [
-                                {
-                                    "station": "MTA1",
-                                    "latitude": 34.05522077,
-                                    "longitude": -118.24550778,
-                                    "network": "SCGN",
-                                    "status": "ACTIVE",
-                                    "distance_km": 0.713,
-                                }
-                            ],
-                            "_meta": {
-                                "tool": "filter_earthscope_station_catalog",
-                                "status": "success",
-                            },
-                        },
-                    },
-                    {
-                        "name": "ndp_stage_resource",
-                        "args": {
-                            "dataset_identifier": "1b0c1b93-f164-4025-bd7b-000252b5ca18",
-                            "resource_name": "MTA1.CI.LY_.30.csv",
-                            "server": "global",
-                        },
-                        "result": {
-                            "staged": True,
-                            "path": str(staged_csv),
-                            "dataset_id": "1b0c1b93-f164-4025-bd7b-000252b5ca18",
-                            "dataset_name": "mta1-ci-ly-30",
-                            "resource_name": "MTA1.CI.LY_.30.csv",
-                            "source_url": (
-                                "https://ds2.datacollaboratory.org/Earthscope_api_dec2024/"
-                                "raw_csv/MTA1.CI.LY_.30.csv"
-                            ),
-                        },
-                    },
-                ]
-            }
-        )
-    )
-
-    prompt = _append_session_workflow_state_context(
-        app,
-        "session-123",
-        "synthesize the result",
-    )
-
-    assert "Accumulated typed workflow state" in prompt
-    assert "MTA1" in prompt
-    assert "0.713" in prompt
-    assert "https://ds2.datacollaboratory.org/Earthscope_api_dec2024/raw_csv/MTA1.CI.LY_.30.csv" in prompt
-    assert '"analysis_ready": true' in prompt
-
-
-def test_regional_station_csv_is_not_analysis_ready_when_station_metadata_mismatches(
-    tmp_path: Path,
-) -> None:
-    staged_csv = tmp_path / "WWMT.CI.LY_.40.csv"
-    staged_csv.write_text("time,east,north,up\n2026-01-01,0,0,0\n", encoding="utf-8")
-
-    state = _workflow_state_from_outputs(
-        [
-            json.dumps(
-                {
-                    "workflow_state": {
-                        "geospatial": {
-                            "status": "resolved",
-                            "region_name": "Bay Area, California",
-                            "center_lat": 37.77,
-                            "center_lon": -122.42,
-                            "radius_km": 75,
-                        },
-                        "station_catalog": {
-                            "status": "ranked_metadata_only",
-                            "stations": [
-                                {
-                                    "station": "UCSF",
-                                    "latitude": 37.7637,
-                                    "longitude": -122.4587,
-                                    "distance_km": 3.5,
-                                }
-                            ],
-                        },
-                        "resource_candidate": {
-                            "status": "selected",
-                            "resource_name": "WWMT.CI.LY_.40.csv",
-                            "resource_url": "https://ds2.example.test/raw_csv/WWMT.CI.LY_.40.csv",
-                        },
-                        "acquisition": {
-                            "status": "staged",
-                            "analysis_ready": True,
-                            "local_path": str(staged_csv),
-                            "source_url": "https://ds2.example.test/raw_csv/WWMT.CI.LY_.40.csv",
-                        },
-                    }
-                }
-            )
-        ]
-    )
-
-    assert state["acquisition"]["status"] == "staged"
-    assert state["acquisition"]["analysis_ready"] is False
-    assert "does not match" in state["acquisition"]["blocker"]
-    assert state["resource_candidate"]["station_id"] == "WWMT"
-    assert state["resource_candidate"]["geographically_grounded"] is False
-
-
-def test_station_csv_provenance_guard_accepts_alternate_geospatial_region_shape(
-    tmp_path: Path,
-) -> None:
-    staged_csv = tmp_path / "WWMT.CI.LY_.40.csv"
-    staged_csv.write_text("time,east,north,up\n2026-01-01,0,0,0\n", encoding="utf-8")
-
-    state = _workflow_state_from_outputs(
-        [
-            json.dumps(
-                {
-                    "workflow_state": {
-                        "type": "geospatial",
-                        "region": {
-                            "type": "circle",
-                            "center": {"lat": 37.77, "lon": -122.42},
-                            "radius_km": 75,
-                        },
-                        "resource_candidate": {
-                            "status": "selected",
-                            "resource_name": "WWMT.CI.LY_.40.csv",
-                        },
-                        "acquisition": {
-                            "status": "staged",
-                            "analysis_ready": True,
-                            "local_path": str(staged_csv),
-                        },
-                    }
-                }
-            )
-        ]
-    )
-
-    assert state["acquisition"]["analysis_ready"] is False
-    assert "filtered station metadata" in state["acquisition"]["blocker"]
-    assert state["resource_candidate"]["station_id"] == "WWMT"
-    assert state["resource_candidate"]["geographically_grounded"] is False
 
 
 def test_blueprint_continuation_contract_routes_from_prior_structured_prompt_state(
@@ -2634,9 +1740,7 @@ def test_workflow_state_reclassifies_data_available_without_staged_local_path() 
                         "acquisition": {
                             "status": "data_available",
                             "analysis_ready": True,
-                            "resource_urls": [
-                                "https://example.test/raw_csv/EFGH.CI.LY_.30.csv"
-                            ],
+                            "resource_urls": ["https://example.test/raw_csv/EFGH.CI.LY_.30.csv"],
                         },
                         "resource_candidate": {
                             "status": "ready",
@@ -2654,35 +1758,6 @@ def test_workflow_state_reclassifies_data_available_without_staged_local_path() 
     assert state["acquisition"]["analysis_ready"] is False
     assert "staged local CSV path" in state["acquisition"]["blocker"]
     assert state["resource_candidate"]["status"] == "ready"
-
-
-def test_workflow_state_reclassifies_metadata_only_with_candidate_url() -> None:
-    state = _workflow_state_from_outputs(
-        [
-            json.dumps(
-                {
-                    "workflow_state": {
-                        "acquisition": {
-                            "status": "metadata_only",
-                            "analysis_ready": False,
-                            "source_url": "https://example.test/raw_csv/ABCD.CI.LY_.30.csv",
-                        },
-                        "resource_candidate": {
-                            "status": "available",
-                            "dataset_id": "changed-dataset",
-                            "resource_name": "ABCD.CI.LY_.30.csv",
-                            "resource_url": "https://example.test/raw_csv/ABCD.CI.LY_.30.csv",
-                        },
-                    }
-                }
-            )
-        ]
-    )
-
-    assert state["acquisition"]["status"] == "candidate_found"
-    assert state["acquisition"]["analysis_ready"] is False
-    assert "no local CSV was staged" in state["acquisition"]["blocker"]
-    assert state["resource_candidate"]["status"] == "available"
 
 
 def test_blueprint_continuation_contract_routes_candidate_url_before_resolver_completion() -> None:
@@ -2744,7 +1819,9 @@ def test_blueprint_continuation_contract_routes_candidate_url_before_resolver_co
     assert "ABCD.CI.LY_.30.csv" in rows[0]["question"]
 
 
-def test_blueprint_continuation_contract_routes_selected_resource_without_acquisition_state() -> None:
+def test_blueprint_continuation_contract_routes_selected_resource_without_acquisition_state() -> (
+    None
+):
     completed = [
         json.dumps(
             {
@@ -2943,9 +2020,7 @@ def test_blueprint_continuation_contract_does_not_repeat_resolver_for_filtered_s
                     {
                         "id": "station_catalog_to_resource",
                         "when_state": {
-                            "station_catalog.status": {
-                                "in": ["ranked", "ranked_metadata_only"]
-                            }
+                            "station_catalog.status": {"in": ["ranked", "ranked_metadata_only"]}
                         },
                         "match": "all",
                         "next_expert": "ndp_resource_resolver",
@@ -2964,7 +2039,9 @@ def test_blueprint_continuation_contract_does_not_repeat_resolver_for_filtered_s
     assert rows == []
 
 
-def test_blueprint_continuation_contract_requires_ranked_stations_before_metadata_resolver() -> None:
+def test_blueprint_continuation_contract_requires_ranked_stations_before_metadata_resolver() -> (
+    None
+):
     contracts = [
         {
             "id": "metadata_acquisition_to_resource_search",
@@ -3167,150 +2244,6 @@ def test_blueprint_continuation_contract_does_not_repeat_staged_station_csv_reso
     assert rows == []
 
 
-def test_non_applicable_station_filter_preserves_analysis_ready_acquisition(
-    tmp_path: Path,
-) -> None:
-    staged_csv = tmp_path / "MTA1.CI.LY_.30.csv"
-    staged_csv.write_text("time,east,north,up\n2024-01-01,0,0,0\n")
-
-    state = _infer_ndp_station_catalog_state_from_tool_evidence(
-        json.dumps(
-            {
-                "ok": True,
-                "catalog_applicable": False,
-                "resource_kind": "station_timeseries_csv",
-                "analysis_ready": True,
-                "path": str(staged_csv),
-                "stations": [],
-                "_meta": {
-                    "tool": "filter_earthscope_station_catalog",
-                    "status": "not_applicable",
-                },
-            }
-        )
-    )
-
-    assert "station_catalog" not in state
-    assert state["resource_candidate"]["resource_kind"] == "station_timeseries_csv"
-    assert state["resource_candidate"]["catalog_applicable"] is False
-    assert state["acquisition"]["status"] == "staged"
-    assert state["acquisition"]["analysis_ready"] is True
-    assert state["acquisition"]["local_path"] == str(staged_csv)
-
-
-def test_handoff_rows_preserve_nested_durable_workflow_state(
-    tmp_path: Path,
-) -> None:
-    staged_csv = tmp_path / "MTA1.CI.LY_.30.csv"
-    staged_csv.write_text("time,east,north,up\n2024-01-01,0,0,0\n")
-
-    rows = [
-        {
-            "agent_id": "earthscope_station_catalog",
-            "stage": "delegate.completed",
-            "status": "completed",
-            "workflow_state": {
-                "station_catalog": {
-                    "status": "ranked_metadata_only",
-                    "stations": [{"station": "MTA1", "distance_km": 0.7}],
-                },
-            },
-            "children": [
-                {
-                    "agent_id": "ndp_resource_resolver",
-                    "stage": "delegate.completed",
-                    "status": "completed",
-                    "workflow_state": {
-                        "resource_candidate": {
-                            "status": "selected",
-                            "dataset_id": "changed-dataset",
-                            "resource_name": "MTA1.CI.LY_.30.csv",
-                        },
-                        "acquisition": {
-                            "status": "staged",
-                            "analysis_ready": True,
-                            "local_path": str(staged_csv),
-                        },
-                    },
-                }
-            ],
-        }
-    ]
-
-    state = _workflow_state_from_handoff_rows(rows)
-
-    assert state["station_catalog"]["status"] == "ranked_metadata_only"
-    assert state["resource_candidate"]["resource_name"] == "MTA1.CI.LY_.30.csv"
-    assert state["resource_candidate"]["geographically_grounded"] is True
-    assert state["acquisition"]["status"] == "staged"
-    assert state["acquisition"]["analysis_ready"] is True
-
-
-def test_nested_handoff_state_drives_analysis_continuation_contract(
-    tmp_path: Path,
-) -> None:
-    staged_csv = tmp_path / "MTA1.CI.LY_.30.csv"
-    staged_csv.write_text("time,east,north,up\n2024-01-01,0,0,0\n")
-    parent_output = _append_nested_workflow_state(
-        "Resolver completed station CSV acquisition.",
-        [
-            {
-                "agent_id": "ndp_resource_resolver",
-                "stage": "delegate.completed",
-                "status": "completed",
-                "workflow_state": {
-                    "station_catalog": {
-                        "status": "ranked_metadata_only",
-                        "stations": [{"station": "MTA1", "distance_km": 0.7}],
-                    },
-                    "resource_candidate": {
-                        "status": "selected",
-                        "dataset_id": "changed-dataset",
-                        "resource_name": "MTA1.CI.LY_.30.csv",
-                    },
-                    "acquisition": {
-                        "status": "staged",
-                        "analysis_ready": True,
-                        "local_path": str(staged_csv),
-                    },
-                },
-            }
-        ],
-    )
-
-    rows = _continuation_contract_handoffs(
-        AgentDef(
-            id="ndp_dataset_discovery",
-            source="expert_pack",
-            title="Discovery",
-            parameters={
-                "continuation_contracts": [
-                    {
-                        "id": "acquisition_to_analysis",
-                        "when_state": {
-                            "acquisition.status": "staged",
-                            "acquisition.analysis_ready": True,
-                            "resource_candidate.geographically_grounded": True,
-                        },
-                        "match": "all",
-                        "next_expert": "gnss_timeseries_analysis",
-                        "next_action": "profile the staged station CSV",
-                    }
-                ]
-            },
-        ),
-        source_text="Explore a changed region.",
-        answer_text="",
-        completed_outputs=[parent_output],
-        declared_child_ids={"gnss_timeseries_analysis"},
-        completed_child_ids=set(),
-    )
-
-    assert [row["delegate_to"] for row in rows] == ["gnss_timeseries_analysis"]
-    assert "Prior structured blueprint state" in rows[0]["question"]
-    assert str(staged_csv) in rows[0]["question"]
-
-
 def test_tool_workspace_context_defaults_ndp_staging_under_workspace(tmp_path: Path) -> None:
     with tool_workspace_context(tmp_path):
         args = _workspace_default_tool_arguments(
@@ -3337,7 +2270,11 @@ def test_tool_session_context_uses_active_session_workspace_root(tmp_path: Path)
     client = TestClient(build_app(sessions_path=tmp_path / "sessions.json"))
     wid = client.post(
         "/v1/workspaces",
-        json={"name": "science", "root_path": str(workspace), "storage_root": str(workspace / ".clio")},
+        json={
+            "name": "science",
+            "root_path": str(workspace),
+            "storage_root": str(workspace / ".clio"),
+        },
     ).json()["id"]
     sid = client.post("/v1/sessions", json={"title": "science", "workspace_id": wid}).json()["id"]
 
@@ -3359,7 +2296,11 @@ def test_generated_child_expert_tool_binds_active_session_workspace_root(
     client = TestClient(build_app(sessions_path=tmp_path / "sessions.json"))
     wid = client.post(
         "/v1/workspaces",
-        json={"name": "science", "root_path": str(workspace), "storage_root": str(workspace / ".clio")},
+        json={
+            "name": "science",
+            "root_path": str(workspace),
+            "storage_root": str(workspace / ".clio"),
+        },
     ).json()["id"]
     sid = client.post("/v1/sessions", json={"title": "science", "workspace_id": wid}).json()["id"]
     parent = AgentDef(
@@ -3379,7 +2320,9 @@ def test_generated_child_expert_tool_binds_active_session_workspace_root(
         "clio_agent.gact.app._runtime_active_agent_blueprint_rows",
         lambda app, session_id="": [parent, child],
     )
-    monkeypatch.setattr("clio_agent.gact.app._blueprint_runner_for_agent", lambda agent_def: "runner")
+    monkeypatch.setattr(
+        "clio_agent.gact.app._blueprint_runner_for_agent", lambda agent_def: "runner"
+    )
 
     def fake_run_dynamic_agent_compat(
         runner: Any,
@@ -3427,135 +2370,6 @@ def test_skipped_delegated_handoff_does_not_execute_even_with_delegate_target() 
     )
 
 
-def test_ndp_metadata_resource_infers_metadata_only_workflow_state() -> None:
-    state = _infer_ndp_workflow_state_from_tool_evidence(
-        json.dumps(
-            {
-                "staged": True,
-                "path": "/workspace/.clio/artifacts/ndp-staging/earthscope_converted_data.csv",
-                "dataset_id": "811f0bcc-99e5-455c-bcf6-7c63c2634f41",
-                "dataset_name": "earthscope_stations",
-                "resource_name": "earthscope_converted_data.csv",
-                "source_url": "https://example.test/earthscope_converted_data.csv",
-            }
-        )
-    )
-
-    assert state["resource_candidate"]["status"] == "metadata_only"
-    assert state["acquisition"]["status"] == "metadata_only"
-    assert state["acquisition"]["analysis_ready"] is False
-    assert state["acquisition"]["metadata_path"].endswith("earthscope_converted_data.csv")
-
-
-def test_ndp_zero_result_constrained_search_is_not_conclusive_absence() -> None:
-    state = _infer_ndp_search_state_from_tool_evidence(
-        json.dumps(
-            {
-                "_meta": {"tool": "search_datasets"},
-                "count": 0,
-                "total_found": 0,
-                "datasets": [],
-                "search_coverage": {
-                    "status": "covered",
-                    "domain": "earthscope_gnss",
-                    "search_terms": [
-                        "EarthScope",
-                        "GNSS",
-                        "GPS",
-                        "Southern California",
-                        "Los Angeles",
-                        "CSV",
-                        "raw_csv",
-                    ],
-                    "resource_format": "csv",
-                    "next_action": "",
-                },
-            }
-        )
-    )
-
-    assert state["catalog"]["status"] == "search_incomplete"
-    assert state["catalog"]["candidate_count"] == 0
-    assert state["resource_discovery"]["status"] == "search_required"
-    assert state["resource_discovery"]["search_terms"] == [
-        "EarthScope",
-        "GNSS",
-        "GPS",
-        "CSV",
-        "raw_csv",
-    ]
-
-
-def test_ndp_station_csv_resource_infers_analysis_ready_workflow_state() -> None:
-    state = _infer_ndp_workflow_state_from_tool_evidence(
-        json.dumps(
-            {
-                "staged": True,
-                "path": "/workspace/.clio/artifacts/ndp-staging/WWMT.CI.LY_.40.csv",
-                "dataset_id": "2611eeb1-4efd-4ab3-badd-abacc6b64d9f",
-                "dataset_name": "wwmt-ci-ly-40",
-                "resource_name": "WWMT.CI.LY_.40.csv",
-                "source_url": "https://example.test/WWMT.CI.LY_.40.csv",
-            }
-        )
-    )
-
-    assert state["resource_candidate"]["status"] == "selected"
-    assert state["acquisition"]["status"] == "staged"
-    assert state["acquisition"]["analysis_ready"] is True
-    assert state["acquisition"]["local_path"].endswith("WWMT.CI.LY_.40.csv")
-
-
-def test_ndp_staged_csv_prose_infers_analysis_ready_workflow_state() -> None:
-    state = _infer_ndp_workflow_state_from_tool_evidence(
-        "| Selected CSV (staged) |\n"
-        "| `/workspace/.clio/artifacts/ndp-staging/WWMT.CI.LY_.40.csv` |\n"
-        "**Source URL**: `https://ds2.example.test/raw_csv/WWMT.CI.LY_.40.csv`\n"
-        "**Size**: `50,084,343` bytes"
-    )
-
-    assert state["resource_candidate"]["status"] == "selected"
-    assert state["acquisition"]["status"] == "staged"
-    assert state["acquisition"]["analysis_ready"] is True
-    assert state["acquisition"]["local_path"].endswith("WWMT.CI.LY_.40.csv")
-
-
-def test_ndp_staged_csv_with_no_blocker_does_not_infer_failure() -> None:
-    state = _infer_ndp_workflow_state_from_tool_evidence(
-        "**Staged CSV Path:** `/workspace/.clio/artifacts/ndp-staging/P475.CI.LY_.20.csv`\n"
-        "**Source URL:** `https://ds2.example.test/raw_csv/P475.CI.LY_.20.csv`\n"
-        "**File Size:** *unknown*\n"
-        "**Staging Blocker:** *none* - the resource is staged and ready for analysis."
-    )
-
-    assert state["resource_candidate"]["status"] == "selected"
-    assert state["acquisition"]["status"] == "staged"
-    assert state["acquisition"]["analysis_ready"] is True
-    assert state["acquisition"]["local_path"].endswith("P475.CI.LY_.20.csv")
-
-
-def test_ndp_plot_result_infers_ready_artifact_workflow_state() -> None:
-    state = _infer_ndp_plot_state_from_tool_evidence(
-        json.dumps(
-            {
-                "ok": True,
-                "path": "/workspace/.clio/artifacts/ndp-staging/MTA1.CI.LY_.30.csv",
-                "output_path": "/workspace/.clio/artifacts/MTA1_time_series.png",
-                "output_size_bytes": 89696,
-                "x_column": "time",
-                "y_columns": ["east", "north", "up"],
-                "rows_plotted": 2000,
-                "_meta": {"tool": "plot_csv_timeseries", "status": "success"},
-            }
-        )
-    )
-
-    assert state["artifact"]["status"] == "ready"
-    assert state["artifact"]["path"].endswith("MTA1_time_series.png")
-    assert state["artifact"]["columns"] == ["east", "north", "up"]
-    assert state["visualization"]["status"] == "complete"
-
-
 def test_visualization_artifact_state_routes_to_synthesis() -> None:
     rows = _continuation_contract_handoffs(
         AgentDef(
@@ -3595,1654 +2409,6 @@ def test_visualization_artifact_state_routes_to_synthesis() -> None:
 
     assert [row["delegate_to"] for row in rows] == ["synthesis"]
     assert "MTA1_time_series.png" in rows[0]["question"]
-
-
-def test_ndp_trajectory_inference_prefers_station_csv_over_metadata() -> None:
-    state = _infer_ndp_workflow_state_from_trajectory(
-        {
-            "observation_0": {
-                "staged": True,
-                "path": "/workspace/.clio/artifacts/ndp-staging/earthscope_converted_data.csv",
-                "dataset_id": "811f0bcc-99e5-455c-bcf6-7c63c2634f41",
-                "dataset_name": "earthscope_stations",
-                "resource_name": "earthscope_converted_data.csv",
-                "source_url": "https://example.test/earthscope_converted_data.csv",
-            },
-            "observation_1": {
-                "staged": True,
-                "path": "/workspace/.clio/artifacts/ndp-staging/P475.CI.LY_.20.csv",
-                "dataset_id": "07e33e0c-4ac3-4a7b-a5b0-5a4610078236",
-                "dataset_name": "p475-ci-ly-20",
-                "resource_name": "P475.CI.LY_.20.csv",
-                "source_url": "https://example.test/P475.CI.LY_.20.csv",
-            },
-        }
-    )
-
-    assert state["resource_candidate"]["status"] == "selected"
-    assert state["resource_candidate"]["resource_name"] == "P475.CI.LY_.20.csv"
-    assert state["acquisition"]["status"] == "staged"
-    assert state["acquisition"]["analysis_ready"] is True
-    assert state["acquisition"]["local_path"].endswith("P475.CI.LY_.20.csv")
-
-
-def test_ndp_trajectory_state_appends_to_child_answer_for_contracts() -> None:
-    answer = "Nearest EarthScope station for the requested region is P475."
-
-    output = _append_inferred_workflow_state_from_trajectory(
-        answer,
-        {
-            "trajectory": {
-                "observation": {
-                    "staged": True,
-                    "path": "/workspace/.clio/artifacts/ndp-staging/P475.CI.LY_.20.csv",
-                    "dataset_id": "07e33e0c-4ac3-4a7b-a5b0-5a4610078236",
-                    "dataset_name": "p475-ci-ly-20",
-                    "resource_name": "P475.CI.LY_.20.csv",
-                    "source_url": "https://example.test/P475.CI.LY_.20.csv",
-                }
-            }
-        },
-    )
-
-    state = _workflow_state_from_outputs([output])
-
-    assert "CLIO inferred typed tool state from tool observations" in output
-    assert state["acquisition"]["status"] == "staged"
-    assert state["acquisition"]["analysis_ready"] is True
-    assert state["acquisition"]["local_path"].endswith("P475.CI.LY_.20.csv")
-
-
-def test_ndp_station_catalog_tool_infers_resource_search_required_state() -> None:
-    state = _infer_ndp_station_catalog_state_from_tool_evidence(
-        json.dumps(
-            {
-                "ok": True,
-                "path": "/workspace/.clio/artifacts/ndp-staging/earthscope_converted_data.csv",
-                "center": {"latitude": 34.05, "longitude": -118.25},
-                "radius_km": 75,
-                "within_radius_count": 2,
-                "stations": [
-                    {
-                        "station": "ABCD",
-                        "latitude": 34.1,
-                        "longitude": -118.3,
-                        "network": "CI",
-                        "status": "active",
-                        "distance_km": 8.4,
-                        "suggested_search_terms": [
-                            "ABCD",
-                            "ABCD EarthScope GNSS CSV",
-                        ],
-                        "resource_discovery": {
-                            "status": "search_required",
-                            "search_terms": [
-                                "ABCD",
-                                "ABCD.CI.LY",
-                                "ABCD raw_csv",
-                            ],
-                        },
-                    }
-                ],
-                "resource_discovery": {
-                    "status": "search_required",
-                    "station_resource_queries": [
-                        {
-                            "station": "ABCD",
-                            "preferred_calls": [
-                                {
-                                    "tool": "ndp_search_datasets",
-                                    "arguments": {
-                                        "resource_name": "ABCD",
-                                        "resource_format": "CSV",
-                                        "server": "global",
-                                        "limit": 20,
-                                    },
-                                }
-                            ],
-                        }
-                    ],
-                },
-                "analysis_ready": False,
-                "_meta": {"tool": "filter_earthscope_station_catalog", "status": "success"},
-            }
-        )
-    )
-
-    assert state["station_catalog"]["status"] == "ranked_metadata_only"
-    assert state["station_catalog"]["candidate_count"] == 2
-    assert state["station_catalog"]["analysis_ready_resource_count"] == 0
-    assert state["resource_discovery"]["status"] == "search_required"
-    assert "ABCD raw_csv" in state["resource_discovery"]["search_terms"]
-    assert state["resource_discovery"]["station_resource_queries"][0]["station"] == "ABCD"
-
-
-def test_ndp_search_tool_infers_incomplete_search_coverage_state() -> None:
-    state = _infer_ndp_search_state_from_tool_evidence(
-        json.dumps(
-            {
-                "datasets": [],
-                "count": 0,
-                "total_found": 0,
-                "search_coverage": {
-                    "domain": "earthscope_gnss",
-                    "status": "incomplete",
-                    "search_terms": ["GNSS", "station", "time-series"],
-                    "next_action": "Search broad EarthScope station catalog terms.",
-                },
-                "_meta": {"tool": "search_datasets", "status": "success"},
-            }
-        )
-    )
-
-    assert state["catalog"]["status"] == "search_incomplete"
-    assert state["resource_discovery"]["status"] == "search_required"
-    assert "EarthScope" in state["resource_discovery"]["search_terms"]
-    assert "GPS" in state["resource_discovery"]["search_terms"]
-
-
-def test_ndp_search_tool_infers_earthscope_metadata_found_state() -> None:
-    state = _infer_ndp_search_state_from_tool_evidence(
-        json.dumps(
-            {
-                "datasets": [
-                    {
-                        "id": "dataset-1",
-                        "name": "earthscope-stations",
-                        "resource_summaries": [
-                            {
-                                "name": "earthscope_converted_data.csv",
-                                "format": "CSV",
-                                "url": "https://example.test/earthscope_converted_data.csv",
-                            }
-                        ],
-                    }
-                ],
-                "count": 1,
-                "total_found": 1,
-                "search_coverage": {
-                    "domain": "earthscope_gnss",
-                    "status": "covered",
-                    "search_terms": ["EarthScope", "GNSS", "station", "catalog", "CSV"],
-                },
-                "_meta": {"tool": "search_datasets", "status": "success"},
-            }
-        )
-    )
-
-    assert state["catalog"]["status"] == "metadata_found"
-    assert state["resource_candidate"]["status"] == "metadata_only"
-    assert state["acquisition"]["analysis_ready"] is False
-
-
-def test_ndp_search_tool_prefers_station_csv_over_metadata_in_same_result() -> None:
-    state = _infer_ndp_search_state_from_tool_evidence(
-        json.dumps(
-            {
-                "datasets": [
-                    {
-                        "id": "metadata-dataset",
-                        "name": "earthscope-stations",
-                        "resource_summaries": [
-                            {
-                                "name": "earthscope_converted_data.csv",
-                                "format": "CSV",
-                                "url": "https://example.test/earthscope_converted_data.csv",
-                            }
-                        ],
-                    },
-                    {
-                        "id": "station-dataset",
-                        "name": "abcd-ci-ly-30",
-                        "resource_summaries": [
-                            {
-                                "name": "ABCD.CI.LY_.30.csv",
-                                "format": "CSV",
-                                "url": "https://example.test/raw_csv/ABCD.CI.LY_.30.csv",
-                            }
-                        ],
-                    },
-                ],
-                "count": 2,
-                "total_found": 2,
-                "search_coverage": {
-                    "domain": "earthscope_gnss",
-                    "status": "covered",
-                    "resource_name": "ABCD",
-                    "resource_format": "CSV",
-                    "station_resource_search": True,
-                },
-                "_meta": {"tool": "search_datasets", "status": "success"},
-            }
-        )
-    )
-
-    assert state["catalog"]["status"] == "candidates_found"
-    assert state["resource_candidate"]["status"] == "selected"
-    assert state["resource_candidate"]["dataset_id"] == "station-dataset"
-    assert state["resource_candidate"]["resource_name"] == "ABCD.CI.LY_.30.csv"
-
-
-def test_ndp_station_catalog_trajectory_state_appends_search_required_for_parent_contracts() -> None:
-    output = _append_inferred_workflow_state_from_trajectory(
-        "Ranked nearby stations from metadata.",
-        {
-            "observation_0": {
-                "ok": True,
-                "path": "/workspace/.clio/artifacts/ndp-staging/earthscope_converted_data.csv",
-                "center": {"latitude": 41.88, "longitude": -87.63},
-                "radius_km": 100,
-                "within_radius_count": 1,
-                "stations": [
-                    {
-                        "station": "WXYZ",
-                        "latitude": 41.9,
-                        "longitude": -87.7,
-                        "distance_km": 6.1,
-                        "resource_discovery": {
-                            "status": "search_required",
-                            "search_terms": ["WXYZ", "WXYZ EarthScope GNSS CSV"],
-                        },
-                    }
-                ],
-                "resource_discovery": {
-                    "status": "search_required",
-                    "station_resource_queries": [
-                        {
-                            "station": "WXYZ",
-                            "preferred_calls": [
-                                {
-                                    "tool": "ndp_search_datasets",
-                                    "arguments": {
-                                        "resource_name": "WXYZ",
-                                        "resource_format": "CSV",
-                                        "server": "global",
-                                        "limit": 20,
-                                    },
-                                }
-                            ],
-                        }
-                    ],
-                },
-                "_meta": {"tool": "filter_earthscope_station_catalog", "status": "success"},
-            }
-        },
-    )
-
-    state = _workflow_state_from_outputs([output])
-
-    assert "CLIO inferred typed tool state from tool observations" in output
-    assert state["station_catalog"]["status"] == "ranked_metadata_only"
-    assert state["resource_discovery"]["status"] == "search_required"
-    assert "WXYZ EarthScope GNSS CSV" in state["resource_discovery"]["search_terms"]
-    assert "station_resource_queries" in state["resource_discovery"]
-
-
-def test_ndp_station_resource_search_trajectory_stays_required_until_ranked_stations_are_covered() -> None:
-    output = _append_inferred_workflow_state_from_trajectory(
-        "Ranked nearby stations and searched the first station.",
-        {
-            "steps": [
-                {
-                    "tool_name": "ndp_filter_earthscope_station_catalog",
-                    "observation": {
-                        "ok": True,
-                        "path": "/workspace/.clio/artifacts/ndp-staging/earthscope_converted_data.csv",
-                        "center": {"latitude": 37.77, "longitude": -122.42},
-                        "radius_km": 75,
-                        "within_radius_count": 3,
-                        "stations": [
-                            {"station": "UCSF", "distance_km": 1.2},
-                            {"station": "SBRB", "distance_km": 10.2},
-                            {"station": "MHDL", "distance_km": 22.4},
-                        ],
-                        "resource_discovery": {"status": "search_required"},
-                        "_meta": {"tool": "filter_earthscope_station_catalog", "status": "success"},
-                    },
-                },
-                {
-                    "tool_name": "ndp_search_datasets",
-                    "tool_args": {"resource_name": "UCSF", "resource_format": "CSV", "server": "global"},
-                    "observation": {
-                        "datasets": [],
-                        "count": 0,
-                        "total_found": 0,
-                        "search_coverage": {
-                            "domain": "earthscope_gnss",
-                            "status": "covered",
-                            "resource_name": "UCSF",
-                            "resource_format": "CSV",
-                            "station_resource_search": True,
-                        },
-                        "_meta": {"tool": "search_datasets", "status": "success"},
-                    },
-                },
-            ]
-        },
-    )
-
-    state = _workflow_state_from_outputs([output])
-
-    assert state["resource_discovery"]["status"] == "search_required"
-    assert state["resource_discovery"]["searched_station_ids"] == ["UCSF"]
-    assert state["resource_discovery"]["remaining_station_ids"] == ["SBRB", "MHDL"]
-    assert state["acquisition"]["analysis_ready"] is False
-
-
-def test_ndp_station_resource_search_trajectory_exhausts_after_ranked_station_coverage() -> None:
-    output = _append_inferred_workflow_state_from_trajectory(
-        "Ranked nearby stations and searched all ranked station resources.",
-        {
-            "steps": [
-                {
-                    "tool_name": "ndp_filter_earthscope_station_catalog",
-                    "observation": {
-                        "ok": True,
-                        "path": "/workspace/.clio/artifacts/ndp-staging/earthscope_converted_data.csv",
-                        "center": {"latitude": 37.77, "longitude": -122.42},
-                        "radius_km": 75,
-                        "within_radius_count": 3,
-                        "stations": [
-                            {"station": "UCSF", "distance_km": 1.2},
-                            {"station": "SBRB", "distance_km": 10.2},
-                            {"station": "MHDL", "distance_km": 22.4},
-                        ],
-                        "resource_discovery": {"status": "search_required"},
-                        "_meta": {"tool": "filter_earthscope_station_catalog", "status": "success"},
-                    },
-                },
-                *[
-                    {
-                        "tool_name": "ndp_search_datasets",
-                        "tool_args": {"resource_name": station, "resource_format": "CSV", "server": "global"},
-                        "observation": {
-                            "datasets": [],
-                            "count": 0,
-                            "total_found": 0,
-                            "search_coverage": {
-                                "domain": "earthscope_gnss",
-                                "status": "covered",
-                                "resource_name": station,
-                                "resource_format": "CSV",
-                                "station_resource_search": True,
-                            },
-                            "_meta": {"tool": "search_datasets", "status": "success"},
-                        },
-                    }
-                    for station in ("UCSF", "SBRB", "MHDL")
-                ],
-            ]
-        },
-    )
-
-    state = _workflow_state_from_outputs([output])
-
-    assert state["resource_discovery"]["status"] == "search_exhausted"
-    assert state["resource_discovery"]["searched_station_ids"] == ["UCSF", "SBRB", "MHDL"]
-    assert state["resource_discovery"]["search_attempt_count"] == 3
-    assert state["acquisition"]["status"] == "metadata_only"
-    assert state["acquisition"]["analysis_ready"] is False
-
-
-def test_empty_tool_agent_fallback_summarizes_metadata_only_search_exhaustion() -> None:
-    answer = _tool_agent_empty_answer_fallback(
-        {
-            "steps": [
-                {
-                    "tool_name": "ndp_filter_earthscope_station_catalog",
-                    "observation": {
-                        "ok": True,
-                        "path": "/workspace/.clio/artifacts/ndp-staging/earthscope_converted_data.csv",
-                        "center": {"latitude": 37.77, "longitude": -122.42},
-                        "radius_km": 75,
-                        "within_radius_count": 3,
-                        "stations": [
-                            {"station": "UCSF", "distance_km": 1.2},
-                            {"station": "SBRB", "distance_km": 10.2},
-                            {"station": "MHDL", "distance_km": 22.4},
-                        ],
-                        "resource_discovery": {"status": "search_required"},
-                        "_meta": {"tool": "filter_earthscope_station_catalog", "status": "success"},
-                    },
-                },
-                *[
-                    {
-                        "tool_name": "ndp_search_datasets",
-                        "tool_args": {
-                            "resource_name": station,
-                            "resource_format": "CSV",
-                            "server": "global",
-                        },
-                        "observation": {
-                            "datasets": [],
-                            "count": 0,
-                            "total_found": 0,
-                            "search_coverage": {
-                                "domain": "earthscope_gnss",
-                                "status": "covered",
-                                "resource_name": station,
-                                "resource_format": "CSV",
-                                "station_resource_search": True,
-                            },
-                            "_meta": {"tool": "search_datasets", "status": "success"},
-                        },
-                    }
-                    for station in ("UCSF", "SBRB", "MHDL")
-                ],
-            ]
-        },
-    )
-
-    assert "Staged EarthScope station metadata" in answer
-    assert "Metadata CSV: `/workspace/.clio/artifacts/ndp-staging/earthscope_converted_data.csv`" in answer
-    assert "37.77 N, 122.42 W" in answer
-    assert "Station-specific NDP searches were attempted for: UCSF, SBRB, MHDL." in answer
-    assert "Resource discovery status: search exhausted" in answer
-    assert "Retained tool observations" not in answer
-
-
-def test_station_resource_search_state_exhausts_from_durable_tool_rows() -> None:
-    selected = {
-        "station_catalog": {
-            "status": "ranked_metadata_only",
-            "stations": [
-                {"station": "UCSF", "distance_km": 3.444},
-                {"station": "SBRB", "distance_km": 9.325},
-                {"station": "SBRU", "distance_km": 9.325},
-                {"station": "MHDL", "distance_km": 10.36},
-                {"station": "EBMD", "distance_km": 12.971},
-            ],
-        },
-        "resource_discovery": {"status": "search_required"},
-        "acquisition": {"status": "metadata_only", "analysis_ready": False},
-    }
-    rows = [
-        {
-            "name": "ndp_search_datasets",
-            "args": {"resource_name": station, "resource_format": "CSV", "server": "global"},
-            "result": {
-                "datasets": [],
-                "count": 0,
-                "total_found": 0,
-                "search_coverage": {
-                    "domain": "earthscope_gnss",
-                    "status": "covered",
-                    "resource_name": station,
-                    "resource_format": "CSV",
-                    "station_resource_search": True,
-                },
-                "_meta": {"tool": "search_datasets", "status": "success"},
-            },
-        }
-        for station in ("UCSF", "SBRB", "SBRU", "MHDL", "EBMD")
-    ]
-
-    state = _station_resource_search_state_from_rows(rows, selected)
-
-    assert state["resource_discovery"]["status"] == "search_exhausted"
-    assert state["resource_discovery"]["searched_station_ids"] == [
-        "UCSF",
-        "SBRB",
-        "SBRU",
-        "MHDL",
-        "EBMD",
-    ]
-    assert state["acquisition"]["status"] == "metadata_only"
-    assert state["acquisition"]["analysis_ready"] is False
-
-
-def test_station_resource_search_state_dedupes_repeated_station_attempts() -> None:
-    selected = {
-        "station_catalog": {
-            "status": "ranked_metadata_only",
-            "stations": [
-                {"station": "UCSF", "distance_km": 3.444},
-                {"station": "SBRB", "distance_km": 9.325},
-                {"station": "SBRU", "distance_km": 9.325},
-            ],
-        },
-        "resource_discovery": {"status": "search_required"},
-        "acquisition": {"status": "metadata_only", "analysis_ready": False},
-    }
-    rows = [
-        {
-            "name": "ndp_search_datasets",
-            "args": {"resource_name": station, "resource_format": "CSV", "server": "global"},
-            "result": {
-                "datasets": [],
-                "count": 0,
-                "total_found": 0,
-                "search_coverage": {
-                    "domain": "earthscope_gnss",
-                    "status": "covered",
-                    "resource_name": station,
-                    "resource_format": "CSV",
-                    "station_resource_search": True,
-                },
-                "_meta": {"tool": "search_datasets", "status": "success"},
-            },
-        }
-        for station in ("UCSF", "SBRB", "UCSF", "SBRU", "SBRB")
-    ]
-
-    state = _station_resource_search_state_from_rows(rows, selected)
-
-    assert state["resource_discovery"]["status"] == "search_exhausted"
-    assert state["resource_discovery"]["searched_station_ids"] == ["UCSF", "SBRB", "SBRU"]
-    assert state["resource_discovery"]["search_attempt_count"] == 3
-    assert state["resource_discovery"]["duplicate_search_attempt_count"] == 2
-    assert state["resource_discovery"]["trace_quality"] == "repeated_station_resource_search"
-
-
-def test_prior_staged_ndp_resource_result_skips_same_station_csv() -> None:
-    rows = [
-        {
-            "name": "ndp_stage_resource",
-            "args": {
-                "dataset_identifier": "1b0c1b93-f164-4025-bd7b-000252b5ca18",
-                "resource_name": "MTA1.CI.LY_.30.csv",
-            },
-            "ok": True,
-            "result": {
-                "path": "/workspace/.clio/artifacts/ndp-staging/MTA1.CI.LY_.30.csv",
-                "source_url": "https://example.test/raw_csv/MTA1.CI.LY_.30.csv",
-                "selected_resource_url": "https://example.test/raw_csv/MTA1.CI.LY_.30.csv",
-                "size_bytes": 50424246,
-                "dataset_id": "1b0c1b93-f164-4025-bd7b-000252b5ca18",
-                "dataset_name": "mta1-ci-ly-30",
-                "resource_name": "MTA1.CI.LY_.30.csv",
-                "_meta": {"tool": "stage_resource", "status": "success"},
-            },
-        }
-    ]
-
-    result = _prior_staged_ndp_resource_result(
-        {
-            "dataset_identifier": "1b0c1b93-f164-4025-bd7b-000252b5ca18",
-            "resource_name": "MTA1.CI.LY_.30.csv",
-            "resource_index": 0,
-        },
-        rows,
-    )
-
-    assert result is not None
-    assert result["path"] == "/workspace/.clio/artifacts/ndp-staging/MTA1.CI.LY_.30.csv"
-    assert result["size_bytes"] == 50424246
-    assert result["_meta"] == {
-        "tool": "stage_resource",
-        "status": "skipped",
-        "reason": "duplicate_station_resource_stage",
-        "cache_hit": True,
-    }
-    assert result["clio_runtime"]["workflow_state"]["acquisition"]["analysis_ready"] is True
-
-
-def test_prior_staged_ndp_resource_result_does_not_skip_different_station_csv() -> None:
-    rows = [
-        {
-            "name": "ndp_stage_resource",
-            "args": {
-                "dataset_identifier": "1b0c1b93-f164-4025-bd7b-000252b5ca18",
-                "resource_name": "MTA1.CI.LY_.30.csv",
-            },
-            "ok": True,
-            "result": {
-                "path": "/workspace/.clio/artifacts/ndp-staging/MTA1.CI.LY_.30.csv",
-                "source_url": "https://example.test/raw_csv/MTA1.CI.LY_.30.csv",
-                "dataset_id": "1b0c1b93-f164-4025-bd7b-000252b5ca18",
-                "resource_name": "MTA1.CI.LY_.30.csv",
-                "_meta": {"tool": "stage_resource", "status": "success"},
-            },
-        }
-    ]
-
-    result = _prior_staged_ndp_resource_result(
-        {
-            "dataset_identifier": "other-dataset",
-            "resource_name": "PKRD.CI.LY_.30.csv",
-            "resource_index": 0,
-        },
-        rows,
-    )
-
-    assert result is None
-
-
-def test_prior_staged_ndp_resource_result_does_not_skip_metadata_only_catalog() -> None:
-    rows = [
-        {
-            "name": "ndp_stage_resource",
-            "args": {
-                "dataset_identifier": "811f0bcc-99e5-455c-bcf6-7c63c2634f41",
-                "resource_name": "earthscope_converted_data.csv",
-            },
-            "ok": True,
-            "result": {
-                "path": "/workspace/.clio/artifacts/ndp-staging/earthscope_converted_data.csv",
-                "source_url": "https://example.test/earthscope_converted_data.csv",
-                "dataset_id": "811f0bcc-99e5-455c-bcf6-7c63c2634f41",
-                "resource_name": "earthscope_converted_data.csv",
-                "_meta": {"tool": "stage_resource", "status": "success"},
-            },
-        }
-    ]
-
-    result = _prior_staged_ndp_resource_result(
-        {
-            "dataset_identifier": "811f0bcc-99e5-455c-bcf6-7c63c2634f41",
-            "resource_name": "earthscope_converted_data.csv",
-            "resource_index": 0,
-        },
-        rows,
-    )
-
-    assert result is None
-
-
-def test_recording_blueprint_tool_skips_duplicate_station_csv_stage() -> None:
-    def fail_stage(**kwargs: Any) -> dict[str, Any]:
-        raise AssertionError(f"duplicate station staging should be short-circuited: {kwargs}")
-
-    tool = dspy.Tool(
-        func=fail_stage,
-        name="ndp_stage_resource",
-        desc="Stage NDP resource",
-        args={"dataset_identifier": {"type": "string"}},
-    )
-    rows: list[dict[str, Any]] = [
-        {
-            "name": "ndp_stage_resource",
-            "args": {
-                "dataset_identifier": "1b0c1b93-f164-4025-bd7b-000252b5ca18",
-                "resource_name": "MTA1.CI.LY_.30.csv",
-            },
-            "ok": True,
-            "result": {
-                "path": "/workspace/.clio/artifacts/ndp-staging/MTA1.CI.LY_.30.csv",
-                "source_url": "https://example.test/raw_csv/MTA1.CI.LY_.30.csv",
-                "dataset_id": "1b0c1b93-f164-4025-bd7b-000252b5ca18",
-                "resource_name": "MTA1.CI.LY_.30.csv",
-                "_meta": {"tool": "stage_resource", "status": "success"},
-            },
-        }
-    ]
-    token = _ACTIVE_BLUEPRINT_TOOL_ROWS.set(rows)
-    try:
-        wrapped = _recording_blueprint_tool(tool)
-        result = wrapped(
-            dataset_identifier="1b0c1b93-f164-4025-bd7b-000252b5ca18",
-            resource_name="MTA1.CI.LY_.30.csv",
-            resource_index=0,
-        )
-    finally:
-        _ACTIVE_BLUEPRINT_TOOL_ROWS.reset(token)
-
-    assert result["_meta"]["reason"] == "duplicate_station_resource_stage"
-    assert rows[-1]["skipped"] is True
-    assert rows[-1]["name"] == "ndp_stage_resource"
-
-
-def test_ndp_search_runtime_feedback_lists_remaining_ranked_stations() -> None:
-    rows = [
-        {
-            "name": "ndp_filter_earthscope_station_catalog",
-            "args": {
-                "filepath": "/workspace/.clio/artifacts/ndp-staging/earthscope_converted_data.csv",
-                "latitude": 37.77,
-                "longitude": -122.42,
-                "radius_km": 75,
-            },
-            "result": {
-                "ok": True,
-                "path": "/workspace/.clio/artifacts/ndp-staging/earthscope_converted_data.csv",
-                "center": {"latitude": 37.77, "longitude": -122.42},
-                "radius_km": 75,
-                "within_radius_count": 3,
-                "stations": [
-                    {"station": "UCSF", "distance_km": 3.444},
-                    {"station": "SBRB", "distance_km": 9.325},
-                    {"station": "SBRU", "distance_km": 9.325},
-                ],
-                "resource_discovery": {"status": "search_required"},
-                "_meta": {"tool": "filter_earthscope_station_catalog", "status": "success"},
-            },
-        },
-        {
-            "name": "ndp_search_datasets",
-            "args": {"resource_name": "UCSF", "resource_format": "CSV", "server": "global"},
-            "result": {
-                "datasets": [],
-                "count": 0,
-                "total_found": 0,
-                "search_coverage": {
-                    "domain": "earthscope_gnss",
-                    "status": "covered",
-                    "resource_name": "UCSF",
-                    "resource_format": "CSV",
-                    "station_code": "UCSF",
-                    "station_resource_search": True,
-                },
-                "_meta": {"tool": "search_datasets", "status": "success"},
-            },
-        },
-    ]
-
-    state = _infer_ndp_workflow_state_from_tool_rows(rows)
-    augmented = _augment_ndp_search_result_with_runtime_state(rows[-1]["result"], rows)
-
-    assert state["resource_discovery"]["status"] == "search_required"
-    assert augmented["clio_runtime"]["terminal"] is False
-    assert augmented["clio_runtime"]["workflow_state"]["resource_discovery"][
-        "remaining_station_ids"
-    ] == ["SBRB", "SBRU"]
-    assert "SBRB, SBRU" in augmented["clio_runtime"]["next_action"]
-
-
-def test_ndp_search_runtime_feedback_marks_station_search_exhausted() -> None:
-    rows: list[dict[str, Any]] = [
-        {
-            "name": "ndp_filter_earthscope_station_catalog",
-            "args": {
-                "filepath": "/workspace/.clio/artifacts/ndp-staging/earthscope_converted_data.csv",
-                "latitude": 37.77,
-                "longitude": -122.42,
-                "radius_km": 75,
-            },
-            "result": {
-                "ok": True,
-                "path": "/workspace/.clio/artifacts/ndp-staging/earthscope_converted_data.csv",
-                "center": {"latitude": 37.77, "longitude": -122.42},
-                "radius_km": 75,
-                "within_radius_count": 3,
-                "stations": [
-                    {"station": "UCSF", "distance_km": 3.444},
-                    {"station": "SBRB", "distance_km": 9.325},
-                    {"station": "SBRU", "distance_km": 9.325},
-                ],
-                "resource_discovery": {"status": "search_required"},
-                "_meta": {"tool": "filter_earthscope_station_catalog", "status": "success"},
-            },
-        }
-    ]
-    rows.extend(
-        {
-            "name": "ndp_search_datasets",
-            "args": {"resource_name": station, "resource_format": "CSV", "server": "global"},
-            "result": {
-                "datasets": [],
-                "count": 0,
-                "total_found": 0,
-                "search_coverage": {
-                    "domain": "earthscope_gnss",
-                    "status": "covered",
-                    "resource_name": station,
-                    "resource_format": "CSV",
-                    "station_code": station,
-                    "station_resource_search": True,
-                },
-                "_meta": {"tool": "search_datasets", "status": "success"},
-            },
-        }
-        for station in ("UCSF", "SBRB", "SBRU")
-    )
-
-    state = _infer_ndp_workflow_state_from_tool_rows(rows)
-    augmented = _augment_ndp_search_result_with_runtime_state(rows[-1]["result"], rows)
-
-    assert state["resource_discovery"]["status"] == "search_exhausted"
-    assert augmented["clio_runtime"]["terminal"] is True
-    assert augmented["clio_runtime"]["workflow_state"]["acquisition"]["status"] == "metadata_only"
-    assert augmented["clio_runtime"]["workflow_state"]["acquisition"]["analysis_ready"] is False
-    assert "Stop calling ndp_search_datasets" in augmented["clio_runtime"]["next_action"]
-
-
-def test_ndp_terminal_state_final_answer_fallback_replaces_stale_continuation() -> None:
-    state = {
-        "station_catalog": {
-            "candidate_count": 2,
-            "radius_km": 75,
-            "center": {"latitude": 37.77, "longitude": -122.42},
-            "stations": [
-                {"station": "UCSF", "distance_km": 3.444},
-                {"station": "SBRB", "distance_km": 9.325},
-            ],
-        },
-        "acquisition": {
-            "status": "metadata_only",
-            "analysis_ready": False,
-            "metadata_path": "/workspace/.clio/artifacts/ndp-staging/earthscope.csv",
-            "blocker": "station-specific searches did not return a concrete GNSS time-series CSV",
-        },
-        "resource_discovery": {
-            "status": "search_exhausted",
-            "searched_station_ids": ["UCSF", "SBRB"],
-        },
-    }
-
-    fallback = _ndp_terminal_workflow_state_final_answer_fallback(
-        "Next action: search UCSF and SBRB with ndp_search_datasets, then run visualization.",
-        state,
-    )
-
-    assert "Resource discovery status: search exhausted" in fallback
-    assert "Station-specific NDP searches were attempted for: UCSF, SBRB." in fallback
-    assert "No GNSS profiling or visualization was run" in fallback
-
-
-def test_ndp_terminal_state_final_answer_fallback_keeps_terminal_brief() -> None:
-    state = {
-        "acquisition": {
-            "status": "metadata_only",
-            "analysis_ready": False,
-            "metadata_path": "/workspace/.clio/artifacts/ndp-staging/earthscope.csv",
-        },
-        "resource_discovery": {
-            "status": "search_exhausted",
-            "searched_station_ids": ["UCSF"],
-        },
-    }
-
-    fallback = _ndp_terminal_workflow_state_final_answer_fallback(
-        "Search exhausted for station-specific NDP resources. No analysis-ready CSV was staged.",
-        state,
-    )
-
-    assert fallback == ""
-
-
-def test_positive_ndp_state_final_answer_fallback_replaces_artifact_only_brief() -> None:
-    state = {
-        "station_catalog": {
-            "candidate_count": 113,
-            "radius_km": 75.0,
-            "center": {"latitude": 34.05, "longitude": -118.25},
-            "stations": [
-                {
-                    "station": "MTA1",
-                    "distance_km": 0.713,
-                    "network": "SCGN",
-                    "status": "ACTIVE",
-                }
-            ],
-            "status": "ranked_metadata_only",
-        },
-        "resource_candidate": {
-            "status": "selected",
-            "resource_name": "MTA1.CI.LY_.30.csv",
-            "resource_url": "https://example.test/EarthScope/MTA1.CI.LY_.30.csv",
-            "geographically_grounded": True,
-            "station_distance_km": 0.713,
-        },
-        "acquisition": {
-            "status": "staged",
-            "analysis_ready": True,
-            "local_path": "/workspace/.clio/artifacts/ndp-staging/MTA1.CI.LY_.30.csv",
-            "source_url": "https://example.test/EarthScope/MTA1.CI.LY_.30.csv",
-        },
-        "profile": {
-            "status": "complete",
-            "rows_scanned": 1000,
-            "columns": ["time", "east", "north", "up", "sigEE", "sigNN", "sigUU"],
-            "numeric_columns": ["east", "north", "up", "sigEE", "sigNN", "sigUU"],
-        },
-        "artifact": {
-            "status": "ready",
-            "path": "/workspace/.clio/artifacts/ndp-visualizations/MTA1_time_series.png",
-            "columns": ["east", "north", "up"],
-        },
-        "visualization": {
-            "status": "complete",
-            "path": "/workspace/.clio/artifacts/ndp-visualizations/MTA1_time_series.png",
-            "source_path": "/workspace/.clio/artifacts/ndp-staging/MTA1.CI.LY_.30.csv",
-        },
-    }
-
-    fallback = _positive_ndp_workflow_state_final_answer_fallback(
-        "Staged CSV file: `/workspace/.clio/artifacts/ndp-staging/MTA1.CI.LY_.30.csv`.\n"
-        "Generated plot: `/workspace/.clio/artifacts/ndp-visualizations/MTA1_time_series.png`.",
-        state,
-    )
-
-    assert "EarthScope GNSS acquisition, profiling, and visualization completed." in fallback
-    assert "requested region centered at 34.05, -118.25 with a 75.0 km radius" in fallback
-    assert "selected station `MTA1`" in fallback
-    assert "0.713 km from the requested center" in fallback
-    assert "NDP source URL: https://example.test/EarthScope/MTA1.CI.LY_.30.csv" in fallback
-    assert "rows scanned: 1000" in fallback
-    assert "`sigEE`" in fallback
-    assert "earthquake/event catalog" not in fallback
-
-
-def test_positive_ndp_state_final_answer_fallback_keeps_complete_brief() -> None:
-    state = {
-        "resource_candidate": {
-            "status": "selected",
-            "resource_name": "MTA1.CI.LY_.30.csv",
-            "resource_url": "https://example.test/EarthScope/MTA1.CI.LY_.30.csv",
-        },
-        "acquisition": {
-            "status": "staged",
-            "analysis_ready": True,
-            "local_path": "/workspace/.clio/artifacts/ndp-staging/MTA1.CI.LY_.30.csv",
-            "source_url": "https://example.test/EarthScope/MTA1.CI.LY_.30.csv",
-        },
-    }
-
-    fallback = _positive_ndp_workflow_state_final_answer_fallback(
-        "Station MTA1 is 0.713 km from the region center. "
-        "The NDP source URL is https://example.test/EarthScope/MTA1.CI.LY_.30.csv. "
-        "Profile rows scanned: 1000 with uncertainty columns sigEE, sigNN, sigUU. "
-        "CSV `/workspace/.clio/artifacts/ndp-staging/MTA1.CI.LY_.30.csv`; "
-        "PNG `/workspace/.clio/artifacts/ndp-visualizations/MTA1_time_series.png`. "
-        "Limitation: no event catalog was included.",
-        state,
-    )
-
-    assert fallback == ""
-
-
-def test_ndp_tool_rows_infer_profile_plot_and_station_catalog_from_live_rows() -> None:
-    rows = [
-        {
-            "name": "ndp_filter_earthscope_station_catalog",
-            "ok": True,
-            "args": {
-                "latitude": 34.05,
-                "longitude": -118.25,
-                "radius_km": 75.0,
-            },
-            "result": {
-                "preview": json.dumps(
-                    {
-                        "ok": True,
-                        "center": {"latitude": 34.05, "longitude": -118.25},
-                        "radius_km": 75.0,
-                        "within_radius_count": 1,
-                        "stations": [
-                            {
-                                "station": "MTA1",
-                                "latitude": 34.05522077,
-                                "longitude": -118.24550778,
-                                "network": "SCGN",
-                                "status": "ACTIVE",
-                                "distance_km": 0.713,
-                            }
-                        ],
-                        "_meta": {"tool": "filter_earthscope_station_catalog"},
-                    }
-                ),
-            },
-        },
-        {
-            "name": "ndp_stage_resource",
-            "ok": True,
-            "args": {
-                "dataset_identifier": "https://example.test/EarthScope/MTA1.CI.LY_.30.csv",
-                "resource_name": "MTA1.CI.LY_.30.csv",
-            },
-            "result": {
-                "ok": True,
-                "path": "/workspace/.clio/artifacts/ndp-staging/MTA1.CI.LY_.30.csv",
-                "source_url": "https://example.test/EarthScope/MTA1.CI.LY_.30.csv",
-            },
-        },
-        {
-            "name": "ndp_profile_csv_resource",
-            "ok": True,
-            "result": json.dumps(
-                {
-                    "ok": True,
-                    "path": "/workspace/.clio/artifacts/ndp-staging/MTA1.CI.LY_.30.csv",
-                    "columns": [
-                        "time",
-                        "east",
-                        "north",
-                        "up",
-                        "sigEE",
-                        "sigNN",
-                        "sigUU",
-                    ],
-                    "rows_scanned": 250000,
-                    "scan_limited": True,
-                    "numeric_summary": {
-                        "east": {"count": 5000},
-                        "north": {"count": 5000},
-                        "up": {"count": 5000},
-                        "sigEE": {"count": 5000},
-                    },
-                    "_meta": {"tool": "profile_csv_resource"},
-                }
-            ),
-        },
-        {
-            "name": "ndp_plot_csv_timeseries",
-            "ok": True,
-            "result": json.dumps(
-                {
-                    "ok": True,
-                    "path": "/workspace/.clio/artifacts/ndp-staging/MTA1.CI.LY_.30.csv",
-                    "output_path": "/workspace/.clio/artifacts/ndp-staging/MTA1.CI.LY_.30_plot.png",
-                    "output_size_bytes": 87820,
-                    "y_columns": ["east", "north", "up"],
-                    "rows_plotted": 2000,
-                    "_meta": {"tool": "plot_csv_timeseries"},
-                }
-            ),
-        },
-    ]
-
-    state = _infer_ndp_workflow_state_from_tool_rows(rows)
-    fallback = _positive_ndp_workflow_state_final_answer_fallback(
-        "CSV staged and plot generated.",
-        state,
-    )
-
-    assert state["station_catalog"]["stations"][0]["distance_km"] == 0.713
-    assert state["profile"]["rows_scanned"] == 250000
-    assert state["artifact"]["path"].endswith("_plot.png")
-    assert "0.713 km from the requested center" in fallback
-    assert "rows scanned: 250000" in fallback
-    assert "Visualization: `/workspace/.clio/artifacts/ndp-staging/MTA1.CI.LY_.30_plot.png`" in fallback
-
-
-def test_ndp_station_resource_search_ignores_off_region_broad_csv_candidate() -> None:
-    output = _append_inferred_workflow_state_from_trajectory(
-        "A broad EarthScope CSV search returned an off-region station resource.",
-        {
-            "steps": [
-                {
-                    "tool_name": "ndp_filter_earthscope_station_catalog",
-                    "observation": {
-                        "ok": True,
-                        "path": "/workspace/.clio/artifacts/ndp-staging/earthscope_converted_data.csv",
-                        "center": {"latitude": 37.77, "longitude": -122.42},
-                        "radius_km": 75,
-                        "within_radius_count": 3,
-                        "stations": [
-                            {"station": "UCSF", "distance_km": 3.4},
-                            {"station": "SBRB", "distance_km": 9.3},
-                            {"station": "SBRU", "distance_km": 9.3},
-                        ],
-                        "resource_discovery": {"status": "search_required"},
-                        "_meta": {"tool": "filter_earthscope_station_catalog", "status": "success"},
-                    },
-                },
-                *[
-                    {
-                        "tool_name": "ndp_search_datasets",
-                        "tool_args": {"resource_name": station, "resource_format": "CSV", "server": "global"},
-                        "observation": {
-                            "datasets": [],
-                            "count": 0,
-                            "total_found": 0,
-                            "search_coverage": {
-                                "domain": "earthscope_gnss",
-                                "status": "covered",
-                                "resource_name": station,
-                                "resource_format": "CSV",
-                                "station_resource_search": True,
-                            },
-                            "_meta": {"tool": "search_datasets", "status": "success"},
-                        },
-                    }
-                    for station in ("UCSF", "SBRB", "SBRU")
-                ],
-                {
-                    "tool_name": "ndp_search_datasets",
-                    "tool_args": {
-                        "search_terms": ["EarthScope", "GNSS", "CSV", "raw_csv"],
-                        "resource_format": "CSV",
-                        "server": "global",
-                    },
-                    "observation": {
-                        "datasets": [
-                            {
-                                "id": "wwmt-dataset",
-                                "name": "wwmt-ci-ly",
-                                "resource_summaries": [
-                                    {
-                                        "name": "WWMT.CI.LY_.40.csv",
-                                        "format": "CSV",
-                                        "url": "https://example.test/raw_csv/WWMT.CI.LY_.40.csv",
-                                    }
-                                ],
-                            }
-                        ],
-                        "count": 1,
-                        "total_found": 1,
-                        "search_coverage": {
-                            "domain": "earthscope_gnss",
-                            "status": "covered",
-                            "resource_format": "CSV",
-                            "station_resource_search": False,
-                            "search_terms": ["EarthScope", "GNSS", "CSV", "raw_csv"],
-                        },
-                        "_meta": {"tool": "search_datasets", "status": "success"},
-                    },
-                },
-            ]
-        },
-    )
-
-    state = _workflow_state_from_outputs([output])
-
-    assert state["resource_discovery"]["status"] == "search_exhausted"
-    assert state["resource_discovery"]["searched_station_ids"] == ["UCSF", "SBRB", "SBRU"]
-    assert state["resource_discovery"]["searches"][-1]["status"] == "off_region_candidate_ignored"
-    assert state["resource_discovery"]["searches"][-1]["off_region_candidate_station_id"] == "WWMT"
-    assert state["acquisition"]["analysis_ready"] is False
-
-
-def test_ndp_station_resource_search_exhaustion_does_not_override_later_staged_station_csv() -> None:
-    output = _append_inferred_workflow_state_from_trajectory(
-        "A station CSV was eventually staged after earlier empty station searches.",
-        {
-            "steps": [
-                {
-                    "tool_name": "ndp_filter_earthscope_station_catalog",
-                    "observation": {
-                        "ok": True,
-                        "path": "/workspace/.clio/artifacts/ndp-staging/earthscope_converted_data.csv",
-                        "center": {"latitude": 37.77, "longitude": -122.42},
-                        "radius_km": 75,
-                        "within_radius_count": 2,
-                        "stations": [
-                            {"station": "UCSF", "distance_km": 1.2},
-                            {"station": "SBRB", "distance_km": 10.2},
-                        ],
-                        "resource_discovery": {"status": "search_required"},
-                        "_meta": {"tool": "filter_earthscope_station_catalog", "status": "success"},
-                    },
-                },
-                {
-                    "tool_name": "ndp_search_datasets",
-                    "tool_args": {"resource_name": "UCSF", "resource_format": "CSV", "server": "global"},
-                    "observation": {
-                        "datasets": [],
-                        "count": 0,
-                        "total_found": 0,
-                        "search_coverage": {
-                            "domain": "earthscope_gnss",
-                            "status": "covered",
-                            "resource_name": "UCSF",
-                            "resource_format": "CSV",
-                            "station_resource_search": True,
-                        },
-                        "_meta": {"tool": "search_datasets", "status": "success"},
-                    },
-                },
-                {
-                    "tool_name": "ndp_stage_resource",
-                    "tool_args": {
-                        "dataset_identifier": "station-dataset",
-                        "resource_name": "SBRB.CI.LY_.20.csv",
-                    },
-                    "observation": {
-                        "ok": True,
-                        "path": "/workspace/.clio/artifacts/ndp-staging/SBRB.CI.LY_.20.csv",
-                        "resource_name": "SBRB.CI.LY_.20.csv",
-                        "source_url": "https://example.test/raw_csv/SBRB.CI.LY_.20.csv",
-                    },
-                },
-            ]
-        },
-    )
-
-    state = _workflow_state_from_outputs([output])
-
-    assert state["acquisition"]["status"] == "staged"
-    assert state["acquisition"]["analysis_ready"] is True
-    assert state["acquisition"]["local_path"].endswith("SBRB.CI.LY_.20.csv")
-
-
-def test_truncated_station_catalog_preview_downgrades_off_region_staged_station_csv() -> None:
-    station_catalog_preview = json.dumps(
-        {
-            "ok": True,
-            "path": "/workspace/.clio/artifacts/ndp-staging/earthscope_converted_data.csv",
-            "center": {"latitude": 37.77, "longitude": -122.42},
-            "radius_km": 75,
-            "within_radius_count": 2,
-            "stations": [
-                {"station": "UCSF", "distance_km": 3.4},
-                {"station": "EBMD", "distance_km": 13.0},
-            ],
-            "resource_discovery": {"status": "search_required"},
-            "_meta": {"tool": "filter_earthscope_station_catalog", "status": "success"},
-        }
-    )
-    output = _append_inferred_workflow_state_from_trajectory(
-        "A broad search staged a CSV after the filtered stations were available.",
-        {
-            "steps": [
-                {
-                    "tool_name": "ndp_filter_earthscope_station_catalog",
-                    "observation": {
-                        "preview": json.dumps(
-                            {
-                                "original_chars": len(station_catalog_preview),
-                                "preview": station_catalog_preview,
-                            }
-                        ),
-                        "truncated": True,
-                    },
-                },
-                {
-                    "tool_name": "ndp_stage_resource",
-                    "tool_args": {
-                        "dataset_identifier": "off-region-dataset",
-                        "resource_name": "WWMT.CI.LY_.40.csv",
-                    },
-                    "observation": {
-                        "ok": True,
-                        "path": "/workspace/.clio/artifacts/ndp-staging/WWMT.CI.LY_.40.csv",
-                        "resource_name": "WWMT.CI.LY_.40.csv",
-                        "source_url": "https://example.test/raw_csv/WWMT.CI.LY_.40.csv",
-                    },
-                },
-            ]
-        },
-    )
-
-    state = _workflow_state_from_outputs([output])
-
-    assert state["station_catalog"]["stations"][0]["station"] == "UCSF"
-    assert state["resource_candidate"]["station_id"] == "WWMT"
-    assert state["resource_candidate"]["geographically_grounded"] is False
-    assert state["acquisition"]["status"] == "staged"
-    assert state["acquisition"]["analysis_ready"] is False
-    assert "does not match the filtered station metadata" in state["acquisition"]["blocker"]
-
-
-def test_contract_order_blocks_analysis_handoff_for_off_region_staged_station_csv() -> None:
-    """Regression for live r21: broad WWMT staging must not authorize analysis."""
-
-    pred = SimpleNamespace(
-        trajectory=None,
-        tools_called=[
-            {
-                "name": "ndp_filter_earthscope_station_catalog",
-                "args": {
-                    "filepath": "/workspace/.clio/artifacts/ndp-staging/earthscope_converted_data.csv",
-                    "latitude": 37.77,
-                    "longitude": -122.42,
-                    "radius_km": 75,
-                },
-                "result": {
-                    "ok": True,
-                    "path": "/workspace/.clio/artifacts/ndp-staging/earthscope_converted_data.csv",
-                    "center": {"latitude": 37.77, "longitude": -122.42},
-                    "radius_km": 75,
-                    "within_radius_count": 3,
-                    "stations": [
-                        {"station": "UCSF", "distance_km": 3.4},
-                        {"station": "SBRB", "distance_km": 9.3},
-                        {"station": "SBRU", "distance_km": 9.3},
-                    ],
-                    "resource_discovery": {"status": "search_required"},
-                    "_meta": {"tool": "filter_earthscope_station_catalog", "status": "success"},
-                },
-            },
-            {
-                "name": "ndp_search_datasets",
-                "args": {"resource_name": "UCSF", "resource_format": "CSV", "server": "global"},
-                "result": {
-                    "datasets": [],
-                    "count": 0,
-                    "total_found": 0,
-                    "search_coverage": {
-                        "domain": "earthscope_gnss",
-                        "status": "covered",
-                        "resource_name": "UCSF",
-                        "resource_format": "CSV",
-                        "station_resource_search": True,
-                    },
-                    "_meta": {"tool": "search_datasets", "status": "success"},
-                },
-            },
-            {
-                "name": "ndp_search_datasets",
-                "args": {
-                    "search_terms": ["EarthScope", "GNSS", "GPS", "CSV", "raw_csv", "San Francisco"],
-                    "resource_format": "CSV",
-                    "server": "global",
-                },
-                "result": {
-                    "datasets": [
-                        {
-                            "id": "wwmt-dataset",
-                            "name": "wwmt-ci-ly-40",
-                            "resource_summaries": [
-                                {
-                                    "name": "WWMT.CI.LY_.40.csv",
-                                    "format": "CSV",
-                                    "url": "https://example.test/raw_csv/WWMT.CI.LY_.40.csv",
-                                }
-                            ],
-                        }
-                    ],
-                    "count": 1,
-                    "total_found": 1,
-                    "search_coverage": {
-                        "domain": "earthscope_gnss",
-                        "status": "covered",
-                        "resource_format": "CSV",
-                        "station_resource_search": False,
-                        "search_terms": ["EarthScope", "GNSS", "GPS", "CSV", "raw_csv", "San Francisco"],
-                    },
-                    "_meta": {"tool": "search_datasets", "status": "success"},
-                },
-            },
-            {
-                "name": "ndp_stage_resource",
-                "args": {
-                    "dataset_identifier": "wwmt-dataset",
-                    "resource_name": "WWMT.CI.LY_.40.csv",
-                },
-                "result": {
-                    "ok": True,
-                    "path": "/workspace/.clio/artifacts/ndp-staging/WWMT.CI.LY_.40.csv",
-                    "dataset_id": "wwmt-dataset",
-                    "dataset_name": "wwmt-ci-ly-40",
-                    "resource_name": "WWMT.CI.LY_.40.csv",
-                    "source_url": "https://example.test/raw_csv/WWMT.CI.LY_.40.csv",
-                    "_meta": {"tool": "stage_resource", "status": "success"},
-                },
-            },
-        ],
-    )
-    tool_outputs = _tool_derived_contract_evidence_for_prediction(pred)
-    state = _workflow_state_from_outputs(tool_outputs)
-
-    assert state["acquisition"]["analysis_ready"] is False
-
-    parent = AgentDef(
-        id="ndp_resource_resolver",
-        source="expert_pack",
-        title="NDP Resource Resolver",
-        parameters={
-            "enforce_child_contract_order": True,
-            "continuation_contracts": [
-                {
-                    "id": "acquisition_to_gnss_profile",
-                    "when_state": {
-                        "acquisition.status": "staged",
-                        "acquisition.analysis_ready": True,
-                    },
-                    "match": "all",
-                    "next_expert": "gnss_timeseries_analysis",
-                    "next_action": "profile the exact staged station CSV",
-                }
-            ],
-        },
-    )
-
-    rows = _filter_child_handoffs_by_contract_order(
-        parent,
-        [{"agent_id": "gnss_timeseries_analysis", "status": "requested"}],
-        completed_outputs=[],
-        current_tool_outputs=tool_outputs,
-        completed_child_ids=set(),
-        declared_child_ids={"gnss_timeseries_analysis"},
-    )
-
-    assert rows[0]["status"] == "skipped"
-    assert rows[0]["skip_reason"] == "child_contract_order_violation"
-    assert rows[0]["allowed_next_children"] == []
-
-
-def test_metadata_only_acquisition_clears_stale_station_candidate_identity() -> None:
-    state = _workflow_state_from_outputs(
-        [
-            json.dumps(
-                {
-                    "workflow_state": {
-                        "resource_candidate": {
-                            "status": "selected",
-                            "dataset_id": "wwmt-dataset",
-                            "dataset_name": "wwmt-ci-ly-40",
-                            "resource_name": "WWMT.CI.LY_.40.csv",
-                            "resource_url": "https://example.test/raw_csv/WWMT.CI.LY_.40.csv",
-                            "station_id": "WWMT",
-                            "geographically_grounded": False,
-                        },
-                        "acquisition": {
-                            "status": "metadata_only",
-                            "analysis_ready": False,
-                            "metadata_path": "/workspace/.clio/artifacts/ndp-staging/earthscope_converted_data.csv",
-                            "source_url": "https://example.test/earthscope_converted_data.csv",
-                        },
-                    }
-                }
-            )
-        ]
-    )
-
-    assert state["resource_candidate"] == {
-        "status": "metadata_only",
-        "resource_name": "earthscope_converted_data.csv",
-        "resource_url": "https://example.test/earthscope_converted_data.csv",
-    }
-    assert state["acquisition"]["analysis_ready"] is False
-
-
-def test_ndp_profile_tool_evidence_infers_complete_profile_state() -> None:
-    state = _infer_ndp_profile_state_from_tool_evidence(
-        json.dumps(
-            {
-                "ok": True,
-                "path": "/workspace/.clio/artifacts/ndp-staging/P475.CI.LY_.20.csv",
-                "size_bytes": 51608375,
-                "columns": ["time", "east", "north", "up", "sigEE", "sigNN"],
-                "rows_scanned": 5000,
-                "scan_limited": True,
-                "numeric_summary": {"east": {"min": -1.0}, "north": {"max": 2.0}},
-                "_meta": {"tool": "profile_csv_resource", "status": "success"},
-            }
-        )
-    )
-
-    assert state["profile"]["status"] == "complete"
-    assert state["profile"]["local_path"].endswith("P475.CI.LY_.20.csv")
-    assert state["profile"]["rows_scanned"] == 5000
-    assert state["profile"]["scan_limited"] is True
-    assert state["profile"]["numeric_columns"] == ["east", "north"]
-
-
-def test_ndp_profile_trajectory_state_appends_for_parent_contracts() -> None:
-    output = _append_inferred_workflow_state_from_trajectory(
-        "Profiled the staged GNSS CSV.",
-        {
-            "observation_0": {
-                "ok": True,
-                "path": "/workspace/.clio/artifacts/ndp-staging/P475.CI.LY_.20.csv",
-                "columns": ["time", "east", "north", "up"],
-                "rows_scanned": 5000,
-                "scan_limited": False,
-                "numeric_summary": {"east": {}, "north": {}, "up": {}},
-                "_meta": {"tool": "profile_csv_resource", "status": "success"},
-            }
-        },
-    )
-
-    state = _workflow_state_from_outputs([output])
-
-    assert state["profile"]["status"] == "complete"
-    assert state["profile"]["local_path"].endswith("P475.CI.LY_.20.csv")
-
-
-def test_nested_child_workflow_state_is_appended_to_parent_output() -> None:
-    parent_output = _append_nested_workflow_state(
-        "Analysis parent summarized its children.",
-        [
-            {
-                "agent_id": "gnss_timeseries_analysis",
-                "stage": "delegate.completed",
-                "status": "completed",
-                "output_summary": json.dumps(
-                    {
-                        "workflow_state": {
-                            "profile": {
-                                "status": "complete",
-                                "local_path": "/workspace/P475.CI.LY_.20.csv",
-                            }
-                        }
-                    }
-                ),
-                "tools_called": [
-                    {
-                        "name": "ndp_stage_resource",
-                        "args": {
-                            "dataset_identifier": "1b0c1b93-f164-4025-bd7b-000252b5ca18",
-                            "resource_name": "MTA1.CI.LY_.30.csv",
-                        },
-                        "result": {
-                            "path": "/workspace/.clio/artifacts/ndp-staging/MTA1.CI.LY_.30.csv",
-                            "resource_name": "MTA1.CI.LY_.30.csv",
-                        },
-                        "ok": True,
-                    }
-                ],
-            }
-        ],
-    )
-
-    state = _workflow_state_from_outputs([parent_output])
-
-    assert "CLIO merged nested typed workflow state" in parent_output
-    assert state["profile"]["status"] == "complete"
-    assert state["profile"]["local_path"].endswith("P475.CI.LY_.20.csv")
-    assert state["resource_candidate"]["dataset_id"] == "1b0c1b93-f164-4025-bd7b-000252b5ca18"
-    assert state["resource_candidate"]["resource_name"] == "MTA1.CI.LY_.30.csv"
-
-
-def test_nested_tool_row_json_result_overrides_stale_candidate_state(
-    tmp_path: Path,
-) -> None:
-    staged_csv = tmp_path / "PKRD.CI.LY_.20.csv"
-    staged_csv.write_text("time,east,north,up\n2024-01-01,0,0,0\n")
-
-    parent_output = _append_nested_workflow_state(
-        json.dumps(
-            {
-                "workflow_state": {
-                    "resource_candidate": {"status": "selected"},
-                    "acquisition": {
-                        "status": "candidate_found",
-                        "analysis_ready": False,
-                        "local_path": str(staged_csv),
-                        "blocker": "analysis-ready acquisition requires a staged local CSV path",
-                    },
-                }
-            }
-        ),
-        [
-            {
-                "agent_id": "ndp_resource_resolver",
-                "stage": "delegate.completed",
-                "status": "completed",
-                "tools_called": [
-                    {
-                        "name": "ndp_stage_resource",
-                        "args": {
-                            "dataset_identifier": "5dcd10ce-d77f-4bf1-8363-ce597892b120",
-                            "resource_name": "PKRD.CI.LY_.20.csv",
-                        },
-                        "result": json.dumps(
-                            {
-                                "staged": True,
-                                "path": str(staged_csv),
-                                "dataset_id": "5dcd10ce-d77f-4bf1-8363-ce597892b120",
-                                "resource_name": "PKRD.CI.LY_.20.csv",
-                                "_meta": {"tool": "stage_resource", "status": "success"},
-                            }
-                        ),
-                        "ok": True,
-                    }
-                ],
-            }
-        ],
-    )
-
-    state = _workflow_state_from_outputs([parent_output])
-
-    assert state["acquisition"]["status"] == "staged"
-    assert state["acquisition"]["analysis_ready"] is True
-    assert "blocker" not in state["acquisition"]
-    assert state["resource_candidate"]["resource_name"] == "PKRD.CI.LY_.20.csv"
-
-
-def test_nested_station_filter_preview_state_grounds_staged_station_csv(
-    tmp_path: Path,
-) -> None:
-    metadata_csv = tmp_path / "earthscope_converted_data.csv"
-    metadata_csv.write_text("Station,Latitude,Longitude\nMTA1,34.05522077,-118.24550778\n")
-    staged_csv = tmp_path / "MTA1.CI.LY_.30.csv"
-    staged_csv.write_text("time,east,north,up\n2024-01-01,0,0,0\n")
-
-    filter_result = {
-        "ok": True,
-        "path": str(metadata_csv),
-        "center": {"latitude": 34.05, "longitude": -118.25},
-        "radius_km": 75,
-        "within_radius_count": 1,
-        "stations": [
-            {
-                "station": "MTA1",
-                "latitude": 34.05522077,
-                "longitude": -118.24550778,
-                "network": "SCGN",
-                "status": "ACTIVE",
-                "distance_km": 0.713,
-                "suggested_search_terms": ["MTA1", "MTA1.CI.LY"],
-            }
-        ],
-        "_meta": {"tool": "filter_earthscope_station_catalog", "status": "success"},
-    }
-    parent_output = _append_nested_workflow_state(
-        "Resolver staged a station CSV after filtering the station catalog.",
-        [
-            {
-                "agent_id": "ndp_resource_resolver",
-                "stage": "delegate.completed",
-                "status": "completed",
-                "tools_called": [
-                    {
-                        "name": "ndp_filter_earthscope_station_catalog",
-                        "args": {"filepath": str(metadata_csv)},
-                        "result": {"preview": json.dumps(filter_result)},
-                        "ok": True,
-                    },
-                    {
-                        "name": "ndp_stage_resource",
-                        "args": {
-                            "dataset_identifier": "1b0c1b93-f164-4025-bd7b-000252b5ca18",
-                            "resource_name": "MTA1.CI.LY_.30.csv",
-                        },
-                        "result": json.dumps(
-                            {
-                                "staged": True,
-                                "path": str(staged_csv),
-                                "dataset_id": "1b0c1b93-f164-4025-bd7b-000252b5ca18",
-                                "resource_name": "MTA1.CI.LY_.30.csv",
-                                "_meta": {"tool": "stage_resource", "status": "success"},
-                            }
-                        ),
-                        "ok": True,
-                    },
-                ],
-            }
-        ],
-    )
-
-    state = _workflow_state_from_outputs([parent_output])
-
-    assert state["station_catalog"]["status"] == "ranked_metadata_only"
-    assert state["resource_candidate"]["resource_name"] == "MTA1.CI.LY_.30.csv"
-    assert state["resource_candidate"]["geographically_grounded"] is True
-    assert state["resource_candidate"]["station_distance_km"] == 0.713
-    assert state["acquisition"]["status"] == "staged"
-    assert state["acquisition"]["analysis_ready"] is True
 
 
 def test_compacted_delegation_output_retains_parseable_workflow_state() -> None:
@@ -5333,7 +2499,9 @@ def test_forwarded_child_prose_is_pending_work_not_final_answer() -> None:
 
 
 def test_earlier_response_prose_is_pending_work_not_final_answer() -> None:
-    answer = "The earlier response already fulfills the full request. No further processing is needed."
+    answer = (
+        "The earlier response already fulfills the full request. No further processing is needed."
+    )
 
     assert _dynamic_answer_has_pending_child_work(answer) is True
     assert _dynamic_answer_is_delegation_placeholder(answer) is True
@@ -5402,30 +2570,6 @@ def test_latest_final_child_output_prefers_synthesis_summary() -> None:
     assert output == "Final synthesized answer with cited data and caveats."
 
 
-def test_ndp_staging_failure_infers_blocked_acquisition_workflow_state() -> None:
-    state = _infer_ndp_workflow_state_from_tool_evidence(
-        "- **Staged CSV path:** *none (staging failed)*\n"
-        "- **Selected source URL:** https://ds2.example.test/raw_csv/SAND.CI.LY_.00.csv\n"
-        "- **Staging blocker:** NDP service unavailable - 502 Proxy Error"
-    )
-
-    assert state["resource_candidate"]["status"] == "missing"
-    assert state["acquisition"]["status"] == "blocked"
-    assert state["acquisition"]["analysis_ready"] is False
-    assert "could not be staged" in state["acquisition"]["blocker"]
-
-
-def test_ndp_acquisition_blocked_prose_infers_blocked_workflow_state() -> None:
-    state = _infer_ndp_workflow_state_from_tool_evidence(
-        "Acquisition blocked: No verifiable EarthScope GNSS station CSV found "
-        "within 75 km of 34.05 N, -118.25 W. No CSV staged."
-    )
-
-    assert state["resource_candidate"]["status"] == "missing"
-    assert state["acquisition"]["status"] == "blocked"
-    assert state["acquisition"]["analysis_ready"] is False
-
-
 def test_blueprint_next_expert_marker_converts_latest_declared_uncompleted_child() -> None:
     rows = _next_expert_marker_handoffs(
         source_text="request",
@@ -5458,7 +2602,10 @@ def test_blueprint_next_expert_marker_appends_observed_sac_path_when_action_is_g
 
     assert len(rows) == 1
     assert rows[0]["delegate_to"] == "visualization"
-    assert "Runtime-selected local SAC path: /tmp/clio-seismic/earthscope_IU_ANMO.sac" in rows[0]["question"]
+    assert (
+        "Runtime-selected local SAC path: /tmp/clio-seismic/earthscope_IU_ANMO.sac"
+        in rows[0]["question"]
+    )
 
 
 def test_blueprint_next_expert_marker_ignores_unknown_or_completed_targets() -> None:
@@ -5476,7 +2623,9 @@ def test_blueprint_next_expert_marker_ignores_unknown_or_completed_targets() -> 
     )
 
 
-def test_blueprint_compiler_selects_declared_dspy_module_kind(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_blueprint_compiler_selects_declared_dspy_module_kind(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     calls: list[tuple[str, Any, list[Any]]] = []
 
     class FakePredict:
@@ -5512,17 +2661,29 @@ def test_blueprint_compiler_selects_declared_dspy_module_kind(monkeypatch: pytes
         "clio_agent.gact.app._dynamic_agent_lm_config",
         lambda base_agent, agent_def: SimpleNamespace(provider="openai", model="gpt-5-mini"),
     )
-    monkeypatch.setattr("clio_agent.gact.app._dynamic_agent_tools", lambda base_agent, agent_def: [scoped_tool])
-    monkeypatch.setattr("clio_agent.gact.app._dynamic_child_expert_tools", lambda base_agent, agent_def: [child_tool])
+    monkeypatch.setattr(
+        "clio_agent.gact.app._dynamic_agent_tools", lambda base_agent, agent_def: [scoped_tool]
+    )
+    monkeypatch.setattr(
+        "clio_agent.gact.app._dynamic_child_expert_tools",
+        lambda base_agent, agent_def: [child_tool],
+    )
 
     base_agent = SimpleNamespace()
     predict = _build_blueprint_dspy_module(
         base_agent,
-        AgentDef(id="predictor", source="expert_pack", title="Predictor", module={"kind": "predict"}),
+        AgentDef(
+            id="predictor", source="expert_pack", title="Predictor", module={"kind": "predict"}
+        ),
     )
     cot = _build_blueprint_dspy_module(
         base_agent,
-        AgentDef(id="reasoner", source="expert_pack", title="Reasoner", module={"kind": "chain_of_thought"}),
+        AgentDef(
+            id="reasoner",
+            source="expert_pack",
+            title="Reasoner",
+            module={"kind": "chain_of_thought"},
+        ),
     )
     react = _build_blueprint_dspy_module(
         base_agent,
@@ -5544,40 +2705,6 @@ def test_blueprint_compiler_selects_declared_dspy_module_kind(monkeypatch: pytes
     assert calls[2][0] == "react"
     assert [tool.name for tool in calls[2][2]] == ["scoped_tool", "delegate_to_child"]
     assert react.program.max_iters == 7
-
-
-def test_blueprint_react_recovers_malformed_final_tool_intent() -> None:
-    def fake_stage_resource(**kwargs: Any) -> dict[str, Any]:
-        return {
-            "staged": True,
-            "path": "/workspace/.clio/artifacts/ndp-staging/MTA1.CI.LY_.30.csv",
-            "dataset_id": kwargs["dataset_identifier"],
-            "resource_name": kwargs["resource_name"],
-            "_meta": {"tool": "stage_resource", "status": "success"},
-        }
-
-    tool = dspy.Tool(
-        func=fake_stage_resource,
-        name="ndp_stage_resource",
-        desc="Stage an NDP resource.",
-        args={},
-    )
-    exc = RuntimeError(
-        "Adapter JSONAdapter failed to parse the LM response.\n\n"
-        'LM Response: {"tool_name":"ndp_stage_resource","tool_args":'
-        '{"dataset_identifier":"changed-dataset","resource_name":"MTA1.CI.LY_.30.csv"}}'
-    )
-
-    recovered = _recover_blueprint_react_tool_intent(tools=[tool], exc=exc)
-
-    assert recovered is not None
-    assert recovered.tools_called[0]["name"] == "ndp_stage_resource"
-    assert recovered.tools_called[0]["ok"] is True
-    assert "Recovered a malformed ReAct tool intent" in recovered.answer
-    state = _workflow_state_from_outputs([recovered.answer])
-    assert state["acquisition"]["status"] == "staged"
-    assert state["acquisition"]["analysis_ready"] is True
-    assert state["resource_candidate"]["resource_name"] == "MTA1.CI.LY_.30.csv"
 
 
 def test_blueprint_runner_uses_dspy_module_call_path(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -5726,7 +2853,9 @@ def test_blueprint_react_empty_answer_preserves_tool_trajectory(
         "clio_agent.gact.app._dynamic_agent_lm_config",
         lambda base_agent, agent_def: SimpleNamespace(provider="argonne", model="gpt-oss-120b"),
     )
-    monkeypatch.setattr("clio_agent.gact.app._dynamic_agent_tools", lambda base_agent, agent_def: [])
+    monkeypatch.setattr(
+        "clio_agent.gact.app._dynamic_agent_tools", lambda base_agent, agent_def: []
+    )
     monkeypatch.setattr(
         "clio_agent.gact.app._dynamic_child_expert_tools",
         lambda base_agent, agent_def: [],
@@ -5734,7 +2863,9 @@ def test_blueprint_react_empty_answer_preserves_tool_trajectory(
 
     module = _build_blueprint_dspy_module(
         SimpleNamespace(),
-        AgentDef(id="source_inspect", source="expert_pack", title="Source", module={"kind": "react"}),
+        AgentDef(
+            id="source_inspect", source="expert_pack", title="Source", module={"kind": "react"}
+        ),
     )
 
     result = module(question="inspect", session_id="session-123")
@@ -5750,94 +2881,6 @@ def test_blueprint_react_empty_answer_preserves_tool_trajectory(
         }
     ]
     assert result.route_source == "agent_blueprint"
-
-
-def test_blueprint_react_terminal_workflow_state_returns_final_prediction(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    assert not issubclass(_BlueprintTerminalWorkflowState, Exception)
-
-    terminal_result = {
-        "datasets": [],
-        "count": 0,
-        "_meta": {
-            "tool": "search_datasets",
-            "status": "skipped",
-            "reason": "resource_discovery_search_exhausted",
-        },
-        "clio_runtime": {
-            "terminal": True,
-            "workflow_state": {
-                "acquisition": {
-                    "status": "metadata_only",
-                    "analysis_ready": False,
-                    "blocker": "No concrete station CSV resources were found.",
-                },
-                "resource_discovery": {"status": "search_exhausted"},
-            },
-        },
-    }
-
-    class FakeReact:
-        def __init__(self, signature: Any, *, tools: list[Any], max_iters: int) -> None:
-            self.signature = signature
-            self.tools = tools
-            self.max_iters = max_iters
-
-        def __call__(self, **kwargs: Any) -> Any:
-            rows = _ACTIVE_BLUEPRINT_TOOL_ROWS.get()
-            if rows is not None:
-                rows.append(
-                    {
-                        "name": "ndp_search_datasets",
-                        "args": {"resource_name": "UCSF", "resource_format": "CSV"},
-                        "ok": True,
-                        "result": terminal_result,
-                        "telemetry_source": "blueprint_react_tool_wrapper",
-                        "skipped": True,
-                    }
-                )
-            raise _BlueprintTerminalWorkflowState(terminal_result)
-
-    monkeypatch.setattr(dspy, "ReAct", FakeReact)
-    monkeypatch.setattr("clio_agent.config.create_lm", lambda config: object())
-    monkeypatch.setattr("clio_agent.config.create_chat_adapter", lambda config: object())
-    monkeypatch.setattr(
-        "clio_agent.gact.app._dynamic_agent_lm_config",
-        lambda base_agent, agent_def: SimpleNamespace(provider="argonne", model="gpt-oss-120b"),
-    )
-    monkeypatch.setattr("clio_agent.gact.app._dynamic_agent_tools", lambda base_agent, agent_def: [])
-    monkeypatch.setattr(
-        "clio_agent.gact.app._dynamic_child_expert_tools",
-        lambda base_agent, agent_def: [],
-    )
-
-    module = _build_blueprint_dspy_module(
-        SimpleNamespace(),
-        AgentDef(
-            id="ndp_resource_resolver",
-            source="expert_pack",
-            title="Resolver",
-            module={"kind": "react"},
-        ),
-    )
-
-    result = module(question="resolve station CSVs", session_id="session-123")
-    workflow_state = _workflow_state_from_outputs([result.workflow_state, result.answer])
-
-    assert result.route_source == "agent_blueprint"
-    assert workflow_state["resource_discovery"]["status"] == "search_exhausted"
-    assert workflow_state["acquisition"]["analysis_ready"] is False
-    assert "metadata-only" in result.answer
-    assert len(result.tools_called) == 1
-    terminal_tool_call = result.tools_called[0]
-    assert terminal_tool_call["name"] == "ndp_search_datasets"
-    assert terminal_tool_call["args"] == {"resource_name": "UCSF", "resource_format": "CSV"}
-    assert terminal_tool_call["ok"] is True
-    assert terminal_tool_call["telemetry_source"] == "blueprint_react_tool_wrapper"
-    assert terminal_tool_call["result"]["_meta"]["reason"] == "resource_discovery_search_exhausted"
-    assert terminal_tool_call["result"]["_meta"]["status"] == "skipped"
-    assert terminal_tool_call["result"]["clio_runtime"]["terminal"] is True
 
 
 def test_extract_tools_called_from_indexed_react_trajectory() -> None:
@@ -5906,45 +2949,6 @@ def test_merge_tool_call_rows_deduplicates_matching_call_id_with_result_evidence
 
     assert len(rows) == 1
     assert rows[0]["call_id"] == "call_same"
-
-
-def test_failed_child_delegation_state_preserves_tool_evidence_as_blocker() -> None:
-    state = _failed_child_delegation_workflow_state(
-        prompt=(
-            "Prior structured blueprint state:\n"
-            '{"acquisition":{"status":"metadata_only","analysis_ready":false},'
-            '"resource_discovery":{"status":"search_required"}}'
-        ),
-        child_agent_id="earthscope_station_catalog",
-        parent_agent_id="ndp_dataset_discovery",
-        error="AuthenticationError",
-        message="token inactive",
-        tools_called=[
-            {
-                "name": "ndp_stage_resource",
-                "args": {
-                    "dataset_identifier": "811f0bcc",
-                    "resource_name": "earthscope_converted_data.csv",
-                },
-                "ok": True,
-                "result": {
-                    "path": "/workspace/.clio/artifacts/ndp-staging/earthscope_converted_data.csv",
-                    "dataset_id": "811f0bcc",
-                    "dataset_name": "earthscope_stations",
-                    "resource_name": "earthscope_converted_data.csv",
-                    "source_url": "https://example.test/earthscope_converted_data.csv",
-                },
-            }
-        ],
-    )
-
-    assert state["delegation"]["status"] == "failed"
-    assert state["delegation"]["failed_child"] == "earthscope_station_catalog"
-    assert state["acquisition"]["status"] == "blocked"
-    assert state["acquisition"]["analysis_ready"] is False
-    assert "AuthenticationError" in state["acquisition"]["blocker"]
-    assert state["resource_discovery"]["status"] == "child_failed"
-    assert state["resource_candidate"]["status"] == "metadata_only"
 
 
 def test_failed_child_delegation_output_summary_is_parent_parseable() -> None:
@@ -6022,7 +3026,9 @@ def test_generated_child_expert_tool_runs_declared_child_and_returns_compact_evi
     child = AgentDef(id="analysis", source="expert_pack", title="Analysis", parent_id="root")
     calls: list[dict[str, Any]] = []
 
-    def fake_run_dynamic_agent_compat(runner, base_agent, agent_def, question, session_id, cancel_requested):
+    def fake_run_dynamic_agent_compat(
+        runner, base_agent, agent_def, question, session_id, cancel_requested
+    ):
         calls.append(
             {
                 "runner": runner,
@@ -6040,8 +3046,12 @@ def test_generated_child_expert_tool_runs_declared_child_and_returns_compact_evi
             delegation='{"return_to":"root"}',
         )
 
-    monkeypatch.setattr("clio_agent.gact.app._blueprint_runner_for_agent", lambda agent_def: "child-runner")
-    monkeypatch.setattr("clio_agent.gact.app._run_dynamic_agent_compat", fake_run_dynamic_agent_compat)
+    monkeypatch.setattr(
+        "clio_agent.gact.app._blueprint_runner_for_agent", lambda agent_def: "child-runner"
+    )
+    monkeypatch.setattr(
+        "clio_agent.gact.app._run_dynamic_agent_compat", fake_run_dynamic_agent_compat
+    )
 
     token = _ACTIVE_GACT_SESSION_ID.set("session-123")
     try:
@@ -6103,222 +3113,6 @@ def test_recording_blueprint_tool_captures_context_local_tool_result() -> None:
     ]
 
 
-def test_recording_blueprint_tool_skips_ndp_search_after_station_exhaustion() -> None:
-    def fail_search(**kwargs: Any) -> dict[str, Any]:
-        raise AssertionError(f"ndp search should have been short-circuited: {kwargs}")
-
-    tool = dspy.Tool(
-        func=fail_search,
-        name="ndp_search_datasets",
-        desc="Search NDP datasets",
-        args={"resource_name": {"type": "string"}},
-    )
-    rows: list[dict[str, Any]] = [
-        {
-            "name": "ndp_filter_earthscope_station_catalog",
-            "args": {
-                "filepath": "/workspace/.clio/artifacts/ndp-staging/earthscope_converted_data.csv",
-                "latitude": 37.77,
-                "longitude": -122.42,
-                "radius_km": 75,
-            },
-            "result": {
-                "ok": True,
-                "path": "/workspace/.clio/artifacts/ndp-staging/earthscope_converted_data.csv",
-                "center": {"latitude": 37.77, "longitude": -122.42},
-                "radius_km": 75,
-                "within_radius_count": 3,
-                "stations": [
-                    {"station": "UCSF", "distance_km": 3.444},
-                    {"station": "SBRB", "distance_km": 9.325},
-                    {"station": "SBRU", "distance_km": 9.325},
-                ],
-                "resource_discovery": {"status": "search_required"},
-                "_meta": {"tool": "filter_earthscope_station_catalog", "status": "success"},
-            },
-        },
-        *[
-            {
-                "name": "ndp_search_datasets",
-                "args": {"resource_name": station, "resource_format": "CSV", "server": "global"},
-                "result": {
-                    "datasets": [],
-                    "count": 0,
-                    "total_found": 0,
-                    "search_coverage": {
-                        "domain": "earthscope_gnss",
-                        "status": "covered",
-                        "resource_name": station,
-                        "resource_format": "CSV",
-                        "station_code": station,
-                        "station_resource_search": True,
-                    },
-                    "_meta": {"tool": "search_datasets", "status": "success"},
-                },
-            }
-            for station in ("UCSF", "SBRB", "SBRU")
-        ],
-    ]
-    token = _ACTIVE_BLUEPRINT_TOOL_ROWS.set(rows)
-    try:
-        wrapped = _recording_blueprint_tool(tool)
-        with pytest.raises(_BlueprintTerminalWorkflowState) as raised:
-            wrapped(resource_name="UCSF", resource_format="CSV", server="global")
-    finally:
-        _ACTIVE_BLUEPRINT_TOOL_ROWS.reset(token)
-    result = raised.value.result
-
-    assert result["_meta"] == {
-        "tool": "search_datasets",
-        "status": "skipped",
-        "reason": "resource_discovery_search_exhausted",
-    }
-    assert result["clio_runtime"]["terminal"] is True
-    assert result["clio_runtime"]["workflow_state"]["resource_discovery"]["status"] == "search_exhausted"
-    assert rows[-1]["skipped"] is True
-    assert rows[-1]["result"]["clio_runtime"]["terminal"] is True
-
-
-def test_recording_blueprint_tool_skips_ndp_search_from_inherited_workflow_state() -> None:
-    def fail_search(**kwargs: Any) -> dict[str, Any]:
-        raise AssertionError(f"ndp search should have been short-circuited: {kwargs}")
-
-    tool = dspy.Tool(
-        func=fail_search,
-        name="ndp_search_datasets",
-        desc="Search NDP datasets",
-        args={"resource_name": {"type": "string"}},
-    )
-    rows: list[dict[str, Any]] = [
-        {
-            "name": "clio_prior_workflow_state",
-            "args": {},
-            "ok": True,
-            "result": {},
-            "workflow_state": {
-                "acquisition": {
-                    "status": "metadata_only",
-                    "analysis_ready": False,
-                    "metadata_path": (
-                        "/workspace/.clio/artifacts/ndp-staging/"
-                        "earthscope_converted_data.csv"
-                    ),
-                },
-                "station_catalog": {
-                    "status": "ranked_metadata_only",
-                    "stations": [
-                        {"station": "UCSF", "distance_km": 3.444},
-                        {"station": "SBRB", "distance_km": 9.325},
-                        {"station": "SBRU", "distance_km": 9.325},
-                    ],
-                },
-                "resource_discovery": {"status": "search_required"},
-            },
-            "telemetry_source": "blueprint_react_context_seed",
-        },
-        *[
-            {
-                "name": "ndp_search_datasets",
-                "args": {"resource_name": station, "resource_format": "CSV", "server": "global"},
-                "result": {
-                    "datasets": [],
-                    "count": 0,
-                    "total_found": 0,
-                    "search_coverage": {
-                        "domain": "earthscope_gnss",
-                        "status": "covered",
-                        "resource_name": station,
-                        "resource_format": "CSV",
-                        "station_code": station,
-                        "station_resource_search": True,
-                    },
-                    "_meta": {"tool": "search_datasets", "status": "success"},
-                },
-            }
-            for station in ("UCSF", "SBRB", "SBRU")
-        ],
-    ]
-    token = _ACTIVE_BLUEPRINT_TOOL_ROWS.set(rows)
-    try:
-        wrapped = _recording_blueprint_tool(tool)
-        with pytest.raises(_BlueprintTerminalWorkflowState) as raised:
-            wrapped(resource_name="MHDL", resource_format="CSV", server="global")
-    finally:
-        _ACTIVE_BLUEPRINT_TOOL_ROWS.reset(token)
-    result = raised.value.result
-
-    assert result["_meta"]["status"] == "skipped"
-    assert result["_meta"]["reason"] == "resource_discovery_search_exhausted"
-    assert result["clio_runtime"]["terminal"] is True
-    assert result["clio_runtime"]["workflow_state"]["resource_discovery"]["status"] == "search_exhausted"
-    assert rows[-1]["skipped"] is True
-
-
-def test_recording_blueprint_tool_skips_duplicate_station_search_before_exhaustion() -> None:
-    def fail_search(**kwargs: Any) -> dict[str, Any]:
-        raise AssertionError(f"duplicate ndp search should be short-circuited: {kwargs}")
-
-    tool = dspy.Tool(
-        func=fail_search,
-        name="ndp_search_datasets",
-        desc="Search NDP datasets",
-        args={"resource_name": {"type": "string"}},
-    )
-    rows: list[dict[str, Any]] = [
-        {
-            "name": "clio_prior_workflow_state",
-            "args": {},
-            "ok": True,
-            "result": {},
-            "workflow_state": {
-                "station_catalog": {
-                    "status": "ranked_metadata_only",
-                    "stations": [
-                        {"station": "UCSF", "distance_km": 3.444},
-                        {"station": "SBRB", "distance_km": 9.325},
-                        {"station": "SBRU", "distance_km": 9.325},
-                    ],
-                },
-                "resource_discovery": {"status": "search_required"},
-            },
-            "telemetry_source": "blueprint_react_context_seed",
-        },
-        {
-            "name": "ndp_search_datasets",
-            "args": {"resource_name": "UCSF", "resource_format": "CSV", "server": "global"},
-            "result": {
-                "datasets": [],
-                "count": 0,
-                "total_found": 0,
-                "search_coverage": {
-                    "domain": "earthscope_gnss",
-                    "status": "covered",
-                    "resource_name": "UCSF",
-                    "resource_format": "CSV",
-                    "station_code": "UCSF",
-                    "station_resource_search": True,
-                },
-                "_meta": {"tool": "search_datasets", "status": "success"},
-            },
-        },
-    ]
-    token = _ACTIVE_BLUEPRINT_TOOL_ROWS.set(rows)
-    try:
-        wrapped = _recording_blueprint_tool(tool)
-        result = wrapped(resource_name="UCSF", resource_format="CSV", server="global")
-    finally:
-        _ACTIVE_BLUEPRINT_TOOL_ROWS.reset(token)
-
-    assert result["_meta"] == {
-        "tool": "search_datasets",
-        "status": "skipped",
-        "reason": "duplicate_station_resource_search",
-    }
-    assert result["clio_runtime"]["terminal"] is False
-    assert "SBRB, SBRU" in result["clio_runtime"]["next_action"]
-    assert rows[-1]["skipped"] is True
-
-
 @pytest.mark.parametrize(
     "blueprint_id",
     [
@@ -6345,7 +3139,10 @@ def test_earthscope_station_catalog_prompt_keeps_resolver_acquisition_boundary(
     assert "  - ndp_search_datasets" not in tool_block
     assert "  - ndp_stage_resource" not in tool_block
     assert "Do not call `ndp_stage_resource` for a station-specific time-series CSV" in prompt
-    assert "do not call `ndp_search_datasets` to search station-specific resources by station ID" in prompt
+    assert (
+        "do not call `ndp_search_datasets` to search station-specific resources by station ID"
+        in prompt
+    )
     assert "The `ndp_resource_resolver` expert owns station-specific resource search" in prompt
     assert "resource_discovery.station_resource_queries" in prompt
 
@@ -6370,10 +3167,16 @@ def test_earthscope_analysis_prompt_forbids_rows_scanned_cadence_inference(
     prompt = prompt_path.read_text(encoding="utf-8")
     normalized_prompt = " ".join(prompt.split())
 
-    assert "Never convert `rows_scanned` into duration, cadence, or a sampling rate" in normalized_prompt
-    assert "`rows_scanned`, `rows_examined`, and file size are profiler coverage signals" in normalized_prompt
+    assert (
+        "Never convert `rows_scanned` into duration, cadence, or a sampling rate"
+        in normalized_prompt
+    )
+    assert (
+        "`rows_scanned`, `rows_examined`, and file size are profiler coverage signals"
+        in normalized_prompt
+    )
     assert "Treat `numeric_summary_rows` or" in prompt
-    assert "Do not infer a \"30-day record\" from `.30`" in normalized_prompt
+    assert 'Do not infer a "30-day record" from `.30`' in normalized_prompt
     assert "visible sample rows suggest that local spacing" in normalized_prompt
     assert "do not generalize" in prompt
     assert "file-wide `Hz`, days-long duration, or sampling-rate claim" in normalized_prompt
@@ -6402,9 +3205,9 @@ def test_earthscope_synthesis_prompt_filters_scan_limited_cadence_claims(
     assert "Never convert `rows_scanned`, `rows_examined`, `rows_profiled`" in prompt
     assert "scan-limited profile row count is coverage evidence only" in prompt
     assert "Treat numeric summaries as covering" in prompt
-    assert "Do not write `Hz`, \"hours\", \"days\", \"duration\", \"complete\"" in normalized_prompt
-    assert "Do not infer a \"30-day record\" from `.30`" in normalized_prompt
-    assert "unqualified \"high suitability\"" in normalized_prompt
+    assert 'Do not write `Hz`, "hours", "days", "duration", "complete"' in normalized_prompt
+    assert 'Do not infer a "30-day record" from `.30`' in normalized_prompt
+    assert 'unqualified "high suitability"' in normalized_prompt
     assert "omit that inference and keep only the grounded facts" in normalized_prompt
 
 
@@ -6429,7 +3232,7 @@ def test_earthscope_station_network_prompt_preserves_uncertainty_units(
 
     assert "Values such as `0.033 m` are centimeter-scale" in prompt
     assert "not sub-centimeter" in prompt
-    assert "Do not call uncertainty \"sub-cm\" unless the" in prompt
+    assert 'Do not call uncertainty "sub-cm" unless the' in prompt
     assert "If the evidence is scan-limited" in prompt
 
 
@@ -6460,7 +3263,7 @@ def test_earthscope_station_network_prompt_forbids_scan_limited_record_claims(
     assert '"30-day record", "30 s cadence", "two-week record"' in normalized_prompt
     assert '"full record", "continuous", "no large data gaps"' in normalized_prompt
     assert "full-file cadence/duration/gap quality was not verified" in normalized_prompt
-    assert "Prefer wording such as \"preliminary station/resource" in normalized_prompt
+    assert 'Prefer wording such as "preliminary station/resource' in normalized_prompt
     assert "Treat `qChannel` as an opaque numeric flag" in prompt
     assert "`missing_values_scope=profiled_rows`" in prompt
 
@@ -6608,10 +3411,7 @@ def test_earthscope_resolver_prompt_uses_typed_station_resource_frontier(
 
     assert "`resource_discovery.station_resource_queries[*].preferred_calls`" in prompt
     assert '`resource_name="<station id>"`' in prompt
-    assert (
-        "Do not search station IDs in `search_terms` for this resolver step"
-        in normalized_prompt
-    )
+    assert "Do not search station IDs in `search_terms` for this resolver step" in normalized_prompt
     assert "grouped calls" in prompt
     assert "do not count as station-resource coverage" in normalized_prompt
 
@@ -6626,15 +3426,13 @@ def test_earthscope_data_prompt_requires_staged_metadata_before_station_filter(
     blueprint_id: str,
 ) -> None:
     root = Path(__file__).resolve().parents[2] / "external" / "clio-agent-marketplace"
-    data_prompt = (
-        root / blueprint_id / "experts" / "data.md"
-    ).read_text(encoding="utf-8")
-    discovery_prompt = (
-        root / blueprint_id / "experts" / "ndp_dataset_discovery.md"
-    ).read_text(encoding="utf-8")
-    station_prompt = (
-        root / blueprint_id / "experts" / "earthscope_station_catalog.md"
-    ).read_text(encoding="utf-8")
+    data_prompt = (root / blueprint_id / "experts" / "data.md").read_text(encoding="utf-8")
+    discovery_prompt = (root / blueprint_id / "experts" / "ndp_dataset_discovery.md").read_text(
+        encoding="utf-8"
+    )
+    station_prompt = (root / blueprint_id / "experts" / "earthscope_station_catalog.md").read_text(
+        encoding="utf-8"
+    )
     normalized_data = " ".join(data_prompt.split())
     normalized_discovery = " ".join(discovery_prompt.split())
     normalized_station = " ".join(station_prompt.split())
@@ -6642,10 +3440,16 @@ def test_earthscope_data_prompt_requires_staged_metadata_before_station_filter(
     assert "discovery_metadata_requires_staging" in data_prompt
     assert "acquisition.metadata_path" in data_prompt
     assert "exists: true" in data_prompt
-    assert "a guessed filename such as `earthscope_stations.csv` is not a staged path" in normalized_data
+    assert (
+        "a guessed filename such as `earthscope_stations.csv` is not a staged path"
+        in normalized_data
+    )
     assert "the next tool call must be `ndp_stage_resource`" in normalized_discovery
     assert "before station ranking can proceed" in normalized_discovery
-    assert "Do not call `ndp_filter_earthscope_station_catalog` with a guessed relative filename" in normalized_station
+    assert (
+        "Do not call `ndp_filter_earthscope_station_catalog` with a guessed relative filename"
+        in normalized_station
+    )
     assert "exact local path returned by `ndp_stage_resource`" in normalized_station
 
 
@@ -6660,15 +3464,15 @@ def test_earthscope_final_prompts_guard_scan_limited_profile_scope(
 ) -> None:
     root = Path(__file__).resolve().parents[2] / "external" / "clio-agent-marketplace"
     main_prompt = (root / blueprint_id / "experts" / "main.md").read_text(encoding="utf-8")
-    synthesis_prompt = (
-        root / blueprint_id / "experts" / "synthesis.md"
-    ).read_text(encoding="utf-8")
-    analysis_prompt = (
-        root / blueprint_id / "experts" / "gnss_timeseries_analysis.md"
-    ).read_text(encoding="utf-8")
-    visualization_prompt = (
-        root / blueprint_id / "experts" / "visualization.md"
-    ).read_text(encoding="utf-8")
+    synthesis_prompt = (root / blueprint_id / "experts" / "synthesis.md").read_text(
+        encoding="utf-8"
+    )
+    analysis_prompt = (root / blueprint_id / "experts" / "gnss_timeseries_analysis.md").read_text(
+        encoding="utf-8"
+    )
+    visualization_prompt = (root / blueprint_id / "experts" / "visualization.md").read_text(
+        encoding="utf-8"
+    )
     combined = " ".join(
         "\n".join([main_prompt, synthesis_prompt, analysis_prompt, visualization_prompt]).split()
     )
@@ -6689,353 +3493,6 @@ def test_earthscope_final_prompts_guard_scan_limited_profile_scope(
     assert "provenance=model_geographic_prior" in combined
     assert "do not cite USGS, UNAVCO" in combined
     assert "Named geographic provenance is allowed only when a tool result" in combined
-
-
-def test_recording_blueprint_tool_skips_broad_csv_search_after_station_catalog() -> None:
-    def fail_search(**kwargs: Any) -> dict[str, Any]:
-        raise AssertionError(f"broad ndp search should be short-circuited: {kwargs}")
-
-    tool = dspy.Tool(
-        func=fail_search,
-        name="ndp_search_datasets",
-        desc="Search NDP datasets",
-        args={"search_terms": {"type": "array"}},
-    )
-    rows: list[dict[str, Any]] = [
-        {
-            "name": "clio_prior_workflow_state",
-            "args": {},
-            "ok": True,
-            "result": {},
-            "workflow_state": {
-                "station_catalog": {
-                    "status": "ranked_metadata_only",
-                    "stations": [
-                        {"station": "UCSF", "distance_km": 3.444},
-                        {"station": "SBRB", "distance_km": 9.325},
-                    ],
-                },
-                "resource_discovery": {
-                    "status": "search_required",
-                    "searched_station_ids": ["UCSF"],
-                },
-            },
-            "telemetry_source": "blueprint_react_context_seed",
-        },
-    ]
-    token = _ACTIVE_BLUEPRINT_TOOL_ROWS.set(rows)
-    try:
-        wrapped = _recording_blueprint_tool(tool)
-        result = wrapped(
-            search_terms=["EarthScope", "GNSS", "CSV"],
-            resource_format="CSV",
-            server="global",
-        )
-    finally:
-        _ACTIVE_BLUEPRINT_TOOL_ROWS.reset(token)
-
-    assert result["_meta"] == {
-        "tool": "search_datasets",
-        "status": "skipped",
-        "reason": "broad_station_resource_search_after_station_catalog",
-    }
-    assert result["clio_runtime"]["terminal"] is False
-    assert "SBRB" in result["clio_runtime"]["next_action"]
-    assert rows[-1]["skipped"] is True
-
-
-def test_ndp_workflow_tool_interceptor_skips_duplicate_from_live_ledger() -> None:
-    app = SimpleNamespace(
-        state=SimpleNamespace(
-            sessions=SimpleNamespace(get=lambda sid: SimpleNamespace(id=sid)),
-            tool_call_ledger={
-                "session-123": [
-                    {
-                        "name": "ndp_filter_earthscope_station_catalog",
-                        "args": {
-                            "filepath": "/workspace/.clio/artifacts/ndp-staging/earthscope.csv",
-                            "latitude": 37.77,
-                            "longitude": -122.42,
-                            "radius_km": 75,
-                        },
-                        "result": {
-                            "ok": True,
-                            "path": "/workspace/.clio/artifacts/ndp-staging/earthscope.csv",
-                            "center": {"latitude": 37.77, "longitude": -122.42},
-                            "radius_km": 75,
-                            "within_radius_count": 2,
-                            "stations": [
-                                {"station": "UCSF", "distance_km": 3.444},
-                                {"station": "SBRB", "distance_km": 9.325},
-                            ],
-                            "resource_discovery": {"status": "search_required"},
-                            "_meta": {
-                                "tool": "filter_earthscope_station_catalog",
-                                "status": "success",
-                            },
-                        },
-                    },
-                    {
-                        "name": "ndp_search_datasets",
-                        "args": {
-                            "resource_name": "UCSF",
-                            "resource_format": "CSV",
-                            "server": "global",
-                        },
-                        "result": {
-                            "datasets": [],
-                            "count": 0,
-                            "total_found": 0,
-                            "search_coverage": {
-                                "domain": "earthscope_gnss",
-                                "status": "covered",
-                                "resource_name": "UCSF",
-                                "resource_format": "CSV",
-                                "station_code": "UCSF",
-                                "station_resource_search": True,
-                            },
-                            "_meta": {"tool": "search_datasets", "status": "success"},
-                        },
-                    },
-                ]
-            },
-        )
-    )
-    interceptor = _make_ndp_workflow_tool_interceptor(app)
-
-    with _tool_session_context("session-123"):
-        result = interceptor(
-            "ndp_search_datasets",
-            {"resource_name": "UCSF", "resource_format": "CSV", "server": "global"},
-        )
-
-    assert result is not None
-    assert result["_meta"] == {
-        "tool": "search_datasets",
-        "status": "skipped",
-        "reason": "duplicate_station_resource_search",
-    }
-    assert result["clio_runtime"]["terminal"] is False
-    assert "SBRB" in result["clio_runtime"]["next_action"]
-
-
-def test_ndp_workflow_tool_interceptor_skips_duplicate_stage_from_live_ledger() -> None:
-    app = SimpleNamespace(
-        state=SimpleNamespace(
-            sessions=SimpleNamespace(get=lambda sid: SimpleNamespace(id=sid)),
-            tool_call_ledger={
-                "session-123": [
-                    {
-                        "name": "ndp_stage_resource",
-                        "args": {
-                            "dataset_identifier": "1b0c1b93-f164-4025-bd7b-000252b5ca18",
-                            "resource_name": "MTA1.CI.LY_.30.csv",
-                        },
-                        "ok": True,
-                        "result": {
-                            "path": "/workspace/.clio/artifacts/ndp-staging/MTA1.CI.LY_.30.csv",
-                            "source_url": "https://example.test/raw_csv/MTA1.CI.LY_.30.csv",
-                            "selected_resource_url": "https://example.test/raw_csv/MTA1.CI.LY_.30.csv",
-                            "size_bytes": 50424246,
-                            "dataset_id": "1b0c1b93-f164-4025-bd7b-000252b5ca18",
-                            "dataset_name": "mta1-ci-ly-30",
-                            "resource_name": "MTA1.CI.LY_.30.csv",
-                            "_meta": {"tool": "stage_resource", "status": "success"},
-                        },
-                    },
-                ]
-            },
-        )
-    )
-    interceptor = _make_ndp_workflow_tool_interceptor(app)
-
-    with _tool_session_context("session-123"):
-        result = interceptor(
-            "ndp_stage_resource",
-            {
-                "dataset_identifier": "1b0c1b93-f164-4025-bd7b-000252b5ca18",
-                "resource_name": "MTA1.CI.LY_.30.csv",
-                "resource_index": 0,
-            },
-        )
-
-    assert result is not None
-    assert result["_meta"] == {
-        "tool": "stage_resource",
-        "status": "skipped",
-        "reason": "duplicate_station_resource_stage",
-        "cache_hit": True,
-    }
-    assert result["path"] == "/workspace/.clio/artifacts/ndp-staging/MTA1.CI.LY_.30.csv"
-    assert result["clio_runtime"]["workflow_state"]["acquisition"]["analysis_ready"] is True
-
-
-def test_ndp_workflow_tool_interceptor_raises_terminal_in_active_blueprint_context() -> None:
-    app = SimpleNamespace(
-        state=SimpleNamespace(
-            sessions=SimpleNamespace(get=lambda sid: SimpleNamespace(id=sid)),
-            tool_call_ledger={
-                "session-123": [
-                    {
-                        "name": "ndp_filter_earthscope_station_catalog",
-                        "args": {
-                            "filepath": "/workspace/.clio/artifacts/ndp-staging/earthscope.csv",
-                            "latitude": 37.77,
-                            "longitude": -122.42,
-                            "radius_km": 75,
-                        },
-                        "result": {
-                            "ok": True,
-                            "path": "/workspace/.clio/artifacts/ndp-staging/earthscope.csv",
-                            "center": {"latitude": 37.77, "longitude": -122.42},
-                            "radius_km": 75,
-                            "within_radius_count": 2,
-                            "stations": [
-                                {"station": "UCSF", "distance_km": 3.444},
-                                {"station": "SBRB", "distance_km": 9.325},
-                            ],
-                            "resource_discovery": {"status": "search_required"},
-                            "_meta": {
-                                "tool": "filter_earthscope_station_catalog",
-                                "status": "success",
-                            },
-                        },
-                    },
-                    *[
-                        {
-                            "name": "ndp_search_datasets",
-                            "args": {
-                                "resource_name": station,
-                                "resource_format": "CSV",
-                                "server": "global",
-                            },
-                            "result": {
-                                "datasets": [],
-                                "count": 0,
-                                "total_found": 0,
-                                "search_coverage": {
-                                    "domain": "earthscope_gnss",
-                                    "status": "covered",
-                                    "resource_name": station,
-                                    "resource_format": "CSV",
-                                    "station_code": station,
-                                    "station_resource_search": True,
-                                },
-                                "_meta": {"tool": "search_datasets", "status": "success"},
-                            },
-                        }
-                        for station in ("UCSF", "SBRB")
-                    ],
-                ]
-            },
-        )
-    )
-    interceptor = _make_ndp_workflow_tool_interceptor(app)
-
-    with _tool_session_context("session-123"):
-        result = interceptor(
-            "ndp_search_datasets",
-            {"resource_name": "UCSF", "resource_format": "CSV", "server": "global"},
-        )
-
-    assert result is not None
-    assert result["_meta"]["reason"] == "resource_discovery_search_exhausted"
-    assert result["clio_runtime"]["terminal"] is True
-
-    active_rows: list[dict[str, Any]] = []
-    token = _ACTIVE_BLUEPRINT_TOOL_ROWS.set(active_rows)
-    try:
-        with _tool_session_context("session-123"):
-            with pytest.raises(_BlueprintTerminalWorkflowState) as raised:
-                interceptor(
-                    "ndp_search_datasets",
-                    {"resource_name": "UCSF", "resource_format": "CSV", "server": "global"},
-                )
-    finally:
-        _ACTIVE_BLUEPRINT_TOOL_ROWS.reset(token)
-
-    assert raised.value.result["_meta"]["reason"] == "resource_discovery_search_exhausted"
-    assert active_rows[-1]["telemetry_source"] == "blueprint_react_tool_interceptor"
-    assert active_rows[-1]["result"]["clio_runtime"]["terminal"] is True
-
-
-def test_generated_child_expert_tool_merges_session_tool_ledger_delta(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    app = SimpleNamespace(
-        state=SimpleNamespace(tool_call_ledger={"session-123": []})
-    )
-    parent = AgentDef(id="root", source="expert_pack", title="Root")
-    child = AgentDef(id="catalog", source="expert_pack", title="Catalog", parent_id="root")
-
-    def fake_run_dynamic_agent_compat(runner, base_agent, agent_def, question, session_id, cancel_requested):
-        app.state.tool_call_ledger[session_id].extend(
-            [
-                {
-                    "name": "ndp_stage_resource",
-                    "args": {
-                        "dataset_identifier": "earthscope-stations",
-                        "resource_name": "earthscope_converted_data.csv",
-                    },
-                    "ok": True,
-                    "result": {
-                        "path": "/tmp/earthscope_converted_data.csv",
-                        "dataset_id": "earthscope-stations",
-                        "dataset_name": "earthscope_stations",
-                        "resource_name": "earthscope_converted_data.csv",
-                        "source_url": "https://example.test/earthscope_converted_data.csv",
-                    },
-                },
-                {
-                    "name": "ndp_filter_earthscope_station_catalog",
-                    "args": {
-                        "filepath": "/tmp/earthscope_converted_data.csv",
-                        "latitude": 37.77,
-                        "longitude": -122.42,
-                        "radius_km": 75,
-                    },
-                    "ok": True,
-                    "result": {
-                        "_meta": {"tool": "filter_earthscope_station_catalog"},
-                        "path": "/tmp/earthscope_converted_data.csv",
-                        "center": {"latitude": 37.77, "longitude": -122.42},
-                        "radius_km": 75,
-                        "within_radius_count": 1,
-                        "stations": [
-                            {
-                                "station": "UCSF",
-                                "latitude": 37.76296967,
-                                "longitude": -122.45815583,
-                                "distance_km": 3.444,
-                            }
-                        ],
-                    },
-                },
-            ]
-        )
-        return SimpleNamespace(answer="metadata catalog filtered")
-
-    monkeypatch.setattr("clio_agent.gact.app._blueprint_runner_for_agent", lambda agent_def: "child-runner")
-    monkeypatch.setattr("clio_agent.gact.app._run_dynamic_agent_compat", fake_run_dynamic_agent_compat)
-
-    token = _ACTIVE_GACT_SESSION_ID.set("session-123")
-    try:
-        with _gact_app_context(app):
-            tool = _build_child_expert_tool(SimpleNamespace(), parent, child)
-            payload = json.loads(tool(question="filter station catalog"))
-    finally:
-        _ACTIVE_GACT_SESSION_ID.reset(token)
-
-    assert [row["name"] for row in payload["tools_called"]] == [
-        "ndp_stage_resource",
-        "ndp_filter_earthscope_station_catalog",
-    ]
-    state = payload["workflow_state"]
-    assert state["acquisition"]["status"] == "metadata_only"
-    assert state["acquisition"]["analysis_ready"] is False
-    assert state["station_catalog"]["status"] == "ranked_metadata_only"
-    assert state["resource_discovery"]["status"] == "search_required"
-    assert "CLIO durable typed workflow state" in payload["output_summary"]
 
 
 def test_generated_child_expert_tool_enforces_contract_order_from_typed_state(
@@ -7082,7 +3539,9 @@ def test_generated_child_expert_tool_enforces_contract_order_from_typed_state(
         "clio_agent.gact.app._runtime_active_agent_blueprint_rows",
         lambda app, session_id="": rows,
     )
-    monkeypatch.setattr("clio_agent.gact.app._blueprint_runner_for_agent", lambda agent_def: "runner")
+    monkeypatch.setattr(
+        "clio_agent.gact.app._blueprint_runner_for_agent", lambda agent_def: "runner"
+    )
 
     def fake_run_dynamic_agent_compat(
         runner: Any,
@@ -7197,46 +3656,6 @@ def test_completed_row_contract_evidence_uses_return_summary_over_local_trace_te
     assert '"analysis_ready": true' in evidence
 
 
-def test_provenance_wrapped_station_csv_state_is_reconciled_as_workflow_state() -> None:
-    state = _workflow_state_from_outputs(
-        [
-            json.dumps(
-                {
-                    "workflow_state": {
-                        "event_catalog": {"status": "recorded"},
-                        "selected_station": {
-                            "csv_path": "/workspace/.clio/artifacts/WWMT.CI.LY_.40.csv",
-                            "station_id": None,
-                        },
-                        "provenance": {
-                            "acquisition": {
-                                "status": "staged",
-                                "analysis_ready": True,
-                                "local_path": "/workspace/.clio/artifacts/WWMT.CI.LY_.40.csv",
-                                "source_url": "https://example.test/WWMT.CI.LY_.40.csv",
-                                "required_columns": ["time", "east", "north", "up"],
-                            },
-                            "resource_candidate": {
-                                "status": "selected",
-                                "resource_name": "WWMT.CI.LY_.40.csv",
-                                "resource_url": "https://example.test/WWMT.CI.LY_.40.csv",
-                            },
-                            "catalog": {"status": "metadata_found"},
-                        },
-                    }
-                }
-            )
-        ]
-    )
-
-    assert state["acquisition"]["status"] == "staged"
-    assert state["acquisition"]["analysis_ready"] is False
-    assert "geographic provenance" in state["acquisition"]["blocker"]
-    assert state["resource_candidate"]["station_id"] == "WWMT"
-    assert state["resource_candidate"]["geographically_grounded"] is False
-    assert state["selected_station"]["station_id"] == "WWMT"
-
-
 def test_generated_child_expert_tool_enforces_contract_order_from_child_completion(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -7280,12 +3699,17 @@ def test_generated_child_expert_tool_enforces_contract_order_from_child_completi
         "clio_agent.gact.app._runtime_active_agent_blueprint_rows",
         lambda app, session_id="": rows,
     )
-    monkeypatch.setattr("clio_agent.gact.app._blueprint_runner_for_agent", lambda agent_def: "runner")
+    monkeypatch.setattr(
+        "clio_agent.gact.app._blueprint_runner_for_agent", lambda agent_def: "runner"
+    )
     monkeypatch.setattr(
         "clio_agent.gact.app._run_dynamic_agent_compat",
-        lambda runner, base_agent, agent_def, question, session_id, cancel_requested: SimpleNamespace(
-            answer="completed without structured state"
-        ),
+        lambda runner,
+        base_agent,
+        agent_def,
+        question,
+        session_id,
+        cancel_requested: SimpleNamespace(answer="completed without structured state"),
     )
 
     session_token = _ACTIVE_GACT_SESSION_ID.set("session-123")
@@ -7355,8 +3779,12 @@ def test_generated_child_expert_tool_blocks_declared_child_when_contract_state_a
             answer='{"workflow_state":{"station_catalog":{"status":"ranked_metadata_only"}}}'
         )
 
-    monkeypatch.setattr("clio_agent.gact.app._blueprint_runner_for_agent", lambda agent_def: "runner")
-    monkeypatch.setattr("clio_agent.gact.app._run_dynamic_agent_compat", fake_run_dynamic_agent_compat)
+    monkeypatch.setattr(
+        "clio_agent.gact.app._blueprint_runner_for_agent", lambda agent_def: "runner"
+    )
+    monkeypatch.setattr(
+        "clio_agent.gact.app._run_dynamic_agent_compat", fake_run_dynamic_agent_compat
+    )
 
     session_token = _ACTIVE_GACT_SESSION_ID.set("session-123")
     completions_token = _ACTIVE_CHILD_TOOL_COMPLETIONS.set([])
@@ -7408,9 +3836,7 @@ def test_generated_child_expert_tool_uses_app_state_completion_fallback(
         ("session-123", "ndp_dataset_discovery"): [
             {
                 "agent_id": "earthscope_station_catalog",
-                "output_summary": (
-                    '{"workflow_state":{"station_catalog":{"status":"ranked"}}}'
-                ),
+                "output_summary": ('{"workflow_state":{"station_catalog":{"status":"ranked"}}}'),
             }
         ]
     }
@@ -7418,7 +3844,9 @@ def test_generated_child_expert_tool_uses_app_state_completion_fallback(
         "clio_agent.gact.app._runtime_active_agent_blueprint_rows",
         lambda app, session_id="": rows,
     )
-    monkeypatch.setattr("clio_agent.gact.app._blueprint_runner_for_agent", lambda agent_def: "runner")
+    monkeypatch.setattr(
+        "clio_agent.gact.app._blueprint_runner_for_agent", lambda agent_def: "runner"
+    )
 
     session_token = _ACTIVE_GACT_SESSION_ID.set("session-123")
     completions_token = _ACTIVE_CHILD_TOOL_COMPLETIONS.set(None)
@@ -7533,10 +3961,17 @@ def test_generated_child_expert_tool_emits_semantic_delegation_events(
     )
     child = AgentDef(id="analysis", source="expert_pack", title="Analysis", parent_id="root")
 
-    monkeypatch.setattr("clio_agent.gact.app._blueprint_runner_for_agent", lambda agent_def: "child-runner")
+    monkeypatch.setattr(
+        "clio_agent.gact.app._blueprint_runner_for_agent", lambda agent_def: "child-runner"
+    )
     monkeypatch.setattr(
         "clio_agent.gact.app._run_dynamic_agent_compat",
-        lambda runner, base_agent, agent_def, question, session_id, cancel_requested: SimpleNamespace(
+        lambda runner,
+        base_agent,
+        agent_def,
+        question,
+        session_id,
+        cancel_requested: SimpleNamespace(
             answer="delegated answer",
             evidence="support",
         ),
@@ -7592,18 +4027,28 @@ def test_blueprint_fanout_tool_enforces_bounds_and_emits_events(
     ]
     calls: list[str] = []
 
-    def fake_run_dynamic_agent_compat(runner, base_agent, agent_def, question, session_id, cancel_requested):
+    def fake_run_dynamic_agent_compat(
+        runner, base_agent, agent_def, question, session_id, cancel_requested
+    ):
         calls.append(agent_def.id)
-        return SimpleNamespace(answer=f"{agent_def.id} compact evidence", evidence=f"{agent_def.id}:evidence")
+        return SimpleNamespace(
+            answer=f"{agent_def.id} compact evidence", evidence=f"{agent_def.id}:evidence"
+        )
 
-    monkeypatch.setattr("clio_agent.gact.app._blueprint_runner_for_agent", lambda agent_def: "child-runner")
-    monkeypatch.setattr("clio_agent.gact.app._run_dynamic_agent_compat", fake_run_dynamic_agent_compat)
+    monkeypatch.setattr(
+        "clio_agent.gact.app._blueprint_runner_for_agent", lambda agent_def: "child-runner"
+    )
+    monkeypatch.setattr(
+        "clio_agent.gact.app._run_dynamic_agent_compat", fake_run_dynamic_agent_compat
+    )
 
     token = _ACTIVE_GACT_SESSION_ID.set("session-123")
     try:
         with _gact_app_context(app):
             tool = _build_fanout_tool(SimpleNamespace(), parent, children)
-            payload = json.loads(tool(question="inspect", child_ids="analysis,visualization,quality"))
+            payload = json.loads(
+                tool(question="inspect", child_ids="analysis,visualization,quality")
+            )
     finally:
         _ACTIVE_GACT_SESSION_ID.reset(token)
 
@@ -7723,9 +4168,7 @@ def test_delegation_placeholder_answers_are_not_final_results() -> None:
     assert _dynamic_answer_is_delegation_placeholder(
         "Executing returned delegation continuation contract."
     )
-    assert _dynamic_answer_is_delegation_placeholder(
-        "Proceeding to the visual confirmation step."
-    )
+    assert _dynamic_answer_is_delegation_placeholder("Proceeding to the visual confirmation step.")
     assert _dynamic_answer_is_delegation_placeholder(
         "The next step is to run the outlier analysis."
     )
@@ -7735,7 +4178,12 @@ def test_delegation_placeholder_answers_are_not_final_results() -> None:
     assert not _dynamic_answer_is_delegation_placeholder(
         "The conversion is safe for downstream visualization with skipped caveats."
     )
-    assert _fallback_answer_from_delegation([{"stage": "delegate.completed", "output_summary": "child"}]) == ""
+    assert (
+        _fallback_answer_from_delegation(
+            [{"stage": "delegate.completed", "output_summary": "child"}]
+        )
+        == ""
+    )
 
 
 def test_native_domain_expert_modules_are_not_runtime_importable(tmp_path: Path) -> None:
@@ -7845,10 +4293,13 @@ Coordinate genomics work.
             "/v1/sessions",
             json={"title": "genomics", "workspace_id": wid},
         ).json()["id"]
-        assert client.post(
-            f"/v1/sessions/{sid}/agent-blueprint",
-            json={"blueprint_id": "genomics"},
-        ).status_code == 200
+        assert (
+            client.post(
+                f"/v1/sessions/{sid}/agent-blueprint",
+                json={"blueprint_id": "genomics"},
+            ).status_code
+            == 200
+        )
         root = next(
             AgentDef(**row)
             for row in client.get("/v1/agents", params={"session_id": sid}).json()["agents"]
@@ -7874,10 +4325,13 @@ def test_session_agent_overlay_is_session_local(tmp_path: Path) -> None:
         sid_a = client.post("/v1/sessions", json={"title": "A"}).json()["id"]
         sid_b = client.post("/v1/sessions", json={"title": "B"}).json()["id"]
         for sid in (sid_a, sid_b):
-            assert client.post(
-                f"/v1/sessions/{sid}/agent-blueprint",
-                json={"path": str(blueprint)},
-            ).status_code == 200
+            assert (
+                client.post(
+                    f"/v1/sessions/{sid}/agent-blueprint",
+                    json={"path": str(blueprint)},
+                ).status_code
+                == 200
+            )
         saved = client.put(
             f"/v1/sessions/{sid_a}/agent-overlay",
             json={
@@ -7907,10 +4361,13 @@ def test_session_agent_overlay_rejects_invalid_contracts(tmp_path: Path) -> None
     app = build_app(sessions_path=tmp_path / "sessions.json", agent=SimpleNamespace())
     with TestClient(app) as client:
         sid = client.post("/v1/sessions", json={"title": "A"}).json()["id"]
-        assert client.post(
-            f"/v1/sessions/{sid}/agent-blueprint",
-            json={"path": str(blueprint)},
-        ).status_code == 200
+        assert (
+            client.post(
+                f"/v1/sessions/{sid}/agent-blueprint",
+                json={"path": str(blueprint)},
+            ).status_code
+            == 200
+        )
 
         broken_parent = client.put(
             f"/v1/sessions/{sid}/agent-overlay",
@@ -7967,10 +4424,13 @@ def test_session_agent_overlay_can_export_workspace_blueprint(tmp_path: Path) ->
             "/v1/sessions",
             json={"title": "A", "workspace_id": wid},
         ).json()["id"]
-        assert client.post(
-            f"/v1/sessions/{sid}/agent-blueprint",
-            json={"path": str(source)},
-        ).status_code == 200
+        assert (
+            client.post(
+                f"/v1/sessions/{sid}/agent-blueprint",
+                json={"path": str(source)},
+            ).status_code
+            == 200
+        )
         saved = client.put(
             f"/v1/sessions/{sid}/agent-overlay",
             json={
@@ -8031,7 +4491,7 @@ def test_session_agent_overlay_prompt_provenance_reaches_prompts_and_turn_metada
             routing_rationale="session overlay",
             route_source="agent_blueprint",
             error_info=None,
-    )
+        )
 
     monkeypatch.setattr("clio_agent.gact.app._try_streamed_forward", no_stream)
     monkeypatch.delenv("CLIO_AGENT_ENABLE_LEGACY_NATIVE_EXPERTS", raising=False)
@@ -8040,10 +4500,13 @@ def test_session_agent_overlay_prompt_provenance_reaches_prompts_and_turn_metada
     app = build_app(sessions_path=tmp_path / "sessions.json", agent=SimpleNamespace())
     with TestClient(app) as client:
         sid = client.post("/v1/sessions", json={"title": "overlay runtime"}).json()["id"]
-        assert client.post(
-            f"/v1/sessions/{sid}/agent-blueprint",
-            json={"path": str(blueprint)},
-        ).status_code == 200
+        assert (
+            client.post(
+                f"/v1/sessions/{sid}/agent-blueprint",
+                json={"path": str(blueprint)},
+            ).status_code
+            == 200
+        )
         saved = client.put(
             f"/v1/sessions/{sid}/agent-overlay",
             json={
@@ -8207,14 +4670,20 @@ def test_marketplace_install_supports_distinct_session_blueprints(tmp_path: Path
             "/v1/sessions",
             json={"title": "materials", "workspace_id": wid},
         ).json()["id"]
-        assert client.post(
-            f"/v1/sessions/{sid_genomics}/agent-blueprint",
-            json={"blueprint_id": "genomics-review"},
-        ).status_code == 200
-        assert client.post(
-            f"/v1/sessions/{sid_materials}/agent-blueprint",
-            json={"blueprint_id": "materials-crystal-review"},
-        ).status_code == 200
+        assert (
+            client.post(
+                f"/v1/sessions/{sid_genomics}/agent-blueprint",
+                json={"blueprint_id": "genomics-review"},
+            ).status_code
+            == 200
+        )
+        assert (
+            client.post(
+                f"/v1/sessions/{sid_materials}/agent-blueprint",
+                json={"blueprint_id": "materials-crystal-review"},
+            ).status_code
+            == 200
+        )
 
         genomics = client.get(f"/v1/sessions/{sid_genomics}/agent-blueprint").json()
         materials = client.get(f"/v1/sessions/{sid_materials}/agent-blueprint").json()
@@ -8313,10 +4782,13 @@ def test_agent_blueprint_update_and_delete_installed_blueprint(tmp_path: Path) -
                 "storage_root": str(workspace / ".clio"),
             },
         ).json()["id"]
-        assert client.post(
-            "/v1/agent-blueprints/install",
-            json={"source": str(marketplace), "scope": "workspace", "workspace_id": wid},
-        ).status_code == 201
+        assert (
+            client.post(
+                "/v1/agent-blueprints/install",
+                json={"source": str(marketplace), "scope": "workspace", "workspace_id": wid},
+            ).status_code
+            == 201
+        )
         marketplace.joinpath("genomics", "experts", "variant.md").write_text(
             """---
 id: variant
@@ -8333,9 +4805,12 @@ Updated behavior.
             json={"scope": "workspace", "workspace_id": wid},
         )
         assert updated.status_code == 200, updated.text
-        assert "Updated Variant Expert" in (
-            workspace / ".clio" / "agent-blueprints" / "genomics" / "experts" / "variant.md"
-        ).read_text()
+        assert (
+            "Updated Variant Expert"
+            in (
+                workspace / ".clio" / "agent-blueprints" / "genomics" / "experts" / "variant.md"
+            ).read_text()
+        )
         deleted = client.delete(
             "/v1/agent-blueprints/genomics",
             params={"scope": "workspace", "workspace_id": wid},
@@ -8398,10 +4873,13 @@ def test_active_agent_blueprint_drives_turn_runtime_and_overrides_builtin_ids(
             "/v1/sessions",
             json={"title": "builtin", "workspace_id": wid},
         ).json()["id"]
-        assert client.post(
-            f"/v1/sessions/{sid_blueprint}/agent-blueprint",
-            json={"blueprint_id": "remote-data"},
-        ).status_code == 200
+        assert (
+            client.post(
+                f"/v1/sessions/{sid_blueprint}/agent-blueprint",
+                json={"blueprint_id": "remote-data"},
+            ).status_code
+            == 200
+        )
         agents_blueprint = client.get(
             "/v1/agents",
             params={"session_id": sid_blueprint},
@@ -8518,9 +4996,7 @@ Use an undeclared external tool.
     body = validate_agent_blueprint_path(root)
 
     assert body["enabled"] is False
-    assert "unknown tool reference: missing_external_tool" in "\n".join(
-        body["validation_errors"]
-    )
+    assert "unknown tool reference: missing_external_tool" in "\n".join(body["validation_errors"])
 
 
 def test_agent_blueprint_mcp_descriptor_requires_explicit_enablement(tmp_path: Path) -> None:
@@ -8700,9 +5176,7 @@ EarthScope descriptor.
     assert body["tools"][0]["input_schema"] == {"type": "object"}
     assert call.status_code == 200, call.text
     assert FakeClient.called_tool == "earthscope_query"
-    assert call.json()["content"] == [
-        {"type": "text", "text": "earthscope_query:ANMO"}
-    ]
+    assert call.json()["content"] == [{"type": "text", "text": "earthscope_query:ANMO"}]
     declared = next(row for row in tools if row["id"] == "earthscope_query")
     assert declared["enabled"] is True
     assert declared["status"] == "ready"
@@ -8785,10 +5259,13 @@ EarthScope descriptor.
             "/v1/sessions",
             json={"title": "earth", "workspace_id": wid},
         ).json()["id"]
-        assert client.post(
-            f"/v1/sessions/{sid}/agent-blueprint",
-            json={"blueprint_id": "earth"},
-        ).status_code == 200
+        assert (
+            client.post(
+                f"/v1/sessions/{sid}/agent-blueprint",
+                json={"blueprint_id": "earth"},
+            ).status_code
+            == 200
+        )
         before = {
             row["id"]: row
             for row in client.get("/v1/agents", params={"session_id": sid}).json()["agents"]
