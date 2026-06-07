@@ -6,7 +6,7 @@ trace review (the agent's autonomous job, no human in the loop) explains gets
 frozen here as a tighter matcher.
 
 Run live: ``CLIO_RUN_LIVE=1 pytest tests/test_real_cases/test_wildfire_case.py
---provider argonne_sophia``.
+--provider argonne_metis``.
 """
 
 from __future__ import annotations

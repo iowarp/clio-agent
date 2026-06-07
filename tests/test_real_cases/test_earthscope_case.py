@@ -6,13 +6,14 @@ The real EarthScope case test (supersedes the EarthScope-specific
 EarthScope/NDP GNSS station CSV evidence, analyze it, render a PNG, and
 synthesize — judged on the *structured* trace, not on the model's prose.
 
-Provider/model are injected, not in the test: the SUT discovers cells from the
-live provider registry (model = the provider's server-side default_model).
-Pin one with ``--provider``; the active cell is recorded in run.extra.
+Provider/model are injected, not in the test. As a blast-radius guardrail the
+matrix is restricted to one provider (Metis) and at most 2 models; normal
+operation is gpt-oss-120b. Pin a cell with ``--provider/--model``; the active
+cell is recorded in run.extra.
 
 Run live:
   ``CLIO_RUN_LIVE=1 pytest tests/test_real_cases/test_earthscope_case.py \
-      -o addopts="" --provider argonne_sophia``
+      -o addopts="" --provider argonne_metis``
 
 The matchers below guard the data pathway with structured checks (on-region
 station from the filter result, real non-empty PNG, full acquisition pipeline).

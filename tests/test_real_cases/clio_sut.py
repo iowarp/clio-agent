@@ -27,10 +27,22 @@ import httpx
 from agent_test import Run, SUT, ToolCall
 
 DEFAULT_BASE_URL = os.environ.get("CLIO_GACT_URL", "http://127.0.0.1:17960").rstrip("/")
+
+# SAFETY GUARDRAIL (deliberate, per Jaime): the matrix must never fan out across
+# every model on every endpoint if the autonomous loop triggers --matrix. So the
+# default matrix is hard-capped to ONE provider and AT MOST 2 models. Metis is
+# the target precisely because it runs a small fixed set. Normal operation uses
+# the first cell (gpt-oss-120b). Override deliberately with CLIO_AGENTTEST_CELLS.
+RESTRICTED_CELLS = [
+    ("argonne_metis", "gpt-oss-120b"),
+    ("argonne_metis", "Llama-4-Maverick-17B-128E-Instruct"),
+]
+
+
 def _cells_from_env() -> list[tuple[str, str]] | None:
     """Optional explicit cell list from config, e.g.
-    ``CLIO_AGENTTEST_CELLS="argonne_sophia:openai/gpt-oss-120b,argonne_metis:gpt-oss-120b"``.
-    Returns None when unset so ``cells()`` falls back to live discovery."""
+    ``CLIO_AGENTTEST_CELLS="argonne_metis:gpt-oss-120b"``.
+    Returns None when unset so ``cells()`` uses the restricted default."""
     raw = os.environ.get("CLIO_AGENTTEST_CELLS", "").strip()
     if not raw:
         return None
@@ -58,20 +70,16 @@ class ClioAgent(SUT):
     # --- agent-test SUT contract -------------------------------------------
 
     def cells(self) -> list[tuple[str, str]]:
-        """Cells are NOT hardcoded. They come from config
-        (``CLIO_AGENTTEST_CELLS``) or are discovered live from the gact
-        provider registry, with each model taken from the provider's
-        server-side ``default_model``. The runner then pins one via
-        ``pytest --provider/--model`` or fans out with ``--matrix``."""
+        """The matrix is intentionally restricted (blast-radius guardrail): a
+        single provider (Metis) and at most 2 models, so an accidental
+        ``--matrix`` cannot sweep every model on every endpoint. The first cell
+        (gpt-oss-120b) is normal operation. Override only on purpose with
+        ``CLIO_AGENTTEST_CELLS``; the runner still pins one with
+        ``--provider/--model``."""
         explicit = _cells_from_env()
         if explicit is not None:
             return explicit
-        try:
-            with httpx.Client(base_url=self._base_url, timeout=5.0) as http:
-                rows = http.get("/v1/providers").json().get("providers", [])
-        except Exception:
-            return []
-        return [(str(r["id"]), str(r.get("default_model") or "")) for r in rows if r.get("id")]
+        return list(RESTRICTED_CELLS)
 
     def available(self, provider: str, model: str) -> bool:
         """A cell is runnable when the gact server is reachable and the
