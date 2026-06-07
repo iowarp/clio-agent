@@ -6,8 +6,9 @@ the case is iterated to productive; each failure that a trace review explains
 becomes a tightened matcher here. Run live with `-m live`.
 
 Division of labor: the matchers below guard the data pathways (tools, route,
-artifact); reading the trace in `runs/` to judge semantics is the human/agent
-job, and what review discovers gets frozen here.
+artifact); reading the trace in `runs/` to judge semantics is the agent's job —
+there is no human in the loop. What that autonomous review discovers gets frozen
+back here as tighter matchers.
 """
 
 from __future__ import annotations
