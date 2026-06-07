@@ -30,6 +30,27 @@ The case prompt is natural and names no expert, tool, or schema:
 - **Work in the session workspace** (artifacts under the workspace, not stray
   `.local/` paths — issue #645).
 
+## Testing harness (agent-test)
+
+Use Jaime's `~/agent-test` pytest plugin as the run+acceptance harness. Division
+of labor: **I (the agent) monitor semantics — read traces, discover failures,
+make design decisions; agent-test monitors the data pathways — assertions on
+tools, trajectory, artifacts, routing; I iterate to improve both** (agent
+prompts, the geo tool, and the matchers). Every failure I find by reading a
+trace becomes a new matcher; the green grid never substitutes for the trace read.
+
+Sequencing (Jaime, 2026-06-06): **first iterate the case to productive** on a
+single cell with trace review. DEFER agent-test's model-matrix and prompt-search
+features until the case works and the harness is in place — those are the payoff
+phase, not the setup phase.
+
+CLIO live-run recipe (from `scripts/run_demo_benchmark.py`; the SUT `invoke`
+reuses it): start the gact server (`uvicorn clio_agent.gact.app:app`), then
+`GET /v1/health` → `GET/POST /v1/workspaces` → `POST /v1/agent-blueprints/install`
+{source, scope:workspace, workspace_id} → `POST /v1/sessions` →
+`POST /v1/sessions/{id}/agent-blueprint` {blueprint_id} → post the prompt turn →
+read session messages + children as the trace → normalize into agent-test `Run`.
+
 ## Priority order
 
 1. **Wire the `geo` tool into clio-agent.** Register the clio-kit `geo` MCP
@@ -64,15 +85,22 @@ The case prompt is natural and names no expert, tool, or schema:
    `synthesis`. Each expert gets a real domain prompt (500+ words), a typed
    signature, and 5–7 curated tools. Pin/install into the default registry the
    same way EarthScope is.
-3. **First live run vs ALCF Sophia + live NDP.** Capture the trace to `runs/`,
-   render the map, and review by hand: did it select an impactful fire, fuse
-   three live sources, and brief the worst-affected communities with caveats?
-4. **Grind to acceptance.** Iterate (r1…rN, traces + reports in `runs/`) on the
-   blueprint prompts/state until a reviewed run is benchmark-clean under mutated
-   geography (different cities/regions) and under the contained/no-smoke case.
-   Encode each regression found during review as a unit test (state-space, not
-   one happy path): selector edge cases, empty smoke, empty monitors, malformed
-   feature responses, oversized responses, missing artifact path.
+3. **Stand up the agent-test harness + first live run.** Write a CLIO `SUT`
+   adapter (the recipe above → normalized `Run`) and a wildfire acceptance test
+   (canonical matchers for tools/trajectory/artifact + `extra` matchers for
+   impact-selector-not-size and no-forced-routing). Validate the wiring on the
+   fake cell (fast), then do ONE live ALCF Sophia + live NDP run. Capture the
+   trace to `runs/`, render the map, and review by hand: did it select an
+   impactful fire, fuse three live sources, and brief the worst-affected
+   communities with caveats? Single cell only — no matrix/sampling yet.
+4. **Grind to acceptance.** Iterate (r1…rN, traces in `runs/`) on the blueprint
+   prompts/state until a reviewed run is benchmark-clean under mutated geography
+   (different cities/regions) and under the contained/no-smoke case. Encode each
+   regression found during review as an agent-test matcher / unit test
+   (state-space, not one happy path): selector edge cases, empty smoke, empty
+   monitors, malformed feature responses, oversized responses, missing artifact
+   path. Only once productive: turn on agent-test's model-matrix and prompt
+   search (the payoff phase).
 5. **Finalize the case spec.** Update this folder's `README.md` to the accepted
    contract; keep all run logs in `runs/`, never in the spec.
 
