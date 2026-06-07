@@ -166,7 +166,7 @@ async def render_feature_map(
         per-layer feature counts, or an ``error`` dict if rendering failed.
     """
     args: dict[str, Any] = {
-        "layers": layers,
+        "layers": [_resolve_layer_geojson(layer) for layer in (layers or [])],
         "output_path": _safe_artifact_path(output_path),
         "title": title,
         "basemap": basemap,
@@ -174,6 +174,34 @@ async def render_feature_map(
     if bbox is not None:
         args["bbox"] = bbox
     return await call_clio_kit_tool("geo", "render_feature_map", args)
+
+
+def _resolve_layer_geojson(layer: dict[str, Any]) -> dict[str, Any]:
+    """Resolve a layer's ``geojson`` when it's a bare filename.
+
+    Acquisition saves each layer to a conventional file in the artifact root
+    (e.g. ``fire_perimeter.geojson``). The renderer runs in a separate
+    subprocess with a different cwd, so a bare filename must be resolved to its
+    absolute path in the artifact root before rendering. Inline GeoJSON
+    (dict/list/JSON string) and existing absolute paths are passed through.
+    """
+    import os
+    from pathlib import Path
+
+    gj = layer.get("geojson")
+    if not isinstance(gj, str):
+        return layer
+    text = gj.strip()
+    if not text or text[0] in "{[":
+        return layer  # inline JSON
+    if Path(text).is_file():
+        return layer  # already a usable path
+    if "/" not in text and "\\" not in text:
+        root = Path(os.environ.get("CLIO_ARTIFACTS_ROOT") or (Path.cwd() / ".clio" / "artifacts" / "geo"))
+        candidate = root / text
+        if candidate.is_file():
+            return {**layer, "geojson": str(candidate.resolve())}
+    return layer
 
 
 def _safe_artifact_path(requested: str) -> str:
