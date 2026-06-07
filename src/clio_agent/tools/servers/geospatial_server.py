@@ -290,3 +290,16 @@ async def points_in_polygons(
     if point_label_fields is not None:
         args["point_label_fields"] = point_label_fields
     return await call_clio_kit_tool("geo", "points_in_polygons", args)
+
+
+@geospatial_server.tool()
+async def bounding_box(geojson: str, pad_km: float = 0.0) -> dict[str, Any]:
+    """Compute the [min_lon, min_lat, max_lon, max_lat] bbox of GeoJSON features.
+
+    Agent story: derive a concrete analysis region from a saved fire perimeter
+    deterministically — don't make the model eyeball coordinates. Pass a saved
+    layer filename (resolves in the artifact dir) or inline GeoJSON; get back a
+    padded numeric bbox. Runs in the clio-kit ``geo`` MCP.
+    """
+    resolved = _resolve_layer_geojson({"geojson": geojson, "name": "bbox"})["geojson"]
+    return await call_clio_kit_tool("geo", "bounding_box", {"geojson": resolved, "pad_km": pad_km})

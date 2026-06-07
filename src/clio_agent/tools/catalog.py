@@ -186,6 +186,12 @@ TOOL_CATALOG: dict[str, ToolCatalogEntry] = {
         {"geospatial", "geojson", "overlap", "spatial-join", "analysis"},
         visible_to={"analysis", "downwind_impact"},
     ),
+    "geospatial_bounding_box": _entry(
+        "geospatial_bounding_box",
+        "geospatial",
+        {"geospatial", "geojson", "bbox", "region"},
+        visible_to={"geography", "data"},
+    ),
     "terrain_dem_terrain": _entry(
         "terrain_dem_terrain",
         "terrain_derivation",
