@@ -5437,19 +5437,27 @@ def _blueprint_runtime_signature(agent_def: "AgentDef") -> Any:
             return value.strip().lower() not in {"false", "0", "no", "off", "disabled"}
         return value is not False
 
-    for name, desc in {
-        "workflow_state": "Typed semantic workflow state used for blueprint continuation routing",
-        "evidence": "Compact evidence rows supporting the answer",
-        "artifacts": "Artifact paths or identifiers produced by the expert",
-        "errors": "Recoverable runtime errors or missing evidence",
-        "delegation": "Delegation metadata for downstream parent experts",
-        "expert_handoffs": (
-            "JSON array of synchronous child expert delegations. Use [] when no child expert should run."
+    # workflow_state is a TYPED dict OutputField so the adapter forces the model to
+    # emit a real JSON object the runtime reads for continuation routing -- this is
+    # what replaced the deleted regex inference backfill. The rest stay free-form.
+    _structured_field_specs: dict[str, tuple[str, Any]] = {
+        "workflow_state": (
+            "Typed semantic workflow state (a JSON object) used for blueprint continuation routing.",
+            dict[str, Any],
         ),
-    }.items():
-        enabled = _structured_output_enabled(structured.get(name, True))
-        if enabled and name not in {field for field, _, _ in outputs}:
-            outputs.append((name, desc, str))
+        "evidence": ("Compact evidence rows supporting the answer", str),
+        "artifacts": ("Artifact paths or identifiers produced by the expert", str),
+        "errors": ("Recoverable runtime errors or missing evidence", str),
+        "delegation": ("Delegation metadata for downstream parent experts", str),
+        "expert_handoffs": (
+            "JSON array of synchronous child expert delegations. Use [] when no child expert should run.",
+            str,
+        ),
+    }
+    _declared = {field for field, _, _ in outputs}
+    for name, (desc, field_type) in _structured_field_specs.items():
+        if _structured_output_enabled(structured.get(name, True)) and name not in _declared:
+            outputs.append((name, desc, field_type))
 
     namespace: dict[str, Any] = {
         "__doc__": f"DSPy signature for Agent Blueprint expert {agent_def.id}."
