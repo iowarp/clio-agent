@@ -1812,6 +1812,50 @@ def _runtime_active_agent_blueprint_agent_ids(app: "FastAPI", session_id: str = 
     }
 
 
+def _runtime_child_agent_rows(
+    app: "FastAPI",
+    parent_id: str,
+    *,
+    session_id: str = "",
+) -> list["AgentDef"]:
+    """Return the enabled child experts declared for ``parent_id``.
+
+    Child discovery must mirror the resolution path that actually executes the
+    delegated agents. ``_runtime_active_agent_blueprint_rows`` only covers agents
+    sourced from an active Agent Blueprint graph; experts resolved through the
+    expert-pack/builtin hierarchy (``_resolve_dynamic_agent``) are invisible to
+    it. When the running parent is not part of the active blueprint, fall back to
+    the same hierarchy so its declared children are still discoverable for
+    synchronous delegation, continuation contracts, and child-tool wiring.
+    """
+
+    if not parent_id:
+        return []
+    blueprint_rows = _runtime_active_agent_blueprint_rows(app, session_id=session_id)
+    children = [row for row in blueprint_rows if row.enabled and row.parent_id == parent_id]
+    if children:
+        return children
+    if any(row.id == parent_id and row.enabled for row in blueprint_rows):
+        # The parent lives in the active blueprint and simply has no children.
+        return []
+    cwd = _runtime_workspace_catalog_cwd(app, session_id=session_id)
+    expert_rows = validate_expert_hierarchy(
+        _merge_agent_def_rows(_builtin_agents() + load_expert_packs(cwd=cwd))
+    )
+    return [row for row in expert_rows if row.enabled and row.parent_id == parent_id]
+
+
+def _runtime_declared_child_ids(
+    app: "FastAPI",
+    parent_id: str,
+    *,
+    session_id: str = "",
+) -> set[str]:
+    """Return the set of enabled child expert ids declared for ``parent_id``."""
+
+    return {row.id for row in _runtime_child_agent_rows(app, parent_id, session_id=session_id)}
+
+
 def _runtime_active_agent_blueprint_root_id(app: "FastAPI", session_id: str = "") -> str:
     rows = _runtime_active_agent_blueprint_rows(app, session_id=session_id)
     if not rows:
@@ -2315,11 +2359,7 @@ def _runtime_dynamic_agent_children_context(
 
     if agent_def.source != "expert_pack" or not session_id:
         return ""
-    rows = [
-        row
-        for row in _runtime_active_agent_blueprint_rows(app, session_id=session_id)
-        if row.enabled and row.parent_id == agent_def.id
-    ]
+    rows = _runtime_child_agent_rows(app, agent_def.id, session_id=session_id)
     if not rows:
         return ""
     lines = [
@@ -2527,8 +2567,22 @@ def _delegation_continuation_policy_contract(
     for index, raw_policy in enumerate(raw_policies):
         if not isinstance(raw_policy, Mapping):
             continue
+        # A contract that names both a target expert AND a concrete next action is
+        # a fully-specified typed continuation contract. It fires on the child's
+        # returned (grounded) evidence and does not need the legacy text-routing
+        # opt-in. Contracts that only name a target with no action remain
+        # ambiguous text routing and stay behind the legacy opt-in.
+        has_next_action = bool(
+            str(
+                raw_policy.get("next_action")
+                or raw_policy.get("required_next_action")
+                or raw_policy.get("action")
+                or ""
+            ).strip()
+        )
         if (
-            (raw_policy.get("when_request_contains") or raw_policy.get("when_output_contains"))
+            not has_next_action
+            and (raw_policy.get("when_request_contains") or raw_policy.get("when_output_contains"))
             and not bool(raw_policy.get("allow_text_routing"))
             and not _user_agent_bool_param(agent_def, "allow_legacy_text_continuation")
         ):
@@ -4524,8 +4578,21 @@ def _continuation_contract_handoff_rows(
     )
     for row in _iter_delegation_return_rows(rows):
         summary = str(row.get("output_summary") or row.get("summary") or "").strip()
+        # A fully-specified text-marker contract (both NEXT_EXPERT and NEXT_ACTION
+        # emitted by the completed child) is a typed continuation contract and is
+        # honored without the legacy opt-in. A bare NEXT_EXPERT marker with no
+        # action stays behind the legacy text-routing opt-in.
+        text_contract = _delegation_continuation_contract(summary)
         contract = (
-            _delegation_continuation_contract(summary) if allow_legacy_text_continuation else {}
+            text_contract
+            if (
+                text_contract.get("next_expert")
+                and (
+                    allow_legacy_text_continuation
+                    or str(text_contract.get("next_action") or "").strip()
+                )
+            )
+            else {}
         )
         origin = str(row.get("agent_id") or row.get("delegate_to") or "").strip()
         origin_agent = (
@@ -5638,11 +5705,7 @@ def _build_child_expert_tool(base_agent: Any, parent: "AgentDef", child: "AgentD
                 for row in active_completions
                 if (evidence := _completed_row_contract_evidence(row))
             ]
-            declared_child_ids = {
-                row.id
-                for row in _runtime_active_agent_blueprint_rows(app, session_id=session_id)
-                if row.enabled and row.parent_id == parent.id
-            }
+            declared_child_ids = _runtime_declared_child_ids(app, parent.id, session_id=session_id)
             allowed_child_ids = _contract_next_child_ids_for_outputs(
                 parent,
                 completed_outputs=completed_outputs,
@@ -5967,11 +6030,7 @@ def _dynamic_child_expert_tools(base_agent: Any, agent_def: "AgentDef") -> list[
     session_id = _ACTIVE_GACT_SESSION_ID.get()
     if app is None or not session_id:
         return []
-    rows = [
-        row
-        for row in _runtime_active_agent_blueprint_rows(app, session_id=session_id)
-        if row.enabled and row.parent_id == agent_def.id
-    ]
+    rows = _runtime_child_agent_rows(app, agent_def.id, session_id=session_id)
     tools = [_build_child_expert_tool(base_agent, agent_def, child) for child in rows]
     if rows and _blueprint_fanout_config(agent_def)["enabled"]:
         tools.append(_build_fanout_tool(base_agent, agent_def, rows))
@@ -6062,14 +6121,11 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
             if self.kind == "react" and _blueprint_enforces_child_contract_order(self.agent_def):
                 declared_child_ids: set[str] = set()
                 if active_app is not None:
-                    declared_child_ids = {
-                        row.id
-                        for row in _runtime_active_agent_blueprint_rows(
-                            active_app,
-                            session_id=active_session_id,
-                        )
-                        if row.enabled and row.parent_id == self.agent_def.id
-                    }
+                    declared_child_ids = _runtime_declared_child_ids(
+                        active_app,
+                        self.agent_def.id,
+                        session_id=active_session_id,
+                    )
                 seeded_completions = _seed_child_tool_completions_from_resume_prompt(
                     question,
                     declared_child_ids,
@@ -7301,14 +7357,11 @@ async def _run_turn_in_background(
                         "return_child_evidence_on_completion",
                     )
                 ):
-                    declared_target_child_ids = {
-                        row.id
-                        for row in _runtime_active_agent_blueprint_rows(
-                            app,
-                            session_id=sid,
-                        )
-                        if row.enabled and row.parent_id == target.id
-                    }
+                    declared_target_child_ids = _runtime_declared_child_ids(
+                        app,
+                        target.id,
+                        session_id=sid,
+                    )
                     output = (
                         _bubbled_child_evidence_output_summary(
                             nested,
@@ -7550,11 +7603,7 @@ async def _run_turn_in_background(
             requested_rows = _coerce_expert_handoff_rows(
                 getattr(latest_pred, "expert_handoffs", None)
             )
-            declared_child_ids = {
-                row.id
-                for row in _runtime_active_agent_blueprint_rows(app, session_id=sid)
-                if row.enabled and row.parent_id == parent_agent.id
-            }
+            declared_child_ids = _runtime_declared_child_ids(app, parent_agent.id, session_id=sid)
             completed_rows_so_far = [
                 row
                 for row in all_rows
@@ -7644,11 +7693,9 @@ async def _run_turn_in_background(
                         expert_handoffs=self_contract_rows,
                     )
                     continue
-                declared_child_ids = {
-                    row.id
-                    for row in _runtime_active_agent_blueprint_rows(app, session_id=sid)
-                    if row.enabled and row.parent_id == parent_agent.id
-                }
+                declared_child_ids = _runtime_declared_child_ids(
+                    app, parent_agent.id, session_id=sid
+                )
                 completed_rows_so_far = [
                     row
                     for row in all_rows
@@ -7769,11 +7816,9 @@ async def _run_turn_in_background(
                 seen_contracts=seen_continuation_contracts,
             )
             if not contract_rows:
-                declared_child_ids = {
-                    row.id
-                    for row in _runtime_active_agent_blueprint_rows(app, session_id=sid)
-                    if row.enabled and row.parent_id == parent_agent.id
-                }
+                declared_child_ids = _runtime_declared_child_ids(
+                    app, parent_agent.id, session_id=sid
+                )
                 completed_rows_so_far = [
                     row
                     for row in all_rows
