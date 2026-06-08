@@ -49,8 +49,8 @@ from clio_agent.gact.app import (
     _fallback_answer_from_delegation,
     _filter_workflow_state_for_blueprint_authority,
     _gact_app_context,
-    _ground_fabricated_local_artifact_paths,
     _gact_turn_timeout_s,
+    _ground_fabricated_local_artifact_paths,
     _latest_delegation_output_summary,
     _latest_final_child_output_summary,
     _merge_tool_call_rows,
@@ -1433,10 +1433,7 @@ def test_ground_fabricated_local_artifact_path_respects_missing_framing(tmp_path
     real_png.parent.mkdir(parents=True)
     real_png.write_bytes(b"\x89PNG" + b"0" * 64)
     state = {"artifact": {"status": "ready", "path": str(real_png)}}
-    answer = (
-        "No figure was produced; a PNG has not been staged at "
-        "/tmp/expected/P475_plot.png yet."
-    )
+    answer = "No figure was produced; a PNG has not been staged at /tmp/expected/P475_plot.png yet."
     grounded = _ground_fabricated_local_artifact_paths(answer, state)
 
     # An honestly-framed missing/expected path must not be rewritten.
@@ -1456,18 +1453,25 @@ def test_ground_fabricated_local_artifact_path_no_verified_neutralizes() -> None
     assert "no local png artifact was produced" in grounded
 
 
-def test_ground_fabricated_local_artifact_path_collapses_doubled_prefix() -> None:
-    # Path-doubling: the model emits a real path with a duplicated prefix
-    # (".../ndp-/home/.../ndp-staging/P473.csv"). Even with multiple verified
-    # artifacts present, collapse the malformed token to the embedded real path.
-    real = "/home/u/.clio/artifacts/ndp-staging/P473.PW.LY_.00.csv"
-    doubled = "/home/u/.clio/artifacts/ndp-/home/u/.clio/artifacts/ndp-staging/P473.PW.LY_.00.csv"
+def test_ground_fabricated_local_artifact_path_collapses_doubled_prefix(tmp_path) -> None:
+    # Path-doubling: the model emits a REAL (on-disk) path with a duplicated
+    # prefix. Even with multiple verified artifacts present, collapse the
+    # malformed token to the embedded real path. The verified set is filesystem-
+    # backed, so the real artifacts must actually exist on disk.
+    staging = tmp_path / ".clio" / "artifacts" / "ndp-staging"
+    staging.mkdir(parents=True)
+    real = staging / "P473.PW.LY_.00.csv"
+    real.write_text("time,east,north,up\n0,0,0,0\n")
+    (staging / "catalog.csv").write_text("Site,Latitude,Longitude\nP473,1,2\n")
+    real_s = str(real)
+    # Duplicated-prefix mangling: ".../artifacts/ndp-" + the full real path.
+    doubled = f"{staging.parent}/ndp-{real_s}"
     state = {
-        "acquisition": {"local_path": real},
-        "catalog": {"metadata_path": "/home/u/.clio/artifacts/ndp-staging/catalog.csv"},
+        "acquisition": {"local_path": real_s},
+        "catalog": {"metadata_path": str(staging / "catalog.csv")},
     }
     grounded = _ground_fabricated_local_artifact_paths(f"Staged CSV: {doubled}.", state)
-    assert real in grounded
+    assert real_s in grounded
     assert doubled not in grounded
 
 
