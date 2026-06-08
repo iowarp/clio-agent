@@ -62,6 +62,14 @@ cd /home/jcernuda/clio-agent && CLIO_RUN_LIVE=1 ES_REGION="San Diego area" uv ru
   `_ground_fabricated_local_artifact_paths`) are framework-side correction of small-model
   fabrication — keep / generalize the `*_selection` denylist / or trade for pure agent-reliability.
 
+## Second case: wildfire (in progress)
+The `wildfire-smoke-impact-review` pack runs on the same composable core and **produces a real
+deliverable** (selects a live fire — e.g. Sawtooth, 24,733 ac, Pinal County AZ — computes downwind
+impact, renders an impact map PNG). It currently fails one acceptance matcher (`region` not yet
+emitted into typed `workflow_state` by the `geography` expert — the same typed-state emission grind
+EarthScope went through). A pack-only reliability grind is running overnight to close that. For the
+morning demo, **lead with EarthScope**; show wildfire as "same architecture, second domain, in progress."
+
 ## Tip for the most reliable live demo
 Use **San Diego** or **Los Angeles** (densest EarthScope coverage). Have the Chicago honest-negative
 ready as the second beat. If a covered run stalls (honest incomplete), re-run once.
