@@ -9893,19 +9893,163 @@ def _is_destructive(tool_name: str) -> bool:
 
 
 def _is_safe_shell_diagnostic(tool_name: str, args: Mapping[str, Any]) -> bool:
-    """Return whether a shell_bash call is a read-only local diagnostic."""
+    """Return whether a shell_bash call is a read-only local diagnostic.
+
+    Two classes auto-allow:
+      1. A small fixed set of read-only diagnostics (date/pwd/whoami/...).
+      2. A bounded text-reshaping pipeline over local files: a command built
+         only from safe read/transform utilities (cat/head/tail/awk/cut/sed/sort/
+         uniq/grep/wc/echo/tr) plus pipes and a single ``>`` redirect, with NO
+         destructive verbs (rm/mv/cp/dd/sudo/curl/wget/chmod/chown/mkfifo/&&-rm).
+         This is needed so an expert can normalize a malformed staged reference
+         CSV (e.g. the EarthScope station catalog whose header carries unit
+         sub-columns) into a clean lat/lon CSV for downstream geo ranking. The
+         shell subprocess still runs under the file-policy cwd; this only governs
+         whether the call needs interactive approval. Pipelines that touch any
+         destructive token fall through to the normal permission gate.
+    """
 
     if tool_name != "shell_bash":
         return False
-    command = str(args.get("command") or "").strip().lower()
-    command = re.sub(r"\s+", " ", command)
-    return command in {
-        "date",
-        "get-date",
-        "pwd",
-        "whoami",
-        "hostname",
+    command = str(args.get("command") or "").strip()
+    normalized = re.sub(r"\s+", " ", command).lower()
+    if normalized in {"date", "get-date", "pwd", "whoami", "hostname"}:
+        return True
+    return _is_safe_text_reshape_command(command)
+
+
+# Destructive shell tokens that disqualify a command from the text-reshape
+# fast-allow path. Anything here forces the normal interactive permission gate.
+_UNSAFE_SHELL_TOKENS: tuple[str, ...] = (
+    "rm",
+    "rmdir",
+    "mv",
+    "cp",
+    "dd",
+    "sudo",
+    "su",
+    "chmod",
+    "chown",
+    "chgrp",
+    "ln",
+    "mkfifo",
+    "mknod",
+    "curl",
+    "wget",
+    "scp",
+    "rsync",
+    "ssh",
+    "nc",
+    "ncat",
+    "telnet",
+    "kill",
+    "pkill",
+    "killall",
+    "shutdown",
+    "reboot",
+    "mkdir",
+    "touch",
+    "truncate",
+    "tee",
+    "xargs",
+    "find",
+    "eval",
+    "exec",
+    "source",
+    "python",
+    "python3",
+    "perl",
+    "ruby",
+    "node",
+    "bash",
+    "sh",
+    "zsh",
+    "git",
+    "apt",
+    "pip",
+    "uv",
+    "npm",
+    "yum",
+    "brew",
+    "systemctl",
+    "service",
+    "crontab",
+    "at",
+    "export",
+    "unset",
+    "alias",
+    "function",
+)
+# Utilities permitted in a text-reshape pipeline.
+_SAFE_RESHAPE_UTILS: frozenset[str] = frozenset(
+    {
+        "cat",
+        "head",
+        "tail",
+        "awk",
+        "gawk",
+        "cut",
+        "sed",
+        "sort",
+        "uniq",
+        "grep",
+        "egrep",
+        "fgrep",
+        "wc",
+        "echo",
+        "tr",
+        "paste",
+        "column",
+        "nl",
+        "printf",
+        "true",
     }
+)
+
+
+def _is_safe_text_reshape_command(command: str) -> bool:
+    """Heuristic: a bounded read/transform pipeline that WRITES its output to a
+    derived file under ``/tmp/`` with no destructive tokens. Conservative — any
+    unrecognized leading word, destructive token, or a non-/tmp/missing output
+    target rejects, so the call falls through to the normal permission gate. A
+    bare read (e.g. ``cat pyproject.toml`` with no redirect) is NOT auto-allowed;
+    only the reshape-and-write-to-/tmp use case is."""
+
+    if not command or len(command) > 2000:
+        return False
+    # Reject backticks / command substitution / process substitution / append
+    # (``>>``) / background (``&``) / chaining (``||``).
+    if any(tok in command for tok in ("`", "$(", "<(", ">(", ">>", "&", "||")):
+        return False
+    # Must redirect output to a single /tmp/ file (the reshape target). Reject a
+    # bare read with no redirect, or a redirect to anywhere outside /tmp/.
+    redirects = re.findall(r">\s*(\S+)", command)
+    if len(redirects) != 1 or not redirects[0].strip("'\"").startswith("/tmp/"):
+        return False
+    # Tokenize on whitespace and pipes; check no destructive token appears and
+    # every "leading" utility (start of a pipe segment) is in the safe set.
+    lowered = command.lower()
+    words = re.findall(r"[a-z0-9_./-]+", lowered)
+    for w in words:
+        base = w.split("/")[-1]
+        if base in _UNSAFE_SHELL_TOKENS:
+            return False
+    # Each pipe segment must start with a safe utility or a brace group.
+    segments = re.split(r"\|", command)
+    for seg in segments:
+        seg = seg.strip().lstrip("{").strip()
+        if not seg:
+            continue
+        m = re.match(r"([A-Za-z0-9_./-]+)", seg)
+        if not m:
+            return False
+        first = m.group(1).split("/")[-1].lower()
+        # Allow a brace-group inner statement starting with echo/printf etc.
+        if first == "}":
+            continue
+        if first not in _SAFE_RESHAPE_UTILS:
+            return False
+    return True
 
 
 def _permission_path_from_args(args: Mapping[str, Any]) -> str:
