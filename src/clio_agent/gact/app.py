@@ -3538,15 +3538,29 @@ def _normalize_workflow_state_section(section: str, value: Mapping[str, Any]) ->
         return normalized
     status = str(normalized.get("status") or "").strip().lower()
     local_path = str(normalized.get("local_path") or normalized.get("path") or "").strip()
-    if normalized.get("analysis_ready") is True and (status != "staged" or not local_path):
+    metadata_path = str(normalized.get("metadata_path") or "").strip()
+    # A metadata/catalog file is not an analysis-ready data resource. When the
+    # analysis-ready local_path is the SAME file the expert recorded as the
+    # discovery metadata_path, the expert reused the catalog instead of staging a
+    # distinct data resource -- so it cannot be analysis-ready. This compares two
+    # typed fields the schema already carries; it hardcodes no domain/file names.
+    reused_metadata_as_data = bool(local_path) and local_path == metadata_path
+    if normalized.get("analysis_ready") is True and (
+        status != "staged" or not local_path or reused_metadata_as_data
+    ):
         normalized["analysis_ready"] = False
         if status in {"blocked", "missing", "metadata_only"}:
             normalized["status"] = status
+        elif reused_metadata_as_data:
+            normalized["status"] = "metadata_only"
         else:
             normalized["status"] = "candidate_found"
         normalized.setdefault(
             "blocker",
-            "analysis-ready acquisition requires a staged local CSV path",
+            "analysis-ready acquisition requires a staged data resource distinct "
+            "from the discovery metadata catalog"
+            if reused_metadata_as_data
+            else "analysis-ready acquisition requires a staged local CSV path",
         )
     elif normalized.get("analysis_ready") is True and status == "staged" and local_path:
         normalized.pop("blocker", None)
@@ -4223,11 +4237,18 @@ def _merge_workflow_state_from_value(value: Any, state: dict[str, Any]) -> None:
             for nested in _json_objects_from_text(text):
                 _merge_workflow_state_from_value(nested, state)
         return
-    if isinstance(value, list):
+    if isinstance(value, (list, tuple)):
         for item in value:
             _merge_workflow_state_from_value(item, state)
         return
     if not isinstance(value, Mapping):
+        # A typed workflow_state field may arrive as a Pydantic model when a pack
+        # declares it as a nested object signature field. Convert it to a plain
+        # mapping so its sections merge. Generic across all packs.
+        if callable(getattr(value, "model_dump", None)):
+            normalized = _jsonish(value)
+            if isinstance(normalized, Mapping):
+                _merge_workflow_state_from_value(normalized, state)
         return
     for key in ("workflow_state", "semantic_state", "state"):
         nested = value.get(key)
@@ -5564,10 +5585,16 @@ def _append_prediction_workflow_state(output: str, result: Any) -> str:
             return output
         block = text
     else:
+        # A typed workflow_state output field may arrive as a Pydantic model
+        # (when a pack declares it as a nested object signature field) or as a
+        # plain dict. Normalize any model to JSON-able structures so the nested
+        # object survives serialization and downstream parsing instead of being
+        # stringified into an unparseable repr. This is generic for all packs.
+        normalized_state = _jsonish(raw_state)
         payload = (
-            raw_state
-            if isinstance(raw_state, Mapping) and "workflow_state" in raw_state
-            else {"workflow_state": raw_state}
+            normalized_state
+            if isinstance(normalized_state, Mapping) and "workflow_state" in normalized_state
+            else {"workflow_state": normalized_state}
         )
         block = json.dumps(payload, sort_keys=True, default=str)
     if block in output:
@@ -7386,6 +7413,14 @@ async def _run_turn_in_background(
                             ],
                         )
                 workflow_state = _workflow_state_from_outputs([prompt, output])
+                # Seed from this expert's own authoritative typed emission. The
+                # output text can be reassigned to child-evidence summaries that
+                # drop the expert's typed workflow_state block, so re-parsing
+                # `output` alone can lose the expert's own state sections. Merging
+                # local_workflow_state guarantees an expert's typed state bubbles
+                # to its parent for continuation routing. Generic for all packs.
+                if local_workflow_state:
+                    _merge_workflow_state_mapping(workflow_state, local_workflow_state)
                 if nested:
                     _merge_workflow_state_mapping(
                         workflow_state,
