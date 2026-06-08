@@ -28,6 +28,9 @@ set -euo pipefail
 CLIO_PREFIX="${CLIO_PREFIX:-$HOME/.local/share/clio}"
 CLIO_PORT="${CLIO_PORT:-17800}"
 CLIO_BIN_DIR="${CLIO_BIN_DIR:-$HOME/.local/bin}"
+# Where the clio-kit MCP servers live; the marketplace packs declare their
+# MCP servers as `uv run --directory ${CLIO_KIT_PATH}/clio-kit-mcp-servers/<name> <name>-mcp`.
+export CLIO_KIT_PATH="${CLIO_KIT_PATH:-$HOME/clio-kit}"
 PIDFILE="$CLIO_PREFIX/clio-server.pid"
 SERVER_LOG="${CLIO_LOG:-$CLIO_PREFIX/clio-server.log}"
 GACT_LOG="$CLIO_PREFIX/gact-stderr.log"
