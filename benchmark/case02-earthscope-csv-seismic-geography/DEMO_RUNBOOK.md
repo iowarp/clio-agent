@@ -62,13 +62,25 @@ cd /home/jcernuda/clio-agent && CLIO_RUN_LIVE=1 ES_REGION="San Diego area" uv ru
   `_ground_fabricated_local_artifact_paths`) are framework-side correction of small-model
   fabrication — keep / generalize the `*_selection` denylist / or trade for pure agent-reliability.
 
-## Second case: wildfire (in progress)
-The `wildfire-smoke-impact-review` pack runs on the same composable core and **produces a real
-deliverable** (selects a live fire — e.g. Sawtooth, 24,733 ac, Pinal County AZ — computes downwind
-impact, renders an impact map PNG). It currently fails one acceptance matcher (`region` not yet
-emitted into typed `workflow_state` by the `geography` expert — the same typed-state emission grind
-EarthScope went through). A pack-only reliability grind is running overnight to close that. For the
-morning demo, **lead with EarthScope**; show wildfire as "same architecture, second domain, in progress."
+## Second case: wildfire — WORKING (second demoable case)
+The `wildfire-smoke-impact-review` pack runs on the same composable core and now **passes its
+acceptance test** (`tests/test_real_cases/test_wildfire_case.py` → pass): it selects a live fire
+(WFIGS), resolves the fire perimeter into a region, fuses smoke + air-quality, computes the
+downwind population overlap, makes a **grounded impact decision** (present/honest-null), and renders
+an **impact map PNG** — all via typed `workflow_state` (region/fire/impact emitted by the agent, not
+runtime logic). Same fix pattern as EarthScope (typed-state emission), **pack-only** (zero new core).
+Run it:
+```
+cd /home/jcernuda/clio-agent && CLIO_RUN_LIVE=1 uv run pytest tests/test_real_cases/test_wildfire_case.py --provider argonne_metis -o addopts="" -p no:cacheprovider -q
+```
+Reliability not statistically measured (like EarthScope, ~stochastic on gpt-oss-120b); a single
+clean pass is confirmed. **Demo as the second domain** — same composable agent, different science case.
+
+## Two-case story for the demo
+Same clean core + clio-kit MCPs + typed-state experts, two real science domains:
+1. **EarthScope GNSS** — geography → NDP discovery → stage real station CSV → profile → plot (+ honest no-coverage).
+2. **Wildfire smoke impact** — fire discovery → region → smoke/AQ fusion → downwind overlap → impact decision → map.
+Neither has any case-specific code in clio-agent core.
 
 ## Tip for the most reliable live demo
 Use **San Diego** or **Los Angeles** (densest EarthScope coverage). Have the Chicago honest-negative
