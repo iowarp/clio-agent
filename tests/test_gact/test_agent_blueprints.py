@@ -49,6 +49,7 @@ from clio_agent.gact.app import (
     _fallback_answer_from_delegation,
     _filter_workflow_state_for_blueprint_authority,
     _gact_app_context,
+    _ground_fabricated_local_artifact_paths,
     _gact_turn_timeout_s,
     _latest_delegation_output_summary,
     _latest_final_child_output_summary,
@@ -1283,6 +1284,34 @@ def test_geospatial_workflow_state_authority_drops_catalog_claims() -> None:
     assert "acquisition" not in state
 
 
+def test_authority_filter_drops_fabricated_selection_block_for_any_expert() -> None:
+    # A model-invented selected_station/gnss_selection block is stripped from any
+    # expert's emitted state, while the schema-backed resource_candidate +
+    # acquisition sections are preserved verbatim.
+    incoming = {
+        "resource_candidate": {"status": "selected", "station_id": "P475"},
+        "acquisition": {
+            "status": "staged",
+            "analysis_ready": True,
+            "local_path": "/tmp/P475.CI.LY_.20.csv",
+        },
+        "selected_station": {
+            "code": "SDM",
+            "csv_path": "/tmp/sdm_gnss_timeseries.csv",
+            "png_path": "/artifacts/gnss_SDM_timeseries.png",
+        },
+        "gnss_selection": {"station": "SAN"},
+        "chosen_station": {"site_id": "LAZ"},
+    }
+    for agent_id in ("data", "analysis", "synthesis", "visualization", "main"):
+        state = _filter_workflow_state_for_blueprint_authority(agent_id, incoming)
+        assert "selected_station" not in state, agent_id
+        assert "gnss_selection" not in state, agent_id
+        assert "chosen_station" not in state, agent_id
+        assert state["resource_candidate"]["station_id"] == "P475", agent_id
+        assert state["acquisition"]["local_path"] == "/tmp/P475.CI.LY_.20.csv", agent_id
+
+
 def test_event_catalog_authority_synthesizes_typed_blocker_from_metadata_only_catalog() -> None:
     state = _filter_workflow_state_for_blueprint_authority(
         "seismic_event_catalog",
@@ -1346,6 +1375,98 @@ def test_event_catalog_authority_empty_state_is_typed_blocker() -> None:
     assert state["event_context"]["status"] == "blocked"
     assert state["event_context"]["verified_event_count"] is None
     assert state["event_context"]["limitations"] == ["no_live_event_catalog_tool"]
+
+
+def test_ground_fabricated_local_artifact_path_rewrites_to_verified(tmp_path) -> None:
+    real_csv = tmp_path / "ndp-staging" / "P475.CI.LY_.20.csv"
+    real_png = tmp_path / "ndp-staging" / "P475.CI.LY_.20_plot.png"
+    real_csv.parent.mkdir(parents=True)
+    real_csv.write_text("time,east,north,up\n0,0,0,0\n")
+    real_png.write_bytes(b"\x89PNG" + b"0" * 64)
+    state = {
+        "acquisition": {"status": "staged", "local_path": str(real_csv)},
+        "artifact": {"status": "ready", "path": str(real_png)},
+    }
+    answer = (
+        "Staged CSV: /home/x/.clio/artifacts/ndp-staging/P475.CI.LY_.20.csv\n"
+        "Plot (PNG): /home/x/.clio/artifacts/plots/P475_CI_LY_timeseries.png\n"
+        "Source URL: https://ds2.datacollaboratory.org/raw_csv/P475.CI.LY_.20.csv"
+    )
+    grounded = _ground_fabricated_local_artifact_paths(answer, state)
+
+    # The fabricated PNG path (not on disk) is rewritten to the verified one.
+    assert str(real_png) in grounded
+    assert "plots/P475_CI_LY_timeseries.png" not in grounded
+    # The fabricated CSV citation is rewritten to the verified staged CSV.
+    assert str(real_csv) in grounded
+    # The remote source URL is left untouched.
+    assert "https://ds2.datacollaboratory.org/raw_csv/P475.CI.LY_.20.csv" in grounded
+
+
+def test_ground_fabricated_csv_path_ignores_metadata_catalog_for_substitution(tmp_path) -> None:
+    # The staged metadata catalog exists on disk too, but must NOT make the
+    # verified-CSV set ambiguous: the deliverable CSV is acquisition.local_path,
+    # so a fabricated csv citation is still grounded to it.
+    staging = tmp_path / "ndp-staging"
+    staging.mkdir()
+    real_csv = staging / "P475.CI.LY_.20.csv"
+    real_csv.write_text("time,east,north,up\n0,0,0,0\n")
+    catalog = staging / "earthscope_converted_data.csv"
+    catalog.write_text("Site,Latitude,Longitude\nP475,32,-117\n")
+    state = {
+        "acquisition": {
+            "status": "staged",
+            "local_path": str(real_csv),
+            "metadata_path": str(catalog),
+        },
+    }
+    answer = "Staged station CSV: /tmp/SAN_timeseries.csv"
+    grounded = _ground_fabricated_local_artifact_paths(answer, state)
+
+    assert str(real_csv) in grounded
+    assert "/tmp/SAN_timeseries.csv" not in grounded
+    assert str(catalog) not in grounded
+
+
+def test_ground_fabricated_local_artifact_path_respects_missing_framing(tmp_path) -> None:
+    real_png = tmp_path / "ndp-staging" / "P475.CI.LY_.20_plot.png"
+    real_png.parent.mkdir(parents=True)
+    real_png.write_bytes(b"\x89PNG" + b"0" * 64)
+    state = {"artifact": {"status": "ready", "path": str(real_png)}}
+    answer = (
+        "No figure was produced; a PNG has not been staged at "
+        "/tmp/expected/P475_plot.png yet."
+    )
+    grounded = _ground_fabricated_local_artifact_paths(answer, state)
+
+    # An honestly-framed missing/expected path must not be rewritten.
+    assert grounded == answer
+
+
+def test_ground_fabricated_local_artifact_path_no_verified_neutralizes() -> None:
+    # With no verified on-disk artifact in state (a data-blocked run), a fabricated
+    # local artifact path must be neutralized rather than presented as real.
+    answer = "Plot (PNG): /home/x/.clio/artifacts/plots/SAN_timeseries.png"
+    grounded = _ground_fabricated_local_artifact_paths(
+        answer, {"acquisition": {"status": "blocked"}}
+    )
+
+    assert "SAN_timeseries.png" not in grounded
+    assert ".png" not in grounded
+    assert "no local png artifact was produced" in grounded
+
+
+def test_ground_fabricated_local_artifact_path_keeps_honest_blocked_prose() -> None:
+    # An honestly-framed absence in a data-blocked answer is left intact.
+    answer = (
+        "No PNG was produced because staging was blocked; a figure would be "
+        "written to /tmp/expected/figure.png once a station CSV is staged."
+    )
+    grounded = _ground_fabricated_local_artifact_paths(
+        answer, {"acquisition": {"status": "blocked"}}
+    )
+
+    assert grounded == answer
 
 
 def test_scan_limited_model_evidence_sanitizer_removes_unsupported_record_claims() -> None:

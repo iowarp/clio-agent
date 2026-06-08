@@ -3028,6 +3028,135 @@ def _sanitize_dynamic_delegation_model_evidence(text: str) -> str:
     return text
 
 
+_ARTIFACT_PATH_TOKEN_RE = re.compile(r"[A-Za-z0-9_./~+-]+\.(?:csv|png)", re.IGNORECASE)
+_ARTIFACT_PATH_MISSING_FRAMING_RE = re.compile(
+    r"(not\s+(?:been\s+)?(?:staged|downloaded|available|present|found|created|generated|produced)|"
+    r"no\s+(?:png|csv|plot|figure|file|artifact|local)\b|"
+    r"does\s+not\s+exist|doesn'?t\s+exist|not\s+yet|is\s+blocked|blocked\s+because|"
+    r"cannot\s+be|could\s+not\s+be|no\s+such\s+file|would\s+(?:need|be)|will\s+be|"
+    r"written\s+to|saved\s+to|expected\s+(?:location|at)|placeholder|hypothetical|"
+    r"once\s+(?:the|a)\b|to\s+be\s+(?:created|generated|written))",
+    re.IGNORECASE,
+)
+
+
+def _is_remote_artifact_ref(value: str) -> bool:
+    """Whether a path string is a remote/URL reference (never a local artifact)."""
+
+    value = str(value or "")
+    return (
+        value.startswith(("http://", "https://", "ftp://", "//"))
+        or "://" in value
+    )
+
+
+_VERIFIED_ARTIFACT_STATE_PATHS: tuple[tuple[str, ...], ...] = (
+    # The analysis-ready staged station time-series CSV (never the metadata
+    # catalog, which is recorded separately under acquisition.metadata_path).
+    ("acquisition", "local_path"),
+    # The rendered plot PNG.
+    ("artifact", "path"),
+    ("visualization", "path"),
+    ("visualization", "plot_path"),
+    ("visualization", "staged_plot_png"),
+    # The profiled station CSV (same file as acquisition.local_path).
+    ("profile", "path"),
+)
+
+
+def _verified_local_artifact_paths_by_ext(
+    state: Mapping[str, Any],
+) -> dict[str, list[str]]:
+    """Collect the run's authoritative on-disk artifact paths from the specific
+    typed workflow_state fields that name a produced deliverable (the staged
+    station CSV and the rendered PNG), bucketed by lowercase extension.
+
+    Only these declared fields are consulted — not an arbitrary walk — so that
+    incidental on-disk files such as the staged metadata catalog
+    (``acquisition.metadata_path``) never count as the deliverable artifact and
+    never make the substitution ambiguous. These are the only artifact paths a
+    final answer may legitimately cite; any other local csv/png path it presents
+    as a produced artifact is a model confabulation."""
+
+    found: dict[str, list[str]] = {"csv": [], "png": []}
+    for section, key in _VERIFIED_ARTIFACT_STATE_PATHS:
+        section_obj = state.get(section)
+        if not isinstance(section_obj, Mapping):
+            continue
+        token = section_obj.get(key)
+        if not isinstance(token, str):
+            continue
+        token = token.strip()
+        if not token or _is_remote_artifact_ref(token):
+            continue
+        lowered = token.lower()
+        for ext in ("csv", "png"):
+            if lowered.endswith("." + ext):
+                try:
+                    on_disk = Path(token).is_file()
+                except OSError:
+                    on_disk = False
+                if on_disk and token not in found[ext]:
+                    found[ext].append(token)
+    return found
+
+
+def _ground_fabricated_local_artifact_paths(
+    answer: str,
+    state: Mapping[str, Any],
+) -> str:
+    """Replace fabricated local artifact (csv/png) path citations in a final
+    answer with the run's verified on-disk artifact of the same type.
+
+    The synthesis model sometimes derives a plausible-but-wrong local artifact
+    filename (e.g. an invented ``.../plots/<station>_timeseries.png`` or a
+    ``<csv>.png`` swap) instead of copying the exact tool-returned path, and on a
+    data-blocked run it can cite a local csv/png that was never produced at all.
+    Such a path does not exist on disk and misrepresents the deliverable. This
+    generic pass — driven only by the typed workflow_state and the filesystem,
+    with no station/region heuristics — corrects a non-existent local csv/png
+    citation: it rewrites it to the single verified artifact of that type when
+    exactly one exists, otherwise (nothing real to point at, e.g. a data-blocked
+    run) it neutralizes the fabricated path with an explicit not-produced note.
+    Remote source URLs and paths the answer honestly frames as
+    missing/not-yet-created are left untouched."""
+
+    if not answer:
+        return answer
+    verified = _verified_local_artifact_paths_by_ext(state)
+
+    result = answer
+    for match in list(_ARTIFACT_PATH_TOKEN_RE.finditer(answer)):
+        token = match.group(0)
+        if _is_remote_artifact_ref(token):
+            continue
+        try:
+            if Path(token).is_file():
+                continue
+        except OSError:
+            continue
+        ext = token.rsplit(".", 1)[-1].lower()
+        candidates = verified.get(ext) or []
+        if len(candidates) > 1:
+            # Ambiguous which verified artifact was meant; leave text unchanged.
+            continue
+        # Respect honest "not produced / would be at <path>" framing.
+        lo = max(0, match.start() - 160)
+        hi = min(len(answer), match.end() + 160)
+        if _ARTIFACT_PATH_MISSING_FRAMING_RE.search(answer[lo:hi]):
+            continue
+        if len(candidates) == 1:
+            # Exactly one verified artifact of this type: correct the citation.
+            result = result.replace(token, candidates[0])
+        else:
+            # No real local artifact of this type exists this run: drop the
+            # fabricated path rather than present an unproduced file as real.
+            result = result.replace(
+                token, f"[no local {ext} artifact was produced this run]"
+            )
+    return result
+
+
 def _strip_embedded_workflow_state_evidence(text: str) -> str:
     """Remove raw machine-state blocks before building human evidence snippets."""
 
@@ -4289,19 +4418,54 @@ _BLUEPRINT_WORKFLOW_STATE_AUTHORITIES: dict[str, set[str]] = {
     "seismic_event_catalog": {"event_context"},
 }
 
+# Top-level workflow_state section names that no pack declares as typed schema —
+# they only ever appear when a model confabulates a parallel "selection" block
+# (e.g. a fabricated ``selected_station`` with an invented station id and a
+# /tmp/... csv/png that contradicts the resource actually staged upstream). The
+# legitimate, schema-backed selection section is ``resource_candidate``; these
+# names are model inventions and are dropped from EVERY expert's emitted state.
+# This is a generic, blueprint-agnostic denylist of non-schema keys; it encodes
+# no station/region/path heuristics.
+_FABRICATED_WORKFLOW_STATE_SECTIONS: frozenset[str] = frozenset(
+    {
+        "selected_station",
+        "selected",
+        "gnss_selection",
+        "station_selection",
+        "chosen_station",
+    }
+)
+
+
+def _drop_fabricated_workflow_state_sections(
+    state: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Remove model-invented selection-block sections from emitted typed state."""
+
+    return {
+        str(key): value
+        for key, value in state.items()
+        if str(key) not in _FABRICATED_WORKFLOW_STATE_SECTIONS
+    }
+
 
 def _filter_workflow_state_for_blueprint_authority(
     agent_id: str,
     state: Mapping[str, Any],
 ) -> dict[str, Any]:
-    """Drop model-authored workflow sections outside an expert's responsibility."""
+    """Drop model-authored workflow sections outside an expert's responsibility.
 
+    Every expert is first stripped of non-schema confabulation sections (an
+    invented ``selected_station``/``gnss_selection`` block). Experts with a
+    declared section authority are then narrowed to exactly those sections."""
+
+    cleaned = _drop_fabricated_workflow_state_sections(state)
     allowed = _BLUEPRINT_WORKFLOW_STATE_AUTHORITIES.get(str(agent_id or "").strip())
     if not allowed:
-        return dict(state)
+        return cleaned
     if str(agent_id or "").strip() == "seismic_event_catalog":
-        return _filter_event_context_authority_state(state)
-    return {str(key): value for key, value in state.items() if str(key) in allowed}
+        return _filter_event_context_authority_state(cleaned)
+    return {str(key): value for key, value in cleaned.items() if str(key) in allowed}
 
 
 def _workflow_state_from_handoff_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
@@ -8677,6 +8841,19 @@ async def _run_turn_in_background(
 
     if error_info is None and not answer_text and expert_handoffs:
         answer_text = _fallback_answer_from_delegation(expert_handoffs)
+
+    # Final user-facing text only: correct any fabricated local artifact (csv/png)
+    # path the answer presents as produced — whether the synthesizing expert
+    # composed a plausible-but-wrong filename or the delegation-fallback text
+    # carried a model-requested ``output_path`` that the tool never wrote — by
+    # grounding it against the run's verified on-disk artifacts in the merged
+    # typed workflow_state. Generic (typed state + filesystem only), applied once
+    # on the assembled answer, never on intermediate child rows.
+    if answer_text and expert_handoffs:
+        answer_text = _ground_fabricated_local_artifact_paths(
+            answer_text,
+            _workflow_state_from_handoff_rows(expert_handoffs),
+        )
 
     # Build assistant parts — routing_decision (v0.2) first when we
     # got a selected_agent, then optional thinking trace, then the
