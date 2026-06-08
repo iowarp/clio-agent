@@ -49,10 +49,15 @@ cd /home/jcernuda/clio-agent && CLIO_RUN_LIVE=1 ES_REGION="San Diego area" uv ru
 ## Honest status (tell the audience / for morning review)
 
 - **Works + grounded:** on covered regions it stages **real** station data and plots it; honest
-  no-coverage on Chicago/Sahara. **No fabrication on clean runs.**
-- **Reliability is ~0.5–0.65 on gpt-oss-120b**, NOT the ≥0.8 Done bar. Remaining failures are
-  **honest incompletes** (model sometimes stages then stalls before profile/plot) — a small-model
-  variance issue, not fabrication. **If a live run stalls, just re-run** (it's stochastic).
+  no-coverage on Chicago/Sahara.
+- **No fabrication.** The one residual fabrication mode (a path-doubling citation, ~1/12 in the
+  overnight 12-run sample) is now **closed** by a generic grounding guard (collapses a malformed
+  cited path to the real embedded artifact); confirmed live + unit-tested. Measured clean rate
+  before the fix was **6/12 ≈ 0.50** (the rest honest incompletes); the path-doubling case is now a
+  clean pass, so practical clean-rate is a bit higher.
+- **Reliability is ~0.5–0.6 on gpt-oss-120b**, NOT the ≥0.8 Done bar. Remaining failures are
+  **honest incompletes** (model sometimes stages then stalls before profile/plot) — small-model
+  variance, not fabrication. **If a live run stalls, just re-run** (it's stochastic).
 - **Backup artifacts** (real, from clean runs) if a live run stalls during the demo:
   - `~/.clio/artifacts/ndp-staging/P473.PW.LY_.00_plot.png` (151 KB)
   - `~/.clio/artifacts/ndp-staging/SEAT.PW.LY_.00_plot.png` (154 KB)
