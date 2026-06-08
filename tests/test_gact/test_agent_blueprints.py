@@ -1456,6 +1456,21 @@ def test_ground_fabricated_local_artifact_path_no_verified_neutralizes() -> None
     assert "no local png artifact was produced" in grounded
 
 
+def test_ground_fabricated_local_artifact_path_collapses_doubled_prefix() -> None:
+    # Path-doubling: the model emits a real path with a duplicated prefix
+    # (".../ndp-/home/.../ndp-staging/P473.csv"). Even with multiple verified
+    # artifacts present, collapse the malformed token to the embedded real path.
+    real = "/home/u/.clio/artifacts/ndp-staging/P473.PW.LY_.00.csv"
+    doubled = "/home/u/.clio/artifacts/ndp-/home/u/.clio/artifacts/ndp-staging/P473.PW.LY_.00.csv"
+    state = {
+        "acquisition": {"local_path": real},
+        "catalog": {"metadata_path": "/home/u/.clio/artifacts/ndp-staging/catalog.csv"},
+    }
+    grounded = _ground_fabricated_local_artifact_paths(f"Staged CSV: {doubled}.", state)
+    assert real in grounded
+    assert doubled not in grounded
+
+
 def test_ground_fabricated_local_artifact_path_keeps_honest_blocked_prose() -> None:
     # An honestly-framed absence in a data-blocked answer is left intact.
     answer = (

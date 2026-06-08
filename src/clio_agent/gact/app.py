@@ -3137,6 +3137,15 @@ def _ground_fabricated_local_artifact_paths(
             continue
         ext = token.rsplit(".", 1)[-1].lower()
         candidates = verified.get(ext) or []
+        # Path-doubling / prefix-mangling: if the non-existent token EMBEDS exactly
+        # one verified artifact path as a substring (e.g. the model emitted
+        # ".../ndp-/home/.../ndp-staging/P473.csv" — a real path with a duplicated
+        # prefix), collapse to that verified path. Generic; runs before the
+        # ambiguity check so it still corrects when several artifacts exist.
+        embedded = [c for c in candidates if c and c in token and c != token]
+        if len(embedded) == 1:
+            result = result.replace(token, embedded[0])
+            continue
         if len(candidates) > 1:
             # Ambiguous which verified artifact was meant; leave text unchanged.
             continue
