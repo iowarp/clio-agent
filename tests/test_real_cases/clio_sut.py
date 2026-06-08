@@ -122,7 +122,7 @@ class ClioAgent(SUT):
             kind = str(row.get("metadata", {}).get("provider_kind") or provider)
             payload = {
                 "provider": kind,
-                "api_base": str(row.get("api_base") or ""),
+                "api_base": str(self._overrides.get("api_base") or row.get("api_base") or ""),
                 "model": model or str(row.get("default_model") or ""),
                 "api_key": os.environ.get("CLIO_LM_API_KEY", "x"),
                 "temperature": float(self._overrides.get("temperature", 1.0)),
