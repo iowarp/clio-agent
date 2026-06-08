@@ -19,7 +19,7 @@ from tests.test_real_cases.test_wildfire_case import (
 
 
 def _render_call(layers):
-    return ToolCall(name="geospatial_render_feature_map", args={}, output={"status": "success", "layers": layers})
+    return ToolCall(name="geo_render_feature_map", args={}, output={"status": "success", "layers": layers})
 
 
 def _impact_run() -> Run:

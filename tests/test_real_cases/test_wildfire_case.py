@@ -81,7 +81,7 @@ def fused_three_layers(run):
     """The rendered map actually fused all three layers with real features
     (fire perimeter + smoke + air-quality), not a single-layer fallback."""
     for call in run.tool_calls:
-        if call.name == "geospatial_render_feature_map" and isinstance(call.output, dict):
+        if call.name == "geo_render_feature_map" and isinstance(call.output, dict):
             layers = call.output.get("layers") or []
             with_features = [
                 layer for layer in layers
@@ -106,7 +106,7 @@ def test_wildfire_downwind_impact(agent):
     # Runtime/harness invariants.
     assert run.error is None, run.error
     assert run.extra["blueprint_activated"], run.extra.get("active_agent_blueprint_id")
-    assert run.called("ndp_query_arcgis_features"), run.tool_names
+    assert run.called("geo_query_arcgis_features"), run.tool_names
 
     # Route: acquisition -> impact analysis -> visualization -> synthesis.
     for expert in ("data", "analysis", "visualization", "synthesis"):
@@ -127,7 +127,7 @@ def test_wildfire_downwind_impact(agent):
 
     # Real deliverable: a map PNG on disk. When impact is present the map fuses
     # all three layers; a genuine-null region may legitimately lack smoke cover.
-    assert run.called("geospatial_render_feature_map"), run.tool_names
+    assert run.called("geo_render_feature_map"), run.tool_names
     if (ws.get("impact") or {}).get("present"):
         assert fused_three_layers(run), "impact run did not fuse all three layers"
     assert any(
