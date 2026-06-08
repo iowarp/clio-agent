@@ -218,14 +218,10 @@ class SyncToolExecutor(Protocol):
 
 ToolExecutor = SyncToolExecutor
 
-DEFAULT_TOOL_TIMEOUTS: dict[str, float] = {
-    "ndp_search_datasets": 75.0,
-    "ndp_get_dataset_details": 75.0,
-    "ndp_stage_resource": 720.0,
-    "ndp_filter_earthscope_station_catalog": 75.0,
-    "ndp_profile_csv_resource": 75.0,
-    "ndp_plot_gnss_timeseries": 75.0,
-}
+# Per-tool wall-clock timeouts are domain-specific and now come from MCP
+# server declarations (a server's ``timeout`` maps into ``tool_timeouts``),
+# not from a hardcoded core table. Core ships no default overrides.
+DEFAULT_TOOL_TIMEOUTS: dict[str, float] = {}
 REPEATED_TRANSIENT_FAILURE_LIMIT = 2
 
 
@@ -593,7 +589,9 @@ class SyncMCPToolExecutor:
             intercepted = tool_interceptor(name, dict(effective_args))
             if intercepted is not None:
                 notify_tool_observer(tool_observer, name, effective_args, "started", None)
-                notify_tool_observer(tool_observer, name, effective_args, "completed", None, intercepted)
+                notify_tool_observer(
+                    tool_observer, name, effective_args, "completed", None, intercepted
+                )
                 return intercepted
 
         notify_tool_observer(tool_observer, name, effective_args, "started", None)
@@ -775,32 +773,14 @@ def _repair_missing_file_arguments(args: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _workspace_default_tool_arguments(name: str, args: Mapping[str, Any]) -> dict[str, Any]:
-    """Apply workspace-owned artifact defaults for tools with optional paths."""
+    """Apply workspace-owned artifact defaults for tools with optional paths.
 
-    workspace_root = _ACTIVE_TOOL_WORKSPACE_ROOT.get().strip()
-    if not workspace_root:
-        return dict(args)
-    root = Path(workspace_root).expanduser()
-    tool_name = name.rsplit(".", 1)[-1]
-    out = dict(args)
-    output_dir = str(out.get("output_dir") or "").strip()
-    output_path = Path(output_dir).expanduser() if output_dir else None
-    uses_disposable_tmp = bool(
-        output_path
-        and output_path.is_absolute()
-        and (
-            output_path == Path("/tmp")
-            or Path("/tmp") in output_path.parents
-        )
-    )
-    if tool_name == "ndp_stage_resource" and (not output_dir or uses_disposable_tmp):
-        out["output_dir"] = str(root / ".clio" / "artifacts" / "ndp-staging")
-    elif tool_name in {
-        "sac_fetch_earthscope_waveform",
-        "sac_discover_earthscope_region_waveform",
-    } and (not output_dir or uses_disposable_tmp):
-        out["output_dir"] = str(root / ".clio" / "artifacts" / "sac-staging")
-    return out
+    Core no longer carries per-tool (e.g. NDP/SAC) staging-path defaults; tool
+    argument shaping for domain tools belongs to the declared MCP servers. This
+    remains a generic pass-through hook so call sites stay stable.
+    """
+
+    return dict(args)
 
 
 def _make_dspy_tools(

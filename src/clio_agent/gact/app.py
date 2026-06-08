@@ -11699,66 +11699,12 @@ def _context_file_turn_provenance(app: "FastAPI", sid: str, *, status: str) -> d
 _CTX_MAX_BYTES = 32 * 1024  # 32 KB cap per attached file
 
 
-def _inspect_parquet_for_context(path: str) -> str:
-    """Run analyze_schema on a Parquet file + return a one-paragraph
-    summary the LM can quote when answering 'what's in this file'."""
-
-    from clio_agent.tools.servers.parquet_server import analyze_schema
-
-    fn = getattr(analyze_schema, "fn", analyze_schema)
-    schema = fn(path)
-    if "error" in schema:
-        return f"Could not inspect Parquet file: {schema['error']}"
-    cols = schema.get("columns", []) or []
-    col_lines = [
-        f"  - {c.get('name')}: {c.get('type')}, nullable={c.get('nullable')}" for c in cols[:24]
-    ]
-    body = (
-        f"Parquet file with {schema.get('num_rows', '?')} rows, "
-        f"{schema.get('num_columns', '?')} columns, "
-        f"{schema.get('num_row_groups', '?')} row groups.\n"
-        "Schema:\n" + "\n".join(col_lines)
-    )
-    if len(cols) > 24:
-        body += f"\n  - ... {len(cols) - 24} more columns"
-    return body
-
-
-def _inspect_hdf5_for_context(path: str) -> str:
-    """Run analyze_file + list_datasets on an HDF5 file + return a
-    one-paragraph summary."""
-
-    from clio_agent.tools.servers.hdf5_server import (
-        analyze_file,
-        list_datasets,
-    )
-
-    af = getattr(analyze_file, "fn", analyze_file)
-    ld = getattr(list_datasets, "fn", list_datasets)
-    overview = af(path)
-    datasets = ld(path)
-    if "error" in overview:
-        return f"Could not inspect HDF5 file: {overview['error']}"
-    rows = (datasets.get("datasets", []) if isinstance(datasets, dict) else []) or []
-    ds_lines = [
-        f"  - {d.get('path')}: shape={d.get('shape')} dtype={d.get('dtype')}" for d in rows[:24]
-    ]
-    body = (
-        f"HDF5 file with {overview.get('total_datasets', len(rows))} datasets "
-        f"in {overview.get('total_groups', 0)} groups.\n"
-        "Datasets:\n" + "\n".join(ds_lines)
-    )
-    if len(rows) > 24:
-        body += f"\n  - ... {len(rows) - 24} more datasets"
-    return body
-
-
-_BINARY_CONTEXT_INSPECTORS = {
-    ".parquet": _inspect_parquet_for_context,
-    ".pq": _inspect_parquet_for_context,
-    ".h5": _inspect_hdf5_for_context,
-    ".hdf5": _inspect_hdf5_for_context,
-}
+# Core no longer bundles in-process scientific format servers, so it ships no
+# built-in binary context inspectors. Structured inspection of attached binary
+# files (parquet/hdf5/...) is the job of declared MCP tools the active pack
+# brings in. The extension -> inspector map stays as a generic, currently-empty
+# hook so the context-file path below is unchanged.
+_BINARY_CONTEXT_INSPECTORS: dict[str, Any] = {}
 
 
 def _format_react_trajectory(traj: Any) -> str:
@@ -16397,8 +16343,8 @@ def build_app(
     async def list_mcp_servers(workspace_id: str = "") -> dict[str, Any]:
         """SPEC §6.7 — enumerate MCP servers the backend has mounted.
 
-        Returns BOTH the bundled in-process servers (fs/hdf5/parquet)
-        AND any third-party servers installed via POST /v1/mcp/servers.
+        Returns BOTH the bundled in-process built-ins (fs/shell) AND any
+        declared/third-party servers installed via POST /v1/mcp/servers.
         Each row carries id/name/status/transport/tools_count/tools.
         """
 
@@ -16408,7 +16354,7 @@ def build_app(
     def _mcp_server_rows(cwd: Path | None = None) -> list[dict[str, Any]]:
         """Return bundled plus installed MCP server catalog rows."""
         rows: list[dict[str, Any]] = []
-        # In-process bundled servers (fs/hdf5/parquet via gateway).
+        # In-process bundled built-in servers (fs/shell via gateway).
         try:
             from clio_agent.tools.gateway import list_capabilities
 

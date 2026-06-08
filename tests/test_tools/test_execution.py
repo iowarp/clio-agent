@@ -16,7 +16,6 @@ from clio_agent.tools.execution import (
     set_global_cancellation_checker,
     set_global_permission_gate,
     set_global_tool_observer,
-    tool_workspace_context,
 )
 
 
@@ -135,25 +134,6 @@ async def test_async_mcp_tool_executor_timeout_cancels_tool_call():
     assert executor.closed is True
 
 
-@pytest.mark.asyncio
-async def test_async_mcp_tool_executor_uses_per_tool_timeout_default():
-    """Long-running staging tools should not inherit the short metadata timeout."""
-    fake_client = FakeClient(delay=0.05)
-    executor = AsyncMCPToolExecutor(
-        object(),
-        timeout=0.01,
-        client_factory=lambda _: fake_client,
-    )
-    await executor.start()
-
-    try:
-        result = await executor.call_tool("ndp_stage_resource", {"value": "slow"})
-    finally:
-        await executor.aclose()
-
-    assert '"name": "ndp_stage_resource"' in result
-
-
 def test_sync_mcp_tool_executor_closes_client_and_loop():
     """close() should shut down the client and background loop idempotently."""
     fake_client = FakeClient()
@@ -196,64 +176,6 @@ def test_sync_mcp_tool_executor_timeout_cancels_tool_call():
 
     assert fake_client.exited is True
     assert executor.closed is True
-
-
-def test_sync_mcp_tool_executor_uses_per_tool_timeout_default():
-    """Sync executor should apply the same long-tool timeout map."""
-    fake_client = FakeClient(delay=0.05)
-    executor = SyncMCPToolExecutor(
-        object(),
-        timeout=0.01,
-        client_factory=lambda _: fake_client,
-    )
-
-    try:
-        result = executor.call_tool("ndp_stage_resource", {"value": "slow"})
-    finally:
-        executor.close()
-
-    assert '"name": "ndp_stage_resource"' in result
-
-
-def test_sync_mcp_tool_executor_applies_workspace_default_staging_dir(tmp_path):
-    """Workspace context should rewrite optional staging paths before MCP execution."""
-    fake_client = FakeClient()
-    executor = SyncMCPToolExecutor(
-        object(),
-        timeout=1.0,
-        client_factory=lambda _: fake_client,
-    )
-
-    try:
-        with tool_workspace_context(tmp_path):
-            result = executor.call_tool("ndp_stage_resource", {"dataset_identifier": "dataset-1"})
-    finally:
-        executor.close()
-
-    expected = str(tmp_path / ".clio" / "artifacts" / "ndp-staging")
-    assert f'"output_dir": "{expected}"' in result
-
-
-def test_sync_mcp_tool_executor_rewrites_disposable_tmp_staging_dir(tmp_path):
-    """Model-selected /tmp staging should not override the active workspace artifact root."""
-    fake_client = FakeClient()
-    executor = SyncMCPToolExecutor(
-        object(),
-        timeout=1.0,
-        client_factory=lambda _: fake_client,
-    )
-
-    try:
-        with tool_workspace_context(tmp_path):
-            result = executor.call_tool(
-                "ndp_stage_resource",
-                {"dataset_identifier": "dataset-1", "output_dir": "/tmp/clio-ndp-staging"},
-            )
-    finally:
-        executor.close()
-
-    expected = str(tmp_path / ".clio" / "artifacts" / "ndp-staging")
-    assert f'"output_dir": "{expected}"' in result
 
 
 def test_sync_mcp_tool_executor_uses_late_global_hooks():

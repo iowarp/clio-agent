@@ -63,17 +63,12 @@ from clio_agent.gact.app import (
     _seed_child_tool_completions_from_resume_prompt,
     _should_execute_delegated_handoff,
     _tool_calls_from_handoff_rows,
-    _tool_session_context,
     _user_agent_bool_param,
     _user_facing_dynamic_evidence_summary,
     _workflow_state_from_outputs,
     build_app,
 )
 from clio_agent.gact.types import AgentDef
-from clio_agent.tools.execution import (
-    _workspace_default_tool_arguments,
-    tool_workspace_context,
-)
 from tests.test_gact.conftest import complete_turn
 
 
@@ -2344,122 +2339,6 @@ def test_blueprint_continuation_contract_does_not_repeat_staged_station_csv_reso
     )
 
     assert rows == []
-
-
-def test_tool_workspace_context_defaults_ndp_staging_under_workspace(tmp_path: Path) -> None:
-    with tool_workspace_context(tmp_path):
-        args = _workspace_default_tool_arguments(
-            "ndp_stage_resource",
-            {"dataset_identifier": "dataset-1"},
-        )
-
-    assert args["output_dir"] == str(tmp_path / ".clio" / "artifacts" / "ndp-staging")
-
-
-def test_tool_workspace_context_rewrites_disposable_tmp_ndp_staging(tmp_path: Path) -> None:
-    with tool_workspace_context(tmp_path):
-        args = _workspace_default_tool_arguments(
-            "ndp_stage_resource",
-            {"dataset_identifier": "dataset-1", "output_dir": "/tmp"},
-        )
-
-    assert args["output_dir"] == str(tmp_path / ".clio" / "artifacts" / "ndp-staging")
-
-
-def test_tool_session_context_uses_active_session_workspace_root(tmp_path: Path) -> None:
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    client = TestClient(build_app(sessions_path=tmp_path / "sessions.json"))
-    wid = client.post(
-        "/v1/workspaces",
-        json={
-            "name": "science",
-            "root_path": str(workspace),
-            "storage_root": str(workspace / ".clio"),
-        },
-    ).json()["id"]
-    sid = client.post("/v1/sessions", json={"title": "science", "workspace_id": wid}).json()["id"]
-
-    with _gact_app_context(client.app), _tool_session_context(sid):
-        args = _workspace_default_tool_arguments(
-            "ndp_stage_resource",
-            {"dataset_identifier": "dataset-1"},
-        )
-
-    assert args["output_dir"] == str(workspace / ".clio" / "artifacts" / "ndp-staging")
-
-
-def test_generated_child_expert_tool_binds_active_session_workspace_root(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    client = TestClient(build_app(sessions_path=tmp_path / "sessions.json"))
-    wid = client.post(
-        "/v1/workspaces",
-        json={
-            "name": "science",
-            "root_path": str(workspace),
-            "storage_root": str(workspace / ".clio"),
-        },
-    ).json()["id"]
-    sid = client.post("/v1/sessions", json={"title": "science", "workspace_id": wid}).json()["id"]
-    parent = AgentDef(
-        id="main",
-        source="expert_pack",
-        title="Main",
-        parameters={"enforce_child_contract_order": False},
-    )
-    child = AgentDef(
-        id="ndp_resource_resolver",
-        source="expert_pack",
-        title="Resolver",
-        parent_id="main",
-    )
-
-    monkeypatch.setattr(
-        "clio_agent.gact.app._runtime_active_agent_blueprint_rows",
-        lambda app, session_id="": [parent, child],
-    )
-    monkeypatch.setattr(
-        "clio_agent.gact.app._blueprint_runner_for_agent", lambda agent_def: "runner"
-    )
-
-    def fake_run_dynamic_agent_compat(
-        runner: Any,
-        base_agent: Any,
-        agent_def: AgentDef,
-        question: str,
-        session_id: str,
-        cancel_requested: Any,
-    ) -> Any:
-        del runner, base_agent, agent_def, question, session_id, cancel_requested
-        args = _workspace_default_tool_arguments(
-            "ndp_stage_resource",
-            {"dataset_identifier": "dataset-1"},
-        )
-        return SimpleNamespace(answer=json.dumps({"workflow_state": {"workspace_args": args}}))
-
-    monkeypatch.setattr(
-        "clio_agent.gact.app._run_dynamic_agent_compat",
-        fake_run_dynamic_agent_compat,
-    )
-
-    session_token = _ACTIVE_GACT_SESSION_ID.set(sid)
-    completions_token = _ACTIVE_CHILD_TOOL_COMPLETIONS.set([])
-    try:
-        with _gact_app_context(client.app):
-            child_tool = _build_child_expert_tool(SimpleNamespace(), parent, child)
-            payload = json.loads(child_tool(question="stage a resource"))
-    finally:
-        _ACTIVE_CHILD_TOOL_COMPLETIONS.reset(completions_token)
-        _ACTIVE_GACT_SESSION_ID.reset(session_token)
-
-    state = _workflow_state_from_outputs([payload["output_summary"]])
-    assert state["workspace_args"]["output_dir"] == str(
-        workspace / ".clio" / "artifacts" / "ndp-staging"
-    )
 
 
 def test_skipped_delegated_handoff_does_not_execute_even_with_delegate_target() -> None:

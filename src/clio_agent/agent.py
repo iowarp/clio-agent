@@ -78,10 +78,16 @@ from clio_agent.signatures.main_agent_sig import (
     AgentAnswerSignature,
     ChatAgentSignature,
 )
-from clio_agent.tools.catalog import tool_owner, tool_tags, tool_visible_to
+from clio_agent.tools.catalog import (
+    set_active_catalog,
+    tool_owner,
+    tool_tags,
+    tool_visible_to,
+)
 from clio_agent.tools.execution import create_sync_tool_executor, notify_global_tool_observer
 from clio_agent.tools.file_policy import FileAccessPolicy, FilePolicyError, validate_write_path
-from clio_agent.tools.gateway import gateway
+from clio_agent.tools.gateway import build_gateway, build_tool_catalog
+from clio_agent.tools.mcp_config import load_mcp_servers
 
 SCIENTIFIC_FILE_SUFFIXES = {
     ".h5",
@@ -236,7 +242,13 @@ class ClioAgent(dspy.Module):
         self.chat_agent = dspy.Predict(ChatAgentSignature)
 
         # Shared MCP executor: one explicit sync boundary for CLI/API thread calls.
-        self.tool_executor = create_sync_tool_executor(gateway)
+        # The tool gateway is built from the universal in-process built-ins
+        # (fs/shell) PLUS the declared MCP servers for the discovered blueprints
+        # and user/workspace config. Declared MCPs are the only source of domain
+        # tools; the catalog (ownership/visibility) is derived from the connected
+        # namespaces merged with the static built-in entries.
+        self._tool_gateway = self._build_tool_gateway()
+        self.tool_executor = create_sync_tool_executor(self._tool_gateway)
 
         # Core no longer installs domain experts into the Python registry.
         # Default and baseline agents are blueprint programs loaded through
@@ -260,6 +272,66 @@ class ClioAgent(dspy.Module):
             print(f"[ClioAgent] Registered {self.registry.get_agent_count()} runtime agents")
             print(f"[ClioAgent] ARC Memory initialized at {data_dir}/arc")
             print(f"[ClioAgent] LSM Tree initialized at {data_dir}/arc/lsm")
+
+    def _discover_pack_servers(self) -> dict[str, dict[str, Any]]:
+        """Return declared ``mcp_servers`` per discovered blueprint id.
+
+        Reads each blueprint's ``AGENT.md`` frontmatter ``mcp_servers`` map so
+        the active pack's declared MCP servers become available tools. Discovery
+        failures degrade to "no pack servers" (pure reasoning / built-ins only).
+        """
+
+        from clio_agent.gact.agent_blueprints import (  # noqa: PLC0415
+            discover_agent_blueprints,
+        )
+
+        pack_servers: dict[str, dict[str, Any]] = {}
+        try:
+            blueprints = discover_agent_blueprints()
+        except Exception as exc:  # noqa: BLE001 - discovery is best-effort
+            if self.verbose:
+                print(f"[ClioAgent] blueprint discovery failed: {exc}")
+            return pack_servers
+        for blueprint in blueprints:
+            servers = blueprint.metadata.get("mcp_servers")
+            if isinstance(servers, Mapping) and servers:
+                pack_servers[blueprint.id] = {str(k): v for k, v in servers.items()}
+        return pack_servers
+
+    def _build_tool_gateway(self) -> Any:
+        """Build the tool gateway from built-ins + declared MCP servers.
+
+        Merges declared MCP servers across pack ``AGENT.md`` frontmatter and
+        user/workspace ``mcp.yaml`` (``load_mcp_servers``), proxy-mounts them next
+        to the in-process built-ins (``build_gateway``), then installs the derived
+        tool catalog (``build_tool_catalog``) so ownership/visibility for declared
+        tools comes from connected namespaces + each expert's ``tools:`` list.
+        """
+
+        pack_servers = self._discover_pack_servers()
+        specs = load_mcp_servers(pack_servers=pack_servers)
+        tool_gateway = build_gateway(specs)
+        experts = self._discover_pack_experts()
+        try:
+            catalog = build_tool_catalog(tool_gateway, experts=experts)
+            set_active_catalog(catalog)
+        except Exception as exc:  # noqa: BLE001 - degrade to static built-ins
+            if self.verbose:
+                print(f"[ClioAgent] tool catalog derivation failed: {exc}")
+            set_active_catalog(None)
+        return tool_gateway
+
+    def _discover_pack_experts(self) -> list[Any]:
+        """Return loaded pack experts (for declared-tool visibility derivation)."""
+
+        from clio_agent.gact.agent_blueprints import load_agent_blueprints  # noqa: PLC0415
+
+        try:
+            return list(load_agent_blueprints())
+        except Exception as exc:  # noqa: BLE001 - best-effort
+            if self.verbose:
+                print(f"[ClioAgent] expert discovery failed: {exc}")
+            return []
 
     def forward(
         self,

@@ -1,4 +1,11 @@
-"""Tool ownership and visibility catalog for CLIO agents."""
+"""Tool ownership and visibility catalog for CLIO agents.
+
+Core ships only the universal built-in tools (``fs``/``shell``). Their
+ownership/visibility lives here as the static base catalog. Every other tool
+is a *declared MCP* tool whose catalog entry is **derived at runtime** from the
+connected server namespace (see ``gateway.build_tool_catalog``) plus each pack
+expert's ``tools:`` list — not hand-written here.
+"""
 
 from __future__ import annotations
 
@@ -38,160 +45,10 @@ def _entry(
     )
 
 
+# Static base catalog: the universal in-process built-ins only (fs/shell). All
+# domain/case tools are declared MCPs and are derived at runtime in
+# ``gateway.build_tool_catalog`` from connected namespaces + expert ``tools:``.
 TOOL_CATALOG: dict[str, ToolCatalogEntry] = {
-    "hdf5_list_datasets": _entry(
-        "hdf5_list_datasets", "data", {"scientific-data", "hdf5", "inspect"}
-    ),
-    "hdf5_analyze_dataset": _entry(
-        "hdf5_analyze_dataset", "data", {"scientific-data", "hdf5", "inspect"}
-    ),
-    "hdf5_check_compression": _entry(
-        "hdf5_check_compression", "data", {"scientific-data", "hdf5", "compression"}
-    ),
-    "hdf5_optimize_chunking": _entry(
-        "hdf5_optimize_chunking", "data", {"scientific-data", "hdf5", "chunking"}
-    ),
-    "hdf5_analyze_file": _entry(
-        "hdf5_analyze_file", "data", {"scientific-data", "hdf5", "inspect"}
-    ),
-    "adios_inspect_file": _entry(
-        "adios_inspect_file", "data", {"scientific-data", "adios", "bp5", "inspect"}
-    ),
-    "adios_inspect_variables": _entry(
-        "adios_inspect_variables", "data", {"scientific-data", "adios", "bp5", "variables"}
-    ),
-    "adios_inspect_profiling": _entry(
-        "adios_inspect_profiling", "data", {"scientific-data", "adios", "bp5", "profiling"}
-    ),
-    "parquet_analyze_schema": _entry(
-        "parquet_analyze_schema", "analysis", {"tabular", "parquet", "schema"}
-    ),
-    "parquet_query_data": _entry("parquet_query_data", "analysis", {"tabular", "parquet", "query"}),
-    "parquet_compute_statistics": _entry(
-        "parquet_compute_statistics", "analysis", {"tabular", "parquet", "statistics"}
-    ),
-    "csv_read_table": _entry("csv_read_table", "analysis", {"tabular", "csv", "schema"}),
-    "ndp_list_organizations": _entry(
-        "ndp_list_organizations",
-        "ndp_catalog",
-        {"catalog", "ndp", "discovery"},
-        visible_to={"data"},
-    ),
-    "ndp_search_datasets": _entry(
-        "ndp_search_datasets",
-        "ndp_catalog",
-        {"catalog", "ndp", "search"},
-        visible_to={"data"},
-    ),
-    "ndp_get_dataset_details": _entry(
-        "ndp_get_dataset_details",
-        "ndp_catalog",
-        {"catalog", "ndp", "metadata"},
-        visible_to={"data"},
-    ),
-    "ndp_stage_resource": _entry(
-        "ndp_stage_resource",
-        "ndp_catalog",
-        {"catalog", "ndp", "download", "staging"},
-        visible_to={"data"},
-    ),
-    "ndp_query_arcgis_features": _entry(
-        "ndp_query_arcgis_features",
-        "ndp_catalog",
-        {"arcgis", "catalog", "feature-server", "geospatial", "ndp"},
-        visible_to={"data", "analysis", "visualization"},
-    ),
-    "ndp_profile_csv_resource": _entry(
-        "ndp_profile_csv_resource",
-        "ndp_catalog",
-        {"catalog", "csv", "ndp", "profile", "weather"},
-        visible_to={"data", "analysis"},
-    ),
-    "ndp_filter_earthscope_station_catalog": _entry(
-        "ndp_filter_earthscope_station_catalog",
-        "ndp_catalog",
-        {"catalog", "earthscope", "geospatial", "gnss", "ndp", "station"},
-        visible_to={"data", "analysis"},
-    ),
-    "ndp_plot_csv_timeseries": _entry(
-        "ndp_plot_csv_timeseries",
-        "ndp_catalog",
-        {"catalog", "csv", "ndp", "plot", "visualization"},
-        visible_to={"analysis", "visualization"},
-    ),
-    "sac_inspect_archive": _entry(
-        "sac_inspect_archive",
-        "sac_format",
-        {"scientific-data", "seismic", "sac", "inspect"},
-        visible_to={"data"},
-    ),
-    "sac_fetch_earthscope_waveform": _entry(
-        "sac_fetch_earthscope_waveform",
-        "sac_format",
-        {"seismic", "sac", "download", "earthscope", "staging"},
-        visible_to={"data", "analysis"},
-    ),
-    "sac_discover_earthscope_region_waveform": _entry(
-        "sac_discover_earthscope_region_waveform",
-        "sac_format",
-        {"seismic", "sac", "download", "earthscope", "geospatial", "staging"},
-        visible_to={"data", "analysis"},
-    ),
-    "sac_compute_trace_statistics": _entry(
-        "sac_compute_trace_statistics",
-        "sac_format",
-        {"seismic", "sac", "statistics", "waveform"},
-        visible_to={"analysis"},
-    ),
-    "sac_plot_traces": _entry(
-        "sac_plot_traces",
-        "sac_format",
-        {"seismic", "sac", "waveform", "visualization", "plot"},
-        visible_to={"visualization"},
-    ),
-    "geospatial_inspect_geojson": _entry(
-        "geospatial_inspect_geojson",
-        "geospatial",
-        {"geospatial", "geojson", "spatial", "geometry", "inspect"},
-    ),
-    "geospatial_render_feature_map": _entry(
-        "geospatial_render_feature_map",
-        "geospatial",
-        {"geospatial", "geojson", "map", "visualization", "render"},
-        visible_to={"visualization", "analysis"},
-    ),
-    "geospatial_points_in_polygons": _entry(
-        "geospatial_points_in_polygons",
-        "geospatial",
-        {"geospatial", "geojson", "overlap", "spatial-join", "analysis"},
-        visible_to={"analysis", "downwind_impact"},
-    ),
-    "geospatial_bounding_box": _entry(
-        "geospatial_bounding_box",
-        "geospatial",
-        {"geospatial", "geojson", "bbox", "region"},
-        visible_to={"geography", "data"},
-    ),
-    "terrain_dem_terrain": _entry(
-        "terrain_dem_terrain",
-        "terrain_derivation",
-        {"geospatial", "terrain", "dem", "slope", "site-suitability"},
-        visible_to={"data", "analysis", "visualization"},
-    ),
-    "terrain_pointcloud_read": _entry(
-        "terrain_pointcloud_read",
-        "terrain_derivation",
-        {"geospatial", "terrain", "lidar", "point-cloud", "gridding"},
-        visible_to={"data", "analysis"},
-    ),
-    "plot_histogram": _entry(
-        "plot_histogram", "visualization", {"visualization", "plot", "histogram"}
-    ),
-    "plot_bar_chart": _entry(
-        "plot_bar_chart", "visualization", {"visualization", "plot", "bar-chart"}
-    ),
-    "plot_scatter": _entry("plot_scatter", "visualization", {"visualization", "plot", "scatter"}),
-    "plot_summary": _entry("plot_summary", "visualization", {"visualization", "plot", "summary"}),
     "shell_bash": _entry(
         "shell_bash",
         "utility",
@@ -210,10 +67,36 @@ TOOL_CATALOG: dict[str, ToolCatalogEntry] = {
 }
 
 
+# The "active" catalog: the static built-ins by default, replaced at runtime by
+# the derived catalog (built-ins + connected MCP namespaces + expert visibility,
+# see ``gateway.build_tool_catalog``). All accessors read this so declared-MCP
+# tools become visible/ownable without touching the static base dict.
+_ACTIVE_CATALOG: dict[str, ToolCatalogEntry] = dict(TOOL_CATALOG)
+
+
+def set_active_catalog(catalog: dict[str, ToolCatalogEntry] | None) -> None:
+    """Install the runtime tool catalog the accessors consult.
+
+    Passing ``None`` resets the active catalog to the static built-ins. The
+    derived catalog from ``gateway.build_tool_catalog`` should be installed here
+    once the agent's gateway is built so declared-MCP tools gain ownership and
+    expert/planner visibility.
+    """
+
+    global _ACTIVE_CATALOG
+    _ACTIVE_CATALOG = dict(TOOL_CATALOG) if catalog is None else dict(catalog)
+
+
+def active_catalog() -> dict[str, ToolCatalogEntry]:
+    """Return the currently active tool catalog."""
+
+    return _ACTIVE_CATALOG
+
+
 def get_tool_entry(tool_name: str) -> ToolCatalogEntry | None:
     """Return catalog metadata for a tool name, if CLIO owns it."""
 
-    return TOOL_CATALOG.get(tool_name)
+    return _ACTIVE_CATALOG.get(tool_name)
 
 
 def tool_owner(tool_name: str) -> str:
@@ -249,7 +132,7 @@ def tool_names_for_owner(owner: str, *, planner_visible_only: bool = True) -> li
 
     names = [
         entry.name
-        for entry in TOOL_CATALOG.values()
+        for entry in _ACTIVE_CATALOG.values()
         if entry.owner == owner and (entry.planner_visible or not planner_visible_only)
     ]
     return sorted(names)

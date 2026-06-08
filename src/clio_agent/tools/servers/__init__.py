@@ -1,17 +1,14 @@
-"""FastMCP server implementations for CLIO Agent tool servers."""
+"""FastMCP server implementations for CLIO Agent's universal built-in tools.
+
+Core ships only the universal defaults (``fs``/``shell``). Every domain/case
+tool is a declared MCP server (our in-home ones live in clio-kit) connected at
+runtime through the declaration mechanism, not imported here.
+"""
 
 from clio_agent.tools.servers.fs_server import fs_server
-from clio_agent.tools.servers.hdf5_server import hdf5_server
-from clio_agent.tools.servers.ndp_server import ndp_server
-from clio_agent.tools.servers.parquet_server import parquet_server
-from clio_agent.tools.servers.sac_server import sac_server
-from clio_agent.tools.servers.terrain_server import terrain_server
+from clio_agent.tools.servers.shell_server import shell_server
 
 __all__ = [
     "fs_server",
-    "hdf5_server",
-    "ndp_server",
-    "parquet_server",
-    "sac_server",
-    "terrain_server",
+    "shell_server",
 ]

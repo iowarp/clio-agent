@@ -1,35 +1,25 @@
-"""
-Tests for CLIO MCP Gateway
+"""Tests for the CLIO MCP gateway (built-ins + declared MCP proxy mounts).
 
-Tests gateway routing with namespaced tool names using
-in-memory Client(gateway) pattern.
+Core ships only the universal in-process built-ins (fs/shell); domain tools are
+declared MCP servers mounted as proxies. These tests are hermetic: declared
+servers are stood up as in-process FastMCP proxies (no subprocess, no network).
 """
 
-import gc
-import json
+import warnings
 
 import pytest
-from fastmcp import Client
+from fastmcp import Client, FastMCP
 
 from clio_agent.tools.gateway import (
+    _list_tools_sync,
     _mount_with_namespace,
+    _namespace_of,
+    build_gateway,
     gateway,
     get_gateway,
     list_capabilities,
 )
-
-
-def _parse_result(result):
-    """Extract dict from CallToolResult."""
-    data = result.data
-    if isinstance(data, dict):
-        return data
-    if isinstance(data, str):
-        try:
-            return json.loads(data)
-        except json.JSONDecodeError:
-            return {"raw": data}
-    return {"raw": str(data)}
+from clio_agent.tools.mcp_config import MCPServerSpec
 
 
 def test_mount_helper_uses_namespace_when_supported():
@@ -41,9 +31,9 @@ def test_mount_helper_uses_namespace_when_supported():
             calls.append((server, namespace))
 
     server = object()
-    _mount_with_namespace(Parent(), server, "hdf5")
+    _mount_with_namespace(Parent(), server, "fs")
 
-    assert calls == [(server, "hdf5")]
+    assert calls == [(server, "fs")]
 
 
 def test_mount_helper_falls_back_to_prefix():
@@ -55,123 +45,123 @@ def test_mount_helper_falls_back_to_prefix():
             calls.append((server, prefix))
 
     server = object()
-    _mount_with_namespace(Parent(), server, "parquet")
+    _mount_with_namespace(Parent(), server, "shell")
 
-    assert calls == [(server, "parquet")]
+    assert calls == [(server, "shell")]
+
+
+def test_namespace_of_splits_on_first_underscore():
+    assert _namespace_of("ndp_search_datasets") == "ndp"
+    assert _namespace_of("fs_read_file") == "fs"
+    assert _namespace_of("nounderscore") == "nounderscore"
 
 
 @pytest.mark.asyncio
-async def test_gateway_has_namespaced_tools():
-    """Test that gateway exposes HDF5 tools with 'hdf5_' prefix."""
+async def test_gateway_exposes_only_builtins_by_default():
+    """The singleton gateway mounts only the universal built-ins (fs/shell)."""
     async with Client(gateway) as client:
         tools = await client.list_tools()
-        tool_names = sorted([t.name for t in tools])
-        assert "hdf5_list_datasets" in tool_names
-        assert "hdf5_analyze_dataset" in tool_names
-        assert "hdf5_check_compression" in tool_names
-        assert "hdf5_optimize_chunking" in tool_names
-        assert "hdf5_analyze_file" in tool_names
+        names = {t.name for t in tools}
 
-
-@pytest.mark.asyncio
-async def test_gateway_preserves_stable_tool_names():
-    """Gateway modernization must not rename existing HDF5/Parquet tools."""
-    expected = {
-        "hdf5_list_datasets",
-        "hdf5_analyze_dataset",
-        "hdf5_check_compression",
-        "hdf5_optimize_chunking",
-        "hdf5_analyze_file",
-        "parquet_analyze_schema",
-        "parquet_query_data",
-        "parquet_compute_statistics",
-        "adios_inspect_file",
-        "adios_inspect_variables",
-        "adios_inspect_profiling",
-        "ndp_list_organizations",
-        "ndp_search_datasets",
-        "ndp_get_dataset_details",
-        "shell_bash",
-    }
-    async with Client(gateway) as client:
-        tools = await client.list_tools()
-        tool_names = {t.name for t in tools}
-
-    assert expected <= tool_names
-
-
-@pytest.mark.asyncio
-async def test_gateway_tool_count():
-    """Test that gateway still exposes the expected HDF5 tool set."""
-    async with Client(gateway) as client:
-        tools = await client.list_tools()
-        hdf5_tools = [t for t in tools if t.name.startswith("hdf5_")]
-        assert len(hdf5_tools) == 5
-
-
-@pytest.mark.asyncio
-async def test_gateway_analyze_file(sample_hdf5):
-    """Test calling analyze_file through gateway with namespace."""
-    async with Client(gateway) as client:
-        result = await client.call_tool("hdf5_analyze_file", {"filepath": sample_hdf5})
-        data = _parse_result(result)
-
-        assert "error" not in data
-        assert data["total_datasets"] == 3
-        assert data["total_groups"] == 1
-
-
-@pytest.mark.asyncio
-async def test_gateway_list_datasets(sample_hdf5):
-    """Test calling list_datasets through gateway with namespace."""
-    async with Client(gateway) as client:
-        result = await client.call_tool("hdf5_list_datasets", {"filepath": sample_hdf5})
-        data = _parse_result(result)
-
-        assert "error" not in data
-        assert data["total_datasets"] == 3
-
-
-@pytest.mark.asyncio
-async def test_gateway_check_compression(sample_hdf5):
-    """Test calling check_compression through gateway with namespace."""
-    async with Client(gateway) as client:
-        result = await client.call_tool("hdf5_check_compression", {"filepath": sample_hdf5})
-        data = _parse_result(result)
-
-        assert "error" not in data
-        assert data["compressed_datasets"] == 1
+    assert "shell_bash" in names
+    assert "fs_read_file" in names
+    assert "fs_propose_edit" in names
+    assert "fs_apply_edit_write" in names
+    # No domain/case tools live in core anymore.
+    assert not any(n.startswith("hdf5_") for n in names)
+    assert not any(n.startswith("ndp_") for n in names)
 
 
 @pytest.mark.asyncio
 async def test_get_gateway_helper():
-    """Test get_gateway() returns the gateway instance."""
+    """get_gateway() returns the gateway instance."""
     gw = get_gateway()
     assert gw is gateway
     assert gw.name == "clio-gateway"
 
 
-@pytest.mark.asyncio
-async def test_list_capabilities_inside_running_loop_has_no_unawaited_warning(recwarn):
-    """Sync capability listing must not leak coroutine warnings in async callers."""
-
+def test_list_capabilities_namespaces_built_ins():
     caps = list_capabilities()
-    assert {c["server"] for c in caps} >= {"hdf5", "parquet", "adios", "ndp", "fs", "shell"}
-
-    gc.collect()
-    leaked = [
-        warning
-        for warning in recwarn
-        if issubclass(warning.category, RuntimeWarning)
-        and "was never awaited" in str(warning.message)
-    ]
-    assert leaked == []
+    assert {c["server"] for c in caps} == {"fs", "shell"}
 
 
-@pytest.mark.asyncio
-async def test_gateway_error_handling():
-    """Test that errors propagate correctly through gateway."""
-    async with Client(gateway) as client:
-        result = await client.call_tool("hdf5_analyze_file", {"filepath": "/nonexistent/file.h5"})
-        data = _parse_result(result)
-        assert "error" in data
+# ---------------------------------------------------------------------------
+# Declared MCP proxy mounts (the only source of domain tools)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def declared_server() -> FastMCP:
+    """A tiny in-process FastMCP standing in for a declared MCP server."""
+    server = FastMCP("declared-demo")
+
+    @server.tool(tags={"alpha", "beta"})
+    def ping(text: str) -> str:
+        """Echo the text back."""
+        return text
+
+    return server
+
+
+def _in_process_factory(declared: FastMCP):
+    """Proxy factory that wraps an in-process server (no subprocess)."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+
+        def factory(_spec: MCPServerSpec) -> FastMCP:
+            return FastMCP.as_proxy(Client(declared))
+
+    return factory
+
+
+def test_build_gateway_mounts_builtins_plus_declared(declared_server: FastMCP):
+    spec = MCPServerSpec(name="demo", transport="stdio", command="x")
+    gw = build_gateway({"demo": spec}, proxy_factory=_in_process_factory(declared_server))
+    names = {t.name for t in _list_tools_sync(gw)}
+    # built-ins always present
+    assert "shell_bash" in names
+    assert any(n.startswith("fs_") for n in names)
+    # declared tool namespaced under the spec name
+    assert "demo_ping" in names
+
+
+def test_build_gateway_declared_tool_callable(declared_server: FastMCP):
+    import asyncio
+
+    spec = MCPServerSpec(name="demo", transport="stdio", command="x")
+    gw = build_gateway({"demo": spec}, proxy_factory=_in_process_factory(declared_server))
+
+    async def _call():
+        async with Client(gw) as client:
+            return await client.call_tool("demo_ping", {"text": "hi"})
+
+    result = asyncio.run(_call())
+    assert result.data == "hi"
+
+
+def test_build_gateway_no_specs_is_builtins_only():
+    gw = build_gateway({})
+    names = {t.name for t in _list_tools_sync(gw)}
+    assert "shell_bash" in names
+    assert not any(n.startswith("demo_") for n in names)
+
+
+def test_build_gateway_skips_unusable_spec(declared_server: FastMCP):
+    bad = MCPServerSpec(
+        name="bad",
+        transport="stdio",
+        validation_errors=("required environment variable ${X} is unset",),
+    )
+    gw = build_gateway({"bad": bad}, proxy_factory=_in_process_factory(declared_server))
+    names = {t.name for t in _list_tools_sync(gw)}
+    assert not any(n.startswith("bad_") for n in names)
+
+
+def test_build_gateway_skips_builtin_namespace_collision(declared_server: FastMCP):
+    """A declared server may not shadow a reserved built-in namespace."""
+    spec = MCPServerSpec(name="fs", transport="stdio", command="x")
+    gw = build_gateway({"fs": spec}, proxy_factory=_in_process_factory(declared_server))
+    names = {t.name for t in _list_tools_sync(gw)}
+    # fs tools remain the in-process ones; declared 'ping' did NOT get mounted
+    assert "fs_read_file" in names
+    assert "fs_ping" not in names

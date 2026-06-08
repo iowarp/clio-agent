@@ -14,6 +14,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+from collections.abc import Iterable
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -129,12 +130,16 @@ def discover_agent_blueprints(
         if (root / _BLUEPRINT_ROOT_NAME).exists():
             candidates.append(root)
         candidates.extend(
-            path for path in sorted(root.iterdir()) if path.is_dir() and (path / _BLUEPRINT_ROOT_NAME).exists()
+            path
+            for path in sorted(root.iterdir())
+            if path.is_dir() and (path / _BLUEPRINT_ROOT_NAME).exists()
         )
         for candidate in candidates:
             blueprints.append(parse_agent_blueprint_root(candidate, scope=scope))
     if bootstrap_diagnostic and not any(row.id == DEFAULT_AGENT_BLUEPRINT_ID for row in blueprints):
-        install_root = _install_root(home=home, cwd=cwd, scope="global") / DEFAULT_AGENT_BLUEPRINT_ID
+        install_root = (
+            _install_root(home=home, cwd=cwd, scope="global") / DEFAULT_AGENT_BLUEPRINT_ID
+        )
         blueprints.append(
             AgentBlueprintDefinition(
                 id=DEFAULT_AGENT_BLUEPRINT_ID,
@@ -168,7 +173,12 @@ def ensure_default_registry_bootstrap(
     blueprint row instead of silently falling back to bundled domain experts.
     """
 
-    if str(os.environ.get(_DEFAULT_BOOTSTRAP_ENV) or "").strip().lower() in {"1", "true", "yes", "on"}:
+    if str(os.environ.get(_DEFAULT_BOOTSTRAP_ENV) or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
         return ""
     home = home or Path.home()
     cwd = cwd or Path(os.getcwd())
@@ -201,10 +211,7 @@ def ensure_default_registry_bootstrap(
         )
     except Exception as exc:  # noqa: BLE001
         target = pinned or DEFAULT_REGISTRY_REF
-        return (
-            "unable to install default registry "
-            f"{DEFAULT_REGISTRY_URL}@{target}: {exc}"
-        )
+        return f"unable to install default registry {DEFAULT_REGISTRY_URL}@{target}: {exc}"
     return ""
 
 
@@ -270,8 +277,13 @@ def parse_agent_blueprint_root(root: Path, *, scope: str) -> AgentBlueprintDefin
         metadata={
             "layout": "agent_blueprint",
             "body": body.strip(),
-            "compatibility": meta.get("compatibility") if isinstance(meta.get("compatibility"), dict) else {},
+            "compatibility": meta.get("compatibility")
+            if isinstance(meta.get("compatibility"), dict)
+            else {},
             "requires": requirements,
+            "mcp_servers": meta.get("mcp_servers")
+            if isinstance(meta.get("mcp_servers"), dict)
+            else {},
             "includes": _list_field(meta, "includes"),
             "blueprint": meta.get("blueprint") if isinstance(meta.get("blueprint"), dict) else {},
             "install": install_metadata
@@ -306,20 +318,37 @@ def validate_agent_blueprint_path(path: Path, *, scope: str = "session") -> dict
     blueprint = parse_agent_blueprint_root(path, scope=scope)
     mcp_descriptors = load_mcp_descriptors(blueprint.root, scope=scope, blueprint_id=blueprint.id)
     hook_descriptors = load_hook_descriptors(blueprint.root, scope=scope, blueprint_id=blueprint.id)
+    declared_servers = blueprint.metadata.get("mcp_servers")
+    declared_server_names = (
+        list(declared_servers.keys()) if isinstance(declared_servers, dict) else []
+    )
     rows = _validate_agent_tool_references(
         validate_agent_hierarchy(_load_blueprint_agents(blueprint), blueprint=blueprint),
         mcp_descriptors=mcp_descriptors,
+        declared_server_names=declared_server_names,
     )
     errors = list(blueprint.validation_errors)
     warnings: list[str] = _agent_continuation_contract_warnings(rows)
     for row in rows:
         errors.extend(f"{row.id}: {error}" for error in row.validation_errors)
     for descriptor in mcp_descriptors:
-        errors.extend(f"{descriptor.get('id', 'mcp')}: {error}" for error in descriptor.get("validation_errors", []))
-        warnings.extend(f"{descriptor.get('id', 'mcp')}: {warning}" for warning in descriptor.get("validation_warnings", []))
+        errors.extend(
+            f"{descriptor.get('id', 'mcp')}: {error}"
+            for error in descriptor.get("validation_errors", [])
+        )
+        warnings.extend(
+            f"{descriptor.get('id', 'mcp')}: {warning}"
+            for warning in descriptor.get("validation_warnings", [])
+        )
     for descriptor in hook_descriptors:
-        errors.extend(f"{descriptor.get('id', 'hook')}: {error}" for error in descriptor.get("validation_errors", []))
-        warnings.extend(f"{descriptor.get('id', 'hook')}: {warning}" for warning in descriptor.get("validation_warnings", []))
+        errors.extend(
+            f"{descriptor.get('id', 'hook')}: {error}"
+            for error in descriptor.get("validation_errors", [])
+        )
+        warnings.extend(
+            f"{descriptor.get('id', 'hook')}: {warning}"
+            for warning in descriptor.get("validation_warnings", [])
+        )
     return {
         "agent_blueprint": blueprint.to_wire(),
         "agents": [row.model_dump(exclude_none=True) for row in rows],
@@ -343,16 +372,24 @@ def validate_agent_hierarchy(
     root_expert = blueprint.root_expert
     extra_errors: dict[str, list[str]] = {}
     if root_expert and root_expert not in ids:
-        extra_errors.setdefault(f"{blueprint.id}.manifest", []).append(f"root_expert not found: {root_expert}")
+        extra_errors.setdefault(f"{blueprint.id}.manifest", []).append(
+            f"root_expert not found: {root_expert}"
+        )
     elif not root_expert:
         roots = [row.id for row in validated if not row.parent_id]
         if len(roots) != 1:
             target = roots[0] if roots else f"{blueprint.id}.manifest"
-            extra_errors.setdefault(target, []).append("blueprint must declare root_expert or contain one root expert")
+            extra_errors.setdefault(target, []).append(
+                "blueprint must declare root_expert or contain one root expert"
+            )
     out: list[AgentDef] = []
     for row in validated:
         errors = [*row.validation_errors, *extra_errors.get(row.id, [])]
-        out.append(row.model_copy(update={"enabled": row.enabled and not errors, "validation_errors": errors}))
+        out.append(
+            row.model_copy(
+                update={"enabled": row.enabled and not errors, "validation_errors": errors}
+            )
+        )
     if f"{blueprint.id}.manifest" in extra_errors:
         out.append(
             AgentDef(
@@ -412,16 +449,10 @@ def _mcp_stdio_spec_from_metadata(
         return command, args, warnings
 
     method = str(
-        install.get("method")
-        or install.get("type")
-        or install.get("manager")
-        or ""
+        install.get("method") or install.get("type") or install.get("manager") or ""
     ).strip()
     package = str(
-        install.get("package")
-        or install.get("name")
-        or install.get("binary")
-        or ""
+        install.get("package") or install.get("name") or install.get("binary") or ""
     ).strip()
     if method in {"uvx", "npx"} and package:
         return method, [package, *args], warnings
@@ -441,10 +472,7 @@ def _local_mcp_script_from_metadata(meta: dict[str, Any]) -> str:
     install = _mapping_field(meta, "install", "deployment")
     runtime = _mapping_field(meta, "runtime", "run")
     method = str(
-        install.get("method")
-        or install.get("type")
-        or install.get("manager")
-        or ""
+        install.get("method") or install.get("type") or install.get("manager") or ""
     ).strip()
     if method not in {"local", "pack-local", "python"}:
         return ""
@@ -461,8 +489,15 @@ def _validate_agent_tool_references(
     rows: list[AgentDef],
     *,
     mcp_descriptors: list[dict[str, Any]],
+    declared_server_names: Iterable[str] = (),
 ) -> list[AgentDef]:
+    # Built-in tools are the universal in-process defaults (fs/shell) plus the
+    # memory tools. Everything else is a declared MCP tool: a reference is valid
+    # iff the pack declares its server namespace via ``mcp_servers`` (declaration
+    # is the enablement). Legacy ``tools/*.md`` descriptors remain explicitly
+    # gated until enabled/trusted.
     builtin_tools = set(TOOL_CATALOG) | _MEMORY_TOOL_NAMES
+    declared_namespaces = {str(n).strip() for n in declared_server_names if str(n).strip()}
     descriptor_tools: dict[str, dict[str, Any]] = {}
     for descriptor in mcp_descriptors:
         for tool in descriptor.get("tools") or []:
@@ -477,6 +512,10 @@ def _validate_agent_tool_references(
         diagnostics = list(row.metadata.get("tool_diagnostics", []))
         for tool_name in row.tools:
             if tool_name in builtin_tools:
+                continue
+            namespace = tool_name.split("_", 1)[0] if "_" in tool_name else tool_name
+            if namespace in declared_namespaces:
+                # Declared via the pack's mcp_servers map; declaration enables it.
                 continue
             descriptor_match = descriptor_tools.get(tool_name)
             if descriptor_match is not None:
@@ -535,8 +574,7 @@ def _validate_agent_continuation_contracts(rows: list[AgentDef]) -> list[AgentDe
                 if not isinstance(contract, dict):
                     continue
                 has_text_predicate = bool(
-                    contract.get("when_request_contains")
-                    or contract.get("when_output_contains")
+                    contract.get("when_request_contains") or contract.get("when_output_contains")
                 )
                 if not has_text_predicate or bool(contract.get("allow_text_routing")):
                     continue
@@ -572,8 +610,7 @@ def _agent_continuation_contract_warnings(rows: list[AgentDef]) -> list[str]:
             if not isinstance(contract, dict):
                 continue
             has_text_predicate = bool(
-                contract.get("when_request_contains")
-                or contract.get("when_output_contains")
+                contract.get("when_request_contains") or contract.get("when_output_contains")
             )
             if not has_text_predicate or not bool(contract.get("allow_text_routing")):
                 continue
@@ -633,9 +670,7 @@ def load_mcp_descriptors(
         warnings: list[str] = []
         warnings.extend(install_warnings)
         if transport:
-            warnings.append(
-                "MCP descriptors are disabled until explicitly enabled and trusted"
-            )
+            warnings.append("MCP descriptors are disabled until explicitly enabled and trusted")
         install_metadata = _mapping_field(meta, "install", "deployment")
         runtime_metadata = _mapping_field(meta, "runtime", "run")
         trust_metadata = _mapping_field(meta, "trust")
@@ -698,9 +733,7 @@ def load_hook_descriptors(
     for path in sorted(hooks_root.glob("*.py")):
         event = path.stem.strip()
         errors: list[str] = []
-        warnings = [
-            "Blueprint packaged hooks are disabled until explicitly enabled and trusted"
-        ]
+        warnings = ["Blueprint packaged hooks are disabled until explicitly enabled and trusted"]
         if event not in _HOOK_EVENT_NAMES:
             errors.append(f"unsupported hook event: {event}")
         try:
@@ -791,7 +824,16 @@ def install_agent_blueprint(
             ).strip()
             if pinned_commit and commit != pinned_commit:
                 subprocess.run(
-                    ["git", "-C", str(clone_target), "fetch", "--depth", "1", "origin", pinned_commit],
+                    [
+                        "git",
+                        "-C",
+                        str(clone_target),
+                        "fetch",
+                        "--depth",
+                        "1",
+                        "origin",
+                        pinned_commit,
+                    ],
                     check=True,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
@@ -837,7 +879,9 @@ def install_agent_blueprint(
                 "scope": scope,
             }
             _write_install_metadata(dest, metadata)
-            installed.append({**parse_agent_blueprint_root(dest, scope=scope).to_wire(), "install": metadata})
+            installed.append(
+                {**parse_agent_blueprint_root(dest, scope=scope).to_wire(), "install": metadata}
+            )
         return {"installed": installed}
 
 
@@ -905,10 +949,16 @@ def _install_candidates(source: Path, *, blueprint_id: str = "") -> list[Path]:
     if (source / _BLUEPRINT_ROOT_NAME).exists():
         candidates.append(source)
     candidates.extend(
-        path for path in sorted(source.iterdir()) if path.is_dir() and (path / _BLUEPRINT_ROOT_NAME).exists()
+        path
+        for path in sorted(source.iterdir())
+        if path.is_dir() and (path / _BLUEPRINT_ROOT_NAME).exists()
     )
     if blueprint_id:
-        candidates = [path for path in candidates if parse_agent_blueprint_root(path, scope="install").id == blueprint_id]
+        candidates = [
+            path
+            for path in candidates
+            if parse_agent_blueprint_root(path, scope="install").id == blueprint_id
+        ]
     return candidates
 
 
