@@ -1,8 +1,8 @@
 """FastMCP server implementations for CLIO Agent's universal built-in tools.
 
 Core ships only the universal defaults (``fs``/``shell``). Every domain/case
-tool is a declared MCP server (our in-home ones live in clio-kit) connected at
-runtime through the declaration mechanism, not imported here.
+tool is a declared MCP server connected at runtime through the declaration
+mechanism, not imported here.
 """
 
 from clio_agent.tools.servers.fs_server import fs_server

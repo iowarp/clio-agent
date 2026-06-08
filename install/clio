@@ -28,12 +28,11 @@ set -euo pipefail
 CLIO_PREFIX="${CLIO_PREFIX:-$HOME/.local/share/clio}"
 CLIO_PORT="${CLIO_PORT:-17800}"
 CLIO_BIN_DIR="${CLIO_BIN_DIR:-$HOME/.local/bin}"
-# Where the clio-kit MCP servers live; the marketplace packs declare their
-# MCP servers as `uv run --directory ${CLIO_KIT_PATH}/clio-kit-mcp-servers/<name> <name>-mcp`.
-export CLIO_KIT_PATH="${CLIO_KIT_PATH:-$HOME/clio-kit}"
-# Filesystem roots the agent's file/shell tools may touch (staging + artifacts
-# land under /tmp and the user's home); without this the policy defaults to cwd.
-export CLIO_ALLOWED_ROOTS="${CLIO_ALLOWED_ROOTS:-$HOME:/tmp}"
+# clio-agent is tool-source agnostic: marketplace packs declare their own MCP
+# servers (e.g. `uvx clio-kit@<ver> mcp-server <name>`), which uvx fetches/caches
+# on demand — so the launcher sets NO CLIO_KIT_PATH and has no clio-kit coupling.
+# File access defaults to clio's active workspace + /tmp (the file policy injects
+# the workspace root); set CLIO_ALLOWED_ROOTS only to deliberately widen that.
 PIDFILE="$CLIO_PREFIX/clio-server.pid"
 SERVER_LOG="${CLIO_LOG:-$CLIO_PREFIX/clio-server.log}"
 GACT_LOG="$CLIO_PREFIX/gact-stderr.log"

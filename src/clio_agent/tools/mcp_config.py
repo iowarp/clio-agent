@@ -1,14 +1,13 @@
 """Standard MCP server declarations — low-friction, human-writable.
 
 clio-agent core does not hardcode domain tool servers. Domain/case tools are
-ordinary MCP servers (our in-home ones live in clio-kit, consumed like any
-installable MCP). A marketplace pack declares the servers it needs right in its
-``AGENT.md`` frontmatter, as a simple ``name: <command-or-url>`` map — no JSON,
-no nested objects required:
+ordinary MCP servers, consumed like any installable MCP. A marketplace pack
+declares the servers it needs right in its ``AGENT.md`` frontmatter, as a simple
+``name: <command-or-url>`` map — no JSON, no nested objects required:
 
     mcp_servers:
-      ndp: uvx clio-kit run ndp
-      geo: uvx clio-kit run geo --basemap
+      files: npx -y @modelcontextprotocol/server-filesystem /data
+      weather: uvx weather-mcp serve
       notion: https://mcp.notion.com/mcp
 
 The value is either a **command string** (shlex-split into command + args; stdio)
