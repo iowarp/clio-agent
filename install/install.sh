@@ -112,10 +112,10 @@ if [ -n "$CLIO_REF" ]; then
   say "Cloning clio-agent at $CLIO_REF (source-build mode)"
   rm -rf "$PREFIX/clio-agent"
   git clone --quiet --branch "$CLIO_REF" --depth 1 "$CLIO_REPO" "$PREFIX/clio-agent"
-  say "Installing clio-agent deps (uv sync)"
-  ( cd "$PREFIX/clio-agent" && uv sync )
+  say "Installing clio-agent deps (uv sync --extra argonne)"
+  ( cd "$PREFIX/clio-agent" && uv sync --extra argonne )
 else
-  pkg_spec="clio-agent${CLIO_VERSION:+==$CLIO_VERSION}"
+  pkg_spec="clio-agent[argonne]${CLIO_VERSION:+==$CLIO_VERSION}"
   say "Installing $pkg_spec from PyPI"
   rm -rf "$PREFIX/clio-agent"
   mkdir -p "$PREFIX/clio-agent"
