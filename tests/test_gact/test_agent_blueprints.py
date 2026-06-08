@@ -882,44 +882,6 @@ def test_blueprint_continuation_contract_returns_first_ordered_transition_only()
     assert [row["delegate_to"] for row in rows] == ["analysis"]
 
 
-def test_blueprint_continuation_contract_passes_observed_sac_path_to_visualization() -> None:
-    rows = _continuation_contract_handoffs(
-        AgentDef(
-            id="main",
-            source="expert_pack",
-            title="Main",
-            parameters={
-                "continuation_contracts": [
-                    {
-                        "id": "to_visualization",
-                        "when_output_contains": ["Trace statistics", ".sac"],
-                        "match": "all",
-                        "next_expert": "visualization",
-                        "next_action": "plot_sac_traces",
-                    },
-                ]
-            },
-        ),
-        source_text="request",
-        answer_text="NDP still mentions OSDF/Pelican blockers.",
-        completed_outputs=[
-            "Trace statistics computed for "
-            "/home/user/clio/tmp/earthscope_IU_ANMO_00_BHZ.sac; "
-            "older NDP evidence mentions Pelican."
-        ],
-        declared_child_ids={"visualization"},
-        completed_child_ids=set(),
-    )
-
-    assert len(rows) == 1
-    assert rows[0]["delegate_to"] == "visualization"
-    assert (
-        "Runtime-selected local SAC path: /home/user/clio/tmp/earthscope_IU_ANMO_00_BHZ.sac"
-        in rows[0]["question"]
-    )
-    assert "Call sac_plot_traces with this exact filepath" in rows[0]["question"]
-
-
 def test_blueprint_continuation_contract_routes_on_typed_state_not_city_or_resource() -> None:
     completed = [
         json.dumps(
@@ -2725,27 +2687,6 @@ def test_blueprint_next_expert_marker_converts_latest_declared_uncompleted_child
     assert rows[0]["delegate_to"] == "visualization"
     assert rows[0]["source"] == "blueprint_next_expert_marker"
     assert "plot_sac_traces /tmp/wave.sac" in rows[0]["question"]
-
-
-def test_blueprint_next_expert_marker_appends_observed_sac_path_when_action_is_generic() -> None:
-    rows = _next_expert_marker_handoffs(
-        source_text="request",
-        completed_outputs=[
-            "Trace statistics\n"
-            "LOCAL_SAC_PATH: /tmp/clio-seismic/earthscope_IU_ANMO.sac\n"
-            "NEXT_EXPERT: visualization\n"
-            "NEXT_ACTION: plot_sac_traces"
-        ],
-        declared_child_ids={"visualization"},
-        completed_child_ids=set(),
-    )
-
-    assert len(rows) == 1
-    assert rows[0]["delegate_to"] == "visualization"
-    assert (
-        "Runtime-selected local SAC path: /tmp/clio-seismic/earthscope_IU_ANMO.sac"
-        in rows[0]["question"]
-    )
 
 
 def test_blueprint_next_expert_marker_ignores_unknown_or_completed_targets() -> None:

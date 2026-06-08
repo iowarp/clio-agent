@@ -3044,10 +3044,7 @@ def _is_remote_artifact_ref(value: str) -> bool:
     """Whether a path string is a remote/URL reference (never a local artifact)."""
 
     value = str(value or "")
-    return (
-        value.startswith(("http://", "https://", "ftp://", "//"))
-        or "://" in value
-    )
+    return value.startswith(("http://", "https://", "ftp://", "//")) or "://" in value
 
 
 _VERIFIED_ARTIFACT_STATE_PATHS: tuple[tuple[str, ...], ...] = (
@@ -3160,9 +3157,7 @@ def _ground_fabricated_local_artifact_paths(
         else:
             # No real local artifact of this type exists this run: drop the
             # fabricated path rather than present an unproduced file as real.
-            result = result.replace(
-                token, f"[no local {ext} artifact was produced this run]"
-            )
+            result = result.replace(token, f"[no local {ext} artifact was produced this run]")
     return result
 
 
@@ -4626,38 +4621,6 @@ def _state_predicates_match(
     return all(hits) if match_mode == "all" else any(hits)
 
 
-def _local_sac_paths_from_text(text: str) -> list[str]:
-    """Return absolute/expanded local SAC paths mentioned in runtime evidence."""
-
-    paths: list[str] = []
-    seen: set[str] = set()
-    for match in re.finditer(
-        r"(?P<path>(?:~|/)[^\s`'\"<>)\]]+?\.sac)\b", text, flags=re.IGNORECASE
-    ):
-        path = match.group("path").strip().rstrip(".,;:")
-        if path not in seen:
-            seen.add(path)
-            paths.append(path)
-    return paths
-
-
-def _append_sac_path_instruction(prompt: str, evidence_text: str, target: str) -> str:
-    if target != "visualization":
-        return prompt
-    paths = _local_sac_paths_from_text(evidence_text)
-    if not paths:
-        return prompt
-    path = paths[-1]
-    instruction = (
-        "\n\nRuntime-selected local SAC path: "
-        f"{path}\nCall sac_plot_traces with this exact filepath. If other evidence mentions "
-        "NDP, OSDF, Pelican, staging limits, or missing remote resources, treat that as "
-        "upstream context only; this local SAC path already exists and is the required "
-        "visualization input."
-    )
-    return f"{prompt}{instruction}"
-
-
 def _continuation_contract_handoffs(
     agent_def: "AgentDef",
     *,
@@ -4727,7 +4690,6 @@ def _continuation_contract_handoffs(
             continue
         action = str(raw_contract.get("next_action") or "").strip()
         prompt = action or source_text
-        prompt = _append_sac_path_instruction(prompt, output_text, target)
         if workflow_state:
             prompt = (
                 f"{prompt}\n\nPrior structured blueprint state:\n"
@@ -4852,7 +4814,6 @@ def _next_expert_marker_handoffs(
             continue
         action_match = re.search(r"(?im)^\s*NEXT_ACTION:\s*(.+?)\s*$", output)
         action = action_match.group(1).strip() if action_match else source_text
-        action = _append_sac_path_instruction(action, output, target)
         rows.append(
             {
                 "delegate_to": target,

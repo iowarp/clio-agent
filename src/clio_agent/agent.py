@@ -534,21 +534,6 @@ class ClioAgent(dspy.Module):
                 tool_name = self._coerce_text(action.get("tool")).strip()
                 owning_expert = self._selected_expert_for_tool(tool_name)
                 selected = self._parent_route_for_child(owning_expert) or owning_expert
-                path_error = self._recovery_tool_path_scope_error(
-                    tool_name,
-                    action.get("args"),
-                    observations,
-                )
-                if path_error is not None:
-                    observations.append(
-                        {
-                            "step": step + 1,
-                            "type": "planner_error",
-                            "ok": False,
-                            "result": path_error,
-                        }
-                    )
-                    continue
                 scope_error = self._tool_action_scope_error(
                     tool_name,
                     selected=selected,
@@ -660,21 +645,6 @@ class ClioAgent(dspy.Module):
                         or f"Planner selected child expert {expert_id}; routing through parent."
                     )
                     expert_id = child_parent
-                path_error = self._recovery_expert_path_scope_error(
-                    expert_id,
-                    expert_question,
-                    observations,
-                )
-                if path_error is not None:
-                    observations.append(
-                        {
-                            "step": step + 1,
-                            "type": "planner_error",
-                            "ok": False,
-                            "result": path_error,
-                        }
-                    )
-                    continue
                 if self._should_answer_with_chat(question, file_context):
                     if routing_mode == "experts":
                         raise RoutingError(
@@ -747,16 +717,6 @@ class ClioAgent(dspy.Module):
                 continue
 
             if kind == "none":
-                if self._answer_would_ignore_recoverable_parent_action(question, observations):
-                    observations.append(
-                        {
-                            "step": step + 1,
-                            "type": "planner_error",
-                            "ok": False,
-                            "result": self._recoverable_parent_action_error(),
-                        }
-                    )
-                    continue
                 if routing_mode == "experts":
                     raise RoutingError(
                         "Session routing_mode='experts' rejected the planner's no-op route.",
@@ -792,16 +752,6 @@ class ClioAgent(dspy.Module):
                 return "none", answer, None, None, route
 
             if kind == "answer":
-                if self._answer_would_ignore_recoverable_parent_action(question, observations):
-                    observations.append(
-                        {
-                            "step": step + 1,
-                            "type": "planner_error",
-                            "ok": False,
-                            "result": self._recoverable_parent_action_error(),
-                        }
-                    )
-                    continue
                 if routing_mode == "experts" and not observations:
                     raise RoutingError(
                         "Session routing_mode='experts' rejected a direct planner answer.",
@@ -929,210 +879,6 @@ class ClioAgent(dspy.Module):
             route,
         )
 
-    @classmethod
-    def _answer_would_ignore_recoverable_parent_action(
-        cls,
-        question: str,
-        observations: list[dict[str, Any]],
-    ) -> bool:
-        """Return whether a direct answer would stop before required recovery."""
-
-        q_lower = question.lower()
-        if not any(term in q_lower for term in ("plot", "artifact", "visual")):
-            return False
-        if not any(term in q_lower for term in ("seismic", "waveform", "sac", "miniseed")):
-            return False
-        if cls._observations_have_waveform_artifact(observations):
-            return False
-        return cls._observations_have_recoverable_ndp_blocker(observations)
-
-    @classmethod
-    def _observations_have_waveform_artifact(cls, observations: list[dict[str, Any]]) -> bool:
-        """Return whether observations include a plotted waveform artifact."""
-
-        for observation in observations:
-            for path in observation.get("local_paths", []) or []:
-                if cls._coerce_text(path).lower().endswith(".png"):
-                    return True
-            direct_tool = cls._coerce_text(observation.get("tool")).strip()
-            direct_result = observation.get("result")
-            if direct_tool == "sac_plot_traces" and tool_result_ok(direct_result):
-                return True
-            if any(
-                cls._coerce_text(path).lower().endswith(".png")
-                for path in cls._local_paths_from_value(direct_result)
-            ):
-                return True
-            for tool in observation.get("tools", []) or []:
-                if not isinstance(tool, Mapping):
-                    continue
-                tool_name = cls._coerce_text(tool.get("tool") or tool.get("name")).strip()
-                result = tool.get("result")
-                if tool_name == "sac_plot_traces" and tool_result_ok(result):
-                    return True
-                if any(
-                    cls._coerce_text(path).lower().endswith(".png")
-                    for path in cls._local_paths_from_value(result)
-                ):
-                    return True
-        return False
-
-    @classmethod
-    def _observations_have_recoverable_ndp_blocker(
-        cls,
-        observations: list[dict[str, Any]],
-    ) -> bool:
-        """Return whether observations expose NDP staging failure with parent recovery."""
-
-        recovery_actions = {
-            "broaden_catalog_search",
-            "try_another_provider",
-            "delegate_to_utility_download",
-        }
-        for observation in observations:
-            metadata = observation.get("metadata")
-            staging = metadata.get("staging") if isinstance(metadata, Mapping) else None
-            actions = observation.get("recommended_parent_actions", [])
-            if isinstance(staging, Mapping):
-                if staging.get("status") != "blocked":
-                    continue
-                actions = staging.get("recommended_parent_actions", actions)
-            normalized_actions = {
-                cls._coerce_text(action).strip()
-                for action in actions or []
-                if cls._coerce_text(action).strip()
-            }
-            if normalized_actions & recovery_actions:
-                return True
-        return False
-
-    @staticmethod
-    def _recoverable_parent_action_error() -> dict[str, Any]:
-        """Return planner feedback for a recoverable parent-action blocker."""
-
-        return {
-            "message": (
-                "A child expert returned recoverable parent actions, but the requested "
-                "workflow still lacks a verified waveform plot artifact."
-            ),
-            "next_action": (
-                "Do not answer yet. Choose a recovery action such as another provider "
-                "or SAC waveform staging, then compute statistics or plot the resulting "
-                "local waveform path."
-            ),
-            "available_recovery_tools": [
-                "sac_fetch_earthscope_waveform",
-                "sac_compute_trace_statistics",
-                "sac_plot_traces",
-            ],
-        }
-
-    @classmethod
-    def _recovery_tool_path_scope_error(
-        cls,
-        tool_name: str,
-        raw_args: Any,
-        observations: list[dict[str, Any]],
-    ) -> dict[str, Any] | None:
-        """Reject SAC analysis/plotting of paths not produced by this recovery loop."""
-
-        if tool_name not in {"sac_compute_trace_statistics", "sac_plot_traces"}:
-            return None
-        if not cls._observations_have_recoverable_ndp_blocker(observations):
-            return None
-        args = cls._normalize_tool_args(raw_args)
-        filepath = cls._coerce_text(args.get("filepath")).strip()
-        if not filepath:
-            return None
-        observed_paths = cls._observed_local_paths_from_observations(observations)
-        if filepath in observed_paths:
-            return None
-        return {
-            "message": (
-                "Planner selected a SAC recovery tool with a filepath that was not "
-                "produced by this turn's successful staging or recovery observations."
-            ),
-            "tool": tool_name,
-            "filepath": filepath,
-            "next_action": (
-                "First stage or fetch a waveform with a recovery tool such as "
-                "sac_fetch_earthscope_waveform, then use the returned local path."
-            ),
-            "observed_local_paths": sorted(observed_paths),
-        }
-
-    @classmethod
-    def _recovery_expert_path_scope_error(
-        cls,
-        expert_id: str,
-        expert_question: str,
-        observations: list[dict[str, Any]],
-    ) -> dict[str, Any] | None:
-        """Reject expert recovery using unobserved local waveform paths."""
-
-        if expert_id not in {"analysis", "visualization"}:
-            return None
-        if not cls._observations_have_recoverable_ndp_blocker(observations):
-            return None
-        observed_paths = cls._observed_local_paths_from_observations(observations)
-        paths = [str(path) for path in extract_file_paths(expert_question, "", SAC_SUFFIXES)]
-        if not paths:
-            return {
-                "message": (
-                    "Planner selected a downstream recovery expert after an NDP "
-                    "staging blocker without naming an explicit current-turn "
-                    "waveform path."
-                ),
-                "expert": expert_id,
-                "next_action": (
-                    "First stage or fetch a waveform with a recovery tool such as "
-                    "sac_fetch_earthscope_waveform, then pass the exact returned "
-                    "local path to analysis or visualization."
-                ),
-                "observed_local_paths": sorted(observed_paths),
-            }
-        missing = [path for path in paths if path not in observed_paths]
-        if not missing:
-            return None
-        return {
-            "message": (
-                "Planner selected an expert recovery step with waveform file paths "
-                "that were not produced by this turn's successful staging or recovery "
-                "observations."
-            ),
-            "expert": expert_id,
-            "unobserved_paths": missing,
-            "next_action": (
-                "First stage or fetch a waveform with a recovery tool such as "
-                "sac_fetch_earthscope_waveform, then pass the returned local path "
-                "to analysis or visualization."
-            ),
-            "observed_local_paths": sorted(observed_paths),
-        }
-
-    @classmethod
-    def _observed_local_paths_from_observations(
-        cls,
-        observations: list[dict[str, Any]],
-    ) -> set[str]:
-        """Collect local paths produced by current-turn observations."""
-
-        paths: set[str] = set()
-        for observation in observations:
-            if observation.get("type") == "planner_error" or observation.get("ok") is False:
-                continue
-            for path in observation.get("local_paths", []) or []:
-                text = cls._coerce_text(path).strip()
-                if text:
-                    paths.add(text)
-            for path in cls._local_paths_from_value(observation.get("result")):
-                paths.add(path)
-            for tool in observation.get("tools", []) or []:
-                if isinstance(tool, Mapping):
-                    for path in cls._local_paths_from_value(tool.get("result")):
-                        paths.add(path)
-        return paths
-
     @staticmethod
     def _has_successful_execution_observation(observations: list[dict[str, Any]]) -> bool:
         """Return whether the loop has a completed non-planner observation to answer from."""
@@ -1227,10 +973,7 @@ class ClioAgent(dspy.Module):
         observation_context = self._format_observations_for_prompt(observations[-4:])
         if not session_context.strip():
             return f"[Current turn observations]\n{observation_context}"
-        return (
-            f"{session_context.strip()}\n\n"
-            f"[Current turn observations]\n{observation_context}"
-        )
+        return f"{session_context.strip()}\n\n[Current turn observations]\n{observation_context}"
 
     def _should_promote_tool_action_to_expert(
         self,
@@ -2262,9 +2005,7 @@ class ClioAgent(dspy.Module):
         if coordinated:
             notes.append(f"coordinates multi-file bundles: {', '.join(coordinated)}")
         intents = [
-            str(intent)
-            for intent in metadata.get("coordinator_intents", [])
-            if str(intent).strip()
+            str(intent) for intent in metadata.get("coordinator_intents", []) if str(intent).strip()
         ]
         if intents:
             notes.append(f"coordination intents: {', '.join(intents)}")

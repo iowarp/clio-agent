@@ -70,12 +70,7 @@ class AgentActionSignature(dspy.Signature):
     - If a child returns structured recommended_parent_actions and the user's
       requested workflow is still unmet, choose one listed recovery action that
       preserves the hierarchy before answering. Do not repeat the same failed
-      child unless you change the search/resource. For waveform work, if NDP
-      staging returns a transport/size blocker but the user asked for waveform
-      inspection/statistics/plotting, the parent may recover through the
-      analysis/SAC capability such as sac_fetch_earthscope_waveform, then use
-      the resulting local_path for statistics and visualization while clearly
-      reporting the original NDP blocker.
+      child unless you change the search/resource.
     """
 
     question: str = dspy.InputField(desc="User's current message")
