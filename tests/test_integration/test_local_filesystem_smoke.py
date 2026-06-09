@@ -76,9 +76,15 @@ def test_doctor_reports_local_file_policy_and_tool_backends(tmp_path):
 
     assert report.by_name("file_policy").state == IntegrationState.READY
     assert report.by_name("file_policy").details["allowed_roots"] == [str(tmp_path.resolve())]
-    assert report.by_name("gateway").state == IntegrationState.READY
-    assert report.by_name("hdf5").state == IntegrationState.READY
-    assert report.by_name("parquet").state == IntegrationState.READY
+    # The default gateway mounts only the universal fs/shell built-ins, so it
+    # is HEALTHY without HDF5/Parquet — those servers are reported only when
+    # actually mounted. A clean core must not be marked degraded.
+    gateway = report.by_name("gateway")
+    assert gateway.state == IntegrationState.READY
+    assert gateway.capabilities
+    backend_names = {item.name for item in report.integrations}
+    assert "hdf5" not in backend_names
+    assert "parquet" not in backend_names
 
 
 @pytest.mark.asyncio

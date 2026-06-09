@@ -129,19 +129,16 @@ class ModelDiscoverySchemaError(ValueError):
         super().__init__(message)
 
 
-_HDF5_TOOLS = {
-    "hdf5_list_datasets",
-    "hdf5_analyze_dataset",
-    "hdf5_check_compression",
-    "hdf5_optimize_chunking",
-    "hdf5_analyze_file",
+# Maps a gateway tool namespace (the prefix before the first underscore in a
+# mounted tool name) to the Python module its server depends on. This drives
+# backend verification for servers that are ACTUALLY mounted on the active
+# gateway — it does not declare any server as universally required. Namespaces
+# absent from the gateway produce no status at all.
+_DATA_BACKEND_MODULES = {
+    "hdf5": "h5py",
+    "parquet": "pyarrow.parquet",
 }
-_PARQUET_TOOLS = {
-    "parquet_analyze_schema",
-    "parquet_query_data",
-    "parquet_compute_statistics",
-}
-_DEFAULT_CLIO_CORE_PATH = Path("/home/akougkas/iowarp/clio-core")
+
 _CLIO_CORE_ENV_VARS = [
     "CHI_SERVER_CONF",
     "WRP_RUNTIME_CONF",
@@ -185,7 +182,7 @@ class RuntimeProbe:
         module_checker: ModuleChecker | None = None,
         lm_timeout: float = 1.0,
         api_timeout: float = 1.0,
-        default_clio_core_path: str | Path | None = _DEFAULT_CLIO_CORE_PATH,
+        default_clio_core_path: str | Path | None = None,
     ) -> None:
         self.env = env if env is not None else os.environ
         self.http_get = http_get or requests.get
@@ -213,8 +210,7 @@ class RuntimeProbe:
             self.probe_arc(),
             self.probe_file_policy(),
             gateway_status,
-            self.probe_hdf5(gateway_tools),
-            self.probe_parquet(gateway_tools),
+            *self.probe_data_backends(gateway_tools),
             self.probe_api(api_state=api_state, api_error=api_error),
             self.probe_clio_core(),
         ]
@@ -529,100 +525,80 @@ class RuntimeProbe:
         tool_names = sorted(
             item["name"] for item in capabilities if isinstance(item.get("name"), str)
         )
-        expected = _HDF5_TOOLS | _PARQUET_TOOLS
-        missing = sorted(expected - set(tool_names))
-        state = IntegrationState.READY if not missing else IntegrationState.DEGRADED
-        summary = (
-            f"Gateway exposes {len(tool_names)} expected tool(s)."
-            if not missing
-            else f"Gateway is missing expected tool(s): {', '.join(missing)}."
-        )
-        next_action = (
-            "No action required."
-            if not missing
-            else "Verify HDF5 and Parquet servers are mounted with stable namespaces."
-        )
+        # The healthy "expected" set is whatever the active gateway actually
+        # mounts — there is no universal tool requirement. A gateway that
+        # exposes at least one tool is READY; an empty gateway is genuinely
+        # broken (no servers mounted) and is DEGRADED.
+        namespaces = sorted({name.split("_", 1)[0] for name in tool_names if "_" in name})
+        if tool_names:
+            return IntegrationStatus(
+                name="gateway",
+                state=IntegrationState.READY,
+                summary=(
+                    f"Gateway exposes {len(tool_names)} tool(s) across {len(namespaces)} server(s)."
+                ),
+                config_source="in-process:clio_agent.tools.gateway",
+                next_action="No action required.",
+                capabilities=tool_names,
+                details={"servers": namespaces},
+                required=True,
+            )
         return IntegrationStatus(
             name="gateway",
-            state=state,
-            summary=summary,
+            state=IntegrationState.DEGRADED,
+            summary="Gateway is reachable but exposes no tools.",
             config_source="in-process:clio_agent.tools.gateway",
-            next_action=next_action,
+            next_action="Mount at least one MCP server on the gateway.",
             capabilities=tool_names,
-            details={"missing_tools": missing},
+            details={"servers": namespaces},
             required=True,
         )
 
-    def probe_hdf5(self, gateway_tools: set[str]) -> IntegrationStatus:
-        """Probe HDF5 backend imports and gateway exposure."""
-        if not self.module_checker("h5py"):
-            return IntegrationStatus(
-                name="hdf5",
-                state=IntegrationState.UNAVAILABLE,
-                summary="h5py is not importable.",
-                config_source="python import:h5py",
-                next_action="Install the HDF5 runtime dependency with the project extras.",
-                capabilities=[],
-                required=True,
-            )
-        missing = sorted(_HDF5_TOOLS - gateway_tools)
-        if missing:
-            return IntegrationStatus(
-                name="hdf5",
-                state=IntegrationState.DEGRADED,
-                summary=f"h5py is available but gateway tools are missing: {', '.join(missing)}.",
-                config_source="python import:h5py; in-process gateway",
-                next_action="Fix the HDF5 FastMCP server mount before relying on HDF5 tools.",
-                capabilities=sorted(_HDF5_TOOLS & gateway_tools),
-                details={"missing_tools": missing},
-                required=True,
-            )
-        return IntegrationStatus(
-            name="hdf5",
-            state=IntegrationState.READY,
-            summary="HDF5 backend and gateway tools are available.",
-            config_source="python import:h5py; in-process gateway",
-            next_action="No action required.",
-            capabilities=sorted(_HDF5_TOOLS),
-            required=True,
-        )
+    def probe_data_backends(self, gateway_tools: set[str]) -> list[IntegrationStatus]:
+        """Verify the Python backend of each data server actually mounted.
 
-    def probe_parquet(self, gateway_tools: set[str]) -> IntegrationStatus:
-        """Probe Parquet backend imports and gateway exposure."""
-        if not self.module_checker("pyarrow.parquet"):
-            return IntegrationStatus(
-                name="parquet",
-                state=IntegrationState.UNAVAILABLE,
-                summary="pyarrow.parquet is not importable.",
-                config_source="python import:pyarrow.parquet",
-                next_action="Install the Parquet runtime dependency with the project extras.",
-                capabilities=[],
-                required=True,
+        This is structural grounding, not a universal requirement: we only
+        report on a backend when the active gateway exposes tools in its
+        namespace. A backend whose tools are not mounted is simply not part
+        of this deployment and produces no status. When a server *is* mounted
+        but its Python dependency cannot be imported, that mount is broken and
+        is surfaced as UNAVAILABLE.
+        """
+        namespaces = {name.split("_", 1)[0] for name in gateway_tools if "_" in name}
+        statuses: list[IntegrationStatus] = []
+        for namespace, module_name in sorted(_DATA_BACKEND_MODULES.items()):
+            if namespace not in namespaces:
+                continue
+            tools = sorted(tool for tool in gateway_tools if tool.split("_", 1)[0] == namespace)
+            if not self.module_checker(module_name):
+                statuses.append(
+                    IntegrationStatus(
+                        name=namespace,
+                        state=IntegrationState.UNAVAILABLE,
+                        summary=(
+                            f"{namespace} tools are mounted but {module_name} is not importable."
+                        ),
+                        config_source=f"python import:{module_name}; in-process gateway",
+                        next_action=(
+                            f"Install the {namespace} runtime dependency with the project extras."
+                        ),
+                        capabilities=tools,
+                        required=True,
+                    )
+                )
+                continue
+            statuses.append(
+                IntegrationStatus(
+                    name=namespace,
+                    state=IntegrationState.READY,
+                    summary=f"{namespace} backend and gateway tools are available.",
+                    config_source=f"python import:{module_name}; in-process gateway",
+                    next_action="No action required.",
+                    capabilities=tools,
+                    required=True,
+                )
             )
-        missing = sorted(_PARQUET_TOOLS - gateway_tools)
-        if missing:
-            return IntegrationStatus(
-                name="parquet",
-                state=IntegrationState.DEGRADED,
-                summary=(
-                    "pyarrow.parquet is available but gateway tools are missing: "
-                    f"{', '.join(missing)}."
-                ),
-                config_source="python import:pyarrow.parquet; in-process gateway",
-                next_action="Fix the Parquet FastMCP server mount before relying on Parquet tools.",
-                capabilities=sorted(_PARQUET_TOOLS & gateway_tools),
-                details={"missing_tools": missing},
-                required=True,
-            )
-        return IntegrationStatus(
-            name="parquet",
-            state=IntegrationState.READY,
-            summary="Parquet backend and gateway tools are available.",
-            config_source="python import:pyarrow.parquet; in-process gateway",
-            next_action="No action required.",
-            capabilities=sorted(_PARQUET_TOOLS),
-            required=True,
-        )
+        return statuses
 
     def probe_api(
         self,

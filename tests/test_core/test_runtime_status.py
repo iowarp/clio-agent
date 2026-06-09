@@ -83,12 +83,15 @@ def test_runtime_report_degraded_path(tmp_path):
 
     report = probe.collect(api_state=IntegrationState.READY)
 
+    # A gateway that mounts only HDF5 tools (no Parquet) is HEALTHY for the
+    # tools it actually exposes — Parquet simply is not part of this
+    # deployment and emits no status. The report is degraded only because the
+    # LM provider reported no loaded models.
     assert report.overall_status == "degraded"
     assert report.by_name("lm_provider").state == IntegrationState.DEGRADED
-    assert report.by_name("gateway").state == IntegrationState.DEGRADED
+    assert report.by_name("gateway").state == IntegrationState.READY
     assert report.by_name("hdf5").state == IntegrationState.READY
-    assert report.by_name("parquet").state == IntegrationState.DEGRADED
-    assert "missing" in report.by_name("parquet").summary.lower()
+    assert "parquet" not in {item.name for item in report.integrations}
 
 
 def test_runtime_report_unavailable_path(tmp_path):
@@ -110,11 +113,15 @@ def test_runtime_report_unavailable_path(tmp_path):
 
     report = probe.collect(api_state=IntegrationState.DEGRADED, api_error="startup failed")
 
+    # When gateway discovery fails, no tools are mounted, so no data-backend
+    # status is emitted — backends are reported only for servers the active
+    # gateway actually exposes.
     assert report.overall_status == "degraded"
     assert report.by_name("lm_provider").state == IntegrationState.UNAVAILABLE
     assert report.by_name("gateway").state == IntegrationState.UNAVAILABLE
-    assert report.by_name("hdf5").state == IntegrationState.UNAVAILABLE
-    assert report.by_name("parquet").state == IntegrationState.UNAVAILABLE
+    backend_names = {item.name for item in report.integrations}
+    assert "hdf5" not in backend_names
+    assert "parquet" not in backend_names
     assert report.by_name("api").state == IntegrationState.DEGRADED
     assert report.by_name("api").details["error"] == "startup failed"
 
