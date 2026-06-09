@@ -26,6 +26,7 @@ from clio_agent.gact.app import (
     _ACTIVE_BLUEPRINT_TOOL_ROWS,
     _ACTIVE_CHILD_TOOL_COMPLETIONS,
     _ACTIVE_GACT_SESSION_ID,
+    _active_base_agent_tool_executor,
     _append_prediction_workflow_state,
     _blueprint_fanout_config,
     _blueprint_module_kind,
@@ -4989,3 +4990,43 @@ def test_dynamic_agent_tools_include_enabled_agent_blueprint_mcp_tool(tmp_path: 
         tools = _dynamic_agent_tools(base_agent, agent_def)
 
     assert [tool.name for tool in tools] == ["earthscope_query"]
+
+
+def test_active_base_agent_tool_executor_prefers_per_workspace() -> None:
+    """A bound workspace routes dynamic-agent tools to the per-workspace executor.
+
+    Blueprint/expert tools are bound to a concrete executor instance, so the
+    cwd of the executor's stdio MCP subprocesses is fixed at bind time. When a
+    workspace is active, the resolver must hand back the agent's per-workspace
+    executor (whose stdio MCPs spawn with cwd=workspace) rather than the shared
+    default executor; otherwise staged artifacts land in the server cwd.
+    """
+    from clio_agent.tools.execution import tool_workspace_context
+
+    default_executor = object()
+    workspace_executor = object()
+    base_agent = SimpleNamespace(
+        tool_executor=default_executor,
+        _active_tool_executor=lambda: (
+            workspace_executor
+            if __import__(
+                "clio_agent.tools.execution",
+                fromlist=["get_active_tool_workspace_root"],
+            ).get_active_tool_workspace_root()
+            else default_executor
+        ),
+    )
+
+    # No workspace bound -> default executor (current behavior).
+    assert _active_base_agent_tool_executor(base_agent) is default_executor
+
+    # Workspace bound -> per-workspace executor takes effect.
+    with tool_workspace_context("/ws/alpha"):
+        assert _active_base_agent_tool_executor(base_agent) is workspace_executor
+
+
+def test_active_base_agent_tool_executor_falls_back_without_seam() -> None:
+    """Agents lacking the per-workspace seam keep using the default executor."""
+    default_executor = object()
+    base_agent = SimpleNamespace(tool_executor=default_executor)
+    assert _active_base_agent_tool_executor(base_agent) is default_executor

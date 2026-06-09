@@ -4784,11 +4784,36 @@ def _enabled_external_mcp_dspy_tools(app: Any, requested_tools: list[str]) -> di
     return available
 
 
+def _active_base_agent_tool_executor(base_agent: Any) -> Any:
+    """Return the base agent's tool executor for the active session workspace.
+
+    Dynamic-agent (blueprint/expert) tools are bound to a concrete tool
+    executor instance: the DSPy tool calls that executor's ``call_tool``
+    directly, so the cwd of the executor's stdio MCP subprocesses is fixed at
+    bind time. When a session workspace is bound, the active tool-execution
+    contextvar carries its root, and the base agent exposes a per-workspace
+    executor (``_active_tool_executor``) whose stdio MCPs spawn with
+    ``cwd=<workspace root>``. Prefer that executor so staged artifacts land in
+    the bound workspace; fall back to the default (no-cwd) ``tool_executor``
+    when no workspace is active or the per-workspace seam is unavailable.
+    """
+
+    resolver = getattr(base_agent, "_active_tool_executor", None)
+    if callable(resolver):
+        try:
+            executor = resolver()
+        except Exception:  # noqa: BLE001 - degrade to default executor
+            executor = None
+        if executor is not None:
+            return executor
+    return getattr(base_agent, "tool_executor", None)
+
+
 def _dynamic_agent_tools(base_agent: Any, agent_def: "AgentDef") -> list[Any]:
     """Resolve the exact DSPy tools a tool-declaring dynamic agent may use."""
 
     requested_tools = [str(t).strip() for t in agent_def.tools if str(t).strip()]
-    tool_executor = getattr(base_agent, "tool_executor", None)
+    tool_executor = _active_base_agent_tool_executor(base_agent)
     if tool_executor is None or not hasattr(tool_executor, "to_dspy_tools"):
         if requested_tools:
             raise _UnsupportedSessionAgent(
