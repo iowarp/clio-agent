@@ -2641,7 +2641,7 @@ def _compact_dynamic_delegation_output(output: str, *, limit: int = 2200) -> str
 
     raw_text = output.strip()
     state_blocks = _compact_workflow_state_blocks(raw_text)
-    text = _sanitize_dynamic_delegation_model_evidence(raw_text)
+    text = raw_text
     display_text = _strip_embedded_workflow_state_evidence(text)
     has_scan_limited_state = any(
         token in block
@@ -2679,8 +2679,6 @@ def _compact_dynamic_delegation_output(output: str, *, limit: int = 2200) -> str
         if not line:
             continue
         lowered = line.lower()
-        if _scan_limited_line_has_unsupported_record_claim(line):
-            continue
         if any(term in lowered for term in stat_terms):
             if line not in stat_lines:
                 stat_lines.append(line)
@@ -2711,321 +2709,6 @@ def _compact_dynamic_delegation_output(output: str, *, limit: int = 2200) -> str
     if tail:
         pieces.append("[tail]\n" + tail)
     return "\n\n".join(pieces)
-
-
-_SCAN_LIMITED_EVIDENCE_TOKENS = (
-    "earthscope",
-    "gnss",
-    "rows_scanned",
-    "rows scanned",
-    "scan_limited",
-    "scan limited",
-    "scan-limited",
-)
-
-_SCAN_LIMITED_UNSUPPORTED_RECORD_PATTERNS = (
-    re.compile(
-        r"(?P<prefix>[,(]\s*)?(?:active,\s*)?"
-        r"(?P<claim>\d+(?:\.\d+)?\s*(?:hz|hertz)\s+sampling)"
-        r"(?P<suffix>\s*[),])?",
-        re.IGNORECASE,
-    ),
-    re.compile(
-        r"(?P<prefix>[,(]\s*)?(?P<claim>\d+(?:\.\d+)?\s*(?:s|sec|secs|second|seconds)\s+cadence)"
-        r"(?P<suffix>\s*[),])?",
-        re.IGNORECASE,
-    ),
-    re.compile(
-        r"(?P<prefix>[,(]\s*)?(?P<claim>two[-\s]?week\s+record)(?P<suffix>\s*[),])?",
-        re.IGNORECASE,
-    ),
-    re.compile(
-        r"(?P<prefix>[,(]\s*)?(?P<claim>(?:GNSS\s+)?\d+(?:\.\d+)?[-\s]*(?:Hz|hertz)\s+time[-\s]*series)(?P<suffix>\s*[),])?",
-        re.IGNORECASE,
-    ),
-    re.compile(
-        r"(?P<prefix>[,(]\s*)?(?P<claim>high[-\s]*rate\s*\(\s*\d+(?:\.\d+)?\s*(?:Hz|hertz)\s*\)\s*3[-\s]*D\s+position\s+time[-\s]*series)(?P<suffix>\s*[),])?",
-        re.IGNORECASE,
-    ),
-    re.compile(
-        r"(?P<prefix>[,(]\s*)?(?P<claim>[≈~]?\s*\d+(?:\.\d+)?\s*days?\s+at\s+\d+(?:\.\d+)?\s*(?:Hz|hertz))(?P<suffix>\s*[),])?",
-        re.IGNORECASE,
-    ),
-    re.compile(
-        r"(?P<prefix>[,(]\s*)?(?P<claim>full\s+record)(?P<suffix>\s*[),])?",
-        re.IGNORECASE,
-    ),
-    re.compile(
-        r"\bthe\s+full\s+record\b",
-        re.IGNORECASE,
-    ),
-    re.compile(
-        r"(?P<prefix>[,(]\s*)?(?P<claim>no\s+large\s+data\s+gaps)(?P<suffix>\s*[),])?",
-        re.IGNORECASE,
-    ),
-    re.compile(
-        r"(?P<prefix>[,(]\s*)?(?P<claim>per[-\s]?epoch\s+noise)(?P<suffix>\s*[),])?",
-        re.IGNORECASE,
-    ),
-    re.compile(
-        r"(?P<prefix>[,(]\s*)?(?P<claim>(?:low|high)[-\s]*rate[^.\n;]*(?:<=|>=|≤|≥|<|>)?\s*1\s*(?:Hz|hertz)[^.\n;]*)(?P<suffix>\s*[),])?",
-        re.IGNORECASE,
-    ),
-    re.compile(
-        r"(?P<prefix>[,(]\s*)?(?P<claim>sub[-\s]?centi(?:meter|metre)\s+precision)(?P<suffix>\s*[),])?",
-        re.IGNORECASE,
-    ),
-    re.compile(
-        r"(?P<prefix>[,(]\s*)?(?P<claim>[≈~]?\s*\d+(?:\.\d+)?\s*(?:h|hr|hrs|hour|hours)\s+of\s+data)(?P<suffix>\s*[),])?",
-        re.IGNORECASE,
-    ),
-    re.compile(
-        r"(?im)^\s*\|?\s*(?:Temporal\s+cadence|Sampled\s+time\s+span)\s*\|.*$",
-    ),
-    re.compile(
-        r"(?im)^\s*[-*]?\s*Cadence:\s*[^.\n;]*$",
-        re.IGNORECASE,
-    ),
-    re.compile(
-        r"(?im)^\s*[-*]?\s*(?:\*\*)?Sampling\s+cadence(?:\*\*)?\s*:\s*[^.\n;]*$",
-        re.IGNORECASE,
-    ),
-    re.compile(
-        r"(?P<prefix>[,(]\s*)?(?P<claim>(?:the\s+)?CSV\s+shows\s+(?:a\s+)?[^.\n;]*(?:Hz|hertz|1000\s*ms)[^.\n;]*)(?P<suffix>\s*[),])?",
-        re.IGNORECASE,
-    ),
-    re.compile(
-        r"(?P<prefix>[,(]\s*)?(?P<claim>(?:only\s+)?\d+(?:\.\d+)?\s*(?:Hz|hertz)\s+public\s+(?:cadence|streams?))(?P<suffix>\s*[),])?",
-        re.IGNORECASE,
-    ),
-    re.compile(
-        r"(?im)^\s*\|?\s*(?:\*\*)?Sampling\s+cadence(?:\*\*)?\s*\|.*$",
-    ),
-    re.compile(
-        r"(?P<prefix>[,(]\s*)?(?P<claim>[~≈]?\s*\d+(?:\.\d+)?\s*(?:Hz|hertz)\s*\([^)\n]*(?:ms|millisecond|second|sec)[^)\n]*\)\s*over\s+the\s+scanned\s+interval[^.\n;]*)(?P<suffix>\s*[),])?",
-        re.IGNORECASE,
-    ),
-    re.compile(
-        r"(?P<prefix>[,(]\s*)?(?P<claim>\d+(?:\.\d+)?\s*(?:s|sec|secs|second|seconds)\s*\(\s*[≈~]?\s*\d+(?:\.\d+)?\s*(?:h|hr|hrs|hour|hours)\s*\))(?P<suffix>\s*[),])?",
-        re.IGNORECASE,
-    ),
-    re.compile(
-        r"(?im)^\s*\|?\s*(?:\*\*)?Overall\s+data\s+quality(?:\*\*)?\s*\|.*(?:high|excellent|suitable|ready).*?$",
-    ),
-    re.compile(
-        r"(?im)^\s*\|?\s*(?:\*\*)?Scan[-\s]*limited\s+profile(?:\*\*)?\s*\|.*(?:no immediate issues|acceptable for quick check).*?$",
-    ),
-    re.compile(
-        r"(?im)^.*(?:meets all required format and quality criteria|suitable for immediate GNSS|excellent candidate for displacement/velocity analysis).*$",
-    ),
-    re.compile(
-        r"(?im)^\s*(?:[-*]\s*)?(?:No\s+missing\s+data\s+were\s+found|No\s+missing\s+values\s+were\s+detected).*?$",
-    ),
-    re.compile(
-        r"(?im)^.*(?:Estimated\s+cadence|Temporal\s+density)\s*:\s*[^.\n]*(?:Hz|hertz).*?$",
-    ),
-    re.compile(
-        r"(?im)^.*(?:Noise\s+level|Overall\s+suitability|Data\s+completeness)\s*:\s*.*?$",
-    ),
-    re.compile(
-        r"(?im)^.*Region\s+definition\s+derived\s+from\s+[^.\n]*(?:USGS|UNAVCO|PBO|SCEC)[^.\n]*.*?$",
-    ),
-    re.compile(
-        r"(?im)^.*(?:full[-\s]?record\s+gaps|long[-\s]?term\s+cadence).*?$",
-    ),
-    re.compile(
-        r"(?im)^.*(?:Station\s+suitability|Overall\s+suitability|optimal\s+spatial\s+coverage).*?$",
-    ),
-    re.compile(
-        r"(?im)^.*(?:Time\s+coverage|continuous\s*\(|no\s+obvious\s+gaps|quality\s+flag\s+qChannel\s+consistent).*?$",
-    ),
-    re.compile(
-        r"(?im)^.*(?:Missing\s+values\s*:\s*0\s*%|all\s+required\s+fields\s+present).*?$",
-    ),
-    re.compile(
-        r"(?im)^.*(?:acceptable\s+for\s+regional\s+deformation|meets\s+quality\s+criteria|ready\s+for\s+downstream\s+modeling).*?$",
-    ),
-    re.compile(
-        r"(?im)^.*(?:high[\s\-\u2010-\u2015]?quality|gap[\s\-\u2010-\u2015]?free|coverage\s+rating|sufficient\s+for\s+basin|Assessment\s+note).*?$",
-    ),
-)
-
-
-def _scan_limited_substitution(match: re.Match[str]) -> str:
-    prefix = match.groupdict().get("prefix") or ""
-    suffix = match.groupdict().get("suffix") or ""
-    if prefix.startswith("(") and suffix.endswith(")"):
-        return ""
-    if prefix.startswith(","):
-        return ""
-    return ""
-
-
-def _sanitize_scan_limited_model_evidence(text: str) -> str:
-    """Remove unsupported record-wide claims from scan-limited model summaries."""
-
-    if not text:
-        return ""
-    lowered = text.casefold()
-    if not any(token in lowered for token in _SCAN_LIMITED_EVIDENCE_TOKENS):
-        return text
-    sanitized = text
-    for pattern in _SCAN_LIMITED_UNSUPPORTED_RECORD_PATTERNS:
-        sanitized = pattern.sub(_scan_limited_substitution, sanitized)
-    sanitized = re.sub(r"\(\s*;\s*", "(", sanitized)
-    sanitized = re.sub(r"\(\s*,\s*", "(", sanitized)
-    sanitized = re.sub(r",\s*,", ",", sanitized)
-    sanitized = re.sub(r"\(\s*\)", "", sanitized)
-    sanitized = re.sub(r"\s{2,}", " ", sanitized)
-    if (
-        sanitized != text
-        and "full-file cadence/duration/gap quality was not verified" not in sanitized
-    ):
-        sanitized = (
-            f"{sanitized.rstrip()}\n"
-            "Scan-limited profile note: full-file cadence/duration/gap quality was not verified."
-        )
-    return sanitized
-
-
-def _scan_limited_line_has_unsupported_record_claim(line: str) -> bool:
-    """Return true when a retained evidence line still carries scan-limited overclaims."""
-
-    if not line:
-        return False
-    lowered = line.casefold()
-    if not any(token in lowered for token in _SCAN_LIMITED_EVIDENCE_TOKENS):
-        # The compactor often flattens a whole child answer into one line. Treat
-        # scan-limited-adjacent QC/cadence/provenance phrases as unsafe even if
-        # the line lost the explicit scan-limited token.
-        return any(
-            token in lowered
-            for token in (
-                "estimated cadence",
-                "temporal density",
-                "overall suitability",
-                "noise level",
-                "data completeness",
-                "region definition derived from usgs",
-                "pbo station coverage",
-            )
-        )
-    if any(
-        token in lowered
-        for token in (
-            "assessment note",
-            "coverage rating",
-            "gap-free",
-            "gap‑free",
-            "high-quality",
-            "high‑quality",
-            "quality criteria",
-            "ready for downstream",
-            "sufficient for basin",
-        )
-    ):
-        return True
-    return any(pattern.search(line) for pattern in _SCAN_LIMITED_UNSUPPORTED_RECORD_PATTERNS)
-
-
-_UNVERIFIED_GEOSPATIAL_PROSE_PATTERN = re.compile(
-    r"\((?=[^)]*(?:USGS|UNAVCO|EarthScope))"
-    r"[^)]*(?:definition|footprints?|catalogue|catalog|high\s+confidence)[^)]*\)",
-    re.IGNORECASE,
-)
-_UNVERIFIED_GEOSPATIAL_PROVENANCE_LINE_PATTERN = re.compile(
-    r"(?P<prefix>\b(?:Provenance|Method):\s*)"
-    r"(?P<claim>[^.\n]*(?:USGS|UNAVCO|EarthScope|SCEC)[^.\n]*"
-    r"(?:boundary|description|model|extent|definition|footprints?|catalogue|catalog|polygon)[^.\n]*)",
-    re.IGNORECASE,
-)
-_UNVERIFIED_GEOSPATIAL_JSON_PROVENANCE_PATTERN = re.compile(
-    r'(?P<prefix>"provenance"\s*:\s*")(?P<claim>[^"\n]*(?:USGS|UNAVCO|EarthScope|SCEC|PBO\s+GNSS)[^"\n]*)"',
-    re.IGNORECASE,
-)
-_UNVERIFIED_GEOSPATIAL_CONFIDENCE_PATTERN = re.compile(
-    r"\bhigh\s+confidence,\s*model[-\s]*derived\s+prior\b",
-    re.IGNORECASE,
-)
-
-
-def _sanitize_unverified_geospatial_model_evidence(text: str) -> str:
-    """Remove named-source geospatial provenance from model-only summaries."""
-
-    if not text:
-        return ""
-    sanitized = _UNVERIFIED_GEOSPATIAL_PROSE_PATTERN.sub(
-        "(model-derived geography; no source/geocoder tool evidence retained)",
-        text,
-    )
-    sanitized = _UNVERIFIED_GEOSPATIAL_PROVENANCE_LINE_PATTERN.sub(
-        r"\g<prefix>model-derived geography; no source/geocoder tool evidence retained",
-        sanitized,
-    )
-    sanitized = _UNVERIFIED_GEOSPATIAL_JSON_PROVENANCE_PATTERN.sub(
-        r'\g<prefix>model_geographic_prior"',
-        sanitized,
-    )
-    sanitized = _UNVERIFIED_GEOSPATIAL_CONFIDENCE_PATTERN.sub(
-        "model-derived prior; no source/geocoder tool evidence retained",
-        sanitized,
-    )
-    return sanitized
-
-
-_UNVERIFIED_EVENT_CONTEXT_NO_EVENTS_PATTERN = re.compile(
-    r"\bno\s+(?:seismic\s+or\s+deformation\s+)?events\s+(?:have\s+been\s+)?(?:detected|recorded|catalog(?:ed|ued))\b",
-    re.IGNORECASE,
-)
-_UNVERIFIED_EVENT_CONTEXT_CATALOG_GENERATION_PATTERN = re.compile(
-    r"\*\*Catalog generation:\*\*\s*\*\*Not yet performed\*\*\s*[–-]\s*"
-    r"[^.\n]*(?:no\s+events)[^.\n]*[.\n]?",
-    re.IGNORECASE,
-)
-_UNVERIFIED_EVENT_CONTEXT_NO_EVENTS_CAN_BE_CATALOGED_PATTERN = re.compile(
-    r"\bno\s+events\s+can\s+be\s+catalog(?:ed|ued)\b",
-    re.IGNORECASE,
-)
-_UNVERIFIED_EVENT_CONTEXT_ZERO_EVENTS_PATTERN = re.compile(
-    r"\b(?:catalog\s+)?(?:contains|lists)\s+(?:zero|no)\s+events\b|\bzero\s+events\b",
-    re.IGNORECASE,
-)
-
-
-def _sanitize_unverified_event_context_model_evidence(text: str) -> str:
-    """Avoid converting a missing event-catalog tool into a no-events claim."""
-
-    if not text:
-        return ""
-    lowered = text.casefold()
-    if "no live event catalog tool" not in lowered and "no_live_event_catalog_tool" not in lowered:
-        return text
-    sanitized = _UNVERIFIED_EVENT_CONTEXT_CATALOG_GENERATION_PATTERN.sub(
-        "**Catalog generation:** **Blocked** - no live event-catalog tool was available in this pack.\n",
-        text,
-    )
-    sanitized = _UNVERIFIED_EVENT_CONTEXT_NO_EVENTS_PATTERN.sub(
-        "no live event-catalog evidence was available",
-        sanitized,
-    )
-    sanitized = _UNVERIFIED_EVENT_CONTEXT_NO_EVENTS_CAN_BE_CATALOGED_PATTERN.sub(
-        "no event catalog can be verified",
-        sanitized,
-    )
-    sanitized = _UNVERIFIED_EVENT_CONTEXT_ZERO_EVENTS_PATTERN.sub(
-        "no live event-catalog evidence was available",
-        sanitized,
-    )
-    return sanitized
-
-
-def _sanitize_dynamic_delegation_model_evidence(text: str) -> str:
-    """Sanitize retained model prose before it becomes parent evidence."""
-
-    text = _sanitize_unverified_geospatial_model_evidence(text)
-    text = _sanitize_scan_limited_model_evidence(text)
-    text = _sanitize_unverified_event_context_model_evidence(text)
-    return text
 
 
 _ARTIFACT_PATH_TOKEN_RE = re.compile(r"[A-Za-z0-9_./~+-]+\.(?:csv|png)", re.IGNORECASE)
@@ -3189,7 +2872,6 @@ def _strip_embedded_workflow_state_evidence(text: str) -> str:
                     '"profile"',
                     '"artifact"',
                     '"visualization"',
-                    '"station_catalog"',
                 )
             )
         ):
@@ -3644,20 +3326,12 @@ def _workflow_status_rank(section: str, value: Mapping[str, Any]) -> int:
         if status:
             return 1
         return 0
-    if section == "station_catalog":
-        if status in {"ranked", "ranked_metadata_only"}:
-            return 3
-        if status in {"no_candidates", "blocked"}:
-            return 2
-        if status:
-            return 1
-        return 0
     if section == "resource_discovery":
         if status in {"resource_found", "candidate_found"}:
             return 4
         if status == "search_required":
             return 3
-        if status in {"search_exhausted", "no_station_candidates", "blocked"}:
+        if status in {"search_exhausted", "blocked"}:
             return 2
         if status:
             return 1
@@ -3698,72 +3372,6 @@ def _normalize_workflow_state_section(section: str, value: Mapping[str, Any]) ->
     elif normalized.get("analysis_ready") is True and status == "staged" and local_path:
         normalized.pop("blocker", None)
     return normalized
-
-
-def _event_catalog_state_requires_capability_blocker(value: Mapping[str, Any]) -> bool:
-    status = str(value.get("status") or "").strip().casefold()
-    resource_status = (
-        str(value.get("resource_status") or value.get("event_catalog_resource_status") or "")
-        .strip()
-        .casefold()
-    )
-    if status == "metadata_found" and resource_status in {"missing", "unavailable", "blocked"}:
-        return True
-    reason = " ".join(
-        str(value.get(key) or "") for key in ("reason", "blocker", "description", "message")
-    ).casefold()
-    if status in {"blocked", "missing", "unavailable", "partial"} and any(
-        token in reason
-        for token in (
-            "no live event",
-            "no seismic event data",
-            "only gnss",
-            "no event-specific",
-            "event catalog tool",
-            "event-catalog tool",
-        )
-    ):
-        return True
-    limitations = value.get("limitations")
-    if isinstance(limitations, list):
-        normalized = {str(item).strip().casefold() for item in limitations}
-        if "no_live_event_catalog_tool" in normalized or "no live event catalog tool" in normalized:
-            return True
-    return False
-
-
-def _event_context_capability_blocker_state() -> dict[str, Any]:
-    return {
-        "status": "blocked",
-        "blocker": "no live event catalog tool available in this pack",
-        "verified_event_count": None,
-        "limitations": ["no_live_event_catalog_tool"],
-        "next_action": (
-            "add or call a live earthquake/event catalog tool for event counts, "
-            "magnitudes, and dates"
-        ),
-    }
-
-
-def _filter_event_context_authority_state(state: Mapping[str, Any]) -> dict[str, Any]:
-    """Keep event-catalog expert state focused on typed event-context evidence."""
-
-    event_context = state.get("event_context")
-    if isinstance(event_context, Mapping):
-        return {"event_context": dict(event_context)}
-
-    for key in ("event_catalog", "event_catalog_capability"):
-        value = state.get(key)
-        if isinstance(value, Mapping) and _event_catalog_state_requires_capability_blocker(value):
-            return {"event_context": _event_context_capability_blocker_state()}
-
-    catalog = state.get("catalog")
-    if isinstance(catalog, Mapping):
-        status = str(catalog.get("status") or "").strip().casefold()
-        if status in {"metadata_found", "metadata_only"}:
-            return {"event_context": _event_context_capability_blocker_state()}
-
-    return {"event_context": _event_context_capability_blocker_state()}
 
 
 def _merge_workflow_state_mapping(target: dict[str, Any], incoming: Mapping[str, Any]) -> None:
@@ -4415,61 +4023,6 @@ def _workflow_state_payload(state: Mapping[str, Any]) -> str:
     """Return a parseable workflow-state payload for prompts and compact rows."""
 
     return json.dumps({"workflow_state": state}, sort_keys=True, default=str)
-
-
-_BLUEPRINT_WORKFLOW_STATE_AUTHORITIES: dict[str, set[str]] = {
-    "geospatial": {"geospatial", "region", "center", "bbox"},
-    "seismic_event_catalog": {"event_context"},
-}
-
-# Top-level workflow_state section names that no pack declares as typed schema —
-# they only ever appear when a model confabulates a parallel "selection" block
-# (e.g. a fabricated ``selected_station`` with an invented station id and a
-# /tmp/... csv/png that contradicts the resource actually staged upstream). The
-# legitimate, schema-backed selection section is ``resource_candidate``; these
-# names are model inventions and are dropped from EVERY expert's emitted state.
-# This is a generic, blueprint-agnostic denylist of non-schema keys; it encodes
-# no station/region/path heuristics.
-_FABRICATED_WORKFLOW_STATE_SECTIONS: frozenset[str] = frozenset(
-    {
-        "selected_station",
-        "selected",
-        "gnss_selection",
-        "station_selection",
-        "chosen_station",
-    }
-)
-
-
-def _drop_fabricated_workflow_state_sections(
-    state: Mapping[str, Any],
-) -> dict[str, Any]:
-    """Remove model-invented selection-block sections from emitted typed state."""
-
-    return {
-        str(key): value
-        for key, value in state.items()
-        if str(key) not in _FABRICATED_WORKFLOW_STATE_SECTIONS
-    }
-
-
-def _filter_workflow_state_for_blueprint_authority(
-    agent_id: str,
-    state: Mapping[str, Any],
-) -> dict[str, Any]:
-    """Drop model-authored workflow sections outside an expert's responsibility.
-
-    Every expert is first stripped of non-schema confabulation sections (an
-    invented ``selected_station``/``gnss_selection`` block). Experts with a
-    declared section authority are then narrowed to exactly those sections."""
-
-    cleaned = _drop_fabricated_workflow_state_sections(state)
-    allowed = _BLUEPRINT_WORKFLOW_STATE_AUTHORITIES.get(str(agent_id or "").strip())
-    if not allowed:
-        return cleaned
-    if str(agent_id or "").strip() == "seismic_event_catalog":
-        return _filter_event_context_authority_state(cleaned)
-    return {str(key): value for key, value in cleaned.items() if str(key) in allowed}
 
 
 def _workflow_state_from_handoff_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
@@ -7460,12 +7013,6 @@ async def _run_turn_in_background(
                     row_state = tool_row.get("workflow_state")
                     if isinstance(row_state, Mapping):
                         _merge_workflow_state_mapping(local_workflow_state, row_state)
-                local_workflow_state = _filter_workflow_state_for_blueprint_authority(
-                    target.id,
-                    local_workflow_state,
-                )
-                if target.id in _BLUEPRINT_WORKFLOW_STATE_AUTHORITIES:
-                    local_output = _user_facing_dynamic_evidence_summary(local_output)
                 if local_workflow_state:
                     local_state_block = _workflow_state_payload(local_workflow_state)
                     if local_state_block not in local_output:
@@ -7564,12 +7111,6 @@ async def _run_turn_in_background(
                     row_state = tool_row.get("workflow_state")
                     if isinstance(row_state, Mapping):
                         _merge_workflow_state_mapping(workflow_state, row_state)
-                workflow_state = _filter_workflow_state_for_blueprint_authority(
-                    target.id,
-                    workflow_state,
-                )
-                if target.id in _BLUEPRINT_WORKFLOW_STATE_AUTHORITIES:
-                    output = _user_facing_dynamic_evidence_summary(output)
                 if workflow_state:
                     state_block = _workflow_state_payload(workflow_state)
                     if state_block not in output:

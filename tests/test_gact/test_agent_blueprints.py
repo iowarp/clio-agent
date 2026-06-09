@@ -47,7 +47,6 @@ from clio_agent.gact.app import (
     _extract_tools_called_from_trajectory,
     _failed_child_delegation_output_summary,
     _fallback_answer_from_delegation,
-    _filter_workflow_state_for_blueprint_authority,
     _gact_app_context,
     _gact_turn_timeout_s,
     _ground_fabricated_local_artifact_paths,
@@ -59,7 +58,6 @@ from clio_agent.gact.app import (
     _recording_blueprint_tool,
     _run_blueprint_dspy_agent,
     _runtime_dynamic_agent_children_context,
-    _sanitize_scan_limited_model_evidence,
     _seed_child_tool_completions_from_resume_prompt,
     _should_execute_delegated_handoff,
     _tool_calls_from_handoff_rows,
@@ -1204,136 +1202,6 @@ def test_workflow_state_merge_preserves_staged_acquisition_over_metadata_only(
     assert state["acquisition"]["local_path"] == str(staged_csv)
 
 
-def test_geospatial_workflow_state_authority_drops_catalog_claims() -> None:
-    state = _filter_workflow_state_for_blueprint_authority(
-        "geospatial",
-        {
-            "geospatial": {
-                "status": "resolved",
-                "center_lat": 34.05,
-                "center_lon": -118.25,
-                "radius_km": 75,
-            },
-            "region": {
-                "center": {"lat": 34.05, "lon": -118.25},
-                "radius_km": 75,
-            },
-            "catalog": {
-                "status": "metadata_only",
-                "stations": [{"id": "P056", "lat": 33.99, "lon": -118.3}],
-            },
-            "resource_candidate": {
-                "status": "selected",
-                "resource_name": "P056.PW.LY_.00.csv",
-            },
-            "acquisition": {
-                "status": "staged",
-                "analysis_ready": True,
-                "local_path": "/tmp/P056.PW.LY_.00.csv",
-            },
-        },
-    )
-
-    assert set(state) == {"geospatial", "region"}
-    assert state["geospatial"]["status"] == "resolved"
-    assert "catalog" not in state
-    assert "resource_candidate" not in state
-    assert "acquisition" not in state
-
-
-def test_authority_filter_drops_fabricated_selection_block_for_any_expert() -> None:
-    # A model-invented selected_station/gnss_selection block is stripped from any
-    # expert's emitted state, while the schema-backed resource_candidate +
-    # acquisition sections are preserved verbatim.
-    incoming = {
-        "resource_candidate": {"status": "selected", "station_id": "P475"},
-        "acquisition": {
-            "status": "staged",
-            "analysis_ready": True,
-            "local_path": "/tmp/P475.CI.LY_.20.csv",
-        },
-        "selected_station": {
-            "code": "SDM",
-            "csv_path": "/tmp/sdm_gnss_timeseries.csv",
-            "png_path": "/artifacts/gnss_SDM_timeseries.png",
-        },
-        "gnss_selection": {"station": "SAN"},
-        "chosen_station": {"site_id": "LAZ"},
-    }
-    for agent_id in ("data", "analysis", "synthesis", "visualization", "main"):
-        state = _filter_workflow_state_for_blueprint_authority(agent_id, incoming)
-        assert "selected_station" not in state, agent_id
-        assert "gnss_selection" not in state, agent_id
-        assert "chosen_station" not in state, agent_id
-        assert state["resource_candidate"]["station_id"] == "P475", agent_id
-        assert state["acquisition"]["local_path"] == "/tmp/P475.CI.LY_.20.csv", agent_id
-
-
-def test_event_catalog_authority_synthesizes_typed_blocker_from_metadata_only_catalog() -> None:
-    state = _filter_workflow_state_for_blueprint_authority(
-        "seismic_event_catalog",
-        {
-            "acquisition": {
-                "status": "staged",
-                "analysis_ready": True,
-                "local_path": "/tmp/JPLM.PW.LY_.00.csv",
-            },
-            "catalog": {"status": "metadata_found"},
-            "profile": {"status": "complete", "rows_scanned": 250000, "scan_limited": True},
-            "station_catalog": {
-                "status": "ranked_metadata_only",
-                "stations": [{"station": "JPLM", "distance_km": 2.519}],
-            },
-        },
-    )
-
-    assert set(state) == {"event_context"}
-    assert state["event_context"] == {
-        "status": "blocked",
-        "blocker": "no live event catalog tool available in this pack",
-        "verified_event_count": None,
-        "limitations": ["no_live_event_catalog_tool"],
-        "next_action": (
-            "add or call a live earthquake/event catalog tool for event counts, "
-            "magnitudes, and dates"
-        ),
-    }
-
-
-def test_event_catalog_authority_preserves_typed_event_context() -> None:
-    state = _filter_workflow_state_for_blueprint_authority(
-        "seismic_event_catalog",
-        {
-            "catalog": {"status": "metadata_found"},
-            "event_context": {
-                "status": "available",
-                "verified_event_count": 3,
-                "source": "event_catalog_tool",
-            },
-            "profile": {"status": "complete"},
-        },
-    )
-
-    assert state == {
-        "event_context": {
-            "status": "available",
-            "verified_event_count": 3,
-            "source": "event_catalog_tool",
-        }
-    }
-
-
-def test_event_catalog_authority_empty_state_is_typed_blocker() -> None:
-    state = _filter_workflow_state_for_blueprint_authority(
-        "seismic_event_catalog",
-        {},
-    )
-
-    assert state["event_context"]["status"] == "blocked"
-    assert state["event_context"]["verified_event_count"] is None
-    assert state["event_context"]["limitations"] == ["no_live_event_catalog_tool"]
-
-
 def test_ground_fabricated_local_artifact_path_rewrites_to_verified(tmp_path) -> None:
     real_csv = tmp_path / "ndp-staging" / "P475.CI.LY_.20.csv"
     real_png = tmp_path / "ndp-staging" / "P475.CI.LY_.20_plot.png"
@@ -1445,137 +1313,6 @@ def test_ground_fabricated_local_artifact_path_keeps_honest_blocked_prose() -> N
     assert grounded == answer
 
 
-def test_scan_limited_model_evidence_sanitizer_removes_unsupported_record_claims() -> None:
-    output = """
-Selected GNSS station - VDCY.
-Suitability: SUITABLE (active, horizontal uncertainty ~= 0.035 m, vertical 0.089 m, 1 Hz sampling)
-Rows scanned: 250000
-The profile was scan_limited, so this was a two-week record with no large data gaps and per-epoch noise.
-Low-rate GNSS displacements (<= 1 Hz) are enough here and uncertainty columns indicate sub-centimetre precision.
-The scan was limited to the first 250 k rows (≈ 1.4 h of data).
-Staged CSV (GNSS 1 Hz time-series): /tmp/MTA1.csv
-This CSV contains GNSS station metadata and high-rate (1 Hz) 3-D position time-series for nearby stations.
-Rows scanned: 250 000 (≈ 2.9 days at 1 Hz).
-| Temporal cadence | ≈ 1 s (timestamps step ~1000 ms) | high-rate |
-| Sampled time span | 5 070 s (≈ 1.4 h) - scan limited to first 250 k rows |
-- Cadence: 1 s
-**Sampling cadence**: 1 Hz (≈ 1000 ms intervals)
-The CSV shows a 1 Hz cadence (1000 ms between samples).
-The plot shows a representative sample and may not capture the entire time span or any data gaps present in the full record.
-Note catalog limitations (single-frequency, possible gaps, 1 Hz public cadence).
-Note catalog limitations (e.g., only 1 Hz public streams, possible gaps).
-| **Sampling cadence** | ~1 Hz (Δt = 1000 ms) over the scanned interval; suitable for rapid deformation detection. |
-| **Overall data quality** | High – suitable for displacement, velocity, or strain analysis. |
-| Scan-limited profile | 250 k rows examined - no immediate issues. |
-MTA1’s dataset meets all required format and quality criteria, making it suitable for immediate GNSS-based investigations.
-No missing values were detected in a 5 k-row sample.
-Estimated cadence: ~55 Hz.
-Temporal density: high (≈55 Hz).
-Noise level: low (σ ≈ 0.03 m E/N, 0.065 m U).
-Overall suitability: high for local deformation or geodetic analysis.
-Region definition derived from USGS seismic-hazard maps and PBO station coverage.
-Time coverage: ≈ 5 days, continuous (no obvious gaps in sampled rows).
-Quality flag qChannel consistent across the record.
-Missing values: 0 % (all required fields present).
-Station suitability (MTA1 - SCGN).
-Conclusion: Station MTA1 provides optimal spatial coverage and meets quality criteria for GNSS-based deformation analysis.
-The staged CSV and PNG artifact are ready for downstream modeling.
-Assessment note: high‑quality, gap‑free data within 1 km of the region centre.
-Coverage rating: moderate (sufficient for basin-scale analysis).
-"""
-
-    sanitized = _sanitize_scan_limited_model_evidence(output)
-
-    assert "horizontal uncertainty ~= 0.035 m" in sanitized
-    assert "vertical 0.089 m" in sanitized
-    assert "1 Hz sampling" not in sanitized
-    assert "two-week record" not in sanitized
-    assert "no large data gaps" not in sanitized
-    assert "<= 1 Hz" not in sanitized
-    assert "sub-centimetre precision" not in sanitized
-    assert "per-epoch noise" not in sanitized
-    assert "1.4 h of data" not in sanitized
-    assert "GNSS 1 Hz time-series" not in sanitized
-    assert "high-rate (1 Hz) 3-D position time-series" not in sanitized
-    assert "2.9 days at 1 Hz" not in sanitized
-    assert "Temporal cadence" not in sanitized
-    assert "Sampled time span" not in sanitized
-    assert "Cadence: 1 s" not in sanitized
-    assert "Sampling cadence" not in sanitized
-    assert "CSV shows a 1 Hz cadence" not in sanitized
-    assert "1 Hz public cadence" not in sanitized
-    assert "1 Hz public streams" not in sanitized
-    assert "over the scanned interval" not in sanitized
-    assert "Overall data quality" not in sanitized
-    assert "no immediate issues" not in sanitized
-    assert "meets all required format and quality criteria" not in sanitized
-    assert "No missing values were detected" not in sanitized
-    assert "Estimated cadence" not in sanitized
-    assert "Temporal density" not in sanitized
-    assert "Noise level" not in sanitized
-    assert "Overall suitability" not in sanitized
-    assert "USGS seismic-hazard maps" not in sanitized
-    assert "PBO station coverage" not in sanitized
-    assert "Time coverage" not in sanitized
-    assert "qChannel consistent" not in sanitized
-    assert "Missing values: 0 %" not in sanitized
-    assert "Station suitability" not in sanitized
-    assert "optimal spatial coverage" not in sanitized
-    assert "meets quality criteria" not in sanitized
-    assert "ready for downstream modeling" not in sanitized
-    assert "Assessment note" not in sanitized
-    assert "high‑quality" not in sanitized
-    assert "gap‑free" not in sanitized
-    assert "Coverage rating" not in sanitized
-    assert "sufficient for basin" not in sanitized
-    assert "full record" not in sanitized
-    assert "full-file cadence/duration/gap quality was not verified" in sanitized
-
-
-def test_compact_dynamic_delegation_output_sanitizes_scan_limited_evidence() -> None:
-    output = "\n".join(
-        [
-            "Profile evidence",
-            "Rows scanned: 250000",
-            "scan_limited: true",
-            "Suitability: SUITABLE (active, horizontal uncertainty ~= 0.035 m, vertical 0.089 m, 1 Hz sampling)",
-            "Estimated cadence: ~55 Hz.",
-            "Noise level: low (sigma ~= 0.03 m).",
-            "Overall suitability: high for local deformation analysis.",
-            "Region definition derived from USGS seismic-hazard maps and PBO station coverage.",
-            "Time coverage: 5 days, continuous (no obvious gaps in sampled rows).",
-            "Quality flag qChannel consistent across the record.",
-            "Conclusion: Station MTA1 provides optimal spatial coverage and meets quality criteria.",
-            "The staged CSV and PNG artifact are ready for downstream modeling.",
-            "Assessment note: high-quality, gap-free data within 1 km.",
-            "Coverage rating: moderate (sufficient for basin-scale analysis).",
-            *[f"filler line {index}" for index in range(220)],
-        ]
-    )
-
-    compacted = _compact_dynamic_delegation_output(output, limit=800)
-
-    assert "Rows scanned: 250000" in compacted
-    assert "horizontal uncertainty ~= 0.035 m" in compacted
-    assert "1 Hz sampling" not in compacted
-    assert "Estimated cadence" not in compacted
-    assert "Noise level" not in compacted
-    assert "Overall suitability" not in compacted
-    assert "USGS seismic-hazard maps" not in compacted
-    assert "PBO station coverage" not in compacted
-    assert "Time coverage" not in compacted
-    assert "qChannel consistent" not in compacted
-    assert "optimal spatial coverage" not in compacted
-    assert "meets quality criteria" not in compacted
-    assert "ready for downstream modeling" not in compacted
-    assert "Assessment note" not in compacted
-    assert "high-quality" not in compacted
-    assert "gap-free" not in compacted
-    assert "Coverage rating" not in compacted
-    assert "sufficient for basin" not in compacted
-    assert "full-file cadence/duration/gap quality was not verified" in compacted
-
-
 def test_compact_dynamic_delegation_output_retains_reconciled_workflow_state(
     tmp_path: Path,
 ) -> None:
@@ -1630,44 +1367,6 @@ def test_compact_dynamic_delegation_output_retains_reconciled_workflow_state(
     assert '"status": "selected"' in compacted
     assert '"status": "blocked"' not in compacted
     assert '"status": "missing"' not in compacted
-
-
-def test_compact_dynamic_delegation_output_sanitizes_event_context_no_events_claims() -> None:
-    output = "\n".join(
-        [
-            "**Event-catalog capability status:**",
-            "- **Catalog generation:** **Not yet performed** - no events have been detected or recorded.",
-            "Only descriptive information is present; no seismic or deformation events have been catalogued.",
-            "No detection algorithm applied - without applying a detector, no events can be cataloged.",
-            "No event-detection has been performed, so the catalog contains zero events.",
-            "No event extraction - catalog contains no events, no event timestamps, magnitudes, or locations.",
-            json.dumps(
-                {
-                    "workflow_state": {
-                        "event_context": {
-                            "status": "blocked",
-                            "blocker": "no live event catalog tool available in this pack",
-                            "verified_event_count": None,
-                            "limitations": ["no_live_event_catalog_tool"],
-                        }
-                    }
-                }
-            ),
-            *[f"filler line {index}" for index in range(220)],
-        ]
-    )
-
-    compacted = _compact_dynamic_delegation_output(output, limit=800)
-
-    assert "no events have been detected" not in compacted
-    assert "no seismic or deformation events" not in compacted
-    assert "no events can be cataloged" not in compacted
-    assert "zero events" not in compacted
-    assert "catalog contains no events" not in compacted
-    assert "no live event-catalog tool was available" in compacted
-    assert "no live event-catalog evidence was available" in compacted
-    assert '"status": "blocked"' in compacted
-    assert '"no_live_event_catalog_tool"' in compacted
 
 
 def test_workflow_state_merge_preserves_non_empty_tool_provenance(tmp_path: Path) -> None:
