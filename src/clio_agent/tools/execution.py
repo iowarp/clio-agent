@@ -570,6 +570,11 @@ class SyncMCPToolExecutor:
                 )
 
         effective_args = _repair_missing_file_arguments(args)
+        effective_args = _ground_output_paths(
+            effective_args,
+            getattr(self._mcp_tools.get(name), "inputSchema", None),
+            get_active_tool_workspace_root(),
+        )
 
         if permission_gate is not None:
             try:
@@ -731,6 +736,136 @@ _FILE_ARGUMENT_NAMES = {
     "source",
     "source_path",
 }
+
+# Output-artifact argument names. When a tool writes a deliverable (a plot, an
+# export, a report) it takes the destination via one of these args. Models vary
+# in whether they emit an ABSOLUTE destination: stronger models obey the
+# "pass an absolute path" prompt, weaker ones emit a bare filename (or omit the
+# arg entirely and let the tool's own relative default apply). Either way the
+# artifact then lands in the MCP server's CWD instead of the bound workspace,
+# where the harness/grader collects deliverables. Grounding these against the
+# active workspace root is generic workspace hygiene — it applies to every tool
+# and every model, with no per-model or per-tool special-casing.
+_OUTPUT_PATH_ARG_NAMES = {
+    "output_path",
+    "out_path",
+    "output_file",
+    "outfile",
+    "output",
+    "save_path",
+    "savepath",
+    "dest",
+    "destination",
+    "dest_path",
+    "out",
+}
+
+_ARTIFACT_SUFFIXES = {
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".svg",
+    ".pdf",
+    ".gif",
+    ".csv",
+    ".tsv",
+    ".parquet",
+    ".json",
+    ".html",
+    ".txt",
+    ".md",
+    ".nc",
+    ".h5",
+    ".hdf5",
+    ".npy",
+    ".npz",
+    ".xlsx",
+}
+
+
+def _is_relative_artifact_path(value: str) -> bool:
+    """Return whether a string is a relative path that names a writable file."""
+
+    candidate = value.strip()
+    if not candidate:
+        return False
+    expanded = Path(candidate).expanduser()
+    if expanded.is_absolute():
+        return False
+    # A bare scheme/URL is not a local filesystem destination.
+    if "://" in candidate:
+        return False
+    return True
+
+
+def _schema_properties(input_schema: Any) -> dict[str, Any]:
+    """Return the ``properties`` mapping from an MCP tool inputSchema."""
+
+    if not isinstance(input_schema, Mapping):
+        return {}
+    properties = input_schema.get("properties")
+    if not isinstance(properties, Mapping):
+        return {}
+    return dict(properties)
+
+
+def _ground_output_paths(
+    args: Mapping[str, Any],
+    input_schema: Any,
+    workspace_root: str,
+) -> dict[str, Any]:
+    """Ground tool output-artifact paths against the active workspace root.
+
+    Two model-agnostic repairs, both gated on a bound workspace root:
+
+    1. RESOLVE a relative output path the model EMITS (e.g. ``"plot.png"``)
+       against the workspace root so the deliverable lands where the harness
+       collects it, instead of in the MCP server's process CWD.
+    2. INJECT a workspace-absolute output path when the model OMITS an output
+       arg whose schema declares a *relative* default (e.g. plot tools default
+       ``output_path="timeseries.png"``). Without this the MCP server applies
+       its own relative default inside the server, after this boundary runs.
+
+    Absolute paths the model already supplied are left untouched. No per-model
+    or per-tool branches: the only inputs are generic output-arg names and the
+    tool's own declared inputSchema.
+    """
+
+    grounded = dict(args)
+    root = workspace_root.strip()
+    if not root:
+        return grounded
+    root_path = Path(root).expanduser()
+
+    # (1) Resolve relative output paths the model emitted.
+    for key, value in list(grounded.items()):
+        if key not in _OUTPUT_PATH_ARG_NAMES:
+            continue
+        if not isinstance(value, str) or not _is_relative_artifact_path(value):
+            continue
+        grounded[key] = str(root_path / Path(value.strip()))
+
+    # (2) Inject a workspace-absolute path for omitted output args whose schema
+    #     default is relative (the tool would otherwise write to its own CWD).
+    properties = _schema_properties(input_schema)
+    for prop_name, prop_schema in properties.items():
+        if prop_name not in _OUTPUT_PATH_ARG_NAMES or prop_name in grounded:
+            continue
+        if not isinstance(prop_schema, Mapping):
+            continue
+        default = prop_schema.get("default")
+        if not isinstance(default, str):
+            continue
+        default_name = Path(default.strip()).name
+        if not default_name:
+            continue
+        if Path(default_name).suffix.lower() not in _ARTIFACT_SUFFIXES:
+            continue
+        if not _is_relative_artifact_path(default):
+            continue
+        grounded[prop_name] = str(root_path / default_name)
+
+    return grounded
 
 
 def _repair_missing_file_arguments(args: Mapping[str, Any]) -> dict[str, Any]:

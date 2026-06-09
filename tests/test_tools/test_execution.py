@@ -11,11 +11,13 @@ from clio_agent.tools.execution import (
     MCPToolBridge,
     RepeatedToolFailureError,
     SyncMCPToolExecutor,
+    _ground_output_paths,
     create_async_tool_executor,
     create_sync_tool_executor,
     set_global_cancellation_checker,
     set_global_permission_gate,
     set_global_tool_observer,
+    tool_workspace_context,
 )
 
 
@@ -68,6 +70,24 @@ class FailingClient(FakeClient):
             if error is not None:
                 raise error
         return SimpleNamespace(data={"name": name, "args": args})
+
+
+class PlotLikeClient(FakeClient):
+    """Fake client exposing a plot-like tool with a relative output_path default."""
+
+    async def list_tools(self):
+        return [
+            SimpleNamespace(
+                name="plot_timeseries",
+                description="Plot a CSV time series to an image.",
+                inputSchema={
+                    "properties": {
+                        "data_path": {"type": "string"},
+                        "output_path": {"type": "string", "default": "timeseries.png"},
+                    }
+                },
+            )
+        ]
 
 
 class StructuredErrorClient(FakeClient):
@@ -458,3 +478,137 @@ def test_mcp_tool_bridge_remains_sync_compatibility_shim():
         assert bridge.call_tool("fake_echo", {"value": "hello"}).startswith("{")
     finally:
         bridge.close()
+
+
+# ---------------------------------------------------------------------------
+# Output-path workspace grounding (model-agnostic artifact hygiene).
+# ---------------------------------------------------------------------------
+
+_PLOT_SCHEMA = {
+    "properties": {
+        "data_path": {"type": "string"},
+        "output_path": {"type": "string", "default": "timeseries.png"},
+    }
+}
+
+
+def test_ground_output_paths_resolves_relative_emitted_path():
+    """A relative output path the model emits resolves against the workspace root."""
+    grounded = _ground_output_paths(
+        {"data_path": "/data/in.csv", "output_path": "plot.png"},
+        _PLOT_SCHEMA,
+        "/work/space",
+    )
+    assert grounded["output_path"] == "/work/space/plot.png"
+    # Input path is untouched (not an output-arg name).
+    assert grounded["data_path"] == "/data/in.csv"
+
+
+def test_ground_output_paths_injects_workspace_path_when_omitted():
+    """An omitted output arg with a relative schema default is injected absolute."""
+    grounded = _ground_output_paths(
+        {"data_path": "/data/in.csv"},
+        _PLOT_SCHEMA,
+        "/work/space",
+    )
+    assert grounded["output_path"] == "/work/space/timeseries.png"
+
+
+def test_ground_output_paths_leaves_absolute_emitted_path_untouched():
+    """An absolute output path the model emits is preserved verbatim."""
+    grounded = _ground_output_paths(
+        {"data_path": "/data/in.csv", "output_path": "/tmp/abs.png"},
+        _PLOT_SCHEMA,
+        "/work/space",
+    )
+    assert grounded["output_path"] == "/tmp/abs.png"
+
+
+def test_ground_output_paths_noop_without_workspace_root():
+    """Without a bound workspace root the args pass through unchanged."""
+    args = {"data_path": "/data/in.csv", "output_path": "plot.png"}
+    grounded = _ground_output_paths(args, _PLOT_SCHEMA, "")
+    assert grounded == args
+    # Omission injection is also gated on the workspace root.
+    grounded2 = _ground_output_paths({"data_path": "/data/in.csv"}, _PLOT_SCHEMA, "")
+    assert "output_path" not in grounded2
+
+
+def test_ground_output_paths_ignores_absolute_schema_default():
+    """A schema default that is already absolute is not re-grounded on omit."""
+    schema = {
+        "properties": {
+            "output_path": {"type": "string", "default": "/etc/fixed/out.png"},
+        }
+    }
+    grounded = _ground_output_paths({"data_path": "/data/in.csv"}, schema, "/work/space")
+    assert "output_path" not in grounded
+
+
+def test_ground_output_paths_ignores_non_artifact_default():
+    """An omitted output arg whose default is not a writable artifact is left alone."""
+    schema = {
+        "properties": {
+            "output": {"type": "string", "default": "stdout"},
+        }
+    }
+    grounded = _ground_output_paths({"data_path": "/data/in.csv"}, schema, "/work/space")
+    assert "output" not in grounded
+
+
+def test_sync_mcp_tool_executor_grounds_relative_output_path(tmp_path):
+    """A relative output_path the model emits is grounded to the workspace root."""
+    fake_client = PlotLikeClient()
+    executor = SyncMCPToolExecutor(
+        object(),
+        timeout=1.0,
+        client_factory=lambda _: fake_client,
+    )
+    try:
+        with tool_workspace_context(tmp_path):
+            result = executor.call_tool(
+                "plot_timeseries",
+                {"data_path": "/data/in.csv", "output_path": "plot.png"},
+            )
+    finally:
+        executor.close()
+    assert str(tmp_path / "plot.png") in result
+
+
+def test_sync_mcp_tool_executor_injects_omitted_output_path(tmp_path):
+    """An omitted output_path is injected absolute from the schema default."""
+    fake_client = PlotLikeClient()
+    executor = SyncMCPToolExecutor(
+        object(),
+        timeout=1.0,
+        client_factory=lambda _: fake_client,
+    )
+    try:
+        with tool_workspace_context(tmp_path):
+            result = executor.call_tool(
+                "plot_timeseries",
+                {"data_path": "/data/in.csv"},
+            )
+    finally:
+        executor.close()
+    assert str(tmp_path / "timeseries.png") in result
+
+
+def test_sync_mcp_tool_executor_keeps_absolute_output_path(tmp_path):
+    """An absolute output_path is passed through unchanged (no regression)."""
+    fake_client = PlotLikeClient()
+    executor = SyncMCPToolExecutor(
+        object(),
+        timeout=1.0,
+        client_factory=lambda _: fake_client,
+    )
+    try:
+        with tool_workspace_context(tmp_path):
+            result = executor.call_tool(
+                "plot_timeseries",
+                {"data_path": "/data/in.csv", "output_path": "/tmp/keep.png"},
+            )
+    finally:
+        executor.close()
+    assert "/tmp/keep.png" in result
+    assert str(tmp_path / "keep.png") not in result
