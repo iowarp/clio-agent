@@ -240,6 +240,17 @@ class LMProviderConfig:
     # entry in the defaults dict, no agent.py branches.
     strip_openai_prefix: bool = field(init=False, default=True)
     supports_vision: bool = field(init=False, default=False)
+    # Handshake-discovered model config. init=False + default empty so callers
+    # never set them; ``apply_handshake`` populates them at bind time (the only
+    # place that networks). ``__post_init__`` stays network-free for /health.
+    # ``chosen_context`` is the active context limit clio operates against
+    # (queryable; for LM Studio it reflects the loaded/load-sized window).
+    context_window: int | None = field(init=False, default=None)
+    chosen_context: int | None = field(init=False, default=None)
+    is_reasoning: bool = field(init=False, default=False)
+    reasoning_param: str | None = field(init=False, default=None)
+    native_tool_calling: bool = field(init=False, default=False)
+    tool_call_parser: str | None = field(init=False, default=None)
 
     def __post_init__(self) -> None:
         """Fill empty fields + capability flags from provider defaults."""
@@ -297,6 +308,70 @@ class LMProviderConfig:
             self.planner_max_tokens = max(self.max_tokens, 4096)
         elif self.planner_max_tokens < 4096:
             self.planner_max_tokens = 4096
+
+    def apply_handshake(self, report: Any, *, user_set_max_tokens: bool = False) -> None:
+        """Fold a provider handshake report into this config (call at bind time).
+
+        Sets the discovered per-model fields (context window, reasoning/tool
+        capabilities) and, unless the caller explicitly set ``max_tokens``,
+        recomputes a context-aware ``max_tokens`` — replacing the static
+        provider default (e.g. the ALCF 4096 cap on 256K-context models).
+        ``user_set_max_tokens`` must be True when the user/env supplied an
+        explicit value so their choice always wins. No-op when the report has no
+        usable profile (handshake failed / model not found), preserving today's
+        static behaviour.
+        """
+        profile = None
+        models = getattr(report, "models", None) or ()
+        if models:
+            if hasattr(report, "model"):
+                profile = report.model(self.model)
+            if profile is None and len(models) == 1:
+                profile = models[0]
+        if profile is None:
+            return
+        self.context_window = profile.context_window
+        self.is_reasoning = bool(profile.is_reasoning)
+        self.reasoning_param = profile.reasoning_param
+        self.native_tool_calling = bool(profile.native_tool_calling)
+        self.tool_call_parser = profile.tool_call_parser
+        window = profile.effective_context_window
+        self.chosen_context = window
+        if not user_set_max_tokens and window:
+            self.max_tokens = resolve_effective_max_tokens(
+                user_max_tokens=0, provider_default=self.max_tokens, context_window=window
+            )
+            self.planner_max_tokens = self.max_tokens
+
+
+# Output-token sizing. An explicit user value always wins; otherwise size to the
+# discovered context window (a sane cap, reserving room for the prompt); else
+# fall back to the static provider default (zero behaviour change pre-handshake).
+DEFAULT_MAX_TOKENS_CAP = 32000
+DEFAULT_PROMPT_BUDGET = 8000
+MIN_MAX_TOKENS_FLOOR = 2048
+
+
+def resolve_effective_max_tokens(
+    *,
+    user_max_tokens: int,
+    provider_default: int,
+    context_window: int | None,
+    prompt_budget: int = DEFAULT_PROMPT_BUDGET,
+    sane_cap: int = DEFAULT_MAX_TOKENS_CAP,
+    min_floor: int = MIN_MAX_TOKENS_FLOOR,
+) -> int:
+    """Choose an output ``max_tokens``.
+
+    Precedence: an explicit ``user_max_tokens`` (>0) wins; otherwise, when the
+    context window is known, ``min(sane_cap, window - prompt_budget)`` floored at
+    ``min_floor``; otherwise the static ``provider_default``.
+    """
+    if user_max_tokens and user_max_tokens > 0:
+        return int(user_max_tokens)
+    if context_window and context_window > 0:
+        return max(min_floor, min(sane_cap, context_window - prompt_budget))
+    return int(provider_default)
 
 
 def _uses_local_reasoning_model_profile(provider: str, model: str) -> bool:
