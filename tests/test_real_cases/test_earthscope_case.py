@@ -44,8 +44,8 @@ def _staged_station_id(run) -> str:
     """The profiled/plotted station CSV encodes the station id, e.g.
     ``P475.CI.LY_.20.csv`` -> ``P475`` (ignores the metadata catalog CSV)."""
     for call in run.tool_calls:
-        if call.name in ("ndp_plot_csv_timeseries", "ndp_profile_csv_resource"):
-            base = Path(str((call.args or {}).get("filepath", ""))).name
+        if call.name in ("plot_plot_timeseries", "pandas_profile_csv"):
+            base = Path(str((call.args or {}).get("data_path", ""))).name
             if base and not base.startswith("earthscope_converted"):
                 return base.split(".")[0]
     return ""
@@ -56,9 +56,9 @@ def ran_acquisition_to_plot_pipeline(run):
     """The real pipeline ran: spatial filter -> stage -> profile -> plot."""
     n = run.tool_names
     return (
-        "ndp_filter_earthscope_station_catalog" in n
+        "geo_filter_points_by_radius" in n
         and "ndp_stage_resource" in n
-        and "ndp_profile_csv_resource" in n
+        and "pandas_profile_csv" in n
         and any("plot" in x for x in n)
     )
 
@@ -69,11 +69,11 @@ def staged_station_on_region(run):
     appear in the filter result within the requested radius. This is what would
     catch an off-region staging (the r50 failure), and it reads structured tool
     output, not synthesis prose."""
-    fr = _tool_result(run, "ndp_filter_earthscope_station_catalog")
+    fr = _tool_result(run, "geo_filter_points_by_radius")
     if not fr:
         return False
     radius = float(fr.get("radius_km") or 0)
-    distances = {str(s.get("station")): s.get("distance_km") for s in fr.get("stations", [])}
+    distances = {str(p.get("id")): p.get("distance_km") for p in fr.get("points", [])}
     sid = _staged_station_id(run)
     if not sid or sid not in distances or distances[sid] is None:
         return False
@@ -114,7 +114,7 @@ def test_earthscope_gnss_region(agent):
     # Provenance: the staged station is genuinely within the requested radius.
     assert staged_station_on_region(run), (
         f"staged station off-region or unverifiable; "
-        f"station={_staged_station_id(run)}, filter={_tool_result(run, 'ndp_filter_earthscope_station_catalog')}"
+        f"station={_staged_station_id(run)}, filter={_tool_result(run, 'geo_filter_points_by_radius')}"
     )
 
     # Real deliverable: a non-empty PNG on disk.
