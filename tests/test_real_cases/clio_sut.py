@@ -228,9 +228,23 @@ class ClioAgent(SUT):
                         json={"parts": [{"type": "text", "text": prompt}]})
         ack.raise_for_status()
         user_id = ack.json()["message_id"]
-        deadline = time.monotonic() + timeout_s
-        while time.monotonic() < deadline:
+        # Progress-based wait: NO per-session/per-experiment wall. Keep waiting as
+        # long as the turn is still producing (the message stream keeps changing);
+        # abort only after a generous NO-PROGRESS window (a genuinely stuck turn).
+        # Individual hung calls are bounded by per-call timeouts elsewhere. A 15-min
+        # run that is producing should complete. ``timeout_s`` (if >0) is an optional
+        # hard ceiling, OFF by default; ``no_progress_s`` is the real watchdog.
+        no_progress_s = float(self._overrides.get("no_progress_s", 900.0))
+        hard_cap_s = float(timeout_s) if timeout_s and timeout_s > 0 else 0.0
+        start = time.monotonic()
+        last_change = start
+        prev_sig = ""
+        while True:
             messages = http.get(f"/v1/sessions/{session_id}/messages").json()["messages"]
+            sig = f"{len(messages)}|{messages[0] if messages else ''}"
+            if sig != prev_sig:
+                prev_sig = sig
+                last_change = time.monotonic()
             for index, message in enumerate(messages):
                 if message.get("id") == user_id:
                     if index > 0 and messages[index - 1].get("role") == "assistant":
@@ -238,8 +252,12 @@ class ClioAgent(SUT):
                         if str(assistant.get("stop_reason") or "") or assistant.get("error_info") is not None:
                             return assistant
                     break
+            now = time.monotonic()
+            if now - last_change > no_progress_s:
+                raise TimeoutError(f"assistant turn made no progress for {no_progress_s:g}s")
+            if hard_cap_s and now - start > hard_cap_s:
+                raise TimeoutError(f"assistant turn exceeded hard cap {hard_cap_s:g}s")
             time.sleep(1.0)
-        raise TimeoutError(f"assistant turn did not settle in {timeout_s:g}s")
 
     # --- normalization ------------------------------------------------------
 
