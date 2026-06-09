@@ -21852,6 +21852,29 @@ def build_app(
         }
         return _lm_provider_info(presets=info.presets)
 
+    @app.get("/v1/providers/lm/wait", response_model=LMProviderInfo)
+    async def wait_lm_provider(timeout: float = 60.0) -> LMProviderInfo:
+        """Block until the LM provider reaches a terminal state, then return it.
+
+        The bind (``PUT /v1/providers/lm``) is async — it returns immediately and
+        wires the LM through an ``idle -> configuring -> ready`` (or ``error``) state
+        machine in the background. This endpoint lets any caller *await* readiness in
+        a single request instead of re-implementing a client-side poll loop: it
+        blocks server-side while the provider is ``configuring`` and returns the
+        ``LMProviderInfo`` the moment it is ``ready``/``error`` (or ``idle`` — nothing
+        pending), or when ``timeout`` (capped at 600s) elapses. Idempotent.
+        """
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + max(0.0, min(float(timeout), 600.0))
+        while True:
+            status = getattr(app.state, "lm_config_status", {}) or {"state": "idle"}
+            if str(status.get("state") or "idle") in ("ready", "error", "idle"):
+                break
+            if loop.time() >= deadline:
+                break
+            await asyncio.sleep(0.2)
+        return _lm_provider_info()
+
     @app.get("/v1/providers/{provider_id}")
     async def get_provider(provider_id: str) -> dict[str, Any]:
         """SPEC §6.12 detail endpoint for one provider preset."""

@@ -23,8 +23,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx
-
-from agent_test import Run, SUT, ToolCall
+from agent_test import SUT, Run, ToolCall
 
 DEFAULT_BASE_URL = os.environ.get("CLIO_GACT_URL", "http://127.0.0.1:17960").rstrip("/")
 
@@ -135,19 +134,30 @@ class ClioAgent(SUT):
         return self
 
     def _wait_lm_ready(self, http: httpx.Client, *, timeout_s: float) -> None:
-        """LM wiring is async after PUT; wait until it reports ready so the
-        first turn does not race a 503 ('no ClioAgent wired')."""
+        """LM wiring is async after PUT; await readiness via the server-side
+        ``GET /v1/providers/lm/wait`` long-poll instead of a hand-rolled poll loop,
+        so the first turn does not race a 503 ('no ClioAgent wired')."""
         deadline = time.monotonic() + timeout_s
         last = ""
         while time.monotonic() < deadline:
-            info = http.get("/v1/providers/lm").json()
+            window = max(1.0, min(30.0, deadline - time.monotonic()))
+            try:
+                info = http.get(
+                    "/v1/providers/lm/wait",
+                    params={"timeout": window},
+                    timeout=window + 10.0,
+                ).json()
+            except Exception as exc:  # transient transport hiccup — retry within deadline
+                last = f"wait error: {exc}"
+                time.sleep(1.0)
+                continue
             state = str(info.get("state") or "")
             last = state or str(info.get("status_message") or "")
             if state == "ready":
                 return
             if state == "error":
                 raise RuntimeError(f"LM provider failed to configure: {info.get('error') or info}")
-            time.sleep(1.0)
+            # idle / still configuring after the long-poll window -> loop again
         raise TimeoutError(f"LM provider not ready in {timeout_s:g}s (last state: {last!r})")
 
     def invoke(self, input: Any) -> Run:
