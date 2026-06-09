@@ -23,14 +23,19 @@ models.dev source on first use when its cache is stale.
 from __future__ import annotations
 
 from clio_agent.providers.handshake.sources.marketplace import lookup_marketplace
-from clio_agent.providers.handshake.sources.models_dev import lookup_models_dev
+from clio_agent.providers.handshake.sources.models_dev import (
+    lookup_models_dev,
+    lookup_models_dev_output,
+)
 from clio_agent.providers.handshake.sources.static import lookup_static
 
 __all__ = [
     "lookup_marketplace",
     "lookup_models_dev",
+    "lookup_models_dev_output",
     "lookup_static",
     "resolve_context",
+    "resolve_output_limit",
 ]
 
 #: Provenance string for the models.dev source.
@@ -75,3 +80,15 @@ def resolve_context(model_id: str, provider_kind: str) -> tuple[int | None, str]
         return window, SOURCE_STATIC
 
     return None, ""
+
+
+def resolve_output_limit(model_id: str, provider_kind: str) -> int | None:
+    """Resolve a model's maximum output tokens (``limit.output``), or None.
+
+    Output caps are only tracked by models.dev today (the marketplace/static
+    sources cover context windows, not output). ``provider_kind`` is accepted for
+    call-site symmetry with :func:`resolve_context`.
+    """
+    if not (model_id or "").strip():
+        return None
+    return lookup_models_dev_output(model_id)

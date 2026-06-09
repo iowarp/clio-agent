@@ -21,60 +21,84 @@ def _report(model_id: str, **kw: object) -> HandshakeReport:
     )
 
 
-# ---- resolve_effective_max_tokens precedence ----
+# ---- resolve_effective_max_tokens precedence (output cap, no magic) ----
 def test_user_override_always_wins() -> None:
     assert (
         resolve_effective_max_tokens(
-            user_max_tokens=5000, provider_default=4096, context_window=262144
+            user_max_tokens=5000,
+            provider_default=4096,
+            output_limit=32768,
+            context_window=262144,
         )
         == 5000
     )
 
 
-def test_context_aware_big_window_uses_sane_cap() -> None:
+def test_output_limit_is_the_default() -> None:
     assert (
         resolve_effective_max_tokens(
-            user_max_tokens=0, provider_default=4096, context_window=262144
+            user_max_tokens=0, provider_default=4096, output_limit=32768, context_window=262144
         )
-        == 32000
+        == 32768
     )
 
 
-def test_context_aware_small_window_reserves_prompt_budget() -> None:
-    # 16384 - 8000 prompt budget = 8384, under the 32000 cap
+def test_output_limit_capped_to_context() -> None:
+    # an output limit larger than the window is capped to the window
     assert (
-        resolve_effective_max_tokens(user_max_tokens=0, provider_default=4096, context_window=16384)
-        == 8384
+        resolve_effective_max_tokens(
+            user_max_tokens=0, provider_default=4096, output_limit=300000, context_window=131072
+        )
+        == 131072
     )
 
 
-def test_context_aware_tiny_window_floored() -> None:
-    # 8192 - 8000 = 192 -> floored to 2048
+def test_no_output_limit_uses_provider_default() -> None:
+    # no discovered output cap -> keep the provider default (no magic), capped to window
     assert (
-        resolve_effective_max_tokens(user_max_tokens=0, provider_default=4096, context_window=8192)
-        == 2048
+        resolve_effective_max_tokens(
+            user_max_tokens=0, provider_default=4096, output_limit=None, context_window=262144
+        )
+        == 4096
     )
 
 
-def test_no_window_falls_back_to_static_default() -> None:
+def test_no_window_no_output_uses_provider_default() -> None:
     assert (
-        resolve_effective_max_tokens(user_max_tokens=0, provider_default=4096, context_window=None)
+        resolve_effective_max_tokens(
+            user_max_tokens=0, provider_default=4096, output_limit=None, context_window=None
+        )
         == 4096
     )
 
 
 # ---- apply_handshake ----
-def test_apply_handshake_replaces_alcf_4096_with_context_aware() -> None:
+def test_apply_handshake_sets_max_tokens_from_output_limit() -> None:
     cfg = LMProviderConfig(provider="argonne", model="openai/gpt-oss-120b", api_key="x")
-    assert cfg.max_tokens == 4096  # the ALCF static default (the bug)
+    assert cfg.max_tokens == 4096  # the ALCF static default
     cfg.apply_handshake(
-        _report("openai/gpt-oss-120b", context_window=65536, native_tool_calling=True),
+        _report(
+            "openai/gpt-oss-120b",
+            context_window=65536,
+            output_limit=32768,
+            native_tool_calling=True,
+        ),
         user_set_max_tokens=False,
     )
     assert cfg.context_window == 65536
     assert cfg.chosen_context == 65536
     assert cfg.native_tool_calling is True
-    assert cfg.max_tokens == 32000  # was 4096
+    assert cfg.max_tokens == 32768  # the discovered output cap, not magic
+
+
+def test_apply_handshake_no_output_limit_keeps_provider_default() -> None:
+    cfg = LMProviderConfig(provider="argonne", model="openai/gpt-oss-120b", api_key="x")
+    cfg.apply_handshake(
+        _report("openai/gpt-oss-120b", context_window=65536),  # no output_limit discovered
+        user_set_max_tokens=False,
+    )
+    assert cfg.chosen_context == 65536
+    assert cfg.max_tokens == 4096  # provider default, no context-minus-magic
 
 
 def test_apply_handshake_user_max_tokens_preserved() -> None:

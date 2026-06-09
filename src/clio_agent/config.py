@@ -344,41 +344,42 @@ class LMProviderConfig:
         self.tool_call_parser = profile.tool_call_parser
         window = profile.effective_context_window
         self.chosen_context = window
-        if not user_set_max_tokens and window:
+        if not user_set_max_tokens:
             self.max_tokens = resolve_effective_max_tokens(
-                user_max_tokens=0, provider_default=self.max_tokens, context_window=window
+                user_max_tokens=0,
+                provider_default=self.max_tokens,
+                output_limit=profile.output_limit,
+                context_window=window,
             )
             self.planner_max_tokens = self.max_tokens
-
-
-# Output-token sizing. An explicit user value always wins; otherwise size to the
-# discovered context window (a sane cap, reserving room for the prompt); else
-# fall back to the static provider default (zero behaviour change pre-handshake).
-DEFAULT_MAX_TOKENS_CAP = 32000
-DEFAULT_PROMPT_BUDGET = 8000
-MIN_MAX_TOKENS_FLOOR = 2048
 
 
 def resolve_effective_max_tokens(
     *,
     user_max_tokens: int,
     provider_default: int,
-    context_window: int | None,
-    prompt_budget: int = DEFAULT_PROMPT_BUDGET,
-    sane_cap: int = DEFAULT_MAX_TOKENS_CAP,
-    min_floor: int = MIN_MAX_TOKENS_FLOOR,
+    output_limit: int | None = None,
+    context_window: int | None = None,
 ) -> int:
-    """Choose an output ``max_tokens``.
+    """Choose the per-reply output ``max_tokens`` — a real discovered number, no magic.
 
-    Precedence: an explicit ``user_max_tokens`` (>0) wins; otherwise, when the
-    context window is known, ``min(sane_cap, window - prompt_budget)`` floored at
-    ``min_floor``; otherwise the static ``provider_default``.
+    Precedence: an explicit ``user_max_tokens`` (>0) wins; otherwise the model's
+    discovered maximum output (``output_limit``, e.g. models.dev ``limit.output``)
+    when known; otherwise the static ``provider_default`` (unchanged pre-handshake).
+    The result is capped to ``context_window`` when known so one reply can never
+    exceed the budget. There is deliberately **no** "context minus a prompt reserve"
+    arithmetic — that was opaque and overflow-prone. ``max_tokens`` is the output
+    cap; the total budget is ``chosen_context``.
     """
     if user_max_tokens and user_max_tokens > 0:
-        return int(user_max_tokens)
+        chosen = int(user_max_tokens)
+    elif output_limit and output_limit > 0:
+        chosen = int(output_limit)
+    else:
+        chosen = int(provider_default)
     if context_window and context_window > 0:
-        return max(min_floor, min(sane_cap, context_window - prompt_budget))
-    return int(provider_default)
+        chosen = min(chosen, int(context_window))
+    return max(1, chosen)
 
 
 def _uses_local_reasoning_model_profile(provider: str, model: str) -> bool:

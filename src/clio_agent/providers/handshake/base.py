@@ -156,22 +156,35 @@ class ProviderHandshake(abc.ABC):
     async def enrich_capabilities(
         self, profile: ModelProfile, ctx: HandshakeContext
     ) -> ModelProfile:
-        """Fill a missing ``context_window`` via the context-source factory.
+        """Fill a missing ``context_window`` and ``output_limit`` from the factory.
 
-        Default behaviour: if the provider already reported a window (``source ==
-        "live"`` with a value) keep it; otherwise consult models.dev then the
-        marketplace DB then the static registry (when ``allow_external_sources``).
+        If the provider already reported a window keep it; otherwise consult
+        models.dev -> marketplace -> static (when ``allow_external_sources``). The
+        ``output_limit`` (the max output cap) is only tracked by models.dev and is
+        resolved independently, since a provider may report context but not output.
         """
-        if profile.context_window is not None or not ctx.allow_external_sources:
+        if not ctx.allow_external_sources:
             return profile
-        from clio_agent.providers.handshake.sources import resolve_context  # noqa: PLC0415
+        from clio_agent.providers.handshake.sources import (  # noqa: PLC0415
+            resolve_context,
+            resolve_output_limit,
+        )
 
-        window, source = resolve_context(profile.id, ctx.provider_kind)
-        if window is None:
+        updates: dict[str, Any] = {}
+        if profile.context_window is None:
+            window, source = resolve_context(profile.id, ctx.provider_kind)
+            if window is not None:
+                updates["context_window"] = window
+                updates["context_source"] = source
+        if profile.output_limit is None:
+            output = resolve_output_limit(profile.id, ctx.provider_kind)
+            if output is not None:
+                updates["output_limit"] = output
+        if not updates:
             return profile
         from dataclasses import replace  # noqa: PLC0415
 
-        return replace(profile, context_window=window, context_source=source)
+        return replace(profile, **updates)
 
     # ------------------------------------------------------------------ helpers
     async def _open_client(self, ctx: HandshakeContext) -> Any:

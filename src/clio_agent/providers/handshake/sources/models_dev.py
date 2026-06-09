@@ -235,3 +235,56 @@ def lookup_models_dev(
         if window is not None:
             return window
     return None
+
+
+def _extract_output(entry: object) -> int | None:
+    """Pull ``limit.output`` out of a models.dev entry, or None if absent/invalid."""
+    if not isinstance(entry, dict):
+        return None
+    limit = entry.get("limit")
+    if not isinstance(limit, dict):
+        return None
+    output = limit.get("output")
+    if isinstance(output, bool):
+        return None
+    if isinstance(output, int) and output > 0:
+        return output
+    return None
+
+
+def _build_output_index(catalog: dict[str, Any]) -> dict[str, int]:
+    """Build a normalized ``{candidate_key: max_output_tokens}`` index (``limit.output``)."""
+    index: dict[str, int] = {}
+    for key, entry in catalog.items():
+        if not isinstance(key, str):
+            continue
+        output = _extract_output(entry)
+        if output is None:
+            continue
+        norm_key = normalize_id(key)
+        if norm_key and norm_key not in index:
+            index[norm_key] = output
+        if "/" in norm_key:
+            basename = norm_key.rsplit("/", 1)[1]
+            if basename and basename not in index:
+                index[basename] = output
+    return index
+
+
+def lookup_models_dev_output(
+    model_id: str,
+    *,
+    path: str | os.PathLike[str] | None = None,
+    ttl_s: float = DEFAULT_TTL_S,
+    allow_fetch: bool = True,
+) -> int | None:
+    """Return the models.dev max output tokens (``limit.output``) for ``model_id``, or None."""
+    catalog = _load_models_dev(path, ttl_s=ttl_s, allow_fetch=allow_fetch)
+    if not catalog:
+        return None
+    index = _build_output_index(catalog)
+    for candidate in iter_id_candidates(model_id):
+        output = index.get(candidate)
+        if output is not None:
+            return output
+    return None
