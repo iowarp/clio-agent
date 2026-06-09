@@ -69,9 +69,9 @@ class TestLMProviderConfig:
         assert config.api_key == "custom-key"
 
     def test_default_temperature(self):
-        """Default temperature should be 1.0."""
+        """Default agentic temperature should be 0.0 (deterministic structured output)."""
         config = LMProviderConfig()
-        assert config.temperature == 1.0
+        assert config.temperature == 0.0
 
     def test_default_planner_temperature(self):
         """Default planner temperature should be 0.3."""

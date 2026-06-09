@@ -834,7 +834,10 @@ class LMProviderInfo(BaseModel):
     provider: str = ""
     api_base: str = ""
     model: str = ""
-    temperature: float = 1.0
+    # Mirrors LMProviderConfig's deterministic default (see config.py):
+    # the agentic LM path is structured/tool-calling, so greedy decoding
+    # is the sane default. Overridable from the TUI.
+    temperature: float = 0.0
     max_tokens: int = 32000
     context_length: int = 0
     thinking_budget: int = 0
@@ -884,14 +887,15 @@ class LMProviderRequest(BaseModel):
     ``temperature`` + ``max_tokens`` are forwarded to dspy.LM so
     the user can tune behaviour from the TUI without touching env
     vars. Defaults match LMProviderConfig's defaults
-    (temperature=1.0, max_tokens=32000).
+    (temperature=0.0 — deterministic, structured/tool-calling agentic
+    output; max_tokens=32000).
     """
 
     provider: str
     api_base: str
     model: str
     api_key: str = "x"
-    temperature: float = 1.0
+    temperature: float = 0.0
     max_tokens: int = 0
     # Context window requested/expected for the model load. This is
     # not forwarded to DSPy/LiteLLM as a completion parameter; local

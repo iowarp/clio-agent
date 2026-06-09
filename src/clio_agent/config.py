@@ -206,7 +206,19 @@ class LMProviderConfig:
     api_base: str = ""
     model: str = ""
     api_key: str = ""
-    temperature: float = 1.0
+    # Default to greedy/deterministic decoding for the agentic LM path.
+    # CLIO drives the LM almost exclusively for STRUCTURED output —
+    # ReAct tool calls, typed routing decisions, JSON workflow_state,
+    # field-formatted DSPy adapter responses. At temperature 1.0 the
+    # sampler injects entropy into exactly those structured fields,
+    # which is how small/cheap models (and the occasional large one)
+    # drift: hallucinated plot columns, fabricated CSV/PNG paths,
+    # parse-time field-format breakage. Per DSPy norms, structured/
+    # tool-calling predictors want deterministic decoding (temp 0.0)
+    # for reproducible, parseable outputs; creativity isn't the job
+    # here. Overridable via CLIO_LM_TEMPERATURE / the PUT body / the
+    # config field for callers who want sampling.
+    temperature: float = 0.0
     # 0 is a sentinel "use the provider's max_tokens override (see
     # PROVIDER_DEFAULTS) if it has one, else 32000". Callers who
     # explicitly pass any non-zero value win.
