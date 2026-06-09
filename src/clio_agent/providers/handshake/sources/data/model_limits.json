@@ -23,6 +23,14 @@
   "context": 128000,
   "source": "seed"
  },
+ "gpt-oss-120b": {
+  "context": 65536,
+  "source": "seed"
+ },
+ "gpt-oss-20b": {
+  "context": 131072,
+  "source": "seed"
+ },
  "granite-4-h-tiny": {
   "context": 1048576,
   "source": "seed"
