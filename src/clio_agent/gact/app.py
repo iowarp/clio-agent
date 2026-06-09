@@ -679,10 +679,14 @@ class _TurnCancelled(RuntimeError):
 
 
 class _TurnTimedOut(RuntimeError):
-    """Raised internally when an agent turn exceeds the configured wall clock."""
+    """Raised internally when an agent turn makes no observable progress.
+
+    ``timeout_s`` is the no-progress window (the max allowed gap between
+    published progress events), not a cap on total turn duration.
+    """
 
     def __init__(self, timeout_s: float) -> None:
-        super().__init__(f"agent turn exceeded {timeout_s:g}s timeout")
+        super().__init__(f"agent turn made no progress for {timeout_s:g}s")
         self.timeout_s = timeout_s
 
 
@@ -6877,27 +6881,63 @@ async def _run_turn_in_background(
     app.state.cancel_events[sid] = turn_cancel_event
     if sid in app.state.cancel_flags:
         turn_cancel_event.set()
-    turn_timeout_s = _gact_turn_timeout_s()
-    turn_deadline = time.monotonic() + turn_timeout_s if turn_timeout_s > 0 else 0.0
+    # No-progress watchdog, not a hard wall: CLIO_GACT_TURN_TIMEOUT_S bounds the
+    # gap BETWEEN observable progress events, never the total turn duration. A
+    # long-but-progressing turn (a multi-phase EarthScope pipeline: filter ->
+    # stage -> profile -> plot, each emitting bus events) must run to completion;
+    # only a turn that goes silent for the whole window is wedged and aborted.
+    # See [[clio-no-session-timeout]].
+    turn_progress_timeout_s = _gact_turn_timeout_s()
+    # Poll the progress heartbeat on a short cadence so abort latency after the
+    # turn truly wedges stays small without busy-waiting. Cap by the window so a
+    # tiny configured timeout still polls at least as often.
+    _watchdog_poll_s = min(2.0, turn_progress_timeout_s) if turn_progress_timeout_s > 0 else 2.0
 
     def cancel_requested() -> bool:
         return turn_cancel_event.is_set()
 
     async def _await_turn_work(awaitable: Any) -> Any:
-        if turn_timeout_s <= 0:
+        if turn_progress_timeout_s <= 0:
             return await awaitable
-        remaining = turn_deadline - time.monotonic()
-        if remaining <= 0:
-            turn_cancel_event.set()
-            close = getattr(awaitable, "close", None)
-            if callable(close):
-                close()
-            raise _TurnTimedOut(turn_timeout_s)
+        # Drive the work as a task and poll for completion. asyncio.wait (unlike
+        # wait_for) does NOT cancel the task when the poll interval elapses, so a
+        # still-running turn is never disturbed by the watchdog tick. We seed the
+        # no-progress clock at "now" so a turn that publishes nothing at all is
+        # still bounded by one window; every bus publish for this session (or a
+        # global "" event) refreshes it via EventBus.last_publish_monotonic.
+        bus = app.state.bus
+        task = asyncio.ensure_future(awaitable)
+        last_progress = time.monotonic()
         try:
-            return await asyncio.wait_for(awaitable, timeout=remaining)
-        except TimeoutError as exc:
-            turn_cancel_event.set()
-            raise _TurnTimedOut(turn_timeout_s) from exc
+            while True:
+                done, _pending = await asyncio.wait({task}, timeout=_watchdog_poll_s)
+                if done:
+                    return task.result()
+                heartbeat = max(
+                    bus.last_publish_monotonic(sid),
+                    bus.last_publish_monotonic(""),
+                )
+                if heartbeat > last_progress:
+                    last_progress = heartbeat
+                if time.monotonic() - last_progress >= turn_progress_timeout_s:
+                    turn_cancel_event.set()
+                    task.cancel()
+                    try:
+                        await task
+                    except BaseException:  # noqa: BLE001 - swallow during abort
+                        pass
+                    raise _TurnTimedOut(turn_progress_timeout_s) from None
+        except asyncio.CancelledError:
+            # If the work already finished, the cancellation targeted *us* (the
+            # watchdog wrapper) after the result was ready -- e.g. event-loop
+            # teardown cancelling pending tasks. Surface the completed result
+            # rather than masking a finished turn as a cancellation.
+            if task.done() and not task.cancelled():
+                exc = task.exception()
+                if exc is None:
+                    return task.result()
+            task.cancel()
+            raise
 
     async def _run_dynamic_agent_sync(agent_def: "AgentDef", prompt: str) -> Any:
         runner = _blueprint_runner_for_agent(agent_def)
@@ -8369,9 +8409,10 @@ async def _run_turn_in_background(
         partial_output = bool(streamed_assistant_buffer)
         error_info = ErrorInfo(
             error="provider_timeout",
-            message=f"agent turn exceeded {exc.timeout_s:g}s timeout",
+            message=f"agent turn made no progress for {exc.timeout_s:g}s",
             details={
                 "session_id": sid,
+                "no_progress_timeout_s": exc.timeout_s,
                 "timeout_s": exc.timeout_s,
                 "partial_output": partial_output,
                 "execution_cancellation": "best_effort",

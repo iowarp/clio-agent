@@ -100,6 +100,38 @@ class SlowClioAgent(FakeClioAgent):
         return FakePrediction(answer=self.answer)
 
 
+class ProgressingSlowClioAgent(FakeClioAgent):
+    """Runs longer than the no-progress window but keeps publishing progress.
+
+    Mirrors a real multi-phase turn (filter -> stage -> profile -> plot): each
+    phase emits a bus event, so the gap between events stays under the window
+    even though the total turn duration exceeds it. The no-progress watchdog
+    must let this run to completion.
+    """
+
+    def __init__(self, *, steps: int, step_s: float) -> None:
+        super().__init__(answer="progressing done")
+        self.steps = steps
+        self.step_s = step_s
+        self.bus: Any | None = None
+
+    def forward(self, question: str, session_id: str) -> Any:
+        from clio_agent.gact.events import Event
+
+        self.calls.append((question, session_id))
+        for i in range(self.steps):
+            time.sleep(self.step_s)
+            if self.bus is not None:
+                self.bus.publish(
+                    Event(
+                        type="semantic.event",
+                        session_id=session_id,
+                        payload={"summary": f"phase {i}"},
+                    )
+                )
+        return FakePrediction(answer=self.answer)
+
+
 @pytest.fixture()
 def fake_agent() -> FakeClioAgent:
     return FakeClioAgent()
@@ -1380,6 +1412,35 @@ def test_post_message_turn_timeout_surfaces_error(
     assert sess["status"] == "error"
     assert sess["message_count"] == 2
     assert len(agent.calls) <= 1
+
+
+def test_post_message_progressing_turn_outlives_no_progress_window(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A long-but-progressing turn must NOT be aborted by the watchdog.
+
+    Total duration (5 x 0.1s = ~0.5s) exceeds the 0.2s window, but the gap
+    between published progress events (~0.1s) stays under it, so the turn is
+    progressing and must complete successfully.
+    """
+
+    from .conftest import complete_turn
+
+    monkeypatch.setenv("CLIO_GACT_TURN_TIMEOUT_S", "0.2")
+    agent = ProgressingSlowClioAgent(steps=5, step_s=0.1)
+    app = build_app(sessions_path=tmp_path / "sessions.json", agent=agent)
+    agent.bus = app.state.bus
+    with TestClient(app) as c:
+        sid = _create_session(c)
+        assistant = complete_turn(c, sid, "hi", timeout=5.0)
+        sess = c.get(f"/v1/sessions/{sid}").json()
+
+    assert assistant.get("error_info") is None
+    assert assistant["stop_reason"] != "error"
+    assert assistant["parts"][-1]["text"] == "progressing done"
+    assert sess["status"] != "error"
+    assert len(agent.calls) == 1
 
 
 def test_post_message_session_model_matching_global_config_runs(

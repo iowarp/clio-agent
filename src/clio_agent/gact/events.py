@@ -117,6 +117,13 @@ class EventBus:
         # ``history[last_event_id + 1:]`` on connect so they don't
         # miss events published before they arrived (SPEC §7.3 replay).
         self._history: dict[str, list[Event]] = defaultdict(list)
+        # session_id -> last publish wall (time.monotonic) timestamp. Every
+        # progress signal a turn makes (semantic events, message deltas, tool
+        # parts) flows through ``publish``, so this doubles as a per-session
+        # liveness heartbeat the turn watchdog reads to distinguish a slow-but-
+        # progressing turn from a wedged one. Plain float assignment is safe to
+        # set from worker threads (the agent loop runs in an executor).
+        self._last_publish_monotonic: dict[str, float] = {}
 
     def publish(self, event: Event) -> None:
         """Fan-out to every subscriber of event.session_id + record
@@ -135,6 +142,14 @@ class EventBus:
         if len(log) > self._history_cap:
             del log[: len(log) - self._history_cap]
 
+        # Record the liveness heartbeat for the turn watchdog. A specific
+        # session's progress also counts as global ("") progress so the
+        # no-progress watchdog (which keys off the turn's session) sees it.
+        now = time.monotonic()
+        self._last_publish_monotonic[event.session_id] = now
+        if event.session_id != "":
+            self._last_publish_monotonic[""] = now
+
         subscriber_sessions = (
             list(self._subs)
             if event.session_id == ""
@@ -146,6 +161,19 @@ class EventBus:
                     q.put_nowait(event)
                 except asyncio.QueueFull:
                     pass
+
+    def last_publish_monotonic(self, session_id: str) -> float:
+        """Return the ``time.monotonic`` of the most recent publish for a session.
+
+        Returns ``0.0`` if nothing has ever been published for the session.
+        Used by the per-turn no-progress watchdog: as long as the turn keeps
+        publishing events (semantic spans, tool parts, message deltas) the
+        turn is making progress and must not be aborted, regardless of total
+        wall-clock elapsed. Only a stretch with no published event for longer
+        than the configured window counts as a wedged turn.
+        """
+
+        return self._last_publish_monotonic.get(session_id, 0.0)
 
     def _history_snapshot(self, session_id: str) -> list[Event]:
         """Return global plus session history ordered by event id."""
