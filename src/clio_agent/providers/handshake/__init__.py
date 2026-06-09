@@ -80,12 +80,22 @@ async def run_handshake(
     force: bool = False,
     ttl_s: float = cache.DEFAULT_TTL_S,
 ) -> HandshakeReport:
-    """Run (or return a cached) handshake for ``ctx``. Never raises."""
+    """Run (or return a cached) handshake for ``ctx``. Never raises.
+
+    On a fresh (non-cached) run, live-discovered limits are recorded into the local
+    model-limits DB (and disagreements logged), so the cascade learns over time.
+    """
     handshake = get_handshake_for(ctx.provider_kind, provider)
     key = cache.cache_key(ctx.provider_id, ctx.api_base)
-    return await cache.cached_or_run(
-        key, lambda: handshake.handshake(ctx), ttl_s=ttl_s, force=force
-    )
+
+    async def _run_and_record() -> HandshakeReport:
+        report = await handshake.handshake(ctx)
+        from clio_agent.providers.handshake.sources import db  # noqa: PLC0415
+
+        db.record_report(report)
+        return report
+
+    return await cache.cached_or_run(key, _run_and_record, ttl_s=ttl_s, force=force)
 
 
 def run_handshake_sync(

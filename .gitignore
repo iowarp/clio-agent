@@ -174,3 +174,6 @@ tmp/
 /ca_warnings_full.geojson
 /cimis_fresno_weather.png
 /artifacts/
+
+# handshake DB runtime mismatch log
+src/clio_agent/providers/handshake/sources/data/model_limits.mismatches.jsonl
