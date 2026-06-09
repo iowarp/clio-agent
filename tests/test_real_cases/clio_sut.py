@@ -125,7 +125,7 @@ class ClioAgent(SUT):
                 "api_base": str(self._overrides.get("api_base") or row.get("api_base") or ""),
                 "model": model or str(row.get("default_model") or ""),
                 "api_key": os.environ.get("CLIO_LM_API_KEY", "x"),
-                "temperature": float(self._overrides.get("temperature", 1.0)),
+                "temperature": float(self._overrides.get("temperature", 0.0)),
                 "max_tokens": int(self._overrides.get("max_tokens", 32000)),
             }
             if "system_prompt" in self._overrides:

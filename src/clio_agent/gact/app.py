@@ -21669,7 +21669,12 @@ def build_app(
                 if pending.get("temperature") is not None
                 else float(cfg["temperature"])
                 if cfg.get("temperature") is not None
-                else 1.0
+                # Mirror LMProviderConfig's deterministic default (0.0) when no
+                # provider is configured yet, instead of re-surfacing the old
+                # 1.0 sampler default that the agentic structured-output path
+                # never wants. Keeps the idle /v1/providers/lm echo consistent
+                # with what an omitted-temperature PUT actually binds.
+                else 0.0
             ),
             max_tokens=(
                 int(pending["max_tokens"])
