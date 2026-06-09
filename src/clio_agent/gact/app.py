@@ -16125,6 +16125,64 @@ def build_app(
             )
         return {"models": models, "source": "static_catalog"}
 
+    @app.get("/v1/providers/{provider_id}/handshake")
+    async def provider_handshake(
+        provider_id: str, api_base: str = "", refresh: bool = False
+    ) -> dict[str, Any]:
+        """Async provider handshake: connectivity + auth + per-model config.
+
+        Report-only (no runtime mutation). Runs the per-provider handshake and
+        returns the discovered context windows, reasoning/tool capabilities and
+        provenance alongside the legacy model list (``to_models_wire`` shape).
+        Cached for the handshake TTL; ``refresh=true`` forces a re-probe. Argonne
+        resolves its own stored token (passive, never interactive).
+        """
+        import os as _os  # noqa: PLC0415
+
+        from clio_agent.providers.handshake import (  # noqa: PLC0415
+            HandshakeContext,
+            run_handshake,
+        )
+        from clio_agent.providers.registry import (  # noqa: PLC0415
+            as_cloud_api_key_env as _cloud_env,
+        )
+
+        preset = next((p for p in _LM_PRESETS if p.id == provider_id), None)
+        if preset is None:
+            preset = next((p for p in _LM_PRESETS if p.provider == provider_id), None)
+        if preset is None:
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="not_found",
+                        message=f"unknown provider: {provider_id}",
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        env_name = _cloud_env().get(preset.provider, "")
+        api_key = (
+            _os.environ.get(env_name, "")
+            if env_name
+            else _os.environ.get("CLIO_LM_API_KEY", "")
+        )
+        ctx = HandshakeContext(
+            provider_id=preset.id,
+            provider_kind=preset.provider,
+            api_base=(api_base or preset.api_base or ""),
+            api_key=api_key,
+            auth_mode="passive",
+            allow_external_sources=True,
+        )
+        report = await run_handshake(ctx, force=refresh)
+        out = report.to_models_wire()
+        out["connectivity"] = report.connectivity.value
+        out["auth"] = report.auth.value
+        out["latency_ms"] = report.latency_ms
+        out["generated_at"] = report.generated_at
+        return out
+
     def _argonne_cluster_from_preset(preset: "LMProviderPreset") -> str:
         """Pull the cluster slug ("sophia"/"polaris") out of an
         argonne preset's api_base. Argonne presets all point at
