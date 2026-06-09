@@ -563,10 +563,7 @@ class SyncMCPToolExecutor:
                     },
                 )
 
-        effective_args = _workspace_default_tool_arguments(
-            name,
-            _repair_missing_file_arguments(args),
-        )
+        effective_args = _repair_missing_file_arguments(args)
 
         if permission_gate is not None:
             try:
@@ -770,17 +767,6 @@ def _repair_missing_file_arguments(args: Mapping[str, Any]) -> dict[str, Any]:
         if len(unique) == 1:
             repaired[key] = str(unique[0])
     return repaired
-
-
-def _workspace_default_tool_arguments(name: str, args: Mapping[str, Any]) -> dict[str, Any]:
-    """Apply workspace-owned artifact defaults for tools with optional paths.
-
-    Core no longer carries per-tool (e.g. NDP/SAC) staging-path defaults; tool
-    argument shaping for domain tools belongs to the declared MCP servers. This
-    remains a generic pass-through hook so call sites stay stable.
-    """
-
-    return dict(args)
 
 
 def _make_dspy_tools(

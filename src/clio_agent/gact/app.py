@@ -2388,6 +2388,40 @@ def _runtime_dynamic_agent_children_context(
     return "\n".join(lines)
 
 
+def _runtime_active_workspace_context(app: "FastAPI", *, session_id: str = "") -> str:
+    """Surface the active workspace root and write-allowed roots to an expert.
+
+    Data only: it tells the expert where the current session's workspace lives
+    and which roots writes are permitted under, so the expert can naturally
+    place generated artifacts inside the workspace. It does NOT reroute, rename,
+    or force any path — file_policy still validates every write, and out-of-root
+    writes still surface as errors / permission prompts.
+    """
+
+    if app is None:
+        return ""
+    root = _runtime_workspace_catalog_cwd(app, session_id=session_id)
+    if root is None:
+        return ""
+    try:
+        from clio_agent.tools.file_policy import FileAccessPolicy  # noqa: PLC0415
+
+        allowed_roots = [str(item) for item in FileAccessPolicy.from_env().allowed_roots]
+    except Exception:
+        allowed_roots = []
+    lines = [
+        f"Active workspace root: {root}",
+        (
+            "Write generated artifacts (files, charts, exports) inside the "
+            "active workspace root using absolute paths so they stay with the "
+            "session. Read inputs from wherever the user points you."
+        ),
+    ]
+    if allowed_roots:
+        lines.append("Writes are only permitted under: " + ", ".join(allowed_roots) + ".")
+    return "\n".join(lines)
+
+
 def _dynamic_parent_resume_prompt(
     original_request: str,
     parent_agent: "AgentDef",
@@ -5790,7 +5824,17 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                 if active_app is not None
                 else ""
             )
-            self.system_prompt = "\n\n".join(part for part in (agent_prompt, child_context) if part)
+            workspace_context = (
+                _runtime_active_workspace_context(
+                    active_app,
+                    session_id=_ACTIVE_GACT_SESSION_ID.get(),
+                )
+                if active_app is not None and self.kind == "react"
+                else ""
+            )
+            self.system_prompt = "\n\n".join(
+                part for part in (agent_prompt, workspace_context, child_context) if part
+            )
             self.has_declared_children = bool(child_context.strip())
 
         def forward(
@@ -6037,8 +6081,18 @@ def _build_tool_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> Any
                 if app is not None
                 else ""
             )
+            workspace_context = (
+                _runtime_active_workspace_context(
+                    app,
+                    session_id=_ACTIVE_GACT_SESSION_ID.get(),
+                )
+                if app is not None
+                else ""
+            )
             self.system_prompt = "\n\n".join(
-                part for part in (runtime_text, agent_prompt, child_context) if part
+                part
+                for part in (runtime_text, agent_prompt, workspace_context, child_context)
+                if part
             )
             self.react_agent = dspy.ReAct(
                 _tool_user_agent_signature(),
