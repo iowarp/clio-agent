@@ -26,6 +26,9 @@ from clio_agent.signatures.analysis_sig import (
 from clio_agent.signatures.expert_sig import (
     DataExpertSignature,
 )
+from clio_agent.signatures.hdf5_sig import (
+    HDF5ExpertSignature,
+)
 from clio_agent.signatures.main_agent_sig import (
     AgentActionSignature,
     AgentAnswerSignature,
@@ -42,6 +45,7 @@ __all__ = [
     "RouterSignature",
     "ChatAgentSignature",
     "DataExpertSignature",
+    "HDF5ExpertSignature",
     "AnalysisExpertSignature",
     "VisualizationExpertSignature",
 ]

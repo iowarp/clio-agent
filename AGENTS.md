@@ -4,6 +4,9 @@
 `src/clio_agent/` contains production code, organized by responsibility:
 - `ui/` for CLI and FastAPI entry points
 - `experts/`, `registry/`, and `signatures/` for routing and expert behavior
+  - `experts/hdf5_skills/` bundles a 24-skill HDF5 knowledge base.
+    HDF5Expert exposes one skill at a time on demand via the
+    `hdf5_consult_skill` tool — bodies are never preloaded.
 - `arc/` for memory/indexing/storage components
 - `tools/servers/` for FastMCP-backed tool servers
 - `optimizer/` for tuning and instrumentation workflows

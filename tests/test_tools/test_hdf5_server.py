@@ -256,6 +256,23 @@ async def test_optimize_chunking_invalid_pattern(sample_hdf5):
 
 
 @pytest.mark.asyncio
+async def test_optimize_chunking_synonym_normalization(sample_hdf5):
+    """Natural-language access-pattern synonyms map to the canonical enum."""
+    async with Client(hdf5_server) as client:
+        for synonym in ("row-wise", "sequential", "time-series", "Columnar", "balanced"):
+            result = await client.call_tool(
+                "optimize_chunking",
+                {
+                    "filepath": sample_hdf5,
+                    "dataset": "simulation/temperature",
+                    "access_pattern": synonym,
+                },
+            )
+            data = _parse_result(result)
+            assert "error" not in data, f"{synonym!r} should normalize, got {data}"
+
+
+@pytest.mark.asyncio
 async def test_analyze_file(sample_hdf5):
     """Test high-level file analysis."""
     async with Client(hdf5_server) as client:
@@ -294,15 +311,315 @@ async def test_invalid_dataset_path(sample_hdf5):
 
 
 @pytest.mark.asyncio
-async def test_all_five_tools_accessible():
-    """Test that the server exposes exactly 5 tools."""
+async def test_tool_inventory():
+    """Server exposes the DataExpert tool set plus the HDF5Expert tool set."""
     async with Client(hdf5_server) as client:
         tools = await client.list_tools()
         tool_names = sorted([t.name for t in tools])
         assert tool_names == [
             "analyze_dataset",
             "analyze_file",
+            "apply_filter",
+            "check_cf_compliance",
             "check_compression",
+            "consult_skill",
+            "get_object_metadata",
             "list_datasets",
             "optimize_chunking",
+            "rechunk_dataset",
+            "visualize_dataset",
         ]
+
+
+# ============================================================================
+# HDF5Expert tools
+# ============================================================================
+
+
+import shutil  # noqa: E402
+
+import numpy as np  # noqa: E402
+
+
+@pytest.mark.asyncio
+async def test_get_object_metadata_dataset(sample_hdf5):
+    async with Client(hdf5_server) as client:
+        result = await client.call_tool(
+            "get_object_metadata",
+            {"filepath": sample_hdf5, "object_path": "/simulation/temperature"},
+        )
+    data = _parse_result(result)
+    assert "error" not in data
+    assert data["object_type"] == "dataset"
+    assert data["shape"] == [100, 100]
+    assert data["is_chunked"] is True
+    assert data["chunks"] == [10, 10]
+    assert data["compression"] == "gzip"
+    assert "attributes" in data
+    assert data["attributes"]["units"]["value"] == "Kelvin"
+    assert "statistics" in data
+
+
+@pytest.mark.asyncio
+async def test_get_object_metadata_group(sample_hdf5):
+    async with Client(hdf5_server) as client:
+        result = await client.call_tool(
+            "get_object_metadata",
+            {"filepath": sample_hdf5, "object_path": "/simulation"},
+        )
+    data = _parse_result(result)
+    assert data["object_type"] == "group"
+    assert set(data["members"]) == {"temperature", "pressure"}
+
+
+@pytest.mark.asyncio
+async def test_get_object_metadata_missing(sample_hdf5):
+    async with Client(hdf5_server) as client:
+        result = await client.call_tool(
+            "get_object_metadata",
+            {"filepath": sample_hdf5, "object_path": "/nope"},
+        )
+    data = _parse_result(result)
+    assert data["error"]["code"] == "object_not_found"
+
+
+@pytest.mark.asyncio
+async def test_rechunk_dataset_requires_exactly_one_layout_arg(sample_hdf5):
+    async with Client(hdf5_server) as client:
+        result = await client.call_tool(
+            "rechunk_dataset",
+            {"filepath": sample_hdf5, "object_path": "/simulation/temperature"},
+        )
+    data = _parse_result(result)
+    assert data["error"]["code"] == "ambiguous_layout_request"
+
+
+@pytest.mark.asyncio
+async def test_rechunk_dataset_chunk_dims(sample_hdf5, tmp_path):
+    if shutil.which("h5repack") is None:
+        pytest.skip("h5repack not installed")
+    out = tmp_path / "rechunked.h5"
+    async with Client(hdf5_server) as client:
+        result = await client.call_tool(
+            "rechunk_dataset",
+            {
+                "filepath": sample_hdf5,
+                "object_path": "/simulation/temperature",
+                "chunk_dims": "50x50",
+                "output_filepath": str(out),
+            },
+        )
+    data = _parse_result(result)
+    assert data.get("success") is True, data
+    assert data["new_chunks"] == [50, 50]
+    assert out.exists()
+
+
+@pytest.mark.asyncio
+async def test_rechunk_dataset_adjustment(sample_hdf5, tmp_path):
+    if shutil.which("h5repack") is None:
+        pytest.skip("h5repack not installed")
+    out = tmp_path / "doubled.h5"
+    async with Client(hdf5_server) as client:
+        result = await client.call_tool(
+            "rechunk_dataset",
+            {
+                "filepath": sample_hdf5,
+                "object_path": "/simulation/temperature",
+                "chunk_adjustment": "double",
+                "output_filepath": str(out),
+            },
+        )
+    data = _parse_result(result)
+    assert data.get("success") is True, data
+    assert data["original_chunks"] == [10, 10]
+    assert data["new_chunks"] == [20, 20]
+
+
+@pytest.mark.asyncio
+async def test_rechunk_dataset_h5repack_missing(sample_hdf5, monkeypatch, tmp_path):
+    monkeypatch.setattr(hdf5_module.shutil, "which", lambda _name: None)
+    async with Client(hdf5_server) as client:
+        result = await client.call_tool(
+            "rechunk_dataset",
+            {
+                "filepath": sample_hdf5,
+                "object_path": "/simulation/temperature",
+                "chunk_dims": "50x50",
+                "output_filepath": str(tmp_path / "x.h5"),
+            },
+        )
+    data = _parse_result(result)
+    assert data["error"]["code"] == "h5repack_not_found"
+
+
+@pytest.mark.asyncio
+async def test_apply_filter_gzip(sample_hdf5, tmp_path):
+    if shutil.which("h5repack") is None:
+        pytest.skip("h5repack not installed")
+    out = tmp_path / "filtered.h5"
+    async with Client(hdf5_server) as client:
+        result = await client.call_tool(
+            "apply_filter",
+            {
+                "filepath": sample_hdf5,
+                "object_path": "/simulation/pressure",
+                "filter_type": "gzip",
+                "compression_level": 4,
+                "output_filepath": str(out),
+            },
+        )
+    data = _parse_result(result)
+    assert data.get("success") is True, data
+    assert data["new_filters"]["compression"] == "gzip"
+    assert data["new_filters"]["compression_opts"] == 4
+
+
+@pytest.mark.asyncio
+async def test_apply_filter_requires_choice(sample_hdf5, tmp_path):
+    async with Client(hdf5_server) as client:
+        result = await client.call_tool(
+            "apply_filter",
+            {
+                "filepath": sample_hdf5,
+                "object_path": "/simulation/pressure",
+                "output_filepath": str(tmp_path / "x.h5"),
+            },
+        )
+    data = _parse_result(result)
+    assert data["error"]["code"] == "no_filter_specified"
+
+
+@pytest.mark.asyncio
+async def test_visualize_dataset_1d(sample_hdf5, tmp_path):
+    out = tmp_path / "ts.png"
+    async with Client(hdf5_server) as client:
+        result = await client.call_tool(
+            "visualize_dataset",
+            {
+                "filepath": sample_hdf5,
+                "object_path": "/timestamps",
+                "save_path": str(out),
+            },
+        )
+    data = _parse_result(result)
+    assert data.get("success") is True, data
+    assert data["plot_type"] == "line"
+    assert out.exists() and out.stat().st_size > 0
+
+
+@pytest.mark.asyncio
+async def test_visualize_dataset_2d(sample_hdf5, tmp_path):
+    out = tmp_path / "temp.png"
+    async with Client(hdf5_server) as client:
+        result = await client.call_tool(
+            "visualize_dataset",
+            {
+                "filepath": sample_hdf5,
+                "object_path": "/simulation/temperature",
+                "save_path": str(out),
+            },
+        )
+    data = _parse_result(result)
+    assert data.get("success") is True, data
+    assert data["plot_type"] == "imshow"
+    assert out.exists()
+
+
+@pytest.mark.asyncio
+async def test_visualize_dataset_rejects_3d(tmp_path):
+    """visualize_dataset only handles rank-1 and rank-2 numeric datasets."""
+    fpath = tmp_path / "cube.h5"
+    with hdf5_module.h5py.File(fpath, "w") as f:
+        f.create_dataset("/cube", data=np.zeros((4, 4, 4)))
+    async with Client(hdf5_server) as client:
+        result = await client.call_tool(
+            "visualize_dataset",
+            {"filepath": str(fpath), "object_path": "/cube"},
+        )
+    data = _parse_result(result)
+    assert data["error"]["code"] == "unsupported_rank"
+
+
+@pytest.mark.asyncio
+async def test_check_cf_compliance_plain_hdf5(sample_hdf5):
+    """Plain h5py-written files have no CF/NetCDF markers — flagged high."""
+    async with Client(hdf5_server) as client:
+        result = await client.call_tool(
+            "check_cf_compliance", {"filepath": sample_hdf5}
+        )
+    data = _parse_result(result)
+    assert data["status"] == "ok"
+    assert data["file_format"] == "HDF5"
+    assert data["declared_conventions"] is None
+    assert data["issue_counts"]["high"] >= 1
+    assert any(i["path"] == "/" for i in data["issues"])
+
+
+@pytest.mark.asyncio
+async def test_consult_skill_exact_name(sample_hdf5):
+    async with Client(hdf5_server) as client:
+        result = await client.call_tool(
+            "consult_skill", {"topic": "hdf5-chunking"}
+        )
+    data = _parse_result(result)
+    assert "error" not in data
+    assert data["skill_name"] == "hdf5-chunking"
+    assert data["matched_by"] == "exact_name"
+    assert "Chunk" in data["body"] or "chunk" in data["body"]
+    assert data["alternatives"] == []
+
+
+@pytest.mark.asyncio
+async def test_consult_skill_topic_match():
+    async with Client(hdf5_server) as client:
+        result = await client.call_tool(
+            "consult_skill",
+            {"topic": "I want to use ros3 to read HDF5 from S3"},
+        )
+    data = _parse_result(result)
+    assert "error" not in data
+    assert data["skill_name"] == "hdf5-ros3-vfd"
+    assert data["matched_by"] == "topic_match"
+    assert data["body"]
+    assert isinstance(data["alternatives"], list)
+
+
+@pytest.mark.asyncio
+async def test_consult_skill_no_match():
+    async with Client(hdf5_server) as client:
+        result = await client.call_tool(
+            "consult_skill", {"topic": "the weather today is nice"}
+        )
+    data = _parse_result(result)
+    assert "error" in data
+    assert data["error"]["code"] == "no_skill_match"
+
+
+@pytest.mark.asyncio
+async def test_consult_skill_rejects_empty_topic():
+    async with Client(hdf5_server) as client:
+        result = await client.call_tool("consult_skill", {"topic": "   "})
+    data = _parse_result(result)
+    assert data["error"]["code"] == "empty_topic"
+
+
+@pytest.mark.asyncio
+async def test_check_cf_compliance_cf_like_file(tmp_path):
+    """A file with CF-shaped metadata scores 100%."""
+    fpath = tmp_path / "cf.h5"
+    with hdf5_module.h5py.File(fpath, "w") as f:
+        f.attrs["Conventions"] = "CF-1.11"
+        f.attrs["_NCProperties"] = "version=2"
+        ds = f.create_dataset("/temperature", data=np.zeros(10, dtype="f8"))
+        ds.attrs["units"] = "K"
+        ds.attrs["standard_name"] = "air_temperature"
+        ds.attrs["long_name"] = "Air temperature"
+    async with Client(hdf5_server) as client:
+        result = await client.call_tool("check_cf_compliance", {"filepath": str(fpath)})
+    data = _parse_result(result)
+    assert data["status"] == "ok"
+    assert data["file_format"] == "NetCDF4"
+    assert data["declared_conventions"] == "CF-1.11"
+    assert data["score_percent"] == 100.0
+    assert data["issue_counts"]["high"] == 0

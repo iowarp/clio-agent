@@ -1,0 +1,241 @@
+---
+name: hdf5-cloud-optimized
+description: "cloud-optimized HDF5", "HDF5 on S3", "HDF5 cloud storage", "paged aggregation", "ros3 VFD", "byte-range requests", "HTTP range GET", object storage access, cloud performance, writing HDF5 optimized for cloud/remote access.
+version: 0.1.0
+---
+
+# Cloud-Optimized HDF5
+
+## Purpose
+
+Cloud-optimized HDF5 is a pattern for writing regular HDF5 files that perform efficiently when accessed from cloud object storage (S3, Azure Blob, etc.) via HTTP byte-range requests.
+
+**Related skills**: `hdf5-chunking` for chunk size configuration, `hdf5-filters` for compression strategies.
+
+## What Cloud-Optimized HDF5 Is
+
+**It's a pattern, not a format**: Cloud-optimized HDF5 files are regular `.h5` files written with specific strategies that enable efficient remote access. No special format or conversion required.
+
+**Recent advances** (2025): Properly configured HDF5 files achieve performance on par with cloud-native formats like Zarr without reformatting data or generating metadata sidecar files (Kerchunk, DMR++).
+
+**Core challenge**: Traditional HDF5 was designed for local filesystem I/O with low-latency random access. Cloud object storage has high latency (10-100ms per request) but good bandwidth. Optimization focuses on minimizing request count rather than maximizing transfer speed.
+
+## Key Concepts
+
+**Byte-Range Requests**: Cloud object storage doesn't support POSIX file operations. Instead, clients make HTTP GET requests with byte-range headers to fetch specific portions of files. Each request has latency overhead.
+
+**The Metadata Problem**: Default HDF5 scatters metadata in small blocks (often 4KB) throughout files. On cloud storage, this requires dozens or hundreds of separate HTTP requests just to locate data before accessing it.
+
+**Latency vs Bandwidth Trade-off**:
+- Local disk: Low latency (~0.1ms), moderate bandwidth
+- Cloud storage: High latency (10-100ms), high bandwidth
+- Strategy: Reduce request count (minimize latency hits), accept larger transfers
+
+## Core Optimization Patterns
+
+### 1. Consolidated Metadata (Paged Aggregation)
+
+**Use paged aggregation file space management strategy** to consolidate all file-level metadata at the front of the file.
+
+```python
+import h5py
+
+# Create file with paged aggregation
+fcpl = h5py.h5p.create(h5py.h5p.FILE_CREATE)
+fcpl.set_file_space_strategy(
+    strategy=h5py.h5f.FILE_SPACE_STRATEGY_PAGE,
+    threshold=0,
+    page_size=1024*1024  # 1 MB pages (NOT default 4KB!)
+)
+
+fid = h5py.h5f.create(
+    b'cloud_optimized.h5',
+    flags=h5py.h5f.ACC_TRUNC,
+    fcpl=fcpl
+)
+f = h5py.File(fid)
+
+# Create datasets as normal
+dset = f.create_dataset('data', (10000, 10000), chunks=(100, 10000), dtype='f4')
+f.close()
+```
+
+**Why this matters**: Metadata consolidated in initial pages = few requests to find data = much faster access.
+
+**Page size**: Default 4KB defeats the purpose. Use MB-scale pages (1-10 MB) to truly consolidate metadata.
+
+### 2. Larger Chunk Sizes (10-100 MB)
+
+**Target 10-100 MB chunks** for cloud storage, much larger than typical local disk chunks (1-10 MB).
+
+```python
+import h5py
+import numpy as np
+
+# Cloud-optimized chunking: larger chunks
+with h5py.File('cloud_data.h5', 'w') as f:
+    # Example: 1000 x 10000 float32 = 40 MB per chunk
+    dset = f.create_dataset(
+        'measurements',
+        shape=(100000, 10000),
+        chunks=(1000, 10000),  # 40 MB chunks
+        dtype='f4',
+        compression='gzip',
+        compression_opts=3
+    )
+```
+
+**Sizing guidelines**:
+- Minimum: 1 MB (sub-MB chunks cause severe performance degradation)
+- Target: 10-100 MB depending on dataset size and access patterns
+- AWS recommendation: 8-16 MB for optimal byte-range requests
+- Pangeo recommendation: ~100 MB for high-performance scientific workloads
+
+**Trade-offs**:
+- Larger chunks = fewer requests but more bandwidth per access
+- Must balance chunk size with typical read sizes
+- Consider memory constraints on client side
+
+### 3. Align Chunk Shape with Access Patterns
+
+Design chunk dimensions to match how data will be read:
+
+```python
+# Time-series data: read all variables for time ranges
+# Chunk along time dimension
+time_series = f.create_dataset(
+    'timeseries',
+    shape=(100000, 50),  # 100k timesteps, 50 variables
+    chunks=(10000, 50),  # Read 10k timesteps at once
+    dtype='f4'
+)
+
+# Spatial data: read spatial slices at specific times
+# Chunk along spatial dimensions
+spatial = f.create_dataset(
+    'spatial',
+    shape=(1000, 1000, 1000),  # time, lat, lon
+    chunks=(1, 1000, 1000),    # Single time slice
+    dtype='f4'
+)
+```
+
+**Wrong chunk shape** = every read touches many chunks = wasted bandwidth and excessive requests.
+
+## h5py API for Cloud-Optimized Files
+
+### Basic Pattern
+
+```python
+import h5py
+
+# Step 1: Create file creation property list with paged aggregation
+fcpl = h5py.h5p.create(h5py.h5p.FILE_CREATE)
+fcpl.set_file_space_strategy(
+    strategy=h5py.h5f.FILE_SPACE_STRATEGY_PAGE,
+    threshold=0,
+    page_size=4*1024*1024  # 4 MB pages
+)
+
+# Step 2: Create file with fcpl
+fid = h5py.h5f.create(b'output.h5', h5py.h5f.ACC_TRUNC, fcpl=fcpl)
+f = h5py.File(fid)
+
+# Step 3: Create datasets with appropriate chunking
+f.create_dataset(
+    'data',
+    shape=(50000, 5000),
+    chunks=(1000, 5000),  # ~20 MB chunks for float32
+    dtype='f4',
+    compression='gzip',
+    compression_opts=3
+)
+
+f.close()
+```
+
+### Reading from Cloud Storage
+
+```python
+# Using ros3 VFD (read-only S3 access)
+import h5py
+
+# Access public S3 bucket
+f = h5py.File(
+    's3://bucket-name/path/to/file.h5',
+    'r',
+    driver='ros3',
+    aws_region=b'us-west-2'
+)
+
+# Access with credentials
+f = h5py.File(
+    's3://bucket-name/path/to/file.h5',
+    'r',
+    driver='ros3',
+    aws_region=b'us-west-2',
+    secret_id=b'ACCESS_KEY_ID',
+    secret_key=b'SECRET_ACCESS_KEY'
+)
+
+# Read data (each chunk access = one HTTP request)
+data = f['dataset'][1000:2000, :]
+f.close()
+```
+
+## Performance Characteristics
+
+**Well-Optimized Files**:
+- Few metadata requests (1-10) due to consolidated metadata
+- Predictable data access: one HTTP request per chunk touched
+- Performance comparable to Zarr and other cloud-native formats
+
+**Poorly-Optimized Files**:
+- Hundreds of small metadata requests before data access begins
+- Many requests for small chunks (<1 MB)
+- Can be 10-100x slower than optimized files
+
+**Comparison to Local Storage**:
+- Local: Random access cheap, many small reads acceptable
+- Cloud: Each access costs latency penalty, must batch into larger operations
+
+## Best Practices
+
+- **Always use paged aggregation** for cloud-destined files with MB-scale page size
+- **Target 10-100 MB chunks** depending on dataset size and typical access patterns
+- **Align chunk shape** with expected read patterns (row-major vs column-major, time slices vs spatial slices)
+- **Use moderate compression** (gzip level 3-5) to balance transfer size with decompression overhead
+- **Test read patterns** from cloud storage before finalizing chunk strategy
+- **Document intended access patterns** so users can optimize their reads
+- **Avoid variable-length datatypes** (vlen strings, ragged arrays) - they don't work efficiently with byte-range requests
+- **Consider total file size**: Very small files (<100 MB) may not benefit from cloud optimization
+- **Profile request count**: Monitor actual HTTP requests during reads to validate optimization
+
+## Major Pitfalls
+
+**Small Chunks (<1 MB)**: Creates excessive HTTP requests. Each request has 10-100ms latency. Chunks <1 MB can reduce throughput to unusable levels for parallel processing frameworks.
+
+**Forgetting Paged Aggregation**: Files without paged aggregation require dozens to hundreds of metadata requests before data access begins. Can add seconds of latency.
+
+**Wrong Page Size**: Using default 4KB page size defeats paged aggregation's purpose. Must explicitly set MB-scale pages.
+
+**Misaligned Chunk Shape**: If chunks don't align with access patterns, every read touches many chunks. Reading one row when chunks are column-oriented wastes 10-100x bandwidth.
+
+**Many Small Reads**: Application code that reads element-by-element or in small slices creates request storms. Batch reads into chunk-aligned operations.
+
+**No Caching**: The ros3 VFD doesn't cache or optimize requests automatically. Each library call becomes immediate HTTP request without batching.
+
+**Variable-Length Datatypes**: Vlen strings and datatypes don't work efficiently with HTTP range requests. Use fixed-length alternatives.
+
+**Over-Compression**: Heavy compression (gzip level 9) increases decompression time without much size reduction. Level 3-5 usually optimal.
+
+**Ignoring Access Patterns**: Writing chunks for convenience rather than expected read patterns. Always design chunking for how data will be consumed.
+
+## Citations and References
+
+- [HDF5 in the Cloud - The HDF Group](https://www.hdfgroup.org/solutions/hdf5-in-the-cloud/)
+- [Cloud-Optimized HDF/NetCDF – Cloud-Optimized Geospatial Formats Guide](https://guide.cloudnativegeo.org/cloud-optimized-netcdf4-hdf5/)
+- [Cloud Storage Options for HDF5 - The HDF Group](https://www.hdfgroup.org/2022/08/08/cloud-storage-options-for-hdf5/)
+- [Evaluating Cloud-Optimized HDF5 for NASA's ICESat-2 Mission](https://nsidc.github.io/cloud-optimized-icesat2/)
+- [HDF in the Cloud - Matthew Rocklin](https://matthewrocklin.com/blog/work/2018/02/06/hdf-in-the-cloud)
+- [Optimization Practices - Chunking (ESIP)](https://esipfed.github.io/cloud-computing-cluster/optimization-practices.html)

@@ -6,6 +6,8 @@ Each expert is a DSPy module specialized for a particular domain.
 
 Production Experts:
 - DataExpert: HDF5, ADIOS, Parquet optimization (file format level)
+- HDF5Expert: HDF5-specialized (layout, filters, VFDs, VOL, SWMR, VDS, CF
+  conventions, cloud-optimized variants) with a 24-skill knowledge bundle
 - AnalysisExpert: Statistical analysis, data profiling (data content level)
 - VisualizationExpert: Charts, plots, visual data summaries
 
@@ -39,6 +41,7 @@ import dspy
 
 from clio_agent.experts.analysis_expert import AnalysisExpert
 from clio_agent.experts.data_expert import DataExpert
+from clio_agent.experts.hdf5_expert import HDF5Expert
 from clio_agent.experts.visualization_expert import VisualizationExpert
 
 # ============================================================================
@@ -59,6 +62,7 @@ def get_all_experts() -> Dict[str, dspy.Module]:
     """
     return {
         "data": DataExpert(),
+        "hdf5": HDF5Expert(),
         "analysis": AnalysisExpert(),
         "visualization": VisualizationExpert(),
     }
@@ -78,6 +82,7 @@ def get_expert_capabilities() -> Dict[str, Dict[str, Any]]:
     """
     return {
         "data": DataExpert.get_capabilities(),
+        "hdf5": HDF5Expert.get_capabilities(),
         "analysis": AnalysisExpert.get_capabilities(),
         "visualization": VisualizationExpert.get_capabilities(),
     }
@@ -85,6 +90,7 @@ def get_expert_capabilities() -> Dict[str, Dict[str, Any]]:
 
 __all__ = [
     "DataExpert",
+    "HDF5Expert",
     "AnalysisExpert",
     "VisualizationExpert",
     "get_all_experts",

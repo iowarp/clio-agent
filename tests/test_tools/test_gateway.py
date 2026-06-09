@@ -89,11 +89,15 @@ async def test_gateway_preserves_stable_tool_names():
 
 @pytest.mark.asyncio
 async def test_gateway_tool_count():
-    """Test that gateway has exactly 5 HDF5 tools."""
+    """Gateway exposes every tool from the mounted hdf5_server under the
+    hdf5_ namespace. Five of those are used by DataExpert; the rest are
+    used by HDF5Expert. Per-expert curation happens in the expert layer,
+    not on the gateway.
+    """
     async with Client(gateway) as client:
         tools = await client.list_tools()
         hdf5_tools = [t for t in tools if t.name.startswith("hdf5_")]
-        assert len(hdf5_tools) == 5
+        assert len(hdf5_tools) == 11
 
 
 @pytest.mark.asyncio

@@ -53,7 +53,7 @@ from clio_agent.errors import (
     RoutingError,
     ToolError,
 )
-from clio_agent.experts import AnalysisExpert, DataExpert, VisualizationExpert
+from clio_agent.experts import AnalysisExpert, DataExpert, HDF5Expert, VisualizationExpert
 from clio_agent.harness import (
     RouteDecision,
     RunTrace,
@@ -173,6 +173,15 @@ class ClioAgent(dspy.Module):
             tool_executor=self.tool_executor,
         )
 
+        # HDF5Expert: HDF5-specialized (layout/filters/VFDs/SWMR/VDS/CF/etc.)
+        # with a 24-skill knowledge bundle. Routes ahead of DataExpert for
+        # HDF5-specific queries; DataExpert stays the target for general
+        # data-format and Parquet questions.
+        self.hdf5_expert = HDF5Expert(
+            arc_memory=self.arc,
+            tool_executor=self.tool_executor,
+        )
+
         # AnalysisExpert: native deterministic Parquet/CSV tools with optional DSPy synthesis
         self.analysis_expert = AnalysisExpert(
             arc_memory=self.arc,
@@ -198,6 +207,28 @@ class ClioAgent(dspy.Module):
                 ],
                 specialization="data_io",
                 metadata={"file_suffixes": [".h5", ".hdf5"]},
+            ),
+        )
+
+        hdf5_caps = HDF5Expert.get_capabilities()
+        self.registry.register_agent(
+            "hdf5",
+            self.hdf5_expert,
+            AgentCapability(
+                keywords=list(hdf5_caps["keywords"]),
+                description=hdf5_caps["description"],
+                tools=[
+                    "hdf5_analyze_file",
+                    "hdf5_get_object_metadata",
+                    "hdf5_rechunk_dataset",
+                    "hdf5_apply_filter",
+                    "hdf5_visualize_dataset",
+                    "hdf5_check_cf_compliance",
+                    "hdf5_consult_skill",
+                ],
+                specialization="hdf5_domain",
+                priority=int(hdf5_caps["priority"]),
+                metadata={"file_suffixes": [".h5", ".hdf5", ".nc"]},
             ),
         )
 
@@ -250,6 +281,7 @@ class ClioAgent(dspy.Module):
             vm = VariantManager(self.arc)
             for agent_id, expert_attr in [
                 ("data", "data_expert"),
+                ("hdf5", "hdf5_expert"),
                 ("analysis", "analysis_expert"),
                 ("visualization", "visualization_expert"),
             ]:
@@ -637,6 +669,17 @@ class ClioAgent(dspy.Module):
                 self._merge_expert_provenance(trace, expert_result)
                 answer = f"{expert_result.analysis}\n\nRecommendations:\n{expert_result.recommendations}"
                 return "data", answer, expert_result, None
+
+            if expert_id == "hdf5":
+                expert_result = self.hdf5_expert(
+                    question=expert_question, file_context=file_context
+                )
+                self._merge_expert_provenance(trace, expert_result)
+                answer = (
+                    f"{expert_result.analysis}\n\n"
+                    f"Recommendations:\n{expert_result.recommendations}"
+                )
+                return "hdf5", answer, expert_result, None
 
             if expert_id == "analysis":
                 expert_result = self.analysis_expert(
