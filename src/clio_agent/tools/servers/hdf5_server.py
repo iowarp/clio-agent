@@ -741,9 +741,6 @@ def rechunk_dataset(
     try:
         validate_non_empty_string(object_path, field="object_path")
         safe_input = validate_read_path(filepath)
-        h5repack_error = _check_h5repack_available()
-        if h5repack_error is not None:
-            return h5repack_error
 
         with h5py.File(safe_input, "r") as f:
             if object_path not in f:
@@ -847,6 +844,10 @@ def rechunk_dataset(
                 }
             }
 
+        h5repack_error = _check_h5repack_available()
+        if h5repack_error is not None:
+            return h5repack_error
+
         cmd = ["h5repack", "-i", str(safe_input), "-o", str(out_path), "-l", layout_arg]
         result = subprocess.run(
             cmd, capture_output=True, text=True, timeout=_H5REPACK_TIMEOUT_SECONDS
@@ -938,9 +939,6 @@ def apply_filter(
     try:
         validate_non_empty_string(object_path, field="object_path")
         safe_input = validate_read_path(filepath)
-        h5repack_error = _check_h5repack_available()
-        if h5repack_error is not None:
-            return h5repack_error
 
         import h5py.h5z as h5z
 
@@ -1093,6 +1091,10 @@ def apply_filter(
                     "next_action": "Choose a new path or delete the existing file.",
                 }
             }
+
+        h5repack_error = _check_h5repack_available()
+        if h5repack_error is not None:
+            return h5repack_error
 
         cmd = ["h5repack", "-i", str(safe_input), "-o", str(out_path), "-f", filter_arg]
         result = subprocess.run(
