@@ -165,3 +165,35 @@ def test_build_gateway_skips_builtin_namespace_collision(declared_server: FastMC
     # fs tools remain the in-process ones; declared 'ping' did NOT get mounted
     assert "fs_read_file" in names
     assert "fs_ping" not in names
+
+
+def test_build_gateway_threads_cwd_to_stdio_only(declared_server: FastMCP):
+    """``cwd`` reaches stdio specs (per-workspace spawn) but never http specs."""
+    seen: dict[str, str | None] = {}
+
+    def factory(spec: MCPServerSpec, cwd: str | None = None) -> FastMCP:
+        seen[spec.name] = cwd
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            return FastMCP.as_proxy(Client(declared_server))
+
+    specs = {
+        "local": MCPServerSpec(name="local", transport="stdio", command="x"),
+        "remote": MCPServerSpec(name="remote", transport="http", url="https://h/mcp"),
+    }
+    build_gateway(specs, cwd="/work/space", proxy_factory=factory)
+
+    assert seen["local"] == "/work/space"  # stdio honors the workspace cwd
+    assert seen["remote"] is None  # http stays shared, ignores cwd
+
+
+def test_build_gateway_legacy_proxy_factory_without_cwd(declared_server: FastMCP):
+    """A factory that takes only the spec still works (back-compat)."""
+    spec = MCPServerSpec(name="demo", transport="stdio", command="x")
+    gw = build_gateway(
+        {"demo": spec},
+        cwd="/work/space",
+        proxy_factory=_in_process_factory(declared_server),
+    )
+    names = {t.name for t in _list_tools_sync(gw)}
+    assert "demo_ping" in names

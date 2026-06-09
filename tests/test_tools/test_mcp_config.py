@@ -112,3 +112,16 @@ def test_transport_for():
     stdio = transport_for(spec_from_declaration("ndp", "uvx clio-kit run ndp"))
     assert not isinstance(stdio, str)
     assert transport_for(spec_from_declaration("n", "https://h/mcp")) == "https://h/mcp"
+
+
+def test_transport_for_stdio_cwd():
+    """stdio transports spawn in the given cwd; http transports ignore it."""
+    stdio = transport_for(spec_from_declaration("ndp", "uvx clio-kit run ndp"), cwd="/work/space")
+    assert getattr(stdio, "cwd", None) == "/work/space"
+    # Default (no cwd) keeps the spawning process's directory.
+    default = transport_for(spec_from_declaration("ndp", "uvx clio-kit run ndp"))
+    assert getattr(default, "cwd", None) is None
+    # http ignores cwd entirely.
+    assert transport_for(spec_from_declaration("n", "https://h/mcp"), cwd="/work/space") == (
+        "https://h/mcp"
+    )

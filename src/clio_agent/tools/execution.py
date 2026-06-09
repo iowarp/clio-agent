@@ -75,6 +75,12 @@ def tool_workspace_context(root: str | Path | None) -> Iterator[None]:
         _ACTIVE_TOOL_WORKSPACE_ROOT.reset(token)
 
 
+def get_active_tool_workspace_root() -> str:
+    """Return the active session workspace root, or ``""`` when none is bound."""
+
+    return _ACTIVE_TOOL_WORKSPACE_ROOT.get()
+
+
 def set_global_permission_gate(
     gate: Optional[Callable[[str, Mapping[str, Any]], str]],
 ) -> None:
@@ -814,6 +820,7 @@ __all__ = [
     "ToolExecutor",
     "create_async_tool_executor",
     "create_sync_tool_executor",
+    "get_active_tool_workspace_root",
     "notify_global_tool_observer",
     "notify_tool_observer",
     "set_global_cancellation_checker",

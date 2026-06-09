@@ -322,12 +322,20 @@ def load_mcp_servers(
     return {n: replace(s, name=n) for n, s in merged.items()}
 
 
-def transport_for(spec: MCPServerSpec) -> Any:
-    """Turn a spec into the ``server`` arg FastMCP's ``Client`` accepts."""
+def transport_for(spec: MCPServerSpec, *, cwd: str | None = None) -> Any:
+    """Turn a spec into the ``server`` arg FastMCP's ``Client`` accepts.
+
+    For stdio servers, ``cwd`` (when given) is the working directory the
+    subprocess is spawned in, so the tool writes into that directory by default.
+    For http servers the ``cwd`` is irrelevant and ignored.
+    """
     if spec.transport == "stdio":
         from fastmcp.client.transports import StdioTransport  # noqa: PLC0415
 
         return StdioTransport(
-            command=spec.command, args=list(spec.args), env=dict(spec.env) or None
+            command=spec.command,
+            args=list(spec.args),
+            env=dict(spec.env) or None,
+            cwd=cwd,
         )
     return spec.url

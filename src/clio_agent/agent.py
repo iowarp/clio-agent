@@ -84,7 +84,11 @@ from clio_agent.tools.catalog import (
     tool_tags,
     tool_visible_to,
 )
-from clio_agent.tools.execution import create_sync_tool_executor, notify_global_tool_observer
+from clio_agent.tools.execution import (
+    create_sync_tool_executor,
+    get_active_tool_workspace_root,
+    notify_global_tool_observer,
+)
 from clio_agent.tools.file_policy import FileAccessPolicy, FilePolicyError, validate_write_path
 from clio_agent.tools.gateway import build_gateway, build_tool_catalog
 from clio_agent.tools.mcp_config import load_mcp_servers
@@ -250,8 +254,20 @@ class ClioAgent(dspy.Module):
         # and user/workspace config. Declared MCPs are the only source of domain
         # tools; the catalog (ownership/visibility) is derived from the connected
         # namespaces merged with the static built-in entries.
-        self._tool_gateway = self._build_tool_gateway()
+        #
+        # Per active workspace: stdio MCP subprocesses are spawned with
+        # ``cwd=<workspace root>`` so every stdio tool writes into the workspace
+        # by default; http MCPs stay shared. The default (no-cwd) gateway and the
+        # process-global tool catalog are built once here (the catalog/tool-set is
+        # identical across workspaces). The tool *executor* is then resolved per
+        # active workspace via ``_active_tool_executor``: each workspace root keys
+        # a lazily built executor over a gateway built with that cwd, so each
+        # workspace spawns its stdio MCPs at most once. No active workspace falls
+        # back to this default executor (current behavior).
+        self._tool_gateway = self._build_tool_gateway(set_catalog=True)
         self.tool_executor = create_sync_tool_executor(self._tool_gateway)
+        # Cache of workspace root -> sync tool executor (lazy, one per workspace).
+        self._workspace_tool_executors: dict[str, Any] = {}
 
         # Core no longer installs domain experts into the Python registry.
         # Default and baseline agents are blueprint programs loaded through
@@ -301,7 +317,7 @@ class ClioAgent(dspy.Module):
                 pack_servers[blueprint.id] = {str(k): v for k, v in servers.items()}
         return pack_servers
 
-    def _build_tool_gateway(self) -> Any:
+    def _build_tool_gateway(self, *, cwd: str | None = None, set_catalog: bool = False) -> Any:
         """Build the tool gateway from built-ins + declared MCP servers.
 
         Merges declared MCP servers across pack ``AGENT.md`` frontmatter and
@@ -309,11 +325,22 @@ class ClioAgent(dspy.Module):
         to the in-process built-ins (``build_gateway``), then installs the derived
         tool catalog (``build_tool_catalog``) so ownership/visibility for declared
         tools comes from connected namespaces + each expert's ``tools:`` list.
+
+        Args:
+            cwd: Working directory for stdio MCP subprocesses (per active
+                workspace). Http MCPs stay shared and ignore it. ``None`` keeps
+                the process cwd (the default gateway).
+            set_catalog: Whether to derive and install the process-global tool
+                catalog from this gateway. The catalog/tool-set is identical
+                across workspaces, so only the default gateway sets it; per-
+                workspace gateways reuse the already-installed catalog.
         """
 
         pack_servers = self._discover_pack_servers()
         specs = load_mcp_servers(pack_servers=pack_servers)
-        tool_gateway = build_gateway(specs)
+        tool_gateway = build_gateway(specs, cwd=cwd)
+        if not set_catalog:
+            return tool_gateway
         experts = self._discover_pack_experts()
         try:
             catalog = build_tool_catalog(tool_gateway, experts=experts)
@@ -323,6 +350,27 @@ class ClioAgent(dspy.Module):
                 print(f"[ClioAgent] tool catalog derivation failed: {exc}")
             set_active_catalog(None)
         return tool_gateway
+
+    def _active_tool_executor(self) -> Any:
+        """Resolve the tool executor for the active session workspace.
+
+        Reads the active workspace root from the tool-execution contextvar. With
+        no active workspace, returns the default (no-cwd) executor (current
+        behavior). Otherwise returns a per-workspace executor over a gateway whose
+        stdio MCP subprocesses are spawned with ``cwd=<workspace root>`` (http MCPs
+        stay shared). The executor is cached per root, so each workspace spawns its
+        stdio MCPs at most once (lazy, on first tool use for that workspace).
+        """
+
+        root = get_active_tool_workspace_root().strip()
+        if not root:
+            return self.tool_executor
+        executor = self._workspace_tool_executors.get(root)
+        if executor is None:
+            gateway = self._build_tool_gateway(cwd=root)
+            executor = create_sync_tool_executor(gateway)
+            self._workspace_tool_executors[root] = executor
+        return executor
 
     def _discover_pack_experts(self) -> list[Any]:
         """Return loaded pack experts (for declared-tool visibility derivation)."""
@@ -1433,7 +1481,7 @@ class ClioAgent(dspy.Module):
 
         start = time.time()
         try:
-            raw_result = self.tool_executor.call_tool(tool_name, args)
+            raw_result = self._active_tool_executor().call_tool(tool_name, args)
             result = normalize_tool_result(self._decode_tool_result(raw_result), tool=tool_name)
         except CancellationError:
             raise
@@ -2050,7 +2098,7 @@ class ClioAgent(dspy.Module):
         return [
             tool
             for tool in [
-                *self.tool_executor.to_dspy_tools(),
+                *self._active_tool_executor().to_dspy_tools(),
                 *self._visualization_tool_map().values(),
             ]
             if tool.name not in PLANNER_HIDDEN_TOOL_NAMES
@@ -2058,7 +2106,9 @@ class ClioAgent(dspy.Module):
 
     def _known_tool_names(self) -> set[str]:
         """Return every tool name currently visible to the planner."""
-        return set(self.tool_executor.get_tool_names()) | set(self._visualization_tool_map())
+        return set(self._active_tool_executor().get_tool_names()) | set(
+            self._visualization_tool_map()
+        )
 
     def _visualization_tool_map(self) -> dict[str, dspy.Tool]:
         """Return local visualization tools keyed by their stable names.

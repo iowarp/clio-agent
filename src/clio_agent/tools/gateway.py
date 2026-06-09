@@ -67,12 +67,15 @@ def get_gateway() -> FastMCP:
     return gateway
 
 
-def _proxy_for_spec(spec: MCPServerSpec) -> FastMCP:
+def _proxy_for_spec(spec: MCPServerSpec, cwd: str | None = None) -> FastMCP:
     """Build a lazy FastMCP proxy backed by a Client over the spec's transport.
 
     The proxy connects lazily on first ``list_tools``/``call_tool``, so an
     unreachable declared server only degrades to "that namespace has no tools"
     rather than failing gateway construction.
+
+    ``cwd`` (when given) is passed to stdio transports so the subprocess is
+    spawned in that working directory; http transports ignore it.
     """
     import warnings  # noqa: PLC0415
 
@@ -80,14 +83,33 @@ def _proxy_for_spec(spec: MCPServerSpec) -> FastMCP:
         # FastMCP 3.2 deprecates as_proxy in favor of create_proxy; both are the
         # same machinery. Silence the deprecation so a successful mount stays quiet.
         warnings.simplefilter("ignore")
-        return FastMCP.as_proxy(Client(transport_for(spec)))
+        return FastMCP.as_proxy(Client(transport_for(spec, cwd=cwd)))
+
+
+def _proxy_factory_accepts_cwd(factory: Callable[..., FastMCP]) -> bool:
+    """Whether a proxy factory accepts a second positional ``cwd`` argument.
+
+    Keeps backward compatibility with test factories that take only the spec.
+    """
+    try:
+        params = inspect.signature(factory).parameters.values()
+    except (TypeError, ValueError):
+        return False
+    positional = [
+        p
+        for p in params
+        if p.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+    ]
+    has_varargs = any(p.kind is inspect.Parameter.VAR_POSITIONAL for p in params)
+    return has_varargs or len(positional) >= 2
 
 
 def build_gateway(
     declared_specs: Mapping[str, MCPServerSpec],
     *,
+    cwd: str | None = None,
     base_gateway: FastMCP | None = None,
-    proxy_factory: Callable[[MCPServerSpec], FastMCP] | None = None,
+    proxy_factory: Callable[..., FastMCP] | None = None,
 ) -> FastMCP:
     """Build the agent's tool gateway: built-ins PLUS the declared MCP servers.
 
@@ -100,13 +122,19 @@ def build_gateway(
         declared_specs: ``name -> MCPServerSpec`` declarations to mount. Specs
             with validation errors, or whose name collides with a built-in /
             already-mounted namespace, are skipped (logged).
+        cwd: Working directory for stdio MCP subprocesses, so every stdio tool
+            writes into that directory by default. ``None`` keeps the spawning
+            process's cwd (current behavior). Http (url) servers ignore ``cwd``;
+            they stay shared regardless.
         base_gateway: The gateway to mount onto. When ``None`` a fresh gateway
             with only the built-ins mounted is created. When provided, it is
             mounted onto in place and returned (used by tests).
         proxy_factory: Optional override that turns a spec into a FastMCP proxy.
             Defaults to ``_proxy_for_spec`` (a lazy ``Client`` over the spec's
-            transport). Tests inject an in-process proxy here so no subprocess is
-            spawned; production never passes this.
+            transport). Called as ``proxy_factory(spec, cwd)`` when it accepts a
+            second argument, else ``proxy_factory(spec)`` for compatibility.
+            Tests inject an in-process proxy here so no subprocess is spawned;
+            production never passes this.
 
     Returns:
         The gateway with the built-ins and declared proxies mounted.
@@ -118,6 +146,7 @@ def build_gateway(
     """
     gw = base_gateway if base_gateway is not None else _new_base_gateway()
     make_proxy = proxy_factory or _proxy_for_spec
+    accepts_cwd = _proxy_factory_accepts_cwd(make_proxy)
 
     # Names already provided (built-ins / earlier mounts) must not be shadowed.
     existing = _mounted_namespaces(gw) | set(BUILTIN_SERVER_NAMES)
@@ -137,7 +166,12 @@ def build_gateway(
             logger.warning("skipping declared MCP %r: namespace already provided", name)
             continue
         try:
-            proxy = make_proxy(spec)
+            # Only stdio specs honor cwd; http specs are shared and ignore it.
+            proxy = (
+                make_proxy(spec, cwd if spec.transport == "stdio" else None)
+                if accepts_cwd
+                else make_proxy(spec)
+            )
             _mount_with_namespace(gw, proxy, name)
             existing.add(name)
         except Exception as exc:  # noqa: BLE001 - non-fatal: log + skip a bad server
