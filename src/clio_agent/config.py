@@ -326,6 +326,13 @@ class LMProviderConfig:
         if models:
             if hasattr(report, "model"):
                 profile = report.model(self.model)
+            if profile is None:
+                # tolerate vendor-prefix differences (e.g. "gpt-oss-120b" vs
+                # "openai/gpt-oss-120b") by matching on the basename.
+                want = self.model.rsplit("/", 1)[-1].lower()
+                profile = next(
+                    (m for m in models if m.id.rsplit("/", 1)[-1].lower() == want), None
+                )
             if profile is None and len(models) == 1:
                 profile = models[0]
         if profile is None:

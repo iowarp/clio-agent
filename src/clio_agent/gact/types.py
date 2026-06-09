@@ -840,6 +840,14 @@ class LMProviderInfo(BaseModel):
     temperature: float = 0.0
     max_tokens: int = 32000
     context_length: int = 0
+    # Handshake-discovered, queryable. ``chosen_context`` is the active context
+    # limit clio operates against (the "context budget" other subsystems query);
+    # ``context_window`` is the model's hard ceiling; the capability flags reflect
+    # what the provider reported (reasoning model / native tool-calling).
+    chosen_context: Optional[int] = None
+    context_window: Optional[int] = None
+    is_reasoning: bool = False
+    native_tool_calling: bool = False
     thinking_budget: int = 0
     transport: Optional[Literal["exec", "sdk"]] = None
     state: Literal["idle", "configuring", "ready", "error"] = "idle"

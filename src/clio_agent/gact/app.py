@@ -6475,6 +6475,10 @@ def _effective_lm_config(app: "FastAPI") -> dict[str, Any]:
         "max_tokens",
         "context_length",
         "thinking_budget",
+        "chosen_context",
+        "context_window",
+        "is_reasoning",
+        "native_tool_calling",
     ):
         if not cfg.get(key):
             value = getattr(provider_config, key, None)
@@ -21748,6 +21752,14 @@ def build_app(
                 if cfg.get("context_length") is not None
                 else 0
             ),
+            chosen_context=(
+                int(cfg["chosen_context"]) if cfg.get("chosen_context") is not None else None
+            ),
+            context_window=(
+                int(cfg["context_window"]) if cfg.get("context_window") is not None else None
+            ),
+            is_reasoning=bool(cfg.get("is_reasoning") or False),
+            native_tool_calling=bool(cfg.get("native_tool_calling") or False),
             thinking_budget=(
                 int(pending["thinking_budget"])
                 if pending.get("thinking_budget") is not None
@@ -21981,6 +21993,35 @@ def build_app(
                 thinking_budget=req.thinking_budget,
                 codex_transport=req.transport or "exec",
             )
+            # Per-provider handshake: discover connectivity + per-model config and
+            # fold it into cfg — context-aware max_tokens (replacing the static ALCF
+            # 4096 cap on 128-256K-context models), reasoning/tool capability flags,
+            # and the queryable chosen_context. Never block a bind on a handshake
+            # failure: fall back to the static config unchanged.
+            handshake_report = None
+            try:
+                from clio_agent.providers.handshake import (  # noqa: PLC0415
+                    HandshakeContext,
+                    run_handshake,
+                )
+
+                handshake_report = await run_handshake(
+                    HandshakeContext(
+                        provider_id=req.provider,
+                        provider_kind=req.provider,
+                        api_base=req.api_base,
+                        api_key=resolved_api_key or "",
+                        target_model=req.model,
+                        auth_mode="active",
+                    ),
+                    force=True,
+                )
+                cfg.apply_handshake(
+                    handshake_report, user_set_max_tokens=(req.max_tokens or 0) > 0
+                )
+            except Exception:
+                handshake_report = None
+            app.state.lm_handshake_report = handshake_report
             await asyncio.get_running_loop().run_in_executor(
                 None,
                 _apply_lm_studio_load_config,
@@ -22038,6 +22079,15 @@ def build_app(
                 agent = await asyncio.get_running_loop().run_in_executor(
                     None, lambda: ClioAgent(verbose=False)
                 )
+                # The fresh agent built its config + LMs from env (pre-handshake);
+                # carry the handshake-applied cfg + cfg-based LMs onto it so the
+                # context-aware max_tokens / chosen_context are in effect on the
+                # very first bind, not just on subsequent hot-swaps.
+                agent._provider_config = cfg
+                agent._main_lm = new_lm
+                agent._planner_lm = new_planner_lm
+                agent._router_lm = new_planner_lm
+                agent._dspy_adapter = new_adapter
         except HTTPException:
             # Argonne auth path raises a structured 401 above; keep its
             # error code intact instead of flattening to a generic 400.

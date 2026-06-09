@@ -124,6 +124,17 @@ class ArgonneHandshake(ProviderHandshake):
         With a usable token we set the ``Authorization: Bearer`` header and
         report ``OK`` so the later phases authenticate once.
         """
+        # Prefer a token the caller already resolved: the bind path mints the
+        # Globus bearer before the handshake and passes it via ``ctx.api_key``,
+        # so reusing it avoids a redundant cold token resolution/refresh on the
+        # first bind (which otherwise fell back to the static config).
+        provided = (ctx.api_key or "").strip()
+        if provided and provided not in {"x", "lm-studio"}:
+            return ConnectivityResult(
+                connectivity=ConnectivityState.OK,
+                auth=AuthState.OK,
+                auth_header={"Authorization": f"Bearer {provided}"},
+            )
         token = self._resolve_passive_token()
 
         if token is None and ctx.auth_mode == "active":
