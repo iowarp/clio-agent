@@ -146,154 +146,86 @@ def test_auth_provider_returns_interactive_argonne_instructions(
         assert "Read-Host" in launched[-1]
 
 
-def test_provider_model_catalog_filters_embedding_models(tmp_path: Path, monkeypatch) -> None:
-    """LM Studio/OpenAI-compatible catalogs should not offer embedding models as chat choices."""
+def _patch_run_handshake(monkeypatch, report) -> None:
+    """Make the picker's unified handshake return a canned report.
 
-    class _Resp:
-        status_code = 200
-        text = ""
+    These are endpoint-wiring tests; per-provider parsing is covered in
+    tests/test_providers/ against captured fixtures.
+    """
 
-        @staticmethod
-        def json() -> dict[str, Any]:
-            return {
-                "data": [
-                    {"id": "qwopus3.5-9b-v3"},
-                    {"id": "text-embedding-nomic-embed-text-v1.5"},
-                ]
-            }
+    async def _fake(ctx, **kwargs):  # noqa: ANN001, ANN003
+        return report
 
-    monkeypatch.setattr("requests.get", lambda *args, **kwargs: _Resp())
-
-    app = build_app(sessions_path=tmp_path / "s.json")
-    with TestClient(app) as c:
-        body = c.get("/v1/providers/lm_studio/models").json()
-
-    ids = {row["id"] for row in body["models"]}
-    assert body["source"] == "live"
-    assert "qwopus3.5-9b-v3" in ids
-    assert "text-embedding-nomic-embed-text-v1.5" not in ids
+    monkeypatch.setattr("clio_agent.providers.handshake.run_handshake", _fake)
 
 
-def test_provider_model_catalog_reads_lm_studio_native_context(tmp_path: Path, monkeypatch) -> None:
-    """LM Studio's native catalog reports load/context metadata the OpenAI shim omits."""
+def test_provider_model_catalog_returns_handshake_models(tmp_path: Path, monkeypatch) -> None:
+    """The picker renders whatever the unified handshake discovered (to_models_wire)."""
+    from clio_agent.providers.handshake import (
+        AuthState,
+        ConnectivityState,
+        HandshakeReport,
+        ModelProfile,
+    )
 
-    class _NativeResp:
-        status_code = 200
-        text = ""
-
-        @staticmethod
-        def json() -> dict[str, Any]:
-            return {
-                "models": [
-                    {
-                        "key": "qwopus3.5-9b-v3",
-                        "display_name": "Qwopus 3.5 9B",
-                        "type": "llm",
-                        "max_context_length": 262144,
-                        "params_string": "9.0B",
-                        "quantization": {"name": "Q4_K_M"},
-                    },
-                    {
-                        "key": "text-embedding-nomic-embed-text-v1.5",
-                        "type": "embedding",
-                        "max_context_length": 2048,
-                    },
-                ]
-            }
-
-    def _get(url: str, *args: Any, **kwargs: Any) -> Any:
-        assert url == "http://127.0.0.1:1234/api/v1/models"
-        return _NativeResp()
-
-    monkeypatch.setattr("requests.get", _get)
+    report = HandshakeReport(
+        provider_id="lm_studio",
+        provider_kind="lm_studio",
+        connectivity=ConnectivityState.OK,
+        auth=AuthState.NOT_REQUIRED,
+        models=(
+            ModelProfile(
+                id="qwopus3.5-9b-v3",
+                context_window=262144,
+                quantization="Q4_K_M",
+                context_source="live",
+            ),
+        ),
+    )
+    _patch_run_handshake(monkeypatch, report)
 
     app = build_app(sessions_path=tmp_path / "s.json")
     with TestClient(app) as c:
         body = c.get("/v1/providers/lm_studio/models").json()
 
     assert body["source"] == "live"
-    assert body["models"] == [
-        {
-            "id": "qwopus3.5-9b-v3",
-            "name": "Qwopus 3.5 9B",
-            "description": "live from LM Studio (localhost) · Q4_K_M · 9.0B",
-            "context_window": 262144,
-        }
-    ]
+    assert len(body["models"]) == 1
+    row = body["models"][0]
+    assert row["id"] == "qwopus3.5-9b-v3"
+    assert row["context_window"] == 262144
+    assert row["quantization"] == "Q4_K_M"
+    assert row["context_source"] == "live"
 
 
-def test_provider_model_catalog_supports_ollama_native_tags(tmp_path: Path, monkeypatch) -> None:
-    """Ollama can be reachable even when its OpenAI shim returns data:null."""
+def test_provider_model_catalog_empty_live_provider_is_live(tmp_path: Path, monkeypatch) -> None:
+    """A reachable provider with no models is 'live' with an empty list, not unavailable."""
+    from clio_agent.providers.handshake import (
+        AuthState,
+        ConnectivityState,
+        HandshakeReport,
+    )
 
-    class _OpenAIResp:
-        status_code = 200
-        text = ""
-
-        @staticmethod
-        def json() -> dict[str, Any]:
-            return {"object": "list", "data": None}
-
-    class _TagsResp:
-        status_code = 200
-        text = ""
-
-        @staticmethod
-        def json() -> dict[str, Any]:
-            return {"models": [{"model": "qwen3:8b"}, {"name": "llama3.1:8b"}]}
-
-    def _get(url: str, *args: Any, **kwargs: Any) -> Any:
-        if url.endswith("/api/tags"):
-            return _TagsResp()
-        return _OpenAIResp()
-
-    monkeypatch.setattr("requests.get", _get)
+    report = HandshakeReport(
+        provider_id="ollama",
+        provider_kind="ollama",
+        connectivity=ConnectivityState.OK,
+        auth=AuthState.NOT_REQUIRED,
+        models=(),
+    )
+    _patch_run_handshake(monkeypatch, report)
 
     app = build_app(sessions_path=tmp_path / "s.json")
     with TestClient(app) as c:
         body = c.get("/v1/providers/ollama/models").json()
 
+    assert body["models"] == []
     assert body["source"] == "live"
-    assert {row["id"] for row in body["models"]} == {"qwen3:8b", "llama3.1:8b"}
 
 
-def test_provider_model_catalog_reports_empty_ollama_as_live(tmp_path: Path, monkeypatch) -> None:
-    """A running Ollama service with no pulled models is not an unreachable provider."""
-
-    class _OpenAIResp:
-        status_code = 200
-        text = ""
-
-        @staticmethod
-        def json() -> dict[str, Any]:
-            return {"object": "list", "data": None}
-
-    class _TagsResp:
-        status_code = 200
-        text = ""
-
-        @staticmethod
-        def json() -> dict[str, Any]:
-            return {"models": []}
-
-    def _get(url: str, *args: Any, **kwargs: Any) -> Any:
-        if url.endswith("/api/tags"):
-            return _TagsResp()
-        return _OpenAIResp()
-
-    monkeypatch.setattr("requests.get", _get)
-
-    app = build_app(sessions_path=tmp_path / "s.json")
-    with TestClient(app) as c:
-        body = c.get("/v1/providers/ollama/models").json()
-
-    assert body == {"models": [], "source": "live"}
-
-
-def test_provider_model_catalog_hides_models_when_live_provider_unavailable(
+def test_provider_model_catalog_unavailable_live_provider_has_no_static(
     tmp_path: Path, monkeypatch
 ) -> None:
-    """Live provider failures should not return stale static model choices."""
-
+    """A live provider that fails reports unavailable -- never stale static choices."""
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     monkeypatch.delenv("CLIO_LM_API_KEY", raising=False)
 
@@ -303,12 +235,11 @@ def test_provider_model_catalog_hides_models_when_live_provider_unavailable(
 
     assert body["models"] == []
     assert body["source"] == "unavailable"
-    assert "missing OPENROUTER_API_KEY" in body["error"]
+    assert body.get("error")
 
 
 def test_provider_model_catalog_keeps_static_cli_candidates(tmp_path: Path) -> None:
-    """CLI providers expose editable candidate catalogs without live /models discovery."""
-
+    """CLI providers (codex/claude_code) expose an editable static candidate catalog."""
     app = build_app(sessions_path=tmp_path / "s.json")
     with TestClient(app) as c:
         codex = c.get("/v1/providers/codex/models").json()
@@ -320,75 +251,12 @@ def test_provider_model_catalog_keeps_static_cli_candidates(tmp_path: Path) -> N
     assert {row["id"] for row in claude["models"]} == {"sonnet", "opus", "haiku"}
 
 
-def test_argonne_model_catalog_uses_list_endpoints_and_jobs_for_status(
-    tmp_path: Path, monkeypatch
-) -> None:
-    """ALCF model selection comes from list-endpoints; jobs only annotates liveness."""
-
-    monkeypatch.setenv("CLIO_ARGONNE_TOKEN", "token")
-
-    class _Resp:
-        status_code = 200
-        text = ""
-
-        def __init__(self, payload: dict[str, Any]) -> None:
-            self._payload = payload
-
-        def json(self) -> dict[str, Any]:
-            return self._payload
-
-    seen_urls: list[str] = []
-
-    def _get(url: str, *args: Any, **kwargs: Any) -> _Resp:
-        seen_urls.append(url)
-        if url.endswith("/resource_server/list-endpoints"):
-            return _Resp(
-                {
-                    "clusters": {
-                        "sophia": {
-                            "frameworks": {
-                                "vllm": {
-                                    "models": [
-                                        "meta-llama/Meta-Llama-3.1-8B-Instruct",
-                                        "not-currently-running/model",
-                                    ]
-                                }
-                            }
-                        }
-                    }
-                }
-            )
-        if url.endswith("/resource_server/sophia/jobs"):
-            return _Resp(
-                {
-                    "running": [
-                        {
-                            "Models": "meta-llama/Meta-Llama-3.1-8B-Instruct",
-                            "Nodes Reserved": "1",
-                            "Walltime": "01:02:03",
-                        }
-                    ]
-                }
-            )
-        raise AssertionError(f"unexpected URL: {url}")
-
-    monkeypatch.setattr("requests.get", _get)
-
+def test_provider_model_catalog_unknown_provider_404(tmp_path: Path) -> None:
+    """An unknown provider id is a clean 404."""
     app = build_app(sessions_path=tmp_path / "s.json")
     with TestClient(app) as c:
-        body = c.get("/v1/providers/argonne_sophia/models").json()
-
-    assert seen_urls == [
-        "https://inference-api.alcf.anl.gov/resource_server/list-endpoints",
-        "https://inference-api.alcf.anl.gov/resource_server/sophia/jobs",
-    ]
-    assert body["source"] == "live"
-    assert [row["id"] for row in body["models"]] == [
-        "meta-llama/Meta-Llama-3.1-8B-Instruct",
-        "not-currently-running/model",
-    ]
-    assert body["models"][0]["description"].startswith("live on sophia")
-    assert body["models"][1]["description"] == "available on sophia/vllm"
+        resp = c.get("/v1/providers/totally-unknown/models")
+    assert resp.status_code == 404
 
 
 def test_health_lm_row_when_unconfigured(tmp_path: Path) -> None:

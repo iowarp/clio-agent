@@ -34,6 +34,7 @@ from clio_agent.providers.handshake.model import (
     ModelProfile,
 )
 from clio_agent.providers.handshake.noop import NoOpHandshake
+from clio_agent.providers.handshake.ollama import OllamaHandshake
 from clio_agent.providers.handshake.openai_compat import OpenAICompatHandshake
 from clio_agent.providers.handshake.sources import resolve_context
 
@@ -61,7 +62,9 @@ _BY_KIND: dict[str, type[ProviderHandshake]] = {
     "lm_studio": LMStudioHandshake,
     "openai": OpenAICompatHandshake,
     "anthropic": OpenAICompatHandshake,
-    "ollama": OpenAICompatHandshake,
+    "ollama": OllamaHandshake,
+    "vllm": OpenAICompatHandshake,
+    "openrouter": OpenAICompatHandshake,
     "codex": NoOpHandshake,
     "claude_code": NoOpHandshake,
 }

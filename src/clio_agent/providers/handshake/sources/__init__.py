@@ -19,6 +19,10 @@ feed :attr:`ModelProfile.context_source`. Nothing here fetches at import time.
 from __future__ import annotations
 
 from clio_agent.providers.handshake.sources import db
+from clio_agent.providers.handshake.sources.litellm_catalog import (
+    lookup_litellm_context,
+    lookup_litellm_output,
+)
 from clio_agent.providers.handshake.sources.models_dev import (
     lookup_models_dev,
     lookup_models_dev_output,
@@ -26,6 +30,8 @@ from clio_agent.providers.handshake.sources.models_dev import (
 
 __all__ = [
     "db",
+    "lookup_litellm_context",
+    "lookup_litellm_output",
     "lookup_models_dev",
     "lookup_models_dev_output",
     "resolve_context",
@@ -34,6 +40,8 @@ __all__ = [
 
 #: Provenance string for the models.dev source.
 SOURCE_MODELS_DEV = "models.dev"
+#: Provenance string for the LiteLLM catalog source.
+SOURCE_LITELLM = "litellm"
 #: Provenance string for the local DB source.
 SOURCE_DB = "db"
 
@@ -57,6 +65,10 @@ def resolve_context(model_id: str, provider_kind: str) -> tuple[int | None, str]
     if window is not None:
         return window, SOURCE_MODELS_DEV
 
+    window = lookup_litellm_context(model_id)
+    if window is not None:
+        return window, SOURCE_LITELLM
+
     window = db.lookup_context(model_id)
     if window is not None:
         return window, SOURCE_DB
@@ -65,10 +77,13 @@ def resolve_context(model_id: str, provider_kind: str) -> tuple[int | None, str]
 
 
 def resolve_output_limit(model_id: str, provider_kind: str) -> int | None:
-    """Resolve a model's maximum output tokens via models.dev, then the local DB."""
+    """Resolve max output tokens via models.dev, then LiteLLM, then the local DB."""
     if not (model_id or "").strip():
         return None
     output = lookup_models_dev_output(model_id)
+    if output is not None:
+        return output
+    output = lookup_litellm_output(model_id)
     if output is not None:
         return output
     return db.lookup_output(model_id)

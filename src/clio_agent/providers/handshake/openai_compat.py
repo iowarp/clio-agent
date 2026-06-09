@@ -204,12 +204,40 @@ class OpenAICompatHandshake(ProviderHandshake):
     async def discover_model_config(
         self, client: Any, ctx: HandshakeContext, raw: dict[str, Any]
     ) -> ModelProfile:
-        """Build a thin :class:`ModelProfile` from one ``/models`` row.
+        """Build a :class:`ModelProfile` from one ``/models`` row.
 
-        These endpoints do not report context, reasoning, or tool-calling flags, so
-        the profile carries ``context_window=None`` and default flags; the base
-        ``enrich_capabilities`` step resolves the window via the context-source
-        factory (models.dev / marketplace).
+        Bare OpenAI/Anthropic ``/models`` rows carry only an id, so the profile is
+        thin and the base ``enrich_capabilities`` step resolves the window via the
+        context-source factory. But some OpenAI-compatible backends DO self-report
+        config on the row, which we extract live (provenance stays ``"live"``):
+
+        * **vLLM** -> ``max_model_len`` (the served context window);
+        * **OpenRouter** -> ``context_length`` (and ``top_provider.context_length`` /
+          ``top_provider.max_completion_tokens`` for the active route).
         """
         model_id = str(raw.get("id", "")).strip()
-        return ModelProfile(id=model_id, context_window=None, raw=dict(raw))
+        top = raw.get("top_provider") if isinstance(raw.get("top_provider"), dict) else {}
+        context_window = _first_positive_int(
+            raw.get("max_model_len"),  # vLLM
+            raw.get("context_length"),  # OpenRouter (top-level)
+            top.get("context_length"),  # OpenRouter (active route)
+        )
+        output_limit = _first_positive_int(
+            raw.get("max_completion_tokens"),
+            top.get("max_completion_tokens"),
+        )
+        return ModelProfile(
+            id=model_id,
+            context_window=context_window,
+            output_limit=output_limit,
+            context_source="live",
+            raw=dict(raw),
+        )
+
+
+def _first_positive_int(*values: Any) -> int | None:
+    """Return the first value that is a positive int (ignoring bools/None/0)."""
+    for value in values:
+        if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+            return value
+    return None

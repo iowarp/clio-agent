@@ -16088,46 +16088,63 @@ def build_app(
         static catalog.
         """
 
-        # Match a preset id first.
-        def _wrap(triple: tuple[list[dict[str, str]], str, str]) -> dict[str, Any]:
-            models, source, err = triple
-            out: dict[str, Any] = {"models": models, "source": source}
-            if err:
-                out["error"] = err
-            return out
+        # Resolve the preset (by id, then by bare kind) and run the *unified*
+        # handshake — provider-agnostic; the per-provider handshake class owns
+        # the protocol details. Passive auth: browsing the picker must never
+        # trigger an interactive OAuth flow.
+        import os as _os  # noqa: PLC0415
 
-        for p in _LM_PRESETS:
-            if p.id == provider_id:
-                if p.provider == "argonne":
-                    cluster = _argonne_cluster_from_preset(p)
-                    return _wrap(_argonne_live_models(cluster, p.api_base))
-                return _wrap(_openai_compat_live_models(p, api_base_override=api_base))
-        # Bare provider kind — pick the first preset that uses this
-        # kind so we have an api_base + label to drive discovery.
-        if provider_id == "argonne":
-            for p in _LM_PRESETS:
-                if p.provider == "argonne":
-                    cluster = _argonne_cluster_from_preset(p)
-                    return _wrap(_argonne_live_models(cluster, p.api_base))
-            return _wrap(_argonne_live_models("sophia"))
-        for p in _LM_PRESETS:
-            if p.provider == provider_id:
-                return _wrap(_openai_compat_live_models(p, api_base_override=api_base))
-        # Last-ditch static for known provider ids only.
-        models = _PROVIDER_MODELS.get(provider_id)
-        if models is None:
-            raise HTTPException(
-                status_code=404,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="not_found",
-                        message=f"unknown provider: {provider_id}",
-                        details={"available": sorted(_PROVIDER_MODELS)},
-                        recoverable=False,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-        return {"models": models, "source": "static_catalog"}
+        from clio_agent.providers.handshake import (  # noqa: PLC0415
+            HandshakeContext,
+            run_handshake,
+        )
+        from clio_agent.providers.registry import (  # noqa: PLC0415
+            as_cloud_api_key_env as _cloud_env,
+        )
+
+        preset = next((p for p in _LM_PRESETS if p.id == provider_id), None)
+        if preset is None:
+            preset = next((p for p in _LM_PRESETS if p.provider == provider_id), None)
+        if preset is None:
+            # Last-ditch static for known provider ids only.
+            models = _PROVIDER_MODELS.get(provider_id)
+            if models is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail=ErrorEnvelope(
+                        error=ErrorInfo(
+                            error="not_found",
+                            message=f"unknown provider: {provider_id}",
+                            details={"available": sorted(_PROVIDER_MODELS)},
+                            recoverable=False,
+                        )
+                    ).model_dump(exclude_none=True),
+                )
+            return {"models": models, "source": "static_catalog"}
+
+        env_name = _cloud_env().get(preset.provider, "")
+        api_key = (
+            _os.environ.get(env_name, "") if env_name else _os.environ.get("CLIO_LM_API_KEY", "")
+        )
+        ctx = HandshakeContext(
+            provider_id=preset.id,
+            provider_kind=preset.provider,
+            api_base=(api_base or preset.api_base or ""),
+            api_key=api_key,
+            auth_mode="passive",
+            allow_external_sources=True,
+        )
+        report = await run_handshake(ctx)
+        wire = report.to_models_wire()
+        # CLI providers (codex / claude_code) have no live ``/models`` endpoint, so
+        # they expose an editable static candidate catalog. A *live* provider that
+        # failed reports ``unavailable`` + the reason rather than showing stale
+        # static choices — surfacing the problem, never silently lying with a cache.
+        if not wire.get("models") and preset.provider in {"codex", "claude_code"}:
+            static = _PROVIDER_MODELS.get(preset.id) or _PROVIDER_MODELS.get(preset.provider)
+            if static:
+                return {"models": static, "source": "static_catalog"}
+        return wire
 
     @app.get("/v1/providers/{provider_id}/handshake")
     async def provider_handshake(
