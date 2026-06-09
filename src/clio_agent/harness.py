@@ -8,6 +8,7 @@ import time
 import uuid
 from collections.abc import Mapping as MappingABC
 from collections.abc import Sequence
+from collections.abc import Set as AbstractSet
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal, Mapping
@@ -161,7 +162,9 @@ def tool_result_ok(result: Any) -> bool:
     return True
 
 
-def extract_file_paths(question: str, file_context: str, suffixes: set[str]) -> list[Path]:
+def extract_file_paths(
+    question: str, file_context: str, suffixes: AbstractSet[str]
+) -> list[Path]:
     """Extract file paths with one of the requested suffixes.
 
     Paths explicitly provided in the user question are kept even if they do not
