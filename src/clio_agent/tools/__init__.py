@@ -1,9 +1,9 @@
 """CLIO tool gateway exports.
 
-The gateway imports scientific tool servers such as HDF5, Parquet, and
-ADIOS. Keep those imports lazy so lightweight modules, including the GACT
-health/capabilities server, can import file-policy helpers without paying
-the full scientific stack startup cost.
+The gateway mounts the universal in-process built-ins (filesystem, shell)
+and proxy-mounts any declared MCP servers next to them. Keep these imports
+lazy so lightweight modules, including the GACT health/capabilities server,
+can import file-policy helpers without paying the full gateway startup cost.
 """
 
 from __future__ import annotations

@@ -44,8 +44,8 @@ def read_file(filepath: str) -> dict[str, Any]:
     """Read a file's contents from disk.
 
     Capped at 256 KB. Larger files return ``truncated: true`` plus
-    the head; the agent should fall back to a streaming reader for
-    big files (HDF5/Parquet have their own dedicated tools).
+    the head; the agent should fall back to a format-specific reader
+    for big files when one is available.
 
     Path validated through file_policy — only files inside the
     configured allowed roots are readable.

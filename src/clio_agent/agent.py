@@ -89,6 +89,10 @@ from clio_agent.tools.file_policy import FileAccessPolicy, FilePolicyError, vali
 from clio_agent.tools.gateway import build_gateway, build_tool_catalog
 from clio_agent.tools.mcp_config import load_mcp_servers
 
+# Generic path-detection allowlist: file suffixes recognized when extracting
+# candidate file paths from free text. This is structural grounding (does the
+# text mention a file at all), NOT keyword->format inference — nothing branches
+# on which suffix matched. Keep it as a minimal, case-agnostic set.
 SCIENTIFIC_FILE_SUFFIXES = {
     ".h5",
     ".hdf5",
@@ -110,7 +114,6 @@ SCIENTIFIC_FILE_SUFFIXES = {
     ".png",
     ".mzml",
 }
-SAC_SUFFIXES = {".sac", ".tar", ".tgz", ".gz"}
 PLANNER_HIDDEN_TOOL_NAMES = {"fs_read_file", "fs_apply_edit_write"}
 
 
@@ -1735,16 +1738,11 @@ class ClioAgent(dspy.Module):
             if isinstance(result, dict) and "error" in result:
                 continue
 
-            label = cls._tool_label_for_fallback(tool)
             scalar_summary = cls._scalar_observation_summary(result)
             if scalar_summary:
-                lines.append(f"{label} ({tool}) returned: {scalar_summary}.")
+                lines.append(f"{tool} returned: {scalar_summary}.")
             else:
-                lines.append(f"{label} ({tool}) returned a successful result.")
-
-            ndp_names = cls._ndp_dataset_names(result)
-            if ndp_names:
-                lines.append(f"National Data Platform datasets: {', '.join(ndp_names[:5])}.")
+                lines.append(f"{tool} returned a successful result.")
 
             try:
                 lines.append(json.dumps(result, ensure_ascii=False, indent=2, default=str))
@@ -1825,27 +1823,6 @@ class ClioAgent(dspy.Module):
             delays.append(max(0.0, min(delay, 60.0)))
         return tuple(delays)
 
-    @staticmethod
-    def _tool_label_for_fallback(tool_name: str) -> str:
-        """Return a user-facing family label for an observed tool."""
-        if tool_name.startswith("ndp_"):
-            return "National Data Platform"
-        if tool_name.startswith("hdf5_"):
-            return "HDF5"
-        if tool_name.startswith("adios_"):
-            return "ADIOS/BP"
-        if tool_name.startswith("parquet_"):
-            return "Parquet"
-        if tool_name.startswith("csv_"):
-            return "CSV"
-        if tool_name.startswith("plot_"):
-            return "Visualization"
-        if tool_name.startswith("shell_"):
-            return "Utility"
-        if tool_name.startswith("fs_"):
-            return "Workspace"
-        return "Tool"
-
     @classmethod
     def _scalar_observation_summary(cls, value: Any) -> str:
         """Return key=value text for top-level scalar observation fields."""
@@ -1856,26 +1833,6 @@ class ClioAgent(dspy.Module):
             if isinstance(item, (str, int, float, bool)) or item is None:
                 scalars.append(f"{key}={item}")
         return ", ".join(scalars[:8])
-
-    @classmethod
-    def _ndp_dataset_names(cls, value: Any) -> list[str]:
-        """Extract dataset names from common NDP result shapes."""
-        if not isinstance(value, dict):
-            return []
-        datasets = value.get("datasets")
-        if isinstance(datasets, dict):
-            items = datasets.get("items", [])
-        elif isinstance(datasets, list):
-            items = datasets
-        else:
-            items = []
-        names: list[str] = []
-        for item in items:
-            if isinstance(item, dict):
-                name = cls._coerce_text(item.get("name") or item.get("title")).strip()
-                if name:
-                    names.append(name)
-        return names
 
     def _answer_synthesis_question(self, question: str) -> str:
         """Return provider-profile-specific instructions for answer synthesis."""
@@ -3325,49 +3282,11 @@ class ClioAgent(dspy.Module):
         explicit_paths = extract_file_paths(question, "", SCIENTIFIC_FILE_SUFFIXES)
         if explicit_paths:
             return explicit_paths[0]
-        if len(self._requested_file_families(question)) > 1:
-            return None
-        suffixes = self._requested_file_suffixes(question)
-        return self._last_session_file_path(session_id, suffixes=suffixes)
+        return self._last_session_file_path(session_id)
 
-    @staticmethod
-    def _requested_file_families(question: str) -> set[str]:
-        """Infer the scientific file families a natural follow-up requests."""
-        lowered = question.lower()
-        families: set[str] = set()
-        if "parquet" in lowered:
-            families.add("parquet")
-        if "hdf5" in lowered or "h5" in lowered:
-            families.add("hdf5")
-        if "adios" in lowered or "bp5" in lowered or " bp" in lowered:
-            families.add("adios")
-        if "csv" in lowered:
-            families.add("csv")
-        return families
-
-    @staticmethod
-    def _requested_file_suffixes(question: str) -> set[str]:
-        """Infer requested file type from natural follow-up wording."""
-        families = ClioAgent._requested_file_families(question)
-        suffixes: set[str] = set()
-        if "parquet" in families:
-            suffixes.add(".parquet")
-        if "hdf5" in families:
-            suffixes.update({".h5", ".hdf5"})
-        if "adios" in families:
-            suffixes.update({".bp", ".bp4", ".bp5"})
-        if "csv" in families:
-            suffixes.add(".csv")
-        return suffixes or SCIENTIFIC_FILE_SUFFIXES
-
-    def _last_session_file_path(
-        self,
-        session_id: str,
-        *,
-        suffixes: set[str] | None = None,
-    ) -> Path | None:
+    def _last_session_file_path(self, session_id: str) -> Path | None:
         """Find the last local scientific file path mentioned in this session."""
-        suffix_filter = suffixes or SCIENTIFIC_FILE_SUFFIXES
+        suffix_filter = SCIENTIFIC_FILE_SUFFIXES
         try:
             conv = self.arc.get_conversation(session_id)
         except Exception:
@@ -3394,18 +3313,6 @@ class ClioAgent(dspy.Module):
         if extract_file_paths(question, "", SCIENTIFIC_FILE_SUFFIXES):
             return question
         return f"{question}\n\nUse this file from the current session: {active_file}"
-
-    @staticmethod
-    def _question_with_file_context(question: str, file_context: str) -> str:
-        """Append current file context when a planner expert action omits the path."""
-        if extract_file_paths(question, "", SCIENTIFIC_FILE_SUFFIXES):
-            return question
-        if len(ClioAgent._requested_file_families(question)) > 1:
-            return question
-        paths = extract_file_paths(file_context, "", SCIENTIFIC_FILE_SUFFIXES)
-        if not paths:
-            return question
-        return f"{question}\n\nUse this file from the current session: {paths[0]}"
 
     def _store_routing_decision(
         self,

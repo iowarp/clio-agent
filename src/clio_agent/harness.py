@@ -18,6 +18,9 @@ RouteTarget = str
 RouteSource = Literal["deterministic", "dspy", "guard", "recovery"]
 ExpertSource = Literal["deterministic", "dspy", "fallback"]
 
+# Generic path-detection regex: suffixes recognized when extracting candidate
+# file paths from free text. Structural grounding only (is a file referenced),
+# NOT keyword->format inference — no branch depends on which alternative matched.
 SCIENTIFIC_PATH_SUFFIX_PATTERN = (
     r"(?:hdf5|h5|parquet|csv|bp5|bp4|bp|sac|tar|tgz|gz|"
     r"fasta|fna|fa|vcf|cif|geojson|png|mzml)"
