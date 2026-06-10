@@ -9577,7 +9577,7 @@ def _is_safe_shell_diagnostic(tool_name: str, args: Mapping[str, Any]) -> bool:
     normalized = re.sub(r"\s+", " ", command).lower()
     if normalized in {"date", "get-date", "pwd", "whoami", "hostname"}:
         return True
-    return _is_safe_text_reshape_command(command)
+    return _is_safe_text_reshape_command(command) or _is_safe_readonly_diagnostic(command)
 
 
 # Destructive shell tokens that disqualify a command from the text-reshape
@@ -9667,6 +9667,51 @@ _SAFE_RESHAPE_UTILS: frozenset[str] = frozenset(
         "true",
     }
 )
+
+# Read-only inspection utilities (no writes). Superset of the reshape utils plus
+# pure file/dir inspectors. Used to auto-allow harmless diagnostic chains so a
+# model's `ls -la X && head -5 X` is not routed to an interactive approval gate
+# that would hang in a headless/autonomous run.
+_SAFE_READONLY_UTILS: frozenset[str] = _SAFE_RESHAPE_UTILS | frozenset(
+    {"ls", "stat", "file", "du", "df", "realpath", "basename", "dirname", "test", "[", "od", "xxd"}
+)
+
+
+def _is_safe_readonly_diagnostic(command: str) -> bool:
+    """Return whether a shell_bash command is a bounded READ-ONLY inspection chain.
+
+    Allows commands built ONLY from read-only utilities joined by ``&&`` / ``;`` /
+    ``|``, with NO output redirect, NO command/process substitution, and NO
+    background or destructive token. This lets an expert inspect staged files
+    (``ls -la /tmp/x.csv && head -5 /tmp/x.csv``) without falling through to the
+    interactive permission gate — which has no approver in headless/test runs and
+    therefore hangs. It writes nothing, so it cannot mutate state.
+    """
+
+    if not command or len(command) > 2000:
+        return False
+    # No command/process substitution, no writes/appends.
+    if any(tok in command for tok in ("`", "$(", "<(", ">(", ">>", ">")):
+        return False
+    # Allow `&&` as a separator but reject a bare background `&`.
+    if "&" in command.replace("&&", ""):
+        return False
+    # No destructive verb anywhere in the command.
+    words = re.findall(r"[a-z0-9_./-]+", command.lower())
+    if any(w.split("/")[-1] in _UNSAFE_SHELL_TOKENS for w in words):
+        return False
+    # Every segment (split on && ; |) must start with a read-only utility.
+    for seg in re.split(r"&&|;|\|", command):
+        seg = seg.strip()
+        if not seg:
+            continue
+        m = re.match(r"([A-Za-z0-9_./\[-]+)", seg)
+        if not m:
+            return False
+        first = m.group(1).split("/")[-1].lower()
+        if first not in _SAFE_READONLY_UTILS:
+            return False
+    return True
 
 
 def _is_safe_text_reshape_command(command: str) -> bool:
