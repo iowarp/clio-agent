@@ -47,8 +47,8 @@ from clio_agent.config import (
     create_chat_adapter,
     create_lm,
     create_planner_lm,
-    fetch_lm_studio_models,
     has_explicit_model_override,
+    list_lm_studio_models,
     load_config_from_env,
     select_models_for_agents,
 )
@@ -214,7 +214,7 @@ class ClioAgent(dspy.Module):
             # LM Studio without an explicit model pin: discover loaded models
             # from the configured API base and use the same selected model for
             # planning and the global DSPy runtime.
-            available_models = fetch_lm_studio_models(base_url=self._provider_config.api_base)
+            available_models = list_lm_studio_models(base_url=self._provider_config.api_base)
             if self.verbose:
                 main_model, expert_model = select_models_for_agents(available_models)
             else:

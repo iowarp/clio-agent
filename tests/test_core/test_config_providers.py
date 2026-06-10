@@ -4,7 +4,7 @@ Tests for multi-provider LM configuration.
 Tests LMProviderConfig, load_config_from_env, create_lm, and create_planner_lm.
 """
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import dspy
 import pytest
@@ -308,7 +308,7 @@ class TestCreateLM:
     def test_lm_studio_empty_model_discovers_loaded_model(self):
         """Blank LM Studio model means use the currently loaded model."""
         config = LMProviderConfig(provider="lm_studio")
-        with patch("clio_agent.config.fetch_lm_studio_models", return_value=["qwopus3.5-9b-v3"]):
+        with patch("clio_agent.config.list_lm_studio_models", return_value=["qwopus3.5-9b-v3"]):
             lm = create_lm(config)
         assert lm.model == "openai/qwopus3.5-9b-v3"
 
@@ -540,116 +540,80 @@ class TestSetupDspy:
         assert adapter.use_json_adapter_fallback is True
 
 
-class TestFetchLmStudioModels:
-    """Test fetch_lm_studio_models with mocked HTTP."""
+class TestListLmStudioModels:
+    """``list_lm_studio_models`` is the single CLI discovery path: it delegates to
+    the unified :class:`LMStudioHandshake` (so there is no second HTTP probe to
+    rot) while preserving the one CLI-specific behaviour — *retry while LM Studio
+    is still loading a model*, and hard-fail (never a silent ``[]``) when nothing
+    ever loads. The low-level ``/api/v0`` parsing is the handshake's job and is
+    covered in ``tests/test_providers``; here we pin the wrapper contract against
+    mocked handshake reports. The wrapper imports ``run_handshake_sync`` from the
+    handshake package, so we patch it at its source module."""
 
-    def test_successful_fetch(self):
-        """Should return model list on successful response."""
-        from clio_agent.config import fetch_lm_studio_models
+    _PATCH = "clio_agent.providers.handshake.run_handshake_sync"
 
-        mock_response = {"data": [{"id": "model-1"}, {"id": "model-2"}]}
-        with patch("clio_agent.config.requests.get") as mock_get:
-            mock_resp = MagicMock()
-            mock_resp.json.return_value = mock_response
-            mock_resp.raise_for_status.return_value = None
-            mock_get.return_value = mock_resp
+    @staticmethod
+    def _report(*, ok: bool, models: tuple[str, ...] = (), error: str | None = None):
+        """Minimal stand-in for a HandshakeReport (only the fields the wrapper reads)."""
+        from types import SimpleNamespace
 
-            models = fetch_lm_studio_models(max_retries=1)
-            assert models == ["model-1", "model-2"]
+        return SimpleNamespace(
+            ok=ok,
+            models=tuple(SimpleNamespace(id=m) for m in models),
+            error=error,
+        )
 
-    def test_fetch_accepts_api_base_with_v1_suffix(self):
-        """Configured LM Studio api_base values may already include /v1."""
-        from clio_agent.config import fetch_lm_studio_models
+    def test_returns_loaded_model_ids(self):
+        """A reachable backend with loaded models yields their ids in one probe."""
+        from clio_agent.config import list_lm_studio_models
 
-        with patch("clio_agent.config.requests.get") as mock_get:
-            mock_resp = MagicMock()
-            mock_resp.json.return_value = {"data": [{"id": "nemotron"}]}
-            mock_resp.raise_for_status.return_value = None
-            mock_get.return_value = mock_resp
+        rep = self._report(ok=True, models=("model-1", "model-2"))
+        with patch(self._PATCH, return_value=rep) as mock_hs:
+            models = list_lm_studio_models(max_retries=1)
+        assert models == ["model-1", "model-2"]
+        assert mock_hs.call_count == 1
 
-            models = fetch_lm_studio_models(
-                base_url="http://192.168.86.143:1234/v1",
-                max_retries=1,
-            )
+    def test_recovers_after_a_loading_delay(self):
+        """Empty first probe, loaded second -> returns once the model loads."""
+        from clio_agent.config import list_lm_studio_models
 
-        assert models == ["nemotron"]
-        mock_get.assert_called_once_with("http://192.168.86.143:1234/v1/models", timeout=10)
+        reports = [
+            self._report(ok=True, models=()),
+            self._report(ok=True, models=("granite",)),
+        ]
+        with patch(self._PATCH, side_effect=reports), patch("time.sleep"):
+            models = list_lm_studio_models(max_retries=5, retry_delay=0)
+        assert models == ["granite"]
 
     def test_empty_models_retries_then_surfaces_configuration_error(self):
-        """Empty discovery should not collapse into a silent [] fallback."""
-        from clio_agent.config import LMStudioDiscoveryError, fetch_lm_studio_models
+        """A persistently empty (but reachable) backend must not collapse to []."""
+        from clio_agent.config import LMStudioDiscoveryError, list_lm_studio_models
 
-        with patch("clio_agent.config.requests.get") as mock_get:
-            mock_resp = MagicMock()
-            mock_resp.json.return_value = {"data": []}
-            mock_resp.raise_for_status.return_value = None
-            mock_get.return_value = mock_resp
+        rep = self._report(ok=True, models=())
+        with patch(self._PATCH, return_value=rep) as mock_hs, patch("time.sleep"):
+            with pytest.raises(LMStudioDiscoveryError, match="no loaded models"):
+                list_lm_studio_models(max_retries=3, retry_delay=0)
+        assert mock_hs.call_count == 3
 
-            with patch("time.sleep"):
-                with pytest.raises(LMStudioDiscoveryError, match="no loaded models"):
-                    fetch_lm_studio_models(max_retries=2, retry_delay=0)
-                assert mock_get.call_count == 2
+    def test_unreachable_surfaces_endpoint_error(self):
+        """An unreachable backend preserves the handshake's connectivity error."""
+        from clio_agent.config import LMStudioDiscoveryError, list_lm_studio_models
 
-    def test_connection_error_retries_then_surfaces_provider_error(self):
-        """Connection exhaustion should preserve the endpoint error."""
-        import requests as req
+        rep = self._report(ok=False, models=(), error="ConnectionError: refused")
+        with patch(self._PATCH, return_value=rep) as mock_hs, patch("time.sleep"):
+            with pytest.raises(LMStudioDiscoveryError, match="refused"):
+                list_lm_studio_models(max_retries=2, retry_delay=0)
+        assert mock_hs.call_count == 2
 
-        from clio_agent.config import LMStudioDiscoveryError, fetch_lm_studio_models
+    def test_discovery_is_names_only_offline(self):
+        """Model discovery must not trigger the external context cascade."""
+        from clio_agent.config import list_lm_studio_models
 
-        with patch("clio_agent.config.requests.get") as mock_get:
-            mock_get.side_effect = req.exceptions.ConnectionError("refused")
-
-            with patch("time.sleep"):
-                with pytest.raises(LMStudioDiscoveryError, match="Could not connect"):
-                    fetch_lm_studio_models(max_retries=2, retry_delay=0)
-                assert mock_get.call_count == 2
-
-    def test_http_error_surfaces_provider_error(self):
-        """HTTP errors should not be reclassified as no loaded model."""
-        import requests as req
-
-        from clio_agent.config import LMStudioDiscoveryError, fetch_lm_studio_models
-
-        with patch("clio_agent.config.requests.get") as mock_get:
-            mock_resp = MagicMock()
-            mock_resp.raise_for_status.side_effect = req.exceptions.HTTPError("500 server")
-            mock_get.return_value = mock_resp
-
-            with pytest.raises(LMStudioDiscoveryError, match="500 server"):
-                fetch_lm_studio_models(max_retries=1)
-
-    def test_unexpected_error_surfaces_provider_error(self):
-        """Unexpected client errors should not return an empty model list."""
-        from clio_agent.config import LMStudioDiscoveryError, fetch_lm_studio_models
-
-        with patch("clio_agent.config.requests.get") as mock_get:
-            mock_get.side_effect = RuntimeError("weird error")
-
-            with pytest.raises(LMStudioDiscoveryError, match="weird error"):
-                fetch_lm_studio_models(max_retries=1)
-
-    def test_invalid_json_surfaces_provider_error(self):
-        """Malformed provider JSON should preserve the parsing failure."""
-        from clio_agent.config import LMStudioDiscoveryError, fetch_lm_studio_models
-
-        with patch("clio_agent.config.requests.get") as mock_get:
-            mock_resp = MagicMock()
-            mock_resp.raise_for_status.return_value = None
-            mock_resp.json.side_effect = ValueError("not json")
-            mock_get.return_value = mock_resp
-
-            with pytest.raises(LMStudioDiscoveryError, match="invalid JSON"):
-                fetch_lm_studio_models(max_retries=1)
-
-    def test_malformed_response_surfaces_provider_error(self):
-        """A response without data[] should be reported as malformed."""
-        from clio_agent.config import LMStudioDiscoveryError, fetch_lm_studio_models
-
-        with patch("clio_agent.config.requests.get") as mock_get:
-            mock_resp = MagicMock()
-            mock_resp.raise_for_status.return_value = None
-            mock_resp.json.return_value = {"models": [{"id": "x"}]}
-            mock_get.return_value = mock_resp
-
-            with pytest.raises(LMStudioDiscoveryError, match="missing data"):
-                fetch_lm_studio_models(max_retries=1)
+        rep = self._report(ok=True, models=("nemotron",))
+        with patch(self._PATCH, return_value=rep) as mock_hs:
+            models = list_lm_studio_models(base_url="http://192.168.86.143:1234/v1", max_retries=1)
+        assert models == ["nemotron"]
+        ctx = mock_hs.call_args.args[0]
+        assert ctx.provider_kind == "lm_studio"
+        assert ctx.api_base == "http://192.168.86.143:1234/v1"
+        assert ctx.allow_external_sources is False

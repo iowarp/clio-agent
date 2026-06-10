@@ -33,8 +33,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, List, Literal, Mapping, Optional
 from urllib.parse import urlparse
 
-import requests
-
 # dspy lives behind a lazy import — top-level ``import dspy`` costs
 # ~4 s on Aurora's frameworks Python (litellm + transitive deps), and
 # every ``runtime.status`` / ``gact.app`` boot path imports config.py
@@ -330,9 +328,7 @@ class LMProviderConfig:
                 # tolerate vendor-prefix differences (e.g. "gpt-oss-120b" vs
                 # "openai/gpt-oss-120b") by matching on the basename.
                 want = self.model.rsplit("/", 1)[-1].lower()
-                profile = next(
-                    (m for m in models if m.id.rsplit("/", 1)[-1].lower() == want), None
-                )
+                profile = next((m for m in models if m.id.rsplit("/", 1)[-1].lower() == want), None)
             if profile is None and len(models) == 1:
                 profile = models[0]
         if profile is None:
@@ -721,7 +717,7 @@ def create_router_lm(config: LMProviderConfig) -> dspy.LM:
 def _resolve_lm_studio_model_if_needed(config: LMProviderConfig) -> None:
     """Fill a blank LM Studio model from the currently loaded model list."""
     if config.provider == "lm_studio" and not config.model.strip():
-        models = fetch_lm_studio_models(base_url=config.api_base)
+        models = list_lm_studio_models(base_url=config.api_base)
         config.model, _ = select_models_for_agents(models)
 
 
@@ -757,107 +753,62 @@ class LMStudioDiscoveryError(RuntimeError):
     """LM Studio model discovery failed before a usable chat model was found."""
 
 
-def fetch_lm_studio_models(
+def list_lm_studio_models(
     base_url: str = "http://127.0.0.1:1234", max_retries: int = 10, retry_delay: float = 2.0
 ) -> List[str]:
-    """Fetch available models from LM Studio API with retry logic.
+    """Discover loaded LM Studio model IDs through the unified provider handshake.
+
+    This is the single LM Studio discovery path: the CLI (here) and the gact
+    server both go through :class:`LMStudioHandshake`, so there is no longer a
+    second, divergent probe to rot. The former standalone HTTP fetch is gone;
+    its one genuinely-CLI-specific behaviour — *retry while LM Studio is still
+    loading a model* — is preserved here: a reachable-but-empty result is
+    retried up to ``max_retries`` times. A persistently unreachable backend, or
+    one that never reports a loaded model, raises :class:`LMStudioDiscoveryError`
+    with actionable text, exactly as before.
 
     Args:
-        base_url: LM Studio base URL
-        max_retries: Maximum connection attempts
-        retry_delay: Delay between retries in seconds
+        base_url: LM Studio base URL (with or without a ``/v1`` suffix).
+        max_retries: Maximum probe attempts while waiting for a model to load.
+        retry_delay: Delay between attempts in seconds.
 
     Returns:
-        List of model IDs
+        List of loaded model IDs.
     """
     import time
 
-    models_url = _lm_studio_models_url(base_url)
-    last_connection_error: requests.exceptions.ConnectionError | None = None
+    from clio_agent.providers.handshake import HandshakeContext, run_handshake_sync
 
+    last_error: str | None = None
     for attempt in range(max_retries):
-        try:
-            response = requests.get(models_url, timeout=10)
-            response.raise_for_status()
-            try:
-                data = response.json()
-            except ValueError as exc:
-                raise LMStudioDiscoveryError(
-                    f"LM Studio model discovery returned invalid JSON from {models_url}: {exc}"
-                ) from exc
-            models = _extract_lm_studio_model_ids(data, models_url=models_url)
-            if models:
-                return models
-            else:
-                print(
-                    f"Waiting for models to load in LM Studio... (attempt {attempt + 1}/{max_retries})"
-                )
-                time.sleep(retry_delay)
-        except requests.exceptions.ConnectionError as exc:
-            last_connection_error = exc
-            if attempt == 0:
-                print(f"Connecting to LM Studio at {base_url}...")
-            print(f"   Retry {attempt + 1}/{max_retries}... (waiting {retry_delay}s)")
+        report = run_handshake_sync(
+            HandshakeContext(
+                provider_id="lm_studio",
+                provider_kind="lm_studio",
+                api_base=base_url,
+                auth_mode="passive",
+                # Names only: the context cascade (models.dev/db) isn't needed to
+                # pick a model, and skipping it keeps discovery offline-fast.
+                allow_external_sources=False,
+            ),
+            # Bypass the handshake TTL cache so each retry re-probes a backend
+            # that may still be loading its first model.
+            force=True,
+        )
+        if report.ok and report.models:
+            return [m.id for m in report.models if m.id]
+        last_error = report.error or "no loaded models reported"
+        if attempt == 0:
+            print(f"Connecting to LM Studio at {base_url}...")
+        print(f"   Waiting for a loaded model... (attempt {attempt + 1}/{max_retries})")
+        if attempt < max_retries - 1:
             time.sleep(retry_delay)
-        except LMStudioDiscoveryError:
-            raise
-        except requests.exceptions.RequestException as exc:
-            raise LMStudioDiscoveryError(
-                f"LM Studio model discovery failed at {models_url}: {exc}"
-            ) from exc
-        except Exception as exc:
-            raise LMStudioDiscoveryError(
-                f"LM Studio model discovery failed unexpectedly at {models_url}: {exc}"
-            ) from exc
 
-    if last_connection_error is not None:
-        raise LMStudioDiscoveryError(
-            f"Could not connect to LM Studio at {models_url} after "
-            f"{max_retries} attempts: {last_connection_error}. Start LM Studio, "
-            "load a chat/instruct model, or set CLIO_LM_API_BASE."
-        ) from last_connection_error
     raise LMStudioDiscoveryError(
-        f"LM Studio reported no loaded models at {models_url} after "
-        f"{max_retries} attempts. Load a chat/instruct model or set CLIO_LM_MODEL."
+        f"LM Studio discovery failed at {base_url} after {max_retries} attempt(s): "
+        f"{last_error}. Start LM Studio, load a chat/instruct model, or set "
+        "CLIO_LM_API_BASE / CLIO_LM_MODEL."
     )
-
-
-def _extract_lm_studio_model_ids(data: Any, *, models_url: str) -> List[str]:
-    """Extract model IDs from an OpenAI-compatible /models response."""
-    if not isinstance(data, Mapping):
-        raise LMStudioDiscoveryError(
-            f"LM Studio model discovery response from {models_url} was not an object."
-        )
-    raw_models = data.get("data")
-    if not isinstance(raw_models, list):
-        raise LMStudioDiscoveryError(
-            f"LM Studio model discovery response from {models_url} missing data[] array."
-        )
-    models: list[str] = []
-    malformed_items = 0
-    for item in raw_models:
-        if not isinstance(item, Mapping):
-            malformed_items += 1
-            continue
-        model_id = str(item.get("id") or "").strip()
-        if model_id:
-            models.append(model_id)
-        else:
-            malformed_items += 1
-    if raw_models and not models:
-        raise LMStudioDiscoveryError(
-            f"LM Studio model discovery response from {models_url} had "
-            f"{malformed_items} model row(s) but no usable id fields."
-        )
-    return models
-
-
-def _lm_studio_models_url(base_url: str) -> str:
-    """Return the normalized LM Studio model-list endpoint."""
-    normalized = base_url.rstrip("/")
-    if normalized.endswith("/v1"):
-        return f"{normalized}/models"
-    return f"{normalized}/v1/models"
 
 
 def _openai_compatible_api_base(base_url: str) -> str:

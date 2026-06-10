@@ -132,7 +132,7 @@ class TestClioAgent:
         monkeypatch.setenv("CLIO_LM_MODEL", "nemotron-cascade-2-30b-a3b-i1")
 
         with patch(
-            "clio_agent.agent.fetch_lm_studio_models",
+            "clio_agent.agent.list_lm_studio_models",
             side_effect=AssertionError("model discovery should be skipped"),
         ):
             agent = ClioAgent(data_dir=str(tmp_path / "clio"))
@@ -204,7 +204,7 @@ class TestClioAgent:
             seen["base_url"] = base_url
             return ["nemotron-cascade-2-30b-a3b-i1"]
 
-        with patch("clio_agent.agent.fetch_lm_studio_models", side_effect=fake_fetch):
+        with patch("clio_agent.agent.list_lm_studio_models", side_effect=fake_fetch):
             with patch(
                 "clio_agent.agent.select_models_for_agents",
                 return_value=("nemotron-cascade-2-30b-a3b-i1", "nemotron-cascade-2-30b-a3b-i1"),
@@ -223,7 +223,7 @@ class TestClioAgent:
         monkeypatch.setenv("CLIO_LM_API_BASE", "http://127.0.0.1:1234/v1")
         monkeypatch.delenv("CLIO_LM_MODEL", raising=False)
 
-        with patch("clio_agent.agent.fetch_lm_studio_models", return_value=[]):
+        with patch("clio_agent.agent.list_lm_studio_models", return_value=[]):
             with patch(
                 "clio_agent.agent.create_lm",
                 side_effect=AssertionError("create_lm should not be called"),
@@ -240,7 +240,7 @@ class TestClioAgent:
         monkeypatch.delenv("CLIO_LM_MODEL", raising=False)
 
         with patch(
-            "clio_agent.agent.fetch_lm_studio_models",
+            "clio_agent.agent.list_lm_studio_models",
             side_effect=LMStudioDiscoveryError("LM Studio invalid JSON from /models"),
         ):
             with patch(
