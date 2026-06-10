@@ -910,6 +910,13 @@ class LMProviderRequest(BaseModel):
     # runtimes such as LM Studio must load the model with this context
     # separately.
     context_length: int = 0
+    # Max concurrent predictions the local backend may run at once
+    # (LM Studio's load-time ``parallel`` field, the UI's "Max Concurrent
+    # Predictions"). The agent issues parallel sub-calls; a single-GPU box
+    # OOMs/stalls when the backend serves them concurrently, so this caps
+    # backend concurrency at load time. 0 = clio's default (1 for LM Studio,
+    # so concurrent pipeline calls queue instead of thrashing the GPU).
+    parallel: int = 0
     # Codex-only transport selector. Other providers ignore it.
     transport: Optional[Literal["exec", "sdk"]] = None
     # Reasoning/thinking budget. Mapped per-provider:

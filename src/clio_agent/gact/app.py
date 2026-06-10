@@ -21448,6 +21448,10 @@ def build_app(
                 raise RuntimeError("LM Studio api_base is empty")
 
             headers = _lm_studio_headers()
+            # Backend concurrency cap (LM Studio "Max Concurrent Predictions").
+            # Default 1: the agent fans out parallel sub-calls and a single-GPU
+            # box wedges when the backend serves them concurrently, so serialize.
+            _lm_studio_parallel = int(req.parallel) if req.parallel and req.parallel > 0 else 1
 
             def _already_loaded_with_requested_context() -> str:
                 try:
@@ -21485,7 +21489,16 @@ def build_app(
                             loaded_context = int(config.get("context_length") or 0)
                         except (TypeError, ValueError):
                             loaded_context = 0
-                        if loaded_context == req.context_length:
+                        try:
+                            loaded_parallel = int(config.get("parallel") or 0)
+                        except (TypeError, ValueError):
+                            loaded_parallel = 0
+                        # Reuse only if BOTH the context and the concurrency cap
+                        # already match what we'd load — otherwise a stale
+                        # parallel=4 instance would be kept and keep stalling.
+                        if loaded_context == req.context_length and (
+                            loaded_parallel == _lm_studio_parallel
+                        ):
                             return instance_id
                 return ""
 
@@ -21505,6 +21518,11 @@ def build_app(
                 json={
                     "model": req.model,
                     "context_length": req.context_length,
+                    # LM Studio's "Max Concurrent Predictions". The agent issues
+                    # parallel sub-calls; a single-GPU backend stalls/OOMs when it
+                    # serves them concurrently, so cap it (default 1) and let
+                    # concurrent pipeline calls queue. Overridable via req.parallel.
+                    "parallel": _lm_studio_parallel,
                     "echo_load_config": True,
                 },
                 timeout=180,
