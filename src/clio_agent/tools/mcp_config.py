@@ -332,10 +332,20 @@ def transport_for(spec: MCPServerSpec, *, cwd: str | None = None) -> Any:
     if spec.transport == "stdio":
         from fastmcp.client.transports import StdioTransport  # noqa: PLC0415
 
+        env: dict[str, str] | None = dict(spec.env) or None
+        if cwd:
+            # Pin clio-kit's artifacts root to the workspace so staged resources
+            # and generated artifacts land in the workspace even when the
+            # launcher (e.g. ``uv run --directory <pkg>``) changes the process
+            # cwd away from it. ``artifacts_root()`` honours ``CLIO_KIT_ARTIFACTS``
+            # before falling back to cwd, so this is the destination regardless of
+            # what the model passes or omits. Merge ``os.environ`` so the
+            # subprocess keeps PATH etc. now that we hand it an explicit env.
+            env = {**os.environ, **(dict(spec.env)), "CLIO_KIT_ARTIFACTS": cwd}
         return StdioTransport(
             command=spec.command,
             args=list(spec.args),
-            env=dict(spec.env) or None,
+            env=env,
             cwd=cwd,
         )
     return spec.url
