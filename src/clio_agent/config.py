@@ -1024,10 +1024,18 @@ def setup_dspy(model: Optional[str] = None, verbose: bool = True) -> dspy.LM:
         raise
 
     dspy = _dspy()
-    dspy.configure(
-        lm=lm,
-        adapter=create_chat_adapter(config),
-    )
+    # Register the LM-activity callback so the GACT no-progress watchdog can tell
+    # an actively-generating (e.g. deep-reasoning) model from a wedged one. A
+    # reasoning model can stream tens of thousands of reasoning_content tokens
+    # with no answer-content tokens; without this signal the watchdog kills it
+    # mid-think. See clio_agent.runtime.lm_activity.
+    from clio_agent.runtime.lm_activity import build_dspy_callback  # noqa: PLC0415
+
+    _configure_kwargs: dict[str, Any] = {"lm": lm, "adapter": create_chat_adapter(config)}
+    _lm_activity_cb = build_dspy_callback()
+    if _lm_activity_cb is not None:
+        _configure_kwargs["callbacks"] = [_lm_activity_cb]
+    dspy.configure(**_configure_kwargs)
 
     return lm
 

@@ -65,6 +65,7 @@ from clio_agent.gact.workspace_scope import (
     workspace_scope,
 )
 from clio_agent.prompts import PromptRegistry, PromptSource, parse_prompt_text
+from clio_agent.runtime.lm_activity import lm_call_in_flight as _lm_call_in_flight
 from clio_agent.tools.catalog import TOOL_CATALOG
 from clio_agent.tools.file_policy import validate_write_path
 from clio_agent.tools.fs_write import write_text_with_policy
@@ -5172,7 +5173,21 @@ def _parse_field_annotation(spec: Any, *, model_name: str) -> Any:
                 fspec if isinstance(fspec, Mapping) else {"type": fspec},
                 model_name=f"{model_name}_{fname}",
             )
-            default = None if _is_optional_annotation(ann) else ...
+            # Precedence for a field's default: an EXPLICIT ``default:`` in the
+            # blueprint DSL wins (lets an author mark a stage-invariant field --
+            # e.g. discovery's ``analysis_ready: false`` -- so a model that drops
+            # the boilerplate key gets the correct value instead of crashing the
+            # whole delegation on a Pydantic "Field required"). This is NOT clio
+            # deciding semantics: the default is declared by the blueprint and is
+            # the field's known value at this stage; routing-critical fields (e.g.
+            # ``status``) simply omit ``default`` and stay required. Otherwise an
+            # Optional[...] field defaults to None; everything else stays required.
+            if isinstance(fspec, Mapping) and "default" in fspec:
+                default = fspec["default"]
+            elif _is_optional_annotation(ann):
+                default = None
+            else:
+                default = ...
             fields[str(fname)] = (ann, default)
         return create_model(_sanitize_model_name(model_name), __base__=BaseModel, **fields)
 
@@ -6942,6 +6957,17 @@ async def _run_turn_in_background(
                 )
                 if heartbeat > last_progress:
                     last_progress = heartbeat
+                # An LM call that is actively generating IS progress, even when it
+                # publishes no bus events for the watchdog to see -- a deep-
+                # reasoning model streams its chain-of-thought on a separate
+                # channel (invisible to DSPy's answer-content listeners) and an
+                # expert child runs the call synchronously in an executor (no live
+                # deltas at all). Treating an in-flight LM call as progress stops
+                # the watchdog from killing a working model mid-think; a per-call
+                # ceiling inside lm_call_in_flight() still lets it abort a truly
+                # wedged provider. See clio_agent.runtime.lm_activity.
+                if _lm_call_in_flight():
+                    last_progress = time.monotonic()
                 if time.monotonic() - last_progress >= turn_progress_timeout_s:
                     turn_cancel_event.set()
                     task.cancel()
@@ -6967,7 +6993,7 @@ async def _run_turn_in_background(
         loop = asyncio.get_running_loop()
         with _gact_app_context(app), _tool_session_context(sid):
             turn_context = contextvars.copy_context()
-        return await _await_turn_work(
+        _pred = await _await_turn_work(
             loop.run_in_executor(
                 None,
                 lambda: turn_context.run(
@@ -6981,6 +7007,28 @@ async def _run_turn_in_background(
                 ),
             ),
         )
+        # ⚑ RAW-HANDOFF instrumentation: what did THIS agent's LM actually emit as
+        # structured expert_handoffs (before any continuation-contract injection)?
+        # Distinguishes agent-driven routing (model emits handoffs) from
+        # contract-driven routing (model emits none; the when_child_completed state
+        # machine injects the next expert). Answers whether we can move to the
+        # minimal agent-routed loop or whether the blueprint must teach routing.
+        try:
+            import logging as _hlog  # noqa: PLC0415
+
+            _raw = _coerce_expert_handoff_rows(getattr(_pred, "expert_handoffs", None)) or []
+            _raw_targets = [
+                str((r or {}).get("agent_id") or (r or {}).get("delegate_to") or "?") for r in _raw
+            ]
+            _hlog.getLogger("clio_agent").warning(
+                "⚑ RAW-HANDOFF agent=%s emitted_handoffs=%s answer_len=%d",
+                getattr(agent_def, "id", "?"),
+                _raw_targets,
+                len(str(getattr(_pred, "answer", "") or "")),
+            )
+        except Exception:  # noqa: BLE001 - instrumentation only
+            pass
+        return _pred
 
     async def _execute_delegated_experts(
         parent_agent: "AgentDef",
@@ -7441,6 +7489,19 @@ async def _run_turn_in_background(
         """Run sync child delegations and re-enter the parent with compact returns."""
 
         latest_pred = initial_pred
+        import logging as _lg_enter  # noqa: PLC0415
+        import traceback as _tb_enter  # noqa: PLC0415
+
+        _clio_frames = [
+            ln.strip().split("\n")[0]
+            for ln in _tb_enter.format_stack()
+            if "gact/app.py" in ln
+        ]
+        _lg_enter.getLogger("clio_agent").warning(
+            "⚑ SETTLE-ENTER parent=%s caller=%s",
+            parent_agent.id,
+            " <- ".join(reversed(_clio_frames[-6:])),
+        )
         all_rows: list[dict[str, Any]] = []
         max_rounds = _user_agent_int_param(parent_agent, "max_sync_delegation_rounds", 4)
         max_rounds = max(1, min(max_rounds, 8))
@@ -7449,6 +7510,21 @@ async def _run_turn_in_background(
         completed_child_ids: set[str] = set()
         completed_child_outputs: dict[str, str] = {}
         for _round in range(max_rounds):
+            import logging as _logging  # noqa: PLC0415
+
+            _req_dbg = [
+                str((r or {}).get("agent_id") or (r or {}).get("delegate_to") or "?")
+                for r in (
+                    _coerce_expert_handoff_rows(getattr(latest_pred, "expert_handoffs", None)) or []
+                )
+            ]
+            _logging.getLogger("clio_agent").warning(
+                "⚑ SETTLE parent=%s round=%d completed=%s requested=%s",
+                parent_agent.id,
+                _round,
+                sorted(completed_child_ids),
+                _req_dbg,
+            )
             requested_rows = _coerce_expert_handoff_rows(
                 getattr(latest_pred, "expert_handoffs", None)
             )
@@ -7518,30 +7594,21 @@ async def _run_turn_in_background(
                     session_id=sid,
                 )
                 previous_answer = str(getattr(latest_pred, "answer", "") or "").strip()
-                self_contract_rows: list[dict[str, Any]] = []
-                if previous_answer:
-                    self_contract_rows = _continuation_contract_handoff_rows(
-                        app,
-                        parent_agent,
-                        [
-                            {
-                                "agent_id": parent_agent.id,
-                                "status": "completed",
-                                "stage": "delegate.completed",
-                                "output_summary": previous_answer,
-                            }
-                        ],
-                        session_id=sid,
-                        seen_contracts=seen_continuation_contracts,
-                    )
-                if self_contract_rows:
-                    latest_pred = SimpleNamespace(
-                        answer="Executing current expert continuation policy.",
-                        selected_expert=parent_agent.id,
-                        routing_rationale="current expert continuation policy",
-                        expert_handoffs=self_contract_rows,
-                    )
-                    continue
+                # REMOVED: the "self-continuation" path that scraped the parent's
+                # OWN prose for a continuation contract, FABRICATED a synthetic
+                # prediction (expert_handoffs derived from text + a canned
+                # "Executing current expert continuation policy." answer), and
+                # re-ran WITHOUT re-asking the parent. That made clio the router by
+                # string-matching narration: a verbose/reasoning model (qwopus)
+                # whose answer merely contained words like "delegate"/"next step"
+                # got re-routed back into an already-finished pipeline -> infinite
+                # restart spin (gpt-oss/gemma, being terse, never tripped it). The
+                # parent's STRUCTURED signal is authoritative: no executable
+                # handoffs => the model decided it is done. If we suspect a
+                # forgotten handoff we RE-ASK the parent (the bounded repair path
+                # below) and let IT decide -- we never fabricate a decision from
+                # prose. (Deterministic prose-keyword routing in core does not
+                # scale across models/use-cases; see the audit issues.)
                 declared_child_ids = _runtime_declared_child_ids(
                     app, parent_agent.id, session_id=sid
                 )
@@ -7698,47 +7765,31 @@ async def _run_turn_in_background(
                     expert_handoffs=contract_rows,
                 )
                 continue
-            if _user_agent_bool_param(
-                parent_agent,
-                "bubble_child_evidence_on_completion",
-            ) or _user_agent_bool_param(
-                parent_agent,
-                "return_child_evidence_on_completion",
-            ):
-                child_answer = _latest_completed_child_output_summary(
-                    all_rows,
-                    declared_child_ids,
-                )
-                if child_answer:
-                    latest_pred = SimpleNamespace(
-                        answer=child_answer,
-                        selected_expert=parent_agent.id,
-                        routing_rationale=(
-                            "completed child evidence bubbled through strict depth chain"
-                        ),
-                        expert_handoffs=[],
-                    )
-                    break
-            continuation_prompt = _dynamic_parent_resume_prompt(
-                source_text,
-                parent_agent,
-                all_rows,
-            )
-            try:
-                latest_pred = await _run_dynamic_agent_sync(parent_agent, continuation_prompt)
-            except RuntimeError as exc:
-                fallback_answer = _latest_parent_resumed_output_summary(all_rows, parent_agent.id)
-                if not fallback_answer or not _is_empty_dynamic_agent_answer_error(exc):
-                    raise
+            # (a) CONTRACTS EXHAUSTED => the pipeline is complete. Finalize with the
+            # completed child/synthesis evidence instead of re-prompting the parent
+            # to "continue". That ``continuation_prompt`` re-invocation asked a
+            # FINISHED agent to keep going, so it either emitted nothing or
+            # re-delegated an already-completed expert (observed: main emitting
+            # ['analysis'] AFTER synthesis) -> spin until max_rounds. Terse models
+            # survived on the round cap; a verbose model (qwopus) blew the
+            # no-progress watchdog. Completion is now a STRUCTURAL fact: no contract
+            # produced a next transition and the agents emit no new handoffs, so
+            # there is no remaining work -- stop. (Interim: the contracts still
+            # ROUTE; branch (b) removes the deterministic orchestration + prose
+            # semantics entirely in favour of agent-emitted handoffs -- #38/#39.)
+            finalize_answer = _latest_completed_child_output_summary(all_rows, declared_child_ids)
+            if not finalize_answer:
+                finalize_answer = _latest_final_child_output_summary(all_rows)
+            if not finalize_answer:
+                finalize_answer = _latest_parent_resumed_output_summary(all_rows, parent_agent.id)
+            if finalize_answer:
                 latest_pred = SimpleNamespace(
-                    answer=fallback_answer,
+                    answer=_user_facing_dynamic_evidence_summary(finalize_answer),
                     selected_expert=parent_agent.id,
-                    routing_rationale=(
-                        "parent resume produced an empty answer; preserving compact "
-                        "completed child delegation evidence"
-                    ),
+                    routing_rationale="pipeline complete: contracts exhausted, no pending handoffs",
                     expert_handoffs=[],
                 )
+            break
         final_answer = str(getattr(latest_pred, "answer", "") or "").strip()
         if final_answer and _dynamic_answer_has_pending_child_work(final_answer):
             artifact_answer = _latest_completed_artifact_output_summary(all_rows)
@@ -8704,6 +8755,28 @@ async def _run_turn_in_background(
         assistant_metadata["agent_runtime"] = agent_runtime
     if prompt_resolution:
         assistant_metadata["prompt_resolution"] = prompt_resolution
+    # Reasoning capture: log the chain-of-thought tokens for EVERY LM call this
+    # turn (planner + each expert + chat), extracted from dspy.lm.history. Most
+    # stacks discard reasoning_content; we persist (question, reasoning, response)
+    # on the assistant message metadata because the reasoning has scientific
+    # value for analysing how the model reached its answer. Gated by
+    # CLIO_CAPTURE_REASONING (default on); set to 0 to avoid the metadata growth.
+    if os.environ.get("CLIO_CAPTURE_REASONING", "").strip().lower() not in {"0", "false", "no", "off"}:
+        try:
+            _reasoning_log = _reasoning_records_from_history_slice(history_start, app)
+        except Exception:  # noqa: BLE001 - reasoning capture is best-effort, never fail a turn
+            _reasoning_log = []
+        if _reasoning_log:
+            import logging as _reasoning_logging  # noqa: PLC0415
+
+            assistant_metadata["reasoning_log"] = _reasoning_log
+            _reasoning_logging.getLogger("clio_agent").info(
+                "⚑ REASONING captured %d call(s): %s",
+                len(_reasoning_log),
+                "; ".join(
+                    f"{(r['model'] or '?').split('/')[-1]}={r['reasoning_chars']}c" for r in _reasoning_log
+                ),
+            )
     # iowarp/clio-agent#6: when streaming actually emitted chunks,
     # reuse its message_id + part_id so the deltas + final
     # message line up. Otherwise mint a fresh id (existing path).
@@ -9290,7 +9363,10 @@ def _all_known_lms(app: "FastAPI") -> list[Any]:
     except Exception:  # pragma: no cover
         pass
     agent = getattr(getattr(app, "state", None), "agent", None)
-    for attr in ("_planner_lm", "_router_lm", "router_lm", "_expert_lm"):
+    # Include _main_lm: the agent's primary LM (planner + experts route through it
+    # when it is not the global dspy.settings.lm). Missing it under-counts usage
+    # AND drops the reasoning trace for the bulk of the turn. Keep the others.
+    for attr in ("_main_lm", "_planner_lm", "_router_lm", "router_lm", "_expert_lm", "main_lm"):
         side = getattr(agent, attr, None) if agent is not None else None
         if side is not None and side not in lms:
             lms.append(side)
@@ -9366,6 +9442,109 @@ def _usage_from_history_slice(start: Any, app: Optional["FastAPI"] = None) -> di
         "cache_write": cache_write,
         "cost_usd": raw_cost,
     }
+
+
+def _entry_reasoning_text(entry: dict[str, Any]) -> str:
+    """Pull the reasoning-channel text out of one dspy ``lm.history`` entry.
+
+    DSPy stores reasoning per call in ``entry["outputs"]`` (each output dict may
+    carry ``reasoning_content``) and on the raw ``entry["response"]``
+    (``choices[i].message.reasoning_content``). Most stacks discard this; we
+    surface it because the chain-of-thought has scientific value for analysing
+    how a model reached an answer.
+    """
+
+    parts: list[str] = []
+    outputs = entry.get("outputs")
+    if isinstance(outputs, list):
+        for out in outputs:
+            if isinstance(out, dict):
+                rc = out.get("reasoning_content")
+                if rc:
+                    parts.append(str(rc))
+    if not parts:
+        response = entry.get("response")
+        choices = getattr(response, "choices", None)
+        if isinstance(choices, list):
+            for choice in choices:
+                msg = getattr(choice, "message", None)
+                rc = getattr(msg, "reasoning_content", None) if msg is not None else None
+                if rc:
+                    parts.append(str(rc))
+    return "\n".join(p for p in parts if p).strip()
+
+
+def _entry_response_text(entry: dict[str, Any]) -> str:
+    """Pull the answer text out of one dspy ``lm.history`` entry's outputs."""
+
+    outputs = entry.get("outputs")
+    texts: list[str] = []
+    if isinstance(outputs, list):
+        for out in outputs:
+            if isinstance(out, str):
+                texts.append(out)
+            elif isinstance(out, dict) and out.get("text"):
+                texts.append(str(out["text"]))
+    return "\n".join(t for t in texts if t).strip()
+
+
+def _entry_prompt_text(entry: dict[str, Any]) -> str:
+    """Best-effort: the rendered user/question prompt for one history entry."""
+
+    prompt = entry.get("prompt")
+    if isinstance(prompt, str) and prompt.strip():
+        return prompt.strip()
+    messages = entry.get("messages")
+    if isinstance(messages, list):
+        # The last user message is the closest thing to "the question" asked.
+        for msg in reversed(messages):
+            if isinstance(msg, dict) and msg.get("role") == "user":
+                return str(msg.get("content") or "").strip()
+    return ""
+
+
+def _reasoning_records_from_history_slice(
+    start: Any, app: Optional["FastAPI"] = None
+) -> list[dict[str, Any]]:
+    """Collect ``(question, reasoning, response)`` per LM call in the turn's
+    history slice -- across planner + every expert + chat -- so the reasoning
+    tokens are LOGGED, not discarded. Only entries that actually carried
+    reasoning are included (non-reasoning models yield an empty list)."""
+
+    try:
+        import dspy  # noqa: PLC0415
+    except Exception:  # pragma: no cover
+        return []
+    if app is not None:
+        lms = _all_known_lms(app)
+    else:
+        lm = getattr(dspy.settings, "lm", None) if hasattr(dspy, "settings") else None
+        lms = [lm] if lm else []
+    lms = [lm for lm in lms if lm is not None]
+    if not lms:
+        return []
+    snap = {id(lms[0]): start} if isinstance(start, int) else (start or {})
+    records: list[dict[str, Any]] = []
+    for lm in lms:
+        start_idx = snap.get(id(lm), 0)
+        history = getattr(lm, "history", None) or []
+        for entry in history[start_idx:]:
+            if not isinstance(entry, dict):
+                continue
+            reasoning = _entry_reasoning_text(entry)
+            if not reasoning:
+                continue
+            records.append(
+                {
+                    "model": entry.get("model") or "",
+                    "question": _entry_prompt_text(entry),
+                    "reasoning": reasoning,
+                    "response": _entry_response_text(entry),
+                    "reasoning_chars": len(reasoning),
+                    "timestamp": entry.get("timestamp") or "",
+                }
+            )
+    return records
 
 
 def _usage_from_history_slice_legacy(start: int) -> dict[str, Any]:
@@ -11026,6 +11205,12 @@ def _stream_response_prefix(field_name: str, previous_field_name: str) -> str:
     return ""
 
 
+# Minimum gap between reasoning-channel heartbeats. The watchdog only needs
+# *a* progress event within its window (default 900s), so a 1s throttle keeps a
+# deep-reasoning turn alive without flooding the bus with one event per token.
+_REASONING_HEARTBEAT_S = 1.0
+
+
 async def _try_streamed_forward(
     app: "FastAPI",
     enriched_text: str,
@@ -11107,6 +11292,9 @@ async def _try_streamed_forward(
     final_pred = None
     emitted_any = False
     previous_stream_field = ""
+    # Seed the reasoning-heartbeat clock so the first reasoning chunk publishes
+    # immediately (refreshing the watchdog the moment the model starts thinking).
+    last_reasoning_heartbeat = time.monotonic() - _REASONING_HEARTBEAT_S
 
     async def _emit_visible_chunk(text: str, field_name: str = "") -> None:
         nonlocal emitted_any, previous_stream_field
@@ -11158,6 +11346,30 @@ async def _try_streamed_forward(
             text_chunk = _chunk_text(piece)
             if text_chunk:
                 await _emit_visible_chunk(text_chunk)
+                continue
+            # No answer-content in this chunk -- but the model may be actively
+            # streaming REASONING tokens (a separate delta channel invisible to
+            # DSPy's content-only listeners). Publishing a throttled, session-
+            # scoped heartbeat refreshes the no-progress watchdog so a deep-
+            # reasoning expert call isn't killed mid-think. We DON'T route the
+            # reasoning into the answer part (it would pollute the answer); the
+            # event carries it under a distinct type a TUI may render as
+            # "thinking", and -- crucially -- advances bus.last_publish_monotonic.
+            reasoning_chunk = _chunk_reasoning_text(piece)
+            if reasoning_chunk:
+                now = time.monotonic()
+                if now - last_reasoning_heartbeat >= _REASONING_HEARTBEAT_S:
+                    last_reasoning_heartbeat = now
+                    try:
+                        app.state.bus.publish(
+                            Event(
+                                type="agent.reasoning.delta",
+                                session_id=sid,
+                                payload={"stream_source": "reasoning"},
+                            )
+                        )
+                    except Exception:  # noqa: BLE001 - heartbeat is best-effort
+                        pass
     except Exception as exc:
         if emitted_any:
             raise _StreamingOutputError(
@@ -11184,6 +11396,46 @@ async def _try_streamed_forward(
             "DSPy streamify returned a final prediction but emitted no visible text chunks.",
         )
     return final_pred
+
+
+def _chunk_reasoning_text(piece: Any) -> str:
+    """Pull reasoning-channel text out of a streamify chunk.
+
+    Reasoning models (qwopus, nemotron, …) stream their chain-of-thought on a
+    SEPARATE delta channel (``delta.reasoning_content`` / ``delta.reasoning``),
+    not ``delta.content``. DSPy's StreamListener only watches ``delta.content``
+    for ``[[ ## field ## ]]`` markers, so reasoning tokens are invisible to it.
+    For an unlistened predict (every blueprint expert), streamify yields the raw
+    chunk straight through to our pump -- but ``_chunk_text`` returns "" for it
+    (content is empty during thinking). We extract the reasoning channel here so
+    the pump can refresh the no-progress watchdog while the model is *actively
+    thinking* (a deep-reasoning expert call can stream tens of thousands of
+    reasoning tokens with zero answer-content tokens; treating that as "no
+    progress" wrongly kills a working model -- see the EarthScope resolver hang).
+    """
+
+    if not piece or isinstance(piece, (str, dict)):
+        # dict shape handled below in the rare OpenAI-dict path; str is answer text.
+        if isinstance(piece, dict):
+            try:
+                delta = piece["choices"][0]["delta"]
+                return str(delta.get("reasoning_content") or delta.get("reasoning") or "")
+            except (KeyError, IndexError, TypeError):
+                return ""
+        return ""
+    try:
+        choices = piece.choices  # type: ignore[attr-defined]
+        if choices:
+            delta = getattr(choices[0], "delta", None)
+            if delta is not None:
+                reasoning = getattr(delta, "reasoning_content", None) or getattr(
+                    delta, "reasoning", None
+                )
+                if reasoning:
+                    return str(reasoning)
+    except Exception:  # noqa: BLE001 - best-effort extraction
+        pass
+    return ""
 
 
 def _chunk_text(piece: Any) -> str:
