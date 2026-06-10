@@ -5294,6 +5294,28 @@ def _blueprint_runtime_signature(agent_def: "AgentDef") -> Any:
         if _structured_output_enabled(structured.get(name, True)) and name not in _declared:
             outputs.append((name, desc, field_type))
 
+    # Force ``workflow_state`` to a plain JSON object even when a blueprint declares
+    # a nested typed schema for it. DSPy labels a generated pydantic model with a
+    # code-like type name (``earthscope_station_catalog_workflow_state_model``) and
+    # code-trained models (qwopus) mimic it as a Python *constructor call*
+    # (``Model(field=...)``) instead of JSON, which breaks the strict parser. The
+    # runtime reads ``workflow_state`` as a JSON object regardless, and the expert
+    # prose already describes its shape — so presenting it as ``dict[str, Any]``
+    # removes the type-name cue and lets the model emit JSON natively. (gpt-oss /
+    # gemma already emit JSON; this is a no-op for them. The lenient adapter stays
+    # as the last-barrier recovery.)
+    outputs = [
+        (name, desc, dict[str, Any]) if name == "workflow_state" else (name, desc, ftype)
+        for name, desc, ftype in outputs
+    ]
+    import logging as _logging  # noqa: PLC0415
+
+    _logging.getLogger("clio_agent").warning(
+        "⚑ SIG-BUILD %s :: workflow_state type=%s",
+        getattr(agent_def, "id", "?"),
+        next((str(t) for n, d, t in outputs if n == "workflow_state"), "<none>"),
+    )
+
     namespace: dict[str, Any] = {
         "__doc__": f"DSPy signature for Agent Blueprint expert {agent_def.id}."
     }

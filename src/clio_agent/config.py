@@ -731,25 +731,121 @@ def _provider_lm_kwargs(config: LMProviderConfig) -> dict[str, Any]:
     return extras
 
 
+def _coerce_constructor_repr_to_jsonable(text: str) -> Any:
+    """Coerce a Python constructor-repr into a nested dict/list/scalar.
+
+    Some local reasoning models (e.g. qwopus) emit a typed output field as a
+    Python constructor call — ``Model(field=val, nested=Sub(a=1, b=[...]))`` —
+    instead of JSON, which no DSPy adapter parses. This rewrites that shape into
+    plain JSON-able data using ``ast`` (constructor calls -> dicts keyed by their
+    keyword args; lists/tuples/sets -> lists; literals as-is). Raises on anything
+    that is not such a repr, so the caller can fall back to the original error.
+    """
+    import ast  # noqa: PLC0415
+
+    node = ast.parse(text.strip(), mode="eval").body
+
+    def conv(n: Any) -> Any:
+        if isinstance(n, ast.Call):
+            return {kw.arg: conv(kw.value) for kw in n.keywords if kw.arg is not None}
+        if isinstance(n, ast.Dict):
+            return {conv(k): conv(v) for k, v in zip(n.keys, n.values)}
+        if isinstance(n, (ast.List, ast.Tuple, ast.Set)):
+            return [conv(e) for e in n.elts]
+        if isinstance(n, ast.Constant):
+            return n.value
+        if isinstance(n, ast.UnaryOp) and isinstance(n.op, ast.USub):
+            return -conv(n.operand)
+        return ast.literal_eval(n)
+
+    return conv(node)
+
+
+_LENIENT_CHAT_ADAPTER_CLS: Any = None
+
+
+def _lenient_chat_adapter_cls() -> Any:
+    """Build (once) a ChatAdapter subclass that recovers constructor-repr fields."""
+    global _LENIENT_CHAT_ADAPTER_CLS  # noqa: PLW0603
+    if _LENIENT_CHAT_ADAPTER_CLS is not None:
+        return _LENIENT_CHAT_ADAPTER_CLS
+    dspy = _dspy()
+    import json as _json  # noqa: PLC0415
+
+    from dspy.adapters.chat_adapter import field_header_pattern  # noqa: PLC0415
+    from dspy.adapters.utils import parse_value  # noqa: PLC0415
+
+    class LenientChatAdapter(dspy.ChatAdapter):  # type: ignore[name-defined]
+        """ChatAdapter that recovers a structured output field a model emitted as a
+        Python constructor-repr (``Model(field=...)``) instead of JSON. The happy
+        path is unchanged; recovery only runs when the strict parse fails."""
+
+        def parse(self, signature: Any, completion: str) -> dict:
+            try:
+                return super().parse(signature, completion)
+            except Exception as primary_exc:
+                # Re-section exactly like ChatAdapter, but coerce a failing field's
+                # constructor-repr value into JSON before re-parsing it.
+                sections: list[tuple[Any, list[str]]] = [(None, [])]
+                for line in completion.splitlines():
+                    match = field_header_pattern.match(line.strip())
+                    if match:
+                        header = match.group(1)
+                        remaining = line[match.end() :].strip()
+                        sections.append((header, [remaining] if remaining else []))
+                    else:
+                        sections[-1][1].append(line)
+                collapsed = [(k, "\n".join(v).strip()) for k, v in sections]
+                fields: dict[str, Any] = {}
+                recovered_fields: list[str] = []
+                for k, v in collapsed:
+                    if k in signature.output_fields and k not in fields:
+                        annotation = signature.output_fields[k].annotation
+                        try:
+                            fields[k] = parse_value(v, annotation)
+                        except Exception:
+                            # Last resort: constructor-repr -> JSON -> parse_value.
+                            coerced = _coerce_constructor_repr_to_jsonable(v)
+                            fields[k] = parse_value(_json.dumps(coerced, default=str), annotation)
+                            recovered_fields.append(str(k))
+                if fields.keys() != signature.output_fields.keys():
+                    raise  # genuinely missing fields — keep the original error
+                # Loud trace flag so the semantics are visible: this turn's output
+                # was NOT valid for the strict parser and was recovered from a
+                # constructor-repr. If you see this a lot, the model isn't emitting
+                # JSON natively (a root issue worth fixing upstream, not just here).
+                _LOG.warning(
+                    "⚑ LENIENT-ADAPTER RECOVERY: coerced constructor-repr -> JSON for "
+                    "field(s) %s (strict parse failed: %s)",
+                    recovered_fields,
+                    str(primary_exc)[:120],
+                )
+                return fields
+
+    _LENIENT_CHAT_ADAPTER_CLS = LenientChatAdapter
+    return _LENIENT_CHAT_ADAPTER_CLS
+
+
 def create_chat_adapter(config: LMProviderConfig) -> Any:
     """Create the DSPy chat adapter appropriate for this provider.
 
-    Use ChatAdapter's text protocol as the primary (local OpenAI-compatible
-    servers work best with it), but KEEP DSPy's JSON-adapter fallback enabled —
-    it only engages when the text parse of a structured output FAILS. Some local
-    reasoning models (e.g. qwopus) emit a typed field like ``workflow_state`` as a
-    Python repr (``model(field=...)``) instead of JSON; without the fallback that
-    raises ``AdapterParseError`` and sinks the turn. The fallback re-requests the
-    field as JSON and recovers. Remote providers already had it on; this restores
-    it for local backends too (opt out with ``CLIO_DISABLE_JSON_ADAPTER_FALLBACK``).
+    Uses ChatAdapter's text protocol (local OpenAI-compatible servers work best
+    with it) wrapped in a lenient subclass that, on a structured-output parse
+    failure, coerces a constructor-repr field (e.g. qwopus emitting
+    ``workflow_state`` as ``Model(field=...)`` instead of JSON) into JSON and
+    re-parses — fixing the model↔adapter mismatch in code, no re-request.
+
+    DSPy's JSON-adapter fallback is kept ONLY for remote providers. On a local
+    backend it is harmful: when it engages it retries with the JSON adapter, which
+    sends ``response_format``, and LM Studio rejects that with HTTP 400 — turning a
+    recoverable parse into a hard error. Local backends rely on the lenient
+    coercion instead (verified: it recovers qwopus's constructor-repr without any
+    re-request). ``CLIO_DISABLE_JSON_ADAPTER_FALLBACK`` force-disables it anywhere.
     """
-    dspy = _dspy()
-    use_json_fallback = os.environ.get("CLIO_DISABLE_JSON_ADAPTER_FALLBACK", "").strip().lower() not in {
-        "1",
-        "true",
-        "yes",
-    }
-    return dspy.ChatAdapter(use_json_adapter_fallback=use_json_fallback)
+    use_json_fallback = not is_local_openai_compatible_backend(config)
+    if os.environ.get("CLIO_DISABLE_JSON_ADAPTER_FALLBACK", "").strip().lower() in {"1", "true", "yes"}:
+        use_json_fallback = False
+    return _lenient_chat_adapter_cls()(use_json_adapter_fallback=use_json_fallback)
 
 
 # ============================================================================
