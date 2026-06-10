@@ -21590,6 +21590,17 @@ def build_app(
                     # serves them concurrently, so cap it (default 1) and let
                     # concurrent pipeline calls queue. Overridable via req.parallel.
                     "parallel": _lm_studio_parallel,
+                    # Flash attention drastically cuts KV-cache memory. Without it,
+                    # a 9B model at a large context (e.g. 65536) on a 16GB card
+                    # fills VRAM as a multi-stage agent run accumulates context and
+                    # LM Studio WEDGES mid-run (the model stops responding even to a
+                    # 1-token probe -> the no-progress watchdog kills the run).
+                    # Enabling it is what makes the shareable local driver survive a
+                    # full pipeline. Opt out with CLIO_LMSTUDIO_FLASH_ATTENTION=0.
+                    "flash_attention": os.environ.get(
+                        "CLIO_LMSTUDIO_FLASH_ATTENTION", ""
+                    ).strip().lower()
+                    not in {"0", "false", "no", "off"},
                     "echo_load_config": True,
                 },
                 timeout=180,
