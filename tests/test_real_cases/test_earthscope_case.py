@@ -91,12 +91,15 @@ def produced_nonempty_png(run):
 
 @pytest.mark.real_case
 @pytest.mark.live
-def test_earthscope_gnss_region(agent):
+def test_earthscope_gnss_region(agent, tmp_path):
     run = agent.run({
         "task": PROMPT,
         "blueprint_id": "earthscope-gnss-region",
         "case_dir": CASE_DIR,
         "run_label": "acceptance",
+        # Isolated, auto-cleaned workspace root: the agent writes the staged CSV
+        # and the rendered PNG here, NOT into the repo (see clio_sut.invoke).
+        "workdir": str(tmp_path),
         "timeout_s": 600,
     })
 
@@ -119,3 +122,12 @@ def test_earthscope_gnss_region(agent):
 
     # Real deliverable: a non-empty PNG on disk.
     assert produced_nonempty_png(run), run.extra.get("artifacts")
+
+    # Hygiene: the rendered PNG lands inside the isolated workdir, never the
+    # repo. This makes the mandatory-workdir guarantee observable.
+    pngs = [p for p in run.extra.get("artifacts", []) if p.endswith(".png")]
+    assert pngs, run.extra.get("artifacts")
+    for p in pngs:
+        assert Path(p).resolve().is_relative_to(tmp_path.resolve()), (
+            f"PNG {p!r} written outside the isolated workdir {tmp_path}"
+        )

@@ -94,12 +94,15 @@ def fused_three_layers(run):
 
 @pytest.mark.real_case
 @pytest.mark.live
-def test_wildfire_downwind_impact(agent):
+def test_wildfire_downwind_impact(agent, tmp_path):
     run = agent.run({
         "task": PROMPT,
         "blueprint_id": "wildfire-smoke-impact-review",
         "case_dir": CASE_DIR,
         "run_label": _RUN_LABEL,
+        # Isolated, auto-cleaned workspace root (see clio_sut.invoke): the map
+        # PNG is written here, not into the repo.
+        "workdir": str(tmp_path),
         "timeout_s": 600,
     })
 
@@ -134,3 +137,11 @@ def test_wildfire_downwind_impact(agent):
         p.endswith(".png") and Path(p).is_file() and Path(p).stat().st_size > 1024
         for p in run.extra["artifacts"]
     ), run.extra["artifacts"]
+
+    # Hygiene: the rendered map PNG lands inside the isolated workdir, never the
+    # repo. This makes the mandatory-workdir guarantee observable.
+    for p in run.extra["artifacts"]:
+        if p.endswith(".png"):
+            assert Path(p).resolve().is_relative_to(tmp_path.resolve()), (
+                f"PNG {p!r} written outside the isolated workdir {tmp_path}"
+            )

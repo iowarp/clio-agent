@@ -169,7 +169,22 @@ class ClioAgent(SUT):
         spec = input if isinstance(input, dict) else {"task": str(input)}
         prompt = str(spec.get("task") or spec.get("prompt") or "")
         blueprint_id = str(spec.get("blueprint_id") or "")
-        workdir = str(spec.get("workdir") or Path.cwd())
+        # ``workdir`` is MANDATORY: it becomes the session's workspace root, and
+        # the agent writes its real deliverables (staged CSVs, rendered PNGs)
+        # there. Defaulting it to ``Path.cwd()`` silently turned the repo root
+        # into the scratch workspace, so every live run deposited artifacts into
+        # the source tree (and got band-aided away with per-filename gitignores).
+        # Require an explicit, isolated dir so that can never recur — tests pass
+        # a pytest ``tmp_path``.
+        workdir = str(spec.get("workdir") or "").strip()
+        if not workdir:
+            raise ValueError(
+                "ClioAgent.invoke requires an explicit 'workdir' in the run spec "
+                "(the isolated workspace root for this run). Pass e.g. "
+                "agent.run({..., 'workdir': str(tmp_path)}). Refusing to default "
+                "to the current working directory, which leaks deliverables into "
+                "the repo."
+            )
         timeout_s = float(spec.get("timeout_s", 600.0))
 
         with httpx.Client(base_url=self._base_url, timeout=200.0) as http:
