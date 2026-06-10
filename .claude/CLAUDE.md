@@ -4,6 +4,62 @@ Essential rules and guidelines for AI agents implementing CLIO Agent.
 
 ---
 
+## ⚑ SUPERSEDING PRINCIPLES (read first — these override anything below)
+
+These were learned the hard way grinding the model-agnostic marketplace across model
+families (qwopus/LM Studio, gpt-oss/gemma/nemotron/ALCF). When older rules below
+conflict with these, **these win.** Much of the "Locked-Down Stack" / numbers below
+is stale or aspirational — do not treat it as ground truth.
+
+1. **NO deterministic decision-making in clio core.** clio MUST NOT decide routing,
+   completion, "pending work," or re-work via keyword/phrase/heuristic matching on a
+   model's prose, nor fabricate a decision the model didn't make. The **parent agent
+   (the model) is the router/decider** — it expresses next steps via its *structured
+   output* (`expert_handoffs`: run them; their absence: it decided it's done). clio's
+   job is to **carry results back, execute the stated handoffs, and — when one seems
+   missing — RE-ASK the parent** (bounded repair) and let *it* decide. Deterministic
+   barriers enable the easy case and break every new model/use-case; they do not scale.
+   *(Anti-patterns removed this session: a prose-keyword "pending work" detector, a
+   "self-contract" path that scraped prose and fabricated a synthetic prediction, a
+   completed-child guard. If you find more, kill them — see issues #38/#39.)*
+
+2. **Allowed vs forbidden in core.** clio MAY *surface/gate on reality* — file/path
+   exists, HITL block, auth gate, **schema-validate**, and **format-only error
+   correction** with no semantic change (the lenient constructor-repr→JSON adapter;
+   a declared Pydantic field default). clio must NOT *silently fix / reroute / scrub /
+   decide* via case-logic or keyword heuristics.
+
+3. **Fix the root in code/data-flow, don't bolt constraints onto prompts.** Do not add
+   `EXACTLY ONCE` / `no &&` / "use column X" prose to expert `.md`s to suppress an
+   observed failure — that overfits to tested cases, bloats context (which *causes*
+   small-model failures), and forecloses edge cases. Fix the cause: lean tool outputs,
+   non-hanging shell, forward the discovered columns, pin staging dirs as infra. Prompt
+   editing IS a valid lever for *understanding/grounding* (telling the model what state
+   means), just not for hard behavioral handcuffs.
+
+4. **Be the trace-driven driver (the loop).** (1) run the target test, (2) read the
+   FULL trace — `~/.config/clio-agent/messages/sess_*.json` + `run.extra.workflow_state`,
+   not the summary; add instrumentation where understanding is thin, (3) hypothesize ONE
+   cause, (4) verify cheaply (~30s probe) before any multi-minute rerun, (5) fix the root,
+   (6) one change per rerun, regression-check, advance. Don't run blindly; don't declare
+   blocked; dig. Deterministic code is only ever the *last* error-correction barrier.
+
+5. **DSPy is the internal engine AND the reference.** For typed-output/adapter/signature
+   semantics, the source of truth is the **DSPy source in `docs/ref/dspy/`** (not guesswork,
+   not this file). Key facts: a Signature *is* a `pydantic.BaseModel`; each field is a
+   `FieldInfo`; `dspy.OutputField(**pydantic_kwargs)` forwards every Pydantic constraint/
+   default; `adapters/utils.py::parse_value` does `json_repair`→`ast.literal_eval`→
+   `TypeAdapter(annotation).validate_python` — so **Pydantic field defaults are honored**
+   when a model omits a key (the recommended way to make a field droppable-with-a-value),
+   required fields raise `ValidationError`, and `use_json_adapter_fallback=False` is the
+   sanctioned way to get a hard error instead of the lenient JSON fallback.
+
+6. **Stale numbers below are NOT ground truth.** `max_tokens=4096` and the "T1: 2K /
+   T2: 4K token budgets" were disproven — models expose 128K–262K context and clio should
+   discover+use it (handshake plan). Treat such figures as historical, not targets.
+
+---
+
 ## Core Principles
 
 **CLIO Agent IS**: Self-improving autonomous agent for scientific data (not a framework)
