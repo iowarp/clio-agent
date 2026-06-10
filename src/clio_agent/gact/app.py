@@ -15722,9 +15722,7 @@ def build_app(
             )
         env_name = _cloud_env().get(preset.provider, "")
         api_key = (
-            _os.environ.get(env_name, "")
-            if env_name
-            else _os.environ.get("CLIO_LM_API_KEY", "")
+            _os.environ.get(env_name, "") if env_name else _os.environ.get("CLIO_LM_API_KEY", "")
         )
         ctx = HandshakeContext(
             provider_id=preset.id,
@@ -15839,6 +15837,65 @@ def build_app(
         except Exception:
             pass
         return rows
+
+    def _declared_mcp_specs(cwd: Path | None = None) -> dict[str, Any]:
+        """Assemble the declared MCP server specs the runtime would mount.
+
+        Mirrors ``ClioAgent._build_tool_gateway``: merge each active blueprint's
+        ``mcp_servers`` frontmatter (pack scope) with user/workspace ``mcp.yaml``
+        via ``load_mcp_servers``. Returns ``{name: MCPServerSpec}``; discovery
+        failures degrade to the mcp.yaml-only set (best-effort), never raising.
+        """
+        from clio_agent.tools.mcp_config import load_mcp_servers  # noqa: PLC0415
+
+        pack_servers: dict[str, dict[str, Any]] = {}
+        try:
+            for blueprint in discover_agent_blueprints(cwd=cwd):
+                servers = blueprint.metadata.get("mcp_servers")
+                if isinstance(servers, Mapping) and servers:
+                    pack_servers[blueprint.id] = {str(k): v for k, v in servers.items()}
+        except Exception:  # noqa: BLE001 - pack discovery is best-effort
+            pass
+        return load_mcp_servers(cwd=cwd, pack_servers=pack_servers)
+
+    @app.get("/v1/mcp/handshake")
+    async def mcp_handshake(workspace_id: str = "", session_id: str = "") -> dict[str, Any]:
+        """Live readiness handshake for every DECLARED MCP tool server.
+
+        Complements ``GET /v1/mcp/servers`` (a catalog of what is mounted): this
+        actively connects to each declared server (workspace/user ``mcp.yaml`` +
+        active pack frontmatter) over its transport, lists its tools, and reports
+        per-server reachability + tool count. That lets a client (the TUI) show
+        "clio-kit up (12 tools), hdf5 **down**" instead of one aggregate gateway
+        row. One unreachable/slow server never sinks the rest (probed in
+        parallel; bounded per-server timeout).
+
+        This is intentionally an on-demand endpoint, NOT part of ``/v1/health``:
+        probing stdio servers spawns subprocesses (e.g. ``uvx``) and can take
+        seconds, which would make the frequently-polled health check slow and
+        flaky. The TUI calls this when it wants live tool-server status.
+        """
+        from clio_agent.providers.handshake import handshake_mcp_servers  # noqa: PLC0415
+
+        cwd = _workspace_catalog_cwd(workspace_id=workspace_id, session_id=session_id)
+        specs = _declared_mcp_specs(cwd=cwd)
+        reports = await handshake_mcp_servers(list(specs.values()))
+        servers: list[dict[str, Any]] = []
+        for report in reports:
+            status = report.to_integration_status()
+            servers.append(
+                {
+                    "name": report.name,
+                    "reachable": report.ok,
+                    "state": status.state.value,
+                    "transport": report.transport,
+                    "tools_count": report.tool_count,
+                    "tools": list(report.tools),
+                    "error": report.error,
+                    "latency_ms": report.latency_ms,
+                }
+            )
+        return {"servers": servers}
 
     @app.post("/v1/mcp/servers", status_code=201)
     async def install_mcp_server(request: Request) -> dict[str, Any]:
@@ -21557,9 +21614,7 @@ def build_app(
                     ),
                     force=True,
                 )
-                cfg.apply_handshake(
-                    handshake_report, user_set_max_tokens=(req.max_tokens or 0) > 0
-                )
+                cfg.apply_handshake(handshake_report, user_set_max_tokens=(req.max_tokens or 0) > 0)
             except Exception:
                 handshake_report = None
             app.state.lm_handshake_report = handshake_report
