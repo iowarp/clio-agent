@@ -5294,20 +5294,17 @@ def _blueprint_runtime_signature(agent_def: "AgentDef") -> Any:
         if _structured_output_enabled(structured.get(name, True)) and name not in _declared:
             outputs.append((name, desc, field_type))
 
-    # Force ``workflow_state`` to a plain JSON object even when a blueprint declares
-    # a nested typed schema for it. DSPy labels a generated pydantic model with a
-    # code-like type name (``earthscope_station_catalog_workflow_state_model``) and
-    # code-trained models (qwopus) mimic it as a Python *constructor call*
-    # (``Model(field=...)``) instead of JSON, which breaks the strict parser. The
-    # runtime reads ``workflow_state`` as a JSON object regardless, and the expert
-    # prose already describes its shape — so presenting it as ``dict[str, Any]``
-    # removes the type-name cue and lets the model emit JSON natively. (gpt-oss /
-    # gemma already emit JSON; this is a no-op for them. The lenient adapter stays
-    # as the last-barrier recovery.)
-    outputs = [
-        (name, desc, dict[str, Any]) if name == "workflow_state" else (name, desc, ftype)
-        for name, desc, ftype in outputs
-    ]
+    # KEEP workflow_state TYPED (do not flatten to dict[str, Any]). The typed
+    # pydantic field names are what ENFORCE the exact workflow_state keys the
+    # continuation contracts route on (e.g. ``station_catalog.status``). When the
+    # field was flattened to a free dict, a small model (qwopus) emitted the
+    # ranking under the wrong key (``catalog`` instead of ``station_catalog``), so
+    # ``station_catalog.status`` resolved to None and the data->resolver contract
+    # never fired. Code-trained models still tend to emit this typed field as a
+    # Python constructor-repr (``Model(field=...)``) rather than JSON; that is
+    # recovered by the LenientChatAdapter (constructor-repr -> JSON, no re-request)
+    # with DSPy's JSON-adapter fallback OFF for local backends so the recovery is
+    # not bypassed. The recovery preserves the correct keys.
     import logging as _logging  # noqa: PLC0415
 
     _logging.getLogger("clio_agent").warning(

@@ -66,7 +66,7 @@
   "context": 1048576,
   "provider": "lm_studio",
   "source": "live",
-  "updated_at": "2026-06-10T07:02:35.632731+00:00"
+  "updated_at": "2026-06-10T14:08:07.480817+00:00"
  },
  "llama-3-70b": {
   "context": 8192,
@@ -200,7 +200,7 @@
   "context": 262144,
   "provider": "lm_studio",
   "source": "live",
-  "updated_at": "2026-06-10T07:02:35.630558+00:00"
+  "updated_at": "2026-06-10T14:08:07.477771+00:00"
  },
  "qwopus3.5-9b-v3:2": {
   "context": 262144,
@@ -212,6 +212,6 @@
   "context": 2048,
   "provider": "lm_studio",
   "source": "live",
-  "updated_at": "2026-06-10T07:02:35.632228+00:00"
+  "updated_at": "2026-06-10T14:08:07.480355+00:00"
  }
 }
