@@ -100,7 +100,12 @@ def test_earthscope_gnss_region(agent, tmp_path):
         # Isolated, auto-cleaned workspace root: the agent writes the staged CSV
         # and the rendered PNG here, NOT into the repo (see clio_sut.invoke).
         "workdir": str(tmp_path),
-        "timeout_s": 600,
+        # No absolute per-run wall clock: an agentic run may take as long as it
+        # keeps ADVANCING. The SUT's no-progress watchdog (no_progress_s) and
+        # per-call timeouts bound genuine stalls; a slow but progressing model
+        # (e.g. a 120B reasoning model over the full pipeline) must not be killed
+        # by a fixed ceiling. timeout_s=0 turns the hard cap OFF.
+        "timeout_s": 0,
     })
 
     # Runtime/harness invariants.

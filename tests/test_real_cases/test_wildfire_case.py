@@ -103,7 +103,9 @@ def test_wildfire_downwind_impact(agent, tmp_path):
         # Isolated, auto-cleaned workspace root (see clio_sut.invoke): the map
         # PNG is written here, not into the repo.
         "workdir": str(tmp_path),
-        "timeout_s": 600,
+        # No absolute per-run wall clock — progress watchdog governs (see the
+        # EarthScope case for the rationale). timeout_s=0 turns the hard cap off.
+        "timeout_s": 0,
     })
 
     # Runtime/harness invariants.

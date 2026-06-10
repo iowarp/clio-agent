@@ -119,12 +119,21 @@ class ClioAgent(SUT):
             if row is None:
                 raise RuntimeError(f"unknown provider cell: {provider!r}")
             kind = str(row.get("metadata", {}).get("provider_kind") or provider)
+            # Sweep hooks (env fallbacks) so the temperature-exploration grind can
+            # vary temperature / point at a non-default LM Studio host without
+            # editing code per run. Explicit per-cell overrides still win.
+            env_temp = os.environ.get("CLIO_AGENTTEST_TEMPERATURE", "")
+            env_api_base = os.environ.get("CLIO_AGENTTEST_API_BASE", "")
             payload = {
                 "provider": kind,
-                "api_base": str(self._overrides.get("api_base") or row.get("api_base") or ""),
+                "api_base": str(
+                    self._overrides.get("api_base") or env_api_base or row.get("api_base") or ""
+                ),
                 "model": model or str(row.get("default_model") or ""),
                 "api_key": os.environ.get("CLIO_LM_API_KEY", "x"),
-                "temperature": float(self._overrides.get("temperature", 0.0)),
+                "temperature": float(
+                    self._overrides.get("temperature", float(env_temp) if env_temp else 0.0)
+                ),
                 "max_tokens": int(self._overrides.get("max_tokens", 32000)),
             }
             if "system_prompt" in self._overrides:
