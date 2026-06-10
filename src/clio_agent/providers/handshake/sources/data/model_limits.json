@@ -1,4 +1,10 @@
 {
+ "arcee-ai/trinity-large-thinking-w4a16": {
+  "context": 131072,
+  "provider": "argonne",
+  "source": "live",
+  "updated_at": "2026-06-10T02:28:29.045485+00:00"
+ },
  "claude-3-5-haiku": {
   "context": 200000,
   "source": "seed"
@@ -10,6 +16,27 @@
  "claude-3-opus": {
   "context": 200000,
   "source": "seed"
+ },
+ "google/gemma-3-27b-it": {
+  "context": 32768,
+  "output": 8192,
+  "provider": "argonne",
+  "source": "live",
+  "updated_at": "2026-06-10T02:28:29.045783+00:00"
+ },
+ "google/gemma-4-26b-a4b-it": {
+  "context": 262144,
+  "output": 32768,
+  "provider": "argonne",
+  "source": "live",
+  "updated_at": "2026-06-10T02:28:29.046738+00:00"
+ },
+ "google/gemma-4-31b-it": {
+  "context": 262144,
+  "output": 32768,
+  "provider": "argonne",
+  "source": "live",
+  "updated_at": "2026-06-10T02:28:29.046947+00:00"
  },
  "gpt-4-turbo": {
   "context": 128000,
@@ -35,6 +62,12 @@
   "context": 1048576,
   "source": "seed"
  },
+ "ibm/granite-4-h-tiny": {
+  "context": 1048576,
+  "provider": "lm_studio",
+  "source": "live",
+  "updated_at": "2026-06-10T02:49:07.233996+00:00"
+ },
  "llama-3-70b": {
   "context": 8192,
   "source": "seed"
@@ -55,9 +88,83 @@
   "source": "live",
   "updated_at": "2026-06-09T21:54:40.641435+00:00"
  },
+ "meta-llama/llama-3.2-90b-vision-instruct": {
+  "context": 8192,
+  "provider": "argonne",
+  "source": "live",
+  "updated_at": "2026-06-10T02:28:29.047173+00:00"
+ },
+ "meta-llama/llama-3.3-70b-instruct": {
+  "context": 32768,
+  "output": 4096,
+  "provider": "argonne",
+  "source": "live",
+  "updated_at": "2026-06-10T02:28:29.047366+00:00"
+ },
+ "meta-llama/llama-4-maverick-17b-128e-instruct": {
+  "context": 16384,
+  "provider": "argonne",
+  "source": "live",
+  "updated_at": "2026-06-10T02:28:29.047557+00:00"
+ },
+ "meta-llama/llama-4-scout-17b-16e-instruct": {
+  "context": 32768,
+  "provider": "argonne",
+  "source": "live",
+  "updated_at": "2026-06-10T02:28:29.047823+00:00"
+ },
+ "meta-llama/meta-llama-3.1-405b-instruct": {
+  "context": 24576,
+  "provider": "argonne",
+  "source": "live",
+  "updated_at": "2026-06-10T02:28:29.048029+00:00"
+ },
+ "meta-llama/meta-llama-3.1-70b-instruct": {
+  "context": 16384,
+  "provider": "argonne",
+  "source": "live",
+  "updated_at": "2026-06-10T02:28:29.048220+00:00"
+ },
+ "meta-llama/meta-llama-3.1-8b-instruct": {
+  "context": 32768,
+  "provider": "argonne",
+  "source": "live",
+  "updated_at": "2026-06-10T02:28:29.048462+00:00"
+ },
  "mistral-7b": {
   "context": 32768,
   "source": "seed"
+ },
+ "mistralai/devstral-2-123b-instruct-2512": {
+  "context": 16384,
+  "provider": "argonne",
+  "source": "live",
+  "updated_at": "2026-06-10T02:28:29.048735+00:00"
+ },
+ "mistralai/mistral-large-instruct-2407": {
+  "context": 16384,
+  "provider": "argonne",
+  "source": "live",
+  "updated_at": "2026-06-10T02:28:29.048935+00:00"
+ },
+ "mistralai/mixtral-8x22b-instruct-v0.1": {
+  "context": 16384,
+  "provider": "argonne",
+  "source": "live",
+  "updated_at": "2026-06-10T02:28:29.049145+00:00"
+ },
+ "nvidia/nemotron-3-super-120b": {
+  "context": 262144,
+  "provider": "argonne",
+  "source": "live",
+  "updated_at": "2026-06-10T02:28:29.049336+00:00"
+ },
+ "openai/gpt-oss-120b": {
+  "context": 65536,
+  "output": 32768,
+  "provider": "argonne",
+  "source": "live",
+  "updated_at": "2026-06-10T02:28:29.049525+00:00"
  },
  "qwen2.5:0.5b": {
   "context": 32768,
@@ -91,6 +198,14 @@
  },
  "qwopus3.5-9b-v3": {
   "context": 262144,
-  "source": "seed"
+  "provider": "lm_studio",
+  "source": "live",
+  "updated_at": "2026-06-10T02:49:07.232417+00:00"
+ },
+ "text-embedding-nomic-embed-text-v1.5": {
+  "context": 2048,
+  "provider": "lm_studio",
+  "source": "live",
+  "updated_at": "2026-06-10T02:49:07.233202+00:00"
  }
 }
