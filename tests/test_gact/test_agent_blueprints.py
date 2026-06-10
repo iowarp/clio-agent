@@ -2795,7 +2795,8 @@ def test_earthscope_station_catalog_prompt_keeps_resolver_acquisition_boundary(
 
     assert "station metadata ranking, not station time-series acquisition" in prompt
     assert "It has no NDP search or staging tools" in prompt
-    assert "  - ndp_filter_earthscope_station_catalog" in tool_block
+    # clio-kit renamed this tool: ndp_filter_earthscope_station_catalog -> geo_filter_points_by_radius
+    assert "  - geo_filter_points_by_radius" in tool_block
     assert "  - ndp_search_datasets" not in tool_block
     assert "  - ndp_stage_resource" not in tool_block
     assert "Do not call `ndp_stage_resource` for a station-specific time-series CSV" in prompt
@@ -3070,10 +3071,15 @@ def test_earthscope_resolver_prompt_uses_typed_station_resource_frontier(
     normalized_prompt = " ".join(prompt.split())
 
     assert "`resource_discovery.station_resource_queries[*].preferred_calls`" in prompt
-    assert '`resource_name="<station id>"`' in prompt
-    assert "Do not search station IDs in `search_terms` for this resolver step" in normalized_prompt
-    assert "grouped calls" in prompt
-    assert "do not count as station-resource coverage" in normalized_prompt
+    # Per-station search now keys on dataset_title (the d6cfcaf docs explicitly
+    # warn AGAINST resource_name for the station id — the NDP filter is unreliable).
+    assert "Use `dataset_title` for the station id" in prompt
+    # The typed per-station preferred_calls are the acquisition frontier; the
+    # resolver must not fall back to free search_terms / city-name searches.
+    assert "those are the acquisition frontier" in normalized_prompt
+    assert "Do not replace them with `search_terms`, city-name searches" in normalized_prompt
+    # An out-of-region / nearest station is not coverage and must not be staged.
+    assert "is NOT coverage and must never be searched or staged" in normalized_prompt
 
 
 @pytest.mark.parametrize(
@@ -3104,13 +3110,18 @@ def test_earthscope_data_prompt_requires_staged_metadata_before_station_filter(
         "a guessed filename such as `earthscope_stations.csv` is not a staged path"
         in normalized_data
     )
-    assert "the next tool call must be `ndp_stage_resource`" in normalized_discovery
-    assert "before station ranking can proceed" in normalized_discovery
+    # Discovery must stage + clean the metadata catalog before ranking can run:
+    # the cleaned /tmp CSV is the station ranker's required input, and the run is
+    # explicitly incomplete until that staging pipeline finishes.
+    assert "The downstream station ranker needs the CLEANED" in normalized_discovery
+    assert "your run is INCOMPLETE until the `shell_bash` clean has run" in normalized_discovery
+    # The station ranker filters the staged metadata path, never a guessed name
+    # (tool renamed: ndp_filter_earthscope_station_catalog -> geo_filter_points_by_radius).
     assert (
-        "Do not call `ndp_filter_earthscope_station_catalog` with a guessed relative filename"
+        "Do not call `geo_filter_points_by_radius` on the raw catalog or on a guessed relative filename"
         in normalized_station
     )
-    assert "exact local path returned by `ndp_stage_resource`" in normalized_station
+    assert "`data_path` = `acquisition.metadata_path`" in normalized_station
 
 
 @pytest.mark.parametrize(
