@@ -134,7 +134,28 @@ class ClioAgent(SUT):
                 "temperature": float(
                     self._overrides.get("temperature", float(env_temp) if env_temp else 0.0)
                 ),
-                "max_tokens": int(self._overrides.get("max_tokens", 32000)),
+                "max_tokens": int(
+                    self._overrides.get(
+                        "max_tokens", int(os.environ.get("CLIO_AGENTTEST_MAX_TOKENS") or 32000)
+                    )
+                ),
+                # LM Studio load-size + concurrency. Omitting context_length leaves
+                # the server with no managed load -> LM Studio JIT-loads its 8192
+                # default (the "8192 trap"), too small for a multi-stage pipeline's
+                # accumulated context. Pass a real window (e.g. 65536) so the bind
+                # loads/reuses an instance at that size. parallel=1 serializes a
+                # single-GPU box. 0 = unset (no-op for non-lm_studio providers).
+                "context_length": int(
+                    self._overrides.get(
+                        "context_length",
+                        int(os.environ.get("CLIO_AGENTTEST_CONTEXT_LENGTH") or 0),
+                    )
+                ),
+                "parallel": int(
+                    self._overrides.get(
+                        "parallel", int(os.environ.get("CLIO_AGENTTEST_PARALLEL") or 0)
+                    )
+                ),
             }
             if "system_prompt" in self._overrides:
                 payload["system_prompt"] = self._overrides["system_prompt"]
@@ -268,14 +289,41 @@ class ClioAgent(SUT):
         # Individual hung calls are bounded by per-call timeouts elsewhere. A 15-min
         # run that is producing should complete. ``timeout_s`` (if >0) is an optional
         # hard ceiling, OFF by default; ``no_progress_s`` is the real watchdog.
-        no_progress_s = float(self._overrides.get("no_progress_s", 900.0))
+        no_progress_s = float(
+            self._overrides.get(
+                "no_progress_s", float(os.environ.get("CLIO_AGENTTEST_NO_PROGRESS_S") or 900.0)
+            )
+        )
         hard_cap_s = float(timeout_s) if timeout_s and timeout_s > 0 else 0.0
         start = time.monotonic()
         last_change = start
         prev_sig = ""
         while True:
             messages = http.get(f"/v1/sessions/{session_id}/messages").json()["messages"]
-            sig = f"{len(messages)}|{messages[0] if messages else ''}"
+            # Child-session activity is progress. This blueprint runs ALL its work in
+            # child expert sessions (geospatial, data->discovery/catalog/resolver,
+            # analysis, visualization, synthesis), so the PARENT session stays silent
+            # for the whole multi-expert run -- watching only the parent turns
+            # ``no_progress_s`` into a flat total-timeout that kills a healthy run.
+            # Fold each child's message count into the signature so any expert's
+            # progress (a tool call, a sub-step, a completion) refreshes the watchdog.
+            child_sig: tuple = ()
+            try:
+                sessions = http.get("/v1/sessions").json()["sessions"]
+                child_ids = [
+                    r.get("id") for r in sessions if r.get("parent_session_id") == session_id
+                ]
+                counts = []
+                for cid in child_ids:
+                    try:
+                        cm = http.get(f"/v1/sessions/{cid}/messages").json()["messages"]
+                        counts.append((str(cid), len(cm)))
+                    except Exception:
+                        counts.append((str(cid), -1))
+                child_sig = tuple(sorted(counts))
+            except Exception:
+                child_sig = ()
+            sig = f"{len(messages)}|{messages[0] if messages else ''}|{child_sig}"
             if sig != prev_sig:
                 prev_sig = sig
                 last_change = time.monotonic()
