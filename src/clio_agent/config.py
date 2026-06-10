@@ -734,13 +734,21 @@ def _provider_lm_kwargs(config: LMProviderConfig) -> dict[str, Any]:
 def create_chat_adapter(config: LMProviderConfig) -> Any:
     """Create the DSPy chat adapter appropriate for this provider.
 
-    Local OpenAI-compatible servers commonly reject DSPy's JSON adapter
-    fallback request format. They still work with ChatAdapter's text
-    protocol, so keep this decision in one place and reuse it anywhere an
-    LM context is installed.
+    Use ChatAdapter's text protocol as the primary (local OpenAI-compatible
+    servers work best with it), but KEEP DSPy's JSON-adapter fallback enabled —
+    it only engages when the text parse of a structured output FAILS. Some local
+    reasoning models (e.g. qwopus) emit a typed field like ``workflow_state`` as a
+    Python repr (``model(field=...)``) instead of JSON; without the fallback that
+    raises ``AdapterParseError`` and sinks the turn. The fallback re-requests the
+    field as JSON and recovers. Remote providers already had it on; this restores
+    it for local backends too (opt out with ``CLIO_DISABLE_JSON_ADAPTER_FALLBACK``).
     """
     dspy = _dspy()
-    use_json_fallback = not is_local_openai_compatible_backend(config)
+    use_json_fallback = os.environ.get("CLIO_DISABLE_JSON_ADAPTER_FALLBACK", "").strip().lower() not in {
+        "1",
+        "true",
+        "yes",
+    }
     return dspy.ChatAdapter(use_json_adapter_fallback=use_json_fallback)
 
 
