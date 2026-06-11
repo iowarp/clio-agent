@@ -82,6 +82,12 @@ _ACTIVE_GACT_SESSION_ID: contextvars.ContextVar[str] = contextvars.ContextVar(
     "clio_gact_active_session_id",
     default="",
 )
+# Resolve-once cache of an expert's declared child ids, used to build the
+# next_expert: Literal[children, "finish"] routing field. The signature is rebuilt
+# on several paths and some lack the app/session context needed to resolve children
+# live; this process-global cache keeps the Literal correct (vs collapsing to
+# Literal["finish"], which would force an immediate finish). Keyed by expert id.
+_EXPERT_CHILDREN_CACHE: dict[str, list[str]] = {}
 _ACTIVE_GACT_TURN_ID: contextvars.ContextVar[str] = contextvars.ContextVar(
     "clio_gact_active_turn_id",
     default="",
@@ -5299,15 +5305,67 @@ def _blueprint_runtime_signature(agent_def: "AgentDef") -> Any:
         "artifacts": ("Artifact paths or identifiers produced by the expert", str),
         "errors": ("Recoverable runtime errors or missing evidence", str),
         "delegation": ("Delegation metadata for downstream parent experts", str),
-        "expert_handoffs": (
-            "JSON array of synchronous child expert delegations. Use [] when no child expert should run.",
-            str,
-        ),
     }
     _declared = {field for field, _, _ in outputs}
     for name, (desc, field_type) in _structured_field_specs.items():
         if _structured_output_enabled(structured.get(name, True)) and name not in _declared:
             outputs.append((name, desc, field_type))
+
+    # Agent-driven routing (replaces the deterministic continuation_contracts state
+    # machine + prose heuristics). EVERY expert emits, at the end of its run, a typed
+    # routing decision the settle traversal reads: the id of the ONE next child to
+    # descend into, or "finish" to return to its parent. main's parent is the user, so
+    # main's `answer` on "finish" is the final deliverable. This mirrors dspy.ReAct's
+    # `next_tool_name: Literal[tools + "finish"]` -- a typed Literal is exactly what
+    # makes a model fill it reliably (the old free-string `expert_handoffs` was always
+    # emitted empty, so 100% of routing fell through to the contracts). The Literal is
+    # built per-expert from its OWN declared children (a leaf gets Literal["finish"]).
+    _route_app = _ACTIVE_GACT_APP.get()
+    _route_sid = _ACTIVE_GACT_SESSION_ID.get()
+    _agent_id = getattr(agent_def, "id", "")
+    _child_ids: list[str] = []
+    if _route_app is not None and _route_sid:
+        try:
+            _child_ids = sorted(
+                _runtime_declared_child_ids(_route_app, _agent_id, session_id=_route_sid)
+            )
+        except Exception:  # noqa: BLE001 - routing field is best-effort at sig-build
+            _child_ids = []
+    # Resolve-once-then-reuse via a process-global cache: some signature-build paths
+    # carry NEITHER the app nor the session context, so resolve children live when we
+    # can and fall back to the cache otherwise -- keeps next_expert's Literal correct
+    # instead of collapsing to Literal["finish"] and forcing an immediate finish.
+    if _agent_id:
+        if _child_ids:
+            _EXPERT_CHILDREN_CACHE[_agent_id] = _child_ids
+        elif _agent_id in _EXPERT_CHILDREN_CACHE:
+            _child_ids = list(_EXPERT_CHILDREN_CACHE[_agent_id])
+    if "next_expert" not in _declared:
+        _route_values = tuple(_child_ids) + ("finish",)
+        _next_expert_type = Literal[_route_values]  # type: ignore[valid-type]
+        outputs.append(
+            (
+                "next_expert",
+                (
+                    "Routing decision emitted when THIS expert's own work is complete: the "
+                    "id of the ONE next child expert to run, or 'finish' to return control "
+                    "to your parent (when you choose 'finish', put the final result in "
+                    "`answer`). Must be EXACTLY one of: " + ", ".join(_route_values) + "."
+                ),
+                _next_expert_type,
+            )
+        )
+    if "next_task" not in _declared:
+        outputs.append(
+            (
+                "next_task",
+                (
+                    "The concrete task/question to hand to the child named in next_expert "
+                    "(leave empty when next_expert='finish')."
+                ),
+                str,
+            )
+        )
 
     # KEEP workflow_state TYPED (do not flatten to dict[str, Any]). The typed
     # pydantic field names are what ENFORCE the exact workflow_state keys the
@@ -5323,9 +5381,10 @@ def _blueprint_runtime_signature(agent_def: "AgentDef") -> Any:
     import logging as _logging  # noqa: PLC0415
 
     _logging.getLogger("clio_agent").warning(
-        "⚑ SIG-BUILD %s :: workflow_state type=%s",
+        "⚑ SIG-BUILD %s :: workflow_state type=%s :: next_expert=%s",
         getattr(agent_def, "id", "?"),
         next((str(t) for n, d, t in outputs if n == "workflow_state"), "<none>"),
+        next((str(t) for n, d, t in outputs if n == "next_expert"), "<none>"),
     )
 
     namespace: dict[str, Any] = {
@@ -6060,6 +6119,8 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                     route_source="agent_blueprint",
                     session_id=session_id,
                     expert_handoffs=[],
+                    next_expert=getattr(result, "next_expert", ""),
+                    next_task=getattr(result, "next_task", ""),
                     workflow_state=getattr(result, "workflow_state", ""),
                     evidence=getattr(result, "evidence", ""),
                     artifacts=getattr(result, "artifacts", ""),
@@ -6076,6 +6137,8 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                 route_source="agent_blueprint",
                 session_id=session_id,
                 expert_handoffs=handoff_rows,
+                next_expert=getattr(result, "next_expert", ""),
+                next_task=getattr(result, "next_task", ""),
                 workflow_state=getattr(result, "workflow_state", ""),
                 evidence=getattr(result, "evidence", ""),
                 artifacts=getattr(result, "artifacts", ""),
@@ -6992,7 +7055,16 @@ async def _run_turn_in_background(
         runner = _blueprint_runner_for_agent(agent_def)
         loop = asyncio.get_running_loop()
         with _gact_app_context(app), _tool_session_context(sid):
-            turn_context = contextvars.copy_context()
+            # The signature is rebuilt inside the executor (via _build_blueprint_dspy_module);
+            # its routing Literal[children, "finish"] resolves children from the active
+            # blueprint keyed on _ACTIVE_GACT_SESSION_ID. Set it here so the copied context
+            # carries it -- otherwise children resolve empty and next_expert collapses to
+            # Literal["finish"], forcing the agent to finish immediately.
+            _sid_tok = _ACTIVE_GACT_SESSION_ID.set(sid)
+            try:
+                turn_context = contextvars.copy_context()
+            finally:
+                _ACTIVE_GACT_SESSION_ID.reset(_sid_tok)
         _pred = await _await_turn_work(
             loop.run_in_executor(
                 None,
@@ -7016,14 +7088,11 @@ async def _run_turn_in_background(
         try:
             import logging as _hlog  # noqa: PLC0415
 
-            _raw = _coerce_expert_handoff_rows(getattr(_pred, "expert_handoffs", None)) or []
-            _raw_targets = [
-                str((r or {}).get("agent_id") or (r or {}).get("delegate_to") or "?") for r in _raw
-            ]
             _hlog.getLogger("clio_agent").warning(
-                "⚑ RAW-HANDOFF agent=%s emitted_handoffs=%s answer_len=%d",
+                "⚑ RAW-ROUTE agent=%s next_expert=%s next_task_len=%d answer_len=%d",
                 getattr(agent_def, "id", "?"),
-                _raw_targets,
+                str(getattr(_pred, "next_expert", "") or "") or "<none>",
+                len(str(getattr(_pred, "next_task", "") or "")),
                 len(str(getattr(_pred, "answer", "") or "")),
             )
         except Exception:  # noqa: BLE001 - instrumentation only
@@ -7503,205 +7572,48 @@ async def _run_turn_in_background(
             " <- ".join(reversed(_clio_frames[-6:])),
         )
         all_rows: list[dict[str, Any]] = []
-        max_rounds = _user_agent_int_param(parent_agent, "max_sync_delegation_rounds", 4)
-        max_rounds = max(1, min(max_rounds, 8))
-        missing_handoff_repairs = 0
-        seen_continuation_contracts: set[tuple[str, str]] = set()
+        max_rounds = _user_agent_int_param(parent_agent, "max_sync_delegation_rounds", 12)
+        max_rounds = max(1, min(max_rounds, 16))
         completed_child_ids: set[str] = set()
         completed_child_outputs: dict[str, str] = {}
-        for _round in range(max_rounds):
-            import logging as _logging  # noqa: PLC0415
+        declared_child_ids = _runtime_declared_child_ids(app, parent_agent.id, session_id=sid)
+        import logging as _logging  # noqa: PLC0415
 
-            _req_dbg = [
-                str((r or {}).get("agent_id") or (r or {}).get("delegate_to") or "?")
-                for r in (
-                    _coerce_expert_handoff_rows(getattr(latest_pred, "expert_handoffs", None)) or []
-                )
-            ]
+        for _round in range(max_rounds):
+            # AGENT-DRIVEN ROUTING. The parent emitted, at the end of its run, a typed
+            # ``next_expert``: the ONE child to descend into, or "finish" to return to
+            # ITS parent. No contracts, no prose heuristics -- the structured field IS
+            # the routing decision (built in _blueprint_runtime_signature as
+            # Literal[children + "finish"]). "finish"/missing/unknown-id => this expert
+            # is done; finalize with its ``answer``. main's parent is the user, so main's
+            # answer on "finish" is the deliverable.
+            next_expert = str(getattr(latest_pred, "next_expert", "") or "").strip()
+            next_task = str(getattr(latest_pred, "next_task", "") or "").strip()
             _logging.getLogger("clio_agent").warning(
-                "⚑ SETTLE parent=%s round=%d completed=%s requested=%s",
+                "⛑ SETTLE parent=%s round=%d completed=%s next_expert=%s next_task=%r reasoning=%r answer=%r",
                 parent_agent.id,
                 _round,
                 sorted(completed_child_ids),
-                _req_dbg,
+                next_expert or "<none>",
+                next_task[:160],
+                str(getattr(latest_pred, "reasoning", "") or "")[:400],
+                str(getattr(latest_pred, "answer", "") or "")[:200],
             )
-            requested_rows = _coerce_expert_handoff_rows(
-                getattr(latest_pred, "expert_handoffs", None)
-            )
-            declared_child_ids = _runtime_declared_child_ids(app, parent_agent.id, session_id=sid)
-            completed_rows_so_far = [
-                row
-                for row in all_rows
-                if row.get("status") == "completed" and row.get("stage") == "delegate.completed"
-            ]
-            completed_outputs_so_far = [
-                evidence
-                for row in completed_rows_so_far
-                if (evidence := _completed_row_contract_evidence(row))
-            ]
-            requested_rows = _filter_child_handoffs_by_contract_order(
-                parent_agent,
-                requested_rows,
-                completed_outputs=completed_outputs_so_far,
-                current_tool_outputs=_tool_derived_contract_evidence_for_prediction(latest_pred),
-                completed_child_ids=completed_child_ids,
-                declared_child_ids=declared_child_ids,
-            )
-            requested_rows = _filter_repeated_successful_sync_handoffs(
-                requested_rows,
-                completed_child_ids,
-                completed_child_outputs,
-            )
-            executable_rows = [
-                row for row in requested_rows if _should_execute_delegated_handoff(row)
-            ]
-            if not completed_child_ids:
-                start_contract_rows = _continuation_contract_handoffs(
-                    parent_agent,
-                    source_text=source_text,
-                    answer_text="",
-                    completed_outputs=[],
-                    declared_child_ids=declared_child_ids,
-                    completed_child_ids=completed_child_ids,
-                )
-                if start_contract_rows:
-                    requested_rows = start_contract_rows
-                    executable_rows = start_contract_rows
-            repeated_skips = [
-                row
-                for row in requested_rows
-                if row.get("status") == "skipped"
-                and row.get("skip_reason") == "completed_sync_child_already_returned"
-            ]
-            if not executable_rows:
-                if repeated_skips:
-                    previous_answer = str(getattr(latest_pred, "answer", "") or "").strip()
-                    if not previous_answer:
-                        previous_answer = _latest_parent_resumed_output_summary(
-                            all_rows,
-                            parent_agent.id,
-                        )
-                        latest_pred = SimpleNamespace(
-                            answer=previous_answer,
-                            selected_expert=parent_agent.id,
-                            routing_rationale="repeated completed child handoff skipped",
-                            expert_handoffs=[],
-                        )
-                    break
-                child_context = _runtime_dynamic_agent_children_context(
-                    app,
-                    parent_agent,
-                    session_id=sid,
-                )
-                previous_answer = str(getattr(latest_pred, "answer", "") or "").strip()
-                # REMOVED: the "self-continuation" path that scraped the parent's
-                # OWN prose for a continuation contract, FABRICATED a synthetic
-                # prediction (expert_handoffs derived from text + a canned
-                # "Executing current expert continuation policy." answer), and
-                # re-ran WITHOUT re-asking the parent. That made clio the router by
-                # string-matching narration: a verbose/reasoning model (qwopus)
-                # whose answer merely contained words like "delegate"/"next step"
-                # got re-routed back into an already-finished pipeline -> infinite
-                # restart spin (gpt-oss/gemma, being terse, never tripped it). The
-                # parent's STRUCTURED signal is authoritative: no executable
-                # handoffs => the model decided it is done. If we suspect a
-                # forgotten handoff we RE-ASK the parent (the bounded repair path
-                # below) and let IT decide -- we never fabricate a decision from
-                # prose. (Deterministic prose-keyword routing in core does not
-                # scale across models/use-cases; see the audit issues.)
-                declared_child_ids = _runtime_declared_child_ids(
-                    app, parent_agent.id, session_id=sid
-                )
-                completed_rows_so_far = [
-                    row
-                    for row in all_rows
-                    if row.get("status") == "completed" and row.get("stage") == "delegate.completed"
-                ]
-                completed_child_ids = {
-                    str(row.get("agent_id") or row.get("delegate_to") or "")
-                    for row in completed_rows_so_far
+            if (
+                next_expert in ("", "finish", "none", "done", "stop")
+                or next_expert not in declared_child_ids
+            ):
+                break
+            requested_rows = [
+                {
+                    "delegate_to": next_expert,
+                    "agent_id": next_expert,
+                    "question": next_task or source_text,
+                    "status": "requested",
+                    "execute": True,
+                    "source": "agent_next_expert",
                 }
-                completed_outputs = [
-                    evidence
-                    for row in completed_rows_so_far
-                    if (evidence := _completed_row_contract_evidence(row))
-                ]
-                executable_rows = _continuation_contract_handoffs(
-                    parent_agent,
-                    source_text=source_text,
-                    answer_text=previous_answer,
-                    completed_outputs=completed_outputs,
-                    declared_child_ids=declared_child_ids,
-                    completed_child_ids=completed_child_ids,
-                )
-                if not executable_rows and _agent_allows_legacy_text_continuation(parent_agent):
-                    executable_rows = _next_expert_marker_handoffs(
-                        source_text=source_text,
-                        completed_outputs=completed_outputs,
-                        declared_child_ids=declared_child_ids,
-                        completed_child_ids=completed_child_ids,
-                    )
-                if executable_rows:
-                    requested_rows = executable_rows
-                else:
-                    should_repair_missing_handoff = (
-                        child_context
-                        and missing_handoff_repairs < 2
-                        and (_round == 0 or _dynamic_answer_has_pending_child_work(previous_answer))
-                    )
-                    if should_repair_missing_handoff:
-                        missing_handoff_repairs += 1
-                        repair_prompt = (
-                            f"Original user request:\n{source_text}\n\n"
-                            f"Previous non-executable answer from parent expert {parent_agent.id!r}:\n"
-                            f"{previous_answer}\n\n"
-                            f"{child_context}\n\n"
-                            "The previous answer described delegation but did not return executable "
-                            "expert_handoffs. Continue by returning concrete expert_handoffs JSON rows "
-                            "for the next declared child expert that should act. Do not say you will "
-                            "route or delegate unless expert_handoffs contains the requested child call. "
-                            "If no child should run, explain why and return expert_handoffs as []."
-                        )
-                        latest_pred = await _run_dynamic_agent_sync(parent_agent, repair_prompt)
-                        continue
-                    if _dynamic_answer_is_delegation_placeholder(previous_answer):
-                        fallback_answer = _latest_parent_resumed_output_summary(
-                            all_rows,
-                            parent_agent.id,
-                        )
-                        if fallback_answer:
-                            latest_pred = SimpleNamespace(
-                                answer=fallback_answer,
-                                selected_expert=parent_agent.id,
-                                routing_rationale=(
-                                    "non-final delegation placeholder replaced with "
-                                    "completed child evidence"
-                                ),
-                                expert_handoffs=[],
-                            )
-                    if _user_agent_bool_param(
-                        parent_agent,
-                        "bubble_child_evidence_on_completion",
-                    ) or _user_agent_bool_param(
-                        parent_agent,
-                        "return_child_evidence_on_completion",
-                    ):
-                        bubbled_answer = _bubbled_child_evidence_output_summary(
-                            all_rows,
-                            parent_agent.id,
-                            declared_child_ids,
-                        )
-                        if bubbled_answer and bubbled_answer != previous_answer:
-                            latest_pred = SimpleNamespace(
-                                answer=bubbled_answer,
-                                selected_expert=parent_agent.id,
-                                routing_rationale=(
-                                    "completed child evidence bubbled through "
-                                    "strict depth chain at completion boundary"
-                                ),
-                                expert_handoffs=[],
-                            )
-                    break
+            ]
             executed_rows = await _execute_delegated_experts(
                 parent_agent,
                 requested_rows,
@@ -7710,152 +7622,36 @@ async def _run_turn_in_background(
                 completed_child_outputs=completed_child_outputs,
             )
             all_rows.extend(executed_rows)
-            completed_rows = [
+            completed_this_round = [
                 row
                 for row in executed_rows
-                if row.get("status") == "completed" and row.get("stage") == "delegate.completed"
+                if row.get("status") == "completed"
+                and row.get("stage") == "delegate.completed"
             ]
-            for row in completed_rows:
-                child_id = str(row.get("agent_id") or row.get("delegate_to") or "").strip()
-                if child_id:
-                    completed_child_ids.add(child_id)
-                    completed_child_outputs[child_id] = str(
+            for row in completed_this_round:
+                cid = str(row.get("agent_id") or row.get("delegate_to") or "").strip()
+                if cid:
+                    completed_child_ids.add(cid)
+                    completed_child_outputs[cid] = str(
                         row.get("output_summary") or row.get("summary") or ""
                     ).strip()
-            if not completed_rows:
+            if not completed_this_round:
+                # Child could not run (unavailable / cycle / error). Stop instead of
+                # looping; the parent's current answer carries whatever evidence exists.
                 break
-            contract_rows = _continuation_contract_handoff_rows(
-                app,
-                parent_agent,
-                executed_rows,
-                session_id=sid,
-                seen_contracts=seen_continuation_contracts,
-            )
-            if not contract_rows:
-                declared_child_ids = _runtime_declared_child_ids(
-                    app, parent_agent.id, session_id=sid
-                )
-                completed_rows_so_far = [
-                    row
-                    for row in all_rows
-                    if row.get("status") == "completed" and row.get("stage") == "delegate.completed"
-                ]
-                completed_child_ids = {
-                    str(row.get("agent_id") or row.get("delegate_to") or "")
-                    for row in completed_rows_so_far
-                }
-                completed_outputs = [
-                    evidence
-                    for row in completed_rows_so_far
-                    if (evidence := _completed_row_contract_evidence(row))
-                ]
-                contract_rows = _continuation_contract_handoffs(
-                    parent_agent,
-                    source_text=source_text,
-                    answer_text="",
-                    completed_outputs=completed_outputs,
-                    declared_child_ids=declared_child_ids,
-                    completed_child_ids=completed_child_ids,
-                )
-            if contract_rows:
-                latest_pred = SimpleNamespace(
-                    answer="Executing returned delegation continuation contract.",
-                    selected_expert=parent_agent.id,
-                    routing_rationale="returned child delegation continuation contract",
-                    expert_handoffs=contract_rows,
-                )
-                continue
-            # (a) CONTRACTS EXHAUSTED => the pipeline is complete. Finalize with the
-            # completed child/synthesis evidence instead of re-prompting the parent
-            # to "continue". That ``continuation_prompt`` re-invocation asked a
-            # FINISHED agent to keep going, so it either emitted nothing or
-            # re-delegated an already-completed expert (observed: main emitting
-            # ['analysis'] AFTER synthesis) -> spin until max_rounds. Terse models
-            # survived on the round cap; a verbose model (qwopus) blew the
-            # no-progress watchdog. Completion is now a STRUCTURAL fact: no contract
-            # produced a next transition and the agents emit no new handoffs, so
-            # there is no remaining work -- stop. (Interim: the contracts still
-            # ROUTE; branch (b) removes the deterministic orchestration + prose
-            # semantics entirely in favour of agent-emitted handoffs -- #38/#39.)
-            finalize_answer = _latest_completed_child_output_summary(all_rows, declared_child_ids)
-            if not finalize_answer:
-                finalize_answer = _latest_final_child_output_summary(all_rows)
-            if not finalize_answer:
-                finalize_answer = _latest_parent_resumed_output_summary(all_rows, parent_agent.id)
-            if finalize_answer:
-                latest_pred = SimpleNamespace(
-                    answer=_user_facing_dynamic_evidence_summary(finalize_answer),
-                    selected_expert=parent_agent.id,
-                    routing_rationale="pipeline complete: contracts exhausted, no pending handoffs",
-                    expert_handoffs=[],
-                )
-            break
-        final_answer = str(getattr(latest_pred, "answer", "") or "").strip()
-        if final_answer and _dynamic_answer_has_pending_child_work(final_answer):
-            artifact_answer = _latest_completed_artifact_output_summary(all_rows)
-            final_child_answer = _latest_final_child_output_summary(all_rows)
-            if final_child_answer:
-                final_child_answer = _user_facing_dynamic_evidence_summary(final_child_answer)
-                latest_pred = SimpleNamespace(
-                    answer=final_child_answer,
-                    selected_expert=parent_agent.id,
-                    routing_rationale=(
-                        "pending delegation prose replaced with completed final "
-                        "child evidence at settlement boundary"
-                    ),
-                    expert_handoffs=[],
-                )
-                final_answer = final_child_answer
-            elif artifact_answer:
-                artifact_answer = _user_facing_dynamic_evidence_summary(artifact_answer)
-                latest_pred = SimpleNamespace(
-                    answer=artifact_answer,
-                    selected_expert=parent_agent.id,
-                    routing_rationale=(
-                        "pending delegation prose replaced with completed artifact evidence "
-                        "at settlement boundary"
-                    ),
-                    expert_handoffs=[],
-                )
-                final_answer = artifact_answer
-            else:
-                fallback_answer = _latest_parent_resumed_output_summary(all_rows, parent_agent.id)
-                if fallback_answer and fallback_answer != final_answer:
-                    fallback_answer = _user_facing_dynamic_evidence_summary(fallback_answer)
-                    latest_pred = SimpleNamespace(
-                        answer=fallback_answer,
-                        selected_expert=parent_agent.id,
-                        routing_rationale=(
-                            "pending delegation prose replaced with latest completed "
-                            "child evidence at settlement boundary"
-                        ),
-                        expert_handoffs=[],
-                    )
-                    final_answer = fallback_answer
-        if _dynamic_answer_is_delegation_placeholder(final_answer):
-            fallback_answer = _latest_final_child_output_summary(all_rows)
-            if not fallback_answer:
-                fallback_answer = _latest_parent_resumed_output_summary(all_rows, parent_agent.id)
-            if fallback_answer:
-                fallback_answer = _user_facing_dynamic_evidence_summary(fallback_answer)
-                latest_pred = SimpleNamespace(
-                    answer=fallback_answer,
-                    selected_expert=parent_agent.id,
-                    routing_rationale=(
-                        "non-final delegation placeholder replaced with completed "
-                        "child evidence at settlement boundary"
-                    ),
-                    expert_handoffs=[],
-                )
+            # Re-invoke the parent with the child's returned evidence so IT emits the
+            # next route (descend again, or finish).
+            resume_prompt = _dynamic_parent_resume_prompt(source_text, parent_agent, all_rows)
+            latest_pred = await _run_dynamic_agent_sync(parent_agent, resume_prompt)
+
         final_answer = str(getattr(latest_pred, "answer", "") or "").strip()
         visible_answer = _user_facing_dynamic_evidence_summary(final_answer)
         if visible_answer and visible_answer != final_answer:
             latest_pred = SimpleNamespace(
                 answer=visible_answer,
                 selected_expert=parent_agent.id,
-                routing_rationale=(
-                    "removed retained evidence scaffolding from final dynamic answer"
-                ),
+                routing_rationale="removed retained evidence scaffolding from final dynamic answer",
+                next_expert="finish",
                 expert_handoffs=[],
             )
         return latest_pred, all_rows
