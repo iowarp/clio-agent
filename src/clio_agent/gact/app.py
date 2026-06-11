@@ -2467,15 +2467,19 @@ def _dynamic_parent_resume_prompt(
     original_request: str,
     parent_agent: "AgentDef",
     executed_handoffs: list[dict[str, Any]],
+    declared_child_ids: set[str] | None = None,
 ) -> str:
     """Build the compact continuation prompt given back to a dynamic parent."""
 
     rows: list[str] = []
     merged_state: dict[str, Any] = {}
+    completed_ids: list[str] = []
     for row in executed_handoffs:
         if str(row.get("stage") or "") != "delegate.completed":
             continue
         agent_id = str(row.get("agent_id") or row.get("delegate_to") or "")
+        if agent_id and agent_id not in completed_ids:
+            completed_ids.append(agent_id)
         status = str(row.get("status") or "")
         summary = str(
             row.get("return_output_summary")
@@ -2506,15 +2510,34 @@ def _dynamic_parent_resume_prompt(
             "the next step. A child whose result already appears here is DONE; do NOT "
             "re-delegate to it:\n" + _workflow_state_payload(merged_state)
         )
+    # Show the orchestrator its own progress as a visible to-do list, so it does not
+    # have to track "which of my children have run" mentally across re-invocations
+    # (small models lose that thread and finish early). This is reactive grounding
+    # (showing state), not forced routing — the agent still decides the next hop, and
+    # a child being "not yet run" is informational, not an order to run it.
+    progress_block = ""
+    if declared_child_ids:
+        remaining = [c for c in sorted(declared_child_ids) if c not in completed_ids]
+        progress_block = (
+            "\n\nYour delegation progress this turn — "
+            f"your child experts: {sorted(declared_child_ids)}; "
+            f"already run: {completed_ids or '[]'}; "
+            f"not yet run: {remaining or '[]'}. "
+            "You are the orchestrator: keep delegating to the children this task still "
+            "needs, and finish only when the work is genuinely complete. Not every child "
+            "is needed for every request — use judgment: skip the ones the evidence makes "
+            "unnecessary (e.g. analysis/visualization when there is no data staged), but "
+            "do not finish prematurely while a needed step has not run."
+        )
     return (
         f"Original user request:\n{original_request}\n\n"
         f"Returned child expert results for parent expert {parent_agent.id!r}:\n"
-        f"{result_block}{state_block}\n\n"
+        f"{result_block}{state_block}{progress_block}\n\n"
         "Continue from these results. Decide the next step via your next_expert / "
-        "next_task output: route to the next child that still needs to run, or set "
-        "next_expert='finish' and write the final answer when the typed state shows the "
-        "work is complete. Do NOT re-delegate to a child whose result is already present "
-        "in the typed workflow_state above."
+        "next_task output: route to the next child the task still needs, or set "
+        "next_expert='finish' and write the final answer when the work is genuinely "
+        "complete. Do NOT re-delegate to a child whose result is already present in the "
+        "typed workflow_state above."
     )
 
 
@@ -7741,7 +7764,9 @@ async def _run_turn_in_background(
                 break
             # Re-invoke the parent with the child's returned evidence so IT emits the
             # next route (descend again, or finish).
-            resume_prompt = _dynamic_parent_resume_prompt(source_text, parent_agent, all_rows)
+            resume_prompt = _dynamic_parent_resume_prompt(
+                source_text, parent_agent, all_rows, declared_child_ids=declared_child_ids
+            )
             latest_pred = await _run_dynamic_agent_sync(parent_agent, resume_prompt)
 
         final_answer = str(getattr(latest_pred, "answer", "") or "").strip()
