@@ -2471,6 +2471,7 @@ def _dynamic_parent_resume_prompt(
     """Build the compact continuation prompt given back to a dynamic parent."""
 
     rows: list[str] = []
+    merged_state: dict[str, Any] = {}
     for row in executed_handoffs:
         if str(row.get("stage") or "") != "delegate.completed":
             continue
@@ -2487,15 +2488,33 @@ def _dynamic_parent_resume_prompt(
         if isinstance(children, list) and children:
             child_note = f"; nested_child_events={len(children)}"
         rows.append(f"- {agent_id}: status={status}{child_note}; result={summary}")
+        child_state = row.get("workflow_state")
+        if isinstance(child_state, Mapping):
+            _merge_workflow_state_mapping(merged_state, child_state)
     result_block = "\n".join(rows) or "- No completed child delegation results were returned."
+    # Surface the MERGED typed workflow_state from the completed children, not just the
+    # prose summaries. A child may put its key result ONLY in the typed field (e.g.
+    # qwopus writes acquisition.metadata_path / station_catalog.station_ids into
+    # workflow_state but not into its prose answer); without this the parent cannot see
+    # the child already delivered, and re-delegates to it in a loop.
+    state_block = ""
+    if merged_state:
+        state_block = (
+            "\n\nAuthoritative typed workflow_state accumulated from the completed "
+            "children — read these typed fields (e.g. acquisition.metadata_path, "
+            "station_catalog.station_ids, acquisition.status, profile.status) to decide "
+            "the next step. A child whose result already appears here is DONE; do NOT "
+            "re-delegate to it:\n" + _workflow_state_payload(merged_state)
+        )
     return (
         f"Original user request:\n{original_request}\n\n"
         f"Returned child expert results for parent expert {parent_agent.id!r}:\n"
-        f"{result_block}\n\n"
-        "Continue from these results. Do not repeat a completed child delegation unless "
-        "the compact result says it failed or more evidence is required. If another "
-        "declared child expert is needed, return expert_handoffs for the next child. "
-        "If the workflow is complete, return the final answer and an empty expert_handoffs array."
+        f"{result_block}{state_block}\n\n"
+        "Continue from these results. Decide the next step via your next_expert / "
+        "next_task output: route to the next child that still needs to run, or set "
+        "next_expert='finish' and write the final answer when the typed state shows the "
+        "work is complete. Do NOT re-delegate to a child whose result is already present "
+        "in the typed workflow_state above."
     )
 
 

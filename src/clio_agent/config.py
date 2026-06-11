@@ -756,6 +756,25 @@ def _coerce_constructor_repr_to_jsonable(text: str) -> Any:
             return n.value
         if isinstance(n, ast.UnaryOp) and isinstance(n.op, ast.USub):
             return -conv(n.operand)
+        if isinstance(n, ast.Name):
+            # A bare identifier where a value was expected. Local models (qwopus)
+            # routinely emit unquoted JS-style literals or unquoted string values
+            # inside a constructor-repr -- e.g. ``analysis_ready=true`` (JS literal,
+            # not Python ``True``) or ``status=staged`` (unquoted string). Python's
+            # ast sees these as Name nodes, which ast.literal_eval rejects ("malformed
+            # node ... ast.Name") and the whole staging tool-call dies. Map the JS
+            # literals and treat any other bare name as its string value. Format-only.
+            low = n.id.lower()
+            if low == "true":
+                return True
+            if low == "false":
+                return False
+            if low in ("none", "null"):
+                return None
+            return n.id
+        if isinstance(n, ast.Attribute):
+            # e.g. an enum-ish ``Status.STAGED`` -> use the trailing attribute name.
+            return n.attr
         return ast.literal_eval(n)
 
     return conv(node)
