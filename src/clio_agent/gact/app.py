@@ -88,6 +88,12 @@ _ACTIVE_GACT_SESSION_ID: contextvars.ContextVar[str] = contextvars.ContextVar(
 # live; this process-global cache keeps the Literal correct (vs collapsing to
 # Literal["finish"], which would force an immediate finish). Keyed by expert id.
 _EXPERT_CHILDREN_CACHE: dict[str, list[str]] = {}
+# Same problem, the prompt side: the orchestrator-identity briefing (built from the
+# children rows, which need the session) collapses to "" on a session-less module
+# rebuild -- so the model loses its "you are an orchestrator, delegate, don't
+# fabricate" grounding on exactly the build it runs. Render-once-reuse keeps the
+# briefing on every build. Keyed by expert id.
+_ORCHESTRATOR_BRIEFING_CACHE: dict[str, str] = {}
 _ACTIVE_GACT_TURN_ID: contextvars.ContextVar[str] = contextvars.ContextVar(
     "clio_gact_active_turn_id",
     default="",
@@ -2366,37 +2372,61 @@ def _runtime_dynamic_agent_children_context(
     *,
     session_id: str = "",
 ) -> str:
-    """Render declared child experts for a runtime Agent Blueprint expert."""
+    """Render the orchestrator-identity briefing for an expert that has children.
 
-    if agent_def.source != "expert_pack" or not session_id:
-        return ""
-    rows = _runtime_child_agent_rows(app, agent_def.id, session_id=session_id)
+    General across blueprints: any expert with declared children IS, by construction,
+    an orchestrator -- it routes work to children (who hold the tools and produce the
+    grounded evidence) and assembles their results. This briefing tells the model that
+    it is an orchestrator, what each child produces, and how to emit its routing
+    decision (next_expert / next_task). This is *grounding* -- telling the model what it
+    is and how routing works -- not a behavioral handcuff, and it is what makes a model
+    delegate instead of answering (and fabricating) from its own prior knowledge.
+    """
+
+    _aid = getattr(agent_def, "id", "")
+    rows: list[AgentDef] = []
+    if agent_def.source == "expert_pack" and session_id and app is not None:
+        rows = _runtime_child_agent_rows(app, _aid, session_id=session_id)
     if not rows:
-        return ""
+        # Session-less rebuild (the build the model often actually runs): reuse the
+        # briefing rendered on a context-bearing build so the grounding never drops.
+        return _ORCHESTRATOR_BRIEFING_CACHE.get(_aid, "")
     lines = [
-        "Declared child experts available for synchronous delegation:",
+        "## You are an ORCHESTRATOR — route work to your children; do not do it yourself",
+        "",
+        "You have child experts who hold the tools and produce the GROUNDED evidence for "
+        "this task. You have NO tools of your own and NO grounded knowledge of your own: "
+        "any specific fact — a place's coordinates, a station/dataset/resource id, a file "
+        "path, a measured value — that you state from prior knowledge instead of from a "
+        "child's returned evidence is a FABRICATION and makes the answer invalid. You "
+        "literally cannot know these things; only your children's tools can find them. "
+        "Your ONLY job is to delegate to the right child, read the typed evidence it "
+        "returns, and decide the next step.",
+        "",
+        "Your child experts (delegate to these — you may route to no one else):",
     ]
     for row in sorted(rows, key=lambda item: (item.tier, item.id)):
-        capabilities: list[str] = []
+        detail = (row.description or row.title or "").strip()
+        cap_bits: list[str] = []
         if row.tools:
-            capabilities.append("tools=" + ", ".join(row.tools))
-        if row.skills:
-            capabilities.append("skills=" + ", ".join(row.skills))
-        if row.commands:
-            capabilities.append("commands=" + ", ".join(row.commands))
-        capability_text = f" ({'; '.join(capabilities)})" if capabilities else ""
-        detail = f" - {row.description}" if row.description else ""
-        lines.append(
-            f"- {row.id}: {row.title}; tier={row.tier or 'unspecified'}; "
-            f"specialization={row.specialization or 'unspecified'}{capability_text}{detail}"
-        )
+            cap_bits.append("tools: " + ", ".join(row.tools))
+        cap_text = f" [{'; '.join(cap_bits)}]" if cap_bits else ""
+        lines.append(f"- `{row.id}`: {detail}{cap_text}")
+    lines.append("")
     lines.append(
-        "When a child expert should act, return an expert_handoffs JSON array "
-        'with rows like {"delegate_to":"child_id","question":"specific task",'
-        '"status":"requested"}. CLIO will run that child synchronously, return a '
-        "compact result to this expert, and then ask this expert to continue."
+        "Routing: set `next_expert` to the id of the ONE child to run next and "
+        "`next_task` to the concrete task for it. After that child returns its evidence "
+        "you will be re-invoked to route again — so advance ONE child at a time and let "
+        "each child's returned evidence (in the typed workflow_state) decide the next "
+        "hop. Set `next_expert` = `finish` ONLY when the task is fully complete and every "
+        "claim in your `answer` is backed by a child's returned evidence; NEVER finish "
+        "with an answer you composed from your own knowledge. If you have done no "
+        "delegation yet, you have no evidence yet — do not finish."
     )
-    return "\n".join(lines)
+    briefing = "\n".join(lines)
+    if _aid:
+        _ORCHESTRATOR_BRIEFING_CACHE[_aid] = briefing
+    return briefing
 
 
 def _runtime_active_workspace_context(app: "FastAPI", *, session_id: str = "") -> str:
@@ -5281,6 +5311,16 @@ def _blueprint_runtime_signature(agent_def: "AgentDef") -> Any:
         raw_inputs,
         [("system_prompt", "Runtime instructions", str), ("question", "User request", str)],
     )
+    # A blueprint that declares its own inputs (e.g. just `question`) REPLACES the
+    # defaults, which silently dropped the `system_prompt` input -- so the expert's
+    # built system prompt (blueprint body + orchestrator briefing + workspace context,
+    # assembled into runtime_system_prompt) was never passed to the model at all; it
+    # ran on the generic 47-char signature instruction + the question only. Always
+    # carry a `system_prompt` input so the body actually reaches the model. (Under the
+    # contract state machine this was latent -- routing was deterministic -- but with
+    # agent-driven routing the expert MUST see its own instructions to orchestrate.)
+    if not any(name == "system_prompt" for name, _, _ in inputs):
+        inputs = [("system_prompt", "Runtime instructions and context for this expert", str), *inputs]
     outputs = _ordered_fields(raw_outputs, [("answer", "User-facing answer", str)])
     structured = (
         agent_def.structured_outputs if isinstance(agent_def.structured_outputs, Mapping) else {}
@@ -5937,14 +5977,14 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                 )
             agent_prompt = agent_def.system_prompt.strip() or agent_def.description
             active_app = _ACTIVE_GACT_APP.get()
-            child_context = (
-                _runtime_dynamic_agent_children_context(
-                    active_app,
-                    agent_def,
-                    session_id=_ACTIVE_GACT_SESSION_ID.get(),
-                )
-                if active_app is not None
-                else ""
+            # Always call it (do not short-circuit on active_app is None): the streamed
+            # forward falls back to the sync _run_blueprint_dspy_agent build, which has
+            # the session but NOT _ACTIVE_GACT_APP -- the function returns the cached
+            # briefing on that path so the orchestrator grounding never drops.
+            child_context = _runtime_dynamic_agent_children_context(
+                active_app,
+                agent_def,
+                session_id=_ACTIVE_GACT_SESSION_ID.get(),
             )
             workspace_context = (
                 _runtime_active_workspace_context(
@@ -5958,6 +5998,24 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                 part for part in (agent_prompt, workspace_context, child_context) if part
             )
             self.has_declared_children = bool(child_context.strip())
+            import logging as _pblog  # noqa: PLC0415
+            import traceback as _pbtb  # noqa: PLC0415
+
+            _pb_frames = [
+                ln.strip().split("\n")[0].split("/")[-1]
+                for ln in _pbtb.format_stack()
+                if "gact/app.py" in ln
+            ]
+            _pblog.getLogger("clio_agent").warning(
+                "⚑ PROMPT-BUILD %s :: kind=%s child_ctx=%d ORCH=%s sid=%r app=%s caller=%s",
+                getattr(agent_def, "id", "?"),
+                self.kind,
+                len(child_context),
+                "ORCHESTRATOR" in self.system_prompt,
+                _ACTIVE_GACT_SESSION_ID.get(),
+                active_app is not None,
+                " <- ".join(reversed(_pb_frames[-4:])),
+            )
 
         def forward(
             self,
@@ -6035,6 +6093,18 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                 _ACTIVE_BLUEPRINT_TOOL_ROWS.set(blueprint_tool_rows)
                 if self.kind == "react"
                 else None
+            )
+            import logging as _cklog  # noqa: PLC0415
+
+            _ck_sp = kwargs.get("system_prompt", "")
+            _cklog.getLogger("clio_agent").warning(
+                "⚑ LM-CALL %s :: kwargs=%s sp_in_sig=%s sp_len=%d ORCH_in_sp=%s instr_len=%d",
+                getattr(self.agent_def, "id", "?"),
+                sorted(kwargs.keys()),
+                "system_prompt" in self.signature.input_fields,
+                len(str(_ck_sp)),
+                "ORCHESTRATOR" in str(_ck_sp),
+                len(getattr(self.signature, "instructions", "") or ""),
             )
             try:
                 with dspy.context(
