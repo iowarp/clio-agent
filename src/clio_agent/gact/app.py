@@ -6097,14 +6097,16 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
             import logging as _cklog  # noqa: PLC0415
 
             _ck_sp = kwargs.get("system_prompt", "")
+            _ck_q = str(kwargs.get("question", ""))
             _cklog.getLogger("clio_agent").warning(
-                "⚑ LM-CALL %s :: kwargs=%s sp_in_sig=%s sp_len=%d ORCH_in_sp=%s instr_len=%d",
+                "⚑ LM-CALL %s :: sp_len=%d ORCH=%s | has_station_ids_in_q=%s SIO5_in_q=%s P472_in_q=%s | q_tail=%r",
                 getattr(self.agent_def, "id", "?"),
-                sorted(kwargs.keys()),
-                "system_prompt" in self.signature.input_fields,
                 len(str(_ck_sp)),
                 "ORCHESTRATOR" in str(_ck_sp),
-                len(getattr(self.signature, "instructions", "") or ""),
+                "station_ids" in _ck_q,
+                "SIO5" in _ck_q,
+                "P472" in _ck_q,
+                _ck_q[-500:],
             )
             try:
                 with dspy.context(
@@ -7684,10 +7686,19 @@ async def _run_turn_in_background(
                     "source": "agent_next_expert",
                 }
             ]
+            # Forward the parent's CURRENT accumulated state (the typed workflow_state it
+            # is holding right now, e.g. station_catalog.station_ids produced by an
+            # earlier sibling) as the child's parent-evidence. The static `source_text`
+            # is the parent's ORIGINAL input, captured before earlier children ran -- so a
+            # later child (e.g. the resolver) otherwise never sees the ranked list it is
+            # documented to consume, and falls back to inventing candidate ids.
+            current_evidence = _append_prediction_workflow_state(
+                str(getattr(latest_pred, "answer", "") or ""), latest_pred
+            ).strip()
             executed_rows = await _execute_delegated_experts(
                 parent_agent,
                 requested_rows,
-                source_text=source_text,
+                source_text=current_evidence or source_text,
                 completed_child_ids=completed_child_ids,
                 completed_child_outputs=completed_child_outputs,
             )
