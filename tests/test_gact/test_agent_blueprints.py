@@ -40,7 +40,6 @@ from clio_agent.gact.app import (
     _compact_dynamic_delegation_output,
     _completed_row_contract_evidence,
     _continuation_contract_handoffs,
-    _delegation_continuation_policy_contract,
     _dynamic_agent_tools,
     _dynamic_answer_has_pending_child_work,
     _dynamic_answer_is_delegation_placeholder,
@@ -54,7 +53,6 @@ from clio_agent.gact.app import (
     _latest_delegation_output_summary,
     _latest_final_child_output_summary,
     _merge_tool_call_rows,
-    _next_expert_marker_handoffs,
     _prediction_structured_metadata,
     _recording_blueprint_tool,
     _run_blueprint_dspy_agent,
@@ -291,58 +289,6 @@ def test_agent_blueprint_allows_explicit_legacy_text_routing_opt_in(tmp_path: Pa
         "allow_text_routing" in warning and "legacy migration routing" in warning
         for warning in validation["validation_warnings"]
     )
-
-
-def test_runtime_text_continuation_policy_requires_legacy_opt_in() -> None:
-    agent = AgentDef(
-        id="legacy_parent",
-        source="expert_pack",
-        title="Legacy Parent",
-        parameters={
-            "continuation_contracts": [
-                {
-                    "id": "station_filename_gate",
-                    "when_output_contains": ["P475.CI.LY_.20"],
-                    "next_expert": "analysis",
-                }
-            ],
-        },
-    )
-
-    contract = _delegation_continuation_policy_contract(
-        agent,
-        "The selected station resource was P475.CI.LY_.20.",
-    )
-
-    assert contract == {}
-
-
-def test_runtime_text_continuation_policy_runs_only_with_explicit_legacy_opt_in() -> None:
-    agent = AgentDef(
-        id="legacy_parent",
-        source="expert_pack",
-        title="Legacy Parent",
-        parameters={
-            "allow_legacy_text_continuation": True,
-            "continuation_contracts": [
-                {
-                    "id": "station_filename_gate",
-                    "when_output_contains": ["P475.CI.LY_.20"],
-                    "next_expert": "analysis",
-                    "next_action": "analyze the selected station",
-                }
-            ],
-        },
-    )
-
-    contract = _delegation_continuation_policy_contract(
-        agent,
-        "The selected station resource was P475.CI.LY_.20.",
-    )
-
-    assert contract["next_expert"] == "analysis"
-    assert contract["next_action"] == "analyze the selected station"
-    assert contract["source_policy"] == "station_filename_gate"
 
 
 def test_workflow_state_normalizes_unicode_hyphens_in_path_fields() -> None:
@@ -2249,38 +2195,6 @@ def test_latest_final_child_output_prefers_synthesis_summary() -> None:
     )
 
     assert output == "Final synthesized answer with cited data and caveats."
-
-
-def test_blueprint_next_expert_marker_converts_latest_declared_uncompleted_child() -> None:
-    rows = _next_expert_marker_handoffs(
-        source_text="request",
-        completed_outputs=[
-            "NEXT_EXPERT: analysis\nNEXT_ACTION: run_sac_fallback\nresource_too_large",
-            "NEXT_EXPERT: visualization\nNEXT_ACTION: plot_sac_traces /tmp/wave.sac\n/tmp/wave.sac",
-        ],
-        declared_child_ids={"analysis", "visualization"},
-        completed_child_ids={"analysis"},
-    )
-
-    assert len(rows) == 1
-    assert rows[0]["delegate_to"] == "visualization"
-    assert rows[0]["source"] == "blueprint_next_expert_marker"
-    assert "plot_sac_traces /tmp/wave.sac" in rows[0]["question"]
-
-
-def test_blueprint_next_expert_marker_ignores_unknown_or_completed_targets() -> None:
-    assert not _next_expert_marker_handoffs(
-        source_text="request",
-        completed_outputs=["NEXT_EXPERT: shell\nNEXT_ACTION: do unsafe thing"],
-        declared_child_ids={"analysis"},
-        completed_child_ids=set(),
-    )
-    assert not _next_expert_marker_handoffs(
-        source_text="request",
-        completed_outputs=["NEXT_EXPERT: analysis\nNEXT_ACTION: repeat"],
-        declared_child_ids={"analysis"},
-        completed_child_ids={"analysis"},
-    )
 
 
 def test_blueprint_compiler_selects_declared_dspy_module_kind(

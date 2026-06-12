@@ -2239,48 +2239,6 @@ def _agent_has_continuation_contracts(agent_def: "AgentDef") -> bool:
     return isinstance(params.get("continuation_contracts"), list)
 
 
-def _filter_child_handoffs_by_contract_order(
-    parent: "AgentDef",
-    requested_rows: list[dict[str, Any]],
-    *,
-    completed_outputs: list[str],
-    current_tool_outputs: list[str] | None = None,
-    completed_child_ids: set[str],
-    declared_child_ids: set[str],
-) -> list[dict[str, Any]]:
-    """Skip model-requested child calls that violate a parent's workflow contract."""
-
-    if not _blueprint_enforces_child_contract_order(parent):
-        return requested_rows
-    allowed_next_ids = _contract_next_child_ids_for_outputs(
-        parent,
-        completed_outputs=[*completed_outputs, *(current_tool_outputs or [])],
-        completed_child_ids=completed_child_ids,
-        declared_child_ids=declared_child_ids,
-    )
-    filtered: list[dict[str, Any]] = []
-    for row in requested_rows:
-        target_id = _delegated_expert_agent_id(row)
-        if not target_id or target_id not in declared_child_ids:
-            filtered.append(row)
-            continue
-        if target_id in allowed_next_ids:
-            filtered.append(row)
-            continue
-        filtered.append(
-            {
-                **row,
-                "agent_id": target_id,
-                "status": "skipped",
-                "stage": "delegate.skipped",
-                "skip_reason": "child_contract_order_violation",
-                "allowed_next_children": sorted(allowed_next_ids),
-                "delegation_lifecycle": "sync",
-            }
-        )
-    return filtered
-
-
 def _seed_child_tool_completions_from_resume_prompt(
     question: str,
     declared_child_ids: set[str],
@@ -2591,170 +2549,6 @@ def _compact_delegation_contract_lines(output: str, *, limit: int = 16) -> list[
         if len(contract_lines) >= limit:
             break
     return contract_lines
-
-
-def _delegation_continuation_contract(output: str) -> dict[str, Any]:
-    """Parse explicit continuation contract lines from delegated output."""
-
-    contract: dict[str, Any] = {}
-    flags: dict[str, str] = {}
-    for raw_line in output.splitlines():
-        match = _DELEGATION_CONTRACT_LINE_RE.match(raw_line)
-        if match is None:
-            continue
-        key = match.group("key").upper()
-        value = match.group("value").strip().strip("`")
-        if key in {"NEXT_EXPERT", "REQUIRED_NEXT_EXPERT"}:
-            contract["next_expert"] = value.split()[0].strip("`")
-        elif key in {"NEXT_ACTION", "REQUIRED_NEXT_ACTION"}:
-            contract["next_action"] = value
-        elif key.startswith("DO_NOT_"):
-            flags[key] = value
-        elif key in {"FINAL_ARTIFACT", "ARTIFACT"}:
-            contract["artifact"] = value
-    if flags:
-        contract["flags"] = flags
-    return contract
-
-
-def _delegation_policy_terms(policy: Mapping[str, Any]) -> list[str]:
-    """Return non-empty trigger terms from a pack-defined continuation policy."""
-
-    raw_terms = (
-        policy.get("when_output_contains")
-        or policy.get("trigger_terms")
-        or policy.get("contains")
-        or []
-    )
-    if isinstance(raw_terms, str):
-        raw_terms = [raw_terms]
-    if not isinstance(raw_terms, Iterable):
-        return []
-    terms: list[str] = []
-    for raw_term in raw_terms:
-        term = str(raw_term or "").strip()
-        if term:
-            terms.append(term)
-    return terms
-
-
-def _delegation_policy_matches(
-    policy: Mapping[str, Any],
-    output: str,
-) -> tuple[bool, list[str]]:
-    """Return whether a pack policy matches delegated output and which terms matched."""
-
-    terms = _delegation_policy_terms(policy)
-    if not terms:
-        return False, []
-    lowered_output = output.lower()
-    matched = [term for term in terms if term.lower() in lowered_output]
-    match_mode = str(policy.get("match") or policy.get("match_mode") or "any").strip().lower()
-    if match_mode == "all":
-        return len(matched) == len(terms), matched
-    return bool(matched), matched
-
-
-def _delegation_continuation_policy_contract(
-    agent_def: "AgentDef | None",
-    output: str,
-) -> dict[str, Any]:
-    """Synthesize a continuation contract from agent blueprint policy metadata."""
-
-    if agent_def is None or not isinstance(agent_def.parameters, Mapping):
-        return {}
-    params = agent_def.parameters
-    raw_policies = params.get("continuation_contracts")
-    if isinstance(raw_policies, Mapping):
-        raw_policies = [raw_policies]
-    if (
-        raw_policies
-        and isinstance(raw_policies, list)
-        and not any(isinstance(raw_policy, Mapping) for raw_policy in raw_policies)
-        and any(params.get(key) for key in ("next_expert", "required_next_expert", "target_expert"))
-    ):
-        source_policy = ""
-        first_item = str(raw_policies[0] or "").strip() if raw_policies else ""
-        if first_item.lower().startswith("id:"):
-            source_policy = first_item.partition(":")[2].strip()
-        flags = {
-            str(key): str(value) for key, value in params.items() if str(key).startswith("DO_NOT_")
-        }
-        raw_policies = [
-            {
-                "id": source_policy,
-                "when_output_contains": params.get("when_output_contains")
-                or params.get("trigger_terms"),
-                "match": params.get("match") or params.get("match_mode") or "any",
-                "next_expert": params.get("next_expert")
-                or params.get("required_next_expert")
-                or params.get("target_expert"),
-                "next_action": params.get("next_action")
-                or params.get("required_next_action")
-                or params.get("action"),
-                "flags": flags,
-            }
-        ]
-    if not isinstance(raw_policies, list):
-        return {}
-    for index, raw_policy in enumerate(raw_policies):
-        if not isinstance(raw_policy, Mapping):
-            continue
-        # A contract that names both a target expert AND a concrete next action is
-        # a fully-specified typed continuation contract. It fires on the child's
-        # returned (grounded) evidence and does not need the legacy text-routing
-        # opt-in. Contracts that only name a target with no action remain
-        # ambiguous text routing and stay behind the legacy opt-in.
-        has_next_action = bool(
-            str(
-                raw_policy.get("next_action")
-                or raw_policy.get("required_next_action")
-                or raw_policy.get("action")
-                or ""
-            ).strip()
-        )
-        if (
-            not has_next_action
-            and (raw_policy.get("when_request_contains") or raw_policy.get("when_output_contains"))
-            and not bool(raw_policy.get("allow_text_routing"))
-            and not _user_agent_bool_param(agent_def, "allow_legacy_text_continuation")
-        ):
-            continue
-        matches, matched_terms = _delegation_policy_matches(raw_policy, output)
-        if not matches:
-            continue
-        target_id = str(
-            raw_policy.get("next_expert")
-            or raw_policy.get("required_next_expert")
-            or raw_policy.get("target_expert")
-            or ""
-        ).strip()
-        if not target_id:
-            continue
-        action = str(
-            raw_policy.get("next_action")
-            or raw_policy.get("required_next_action")
-            or raw_policy.get("action")
-            or ""
-        ).strip()
-        raw_flags = raw_policy.get("flags") or {}
-        flags = (
-            {str(key): str(value) for key, value in raw_flags.items()}
-            if isinstance(raw_flags, Mapping)
-            else {}
-        )
-        contract: dict[str, Any] = {
-            "next_expert": target_id,
-            "source": "agent_blueprint_continuation_policy",
-            "source_policy": str(raw_policy.get("id") or raw_policy.get("name") or index),
-            "matched_terms": matched_terms,
-        }
-        if action:
-            contract["next_action"] = action
-        if flags:
-            contract["flags"] = flags
-        return contract
-    return {}
 
 
 def _iter_delegation_return_rows(rows: list[dict[str, Any]]) -> Iterator[dict[str, Any]]:
@@ -4400,116 +4194,6 @@ def _continuation_contract_handoffs(
     return rows
 
 
-def _continuation_contract_handoff_rows(
-    app: FastAPI,
-    parent_agent: "AgentDef",
-    rows: list[dict[str, Any]],
-    *,
-    session_id: str,
-    seen_contracts: set[tuple[str, str]],
-) -> list[dict[str, Any]]:
-    """Build executable child handoffs from returned continuation contracts."""
-
-    handoffs: list[dict[str, Any]] = []
-    allow_legacy_text_continuation = _user_agent_bool_param(
-        parent_agent,
-        "allow_legacy_text_continuation",
-    )
-    for row in _iter_delegation_return_rows(rows):
-        summary = str(row.get("output_summary") or row.get("summary") or "").strip()
-        # A fully-specified text-marker contract (both NEXT_EXPERT and NEXT_ACTION
-        # emitted by the completed child) is a typed continuation contract and is
-        # honored without the legacy opt-in. A bare NEXT_EXPERT marker with no
-        # action stays behind the legacy text-routing opt-in.
-        text_contract = _delegation_continuation_contract(summary)
-        contract = (
-            text_contract
-            if (
-                text_contract.get("next_expert")
-                and (
-                    allow_legacy_text_continuation
-                    or str(text_contract.get("next_action") or "").strip()
-                )
-            )
-            else {}
-        )
-        origin = str(row.get("agent_id") or row.get("delegate_to") or "").strip()
-        origin_agent = (
-            _resolve_runtime_dynamic_agent(app, origin, session_id=session_id) if origin else None
-        )
-        if not contract.get("next_expert"):
-            contract = _delegation_continuation_policy_contract(origin_agent, summary)
-        target_id = str(contract.get("next_expert") or "").strip()
-        if not target_id:
-            continue
-        target = _resolve_runtime_dynamic_agent(app, target_id, session_id=session_id)
-        if target is None or target.source != "expert_pack" or not target.enabled:
-            continue
-        if target.parent_id != parent_agent.id:
-            continue
-        action = str(contract.get("next_action") or "").strip()
-        key = (target.id, action)
-        if key in seen_contracts:
-            continue
-        seen_contracts.add(key)
-        origin_parent = str(row.get("parent_id") or "").strip()
-        prompt_parts = [
-            f"Continuation contract returned by {origin or 'child expert'}.",
-        ]
-        if origin_parent:
-            prompt_parts.append(f"Original return parent: {origin_parent}.")
-        if action:
-            prompt_parts.append(f"Required next action: {action}")
-        if summary:
-            prompt_parts.append(f"Returned evidence:\n{summary}")
-        handoffs.append(
-            {
-                "delegate_to": target.id,
-                "agent_id": target.id,
-                "question": "\n\n".join(prompt_parts),
-                "status": "requested",
-                "execute": True,
-                "source": str(contract.get("source") or "delegation_continuation_contract"),
-                "continuation_contract": {
-                    **contract,
-                    "origin_agent_id": origin,
-                    "origin_parent_id": origin_parent,
-                },
-            }
-        )
-    return handoffs
-
-
-def _next_expert_marker_handoffs(
-    *,
-    source_text: str,
-    completed_outputs: list[str],
-    declared_child_ids: set[str],
-    completed_child_ids: set[str],
-) -> list[dict[str, Any]]:
-    rows: list[dict[str, Any]] = []
-    for output in reversed(completed_outputs):
-        target_match = re.search(r"(?im)^\s*NEXT_EXPERT:\s*([A-Za-z0-9_.-]+)\s*$", output)
-        if target_match is None:
-            continue
-        target = target_match.group(1).strip()
-        if target not in declared_child_ids or target in completed_child_ids:
-            continue
-        action_match = re.search(r"(?im)^\s*NEXT_ACTION:\s*(.+?)\s*$", output)
-        action = action_match.group(1).strip() if action_match else source_text
-        rows.append(
-            {
-                "delegate_to": target,
-                "question": f"{action}\n\nPrior blueprint evidence:\n{output.strip()}",
-                "status": "requested",
-                "execute": True,
-                "source": "blueprint_next_expert_marker",
-            }
-        )
-        break
-    return rows
-
-
 def _agent_allows_legacy_text_continuation(agent_def: "AgentDef") -> bool:
     return _user_agent_bool_param(agent_def, "allow_legacy_text_continuation")
 
@@ -5418,7 +5102,10 @@ def _blueprint_runtime_signature(agent_def: "AgentDef") -> Any:
     # contract state machine this was latent -- routing was deterministic -- but with
     # agent-driven routing the expert MUST see its own instructions to orchestrate.)
     if not any(name == "system_prompt" for name, _, _ in inputs):
-        inputs = [("system_prompt", "Runtime instructions and context for this expert", str), *inputs]
+        inputs = [
+            ("system_prompt", "Runtime instructions and context for this expert", str),
+            *inputs,
+        ]
     outputs = _ordered_fields(raw_outputs, [("answer", "User-facing answer", str)])
     structured = (
         agent_def.structured_outputs if isinstance(agent_def.structured_outputs, Mapping) else {}
@@ -6142,16 +5829,18 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                     )
                 )
             if trace.HF_ON:
-                trace.hot(
-                    "FWD-ENTER", "%s kind=%s", getattr(self.agent_def, "id", "?"), self.kind
-                )
+                trace.hot("FWD-ENTER", "%s kind=%s", getattr(self.agent_def, "id", "?"), self.kind)
             runtime_system_prompt = self.system_prompt
             # Qwen-family models (qwopus), with thinking disabled, write free-form prose
             # instead of the structured field format and never emit a terminator, so they
             # generate unboundedly (→ truncation / >900s wedge). Tell them to output only
             # the required fields and stop. Env-gated so it rides with CLIO_LM_DISABLE_THINKING
             # and never touches the well-behaved remote models.
-            if os.environ.get("CLIO_LM_DISABLE_THINKING", "").strip().lower() in {"1", "true", "yes"}:
+            if os.environ.get("CLIO_LM_DISABLE_THINKING", "").strip().lower() in {
+                "1",
+                "true",
+                "yes",
+            }:
                 runtime_system_prompt = (
                     runtime_system_prompt
                     + "\n\nOUTPUT DISCIPLINE: Produce ONLY the required output fields, each "
@@ -6198,9 +5887,7 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                     child_completion_context_key = (active_session_id, self.agent_def.id)
                     contexts[child_completion_context_key] = seeded_completions
             if trace.HF_ON:
-                trace.hot(
-                    "FWD-A", "%s child-context+seed-done", getattr(self.agent_def, "id", "?")
-                )
+                trace.hot("FWD-A", "%s child-context+seed-done", getattr(self.agent_def, "id", "?"))
             blueprint_tool_rows: list[dict[str, Any]] = []
             if self.kind == "react":
                 prior_workflow_state = _workflow_state_from_outputs(
@@ -7788,9 +7475,7 @@ async def _run_turn_in_background(
             import traceback as _tb_enter  # noqa: PLC0415
 
             _clio_frames = [
-                ln.strip().split("\n")[0]
-                for ln in _tb_enter.format_stack()
-                if "gact/app.py" in ln
+                ln.strip().split("\n")[0] for ln in _tb_enter.format_stack() if "gact/app.py" in ln
             ]
             trace.route(
                 "SETTLE-ENTER",
@@ -7870,8 +7555,7 @@ async def _run_turn_in_background(
             completed_this_round = [
                 row
                 for row in executed_rows
-                if row.get("status") == "completed"
-                and row.get("stage") == "delegate.completed"
+                if row.get("status") == "completed" and row.get("stage") == "delegate.completed"
             ]
             for row in completed_this_round:
                 cid = str(row.get("agent_id") or row.get("delegate_to") or "").strip()
@@ -8804,7 +8488,12 @@ async def _run_turn_in_background(
     # on the assistant message metadata because the reasoning has scientific
     # value for analysing how the model reached its answer. Gated by
     # CLIO_CAPTURE_REASONING (default on); set to 0 to avoid the metadata growth.
-    if os.environ.get("CLIO_CAPTURE_REASONING", "").strip().lower() not in {"0", "false", "no", "off"}:
+    if os.environ.get("CLIO_CAPTURE_REASONING", "").strip().lower() not in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }:
         try:
             _reasoning_log = _reasoning_records_from_history_slice(history_start, app)
         except Exception:  # noqa: BLE001 - reasoning capture is best-effort, never fail a turn
@@ -8816,7 +8505,8 @@ async def _run_turn_in_background(
                 "captured %d call(s): %s",
                 len(_reasoning_log),
                 "; ".join(
-                    f"{(r['model'] or '?').split('/')[-1]}={r['reasoning_chars']}c" for r in _reasoning_log
+                    f"{(r['model'] or '?').split('/')[-1]}={r['reasoning_chars']}c"
+                    for r in _reasoning_log
                 ),
             )
     # iowarp/clio-agent#6: when streaming actually emitted chunks,
@@ -21903,9 +21593,9 @@ def build_app(
                     # 1-token probe -> the no-progress watchdog kills the run).
                     # Enabling it is what makes the shareable local driver survive a
                     # full pipeline. Opt out with CLIO_LMSTUDIO_FLASH_ATTENTION=0.
-                    "flash_attention": os.environ.get(
-                        "CLIO_LMSTUDIO_FLASH_ATTENTION", ""
-                    ).strip().lower()
+                    "flash_attention": os.environ.get("CLIO_LMSTUDIO_FLASH_ATTENTION", "")
+                    .strip()
+                    .lower()
                     not in {"0", "false", "no", "off"},
                     "echo_load_config": True,
                 },
