@@ -315,8 +315,11 @@ class TestEnrich:
         enriched = compiler._enrich(compacted, "analyze HDF5 file")
 
         assert "tools" in enriched
-        # Should contain tool names from gateway
-        assert "hdf5" in enriched["tools"].lower() or enriched["tools"] == ""
+        # Enrich summarises the BUNDLED gateway tools (fs + shell). Domain servers
+        # like hdf5 are declared MCPs, not bundled in core, so they are not part of
+        # the default capability summary — assert against a stable built-in instead.
+        tools_text = enriched["tools"].lower()
+        assert tools_text == "" or "shell_bash" in tools_text or "fs_read_file" in tools_text
 
     def test_enrich_filters_tools_by_scope(self, tmp_path):
         """Scoped context should only include tools visible to that agent."""
