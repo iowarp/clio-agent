@@ -11193,12 +11193,22 @@ def _build_stream_listeners(agent: Any, stream_listener_cls: Any) -> list[Any]:
 
 
 def _agent_streaming_unsupported_reason(agent: Any) -> str:
-    """Return a fallback reason when the active provider cannot stream live."""
+    """Return a fallback reason when the active provider cannot stream live.
+
+    Only the CLI-backed custom transports (``codex`` JSON-RPC, ``claude_code``
+    exec) are genuinely non-streaming. Argonne/ALCF (Sophia + Metis) is a plain
+    OpenAI-compatible SSE endpoint: it streams at the provider AND through LiteLLM
+    (verified: multi-chunk incremental deltas), so it must NOT be force-classified
+    as batch. Hardcoding it here bypassed the streamify pump for EVERY ALCF run
+    (iowarp/clio-agent#160). The streamify path below has its own graceful
+    try/except fallback to sync, so letting argonne attempt streaming can only
+    improve on the previous always-batch behaviour.
+    """
 
     provider_config = getattr(agent, "_provider_config", None)
     provider = str(getattr(provider_config, "provider", "") or "")
     provider_kind = _provider_runtime_kind(provider)
-    if provider_kind in {"argonne", "claude_code", "codex"}:
+    if provider_kind in {"claude_code", "codex"}:
         return "provider_streaming_unsupported"
     return ""
 

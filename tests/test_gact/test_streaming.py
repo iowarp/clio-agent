@@ -253,48 +253,28 @@ async def test_provider_without_live_streaming_skips_streamify(
     assert fallback["live_streaming"] is False
 
 
-@pytest.mark.asyncio
-async def test_argonne_provider_skips_streamify(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    def fail_streamify(*args: Any, **kwargs: Any) -> Any:
-        del args, kwargs
-        raise AssertionError("streamify should not be called for Argonne providers")
+def test_argonne_streaming_is_not_force_classified_as_batch() -> None:
+    """iowarp/clio-agent#160: ALCF (Sophia + Metis) is a plain OpenAI-compatible
+    SSE endpoint that streams at the provider AND through LiteLLM (verified with a
+    live multi-chunk probe). CLIO must NOT force-classify it as batch -- doing so
+    bypassed the streamify pump for every ALCF run. Only the CLI-backed custom
+    transports (codex JSON-RPC, claude_code exec) stay genuinely non-streaming."""
 
-    streamify_module = importlib.import_module("dspy.streaming.streamify")
-    monkeypatch.setattr(streamify_module, "streamify", fail_streamify)
-    agent = _DspyAgent("sync answer")
-    agent._provider_config = SimpleNamespace(provider="argonne")
-    app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
+    from clio_agent.gact.app import _agent_streaming_unsupported_reason
 
-    result = await _try_streamed_forward(app, "hello", "sid", lambda text: None)
+    def _agent(provider: str) -> SimpleNamespace:
+        return SimpleNamespace(_provider_config=SimpleNamespace(provider=provider))
 
-    assert result is None
-    assert agent.calls == []
-    fallback = _pop_stream_fallback(app, "sid")
-    assert fallback["reason"] == "provider_streaming_unsupported"
+    # Argonne (bare kind + both preset ids) must now attempt streaming.
+    for provider in ("argonne", "argonne_metis", "argonne_sophia"):
+        assert _agent_streaming_unsupported_reason(_agent(provider)) == "", provider
 
-
-@pytest.mark.asyncio
-async def test_argonne_preset_id_skips_streamify(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    def fail_streamify(*args: Any, **kwargs: Any) -> Any:
-        del args, kwargs
-        raise AssertionError("streamify should not be called for Argonne preset ids")
-
-    streamify_module = importlib.import_module("dspy.streaming.streamify")
-    monkeypatch.setattr(streamify_module, "streamify", fail_streamify)
-    agent = _DspyAgent("sync answer")
-    agent._provider_config = SimpleNamespace(provider="argonne_sophia")
-    app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
-
-    result = await _try_streamed_forward(app, "hello", "sid", lambda text: None)
-
-    assert result is None
-    assert agent.calls == []
-    fallback = _pop_stream_fallback(app, "sid")
-    assert fallback["reason"] == "provider_streaming_unsupported"
+    # Genuinely non-streaming CLI transports remain force-classified as batch.
+    for provider in ("codex", "claude_code"):
+        assert (
+            _agent_streaming_unsupported_reason(_agent(provider))
+            == "provider_streaming_unsupported"
+        ), provider
 
 
 @pytest.mark.asyncio
