@@ -24,6 +24,9 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextvars
+
+# Diagnostic: SIGUSR1 dumps all thread tracebacks to stderr (for wedge debugging).
+import faulthandler as _faulthandler  # noqa: E402
 import fnmatch
 import hashlib
 import importlib.util
@@ -32,12 +35,19 @@ import json
 import os
 import re
 import shutil
+import signal as _signal  # noqa: E402
 import subprocess
 import sys
 import tempfile
 import threading
 import time
 import uuid
+
+try:
+    _faulthandler.register(_signal.SIGUSR1, all_threads=True)
+except (ValueError, OSError):
+    pass
+
 from collections.abc import Iterable, Mapping
 from contextlib import asynccontextmanager, contextmanager, nullcontext
 from dataclasses import asdict
@@ -52,6 +62,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from clio_agent import conf
 from clio_agent.gact.semantic_events import (
     DEFAULT_DETAIL_LEVEL,
     SemanticEvent,
@@ -65,6 +76,7 @@ from clio_agent.gact.workspace_scope import (
     workspace_scope,
 )
 from clio_agent.prompts import PromptRegistry, PromptSource, parse_prompt_text
+from clio_agent.runtime import trace
 from clio_agent.runtime.lm_activity import lm_call_in_flight as _lm_call_in_flight
 from clio_agent.tools.catalog import TOOL_CATALOG
 from clio_agent.tools.file_policy import validate_write_path
@@ -719,10 +731,14 @@ class _BlueprintTerminalWorkflowState(BaseException):
 def _gact_turn_timeout_s() -> float:
     """Return the per-turn timeout in seconds; <=0 disables the watchdog."""
 
-    raw = os.environ.get("CLIO_GACT_TURN_TIMEOUT_S", "900").strip()
     try:
-        return float(raw)
-    except ValueError:
+        return conf.resolve(
+            "limits.turn_timeout_s",
+            env="CLIO_GACT_TURN_TIMEOUT_S",
+            default=900.0,
+            cast=conf.as_float,
+        )
+    except (ValueError, TypeError):
         return 900.0
 
 
@@ -5020,6 +5036,46 @@ def _call_recovered_dspy_tool(tool: Any, args: Mapping[str, Any]) -> Any:
     raise TypeError(f"tool is not callable: {getattr(tool, 'name', '<unknown>')}")
 
 
+def _is_repairable_typed_output_error(exc: BaseException) -> bool:
+    """Whether an expert's failure is a typed-output SCHEMA validation miss that a
+    single re-ask can fix -- a required field was DROPPED or set null by a model
+    that already has the data -- as opposed to a tool/runtime error. Detected by the
+    pydantic / DSPy validation signature so it covers BOTH the strict remote
+    JSONAdapter and the local lenient adapter."""
+
+    text = f"{type(exc).__name__}: {exc}".lower()
+    markers = (
+        "validation error",  # pydantic header
+        "field required",  # a required field was dropped
+        "input should be",  # wrong type / null where a value is required
+        "adapterparseerror",  # DSPy wrapper around a parse/validation miss
+        "expected to find output fields",  # adapter could not locate a declared field
+    )
+    return any(m in text for m in markers)
+
+
+def _typed_output_repair_hint(exc: BaseException) -> str:
+    """Build ONE bounded-repair instruction from a typed-output validation error,
+    fed back to the SAME expert so it re-emits with the field corrected. This is
+    clio's documented "re-ask when something is missing" bounded repair -- NOT a
+    default and NOT hiding: the model fixes its own drop using evidence it already
+    has."""
+
+    detail = str(exc).replace("\n", " ").strip()
+    if len(detail) > 600:
+        detail = detail[:600] + " …"
+    return (
+        "SCHEMA-REPAIR (your previous response was REJECTED by output validation): "
+        f"{detail}\n"
+        "Re-emit your COMPLETE response, fixing exactly that: a REQUIRED field was "
+        "missing or null. Include it with a correct, non-empty value consistent with "
+        "the evidence you already gathered -- e.g. if you set a 'ranked' status you "
+        "MUST also emit the list of station ids you ranked; a required boolean must "
+        "be true or false, never null. Do NOT add keys outside the declared schema, "
+        "and do NOT drop any other required field."
+    )
+
+
 def _recover_blueprint_react_tool_intent(
     *,
     tools: Iterable[Any],
@@ -5375,18 +5431,26 @@ def _blueprint_runtime_signature(agent_def: "AgentDef") -> Any:
             return value.strip().lower() not in {"false", "0", "no", "off", "disabled"}
         return value is not False
 
-    # workflow_state is a TYPED dict OutputField so the adapter forces the model to
-    # emit a real JSON object the runtime reads for continuation routing -- this is
-    # what replaced the deleted regex inference backfill. The rest stay free-form.
+    # CLEAN CONTRACT: workflow_state is the ONE load-bearing structured output --
+    # a TYPED dict the adapter forces the model to emit, and the channel the
+    # agent->agent handoff actually travels on (_append_prediction_workflow_state
+    # carries ONLY workflow_state to the next expert). The former companions
+    # (evidence/artifacts/errors/delegation) were a redundant second copy that
+    # nothing authoritative consumed: `artifacts` is tool-tracked on disk
+    # (clio_sut._artifacts) and its handoff rides in workflow_state; `evidence`
+    # was merged-then-stripped from display; `errors` was logging-only; clio
+    # BUILDS `delegation` state itself and ignored the LM's field. Declaring them
+    # *required* only enlarged the contract and made strict-adapter models (the
+    # remote JSONAdapter path: nemotron) hard-fail an otherwise-correct run when
+    # they sensibly omitted an empty one. A smaller contract is easier for every
+    # model to satisfy -- so we no longer auto-inject them. (A blueprint that
+    # genuinely needs one can still declare it explicitly in its signature
+    # `outputs:`.)
     _structured_field_specs: dict[str, tuple[str, Any]] = {
         "workflow_state": (
             "Typed semantic workflow state (a JSON object) used for blueprint continuation routing.",
             dict[str, Any],
         ),
-        "evidence": ("Compact evidence rows supporting the answer", str),
-        "artifacts": ("Artifact paths or identifiers produced by the expert", str),
-        "errors": ("Recoverable runtime errors or missing evidence", str),
-        "delegation": ("Delegation metadata for downstream parent experts", str),
     }
     _declared = {field for field, _, _ in outputs}
     for name, (desc, field_type) in _structured_field_specs.items():
@@ -5460,14 +5524,14 @@ def _blueprint_runtime_signature(agent_def: "AgentDef") -> Any:
     # recovered by the LenientChatAdapter (constructor-repr -> JSON, no re-request)
     # with DSPy's JSON-adapter fallback OFF for local backends so the recovery is
     # not bypassed. The recovery preserves the correct keys.
-    import logging as _logging  # noqa: PLC0415
-
-    _logging.getLogger("clio_agent").warning(
-        "⚑ SIG-BUILD %s :: workflow_state type=%s :: next_expert=%s",
-        getattr(agent_def, "id", "?"),
-        next((str(t) for n, d, t in outputs if n == "workflow_state"), "<none>"),
-        next((str(t) for n, d, t in outputs if n == "next_expert"), "<none>"),
-    )
+    if trace.HF_ON:
+        trace.hot(
+            "SIG-BUILD",
+            "%s :: workflow_state type=%s :: next_expert=%s",
+            getattr(agent_def, "id", "?"),
+            next((str(t) for n, d, t in outputs if n == "workflow_state"), "<none>"),
+            next((str(t) for n, d, t in outputs if n == "next_expert"), "<none>"),
+        )
 
     namespace: dict[str, Any] = {
         "__doc__": f"DSPy signature for Agent Blueprint expert {agent_def.id}."
@@ -6040,24 +6104,25 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                 part for part in (agent_prompt, workspace_context, child_context) if part
             )
             self.has_declared_children = bool(child_context.strip())
-            import logging as _pblog  # noqa: PLC0415
-            import traceback as _pbtb  # noqa: PLC0415
+            if trace.HF_ON:
+                import traceback as _pbtb  # noqa: PLC0415
 
-            _pb_frames = [
-                ln.strip().split("\n")[0].split("/")[-1]
-                for ln in _pbtb.format_stack()
-                if "gact/app.py" in ln
-            ]
-            _pblog.getLogger("clio_agent").warning(
-                "⚑ PROMPT-BUILD %s :: kind=%s child_ctx=%d ORCH=%s sid=%r app=%s caller=%s",
-                getattr(agent_def, "id", "?"),
-                self.kind,
-                len(child_context),
-                "ORCHESTRATOR" in self.system_prompt,
-                _ACTIVE_GACT_SESSION_ID.get(),
-                active_app is not None,
-                " <- ".join(reversed(_pb_frames[-4:])),
-            )
+                _pb_frames = [
+                    ln.strip().split("\n")[0].split("/")[-1]
+                    for ln in _pbtb.format_stack()
+                    if "gact/app.py" in ln
+                ]
+                trace.hot(
+                    "PROMPT-BUILD",
+                    "%s :: kind=%s child_ctx=%d ORCH=%s sid=%r app=%s caller=%s",
+                    getattr(agent_def, "id", "?"),
+                    self.kind,
+                    len(child_context),
+                    "ORCHESTRATOR" in self.system_prompt,
+                    _ACTIVE_GACT_SESSION_ID.get(),
+                    active_app is not None,
+                    " <- ".join(reversed(_pb_frames[-4:])),
+                )
 
         def forward(
             self,
@@ -6076,7 +6141,24 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                         executor_work_may_continue=False,
                     )
                 )
+            if trace.HF_ON:
+                trace.hot(
+                    "FWD-ENTER", "%s kind=%s", getattr(self.agent_def, "id", "?"), self.kind
+                )
             runtime_system_prompt = self.system_prompt
+            # Qwen-family models (qwopus), with thinking disabled, write free-form prose
+            # instead of the structured field format and never emit a terminator, so they
+            # generate unboundedly (→ truncation / >900s wedge). Tell them to output only
+            # the required fields and stop. Env-gated so it rides with CLIO_LM_DISABLE_THINKING
+            # and never touches the well-behaved remote models.
+            if os.environ.get("CLIO_LM_DISABLE_THINKING", "").strip().lower() in {"1", "true", "yes"}:
+                runtime_system_prompt = (
+                    runtime_system_prompt
+                    + "\n\nOUTPUT DISCIPLINE: Produce ONLY the required output fields, each "
+                    "filled in directly and once. Do NOT write a prose narrative, do NOT "
+                    "restate your reasoning, do NOT repeat or re-explain fields. After the "
+                    "last required field, STOP immediately."
+                )
             active_app = _ACTIVE_GACT_APP.get()
             active_session_id = _ACTIVE_GACT_SESSION_ID.get()
             if active_app is not None:
@@ -6115,11 +6197,19 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                         active_app.state.child_tool_completion_contexts = contexts
                     child_completion_context_key = (active_session_id, self.agent_def.id)
                     contexts[child_completion_context_key] = seeded_completions
+            if trace.HF_ON:
+                trace.hot(
+                    "FWD-A", "%s child-context+seed-done", getattr(self.agent_def, "id", "?")
+                )
             blueprint_tool_rows: list[dict[str, Any]] = []
             if self.kind == "react":
                 prior_workflow_state = _workflow_state_from_outputs(
                     [question, runtime_system_prompt]
                 )
+                if trace.HF_ON:
+                    trace.hot(
+                        "FWD-B", "%s workflow-state-parsed", getattr(self.agent_def, "id", "?")
+                    )
                 if prior_workflow_state:
                     blueprint_tool_rows.append(
                         {
@@ -6136,55 +6226,81 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                 if self.kind == "react"
                 else None
             )
-            import logging as _cklog  # noqa: PLC0415
-
-            _ck_sp = kwargs.get("system_prompt", "")
-            _ck_q = str(kwargs.get("question", ""))
-            _cklog.getLogger("clio_agent").warning(
-                "⚑ LM-CALL %s :: sp_len=%d ORCH=%s | has_station_ids_in_q=%s SIO5_in_q=%s P472_in_q=%s | q_tail=%r",
-                getattr(self.agent_def, "id", "?"),
-                len(str(_ck_sp)),
-                "ORCHESTRATOR" in str(_ck_sp),
-                "station_ids" in _ck_q,
-                "SIO5" in _ck_q,
-                "P472" in _ck_q,
-                _ck_q[-500:],
-            )
+            if trace.HF_ON:
+                _ck_sp = kwargs.get("system_prompt", "")
+                _ck_q = str(kwargs.get("question", ""))
+                trace.hot(
+                    "LM-CALL",
+                    "%s :: sp_len=%d ORCH=%s | has_station_ids_in_q=%s SIO5_in_q=%s P472_in_q=%s | q_tail=%r",
+                    getattr(self.agent_def, "id", "?"),
+                    len(str(_ck_sp)),
+                    "ORCHESTRATOR" in str(_ck_sp),
+                    "station_ids" in _ck_q,
+                    "SIO5" in _ck_q,
+                    "P472" in _ck_q,
+                    _ck_q[-500:],
+                )
             try:
                 with dspy.context(
                     lm=create_lm(self.config), adapter=create_chat_adapter(self.config)
                 ):
-                    try:
-                        result = self.program(**kwargs)
-                    except _BlueprintTerminalWorkflowState as terminal_exc:
-                        terminal_state = terminal_exc.result.get("clio_runtime", {}).get(
-                            "workflow_state", {}
+                    _repair_hint = ""
+                    for _repair_attempt in range(2):  # original + ONE bounded SCHEMA-REPAIR re-ask
+                        _call_kwargs = (
+                            kwargs
+                            if not _repair_hint
+                            else {**kwargs, "question": f"{kwargs['question']}\n\n{_repair_hint}"}
                         )
-                        terminal_mapping = (
-                            dict(terminal_state) if isinstance(terminal_state, Mapping) else {}
-                        )
-                        result = dspy.Prediction(
-                            answer="The workflow reached a terminal typed state.",
-                            workflow_state=terminal_mapping,
-                            evidence=[terminal_exc.result],
-                            artifacts=[],
-                            errors=[],
-                            delegation={},
-                            trajectory=None,
-                            tools_called=[],
-                        )
-                    except Exception as exc:
-                        recovered = (
-                            _recover_blueprint_react_tool_intent(
-                                tools=self.tools,
-                                exc=exc,
+                        try:
+                            result = self.program(**_call_kwargs)
+                            break
+                        except _BlueprintTerminalWorkflowState as terminal_exc:
+                            terminal_state = terminal_exc.result.get("clio_runtime", {}).get(
+                                "workflow_state", {}
                             )
-                            if self.kind == "react"
-                            else None
-                        )
-                        if recovered is None:
-                            raise
-                        result = recovered
+                            terminal_mapping = (
+                                dict(terminal_state) if isinstance(terminal_state, Mapping) else {}
+                            )
+                            result = dspy.Prediction(
+                                answer="The workflow reached a terminal typed state.",
+                                workflow_state=terminal_mapping,
+                                evidence=[terminal_exc.result],
+                                artifacts=[],
+                                errors=[],
+                                delegation={},
+                                trajectory=None,
+                                tools_called=[],
+                            )
+                            break
+                        except Exception as exc:
+                            # Bounded repair: a typed-output SCHEMA validation miss (a
+                            # required field dropped/null by a model that HAS the data)
+                            # is re-askable -- feed the error back and let the SAME
+                            # expert re-emit ONCE. clio's documented behavior is to
+                            # RE-ASK when something is missing; this wires it for a
+                            # ValidationError, not just missing handoffs. Not a default,
+                            # not hiding -- the model corrects its own drop.
+                            if _repair_attempt == 0 and _is_repairable_typed_output_error(exc):
+                                _repair_hint = _typed_output_repair_hint(exc)
+                                trace.event(
+                                    "SCHEMA-REPAIR",
+                                    "%s :: re-asking once :: %s",
+                                    getattr(self.agent_def, "id", "?"),
+                                    str(exc).replace("\n", " ")[:160],
+                                )
+                                continue
+                            recovered = (
+                                _recover_blueprint_react_tool_intent(
+                                    tools=self.tools,
+                                    exc=exc,
+                                )
+                                if self.kind == "react"
+                                else None
+                            )
+                            if recovered is None:
+                                raise
+                            result = recovered
+                            break
             finally:
                 if blueprint_tool_rows_token is not None:
                     _ACTIVE_BLUEPRINT_TOOL_ROWS.reset(blueprint_tool_rows_token)
@@ -7193,24 +7309,20 @@ async def _run_turn_in_background(
                 ),
             ),
         )
-        # ⚑ RAW-HANDOFF instrumentation: what did THIS agent's LM actually emit as
+        # RAW-ROUTE instrumentation: what did THIS agent's LM actually emit as
         # structured expert_handoffs (before any continuation-contract injection)?
         # Distinguishes agent-driven routing (model emits handoffs) from
         # contract-driven routing (model emits none; the when_child_completed state
         # machine injects the next expert). Answers whether we can move to the
         # minimal agent-routed loop or whether the blueprint must teach routing.
-        try:
-            import logging as _hlog  # noqa: PLC0415
-
-            _hlog.getLogger("clio_agent").warning(
-                "⚑ RAW-ROUTE agent=%s next_expert=%s next_task_len=%d answer_len=%d",
-                getattr(agent_def, "id", "?"),
-                str(getattr(_pred, "next_expert", "") or "") or "<none>",
-                len(str(getattr(_pred, "next_task", "") or "")),
-                len(str(getattr(_pred, "answer", "") or "")),
-            )
-        except Exception:  # noqa: BLE001 - instrumentation only
-            pass
+        trace.route(
+            "RAW-ROUTE",
+            "agent=%s next_expert=%s next_task_len=%d answer_len=%d",
+            getattr(agent_def, "id", "?"),
+            str(getattr(_pred, "next_expert", "") or "") or "<none>",
+            len(str(getattr(_pred, "next_task", "") or "")),
+            len(str(getattr(_pred, "answer", "") or "")),
+        )
         return _pred
 
     async def _execute_delegated_experts(
@@ -7672,26 +7784,26 @@ async def _run_turn_in_background(
         """Run sync child delegations and re-enter the parent with compact returns."""
 
         latest_pred = initial_pred
-        import logging as _lg_enter  # noqa: PLC0415
-        import traceback as _tb_enter  # noqa: PLC0415
+        if trace.ROUTE_ON:
+            import traceback as _tb_enter  # noqa: PLC0415
 
-        _clio_frames = [
-            ln.strip().split("\n")[0]
-            for ln in _tb_enter.format_stack()
-            if "gact/app.py" in ln
-        ]
-        _lg_enter.getLogger("clio_agent").warning(
-            "⚑ SETTLE-ENTER parent=%s caller=%s",
-            parent_agent.id,
-            " <- ".join(reversed(_clio_frames[-6:])),
-        )
+            _clio_frames = [
+                ln.strip().split("\n")[0]
+                for ln in _tb_enter.format_stack()
+                if "gact/app.py" in ln
+            ]
+            trace.route(
+                "SETTLE-ENTER",
+                "parent=%s caller=%s",
+                parent_agent.id,
+                " <- ".join(reversed(_clio_frames[-6:])),
+            )
         all_rows: list[dict[str, Any]] = []
         max_rounds = _user_agent_int_param(parent_agent, "max_sync_delegation_rounds", 12)
         max_rounds = max(1, min(max_rounds, 16))
         completed_child_ids: set[str] = set()
         completed_child_outputs: dict[str, str] = {}
         declared_child_ids = _runtime_declared_child_ids(app, parent_agent.id, session_id=sid)
-        import logging as _logging  # noqa: PLC0415
 
         for _round in range(max_rounds):
             # AGENT-DRIVEN ROUTING. The parent emitted, at the end of its run, a typed
@@ -7703,16 +7815,18 @@ async def _run_turn_in_background(
             # answer on "finish" is the deliverable.
             next_expert = str(getattr(latest_pred, "next_expert", "") or "").strip()
             next_task = str(getattr(latest_pred, "next_task", "") or "").strip()
-            _logging.getLogger("clio_agent").warning(
-                "⛑ SETTLE parent=%s round=%d completed=%s next_expert=%s next_task=%r reasoning=%r answer=%r",
-                parent_agent.id,
-                _round,
-                sorted(completed_child_ids),
-                next_expert or "<none>",
-                next_task[:160],
-                str(getattr(latest_pred, "reasoning", "") or "")[:400],
-                str(getattr(latest_pred, "answer", "") or "")[:200],
-            )
+            if trace.ROUTE_ON:
+                trace.route(
+                    "SETTLE",
+                    "parent=%s round=%d completed=%s next_expert=%s next_task=%r reasoning=%r answer=%r",
+                    parent_agent.id,
+                    _round,
+                    sorted(completed_child_ids),
+                    next_expert or "<none>",
+                    next_task[:160],
+                    str(getattr(latest_pred, "reasoning", "") or "")[:400],
+                    str(getattr(latest_pred, "answer", "") or "")[:200],
+                )
             if (
                 next_expert in ("", "finish", "none", "done", "stop")
                 or next_expert not in declared_child_ids
@@ -7726,6 +7840,14 @@ async def _run_turn_in_background(
                     "status": "requested",
                     "execute": True,
                     "source": "agent_next_expert",
+                    # Agent-driven routing emits ONE deliberate child per round, so a
+                    # re-route to an already-completed child (e.g. "analysis recovered
+                    # the data -> retry visualization") is an intentional decision clio
+                    # must honor, NOT a duplicate to skip. Bypass the completed-child
+                    # repeat filter for agent-emitted routes; the max_rounds clamp bounds
+                    # any genuine loop. (The filter still guards the legacy multi-handoff
+                    # paths.) See agent-driven-routing #38/#39.
+                    "allow_repeat": True,
                 }
             ]
             # Forward the parent's CURRENT accumulated state (the typed workflow_state it
@@ -8688,11 +8810,10 @@ async def _run_turn_in_background(
         except Exception:  # noqa: BLE001 - reasoning capture is best-effort, never fail a turn
             _reasoning_log = []
         if _reasoning_log:
-            import logging as _reasoning_logging  # noqa: PLC0415
-
             assistant_metadata["reasoning_log"] = _reasoning_log
-            _reasoning_logging.getLogger("clio_agent").info(
-                "⚑ REASONING captured %d call(s): %s",
+            trace.event(
+                "REASONING",
+                "captured %d call(s): %s",
                 len(_reasoning_log),
                 "; ".join(
                     f"{(r['model'] or '?').split('/')[-1]}={r['reasoning_chars']}c" for r in _reasoning_log
@@ -11739,7 +11860,12 @@ def _context_file_turn_provenance(app: "FastAPI", sid: str, *, status: str) -> d
     }
 
 
-_CTX_MAX_BYTES = 32 * 1024  # 32 KB cap per attached file
+_CTX_MAX_BYTES = conf.resolve(
+    "limits.context_inline_bytes",
+    env="CLIO_CTX_MAX_BYTES",
+    default=32 * 1024,  # 32 KB cap per attached file
+    cast=conf.as_int,
+)
 
 
 # Core no longer bundles in-process scientific format servers, so it ships no
@@ -22863,6 +22989,10 @@ def main() -> None:
         ),
     )
     args = parser.parse_args()
+
+    # Resolve trace verbosity (file→env→default) and install the formatted log
+    # handler for the server process, now that the environment is settled.
+    trace.configure()
 
     # Always build a fresh app inside main() — the module-level
     # ``app`` symbol is intentionally lazy (see __getattr__ above) so

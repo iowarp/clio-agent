@@ -724,6 +724,16 @@ def _resolve_lm_studio_model_if_needed(config: LMProviderConfig) -> None:
 def _provider_lm_kwargs(config: LMProviderConfig) -> dict[str, Any]:
     """Return provider-specific LiteLLM kwargs for dspy.LM construction."""
     extras = _thinking_kwargs(config)
+    # Qwen-family reasoning models (e.g. qwopus) run their reasoning_content away
+    # on the pipeline's structured routing/tool-decision calls — consuming the whole
+    # token budget without reaching the decision (uncapped → >900s → wedge; capped →
+    # no tool call). Structured routing does not need chain-of-thought, so disable
+    # thinking when CLIO_LM_DISABLE_THINKING is set. enable_thinking=false is honored
+    # by Qwen chat templates (verified: 8327 reasoning chars/43s → 0 chars/0.8s).
+    if os.environ.get("CLIO_LM_DISABLE_THINKING", "").strip().lower() in {"1", "true", "yes"}:
+        body = dict(extras.get("extra_body") or {})
+        body["chat_template_kwargs"] = {**body.get("chat_template_kwargs", {}), "enable_thinking": False}
+        extras["extra_body"] = body
     if config.provider == "codex":
         extras["codex_transport"] = config.codex_transport
     elif config.provider == "claude_code":
@@ -749,7 +759,7 @@ def _coerce_constructor_repr_to_jsonable(text: str) -> Any:
         if isinstance(n, ast.Call):
             return {kw.arg: conv(kw.value) for kw in n.keywords if kw.arg is not None}
         if isinstance(n, ast.Dict):
-            return {conv(k): conv(v) for k, v in zip(n.keys, n.values)}
+            return {conv(k): conv(v) for k, v in zip(n.keys, n.values, strict=False)}
         if isinstance(n, (ast.List, ast.Tuple, ast.Set)):
             return [conv(e) for e in n.elts]
         if isinstance(n, ast.Constant):
@@ -833,9 +843,11 @@ def _lenient_chat_adapter_cls() -> Any:
                 # was NOT valid for the strict parser and was recovered from a
                 # constructor-repr. If you see this a lot, the model isn't emitting
                 # JSON natively (a root issue worth fixing upstream, not just here).
-                _LOG.warning(
-                    "⚑ LENIENT-ADAPTER RECOVERY: coerced constructor-repr -> JSON for "
-                    "field(s) %s (strict parse failed: %s)",
+                from clio_agent.runtime import trace  # noqa: PLC0415
+
+                trace.event(
+                    "LENIENT-ADAPTER RECOVERY",
+                    "coerced constructor-repr -> JSON for field(s) %s (strict parse failed: %s)",
                     recovered_fields,
                     str(primary_exc)[:120],
                 )
