@@ -27,6 +27,7 @@ from typing import Any
 
 from fastmcp import FastMCP
 
+from clio_agent import conf
 from clio_agent.tools.file_policy import (
     validate_non_empty_string,
     validate_read_path,
@@ -36,7 +37,10 @@ from clio_agent.tools.fs_write import write_text_with_policy
 
 fs_server = FastMCP("fs")
 
-_MAX_READ_BYTES = 256 * 1024  # 256 KB cap on direct reads
+# 256 KB cap on direct reads — resolved file → env → default (clio_agent.conf).
+_MAX_READ_BYTES = conf.resolve(
+    "limits.fs_read_bytes", env="CLIO_FS_MAX_READ_BYTES", default=256 * 1024, cast=conf.as_int
+)
 
 
 @fs_server.tool()

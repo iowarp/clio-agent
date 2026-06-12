@@ -33,6 +33,7 @@ from typing import Any, Callable, Dict, Iterator, List, Literal
 
 import dspy
 
+from clio_agent import conf
 from clio_agent.arc.lsm import LSMTree
 from clio_agent.arc.memory import ARCMemory
 from clio_agent.arc.retrieval import ContextRetriever
@@ -2804,10 +2805,14 @@ class ClioAgent(dspy.Module):
     @staticmethod
     def _agent_max_steps() -> int:
         """Read the planner loop step budget from configuration."""
-        raw = os.environ.get("CLIO_AGENT_MAX_STEPS", str(DEFAULT_AGENT_MAX_STEPS))
         try:
-            value = int(raw)
-        except ValueError:
+            value = conf.resolve(
+                "limits.agent_max_steps",
+                env="CLIO_AGENT_MAX_STEPS",
+                default=DEFAULT_AGENT_MAX_STEPS,
+                cast=conf.as_int,
+            )
+        except (ValueError, TypeError):
             value = DEFAULT_AGENT_MAX_STEPS
         return max(1, min(value, 12))
 

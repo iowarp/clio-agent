@@ -20,10 +20,12 @@ still fires when a provider truly hangs (no tokens, dead socket).
 
 from __future__ import annotations
 
-import os
 import threading
 import time
 from typing import Any
+
+from clio_agent import conf
+from clio_agent.runtime import trace
 
 _LOCK = threading.Lock()
 _STATE: dict[str, float] = {"inflight": 0.0, "started": 0.0, "last": 0.0}
@@ -36,15 +38,16 @@ _DEFAULT_MAX_LM_CALL_S = 1800.0
 
 
 def _max_lm_call_seconds() -> float:
-    raw = os.environ.get("CLIO_MAX_LM_CALL_S", "").strip()
-    if raw:
-        try:
-            value = float(raw)
-            if value > 0:
-                return value
-        except ValueError:
-            pass
-    return _DEFAULT_MAX_LM_CALL_S
+    try:
+        value = conf.resolve(
+            "limits.lm_call_s",
+            env="CLIO_MAX_LM_CALL_S",
+            default=_DEFAULT_MAX_LM_CALL_S,
+            cast=conf.as_float,
+        )
+    except (ValueError, TypeError):
+        return _DEFAULT_MAX_LM_CALL_S
+    return value if value > 0 else _DEFAULT_MAX_LM_CALL_S
 
 
 def note_lm_start() -> None:
@@ -89,5 +92,28 @@ def build_dspy_callback() -> Any | None:
 
         def on_lm_end(self, call_id, outputs, exception):  # noqa: ANN001, D102
             note_lm_end()
+            # Diagnostic (reasoning-model react-leaf): log what the LM actually
+            # returned so we can see whether `content` is empty and the tool
+            # decision was lost to `reasoning_content`. HIGH_FREQ trace; the legacy
+            # CLIO_LOG_LM_RESPONSE flag still enables it (folded into the trace
+            # whitelist as the `lm_response` tag). Best-effort, never raises.
+            if trace.HF_ON:
+                try:
+                    items = outputs if isinstance(outputs, (list, tuple)) else [outputs]
+                    parts = []
+                    for it in items[:2]:
+                        if isinstance(it, str):
+                            txt = it
+                        elif isinstance(it, dict):
+                            txt = str(it.get("text") or it.get("content") or it)
+                        else:
+                            txt = repr(getattr(it, "text", it))
+                        parts.append(f"len={len(txt)} head={txt[:300]!r}")
+                    trace.hot(
+                        "LM-RESPONSE", "call=%s n=%s :: %s",
+                        call_id, len(items), " || ".join(parts),
+                    )
+                except Exception:  # noqa: BLE001 - diagnostic only
+                    pass
 
     return _LMActivityCallback()

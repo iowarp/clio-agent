@@ -70,6 +70,11 @@ class ClioAgentCLI:
         self.verbose = verbose
         self.history: list[dict[str, Any]] = []
         load_project_env_file()
+        # Resolve trace verbosity after .env is loaded (file→env→default) and
+        # install the formatted log handler for this process.
+        from clio_agent.runtime import trace  # noqa: PLC0415
+
+        trace.configure()
 
         # Setup LM Studio
         try:
@@ -657,6 +662,9 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
     load_project_env_file()
+    from clio_agent.runtime import trace  # noqa: PLC0415
+
+    trace.configure()
 
     if args.command == "doctor":
         sys.exit(run_doctor(json_output=args.json))

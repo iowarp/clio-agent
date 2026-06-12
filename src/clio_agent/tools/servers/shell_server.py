@@ -17,15 +17,30 @@ from typing import Any
 
 from fastmcp import FastMCP
 
+from clio_agent import conf
 from clio_agent.tools.file_policy import FileAccessPolicy, FilePolicyError
 
 shell_server = FastMCP("shell")
 
-_DEFAULT_TIMEOUT_S = 5.0
-_MAX_TIMEOUT_S = 30.0
-_DEFAULT_MAX_OUTPUT_BYTES = 16 * 1024
-_MAX_OUTPUT_BYTES = 128 * 1024
-_MAX_COMMAND_CHARS = 4000
+# Operational caps — resolved file → env → default (see clio_agent.conf).
+_DEFAULT_TIMEOUT_S = conf.resolve(
+    "limits.shell_default_timeout_s", env="CLIO_SHELL_DEFAULT_TIMEOUT_S", default=5.0, cast=conf.as_float
+)
+_MAX_TIMEOUT_S = conf.resolve(
+    "limits.shell_max_timeout_s", env="CLIO_SHELL_MAX_TIMEOUT_S", default=30.0, cast=conf.as_float
+)
+_DEFAULT_MAX_OUTPUT_BYTES = conf.resolve(
+    "limits.shell_default_output_bytes",
+    env="CLIO_SHELL_DEFAULT_OUTPUT_BYTES",
+    default=16 * 1024,
+    cast=conf.as_int,
+)
+_MAX_OUTPUT_BYTES = conf.resolve(
+    "limits.shell_max_output_bytes", env="CLIO_SHELL_MAX_OUTPUT_BYTES", default=128 * 1024, cast=conf.as_int
+)
+_MAX_COMMAND_CHARS = conf.resolve(
+    "limits.shell_max_command_chars", env="CLIO_SHELL_MAX_COMMAND_CHARS", default=4000, cast=conf.as_int
+)
 
 
 def _error(code: str, message: str, *, details: dict[str, Any] | None = None) -> dict[str, Any]:

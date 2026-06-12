@@ -44,6 +44,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
+from clio_agent import conf
+
 logger = logging.getLogger(__name__)
 
 
@@ -103,7 +105,12 @@ class HookRegistry:
         self._hooks: dict[str, list[_HookHandler]] = {event: [] for event in _KNOWN_EVENTS}
         self._lock = threading.Lock()
         self._timeout_s = (
-            float(os.environ.get("CLIO_HOOK_TIMEOUT_S", "5.0"))
+            conf.resolve(
+                "limits.hook_timeout_s",
+                env="CLIO_HOOK_TIMEOUT_S",
+                default=5.0,
+                cast=conf.as_float,
+            )
             if timeout_s is None
             else float(timeout_s)
         )
