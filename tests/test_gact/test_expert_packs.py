@@ -782,13 +782,8 @@ def test_expert_pack_agent_executes_delegated_child_expert(
                     "answer": "ROOT_OK",
                     "selected_expert": agent_def.id,
                     "routing_rationale": "session selected expert-pack agent",
-                    "expert_handoffs": [
-                        {
-                            "delegate_to": "schema_review",
-                            "question": "Inspect the CSV schema",
-                            "status": "requested",
-                        }
-                    ],
+                    "next_expert": "schema_review",
+                    "next_task": "Inspect the CSV schema",
                 },
             )()
         if agent_def.id == "root_review":
@@ -799,7 +794,7 @@ def test_expert_pack_agent_executes_delegated_child_expert(
                     "answer": "ROOT_FINAL",
                     "selected_expert": agent_def.id,
                     "routing_rationale": "parent resumed after child expert",
-                    "expert_handoffs": [],
+                    "next_expert": "finish",
                 },
             )()
         return type(
@@ -855,7 +850,7 @@ Inspect schemas.
             (
                 "Inspect the CSV schema\n\n"
                 "Parent evidence available for this delegated task:\n\n"
-                "inspect data.csv"
+                "ROOT_OK"
             ),
             sid,
         ),
@@ -946,13 +941,8 @@ def test_returned_continuation_contract_executes_declared_child(
                     "answer": "ROOT_REQUESTED_SCHEMA",
                     "selected_expert": agent_def.id,
                     "routing_rationale": "session selected expert-pack agent",
-                    "expert_handoffs": [
-                        {
-                            "delegate_to": "schema_review",
-                            "question": "Inspect the CSV schema",
-                            "status": "requested",
-                        }
-                    ],
+                    "next_expert": "schema_review",
+                    "next_task": "Inspect the CSV schema",
                 },
             )()
         if agent_def.id == "schema_review":
@@ -970,14 +960,28 @@ def test_returned_continuation_contract_executes_declared_child(
                     ),
                     "selected_expert": agent_def.id,
                     "routing_rationale": "delegated child expert",
-                    "expert_handoffs": [],
+                },
+            )()
+        # root_review resumes after schema_review's return, reads the returned
+        # NEXT_EXPERT/NEXT_ACTION evidence, and routes to visualization itself
+        # via its typed next_expert (agent-driven routing replaced the deterministic
+        # continuation-contract auto-injection).
+        if agent_def.id == "root_review" and root_calls == 2:
+            assert "SCHEMA_OK" in question
+            assert "plot_schema_summary data.csv" in question
+            return type(
+                "Pred",
+                (),
+                {
+                    "answer": "ROOT_ROUTING_TO_VISUALIZATION",
+                    "selected_expert": agent_def.id,
+                    "routing_rationale": "route to visualization per returned evidence",
+                    "next_expert": "visualization",
+                    "next_task": "plot_schema_summary data.csv",
                 },
             )()
         if agent_def.id == "visualization":
-            assert "Continuation contract returned by schema_review" in question
-            assert "Required next action: plot_schema_summary data.csv" in question
-            assert "Returned evidence:" in question
-            assert "SCHEMA_OK" in question
+            assert "plot_schema_summary data.csv" in question
             return type(
                 "Pred",
                 (),
@@ -985,7 +989,6 @@ def test_returned_continuation_contract_executes_declared_child(
                     "answer": "FINAL_ARTIFACT: /tmp/schema.png",
                     "selected_expert": agent_def.id,
                     "routing_rationale": "returned continuation contract",
-                    "expert_handoffs": [],
                 },
             )()
         return type(
@@ -995,7 +998,7 @@ def test_returned_continuation_contract_executes_declared_child(
                 "answer": "ROOT_FINAL",
                 "selected_expert": agent_def.id,
                 "routing_rationale": "parent resumed after continuation child",
-                "expert_handoffs": [],
+                "next_expert": "finish",
             },
         )()
 
@@ -1052,6 +1055,7 @@ Produce artifacts.
     assert [row[0] for row in calls] == [
         "root_review",
         "schema_review",
+        "root_review",
         "visualization",
         "root_review",
     ]
@@ -1073,9 +1077,11 @@ Produce artifacts.
         if row.get("agent_id") == "visualization"
         and row.get("stage") == "delegate.completed"
     )
-    assert visualization["source"] == "delegation_continuation_contract"
-    assert visualization["continuation_contract"]["next_expert"] == "visualization"
-    assert visualization["continuation_contract"]["origin_agent_id"] == "schema_review"
+    # The parent routes to visualization via its typed next_expert after reading
+    # schema_review's returned evidence, so the executed handoff is tagged
+    # agent_next_expert (the deterministic continuation-contract injection that
+    # used to tag this delegation_continuation_contract was removed).
+    assert visualization["source"] == "agent_next_expert"
     assert visualization["output_summary"] == "FINAL_ARTIFACT: /tmp/schema.png"
     assert assistant["parts"][-1]["text"] == "ROOT_FINAL"
 
@@ -1113,13 +1119,8 @@ def test_returned_continuation_contract_rejects_non_child_target(
                     "answer": "ROOT_REQUESTED_SCHEMA",
                     "selected_expert": agent_def.id,
                     "routing_rationale": "session selected expert-pack agent",
-                    "expert_handoffs": [
-                        {
-                            "delegate_to": "schema_review",
-                            "question": "Inspect the CSV schema",
-                            "status": "requested",
-                        }
-                    ],
+                    "next_expert": "schema_review",
+                    "next_task": "Inspect the CSV schema",
                 },
             )()
         if agent_def.id == "schema_review":
@@ -1130,11 +1131,12 @@ def test_returned_continuation_contract_rejects_non_child_target(
                     "answer": "NEXT_EXPERT: outside_agent\nNEXT_ACTION: should_not_run",
                     "selected_expert": agent_def.id,
                     "routing_rationale": "delegated child expert",
-                    "expert_handoffs": [],
                 },
             )()
         if agent_def.id == "outside_agent":
             raise AssertionError("non-child continuation target must not execute")
+        # Parent resume attempts to route to a non-child target; the settle loop
+        # must reject next_expert values outside its declared children and finalize.
         return type(
             "Pred",
             (),
@@ -1142,7 +1144,8 @@ def test_returned_continuation_contract_rejects_non_child_target(
                 "answer": "ROOT_FINAL",
                 "selected_expert": agent_def.id,
                 "routing_rationale": "parent resumed after ignored contract",
-                "expert_handoffs": [],
+                "next_expert": "outside_agent",
+                "next_task": "should_not_run",
             },
         )()
 
@@ -1222,7 +1225,7 @@ def test_nested_child_evidence_survives_empty_parent_resume(
         return None
 
     def fake_prompt_agent(base_agent: Any, agent_def: Any, question: str, session_id: str) -> Any:
-        del base_agent, question, session_id
+        del base_agent, session_id
         calls.append(agent_def.id)
         if agent_def.id == "root_review" and calls.count("root_review") == 1:
             return type(
@@ -1232,13 +1235,8 @@ def test_nested_child_evidence_survives_empty_parent_resume(
                     "answer": "ROOT_REQUESTED_DATA",
                     "selected_expert": agent_def.id,
                     "routing_rationale": "session selected expert-pack agent",
-                    "expert_handoffs": [
-                        {
-                            "delegate_to": "data",
-                            "question": "Find bounded waveform data",
-                            "status": "requested",
-                        }
-                    ],
+                    "next_expert": "data",
+                    "next_task": "Find bounded waveform data",
                 },
             )()
         if agent_def.id == "data" and calls.count("data") == 1:
@@ -1249,13 +1247,8 @@ def test_nested_child_evidence_survives_empty_parent_resume(
                     "answer": "DATA_REQUESTED_NDP",
                     "selected_expert": agent_def.id,
                     "routing_rationale": "delegated child expert",
-                    "expert_handoffs": [
-                        {
-                            "delegate_to": "ndp_catalog",
-                            "question": "Stage bounded NDP resource",
-                            "status": "requested",
-                        }
-                    ],
+                    "next_expert": "ndp_catalog",
+                    "next_task": "Stage bounded NDP resource",
                 },
             )()
         if agent_def.id == "ndp_catalog":
@@ -1266,11 +1259,23 @@ def test_nested_child_evidence_survives_empty_parent_resume(
                     "answer": "NDP staging failed: resource exceeds allowed staging limit.",
                     "selected_expert": agent_def.id,
                     "routing_rationale": "delegated child expert",
-                    "expert_handoffs": [],
                 },
             )()
+        # data resumes after ndp_catalog returned the staging-limit blocker. data
+        # surfaces the nested blocker evidence as its own answer and finishes (the
+        # blocker is terminal for data); the staging-limit evidence reaches root.
         if agent_def.id == "data":
-            raise RuntimeError("user agent 'data' returned an empty answer")
+            assert "staging limit" in question
+            return type(
+                "Pred",
+                (),
+                {
+                    "answer": "Data discovery blocked: NDP returned a staging limit blocker.",
+                    "selected_expert": agent_def.id,
+                    "routing_rationale": "data resumed after ndp blocker",
+                    "next_expert": "finish",
+                },
+            )()
         if agent_def.id == "fallback_analysis":
             return type(
                 "Pred",
@@ -1279,7 +1284,21 @@ def test_nested_child_evidence_survives_empty_parent_resume(
                     "answer": "ANALYSIS_USED_FALLBACK",
                     "selected_expert": agent_def.id,
                     "routing_rationale": "continued from data blocker",
-                    "expert_handoffs": [],
+                },
+            )()
+        # root resumes after data returned the staging-limit blocker and routes to
+        # fallback_analysis itself; on the next resume it finalizes.
+        if agent_def.id == "root_review" and calls.count("fallback_analysis") == 0:
+            assert "staging limit" in question
+            return type(
+                "Pred",
+                (),
+                {
+                    "answer": "ROOT_ROUTING_TO_FALLBACK",
+                    "selected_expert": agent_def.id,
+                    "routing_rationale": "route to fallback analysis",
+                    "next_expert": "fallback_analysis",
+                    "next_task": "run fallback analysis",
                 },
             )()
         return type(
@@ -1289,7 +1308,7 @@ def test_nested_child_evidence_survives_empty_parent_resume(
                 "answer": "ROOT_FINAL",
                 "selected_expert": agent_def.id,
                 "routing_rationale": "parent resumed after analysis",
-                "expert_handoffs": [],
+                "next_expert": "finish",
             },
         )()
 
@@ -1368,6 +1387,7 @@ Analyze recovered data.
         "data",
         "ndp_catalog",
         "data",
+        "root_review",
         "fallback_analysis",
         "root_review",
     ]
@@ -1395,8 +1415,14 @@ Analyze recovered data.
         and row.get("stage") == "delegate.completed"
     )
     assert data["status"] == "completed"
+    # The nested ndp_catalog staging-limit evidence survives data's empty resume
+    # and bubbles up as data's completed output.
     assert "staging limit" in data["output_summary"]
-    assert analysis["source"] == "agent_blueprint_continuation_policy"
+    # root routes to fallback_analysis via its typed next_expert after reading
+    # data's bubbled blocker, so the executed handoff is tagged agent_next_expert
+    # (the deterministic agent_blueprint_continuation_policy auto-injection was
+    # removed).
+    assert analysis["source"] == "agent_next_expert"
     assert assistant["parts"][-1]["text"] == "ROOT_FINAL"
 
 
@@ -1723,13 +1749,25 @@ def test_current_expert_continuation_policy_executes_declared_child(
                     "answer": "ROOT_REQUESTED_STRUCTURE",
                     "selected_expert": agent_def.id,
                     "routing_rationale": "session selected expert-pack agent",
-                    "expert_handoffs": [
-                        {
-                            "delegate_to": "structure",
-                            "question": "Inspect CIF",
-                            "status": "requested",
-                        }
-                    ],
+                    "next_expert": "structure",
+                    "next_task": "Inspect CIF",
+                },
+            )()
+        # structure is itself an orchestrator (it has the child `quality`): on its
+        # first run it routes to quality via its own typed next_expert; on resume
+        # (after quality returns) it finishes. The pack continuation policy is
+        # surfaced to the orchestrator, which decides — the deterministic policy
+        # auto-injection was removed.
+        if agent_def.id == "structure" and calls.count("structure") == 1:
+            return type(
+                "Pred",
+                (),
+                {
+                    "answer": "Formula SrTiO3 and occupancy evidence are clean.",
+                    "selected_expert": agent_def.id,
+                    "routing_rationale": "tool-grounded structure answer; review quality next",
+                    "next_expert": "quality",
+                    "next_task": "review quality",
                 },
             )()
         if agent_def.id == "structure":
@@ -1739,8 +1777,8 @@ def test_current_expert_continuation_policy_executes_declared_child(
                 {
                     "answer": "Formula SrTiO3 and occupancy evidence are clean.",
                     "selected_expert": agent_def.id,
-                    "routing_rationale": "tool-grounded structure answer",
-                    "expert_handoffs": [],
+                    "routing_rationale": "structure resumed after quality",
+                    "next_expert": "finish",
                 },
             )()
         if agent_def.id == "quality":
@@ -1751,7 +1789,6 @@ def test_current_expert_continuation_policy_executes_declared_child(
                     "answer": "QUALITY_REVIEW_DONE",
                     "selected_expert": agent_def.id,
                     "routing_rationale": "policy child",
-                    "expert_handoffs": [],
                 },
             )()
         return type(
@@ -1761,7 +1798,7 @@ def test_current_expert_continuation_policy_executes_declared_child(
                 "answer": "ROOT_FINAL",
                 "selected_expert": agent_def.id,
                 "routing_rationale": "parent resumed after policy child",
-                "expert_handoffs": [],
+                "next_expert": "finish",
             },
         )()
 
@@ -1841,7 +1878,10 @@ Review quality.
         for row in handoffs
         if row.get("agent_id") == "quality" and row.get("stage") == "delegate.completed"
     )
-    assert quality["source"] == "agent_blueprint_continuation_policy"
+    # structure routes to quality via its own typed next_expert, so the executed
+    # handoff is tagged agent_next_expert (the deterministic
+    # agent_blueprint_continuation_policy auto-injection was removed).
+    assert quality["source"] == "agent_next_expert"
     assert assistant["parts"][-1]["text"] == "ROOT_FINAL"
 
 
@@ -1870,7 +1910,10 @@ def test_continuation_contract_retries_incomplete_prior_child(
     def fake_prompt_agent(base_agent: Any, agent_def: Any, question: str, session_id: str) -> Any:
         del base_agent, session_id
         calls.append((agent_def.id, question))
+        viz_calls = len([row for row in calls if row[0] == "waveform_visualization"])
+        analysis_calls = len([row for row in calls if row[0] == "waveform_analysis"])
         if agent_def.id == "root_review" and len(calls) == 1:
+            # The orchestrator tries visualization first (premature, before data).
             return type(
                 "Pred",
                 (),
@@ -1878,21 +1921,11 @@ def test_continuation_contract_retries_incomplete_prior_child(
                     "answer": "ROOT_REQUESTED_ANALYSIS_AND_PLOT",
                     "selected_expert": agent_def.id,
                     "routing_rationale": "session selected expert-pack agent",
-                    "expert_handoffs": [
-                        {
-                            "delegate_to": "waveform_visualization",
-                            "question": "Generate a PNG plot of the waveform using computed statistics.",
-                            "status": "requested",
-                        },
-                        {
-                            "delegate_to": "waveform_analysis",
-                            "question": "Recover SAC evidence and trace statistics.",
-                            "status": "requested",
-                        },
-                    ],
+                    "next_expert": "waveform_visualization",
+                    "next_task": "Generate a PNG plot of the waveform using computed statistics.",
                 },
             )()
-        if agent_def.id == "waveform_visualization" and "Returned evidence" not in question:
+        if agent_def.id == "waveform_visualization" and viz_calls == 1:
             return type(
                 "Pred",
                 (),
@@ -1903,7 +1936,20 @@ def test_continuation_contract_retries_incomplete_prior_child(
                     ),
                     "selected_expert": agent_def.id,
                     "routing_rationale": "called before data was available",
-                    "expert_handoffs": [],
+                },
+            )()
+        if agent_def.id == "root_review" and analysis_calls == 0:
+            # visualization reported it is blocked on data; route to analysis to
+            # recover the SAC evidence.
+            return type(
+                "Pred",
+                (),
+                {
+                    "answer": "ROOT_ROUTING_TO_ANALYSIS",
+                    "selected_expert": agent_def.id,
+                    "routing_rationale": "recover SAC evidence first",
+                    "next_expert": "waveform_analysis",
+                    "next_task": "Recover SAC evidence and trace statistics.",
                 },
             )()
         if agent_def.id == "waveform_analysis":
@@ -1918,7 +1964,23 @@ def test_continuation_contract_retries_incomplete_prior_child(
                     ),
                     "selected_expert": agent_def.id,
                     "routing_rationale": "analysis recovered SAC evidence",
-                    "expert_handoffs": [],
+                },
+            )()
+        if agent_def.id == "root_review" and viz_calls == 1:
+            # analysis returned the SAC evidence; the orchestrator re-routes to
+            # visualization to retry it with the recovered SAC path.
+            return type(
+                "Pred",
+                (),
+                {
+                    "answer": "ROOT_RETRYING_VISUALIZATION",
+                    "selected_expert": agent_def.id,
+                    "routing_rationale": "retry visualization with returned SAC evidence",
+                    "next_expert": "waveform_visualization",
+                    "next_task": (
+                        "Returned evidence from waveform_analysis: "
+                        "plot_sac_traces /tmp/waveform.sac"
+                    ),
                 },
             )()
         if agent_def.id == "waveform_visualization":
@@ -1930,7 +1992,6 @@ def test_continuation_contract_retries_incomplete_prior_child(
                     "answer": "PNG_DONE /tmp/waveform.png",
                     "selected_expert": agent_def.id,
                     "routing_rationale": "retried with returned SAC evidence",
-                    "expert_handoffs": [],
                 },
             )()
         return type(
@@ -1940,7 +2001,7 @@ def test_continuation_contract_retries_incomplete_prior_child(
                 "answer": "ROOT_FINAL",
                 "selected_expert": agent_def.id,
                 "routing_rationale": "root finalized",
-                "expert_handoffs": [],
+                "next_expert": "finish",
             },
         )()
 
@@ -2069,13 +2130,8 @@ def test_pack_continuation_policy_executes_declared_child_when_contract_text_mis
                     "answer": "ROOT_REQUESTED_SCHEMA",
                     "selected_expert": agent_def.id,
                     "routing_rationale": "session selected expert-pack agent",
-                    "expert_handoffs": [
-                        {
-                            "delegate_to": "schema_review",
-                            "question": "Inspect the CSV schema",
-                            "status": "requested",
-                        }
-                    ],
+                    "next_expert": "schema_review",
+                    "next_task": "Inspect the CSV schema",
                 },
             )()
         if agent_def.id == "schema_review":
@@ -2086,13 +2142,26 @@ def test_pack_continuation_policy_executes_declared_child_when_contract_text_mis
                     "answer": "Schema source returned resource_too_large before sampling.",
                     "selected_expert": agent_def.id,
                     "routing_rationale": "delegated child expert",
-                    "expert_handoffs": [],
+                },
+            )()
+        # root_review resumes after schema_review's resource_too_large return and
+        # routes to visualization via its typed next_expert (the pack-defined
+        # continuation policy is surfaced to the orchestrator, which decides).
+        if agent_def.id == "root_review" and len([row for row in calls if row[0] == "root_review"]) == 2:
+            assert "resource_too_large" in question
+            return type(
+                "Pred",
+                (),
+                {
+                    "answer": "ROOT_ROUTING_TO_VISUALIZATION",
+                    "selected_expert": agent_def.id,
+                    "routing_rationale": "recover via visualization",
+                    "next_expert": "visualization",
+                    "next_task": "plot_schema_summary data.csv",
                 },
             )()
         if agent_def.id == "visualization":
-            assert "Continuation contract returned by schema_review" in question
-            assert "Required next action: plot_schema_summary data.csv" in question
-            assert "resource_too_large" in question
+            assert "plot_schema_summary data.csv" in question
             return type(
                 "Pred",
                 (),
@@ -2100,7 +2169,6 @@ def test_pack_continuation_policy_executes_declared_child_when_contract_text_mis
                     "answer": "FINAL_ARTIFACT: /tmp/schema.png",
                     "selected_expert": agent_def.id,
                     "routing_rationale": "pack-defined continuation policy",
-                    "expert_handoffs": [],
                 },
             )()
         return type(
@@ -2110,7 +2178,7 @@ def test_pack_continuation_policy_executes_declared_child_when_contract_text_mis
                 "answer": "ROOT_FINAL",
                 "selected_expert": agent_def.id,
                 "routing_rationale": "parent resumed after continuation child",
-                "expert_handoffs": [],
+                "next_expert": "finish",
             },
         )()
 
@@ -2178,6 +2246,7 @@ Produce artifacts.
     assert [row[0] for row in calls] == [
         "root_review",
         "schema_review",
+        "root_review",
         "visualization",
         "root_review",
     ]
@@ -2188,12 +2257,11 @@ Produce artifacts.
         if row.get("agent_id") == "visualization"
         and row.get("stage") == "delegate.completed"
     )
-    assert visualization["source"] == "agent_blueprint_continuation_policy"
-    assert visualization["continuation_contract"]["next_expert"] == "visualization"
-    assert visualization["continuation_contract"]["source"] == "agent_blueprint_continuation_policy"
-    assert visualization["continuation_contract"]["source_policy"] == "schema_too_large_recovery"
-    assert visualization["continuation_contract"]["matched_terms"] == ["resource_too_large"]
-    assert visualization["continuation_contract"]["origin_agent_id"] == "schema_review"
+    # The orchestrator routes to visualization via its typed next_expert, so the
+    # executed handoff is tagged agent_next_expert (the deterministic
+    # agent_blueprint_continuation_policy auto-injection was removed).
+    assert visualization["source"] == "agent_next_expert"
+    assert visualization["output_summary"] == "FINAL_ARTIFACT: /tmp/schema.png"
     assert assistant["parts"][-1]["text"] == "ROOT_FINAL"
 
 
@@ -2230,13 +2298,8 @@ def test_pack_continuation_policy_rejects_non_child_target(
                     "answer": "ROOT_REQUESTED_SCHEMA",
                     "selected_expert": agent_def.id,
                     "routing_rationale": "session selected expert-pack agent",
-                    "expert_handoffs": [
-                        {
-                            "delegate_to": "schema_review",
-                            "question": "Inspect the CSV schema",
-                            "status": "requested",
-                        }
-                    ],
+                    "next_expert": "schema_review",
+                    "next_task": "Inspect the CSV schema",
                 },
             )()
         if agent_def.id == "schema_review":
@@ -2247,11 +2310,12 @@ def test_pack_continuation_policy_rejects_non_child_target(
                     "answer": "Schema source returned resource_too_large before sampling.",
                     "selected_expert": agent_def.id,
                     "routing_rationale": "delegated child expert",
-                    "expert_handoffs": [],
                 },
             )()
         if agent_def.id == "outside_agent":
             raise AssertionError("non-child continuation policy target must not execute")
+        # Parent resume attempts to route to a non-child target; the settle loop
+        # must reject next_expert values outside its declared children and finalize.
         return type(
             "Pred",
             (),
@@ -2259,6 +2323,8 @@ def test_pack_continuation_policy_rejects_non_child_target(
                 "answer": "ROOT_FINAL",
                 "selected_expert": agent_def.id,
                 "routing_rationale": "parent resumed after ignored policy",
+                "next_expert": "outside_agent",
+                "next_task": "should_not_run",
                 "expert_handoffs": [],
             },
         )()
@@ -2359,13 +2425,8 @@ def test_delegated_child_tool_telemetry_stays_on_active_parent_turn(
                     "answer": "ROOT_REQUESTED_SCHEMA",
                     "selected_expert": agent_def.id,
                     "routing_rationale": "session selected expert-pack agent",
-                    "expert_handoffs": [
-                        {
-                            "delegate_to": "schema_review",
-                            "question": "Inspect the CSV schema",
-                            "status": "requested",
-                        }
-                    ],
+                    "next_expert": "schema_review",
+                    "next_task": "Inspect the CSV schema",
                 },
             )()
         if agent_def.id == "schema_review":
@@ -2387,7 +2448,7 @@ def test_delegated_child_tool_telemetry_stays_on_active_parent_turn(
                 "answer": "ROOT_FINAL",
                 "selected_expert": agent_def.id,
                 "routing_rationale": "parent resumed after child expert",
-                "expert_handoffs": [],
+                "next_expert": "finish",
             },
         )()
 

@@ -734,6 +734,10 @@ def test_put_lm_provider_applies_lm_studio_context_length(tmp_path: Path, monkey
             "json": {
                 "model": "qwopus3.5-9b-v3",
                 "context_length": 32768,
+                # concurrency cap (default 1) + flash attention are part of the
+                # load config; see _maybe_load_lm_studio_model in gact/app.py.
+                "parallel": 1,
+                "flash_attention": True,
                 "echo_load_config": True,
             },
             "timeout": 180,
@@ -764,7 +768,9 @@ def test_put_lm_provider_reuses_loaded_lm_studio_model(tmp_path: Path, monkeypat
                         "loaded_instances": [
                             {
                                 "id": "qwopus3.5-9b-v3",
-                                "config": {"context_length": 32768},
+                                # reuse requires BOTH context AND parallel to match
+                                # the load config we'd otherwise send (parallel default 1)
+                                "config": {"context_length": 32768, "parallel": 1},
                             },
                         ],
                     },

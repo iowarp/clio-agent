@@ -86,9 +86,13 @@ def test_resolve_falls_through_to_db_seed() -> None:
 
 def test_resolve_models_dev_takes_priority_over_db(isolated_db: Path) -> None:
     data = json.loads(isolated_db.read_text(encoding="utf-8"))
-    data["gemma-4-31b-it"] = {"context": 4096}  # deliberately wrong DB value
+    # Use the fully-qualified key: the seed already carries
+    # ``google/gemma-4-31b-it`` (262144), whose basename ``gemma-4-31b-it`` is
+    # registered in the lookup index — so a bare key would be shadowed. Overwrite
+    # the qualified entry to plant the deliberately-wrong DB value.
+    data["google/gemma-4-31b-it"] = {"context": 4096}  # deliberately wrong DB value
     isolated_db.write_text(json.dumps(data), encoding="utf-8")
-    assert db_mod.lookup_context("gemma-4-31b-it") == 4096
+    assert db_mod.lookup_context("google/gemma-4-31b-it") == 4096
     window, source = resolve_context("google/gemma-4-31b-it", "openai_compat")
     assert window == 262144  # models.dev wins
     assert source == SOURCE_MODELS_DEV

@@ -9,13 +9,71 @@ so testing it directly is both faithful and deadlock-free.
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
+
+def _settled_history(
+    app, sid: str, *, timeout: float = 5.0, stable_window: float = 0.12, poll: float = 0.02
+):
+    """Return the session's bus history once it has stopped growing.
+
+    The live tool observer publishes ``tool.call.*`` events onto the event loop
+    from the daemon turn thread, so they can land slightly AFTER ``complete_turn``
+    sees the assistant message settle. Reading the history once immediately races
+    that flush. Poll until the history length is stable for a short window (or the
+    timeout fires) so the assertions see the fully-flushed event stream.
+    """
+
+    deadline = time.monotonic() + timeout
+    last_n: int = -1
+    stable_start: float | None = None
+    while time.monotonic() < deadline:
+        history = _settled_history(app, sid)
+        n = len(history)
+        if n > 0 and n == last_n:
+            if stable_start is None:
+                stable_start = time.monotonic()
+            elif time.monotonic() - stable_start >= stable_window:
+                return history
+        else:
+            stable_start = None
+            last_n = n
+        time.sleep(poll)
+    return app.state.bus._history.get(sid, [])
+
 from clio_agent.gact.app import _make_tool_observer, _merge_tool_call_rows, build_app
+
+
+@pytest.fixture(autouse=True)
+def _isolate_tool_runtime_globals():
+    """Reset the process-global tool-runtime hooks around every test.
+
+    Turns run in daemon threads and the tool observer/gate/etc. are process
+    globals that ``build_app(agent=...)`` installs eagerly but that are cleared
+    only on lifespan shutdown. These tests use a bare ``TestClient`` (no ``with``),
+    so without an explicit reset a prior test's lingering daemon turn thread can
+    fire the global observer AFTER the next test has re-pointed it, leaking
+    events into the wrong app's bus and making the live-observer assertions flake
+    nondeterministically. Clearing to None before and after each test makes a
+    late stray call a no-op, so each test's own ``build_app`` install is the
+    only authority during its turn.
+    """
+    from clio_agent.tools import execution  # noqa: PLC0415
+
+    def _clear() -> None:
+        execution.set_global_tool_observer(None)
+        execution.set_global_permission_gate(None)
+        execution.set_global_cancellation_checker(None)
+        execution.set_global_tool_interceptor(None)
+
+    _clear()
+    yield
+    _clear()
 
 
 @dataclass
@@ -128,7 +186,7 @@ def test_posthoc_tools_called_metadata_does_not_emit_lifecycle_events(app_client
     sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
     assistant = complete_turn(client, sid, "analyze")
 
-    history = app.state.bus._history.get(sid, [])
+    history = _settled_history(app, sid)
     started = [e for e in history if e.type == "tool.call.started"]
     completed = [e for e in history if e.type == "tool.call.completed"]
 
@@ -160,7 +218,7 @@ def test_live_observed_tool_call_is_not_reemitted_post_turn(tmp_path: Path) -> N
     sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
     assistant = complete_turn(client, sid, "analyze")
 
-    history = app.state.bus._history.get(sid, [])
+    history = _settled_history(app, sid)
     started = [e for e in history if e.type == "tool.call.started"]
     completed = [e for e in history if e.type == "tool.call.completed"]
 
@@ -186,7 +244,7 @@ def test_live_observer_upgrades_matching_posthoc_trace_metadata(tmp_path: Path) 
     sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
     assistant = complete_turn(client, sid, "analyze")
 
-    history = app.state.bus._history.get(sid, [])
+    history = _settled_history(app, sid)
     started = [e for e in history if e.type == "tool.call.started"]
     completed = [e for e in history if e.type == "tool.call.completed"]
     tools_called = assistant["metadata"]["tools_called"]
@@ -211,7 +269,7 @@ def test_live_observer_records_completed_tool_result_evidence(tmp_path: Path) ->
     sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
     assistant = complete_turn(client, sid, "analyze")
 
-    history = app.state.bus._history.get(sid, [])
+    history = _settled_history(app, sid)
     completed = [e for e in history if e.type == "tool.call.completed"]
     tools_called = assistant["metadata"]["tools_called"]
     tool_results = [
@@ -246,7 +304,7 @@ def test_live_observer_preserves_failed_structured_tool_result_evidence(tmp_path
     sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
     assistant = complete_turn(client, sid, "analyze")
 
-    history = app.state.bus._history.get(sid, [])
+    history = _settled_history(app, sid)
     completed = [e for e in history if e.type == "tool.call.completed"]
     tools_called = assistant["metadata"]["tools_called"]
     tool_results = [
@@ -312,7 +370,7 @@ def test_live_tool_observer_emits_route_context_before_tool_part(tmp_path: Path)
 
     observer("NdpSearchDatasets", {"search_terms": "seismic"}, "started", None)
 
-    history = app.state.bus._history.get(sid, [])
+    history = _settled_history(app, sid)
     added_parts = [
         e.payload["part"]
         for e in history

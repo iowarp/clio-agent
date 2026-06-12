@@ -49,7 +49,11 @@ def test_builtin_shell_tool_still_gates_non_diagnostic_command(tmp_path: Path) -
     app.state.permission_default = "deny"
     gate = _make_permission_gate(app)
 
-    assert gate("shell_bash", {"command": "cat pyproject.toml"}) == "deny"
+    # ``rm`` is a destructive token, so it is NOT a safe read-only diagnostic and
+    # still routes to the normal permission gate. (Read-only inspectors like
+    # ``cat``/``ls`` ARE auto-allowed now — see _SAFE_READONLY_UTILS — so use a
+    # genuinely state-changing command to exercise the gate.)
+    assert gate("shell_bash", {"command": "rm pyproject.toml"}) == "deny"
 
 
 def test_destructive_tool_blocks_until_resolved(tmp_path: Path) -> None:

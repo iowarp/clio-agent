@@ -499,17 +499,22 @@ def test_blueprint_runtime_signature_preserves_fields_and_normalizes_structured_
 
     signature = _blueprint_runtime_signature(agent_def)
 
-    assert list(signature.input_fields) == ["question", "dataset_summary"]
+    # ``system_prompt`` is always carried as an input so the expert's built body
+    # reaches the model (see _blueprint_runtime_signature). Declared inputs follow.
+    assert list(signature.input_fields) == ["system_prompt", "question", "dataset_summary"]
+    # CLEAN CONTRACT: the only auto-injected structured output is ``workflow_state``
+    # (default-enabled); the agent-driven routing fields ``next_expert``/``next_task``
+    # are always appended. The legacy companions (evidence/artifacts/errors/delegation/
+    # expert_handoffs) are no longer injected regardless of structured_outputs.
     assert list(signature.output_fields) == [
         "answer",
         "artifact_plan",
         "workflow_state",
-        "evidence",
-        "errors",
-        "expert_handoffs",
+        "next_expert",
+        "next_task",
     ]
-    assert "artifacts" not in signature.output_fields
-    assert "delegation" not in signature.output_fields
+    for legacy in ("evidence", "artifacts", "errors", "delegation", "expert_handoffs"):
+        assert legacy not in signature.output_fields
 
 
 def test_blueprint_runtime_signature_preserves_declared_field_types() -> None:
@@ -559,11 +564,8 @@ def test_blueprint_runtime_signature_defaults_empty_declarations_to_question_and
     assert list(signature.output_fields) == [
         "answer",
         "workflow_state",
-        "evidence",
-        "artifacts",
-        "errors",
-        "delegation",
-        "expert_handoffs",
+        "next_expert",
+        "next_task",
     ]
 
 
@@ -575,8 +577,9 @@ def test_blueprint_runtime_signature_defaults_empty_declarations_to_question_and
         ({"inputs": [], "outputs": []}, ["system_prompt", "question"], ["answer"]),
         ({"outputs": {"summary": "Short summary"}}, ["system_prompt", "question"], ["summary"]),
         (
+            # declared inputs without system_prompt → it is prepended
             {"inputs": ["question", "file_context"], "outputs": ["answer", "quality_flags"]},
-            ["question", "file_context"],
+            ["system_prompt", "question", "file_context"],
             ["answer", "quality_flags"],
         ),
         (
@@ -584,7 +587,7 @@ def test_blueprint_runtime_signature_defaults_empty_declarations_to_question_and
                 "input": [{"name": "question", "description": "User goal"}],
                 "output": [{"id": "answer", "desc": "Final answer"}],
             },
-            ["question"],
+            ["system_prompt", "question"],
             ["answer"],
         ),
     ],
@@ -612,7 +615,9 @@ def test_blueprint_runtime_signature_field_declaration_matrix(
     )
 
     assert list(signature.input_fields) == expected_inputs
-    assert list(signature.output_fields) == expected_outputs
+    # workflow_state is disabled here; the agent-driven routing fields are always
+    # appended (a leaf with no children still gets next_expert=Literal["finish"]).
+    assert list(signature.output_fields) == [*expected_outputs, "next_expert", "next_task"]
 
 
 @pytest.mark.parametrize(
@@ -630,23 +635,18 @@ def test_blueprint_runtime_signature_field_declaration_matrix(
     ],
 )
 def test_blueprint_structured_output_enablement_matrix(value: Any, enabled: bool) -> None:
+    # ``workflow_state`` is the only auto-injected structured output, and its
+    # ``structured_outputs`` toggle accepts bools and truthy/falsey strings.
     signature = _blueprint_runtime_signature(
         AgentDef(
             id="structured",
             source="expert_pack",
             title="Structured",
-            structured_outputs={
-                "workflow_state": False,
-                "evidence": value,
-                "artifacts": False,
-                "errors": False,
-                "delegation": False,
-                "expert_handoffs": False,
-            },
+            structured_outputs={"workflow_state": value},
         )
     )
 
-    assert ("evidence" in signature.output_fields) is enabled
+    assert ("workflow_state" in signature.output_fields) is enabled
 
 
 def test_blueprint_module_kind_rejects_unsupported_values() -> None:
@@ -3070,16 +3070,16 @@ def test_earthscope_resolver_prompt_uses_typed_station_resource_frontier(
     prompt = prompt_path.read_text(encoding="utf-8")
     normalized_prompt = " ".join(prompt.split())
 
-    assert "`resource_discovery.station_resource_queries[*].preferred_calls`" in prompt
-    # Per-station search now keys on dataset_title (the d6cfcaf docs explicitly
-    # warn AGAINST resource_name for the station id — the NDP filter is unreliable).
-    assert "Use `dataset_title` for the station id" in prompt
-    # The typed per-station preferred_calls are the acquisition frontier; the
-    # resolver must not fall back to free search_terms / city-name searches.
-    assert "those are the acquisition frontier" in normalized_prompt
-    assert "Do not replace them with `search_terms`, city-name searches" in normalized_prompt
-    # An out-of-region / nearest station is not coverage and must not be staged.
-    assert "is NOT coverage and must never be searched or staged" in normalized_prompt
+    # Per-station search keys on dataset_title with the station id (the prompt
+    # explicitly warns AGAINST resource_name for the station id — it 502s).
+    assert "in `dataset_title` (NOT `resource_name`, which 502s)" in normalized_prompt
+    # The resolver works the ranked station list; it must not widen past it into
+    # free-text / city-name searches.
+    assert "don't widen beyond the ranked list" in normalized_prompt
+    # An out-of-region / no-candidate region is not coverage and must not be
+    # searched or staged.
+    assert "Do NOT search or stage anything, do NOT" in normalized_prompt
+    assert "the region has no EarthScope GNSS coverage" in normalized_prompt
 
 
 @pytest.mark.parametrize(
@@ -3103,25 +3103,25 @@ def test_earthscope_data_prompt_requires_staged_metadata_before_station_filter(
     normalized_discovery = " ".join(discovery_prompt.split())
     normalized_station = " ".join(station_prompt.split())
 
-    assert "discovery_metadata_requires_staging" in data_prompt
+    # Discovery must stage the metadata catalog; the parent routes the work back
+    # to discovery when only a guessed filename (not a staged path) is present.
     assert "acquisition.metadata_path" in data_prompt
-    assert "exists: true" in data_prompt
     assert (
         "a guessed filename such as `earthscope_stations.csv` is not a staged path"
         in normalized_data
     )
     # Discovery must stage + clean the metadata catalog before ranking can run:
-    # the cleaned /tmp CSV is the station ranker's required input, and the run is
-    # explicitly incomplete until that staging pipeline finishes.
-    assert "The downstream station ranker needs the CLEANED" in normalized_discovery
+    # the cleaned workspace CSV is the station ranker's required input, and the run
+    # is explicitly incomplete until that staging pipeline finishes.
+    assert "The downstream ranker needs the CLEANED workspace file" in normalized_discovery
     assert "your run is INCOMPLETE until the `shell_bash` clean has run" in normalized_discovery
     # The station ranker filters the staged metadata path, never a guessed name
     # (tool renamed: ndp_filter_earthscope_station_catalog -> geo_filter_points_by_radius).
+    assert "never filter the raw catalog or a guessed filename" in normalized_station
     assert (
-        "Do not call `geo_filter_points_by_radius` on the raw catalog or on a guessed relative filename"
+        "the cleaned catalog at `acquisition.metadata_path` with `geo_filter_points_by_radius`"
         in normalized_station
     )
-    assert "`data_path` = `acquisition.metadata_path`" in normalized_station
 
 
 @pytest.mark.parametrize(
@@ -3979,12 +3979,15 @@ Coordinate genomics work.
 
     context = _runtime_dynamic_agent_children_context(app, root, session_id=sid)
 
-    assert "Declared child experts" in context
-    assert "variant: Variant Expert" in context
+    assert "Your child experts (delegate to these — you may route to no one else):" in context
+    assert "- `variant`: Variant Expert" in context
     assert "memory_search_sessions" in context
-    assert "expert_handoffs JSON array" in context
+    assert "set `next_expert` to the id of the ONE child to run next" in context
+    assert "`next_task`" in context
+    # The child listing moved out of the static system_prompt into the runtime
+    # children context (asserted above); the system_prompt must still have no
+    # unresolved template markers.
     assert "{{" not in root.system_prompt
-    assert "- variant: Variant Expert" in root.system_prompt
 
 
 def test_session_agent_overlay_is_session_local(tmp_path: Path) -> None:
