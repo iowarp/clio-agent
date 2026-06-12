@@ -2341,7 +2341,7 @@ def _filter_repeated_successful_sync_handoffs(
 
 
 def _runtime_dynamic_agent_children_context(
-    app: "FastAPI",
+    app: "FastAPI | None",
     agent_def: "AgentDef",
     *,
     session_id: str = "",
@@ -5021,7 +5021,11 @@ def _parse_field_annotation(spec: Any, *, model_name: str) -> Any:
 
     match = re.fullmatch(r"(?:list|array)\[(.+)\]", low)
     if match:
-        return list[_parse_field_annotation({"type": match.group(1)}, model_name=model_name)]
+        # Runtime type construction from a blueprint string: the inner is a real
+        # type at runtime but is statically Any, which mypy cannot use as a
+        # subscript. This is intentional dynamic typing, not a defect.
+        inner_list = _parse_field_annotation({"type": match.group(1)}, model_name=model_name)
+        return list[inner_list]  # type: ignore[valid-type]
 
     match = re.fullmatch(r"literal\[(.*)\]", text, flags=re.IGNORECASE)
     if match:
@@ -5556,14 +5560,13 @@ def _build_child_expert_tool(base_agent: Any, parent: "AgentDef", child: "AgentD
             "structured": _prediction_structured_metadata(pred),
         }
         if active_completions is not None:
-            active_completions.append(
-                {
-                    "agent_id": child.id,
-                    "output_summary": compact_output,
-                    "workflow_state": workflow_state,
-                    "tools_called": tools_called,
-                }
-            )
+            completion: dict[str, Any] = {
+                "agent_id": child.id,
+                "output_summary": compact_output,
+                "workflow_state": workflow_state,
+                "tools_called": tools_called,
+            }
+            active_completions.append(completion)
         if _blueprint_enforces_child_contract_order(parent) and app_state is not None:
             turn_completed = getattr(app_state, "child_tool_completed_by_turn", None)
             if not isinstance(turn_completed, set):
@@ -7381,7 +7384,7 @@ async def _run_turn_in_background(
             except (_TurnCancelled, _TurnTimedOut):
                 raise
             except Exception as exc:  # noqa: BLE001
-                child_tools_called: list[dict[str, Any]] = []
+                child_tools_called = []
                 if isinstance(ledger, dict):
                     session_rows = ledger.get(sid)
                     if isinstance(session_rows, list) and len(session_rows) > ledger_start:
