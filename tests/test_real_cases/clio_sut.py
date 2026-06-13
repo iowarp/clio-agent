@@ -124,12 +124,22 @@ class ClioAgent(SUT):
             # editing code per run. Explicit per-cell overrides still win.
             env_temp = os.environ.get("CLIO_AGENTTEST_TEMPERATURE", "")
             env_api_base = os.environ.get("CLIO_AGENTTEST_API_BASE", "")
+            api_base = str(
+                self._overrides.get("api_base") or env_api_base or row.get("api_base") or ""
+            )
+            model_id = model or str(row.get("default_model") or "")
+            # CLEAN SLATE before handing off to clio: eject EVERY loaded instance of
+            # this model from LM Studio first, so a prior crashed/duplicate/wrong-config
+            # instance (e.g. a stale parallel=4 load) can never co-reside with the one
+            # clio is about to load and collapse the GPU. This is the TEST's job, not
+            # clio core's — clio's production load path must not aggressively unload
+            # user/other instances; the harness owns its own hygiene. lm_studio only.
+            if kind == "lm_studio":
+                self._eject_lm_studio_model(api_base, model_id)
             payload = {
                 "provider": kind,
-                "api_base": str(
-                    self._overrides.get("api_base") or env_api_base or row.get("api_base") or ""
-                ),
-                "model": model or str(row.get("default_model") or ""),
+                "api_base": api_base,
+                "model": model_id,
                 "api_key": os.environ.get("CLIO_LM_API_KEY", "x"),
                 "temperature": float(
                     self._overrides.get("temperature", float(env_temp) if env_temp else 0.0)
@@ -174,6 +184,63 @@ class ClioAgent(SUT):
             http.put("/v1/providers/lm", json=payload, timeout=180.0).raise_for_status()
             self._wait_lm_ready(http, timeout_s=float(self._overrides.get("bind_timeout_s", 120.0)))
         return self
+
+    def _eject_lm_studio_model(self, api_base: str, model: str) -> list[str]:
+        """Unload EVERY loaded LM Studio instance of ``model`` (clean slate).
+
+        Best-effort, never raises: queries the LM Studio native REST
+        (``GET /api/v1/models``), finds all loaded instances whose key/id matches
+        ``model``, and unloads each (``POST /api/v1/models/unload``). Run BEFORE
+        clio binds (and at teardown) so a stale/duplicate/wrong-config instance
+        (e.g. a crashed parallel=4 load) can never co-reside with the fresh one and
+        OOM the GPU. The harness owns this hygiene; clio core stays untouched.
+        """
+        from urllib.parse import urlsplit, urlunsplit
+
+        if not api_base or not model:
+            return []
+        parts = urlsplit(api_base.rstrip("/"))
+        root = urlunsplit((parts.scheme, parts.netloc, "", "", ""))
+        headers = {"Content-Type": "application/json"}
+        token = (
+            os.environ.get("LM_STUDIO_API_TOKEN", "").strip()
+            or os.environ.get("LM_API_TOKEN", "").strip()
+        )
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        ejected: list[str] = []
+        try:
+            with httpx.Client(timeout=30.0) as h:
+                resp = h.get(f"{root}/api/v1/models", headers=headers)
+                if resp.status_code >= 400:
+                    return []
+                for item in resp.json().get("models") or []:
+                    if not isinstance(item, dict):
+                        continue
+                    key = str(item.get("key") or "")
+                    for inst in item.get("loaded_instances") or []:
+                        if not isinstance(inst, dict):
+                            continue
+                        iid = str(inst.get("id") or "")
+                        if not iid:
+                            continue
+                        # match exact key/id OR the "<model>:<n>" duplicate form
+                        if model in {key, iid} or iid.startswith(f"{model}:") or key == model:
+                            try:
+                                u = h.post(
+                                    f"{root}/api/v1/models/unload",
+                                    headers=headers,
+                                    json={"instance_id": iid},
+                                )
+                                if u.status_code < 400:
+                                    ejected.append(iid)
+                            except Exception:
+                                pass
+        except Exception:
+            return ejected
+        if ejected:
+            print(f"[clean-slate] ejected LM Studio instances of {model!r}: {ejected}")
+        return ejected
 
     def _wait_lm_ready(self, http: httpx.Client, *, timeout_s: float) -> None:
         """LM wiring is async after PUT; await readiness via the server-side
