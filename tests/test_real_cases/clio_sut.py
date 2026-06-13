@@ -18,6 +18,7 @@ the ``agent.run({...})`` input dict.
 from __future__ import annotations
 
 import os
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -307,51 +308,55 @@ class ClioAgent(SUT):
             )
         )
         hard_cap_s = float(timeout_s) if timeout_s and timeout_s > 0 else 0.0
-        start = time.monotonic()
-        last_change = start
-        prev_sig = ""
-        while True:
-            messages = http.get(f"/v1/sessions/{session_id}/messages").json()["messages"]
-            # Child-session activity is progress. This blueprint runs ALL its work in
-            # child expert sessions (geospatial, data->discovery/catalog/resolver,
-            # analysis, visualization, synthesis), so the PARENT session stays silent
-            # for the whole multi-expert run -- watching only the parent turns
-            # ``no_progress_s`` into a flat total-timeout that kills a healthy run.
-            # Fold each child's message count into the signature so any expert's
-            # progress (a tool call, a sub-step, a completion) refreshes the watchdog.
-            child_sig: tuple = ()
+        # Real progress signal = the session SSE feed. Under agent-driven routing
+        # the experts run NESTED inside this one parent turn (no child sessions),
+        # so /messages is static for the whole pipeline -- watching it turns
+        # ``no_progress_s`` into a blind total-timeout that kills a slow-but-
+        # healthy reasoning-model run (the bug). The SSE feed instead emits an
+        # event for every actual step (message parts, agent.reasoning.delta while
+        # a model generates, status changes); only ``server.heartbeat`` is a mere
+        # keep-alive. A background consumer stamps the time of the last REAL event;
+        # the watchdog fires only when genuine work has stalled for no_progress_s.
+        progress = {"t": time.monotonic()}
+        stop_events = threading.Event()
+
+        def _consume_events() -> None:
             try:
-                sessions = http.get("/v1/sessions").json()["sessions"]
-                child_ids = [
-                    r.get("id") for r in sessions if r.get("parent_session_id") == session_id
-                ]
-                counts = []
-                for cid in child_ids:
-                    try:
-                        cm = http.get(f"/v1/sessions/{cid}/messages").json()["messages"]
-                        counts.append((str(cid), len(cm)))
-                    except Exception:
-                        counts.append((str(cid), -1))
-                child_sig = tuple(sorted(counts))
+                with httpx.Client(base_url=self._base_url, timeout=None) as ec:
+                    with ec.stream("GET", f"/v1/sessions/{session_id}/events") as resp:
+                        for line in resp.iter_lines():
+                            if stop_events.is_set():
+                                return
+                            if not line or "server.heartbeat" in line:
+                                continue
+                            # Any non-heartbeat SSE line (event:/data: for a real
+                            # step) counts as genuine progress.
+                            if line.startswith(("event:", "data:")):
+                                progress["t"] = time.monotonic()
             except Exception:
-                child_sig = ()
-            sig = f"{len(messages)}|{messages[0] if messages else ''}|{child_sig}"
-            if sig != prev_sig:
-                prev_sig = sig
-                last_change = time.monotonic()
-            for index, message in enumerate(messages):
-                if message.get("id") == user_id:
-                    if index > 0 and messages[index - 1].get("role") == "assistant":
-                        assistant = messages[index - 1]
-                        if str(assistant.get("stop_reason") or "") or assistant.get("error_info") is not None:
-                            return assistant
-                    break
-            now = time.monotonic()
-            if now - last_change > no_progress_s:
-                raise TimeoutError(f"assistant turn made no progress for {no_progress_s:g}s")
-            if hard_cap_s and now - start > hard_cap_s:
-                raise TimeoutError(f"assistant turn exceeded hard cap {hard_cap_s:g}s")
-            time.sleep(1.0)
+                pass  # SSE is best-effort; the message poll below still terminates
+
+        ev_thread = threading.Thread(target=_consume_events, daemon=True)
+        ev_thread.start()
+        start = time.monotonic()
+        try:
+            while True:
+                messages = http.get(f"/v1/sessions/{session_id}/messages").json()["messages"]
+                for index, message in enumerate(messages):
+                    if message.get("id") == user_id:
+                        if index > 0 and messages[index - 1].get("role") == "assistant":
+                            assistant = messages[index - 1]
+                            if str(assistant.get("stop_reason") or "") or assistant.get("error_info") is not None:
+                                return assistant
+                        break
+                now = time.monotonic()
+                if now - progress["t"] > no_progress_s:
+                    raise TimeoutError(f"assistant turn made no progress for {no_progress_s:g}s")
+                if hard_cap_s and now - start > hard_cap_s:
+                    raise TimeoutError(f"assistant turn exceeded hard cap {hard_cap_s:g}s")
+                time.sleep(1.0)
+        finally:
+            stop_events.set()
 
     # --- normalization ------------------------------------------------------
 
