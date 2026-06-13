@@ -18,7 +18,6 @@ the ``agent.run({...})`` input dict.
 from __future__ import annotations
 
 import os
-import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -302,46 +301,34 @@ class ClioAgent(SUT):
         # Individual hung calls are bounded by per-call timeouts elsewhere. A 15-min
         # run that is producing should complete. ``timeout_s`` (if >0) is an optional
         # hard ceiling, OFF by default; ``no_progress_s`` is the real watchdog.
-        no_progress_s = float(
+        # The SERVER owns no-progress detection. Under agent-driven routing the
+        # experts run NESTED in this one parent turn (no child sessions, and the
+        # nested expert LM calls -- which run in executors -- emit neither a
+        # /messages delta nor a session SSE event the client can see). So the
+        # client has NO visibility into intra-turn progress and MUST NOT run its
+        # own progress watchdog: doing so just kills a slow-but-healthy reasoning
+        # run that the server knows is still generating (server-side
+        # ``CLIO_GACT_TURN_TIMEOUT_S`` IS progress-aware -- it treats an in-flight
+        # LM call as progress and returns a terminal ``provider_timeout`` message
+        # only when the model truly wedges). The client therefore just waits for
+        # the server's terminal message; ``unresponsive_s`` only guards against the
+        # server itself going dark (poll failing), and ``timeout_s`` is an optional
+        # absolute hard ceiling (OFF by default).
+        unresponsive_s = float(
             self._overrides.get(
                 "no_progress_s", float(os.environ.get("CLIO_AGENTTEST_NO_PROGRESS_S") or 900.0)
             )
         )
         hard_cap_s = float(timeout_s) if timeout_s and timeout_s > 0 else 0.0
-        # Real progress signal = the session SSE feed. Under agent-driven routing
-        # the experts run NESTED inside this one parent turn (no child sessions),
-        # so /messages is static for the whole pipeline -- watching it turns
-        # ``no_progress_s`` into a blind total-timeout that kills a slow-but-
-        # healthy reasoning-model run (the bug). The SSE feed instead emits an
-        # event for every actual step (message parts, agent.reasoning.delta while
-        # a model generates, status changes); only ``server.heartbeat`` is a mere
-        # keep-alive. A background consumer stamps the time of the last REAL event;
-        # the watchdog fires only when genuine work has stalled for no_progress_s.
-        progress = {"t": time.monotonic()}
-        stop_events = threading.Event()
-
-        def _consume_events() -> None:
-            try:
-                with httpx.Client(base_url=self._base_url, timeout=None) as ec:
-                    with ec.stream("GET", f"/v1/sessions/{session_id}/events") as resp:
-                        for line in resp.iter_lines():
-                            if stop_events.is_set():
-                                return
-                            if not line or "server.heartbeat" in line:
-                                continue
-                            # Any non-heartbeat SSE line (event:/data: for a real
-                            # step) counts as genuine progress.
-                            if line.startswith(("event:", "data:")):
-                                progress["t"] = time.monotonic()
-            except Exception:
-                pass  # SSE is best-effort; the message poll below still terminates
-
-        ev_thread = threading.Thread(target=_consume_events, daemon=True)
-        ev_thread.start()
         start = time.monotonic()
-        try:
-            while True:
+        last_ok = start
+        while True:
+            try:
                 messages = http.get(f"/v1/sessions/{session_id}/messages").json()["messages"]
+                last_ok = time.monotonic()  # server is alive and answering
+            except Exception:
+                messages = None
+            if messages is not None:
                 for index, message in enumerate(messages):
                     if message.get("id") == user_id:
                         if index > 0 and messages[index - 1].get("role") == "assistant":
@@ -349,14 +336,12 @@ class ClioAgent(SUT):
                             if str(assistant.get("stop_reason") or "") or assistant.get("error_info") is not None:
                                 return assistant
                         break
-                now = time.monotonic()
-                if now - progress["t"] > no_progress_s:
-                    raise TimeoutError(f"assistant turn made no progress for {no_progress_s:g}s")
-                if hard_cap_s and now - start > hard_cap_s:
-                    raise TimeoutError(f"assistant turn exceeded hard cap {hard_cap_s:g}s")
-                time.sleep(1.0)
-        finally:
-            stop_events.set()
+            now = time.monotonic()
+            if now - last_ok > unresponsive_s:
+                raise TimeoutError(f"gact server unresponsive for {unresponsive_s:g}s")
+            if hard_cap_s and now - start > hard_cap_s:
+                raise TimeoutError(f"assistant turn exceeded hard cap {hard_cap_s:g}s")
+            time.sleep(1.0)
 
     # --- normalization ------------------------------------------------------
 
