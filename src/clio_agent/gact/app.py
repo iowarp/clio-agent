@@ -2330,42 +2330,6 @@ def _dynamic_parent_resume_prompt(
     )
 
 
-_DELEGATION_CONTRACT_PREFIXES = (
-    "NEXT_EXPERT:",
-    "NEXT_ACTION:",
-    "REQUIRED_NEXT_EXPERT:",
-    "REQUIRED_NEXT_ACTION:",
-    "DO_NOT_",
-    "FINAL_ARTIFACT:",
-    "ARTIFACT:",
-)
-
-_DELEGATION_CONTRACT_LINE_RE = re.compile(
-    r"^\s*(?:[-*]\s*)?"
-    r"(?P<key>NEXT_EXPERT|NEXT_ACTION|REQUIRED_NEXT_EXPERT|REQUIRED_NEXT_ACTION|"
-    r"DO_NOT_[A-Z0-9_]+|FINAL_ARTIFACT|ARTIFACT)"
-    r"\s*:\s*(?P<value>.+?)\s*$",
-    re.IGNORECASE,
-)
-
-
-def _compact_delegation_contract_lines(output: str, *, limit: int = 16) -> list[str]:
-    """Return explicit pack-defined continuation contracts from child output."""
-
-    contract_lines: list[str] = []
-    for raw_line in output.splitlines():
-        line = " ".join(raw_line.strip().split())
-        if not line:
-            continue
-        upper = line.upper()
-        if any(upper.startswith(prefix) for prefix in _DELEGATION_CONTRACT_PREFIXES):
-            if line not in contract_lines:
-                contract_lines.append(line)
-        if len(contract_lines) >= limit:
-            break
-    return contract_lines
-
-
 def _iter_delegation_return_rows(rows: list[dict[str, Any]]) -> Iterator[dict[str, Any]]:
     """Yield completed delegation rows, including nested child return rows."""
 
@@ -2397,7 +2361,6 @@ def _compact_dynamic_delegation_output(output: str, *, limit: int = 2200) -> str
             return f"{display_text.rstrip()}\n\nRetained typed workflow state:\n{state_blocks[0]}"
         return display_text
     evidence_index = _compact_exact_evidence_index(display_text)
-    contract_lines = _compact_delegation_contract_lines(display_text)
     stat_lines: list[str] = []
     stat_terms = (
         "trace",
@@ -2431,11 +2394,6 @@ def _compact_dynamic_delegation_output(output: str, *, limit: int = 2200) -> str
         retained_blocks.append(evidence_index)
     if state_blocks:
         retained_blocks.append("Retained typed workflow state:\n" + "\n".join(state_blocks))
-    if contract_lines:
-        retained_blocks.append(
-            "Retained delegation continuation contracts:\n"
-            + "\n".join(f"- {line}" for line in contract_lines)
-        )
     if stat_lines:
         retained_blocks.append(
             "Retained numeric/trace evidence:\n" + "\n".join(f"- {line}" for line in stat_lines)
@@ -2910,49 +2868,6 @@ def _tool_agent_empty_answer_fallback(trajectory: Any, *, max_items: int = 6) ->
             preview = f"{preview[:1200].rstrip()}..."
         lines.append(f"- {label}: {preview}")
     return "\n".join(lines)
-
-
-_CONTRADICTORY_MISSING_INPUT_TERMS = (
-    "does not exist",
-    "file does not exist",
-    "file you referenced",
-    "no file",
-    "no input",
-    "not provided",
-    "was not provided",
-    "please provide",
-    "provide the correct path",
-    "unable to perform",
-    "unable to produce",
-)
-
-
-def _tool_agent_contradictory_answer_fallback(
-    answer: str,
-    trajectory: Any,
-    *,
-    max_items: int = 6,
-) -> str:
-    """Preserve successful tool evidence when final prose claims missing input."""
-
-    normalized_answer = answer.casefold()
-    if not any(term in normalized_answer for term in _CONTRADICTORY_MISSING_INPUT_TERMS):
-        return ""
-    retained = _tool_agent_empty_answer_fallback(trajectory, max_items=max_items)
-    if not retained:
-        return ""
-    return "\n".join(
-        (
-            "The tool-backed expert produced final prose that appeared to contradict "
-            "successful tool observations. CLIO retained the tool-grounded evidence "
-            "instead of propagating the missing-input answer.",
-            "",
-            retained,
-            "",
-            "Discarded contradictory final answer:",
-            answer,
-        )
-    )
 
 
 def _merge_inferred_workflow_state(
@@ -5444,14 +5359,6 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                     tools_called = _merge_tool_call_rows(tools_called, blueprint_tool_rows)
                 if not answer:
                     answer = _tool_agent_empty_answer_fallback(getattr(result, "trajectory", None))
-                else:
-                    answer = (
-                        _tool_agent_contradictory_answer_fallback(
-                            answer,
-                            getattr(result, "trajectory", None),
-                        )
-                        or answer
-                    )
             answer = _append_prediction_workflow_state(answer, result)
             handoff_rows = _coerce_expert_handoff_rows(getattr(result, "expert_handoffs", None))
             if not answer and not handoff_rows:
@@ -5627,14 +5534,6 @@ def _build_tool_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> Any
             answer = str(getattr(result, "answer", "") or "").strip()
             if not answer:
                 answer = _tool_agent_empty_answer_fallback(getattr(result, "trajectory", None))
-            else:
-                answer = (
-                    _tool_agent_contradictory_answer_fallback(
-                        answer,
-                        getattr(result, "trajectory", None),
-                    )
-                    or answer
-                )
             if not answer:
                 raise RuntimeError(f"user agent {self.agent_def.id!r} returned an empty answer")
             tools_called = _extract_tools_called_from_trajectory(

@@ -14,30 +14,6 @@ class _Agent:
     id: str
 
 
-def test_compact_delegation_output_preserves_continuation_contracts() -> None:
-    sac_path = "/tmp/clio-seismic-staging/earthscope_IU_ANMO_00_BHZ.sac"
-    output = "\n".join(
-        [
-            "Fresh bounded waveform evidence was recovered.",
-            f"Staged path: {sac_path}",
-            "NEXT_EXPERT: visualization",
-            f"NEXT_ACTION: plot_sac_traces {sac_path}",
-            "DO_NOT_FINALIZE_BEFORE_VISUALIZATION: true",
-            "Trace statistics:",
-            "- npts: 1200",
-            "- delta_s: 0.05",
-            *[f"verbose supporting note {idx}" for idx in range(220)],
-        ]
-    )
-
-    compact = _compact_dynamic_delegation_output(output, limit=900)
-
-    assert "Retained delegation continuation contracts:" in compact
-    assert "NEXT_EXPERT: visualization" in compact
-    assert f"NEXT_ACTION: plot_sac_traces {sac_path}" in compact
-    assert "DO_NOT_FINALIZE_BEFORE_VISUALIZATION: true" in compact
-    assert sac_path in compact
-    assert "npts: 1200" in compact
 
 
 
