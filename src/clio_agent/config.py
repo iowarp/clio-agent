@@ -1050,6 +1050,18 @@ def _lenient_chat_adapter_cls() -> Any:
                 )
                 return fields
 
+    # DSPy's streaming support is gated by an allowlist keyed on the adapter's
+    # CLASS NAME STRING (dspy/streaming/streaming_listener.py: it checks
+    # ``settings.adapter.__class__.__name__ in {"ChatAdapter","XMLAdapter",
+    # "JSONAdapter"}``, NOT isinstance). Our lenient subclass IS a ChatAdapter but
+    # its name ("LenientChatAdapter") isn't in that list, so DSPy raises
+    # "Unsupported adapter for streaming: LenientChatAdapter" the moment a content
+    # chunk streams — which surfaced as nemotron/Sophia's TaskGroup/ExceptionGroup
+    # "live streaming failed before emitting output". Report the name as
+    # "ChatAdapter" so streaming is accepted; isinstance/behavior are unchanged.
+    LenientChatAdapter.__name__ = "ChatAdapter"
+    LenientChatAdapter.__qualname__ = "ChatAdapter"
+
     _LENIENT_CHAT_ADAPTER_CLS = LenientChatAdapter
     return _LENIENT_CHAT_ADAPTER_CLS
 
