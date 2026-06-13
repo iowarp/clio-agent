@@ -549,6 +549,117 @@ def has_explicit_model_override(env: Mapping[str, str] | None = None) -> bool:
     return bool(current_env.get("CLIO_LM_MODEL", "").strip())
 
 
+def _resolve_lm_io_log_path() -> str:
+    """File path for full LM I/O logging, or '' to disable.
+
+    Resolves file -> env (``CLIO_LOG_LM_IO``) -> default '' via the conf layer.
+    When set, EVERY LM call (planner, every expert, chat) appends its rendered
+    input messages and BOTH output channels (content + reasoning_content) plus
+    finish_reason and token usage to the file -- including truncated / parse-
+    failed calls. This is the authoritative way to see what actually went into
+    and came out of a model, with no assumptions.
+    """
+    try:
+        from clio_agent.conf import resolve  # noqa: PLC0415
+
+        return str(resolve("lm.io_log_path", env="CLIO_LOG_LM_IO", default="") or "").strip()
+    except Exception:  # noqa: BLE001 - never let logging config break LM construction
+        return os.environ.get("CLIO_LOG_LM_IO", "").strip()
+
+
+_IO_LOGGING_LM_CLS: Any = None
+
+
+def _io_logging_lm_cls() -> Any:
+    """Build (once) a dspy.LM subclass that logs every call's full I/O."""
+    global _IO_LOGGING_LM_CLS  # noqa: PLW0603
+    if _IO_LOGGING_LM_CLS is not None:
+        return _IO_LOGGING_LM_CLS
+    dspy = _dspy()
+
+    class IOLoggingLM(dspy.LM):  # type: ignore[name-defined,misc]
+        """dspy.LM that appends every call's input + output to a JSONL file.
+
+        Reads ``history[-1]`` after each call (same thread as the call), so it
+        captures the raw ``content`` AND ``reasoning_content`` channels even when
+        the response was truncated or failed downstream parsing -- the one place
+        an expert call's reasoning is reliably visible (expert LMs run in
+        executors the settle path cannot reach). The happy path is unchanged.
+        """
+
+        _clio_io_log_path: str = ""
+
+        def __call__(self, prompt=None, messages=None, **kwargs):  # type: ignore[override]
+            try:
+                return super().__call__(prompt=prompt, messages=messages, **kwargs)
+            finally:
+                self._clio_log_last_call()
+
+        def _clio_log_last_call(self) -> None:
+            import json as _json  # noqa: PLC0415
+
+            try:
+                history = getattr(self, "history", None) or []
+                if not history or not isinstance(history[-1], dict):
+                    return
+                entry = history[-1]
+                response = entry.get("response")
+                content = reasoning = finish = ""
+                choices = getattr(response, "choices", None)
+                if choices is None and isinstance(response, dict):
+                    choices = response.get("choices")
+                if choices:
+                    ch0 = choices[0]
+                    msg = getattr(ch0, "message", None)
+                    if msg is None and isinstance(ch0, dict):
+                        msg = ch0.get("message")
+                    if msg is not None:
+                        content = (
+                            getattr(msg, "content", None)
+                            if not isinstance(msg, dict)
+                            else msg.get("content")
+                        ) or ""
+                        reasoning = (
+                            getattr(msg, "reasoning_content", None)
+                            if not isinstance(msg, dict)
+                            else msg.get("reasoning_content")
+                        ) or ""
+                    finish = (
+                        getattr(ch0, "finish_reason", None)
+                        if not isinstance(ch0, dict)
+                        else ch0.get("finish_reason")
+                    ) or ""
+                record = {
+                    "model": entry.get("model"),
+                    "messages": entry.get("messages") or entry.get("prompt"),
+                    "content": content,
+                    "content_len": len(str(content)),
+                    "reasoning_content": reasoning,
+                    "reasoning_len": len(str(reasoning)),
+                    "finish_reason": finish,
+                    "usage": entry.get("usage"),
+                    "timestamp": entry.get("timestamp"),
+                }
+                with open(self._clio_io_log_path, "a", encoding="utf-8") as fh:
+                    fh.write(_json.dumps(record, default=str) + "\n")
+            except Exception:  # noqa: BLE001 - logging is best-effort, never fail a call
+                pass
+
+    _IO_LOGGING_LM_CLS = IOLoggingLM
+    return _IO_LOGGING_LM_CLS
+
+
+def _construct_lm(*, model: str, **lm_kwargs: Any) -> dspy.LM:
+    """Construct a dspy.LM, swapping in the I/O-logging subclass when enabled."""
+    dspy = _dspy()
+    log_path = _resolve_lm_io_log_path()
+    if not log_path:
+        return dspy.LM(model=model, **lm_kwargs)
+    lm = _io_logging_lm_cls()(model=model, **lm_kwargs)
+    lm._clio_io_log_path = log_path
+    return lm
+
+
 def create_lm(config: LMProviderConfig) -> dspy.LM:
     """Create a dspy.LM instance from provider config.
 
@@ -563,13 +674,12 @@ def create_lm(config: LMProviderConfig) -> dspy.LM:
     Returns:
         Configured dspy.LM instance
     """
-    dspy = _dspy()
     _ensure_provider_registered(config)
     _resolve_lm_studio_model_if_needed(config)
     model_name = _resolve_model_name(config)
 
     extras = _provider_lm_kwargs(config)
-    return dspy.LM(
+    return _construct_lm(
         model=model_name,
         api_base=config.api_base,
         api_key=config.api_key,
@@ -692,12 +802,11 @@ def create_planner_lm(config: LMProviderConfig) -> dspy.LM:
     Returns:
         Configured dspy.LM instance with lower planner temperature
     """
-    dspy = _dspy()
     _ensure_provider_registered(config)
     _resolve_lm_studio_model_if_needed(config)
     model_name = _resolve_model_name(config)
 
-    return dspy.LM(
+    return _construct_lm(
         model=model_name,
         api_base=config.api_base,
         api_key=config.api_key,
