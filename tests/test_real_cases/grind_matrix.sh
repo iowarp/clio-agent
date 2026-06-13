@@ -3,15 +3,24 @@
 # Seattle alt-positive + Chicago negative. LM Studio / single-GPU providers must
 # run serially, so this batches all cells in one process and logs each verdict.
 #
+# PER-CELL ISOLATION (MANAGE_SERVER=1, default): the gact server is killed and
+# restarted CLEAN before every cell, each with its own lm_io log. This is the fix
+# for the cascade failure mode — a provider_timeout leaves `executor_work_may_continue`
+# server-side, which poisons the NEXT bind (config_error) on a shared long-lived
+# server. Restarting per cell means one hung tool / timed-out run can never cascade
+# into the rest of the matrix (the temp sweep already proved per-run restart works).
+# Set MANAGE_SERVER=0 to use a pre-existing long-lived server at GACT_URL instead.
+#
 # Usage:
-#   PROVIDER=lm_studio MODEL=qwopus3.5-9b-v3 CTX=32768 API_BASE=http://172.23.32.1:1234/v1 \
+#   PROVIDER=lm_studio MODEL=qwopus3.5-9b-v3 CTX=65536 API_BASE=http://172.23.32.1:1234/v1 \
 #   N_POS=5 RESULTS=/tmp/grind_qwopus_results.txt bash grind_matrix.sh
 #
 # Env knobs (all optional except PROVIDER/MODEL):
 #   GACT_URL (default http://127.0.0.1:17960), CTX (context_length, 0=unset),
 #   API_BASE (LM Studio base), PARALLEL (default 1), NO_PROGRESS (default 900),
 #   N_POS (San Diego repeats, default 5), RESULTS (verdict log path),
-#   LOGDIR (per-run pytest logs, default /tmp).
+#   LOGDIR (per-run pytest logs, default /tmp), MANAGE_SERVER (default 1),
+#   KIT_PATH (default /home/jcernuda/clio-kit), ALLOWED_ROOTS (server file policy).
 set -u
 cd "$(dirname "$0")/../.." || exit 2
 
@@ -24,16 +33,49 @@ PARALLEL="${PARALLEL:-1}"
 NO_PROGRESS="${NO_PROGRESS:-900}"
 N_POS="${N_POS:-5}"
 LOGDIR="${LOGDIR:-/tmp}"
+MANAGE_SERVER="${MANAGE_SERVER:-1}"
+KIT_PATH="${KIT_PATH:-/home/jcernuda/clio-kit}"
+ALLOWED_ROOTS="${ALLOWED_ROOTS:-/home/jcernuda:/tmp}"
 CELL="$(echo "${PROVIDER}-${MODEL}" | tr '/:' '__')"
 RESULTS="${RESULTS:-/tmp/grind_${CELL}_results.txt}"
+PORT="$(echo "$GACT_URL" | grep -oE ':[0-9]+' | tr -d ':' | head -1)"; PORT="${PORT:-17960}"
+
+kill_server() {
+  local pid
+  pid=$( (ss -ltnp 2>/dev/null | grep ":${PORT}" || true) | grep -oE 'pid=[0-9]+' | head -1 | cut -d= -f2)
+  [ -n "$pid" ] && kill -9 "$pid" 2>/dev/null
+  sleep 3
+}
+
+start_server() {
+  # $1 = per-cell lm_io log path
+  local iolog="$1" srvlog="$2"
+  rm -f "$iolog"
+  CLIO_DEBUG=med CLIO_KIT_PATH="$KIT_PATH" CLIO_ALLOWED_ROOTS="$ALLOWED_ROOTS" \
+    CLIO_LOG_LM_IO="$iolog" uv run clio-agent-gact --host 127.0.0.1 --port "$PORT" \
+    > "$srvlog" 2>&1 &
+  local i
+  for i in $(seq 1 90); do
+    curl -s -m3 "http://127.0.0.1:${PORT}/v1/health" >/dev/null 2>&1 && return 0
+    sleep 2
+  done
+  echo "    -> WARN: server on :${PORT} did not become healthy in 180s" | tee -a "$RESULTS"
+  return 1
+}
 
 run_one() {
   # $1=label $2=region(or empty) $3=expect(positive|negative)
   local label="$1" region="$2" expect="$3"
   local log="${LOGDIR}/grind_${CELL}_${label}.log"
+  local iolog="${LOGDIR}/lm_io_${CELL}_${label}.jsonl"
+  local srvlog="${LOGDIR}/gact_${CELL}_${label}.log"
   local t0 t1 verdict
+  if [ "$MANAGE_SERVER" = 1 ]; then
+    kill_server
+    start_server "$iolog" "$srvlog"
+  fi
   t0=$(date +%s)
-  CLIO_RUN_LIVE=1 CLIO_GACT_URL="$GACT_URL" CLIO_KIT_PATH=/home/jcernuda/clio-kit \
+  CLIO_RUN_LIVE=1 CLIO_GACT_URL="$GACT_URL" CLIO_KIT_PATH="$KIT_PATH" \
     CLIO_AGENTTEST_API_BASE="$API_BASE" CLIO_AGENTTEST_CONTEXT_LENGTH="$CTX" \
     CLIO_AGENTTEST_PARALLEL="$PARALLEL" CLIO_AGENTTEST_NO_PROGRESS_S="$NO_PROGRESS" \
     CLIO_AGENTTEST_REGION="$region" CLIO_AGENTTEST_EXPECT="$expect" \
@@ -47,9 +89,12 @@ run_one() {
   if [ "$verdict" = FAIL ]; then
     echo "    -> $(grep -oE 'AssertionError.*|provider_timeout.*|made no progress.*|config_error.*' "$log" | head -1)" | tee -a "$RESULTS"
   fi
+  # Kill the server after each cell so any lingering executor work (best-effort
+  # cancellation on timeout) can't bleed into the next cell's bind.
+  [ "$MANAGE_SERVER" = 1 ] && kill_server
 }
 
-echo "=== GRIND ${CELL} ctx=${CTX} $(date '+%F %T') ===" | tee -a "$RESULTS"
+echo "=== GRIND ${CELL} ctx=${CTX} manage_server=${MANAGE_SERVER} port=${PORT} $(date '+%F %T') ===" | tee -a "$RESULTS"
 for i in $(seq 1 "$N_POS"); do run_one "sandiego_${i}" "" positive; done
 run_one "seattle_alt" "Seattle" positive
 run_one "chicago_neg" "Chicago" negative
