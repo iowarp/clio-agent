@@ -114,12 +114,6 @@ _ACTIVE_GACT_TRACE_ID: contextvars.ContextVar[str] = contextvars.ContextVar(
     "clio_gact_active_trace_id",
     default="",
 )
-_ACTIVE_CHILD_TOOL_COMPLETIONS: contextvars.ContextVar[list[dict[str, str]] | None] = (
-    contextvars.ContextVar(
-        "clio_gact_active_child_tool_completions",
-        default=None,
-    )
-)
 _ACTIVE_BLUEPRINT_TOOL_ROWS: contextvars.ContextVar[list[dict[str, Any]] | None] = (
     contextvars.ContextVar(
         "clio_gact_active_blueprint_tool_rows",
@@ -2189,103 +2183,6 @@ def _handoff_is_continuation_contract(row: Mapping[str, Any]) -> bool:
     return "continuation" in source
 
 
-def _blueprint_enforces_child_contract_order(agent_def: "AgentDef") -> bool:
-    params = agent_def.parameters if isinstance(agent_def.parameters, Mapping) else {}
-    raw_value = params.get("enforce_child_contract_order")
-    if isinstance(raw_value, bool):
-        return raw_value
-    return str(raw_value or "").strip().lower() in _REPEAT_HANDOFF_TRUE_VALUES
-
-
-def _contract_next_child_ids_for_outputs(
-    parent: "AgentDef",
-    *,
-    completed_outputs: list[str],
-    completed_child_ids: set[str],
-    declared_child_ids: set[str],
-) -> set[str]:
-    rows = _continuation_contract_handoffs(
-        parent,
-        source_text="",
-        answer_text="",
-        completed_outputs=completed_outputs,
-        declared_child_ids=declared_child_ids,
-        completed_child_ids=completed_child_ids,
-    )
-    return {
-        str(row.get("delegate_to") or row.get("agent_id") or "").strip()
-        for row in rows
-        if str(row.get("delegate_to") or row.get("agent_id") or "").strip()
-    }
-
-
-def _tool_derived_contract_evidence_for_prediction(pred: Any) -> list[str]:
-    """Return contract evidence derived from a prediction's typed workflow_state."""
-
-    state: dict[str, Any] = {}
-    _merge_workflow_state_from_value(getattr(pred, "workflow_state", None), state)
-    for row in getattr(pred, "tools_called", None) or []:
-        if isinstance(row, Mapping):
-            row_state = row.get("workflow_state")
-            if isinstance(row_state, Mapping):
-                _merge_workflow_state_mapping(state, row_state)
-    if not state:
-        return []
-    return [_workflow_state_payload(state)]
-
-
-def _agent_has_continuation_contracts(agent_def: "AgentDef") -> bool:
-    params = agent_def.parameters if isinstance(agent_def.parameters, Mapping) else {}
-    return isinstance(params.get("continuation_contracts"), list)
-
-
-def _seed_child_tool_completions_from_resume_prompt(
-    question: str,
-    declared_child_ids: set[str],
-) -> list[dict[str, str]]:
-    """Recover completed child evidence from CLIO's parent-resume prompt."""
-
-    completions: list[dict[str, str]] = []
-    active: dict[str, str] | None = None
-    active_lines: list[str] = []
-    in_results = False
-
-    def flush_active() -> None:
-        nonlocal active, active_lines
-        if active is not None:
-            active["output_summary"] = "\n".join(active_lines).strip()
-            completions.append(active)
-        active = None
-        active_lines = []
-
-    for raw_line in question.splitlines():
-        line = raw_line.strip()
-        if line.startswith("Returned child expert results for parent expert"):
-            in_results = True
-            continue
-        if not in_results:
-            continue
-        if line.startswith("Continue from these results."):
-            break
-        if not line.startswith("- "):
-            if active is not None:
-                active_lines.append(raw_line.rstrip())
-            continue
-        maybe_child_id = line[2:].split(":", 1)[0].strip()
-        if maybe_child_id not in declared_child_ids:
-            if active is not None:
-                active_lines.append(raw_line.rstrip())
-            continue
-        flush_active()
-        if ": status=completed" not in line:
-            continue
-        result = line.split("result=", 1)[1].strip() if "result=" in line else ""
-        active = {"agent_id": maybe_child_id, "output_summary": ""}
-        active_lines = [result] if result else []
-    flush_active()
-    return completions
-
-
 def _completed_child_repeat_blocked(
     row: Mapping[str, Any],
     completed_child_ids: set[str],
@@ -3850,24 +3747,6 @@ def _should_execute_delegated_handoff(row: Mapping[str, Any]) -> bool:
     return status in {"requested", "pending", "delegate", "delegated"}
 
 
-def _contract_match_terms(value: Any) -> list[str]:
-    if value in (None, ""):
-        return []
-    if isinstance(value, str):
-        return [value]
-    if isinstance(value, list | tuple | set):
-        return [str(item) for item in value if str(item).strip()]
-    return [str(value)]
-
-
-def _contract_terms_match(text: str, terms: list[str], match_mode: str) -> bool:
-    if not terms:
-        return True
-    normalized = text.lower()
-    hits = [term.lower() in normalized for term in terms]
-    return all(hits) if match_mode == "all" else any(hits)
-
-
 def _json_objects_from_text(text: str) -> list[Any]:
     """Extract JSON objects embedded in model/tool evidence without trusting prose."""
 
@@ -4076,126 +3955,6 @@ def _state_predicate_hit(actual: Any, expected: Any) -> bool:
             return actual is (expected.strip().lower() in {"1", "true", "yes", "on"})
         return actual is bool(expected)
     return str(actual).strip().lower() == str(expected).strip().lower()
-
-
-def _state_predicates_match(
-    state: Mapping[str, Any],
-    predicates: Mapping[str, Any],
-    match_mode: str,
-) -> bool:
-    if not predicates:
-        return True
-    if (
-        not _workflow_state_has_existing_staged_path(state)
-        and str(predicates.get("acquisition.status") or "").strip().lower() == "staged"
-        and _state_predicate_hit(predicates.get("acquisition.analysis_ready"), True)
-    ):
-        return False
-    hits = [
-        _state_predicate_hit(_state_path_value(state, str(path)), expected)
-        for path, expected in predicates.items()
-    ]
-    return all(hits) if match_mode == "all" else any(hits)
-
-
-def _continuation_contract_handoffs(
-    agent_def: "AgentDef",
-    *,
-    source_text: str,
-    answer_text: str,
-    completed_outputs: list[str],
-    declared_child_ids: set[str],
-    completed_child_ids: set[str],
-) -> list[dict[str, Any]]:
-    params = agent_def.parameters if isinstance(agent_def.parameters, Mapping) else {}
-    contracts = params.get("continuation_contracts")
-    if not isinstance(contracts, list):
-        return []
-    # A parent answer emitted before mandatory continuation has run is not
-    # evidence. Only completed child outputs should drive follow-up contracts or
-    # be forwarded as prior blueprint evidence. The exception is CLIO-appended
-    # typed state inferred from tool observations; that is tool evidence, not
-    # free-form model prose, and ReAct experts need it to continue from their
-    # own tool results.
-    output_text = "\n\n".join(completed_outputs)
-    workflow_state_inputs = [source_text, *completed_outputs]
-    if "CLIO inferred typed tool state" in answer_text:
-        workflow_state_inputs.append(answer_text)
-    workflow_state = _workflow_state_from_outputs(workflow_state_inputs)
-    rows: list[dict[str, Any]] = []
-    for raw_contract in contracts:
-        if not isinstance(raw_contract, Mapping):
-            continue
-        target = str(
-            raw_contract.get("next_expert") or raw_contract.get("delegate_to") or ""
-        ).strip()
-        raw_flags = raw_contract.get("flags")
-        flags: dict[str, Any] = dict(raw_flags) if isinstance(raw_flags, Mapping) else {}
-        if not target or target not in declared_child_ids:
-            continue
-        if target in completed_child_ids and not _handoff_allows_repeat(flags):
-            continue
-        match_mode = str(raw_contract.get("match") or "any").strip().lower()
-        if match_mode not in {"any", "all"}:
-            match_mode = "any"
-        request_terms = _contract_match_terms(raw_contract.get("when_request_contains"))
-        output_terms = _contract_match_terms(raw_contract.get("when_output_contains"))
-        completed_child_terms = _contract_match_terms(
-            raw_contract.get("when_child_completed")
-            or raw_contract.get("when_completed_child")
-            or raw_contract.get("after_child")
-        )
-        if completed_child_terms:
-            child_hits = [term in completed_child_ids for term in completed_child_terms]
-            if match_mode == "all":
-                if not all(child_hits):
-                    continue
-            elif not any(child_hits):
-                continue
-        state_predicates = raw_contract.get("when_state") or raw_contract.get("when_workflow_state")
-        if not isinstance(state_predicates, Mapping):
-            state_predicates = raw_contract.get("when_semantic_state")
-        if not isinstance(state_predicates, Mapping):
-            state_predicates = {}
-        if request_terms and not _contract_terms_match(source_text, request_terms, match_mode):
-            continue
-        if output_terms and not _contract_terms_match(output_text, output_terms, match_mode):
-            continue
-        if state_predicates and not _state_predicates_match(
-            workflow_state, state_predicates, match_mode
-        ):
-            continue
-        action = str(raw_contract.get("next_action") or "").strip()
-        prompt = action or source_text
-        if workflow_state:
-            prompt = (
-                f"{prompt}\n\nPrior structured blueprint state:\n"
-                f"{json.dumps(workflow_state, sort_keys=True, default=str)}"
-            )
-        if output_text.strip():
-            prompt = f"{prompt}\n\nPrior blueprint evidence:\n{output_text.strip()}"
-        source = (
-            "blueprint_typed_state_continuation_contract"
-            if (state_predicates or completed_child_terms) and not (request_terms or output_terms)
-            else "blueprint_continuation_contract"
-        )
-        rows.append(
-            {
-                "delegate_to": target,
-                "question": prompt,
-                "status": "requested",
-                "execute": True,
-                "source": source,
-                "contract_id": str(raw_contract.get("id") or ""),
-                **flags,
-            }
-        )
-        break
-    return rows
-
-
-def _agent_allows_legacy_text_continuation(agent_def: "AgentDef") -> bool:
-    return _user_agent_bool_param(agent_def, "allow_legacy_text_continuation")
 
 
 def _user_agent_param(agent_def: "AgentDef", name: str) -> Any:
@@ -5293,23 +5052,6 @@ def _fallback_answer_from_delegation(handoffs: list[dict[str, Any]]) -> str:
     return ""
 
 
-def _completed_row_contract_evidence(row: Mapping[str, Any]) -> str:
-    """Return compact text plus durable typed state for continuation checks."""
-
-    parts: list[str] = []
-    summary = str(
-        row.get("return_output_summary") or row.get("output_summary") or row.get("summary") or ""
-    ).strip()
-    if summary:
-        parts.append(summary)
-    workflow_state = row.get("workflow_state")
-    if isinstance(workflow_state, Mapping) and workflow_state:
-        parts.append(
-            f"CLIO durable typed workflow state:\n{_workflow_state_payload(workflow_state)}"
-        )
-    return "\n\n".join(parts).strip()
-
-
 def _blueprint_fanout_config(agent_def: "AgentDef") -> dict[str, Any]:
     """Normalize the Agent Blueprint fanout declaration."""
 
@@ -5356,9 +5098,6 @@ def _build_child_expert_tool(base_agent: Any, parent: "AgentDef", child: "AgentD
 
     import dspy  # noqa: PLC0415
 
-    def completion_context_key(session_id: str) -> tuple[str, str]:
-        return (session_id, parent.id)
-
     def delegate_child(question: str) -> str:
         app = _ACTIVE_GACT_APP.get()
         session_id = _ACTIVE_GACT_SESSION_ID.get()
@@ -5366,111 +5105,8 @@ def _build_child_expert_tool(base_agent: Any, parent: "AgentDef", child: "AgentD
             raise RuntimeError("child expert tool requires an active CLIO app/session context")
         if child.parent_id != parent.id:
             raise RuntimeError(f"{child.id!r} is not a declared child of {parent.id!r}")
-        turn_completed_key = (
-            session_id,
-            _active_semantic_turn_id(),
-            parent.id,
-            child.id,
-        )
         app_state = getattr(app, "state", None)
-        turn_completed = getattr(app_state, "child_tool_completed_by_turn", None)
-        active_completions = _ACTIVE_CHILD_TOOL_COMPLETIONS.get()
-        if active_completions is None:
-            completion_contexts = getattr(app_state, "child_tool_completion_contexts", None)
-            if isinstance(completion_contexts, dict):
-                stored = completion_contexts.get(completion_context_key(session_id))
-                if isinstance(stored, list):
-                    active_completions = stored
 
-        def completed_child_payload(output_summary: str) -> str:
-            return json.dumps(
-                {
-                    "agent_id": child.id,
-                    "parent_id": parent.id,
-                    "status": "completed",
-                    "stage": "delegate.completed",
-                    "return_to": parent.id,
-                    "return_payload": "compact_result",
-                    "repeat_ignored": True,
-                    "output_summary": output_summary,
-                },
-                sort_keys=True,
-                default=str,
-            )
-
-        if _blueprint_enforces_child_contract_order(parent):
-            if active_completions is None:
-                active_completions = []
-            completed_child_ids = {
-                row["agent_id"] for row in active_completions if row.get("agent_id")
-            }
-            completed_outputs = [
-                evidence
-                for row in active_completions
-                if (evidence := _completed_row_contract_evidence(row))
-            ]
-            declared_child_ids = _runtime_declared_child_ids(app, parent.id, session_id=session_id)
-            allowed_child_ids = _contract_next_child_ids_for_outputs(
-                parent,
-                completed_outputs=completed_outputs,
-                completed_child_ids=completed_child_ids,
-                declared_child_ids=declared_child_ids,
-            )
-            if (
-                _agent_has_continuation_contracts(parent)
-                and child.id not in allowed_child_ids
-                and child.id not in completed_child_ids
-            ):
-                allowed = ", ".join(sorted(allowed_child_ids))
-                reason = (
-                    f"child expert {child.id!r} is not currently authorized by "
-                    f"typed continuation contracts for parent {parent.id!r}; "
-                    f"allowed next child: {allowed or '<none>'}"
-                )
-                return json.dumps(
-                    {
-                        "agent_id": child.id,
-                        "parent_id": parent.id,
-                        "status": "skipped",
-                        "stage": "delegate.skipped",
-                        "skip_reason": "child_contract_precondition_unmet",
-                        "allowed_next_children": sorted(allowed_child_ids),
-                        "output_summary": reason,
-                    },
-                    sort_keys=True,
-                    default=str,
-                )
-            if isinstance(turn_completed, set) and turn_completed_key in turn_completed:
-                prior_output = ""
-                for row in reversed(active_completions):
-                    if row.get("agent_id") == child.id and row.get("output_summary"):
-                        prior_output = str(row.get("output_summary") or "")
-                        break
-                if not prior_output:
-                    prior_output = (
-                        f"child expert {child.id!r} already completed for parent "
-                        f"{parent.id!r} in this turn"
-                    )
-                if child.id not in allowed_child_ids:
-                    return completed_child_payload(prior_output)
-            if child.id in completed_child_ids:
-                prior_output = ""
-                for row in reversed(active_completions):
-                    if row.get("agent_id") == child.id and row.get("output_summary"):
-                        prior_output = str(row.get("output_summary") or "")
-                        break
-                if child.id not in allowed_child_ids:
-                    return completed_child_payload(prior_output)
-            if (
-                allowed_child_ids
-                and child.id not in allowed_child_ids
-                and _agent_has_continuation_contracts(parent)
-            ):
-                allowed = ", ".join(sorted(allowed_child_ids))
-                raise RuntimeError(
-                    f"child expert {child.id!r} is not the next contract-allowed "
-                    f"child for parent {parent.id!r}; allowed next child: {allowed or '<none>'}"
-                )
         _emit_semantic_event(
             app,
             session_id,
@@ -5559,20 +5195,6 @@ def _build_child_expert_tool(base_agent: Any, parent: "AgentDef", child: "AgentD
             "tools_called": tools_called,
             "structured": _prediction_structured_metadata(pred),
         }
-        if active_completions is not None:
-            completion: dict[str, Any] = {
-                "agent_id": child.id,
-                "output_summary": compact_output,
-                "workflow_state": workflow_state,
-                "tools_called": tools_called,
-            }
-            active_completions.append(completion)
-        if _blueprint_enforces_child_contract_order(parent) and app_state is not None:
-            turn_completed = getattr(app_state, "child_tool_completed_by_turn", None)
-            if not isinstance(turn_completed, set):
-                turn_completed = set()
-                app_state.child_tool_completed_by_turn = turn_completed
-            turn_completed.add(turn_completed_key)
         _emit_semantic_event(
             app,
             session_id,
@@ -5867,28 +5489,6 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
             kwargs = {"question": question}
             if "system_prompt" in self.signature.input_fields:
                 kwargs["system_prompt"] = runtime_system_prompt
-            child_completion_token = None
-            child_completion_context_key: tuple[str, str] | None = None
-            if self.kind == "react" and _blueprint_enforces_child_contract_order(self.agent_def):
-                declared_child_ids: set[str] = set()
-                if active_app is not None:
-                    declared_child_ids = _runtime_declared_child_ids(
-                        active_app,
-                        self.agent_def.id,
-                        session_id=active_session_id,
-                    )
-                seeded_completions = _seed_child_tool_completions_from_resume_prompt(
-                    question,
-                    declared_child_ids,
-                )
-                child_completion_token = _ACTIVE_CHILD_TOOL_COMPLETIONS.set(seeded_completions)
-                if active_app is not None and active_session_id:
-                    contexts = getattr(active_app.state, "child_tool_completion_contexts", None)
-                    if not isinstance(contexts, dict):
-                        contexts = {}
-                        active_app.state.child_tool_completion_contexts = contexts
-                    child_completion_context_key = (active_session_id, self.agent_def.id)
-                    contexts[child_completion_context_key] = seeded_completions
             if trace.HF_ON:
                 trace.hot("FWD-A", "%s child-context+seed-done", getattr(self.agent_def, "id", "?"))
             blueprint_tool_rows: list[dict[str, Any]] = []
@@ -5994,12 +5594,6 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
             finally:
                 if blueprint_tool_rows_token is not None:
                     _ACTIVE_BLUEPRINT_TOOL_ROWS.reset(blueprint_tool_rows_token)
-                if child_completion_context_key is not None and active_app is not None:
-                    contexts = getattr(active_app.state, "child_tool_completion_contexts", None)
-                    if isinstance(contexts, dict):
-                        contexts.pop(child_completion_context_key, None)
-                if child_completion_token is not None:
-                    _ACTIVE_CHILD_TOOL_COMPLETIONS.reset(child_completion_token)
             if cancel_requested is not None and cancel_requested():
                 raise _TurnCancelled(
                     _cancelled_error_info(

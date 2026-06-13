@@ -328,7 +328,7 @@ def validate_agent_blueprint_path(path: Path, *, scope: str = "session") -> dict
         declared_server_names=declared_server_names,
     )
     errors = list(blueprint.validation_errors)
-    warnings: list[str] = _agent_continuation_contract_warnings(rows)
+    warnings: list[str] = []
     for row in rows:
         errors.extend(f"{row.id}: {error}" for error in row.validation_errors)
     for descriptor in mcp_descriptors:
@@ -554,73 +554,6 @@ def _validate_agent_tool_references(
             )
         )
     return out
-
-
-def _validate_agent_continuation_contracts(rows: list[AgentDef]) -> list[AgentDef]:
-    """Require production blueprint continuation to route on typed state.
-
-    Runtime support for text predicates remains for migration/debug fixtures, but
-    marketplace Agent Blueprints should not make prose substring checks their
-    default reliability mechanism.
-    """
-
-    out: list[AgentDef] = []
-    for row in rows:
-        params = row.parameters if isinstance(row.parameters, dict) else {}
-        contracts = params.get("continuation_contracts")
-        errors = list(row.validation_errors)
-        if isinstance(contracts, list):
-            for index, contract in enumerate(contracts):
-                if not isinstance(contract, dict):
-                    continue
-                has_text_predicate = bool(
-                    contract.get("when_request_contains") or contract.get("when_output_contains")
-                )
-                if not has_text_predicate or bool(contract.get("allow_text_routing")):
-                    continue
-                contract_id = str(contract.get("id") or f"#{index + 1}").strip()
-                errors.append(
-                    "continuation contract "
-                    f"{contract_id!r} uses free-text routing predicates; "
-                    "route on when_state/when_workflow_state or explicit child "
-                    "completion instead, or mark temporary/debug use with "
-                    "allow_text_routing: true"
-                )
-        out.append(
-            row.model_copy(
-                update={
-                    "enabled": row.enabled and not errors,
-                    "validation_errors": errors,
-                }
-            )
-        )
-    return out
-
-
-def _agent_continuation_contract_warnings(rows: list[AgentDef]) -> list[str]:
-    """Return validation warnings for explicitly quarantined legacy routing."""
-
-    warnings: list[str] = []
-    for row in rows:
-        params = row.parameters if isinstance(row.parameters, dict) else {}
-        contracts = params.get("continuation_contracts")
-        if not isinstance(contracts, list):
-            continue
-        for index, contract in enumerate(contracts):
-            if not isinstance(contract, dict):
-                continue
-            has_text_predicate = bool(
-                contract.get("when_request_contains") or contract.get("when_output_contains")
-            )
-            if not has_text_predicate or not bool(contract.get("allow_text_routing")):
-                continue
-            contract_id = str(contract.get("id") or f"#{index + 1}").strip()
-            warnings.append(
-                f"{row.id}: continuation contract {contract_id!r} uses "
-                "allow_text_routing; this is legacy migration routing and "
-                "must not be used as a benchmark reliability mechanism"
-            )
-    return warnings
 
 
 def load_mcp_descriptors(
@@ -1068,4 +1001,4 @@ def _load_blueprint_agents(blueprint: AgentBlueprintDefinition) -> list[AgentDef
                 validation_errors=["agent blueprint has no expert Markdown files"],
             )
         )
-    return _validate_agent_continuation_contracts(out)
+    return out
