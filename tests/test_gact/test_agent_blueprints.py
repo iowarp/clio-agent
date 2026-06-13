@@ -38,8 +38,6 @@ from clio_agent.gact.app import (
     _coerce_fanout_child_ids,
     _compact_dynamic_delegation_output,
     _dynamic_agent_tools,
-    _dynamic_answer_has_pending_child_work,
-    _dynamic_answer_is_delegation_placeholder,
     _dynamic_child_expert_tools,
     _extract_tools_called_from_trajectory,
     _failed_child_delegation_output_summary,
@@ -47,7 +45,6 @@ from clio_agent.gact.app import (
     _gact_app_context,
     _gact_turn_timeout_s,
     _ground_fabricated_local_artifact_paths,
-    _latest_delegation_output_summary,
     _latest_final_child_output_summary,
     _merge_tool_call_rows,
     _prediction_structured_metadata,
@@ -1139,65 +1136,12 @@ def test_user_facing_summary_removes_clio_typed_state_blocks() -> None:
     assert "workflow_state" not in visible
 
 
-def test_forwarded_child_prose_is_pending_work_not_final_answer() -> None:
-    answer = (
-        "The request has been forwarded to the analysis child expert. "
-        "No further action is required from the current expert until the child returns."
-    )
-
-    assert _dynamic_answer_has_pending_child_work(answer) is True
-    assert _dynamic_answer_is_delegation_placeholder(answer) is True
 
 
-def test_earlier_response_prose_is_pending_work_not_final_answer() -> None:
-    answer = (
-        "The earlier response already fulfills the full request. No further processing is needed."
-    )
-
-    assert _dynamic_answer_has_pending_child_work(answer) is True
-    assert _dynamic_answer_is_delegation_placeholder(answer) is True
 
 
-def test_will_request_child_prose_is_pending_work_not_final_answer() -> None:
-    answer = (
-        "We will request the data child expert to obtain the required GNSS "
-        "station time-series and stage them as CSV resources for later analysis."
-    )
-
-    assert _dynamic_answer_has_pending_child_work(answer) is True
-    assert _dynamic_answer_is_delegation_placeholder(answer) is True
 
 
-def test_pending_parent_output_can_fall_back_to_latest_nested_child_evidence() -> None:
-    rows = [
-        {
-            "agent_id": "ndp_dataset_discovery",
-            "stage": "delegate.completed",
-            "status": "completed",
-            "output_summary": json.dumps(
-                {
-                    "workflow_state": {
-                        "catalog": {"status": "metadata_found"},
-                        "resource_discovery": {
-                            "status": "search_exhausted",
-                            "searches": ["WXYZ EarthScope GNSS CSV"],
-                        },
-                        "acquisition": {
-                            "status": "metadata_only",
-                            "analysis_ready": False,
-                        },
-                    }
-                }
-            ),
-        }
-    ]
-    parent_output = (
-        "Dataset discovery pending - child expert will confirm presence or absence "
-        "of GNSS stations/time-series."
-    )
-
-    assert _dynamic_answer_has_pending_child_work(parent_output) is True
-    assert "search_exhausted" in _latest_delegation_output_summary(rows)
 
 
 def test_latest_final_child_output_prefers_synthesis_summary() -> None:
@@ -2349,26 +2293,6 @@ def test_fallback_answer_from_delegation_uses_latest_completed_parent_resume() -
     )
 
 
-def test_delegation_placeholder_answers_are_not_final_results() -> None:
-    assert _dynamic_answer_is_delegation_placeholder(
-        "Executing returned delegation continuation contract."
-    )
-    assert _dynamic_answer_is_delegation_placeholder("Proceeding to the visual confirmation step.")
-    assert _dynamic_answer_is_delegation_placeholder(
-        "The next step is to run the outlier analysis."
-    )
-    assert _dynamic_answer_is_delegation_placeholder(
-        "gnss_timeseries_analysis returned compact evidence to main"
-    )
-    assert not _dynamic_answer_is_delegation_placeholder(
-        "The conversion is safe for downstream visualization with skipped caveats."
-    )
-    assert (
-        _fallback_answer_from_delegation(
-            [{"stage": "delegate.completed", "output_summary": "child"}]
-        )
-        == ""
-    )
 
 
 def test_native_domain_expert_modules_are_not_runtime_importable(tmp_path: Path) -> None:

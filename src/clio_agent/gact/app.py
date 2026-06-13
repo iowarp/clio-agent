@@ -2155,88 +2155,6 @@ def _coerce_expert_handoff_rows(value: Any) -> list[dict[str, Any]]:
     return []
 
 
-_REPEAT_HANDOFF_TRUE_VALUES = {"1", "true", "yes", "allow", "allowed", "force", "forced"}
-
-
-def _handoff_allows_repeat(row: Mapping[str, Any]) -> bool:
-    """Return true when a sync handoff explicitly asks to rerun a completed child."""
-
-    for key in ("allow_repeat", "repeat", "force", "retry"):
-        if key not in row:
-            continue
-        raw_value = row.get(key)
-        if isinstance(raw_value, bool):
-            if raw_value:
-                return True
-            continue
-        if str(raw_value or "").strip().lower() in _REPEAT_HANDOFF_TRUE_VALUES:
-            return True
-    return False
-
-
-def _handoff_is_continuation_contract(row: Mapping[str, Any]) -> bool:
-    """Return true when a handoff came from returned child continuation evidence."""
-
-    if isinstance(row.get("continuation_contract"), Mapping):
-        return True
-    source = str(row.get("source") or "").strip().lower()
-    return "continuation" in source
-
-
-def _completed_child_repeat_blocked(
-    row: Mapping[str, Any],
-    completed_child_ids: set[str],
-    completed_child_outputs: Mapping[str, str],
-) -> bool:
-    """Return whether a requested sync child repeat should be skipped."""
-
-    target_id = _delegated_expert_agent_id(row)
-    if not target_id or target_id not in completed_child_ids:
-        return False
-    if _handoff_allows_repeat(row):
-        return False
-    previous_output = str(completed_child_outputs.get(target_id) or "").strip()
-    if _handoff_is_continuation_contract(row) and _dynamic_answer_has_pending_child_work(
-        previous_output
-    ):
-        return False
-    return True
-
-
-def _filter_repeated_successful_sync_handoffs(
-    requested_rows: list[dict[str, Any]],
-    completed_child_ids: set[str],
-    completed_child_outputs: Mapping[str, str] | None = None,
-) -> list[dict[str, Any]]:
-    """Skip repeated child calls already completed in the current sync settlement."""
-
-    completed_child_outputs = completed_child_outputs or {}
-    filtered: list[dict[str, Any]] = []
-    for row in requested_rows:
-        if not _should_execute_delegated_handoff(row):
-            filtered.append(row)
-            continue
-        target_id = _delegated_expert_agent_id(row)
-        if _completed_child_repeat_blocked(
-            row,
-            completed_child_ids,
-            completed_child_outputs,
-        ):
-            filtered.append(
-                {
-                    **row,
-                    "agent_id": target_id,
-                    "status": "skipped",
-                    "stage": "delegate.skipped",
-                    "skip_reason": "completed_sync_child_already_returned",
-                    "delegation_lifecycle": "sync",
-                }
-            )
-            continue
-        filtered.append(row)
-    return filtered
-
-
 def _runtime_dynamic_agent_children_context(
     app: "FastAPI | None",
     agent_def: "AgentDef",
@@ -3365,92 +3283,6 @@ def _extract_tools_called_from_trajectory(
 
     visit(trajectory)
     return rows
-
-
-def _dynamic_answer_has_pending_child_work(answer: str) -> bool:
-    """Return true when a resumed parent answer appears to leave child work pending."""
-
-    text = answer.lower()
-    pending_terms = (
-        "next step",
-        "should next",
-        "delegating",
-        "delegate",
-        "route to",
-        "route through",
-        "forwarded to",
-        "forwarded the request",
-        "will request the",
-        "we will request",
-        "pending",
-        "request the data child",
-        "request the analysis child",
-        "request the visualization child",
-        "request the synthesis child",
-        "until the child returns",
-        "until the child expert returns",
-        "no further action is required",
-        "earlier response already fulfills",
-        "still need",
-        "needs to",
-        "need to",
-        "not produced",
-        "not produce",
-        "not complete",
-        "cannot proceed",
-        "cannot be completed",
-        "cannot complete",
-        "no png",
-        "no plot",
-        "no artifact",
-        "no staged",
-        "no recovered",
-        "unable to",
-        "requires a",
-        "requires an",
-        "blocker",
-        "blocked",
-        "recover",
-        "recovery",
-        "visualization should",
-        "produce a png",
-        "create a png",
-        "create a plot",
-        "plot artifact",
-    )
-    return any(term in text for term in pending_terms)
-
-
-def _dynamic_answer_is_delegation_placeholder(answer: str) -> bool:
-    """Return true when parent prose describes unfinished delegation instead of a result."""
-
-    text = " ".join(answer.casefold().split())
-    if not text:
-        return False
-    placeholder_terms = (
-        "executing returned delegation continuation contract",
-        "executing current expert continuation policy",
-        "delegating to",
-        "i am delegating",
-        "i will delegate",
-        "will request the",
-        "we will request",
-        "request the data child",
-        "request the analysis child",
-        "request the visualization child",
-        "request the synthesis child",
-        "forwarded to",
-        "forwarded the request",
-        "until the child returns",
-        "until the child expert returns",
-        "earlier response already fulfills",
-        "next step",
-        "proceeding to",
-        "returned compact evidence",
-        "routing to",
-        "route to",
-    )
-    return any(term in text for term in placeholder_terms)
 
 
 def _dynamic_agent_runtime_provenance(
@@ -6637,11 +6469,7 @@ async def _run_turn_in_background(
             ]
 
         executed: list[dict[str, Any]] = []
-        for row in _filter_repeated_successful_sync_handoffs(
-            rows,
-            completed_child_ids,
-            completed_child_outputs,
-        ):
+        for row in rows:
             if not _should_execute_delegated_handoff(row):
                 executed.append(row)
                 continue
@@ -6794,8 +6622,8 @@ async def _run_turn_in_background(
                         pred_child,
                         source_text=prompt,
                     )
-                output = str(getattr(pred_child, "answer", "") or "").strip()
-                output = _append_prediction_workflow_state(output, pred_child)
+                raw_answer = str(getattr(pred_child, "answer", "") or "").strip()
+                output = _append_prediction_workflow_state(raw_answer, pred_child)
                 if not nested:
                     child_rows = _coerce_expert_handoff_rows(
                         getattr(pred_child, "expert_handoffs", None)
@@ -6809,18 +6637,19 @@ async def _run_turn_in_background(
                         depth=depth + 1,
                         seen={*seen, target.id},
                     )
-                if _dynamic_answer_is_delegation_placeholder(output):
-                    output = (
+                # STRUCTURAL empty-answer fallback (no prose-keyword scanning): a
+                # tool-driven child can produce real tool evidence but an EMPTY prose
+                # answer. ONLY when the answer is genuinely empty do we surface the
+                # tool-trajectory evidence or the latest nested-child summary -- a
+                # non-empty answer IS the agent's deliverable and is left untouched.
+                if not raw_answer:
+                    fallback = (
                         _tool_agent_empty_answer_fallback(getattr(pred_child, "trajectory", None))
                         or _latest_parent_resumed_output_summary(nested, target.id)
-                        or output
-                    )
-                if nested and _dynamic_answer_has_pending_child_work(output):
-                    output = (
-                        _latest_parent_resumed_output_summary(nested, target.id)
                         or _latest_delegation_output_summary(nested)
-                        or output
                     )
+                    if fallback:
+                        output = _append_prediction_workflow_state(fallback, pred_child)
                 if nested and (
                     _user_agent_bool_param(
                         target,
@@ -7122,14 +6951,6 @@ async def _run_turn_in_background(
                     "status": "requested",
                     "execute": True,
                     "source": "agent_next_expert",
-                    # Agent-driven routing emits ONE deliberate child per round, so a
-                    # re-route to an already-completed child (e.g. "analysis recovered
-                    # the data -> retry visualization") is an intentional decision clio
-                    # must honor, NOT a duplicate to skip. Bypass the completed-child
-                    # repeat filter for agent-emitted routes; the max_rounds clamp bounds
-                    # any genuine loop. (The filter still guards the legacy multi-handoff
-                    # paths.) See agent-driven-routing #38/#39.
-                    "allow_repeat": True,
                 }
             ]
             # Forward the parent's CURRENT accumulated state (the typed workflow_state it

@@ -4,9 +4,7 @@ from dataclasses import dataclass
 
 from clio_agent.gact.app import (
     _compact_dynamic_delegation_output,
-    _dynamic_answer_has_pending_child_work,
     _dynamic_parent_resume_prompt,
-    _filter_repeated_successful_sync_handoffs,
     _latest_parent_resumed_output_summary,
 )
 
@@ -42,13 +40,6 @@ def test_compact_delegation_output_preserves_continuation_contracts() -> None:
     assert "npts: 1200" in compact
 
 
-def test_dynamic_answer_has_pending_child_work_detects_delegation_prose() -> None:
-    assert _dynamic_answer_has_pending_child_work(
-        "Delegating this review through mass_spec and search_readiness."
-    )
-    assert _dynamic_answer_has_pending_child_work(
-        "This should route to the child expert before final synthesis."
-    )
 
 
 def test_parent_resume_prompt_receives_compacted_continuation_contracts() -> None:
@@ -117,41 +108,5 @@ def test_latest_parent_resumed_output_summary_prefers_final_nested_parent_result
     )
 
 
-def test_repeated_successful_sync_handoff_is_skipped_without_retry_intent() -> None:
-    rows = [
-        {
-            "delegate_to": "per_sample_metrics",
-            "question": "Run per-sample metrics for the VCF.",
-            "status": "requested",
-            "execute": True,
-        },
-        {
-            "delegate_to": "manifest_reconciliation",
-            "question": "Reconcile manifest caveats.",
-            "status": "requested",
-            "execute": True,
-        },
-    ]
-
-    filtered = _filter_repeated_successful_sync_handoffs(rows, {"per_sample_metrics"})
-
-    assert filtered[0]["status"] == "skipped"
-    assert filtered[0]["stage"] == "delegate.skipped"
-    assert filtered[0]["skip_reason"] == "completed_sync_child_already_returned"
-    assert filtered[1]["status"] == "requested"
 
 
-def test_repeated_successful_sync_handoff_allows_explicit_retry() -> None:
-    rows = [
-        {
-            "delegate_to": "per_sample_metrics",
-            "question": "Retry per-sample metrics after a corrected file path.",
-            "status": "requested",
-            "retry": True,
-            "execute": True,
-        }
-    ]
-
-    filtered = _filter_repeated_successful_sync_handoffs(rows, {"per_sample_metrics"})
-
-    assert filtered == rows
