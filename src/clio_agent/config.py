@@ -790,6 +790,84 @@ def _coerce_constructor_repr_to_jsonable(text: str) -> Any:
     return conv(node)
 
 
+def _unwrap_self_named_envelope(obj: Any, field_name: str) -> Any:
+    """Unwrap a structured value a model framed under its own field name.
+
+    Reasoning/small models routinely emit a structured output field's value
+    wrapped in a single-key envelope keyed by the field's own name -- e.g. the
+    ``workflow_state`` field returned as ``{"workflow_state": {...}}`` instead of
+    just ``{...}`` (qwopus copies this shape straight from blueprint examples).
+    This is a framing error with no semantic change, so unwrap it. Only triggers
+    when the dict has exactly that one key and a structured (dict/list) inner
+    value -- never alters a genuine single-key payload of a different name.
+    """
+    if (
+        isinstance(obj, dict)
+        and len(obj) == 1
+        and field_name in obj
+        and isinstance(obj[field_name], (dict, list))
+    ):
+        return obj[field_name]
+    return obj
+
+
+def _recover_malformed_structured_value(field_name: str, text: str) -> Any:
+    """Recover a structured field value from a model's malformed text.
+
+    Handles, in order, the format errors local models produce on JSON-object
+    output fields -- all purely structural, no semantic change:
+
+    1. a dropped/extra brace or bracket (``json_repair`` rebalances it),
+    2. a Python constructor-repr (``Model(field=...)``) instead of JSON
+       (``_coerce_constructor_repr_to_jsonable``),
+    3. a self-named envelope (``{"<field>": {...}}``) -- unwrapped.
+
+    Raises if none apply, so the caller can dump + surface the original error.
+    """
+    import json as _json  # noqa: PLC0415
+
+    obj: Any = None
+    try:
+        import json_repair  # noqa: PLC0415
+
+        obj = _json.loads(json_repair.repair_json(text))
+    except Exception:  # noqa: BLE001 - fall through to constructor-repr
+        obj = None
+    if obj is None:
+        obj = _coerce_constructor_repr_to_jsonable(text)
+    return _unwrap_self_named_envelope(obj, field_name)
+
+
+def _dump_unparseable_completion(
+    signature: Any, completion: str, field: str, value: str, error: str
+) -> None:
+    """Best-effort diagnostic dump of a model completion the adapter could not parse.
+
+    Captures the raw ``content`` the strict + lenient parsers both rejected, plus the
+    specific field value that broke, so the model↔adapter format mismatch can be seen
+    directly instead of inferred. Gated by ``CLIO_DUMP_UNPARSEABLE`` (a file path);
+    no-op when unset. Never raises.
+    """
+    path = os.environ.get("CLIO_DUMP_UNPARSEABLE", "").strip()
+    if not path:
+        return
+    try:
+        import json as _json  # noqa: PLC0415
+
+        record = {
+            "signature": getattr(signature, "__name__", str(signature)),
+            "output_fields": list(getattr(signature, "output_fields", {}).keys()),
+            "failing_field": field,
+            "error": error,
+            "failing_value": value,
+            "raw_completion": completion,
+        }
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(_json.dumps(record) + "\n")
+    except Exception:  # noqa: BLE001 - diagnostic only, never fail a turn
+        pass
+
+
 _LENIENT_CHAT_ADAPTER_CLS: Any = None
 
 
@@ -833,9 +911,19 @@ def _lenient_chat_adapter_cls() -> Any:
                         try:
                             fields[k] = parse_value(v, annotation)
                         except Exception:
-                            # Last resort: constructor-repr -> JSON -> parse_value.
-                            coerced = _coerce_constructor_repr_to_jsonable(v)
-                            fields[k] = parse_value(_json.dumps(coerced, default=str), annotation)
+                            # Recover structural malformations local models produce on
+                            # JSON-object fields -- a dropped brace, a constructor-repr,
+                            # or a self-named envelope ({"workflow_state": {...}}). All
+                            # format-only (no semantic change); see
+                            # _recover_malformed_structured_value.
+                            try:
+                                recovered = _recover_malformed_structured_value(str(k), v)
+                            except Exception as recover_exc:
+                                _dump_unparseable_completion(
+                                    signature, completion, str(k), v, str(recover_exc)
+                                )
+                                raise
+                            fields[k] = parse_value(_json.dumps(recovered, default=str), annotation)
                             recovered_fields.append(str(k))
                 if fields.keys() != signature.output_fields.keys():
                     raise  # genuinely missing fields — keep the original error

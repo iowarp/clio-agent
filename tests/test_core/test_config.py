@@ -11,7 +11,58 @@ PROVIDER_DEFAULTS dict derived from clio_agent.providers.registry.
 
 import pytest
 
-from clio_agent.config import select_models_for_agents
+from clio_agent.config import (
+    _recover_malformed_structured_value,
+    _unwrap_self_named_envelope,
+    select_models_for_agents,
+)
+
+
+class TestStructuredValueRecovery:
+    """Recovery of structured output fields from local-model malformations.
+
+    These are format-only repairs (no semantic change) the lenient ChatAdapter
+    applies when the strict parse fails -- the exact failure modes reasoning/
+    small models produce on JSON-object fields.
+    """
+
+    def test_unwrap_self_named_envelope(self):
+        """A value framed under its own field name is unwrapped."""
+        wrapped = {"workflow_state": {"catalog": {"status": "metadata_found"}}}
+        assert _unwrap_self_named_envelope(wrapped, "workflow_state") == {
+            "catalog": {"status": "metadata_found"}
+        }
+
+    def test_unwrap_leaves_genuine_single_key_payload(self):
+        """A single-key dict whose key is NOT the field name is left intact."""
+        payload = {"catalog": {"status": "metadata_found"}}
+        assert _unwrap_self_named_envelope(payload, "workflow_state") == payload
+
+    def test_recover_double_wrapped_with_dropped_brace(self):
+        """The exact qwopus failure: self-named envelope + a missing closing brace."""
+        # 7 '{' vs 6 '}' -- json_repair rebalances, then the envelope is unwrapped.
+        malformed = (
+            '{"workflow_state": {"catalog": {"status": "metadata_found"}, '
+            '"acquisition": {"metadata_path": "/tmp/es_clean.csv", '
+            '"analysis_ready": false}}'
+        )
+        recovered = _recover_malformed_structured_value("workflow_state", malformed)
+        assert set(recovered.keys()) >= {"catalog", "acquisition"}
+        assert recovered["acquisition"]["metadata_path"] == "/tmp/es_clean.csv"
+
+    def test_recover_plain_valid_json_unchanged(self):
+        """A well-formed, non-wrapped value round-trips untouched."""
+        good = '{"catalog": {"status": "no_candidates"}}'
+        assert _recover_malformed_structured_value("workflow_state", good) == {
+            "catalog": {"status": "no_candidates"}
+        }
+
+    def test_recover_constructor_repr(self):
+        """A Python constructor-repr value still coerces (legacy qwopus shape)."""
+        repr_text = "State(catalog=Cat(status='metadata_found'), ready=false)"
+        recovered = _recover_malformed_structured_value("workflow_state", repr_text)
+        assert recovered["catalog"]["status"] == "metadata_found"
+        assert recovered["ready"] is False
 
 
 class TestSelectModels:
