@@ -917,6 +917,14 @@ class LMProviderRequest(BaseModel):
     # backend concurrency at load time. 0 = clio's default (1 for LM Studio,
     # so concurrent pipeline calls queue instead of thrashing the GPU).
     parallel: int = 0
+    # Per-turn no-progress watchdog (seconds): bounds the gap between observable
+    # progress events within one turn, NOT total duration. Exposed here so a
+    # client (e.g. the test harness) can drive it on the SAME channel it
+    # configures the LM, instead of it being a disconnected server-launch env.
+    # 0 = unset → fall back to conf `limits.turn_timeout_s` /
+    # CLIO_GACT_TURN_TIMEOUT_S / 900s default. Slow reasoning models over a long
+    # multi-stage pipeline need ~1800.
+    turn_timeout_s: float = 0.0
     # Codex-only transport selector. Other providers ignore it.
     transport: Optional[Literal["exec", "sdk"]] = None
     # Reasoning/thinking budget. Mapped per-provider:

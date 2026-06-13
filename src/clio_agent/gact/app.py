@@ -722,9 +722,24 @@ class _BlueprintTerminalWorkflowState(BaseException):
         self.result = dict(result)
 
 
-def _gact_turn_timeout_s() -> float:
-    """Return the per-turn timeout in seconds; <=0 disables the watchdog."""
+def _gact_turn_timeout_s(app: Optional["FastAPI"] = None) -> float:
+    """Return the per-turn no-progress timeout in seconds; <=0 disables it.
 
+    Precedence: a RUNTIME value set via ``PUT /v1/providers/lm`` (``turn_timeout_s``,
+    stored on ``app.state.lm_config``) wins, so a client configures this on the
+    SAME channel it configures the LM — no disconnected server-launch env. When
+    unset (0/absent), fall back to the conf pathway (file → ``CLIO_GACT_TURN_TIMEOUT_S``
+    → 900s default).
+    """
+    if app is not None:
+        cfg = getattr(getattr(app, "state", None), "lm_config", None)
+        if isinstance(cfg, Mapping):
+            try:
+                runtime = conf.as_float(cfg.get("turn_timeout_s") or 0)
+            except (ValueError, TypeError):
+                runtime = 0.0
+            if runtime > 0:
+                return runtime
     try:
         return conf.resolve(
             "limits.turn_timeout_s",
@@ -6233,7 +6248,7 @@ async def _run_turn_in_background(
     # stage -> profile -> plot, each emitting bus events) must run to completion;
     # only a turn that goes silent for the whole window is wedged and aborted.
     # See [[clio-no-session-timeout]].
-    turn_progress_timeout_s = _gact_turn_timeout_s()
+    turn_progress_timeout_s = _gact_turn_timeout_s(app)
     # Poll the progress heartbeat on a short cadence so abort latency after the
     # turn truly wedges stays small without busy-waiting. Cap by the window so a
     # tiny configured timeout still polls at least as often.
@@ -21129,6 +21144,7 @@ def build_app(
             "max_tokens": req.max_tokens,
             "context_length": req.context_length,
             "thinking_budget": req.thinking_budget,
+            "turn_timeout_s": req.turn_timeout_s,
             "transport": cfg.codex_transport if req.provider == "codex" else None,
         }
         _clear_session_model_refs(app)

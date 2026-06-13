@@ -924,3 +924,38 @@ def test_put_lm_provider_failed_first_connect_restores_env(tmp_path: Path, monke
     assert {key: os.environ.get(key) for key in before} == before
     assert get_body["configured"] is False
     assert app.state.lm_config is None
+
+
+def test_turn_timeout_precedence_runtime_over_conf() -> None:
+    """The per-turn no-progress timeout is drivable on the LM-config channel.
+
+    A runtime value (set via PUT /v1/providers/lm -> app.state.lm_config) wins so
+    a client (e.g. the test harness) configures it on the SAME channel it
+    configures the LM; absent/zero falls back to conf file -> env -> 900s default.
+    Regression: the server-side watchdog used to be a disconnected launch-only env
+    that silently disagreed with the client's no-progress setting.
+    """
+    import clio_agent.conf as conf
+    from clio_agent.gact.app import _gact_turn_timeout_s
+
+    os.environ.pop("CLIO_GACT_TURN_TIMEOUT_S", None)
+    conf.reload()
+    app = SimpleNamespace(state=SimpleNamespace())
+
+    # No app / no runtime config -> default.
+    assert _gact_turn_timeout_s(None) == 900.0
+    assert _gact_turn_timeout_s(app) == 900.0
+
+    # Runtime value (what the SUT PUT stores) wins.
+    app.state.lm_config = {"turn_timeout_s": 1800.0}
+    assert _gact_turn_timeout_s(app) == 1800.0
+
+    # Runtime 0 -> fall through to env.
+    app.state.lm_config = {"turn_timeout_s": 0}
+    os.environ["CLIO_GACT_TURN_TIMEOUT_S"] = "1234"
+    conf.reload()
+    try:
+        assert _gact_turn_timeout_s(app) == 1234.0
+    finally:
+        os.environ.pop("CLIO_GACT_TURN_TIMEOUT_S", None)
+        conf.reload()

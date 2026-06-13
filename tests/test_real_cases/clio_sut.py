@@ -156,6 +156,18 @@ class ClioAgent(SUT):
                         "parallel", int(os.environ.get("CLIO_AGENTTEST_PARALLEL") or 0)
                     )
                 ),
+                # Drive the SERVER's per-turn no-progress watchdog on the SAME
+                # channel we configure the LM, so it cannot silently disagree with
+                # our client-side watchdog (CLIO_AGENTTEST_NO_PROGRESS_S). Without
+                # this the server defaults to 900s and kills a slow-but-progressing
+                # reasoning-model pipeline even though the SUT waits longer. 0 =
+                # leave the server on its own conf/default.
+                "turn_timeout_s": float(
+                    self._overrides.get(
+                        "turn_timeout_s",
+                        float(os.environ.get("CLIO_AGENTTEST_NO_PROGRESS_S") or 0),
+                    )
+                ),
             }
             if "system_prompt" in self._overrides:
                 payload["system_prompt"] = self._overrides["system_prompt"]
