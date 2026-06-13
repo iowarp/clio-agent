@@ -23,14 +23,23 @@ trace-review job; what review finds gets frozen as new matchers here.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
-
 from agent_test import matcher
 
 CASE_DIR = "benchmark/case02-earthscope-csv-seismic-geography"
 PROMPT = Path(CASE_DIR, "prompt.txt").read_text().strip()
+
+# Grind hooks (no code edits per region): CLIO_AGENTTEST_REGION swaps the default
+# "San Diego" geography for an alternative positive (e.g. "Seattle") or a
+# no-coverage negative (e.g. "Chicago"); CLIO_AGENTTEST_EXPECT=negative flips the
+# acceptance to "the agent honestly found no coverage and did NOT fabricate".
+_REGION = os.environ.get("CLIO_AGENTTEST_REGION", "").strip()
+if _REGION:
+    PROMPT = PROMPT.replace("San Diego", _REGION)
+_EXPECT = os.environ.get("CLIO_AGENTTEST_EXPECT", "positive").strip().lower()
 
 
 def _tool_result(run, name):
@@ -111,6 +120,20 @@ def test_earthscope_gnss_region(agent, tmp_path):
     # Runtime/harness invariants.
     assert run.error is None, run.error
     assert run.extra["blueprint_activated"], run.extra.get("active_agent_blueprint_id")
+
+    if _EXPECT == "negative":
+        # No EarthScope GNSS coverage in the requested region: the agent must
+        # resolve the geography, find no in-region stations, and STOP honestly --
+        # never fabricate a distant station or a plot. So: no station was
+        # staged/profiled/plotted, and no PNG was produced.
+        assert not _staged_station_id(run), (
+            f"no-coverage region staged a station (fabrication): "
+            f"{_staged_station_id(run)}; filter={_tool_result(run, 'geo_filter_points_by_radius')}"
+        )
+        assert not produced_nonempty_png(run), (
+            f"no-coverage region fabricated a PNG: {run.extra.get('artifacts')}"
+        )
+        return
 
     # Route: geography/acquisition -> analysis -> visualization -> synthesis.
     assert run.routed_to("data"), run.steps
