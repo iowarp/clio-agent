@@ -4445,6 +4445,14 @@ def _reextract_over_retained_trajectory(program: Any, hint: str) -> Any:
     """
 
     retained = _ACTIVE_REACT_TRAJECTORY.get()
+    _traj = retained.get("trajectory") if isinstance(retained, dict) else None
+    trace.event(
+        "REEXTRACT",
+        "retained=%s traj_keys=%d input_keys=%s",
+        "none" if retained is None else "present",
+        len(_traj) if isinstance(_traj, dict) else -1,
+        list(retained.get("input_args", {}).keys()) if isinstance(retained, dict) else [],
+    )
     if not retained or not retained.get("trajectory"):
         return None
     extract = getattr(program, "extract", None)
@@ -5639,13 +5647,11 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                             # not hiding -- the model corrects its own drop.
                             if _repair_attempt == 0 and _is_repairable_typed_output_error(exc):
                                 hint = _typed_output_repair_hint(exc)
-                                # Preferred for react experts: re-run ONLY the
-                                # final extract over the retained trajectory
-                                # (S4a) -- the tool loop already gathered the
-                                # evidence; the failure is purely typed-output
-                                # format. Avoids the expensive (and sometimes
-                                # never-ending) full agentic re-run.
                                 if self.kind == "react":
+                                    # Re-run ONLY the final extract over the
+                                    # retained trajectory (S4a): the tool loop
+                                    # already gathered the evidence; the failure
+                                    # is purely the typed-output format.
                                     reextracted = _reextract_over_retained_trajectory(
                                         self.program, hint
                                     )
@@ -5658,17 +5664,30 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                                         )
                                         result = reextracted
                                         break
-                                # Fallback (predict/CoT, or no retained
-                                # trajectory, or re-extract failed): the bounded
-                                # question-append full re-ask.
-                                _repair_hint = hint
-                                trace.event(
-                                    "SCHEMA-REPAIR",
-                                    "%s :: re-asking once :: %s",
-                                    getattr(self.agent_def, "id", "?"),
-                                    str(exc).replace("\n", " ")[:160],
-                                )
-                                continue
+                                    # No usable trajectory -> do NOT full-re-ask a
+                                    # react expert: restarting the whole tool loop
+                                    # re-bloats the prompt and can stall the
+                                    # provider into a no-progress wedge (the qwopus
+                                    # MODE-A failure). Fall through to recover the
+                                    # partial intent / surface the error so the
+                                    # turn settles fast instead of hanging.
+                                    trace.event(
+                                        "SCHEMA-REPAIR",
+                                        "%s :: re-extract unavailable; settling (no full re-ask) :: %s",
+                                        getattr(self.agent_def, "id", "?"),
+                                        str(exc).replace("\n", " ")[:160],
+                                    )
+                                else:
+                                    # predict/CoT: a single cheap re-ask is fine
+                                    # (no tool loop to restart).
+                                    _repair_hint = hint
+                                    trace.event(
+                                        "SCHEMA-REPAIR",
+                                        "%s :: re-asking once :: %s",
+                                        getattr(self.agent_def, "id", "?"),
+                                        str(exc).replace("\n", " ")[:160],
+                                    )
+                                    continue
                             recovered = (
                                 _recover_blueprint_react_tool_intent(
                                     tools=self.tools,
