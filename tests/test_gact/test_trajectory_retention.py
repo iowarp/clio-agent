@@ -102,3 +102,62 @@ def test_prediction_summary_omits_absent_trajectory_and_reasoning():
     # Lean payload for routing/predict: no empty trajectory/reasoning keys.
     assert "trajectory" not in summary
     assert "reasoning" not in summary
+
+
+class _FakeProgram:
+    """Stands in for a dspy.ReAct: only extract + _format_trajectory used."""
+
+    def __init__(self, *, fail=False):
+        self.extract_calls = []
+        self._fail = fail
+
+    def _format_trajectory(self, trajectory):
+        return f"FMT:{sorted(trajectory)}"
+
+    def extract(self, **kwargs):
+        self.extract_calls.append(kwargs)
+        if self._fail:
+            raise ValueError("still missing required field: station_ids")
+        return _AttrDict(answer="fixed", station_ids=["SIO5"])
+
+
+def test_reextract_reruns_only_extract_over_retained_trajectory():
+    prog = _FakeProgram()
+    token = gact_app._ACTIVE_REACT_TRAJECTORY.set(
+        {"trajectory": {"tool_name_0": "shell_bash"}, "input_args": {"question": "find stations"}}
+    )
+    try:
+        result = gact_app._reextract_over_retained_trajectory(prog, "FILL station_ids")
+        assert result is not None
+        assert result.answer == "fixed"
+        # extract ran exactly once (NOT the whole tool loop)
+        assert len(prog.extract_calls) == 1
+        call = prog.extract_calls[0]
+        assert "FILL station_ids" in call["question"]  # hint steered the re-extract
+        assert call["trajectory"].startswith("FMT:")  # retained trajectory formatted + passed
+        # original trajectory threaded back into the Prediction
+        assert result.trajectory == {"tool_name_0": "shell_bash"}
+    finally:
+        gact_app._ACTIVE_REACT_TRAJECTORY.reset(token)
+
+
+def test_reextract_returns_none_without_retained_trajectory():
+    prog = _FakeProgram()
+    token = gact_app._ACTIVE_REACT_TRAJECTORY.set(None)
+    try:
+        assert gact_app._reextract_over_retained_trajectory(prog, "hint") is None
+        assert prog.extract_calls == []
+    finally:
+        gact_app._ACTIVE_REACT_TRAJECTORY.reset(token)
+
+
+def test_reextract_returns_none_when_extract_fails():
+    prog = _FakeProgram(fail=True)
+    token = gact_app._ACTIVE_REACT_TRAJECTORY.set(
+        {"trajectory": {"tool_name_0": "x"}, "input_args": {"question": "q"}}
+    )
+    try:
+        # extract raises again -> None, so the caller falls back to full re-ask.
+        assert gact_app._reextract_over_retained_trajectory(prog, "hint") is None
+    finally:
+        gact_app._ACTIVE_REACT_TRAJECTORY.reset(token)

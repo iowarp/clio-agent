@@ -4429,6 +4429,44 @@ def _typed_output_repair_hint(exc: BaseException) -> str:
     )
 
 
+def _reextract_over_retained_trajectory(program: Any, hint: str) -> Any:
+    """Re-run ONLY the dspy.ReAct extract over the RETAINED trajectory.
+
+    The qwopus failure mode is a model that completes its tool loop but drops a
+    required output field at the final extract. Re-running the WHOLE program
+    repeats the (already-successful, expensive) tool loop and can loop forever.
+    Instead, re-run just ``program.extract`` over the trajectory _RetainingReAct
+    stashed before the failed extract (S4a), steering it with the repair hint.
+    The evidence is reused; only the typed-output format is re-emitted.
+
+    Returns a dspy.Prediction on success, or None if there is no retained
+    trajectory / the program is not a ReAct / the re-extract itself fails (the
+    caller then falls back to the bounded full re-ask).
+    """
+
+    retained = _ACTIVE_REACT_TRAJECTORY.get()
+    if not retained or not retained.get("trajectory"):
+        return None
+    extract = getattr(program, "extract", None)
+    format_trajectory = getattr(program, "_format_trajectory", None)
+    if extract is None or not callable(format_trajectory):
+        return None
+
+    import dspy  # noqa: PLC0415
+
+    trajectory = retained["trajectory"]
+    input_args = dict(retained.get("input_args") or {})
+    # Steer the re-extract with the repair hint via the question input field.
+    if input_args.get("question"):
+        input_args["question"] = f"{input_args['question']}\n\n{hint}"
+    try:
+        formatted = format_trajectory(trajectory)
+        extract_pred = extract(**input_args, trajectory=formatted)
+    except Exception:  # noqa: BLE001 - re-extract is best-effort; fall back to full re-ask
+        return None
+    return dspy.Prediction(trajectory=trajectory, **extract_pred)
+
+
 def _recover_blueprint_react_tool_intent(
     *,
     tools: Iterable[Any],
@@ -5600,7 +5638,30 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                             # ValidationError, not just missing handoffs. Not a default,
                             # not hiding -- the model corrects its own drop.
                             if _repair_attempt == 0 and _is_repairable_typed_output_error(exc):
-                                _repair_hint = _typed_output_repair_hint(exc)
+                                hint = _typed_output_repair_hint(exc)
+                                # Preferred for react experts: re-run ONLY the
+                                # final extract over the retained trajectory
+                                # (S4a) -- the tool loop already gathered the
+                                # evidence; the failure is purely typed-output
+                                # format. Avoids the expensive (and sometimes
+                                # never-ending) full agentic re-run.
+                                if self.kind == "react":
+                                    reextracted = _reextract_over_retained_trajectory(
+                                        self.program, hint
+                                    )
+                                    if reextracted is not None:
+                                        trace.event(
+                                            "SCHEMA-REPAIR",
+                                            "%s :: re-extract-only :: %s",
+                                            getattr(self.agent_def, "id", "?"),
+                                            str(exc).replace("\n", " ")[:160],
+                                        )
+                                        result = reextracted
+                                        break
+                                # Fallback (predict/CoT, or no retained
+                                # trajectory, or re-extract failed): the bounded
+                                # question-append full re-ask.
+                                _repair_hint = hint
                                 trace.event(
                                     "SCHEMA-REPAIR",
                                     "%s :: re-asking once :: %s",
