@@ -292,8 +292,10 @@ def build_trace_backend(default_root: Path) -> SemanticTraceBackend:
 
     ``CLIO_SEMANTIC_TRACE_BACKEND`` accepts ``file``, ``factory``, or ``none``.
     ``CLIO_SEMANTIC_TRACE_PATH`` may point at either a JSONL file or a
-    directory. Durable tracing is opt-in; live semantic SSE remains on
-    by default.
+    directory. The durable file backend is now the DEFAULT: the canonical trace
+    is the substrate the unified memory underbelly is built on (ARC live view,
+    re-extract repair, research replay). Set the backend to ``none`` to opt out.
+    Live semantic SSE is independent and always on.
     """
 
     from clio_agent import conf
@@ -302,7 +304,7 @@ def build_trace_backend(default_root: Path) -> SemanticTraceBackend:
         conf.resolve(
             "trace.backend",
             env="CLIO_SEMANTIC_TRACE_BACKEND",
-            default="none",
+            default="file",
             cast=conf.as_str,
         )
         .strip()
