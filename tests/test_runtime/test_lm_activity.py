@@ -128,26 +128,28 @@ def test_streamed_call_drains_chunks_and_returns_result(monkeypatch):
     activity: list[int] = []
     monkeypatch.setattr(lm_activity, "note_lm_activity", lambda: activity.append(1))
 
-    async def fake_aforward(self, prompt=None, messages=None, **kwargs):  # noqa: ANN001
+    # Patch acall (the @with_callbacks-wrapped streaming entry the driver calls):
+    # stream N chunks via send_stream, return the assembled outputs.
+    async def fake_acall(self, prompt=None, messages=None, **kwargs):  # noqa: ANN001
         send = dspy.settings.send_stream
         for i in range(4):
             await send.send(f"chunk{i}")
-        return "ASSEMBLED-RESULT"
+        return ["ASSEMBLED-RESULT"]
 
-    monkeypatch.setattr(type(lm), "aforward", fake_aforward, raising=False)
+    monkeypatch.setattr(type(lm), "acall", fake_acall, raising=False)
 
     out = lm._clio_streamed_call(messages=[{"role": "user", "content": "hi"}])
-    assert out == "ASSEMBLED-RESULT"
+    assert out == ["ASSEMBLED-RESULT"]
     assert len(activity) == 4  # one note_lm_activity per streamed chunk
 
 
 def test_streamed_call_propagates_lm_error(monkeypatch):
     lm = cfg._io_logging_lm_cls()(model="openai/dummy")
 
-    async def boom_aforward(self, prompt=None, messages=None, **kwargs):  # noqa: ANN001
+    async def boom_acall(self, prompt=None, messages=None, **kwargs):  # noqa: ANN001
         raise ValueError("provider exploded")
 
-    monkeypatch.setattr(type(lm), "aforward", boom_aforward, raising=False)
+    monkeypatch.setattr(type(lm), "acall", boom_acall, raising=False)
 
     # A real LM error must propagate (the repair loop owns it), NOT be swallowed
     # into a silent fallback that would double-call the provider.

@@ -639,20 +639,26 @@ def _io_logging_lm_cls() -> Any:
         def _clio_streamed_call(self, prompt=None, messages=None, **kwargs):  # noqa: ANN001
             """Run the call STREAMED so each chunk refreshes the watchdog.
 
-            Producer awaits ``self.aforward`` with ``dspy.settings.send_stream``
+            Producer awaits ``self.acall`` with ``dspy.settings.send_stream``
             set; a consumer drains-and-discards each chunk, calling
-            ``note_lm_activity`` per token. ``aforward`` assembles the authoritative
-            result (via litellm ``stream_chunk_builder``) and updates ``self.history``
-            -- so the shared ``_clio_log_last_call`` finally still emits ``lm.call``.
+            ``note_lm_activity`` per token. ``acall`` (NOT ``aforward``) is the
+            ``@with_callbacks``-wrapped entry: it fires ``on_lm_start``/``on_lm_end``
+            -> ``note_lm_start``/``note_lm_end`` (so the call registers as in-flight
+            for the watchdog) + the ``lm.call.started`` marker, and it returns the
+            SAME processed outputs as the blocking ``__call__`` (``aforward`` +
+            ``_process_lm_response``). The inner ``aforward`` assembles the
+            authoritative result (litellm ``stream_chunk_builder``) and updates
+            ``self.history`` -- so the shared ``_clio_log_last_call`` finally still
+            emits ``lm.call``.
 
             Real LM errors (raised inside ``aforward``) propagate so the repair loop
             handles them exactly as on the blocking path. Streaming-PLUMBING failures
             (anyio/dspy unavailable) raise ``_StreamingPlumbingError`` so ``__call__``
             falls back to the blocking call -- without a double LM round-trip.
 
-            Version-fragile (public surfaces): dspy.LM.aforward + dspy.settings
-            send_stream + litellm streaming; anyio memory object streams. Gated
-            default-on with the CLIO_LM_TOKEN_LIVENESS kill switch.
+            Version-fragile (public surfaces): dspy.BaseLM.acall (@with_callbacks)
+            + dspy.settings send_stream + litellm streaming; anyio memory object
+            streams. Gated default-on with the CLIO_LM_TOKEN_LIVENESS kill switch.
             """
             import asyncio as _asyncio  # noqa: PLC0415
 
@@ -674,7 +680,7 @@ def _io_logging_lm_cls() -> Any:
                 async def _produce() -> None:
                     try:
                         with dspy.settings.context(send_stream=send):
-                            holder["result"] = await self.aforward(
+                            holder["result"] = await self.acall(
                                 prompt=prompt, messages=messages, **kwargs
                             )
                     except BaseException as exc:  # noqa: BLE001 - re-raised post-drain
