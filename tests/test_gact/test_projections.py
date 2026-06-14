@@ -97,3 +97,44 @@ def test_trace_backend_file_opt_in(tmp_path, monkeypatch):
     backend = build_trace_backend(tmp_path / "semantic_traces")
     assert backend.name == "file"
     backend.close()
+
+
+def test_file_backend_dotted_directory_writes_per_session(tmp_path):
+    # Regression: a DIRECTORY path containing dots (e.g. a model-named grind dir
+    # "trace_..._qwopus3.5-9b-v3_sandiego") must still be treated as a directory of
+    # per-session files. Plain Path.suffix truthiness misfired here -> the writer
+    # opened a directory as a file and silently dropped every event (empty trace).
+    dotted_dir = tmp_path / "trace_lm_studio-qwopus3.5-9b-v3_sandiego_5"
+    dotted_dir.mkdir()
+    backend = se.FileSemanticTraceBackend(dotted_dir)
+    event = SemanticEvent(
+        event_type="probe.test",
+        session_id="sessABC",
+        trace_id="t",
+        turn_id="tu",
+        actor={},
+        payload={"x": 1},
+    )
+    backend.emit(event)
+    backend.flush()
+    written = list(dotted_dir.glob("*.semantic.jsonl"))
+    assert written == [dotted_dir / "sessABC.semantic.jsonl"], (
+        f"expected per-session file in the dotted directory, got {written}"
+    )
+    assert "probe.test" in written[0].read_text()
+
+
+def test_file_backend_explicit_jsonl_path_is_single_file(tmp_path):
+    target = tmp_path / "all.jsonl"
+    backend = se.FileSemanticTraceBackend(target)
+    event = SemanticEvent(
+        event_type="probe.test",
+        session_id="s1",
+        trace_id="t",
+        turn_id="tu",
+        actor={},
+        payload={},
+    )
+    backend.emit(event)
+    backend.flush()
+    assert target.exists() and "probe.test" in target.read_text()

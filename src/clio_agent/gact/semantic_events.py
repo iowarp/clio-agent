@@ -325,8 +325,16 @@ class FileSemanticTraceBackend:
         self.path = path
         _ensure_trace_writer()
 
+    # A configured path is a single JSONL file ONLY when it carries a recognised
+    # trace-file extension; otherwise it is a directory of per-session files.
+    # Plain ``Path.suffix`` truthiness misfires on directory paths that contain
+    # dots -- e.g. a model-named grind dir ".../trace_..._qwopus3.5-9b-v3_sandiego"
+    # whose ``.suffix`` is ".5-9b-v3_sandiego" -- which made the writer try to open
+    # a directory as a file and silently drop every event (empty trace).
+    _FILE_SUFFIXES = frozenset({".jsonl", ".json", ".ndjson", ".log"})
+
     def _path_for(self, event: SemanticEvent) -> Path:
-        if self.path.suffix:
+        if self.path.suffix.lower() in self._FILE_SUFFIXES:
             return self.path
         return self.path / f"{event.session_id}.semantic.jsonl"
 
