@@ -33,7 +33,7 @@ def _settled_history(
     last_n: int = -1
     stable_start: float | None = None
     while time.monotonic() < deadline:
-        history = _settled_history(app, sid)
+        history = app.state.bus._history.get(sid, [])
         n = len(history)
         if n > 0 and n == last_n:
             if stable_start is None:
