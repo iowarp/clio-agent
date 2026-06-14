@@ -45,6 +45,7 @@ from clio_agent.arc.schema import (
     encode_procedural_memory,
     encode_variant_record,
 )
+from clio_agent.arc.storage import ARCStore, LocalFSStore
 
 
 class ARCMemory:
@@ -66,33 +67,29 @@ class ARCMemory:
         >>> print(f"Hit rate: {stats['hit_rate']:.2%}")
     """
 
-    def __init__(self, data_dir: str = ".clio_agent/arc", cache_capacity: int = 1000):
+    def __init__(
+        self,
+        data_dir: str = ".clio_agent/arc",
+        cache_capacity: int = 1000,
+        store: "ARCStore | None" = None,
+    ):
         """Initialize ARC memory system.
 
         Args:
             data_dir: Directory path for persistent storage
             cache_capacity: Maximum number of cached items
+            store: Optional ARCStore for record persistence. Defaults to a
+                local-filesystem store rooted at ``data_dir``; inject a
+                clio-core CTE-backed store here to relocate persistence without
+                changing any call site.
         """
         self.data_dir = Path(data_dir)
         self.data_dir.mkdir(parents=True, exist_ok=True)
 
-        # Create subdirectories for different data types
-        self._conv_dir = self.data_dir / "conversations"
-        self._inv_dir = self.data_dir / "invocations"
-        self._metrics_dir = self.data_dir / "metrics"
-        self._context_dir = self.data_dir / "context"
-
-        self._profiles_dir = self.data_dir / "profiles"
-        self._procedural_dir = self.data_dir / "procedural"
-        self._variants_dir = self.data_dir / "variants"
-
-        self._conv_dir.mkdir(exist_ok=True)
-        self._inv_dir.mkdir(exist_ok=True)
-        self._metrics_dir.mkdir(exist_ok=True)
-        self._context_dir.mkdir(exist_ok=True)
-        self._profiles_dir.mkdir(exist_ok=True)
-        self._procedural_dir.mkdir(exist_ok=True)
-        self._variants_dir.mkdir(exist_ok=True)
+        # Persistence seam: every record kind is read/written through an
+        # ARCStore, so ARC never touches the filesystem directly. The LSM tree
+        # (below) remains a separate high-throughput subsystem.
+        self._store: ARCStore = store if store is not None else LocalFSStore(self.data_dir)
 
         # Cache layer (hot data)
         self._cache = LRUCache(capacity=cache_capacity)
@@ -180,9 +177,8 @@ class ARCMemory:
             self._conv_index.insert(index_key, {"session_id": session_id})
 
             # Persist to disk
-            file_path = self._conv_dir / f"{session_id}.msgpack"
             encoded = encode_conversation(conversation)
-            file_path.write_bytes(encoded)
+            self._store.put("conversations", session_id, encoded)
             self._disk_writes += 1
 
             # Evict old index entries if necessary
@@ -215,11 +211,10 @@ class ARCMemory:
 
         # Slow path: load from disk
         with self._lock:
-            file_path = self._conv_dir / f"{session_id}.msgpack"
-            if not file_path.exists():
+            encoded = self._store.get("conversations", session_id)
+            if encoded is None:
                 return None
 
-            encoded = file_path.read_bytes()
             conversation = decode_conversation(encoded)
             self._disk_reads += 1
 
@@ -291,9 +286,8 @@ class ARCMemory:
             self._inv_index.insert(index_key, {"trace_id": trace_id})
 
             # Persist to disk
-            file_path = self._inv_dir / f"{trace_id}.msgpack"
             encoded = encode_invocation(invocation)
-            file_path.write_bytes(encoded)
+            self._store.put("invocations", trace_id, encoded)
             self._disk_writes += 1
 
             # Also store in LSM tree for high-throughput metrics queries
@@ -335,11 +329,10 @@ class ARCMemory:
 
         # Slow path: load from disk
         with self._lock:
-            file_path = self._inv_dir / f"{invocation_id}.msgpack"
-            if not file_path.exists():
+            encoded = self._store.get("invocations", invocation_id)
+            if encoded is None:
                 return None
 
-            encoded = file_path.read_bytes()
             invocation = decode_invocation(encoded)
             self._disk_reads += 1
 
@@ -380,9 +373,8 @@ class ARCMemory:
                     invocations.append(inv)
         else:
             with self._lock:
-                for fpath in self._inv_dir.glob("*.msgpack"):
+                for _name, encoded in self._store.scan("invocations"):
                     try:
-                        encoded = fpath.read_bytes()
                         inv = decode_invocation(encoded)
                         self._disk_reads += 1
                     except Exception:
@@ -425,9 +417,8 @@ class ARCMemory:
             self._cache.put(cache_key, metrics)
 
             # Persist to disk
-            file_path = self._metrics_dir / f"{agent_id}_{period}.msgpack"
             encoded = encode_metrics(metrics)
-            file_path.write_bytes(encoded)
+            self._store.put("metrics", f"{agent_id}_{period}", encoded)
             self._disk_writes += 1
 
     def get_metrics(self, agent_id: str, period: Optional[str] = None) -> Optional[Metrics]:
@@ -448,13 +439,14 @@ class ARCMemory:
         # If no period specified, find latest metrics file
         if period is None:
             with self._lock:
-                pattern = f"{agent_id}_*.msgpack"
-                matching_files = sorted(self._metrics_dir.glob(pattern))
-                if not matching_files:
+                matching = sorted(
+                    self._store.scan("metrics", prefix=f"{agent_id}_"),
+                    key=lambda kv: kv[0],
+                )
+                if not matching:
                     return None
-                # Get most recent file
-                latest_file = matching_files[-1]
-                encoded = latest_file.read_bytes()
+                # Most recent = lexicographically latest name (agent_period)
+                encoded = matching[-1][1]
                 metrics = decode_metrics(encoded)
                 self._disk_reads += 1
 
@@ -473,12 +465,11 @@ class ARCMemory:
 
         # Slow path: load from disk
         with self._lock:
-            file_path = self._metrics_dir / f"{agent_id}_{period}.msgpack"
-            if not file_path.exists():
+            raw = self._store.get("metrics", f"{agent_id}_{period}")
+            if raw is None:
                 return None
 
-            encoded = file_path.read_bytes()
-            metrics = decode_metrics(encoded)
+            metrics = decode_metrics(raw)
             self._disk_reads += 1
 
             # Update cache
@@ -508,9 +499,8 @@ class ARCMemory:
             self._cache.put(cache_key, context)
 
             # Persist to disk
-            file_path = self._context_dir / f"{domain}.msgpack"
             encoded = encode_context(context)
-            file_path.write_bytes(encoded)
+            self._store.put("context", domain, encoded)
             self._disk_writes += 1
 
     def get_context(self, domain: str) -> Optional[Context]:
@@ -536,11 +526,10 @@ class ARCMemory:
 
         # Slow path: load from disk
         with self._lock:
-            file_path = self._context_dir / f"{domain}.msgpack"
-            if not file_path.exists():
+            encoded = self._store.get("context", domain)
+            if encoded is None:
                 return None
 
-            encoded = file_path.read_bytes()
             context = decode_context(encoded)
             self._disk_reads += 1
 
@@ -740,9 +729,8 @@ class ARCMemory:
 
             # Persist to disk
             key_hash = hashlib.md5(cache_key.encode()).hexdigest()[:12]
-            file_path = self._profiles_dir / f"{profile.session_id}_{key_hash}.msgpack"
             encoded = encode_dataset_profile(profile)
-            file_path.write_bytes(encoded)
+            self._store.put("profiles", f"{profile.session_id}_{key_hash}", encoded)
             self._disk_writes += 1
 
     def get_dataset_profile(self, session_id: str, filepath: str) -> Optional[DatasetProfile]:
@@ -771,9 +759,7 @@ class ARCMemory:
 
         # Slow path: scan disk for this session
         with self._lock:
-            pattern = f"{session_id}_*.msgpack"
-            for file_path in self._profiles_dir.glob(pattern):
-                encoded = file_path.read_bytes()
+            for _name, encoded in self._store.scan("profiles", prefix=f"{session_id}_"):
                 profile = decode_dataset_profile(encoded)
                 self._disk_reads += 1
                 if profile.filepath == filepath:
@@ -813,9 +799,7 @@ class ARCMemory:
                             seen_filepaths.add(val.filepath)
 
             # Also scan disk for profiles not in cache
-            pattern = f"{session_id}_*.msgpack"
-            for file_path in self._profiles_dir.glob(pattern):
-                encoded = file_path.read_bytes()
+            for _name, encoded in self._store.scan("profiles", prefix=f"{session_id}_"):
                 profile = decode_dataset_profile(encoded)
                 self._disk_reads += 1
                 if profile.filepath not in seen_filepaths:
@@ -858,9 +842,8 @@ class ARCMemory:
 
             # Persist to disk
             key_hash = hashlib.md5(cache_key.encode()).hexdigest()[:12]
-            file_path = self._procedural_dir / f"{memory.expert_id}_{key_hash}.msgpack"
             encoded = encode_procedural_memory(memory)
-            file_path.write_bytes(encoded)
+            self._store.put("procedural", f"{memory.expert_id}_{key_hash}", encoded)
             self._disk_writes += 1
 
     def get_procedural_memories(
@@ -902,13 +885,9 @@ class ARCMemory:
                                 seen_keys.add(key)
 
             # Scan disk
-            if expert_id:
-                pattern = f"{expert_id}_*.msgpack"
-            else:
-                pattern = "*.msgpack"
+            scan_prefix = f"{expert_id}_" if expert_id else ""
 
-            for file_path in self._procedural_dir.glob(pattern):
-                encoded = file_path.read_bytes()
+            for _name, encoded in self._store.scan("procedural", prefix=scan_prefix):
                 mem = decode_procedural_memory(encoded)
                 self._disk_reads += 1
 
@@ -957,9 +936,8 @@ class ARCMemory:
         invocations: list[Invocation] = []
 
         with self._lock:
-            for fpath in self._inv_dir.glob("*.msgpack"):
+            for _name, encoded in self._store.scan("invocations"):
                 try:
-                    encoded = fpath.read_bytes()
                     inv = decode_invocation(encoded)
                     self._disk_reads += 1
 
@@ -975,6 +953,23 @@ class ARCMemory:
         # Sort by started_at descending (most recent first)
         invocations.sort(key=lambda inv: inv.started_at, reverse=True)
         return invocations[:limit]
+
+    def iter_invocations(self) -> list[Invocation]:
+        """Return every persisted invocation (decode-tolerant, unordered).
+
+        Public accessor for whole-corpus scans (e.g. optimizer training-data
+        counts) so callers go through the ARCStore seam instead of reaching
+        into physical storage.
+        """
+        invocations: list[Invocation] = []
+        with self._lock:
+            for _name, encoded in self._store.scan("invocations"):
+                try:
+                    invocations.append(decode_invocation(encoded))
+                    self._disk_reads += 1
+                except Exception:
+                    continue
+        return invocations
 
     def store_variant_record(self, record: VariantRecord) -> None:
         """Store a variant record in ARC.
@@ -999,9 +994,8 @@ class ARCMemory:
             cache_key = f"variant:{record.variant_id}"
             self._cache.put(cache_key, record)
 
-            file_path = self._variants_dir / f"{record.variant_id}.msgpack"
             encoded = encode_variant_record(record)
-            file_path.write_bytes(encoded)
+            self._store.put("variants", record.variant_id, encoded)
             self._disk_writes += 1
 
     def get_variant_records(self, agent_id: str) -> list[VariantRecord]:
@@ -1024,9 +1018,8 @@ class ARCMemory:
         records: list[VariantRecord] = []
 
         with self._lock:
-            for fpath in self._variants_dir.glob("*.msgpack"):
+            for _name, encoded in self._store.scan("variants"):
                 try:
-                    encoded = fpath.read_bytes()
                     record = decode_variant_record(encoded)
                     self._disk_reads += 1
 
@@ -1068,20 +1061,7 @@ class ARCMemory:
             self._inv_index.clear()
 
             # Clear disk storage
-            for file_path in self._conv_dir.glob("*.msgpack"):
-                file_path.unlink()
-            for file_path in self._inv_dir.glob("*.msgpack"):
-                file_path.unlink()
-            for file_path in self._metrics_dir.glob("*.msgpack"):
-                file_path.unlink()
-            for file_path in self._context_dir.glob("*.msgpack"):
-                file_path.unlink()
-            for file_path in self._profiles_dir.glob("*.msgpack"):
-                file_path.unlink()
-            for file_path in self._procedural_dir.glob("*.msgpack"):
-                file_path.unlink()
-            for file_path in self._variants_dir.glob("*.msgpack"):
-                file_path.unlink()
+            self._store.clear()
 
             # Reset counters
             self._disk_reads = 0

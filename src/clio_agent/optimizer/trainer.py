@@ -13,7 +13,7 @@ from typing import Any
 
 import dspy
 
-from clio_agent.arc.schema import Invocation, decode_invocation
+from clio_agent.arc.schema import Invocation
 
 # Error keywords that indicate problematic output
 _ERROR_KEYWORDS = frozenset(
@@ -120,14 +120,9 @@ class TrainingSetGenerator:
         """
         counts: dict[str, int] = {}
 
-        for fpath in self._arc._inv_dir.glob("*.msgpack"):
-            try:
-                encoded = fpath.read_bytes()
-                inv = decode_invocation(encoded)
-                if inv.status == "success":
-                    counts[inv.agent_id] = counts.get(inv.agent_id, 0) + 1
-            except Exception:
-                continue
+        for inv in self._arc.iter_invocations():
+            if inv.status == "success":
+                counts[inv.agent_id] = counts.get(inv.agent_id, 0) + 1
 
         return counts
 
