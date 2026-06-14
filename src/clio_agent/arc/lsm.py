@@ -518,6 +518,21 @@ class LSMTree:
                 "total_records": total_records,
             }
 
+    def flush(self) -> None:
+        """Flush the in-memory MemTable to an on-disk SSTable.
+
+        Frees the MemTable's heap without tearing down the tree, so the LSM
+        keeps accepting writes afterwards. Used by ARC's session-release /
+        flush-and-release lifecycle to return an idle server to baseline.
+
+        Examples:
+            >>> lsm = LSMTree()
+            >>> lsm.write(time.time(), {"latency_ms": 1500})
+            >>> lsm.flush()
+        """
+        with self._lock:
+            self._flush_memtable()
+
     def close(self) -> None:
         """Stop background compaction and close LSM tree.
 

@@ -147,6 +147,40 @@ class LRUCache:
         with self._lock:
             self._remove_key(key)
 
+    def keys(self) -> list[str]:
+        """Return a snapshot list of current cache keys.
+
+        Examples:
+            >>> cache.put("conv:s1", object())
+            >>> "conv:s1" in cache.keys()
+            True
+        """
+        with self._lock:
+            return list(self._cache.keys())
+
+    def invalidate_prefix(self, prefix: str) -> int:
+        """Remove all entries whose key starts with ``prefix``.
+
+        Used to release a session's hot data from the cache without disturbing
+        other sessions (cache keys are namespaced, e.g. ``conv:<sid>``).
+
+        Args:
+            prefix: Key prefix to match.
+
+        Returns:
+            Number of entries removed.
+
+        Examples:
+            >>> cache.put("conv:s1", object())
+            >>> cache.invalidate_prefix("conv:s1")
+            1
+        """
+        with self._lock:
+            matching = [key for key in list(self._cache.keys()) if key.startswith(prefix)]
+            for key in matching:
+                self._remove_key(key)
+            return len(matching)
+
     def clear(self) -> None:
         """Clear all entries from cache and reset statistics.
 

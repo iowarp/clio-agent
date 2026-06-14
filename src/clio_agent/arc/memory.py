@@ -1032,6 +1032,59 @@ class ARCMemory:
         records.sort(key=lambda r: r.created_at, reverse=True)
         return records
 
+    def release_session(self, session_id: str) -> Dict[str, int]:
+        """Release a session's hot footprint from cache and indexes.
+
+        Persistence is write-through, so eviction loses nothing: a later read
+        re-loads from the store. Called when a session goes idle or closes so an
+        otherwise-idle server returns toward baseline memory instead of pinning
+        every session's objects in the never-evicted hot path.
+
+        Args:
+            session_id: Session to release.
+
+        Returns:
+            Counts of evicted cache and index entries (for diagnostics/tests).
+        """
+        with self._lock:
+            evicted_cache = 0
+
+            # Invocations are cached by trace_id; resolve them through the index
+            # before its entries are removed below.
+            for entry in self._inv_index.get_session_range(session_id):
+                trace_id = entry.get("trace_id") if isinstance(entry, dict) else None
+                if trace_id:
+                    self._cache.invalidate(f"inv:{trace_id}")
+                    evicted_cache += 1
+
+            self._cache.invalidate(f"conv:{session_id}")
+            evicted_cache += 1
+            evicted_cache += self._cache.invalidate_prefix(f"profile:{session_id}:")
+            evicted_cache += self._cache.invalidate_prefix(f"proc:{session_id}:")
+
+            evicted_index = self._conv_index.delete_session(session_id)
+            evicted_index += self._inv_index.delete_session(session_id)
+
+            return {"cache": evicted_cache, "index": evicted_index}
+
+    def flush_and_release(self) -> None:
+        """Release ALL in-memory state to return to baseline (tests/memprof).
+
+        Flushes the LSM MemTable to disk, clears the cache, and clears both
+        indexes. The persistent store is untouched and fully re-loadable; this
+        only drops the hot/heap copies so memory profiling sees a clean floor.
+
+        Examples:
+            >>> arc.flush_and_release()
+            >>> arc.get_cache_stats()['size']
+            0
+        """
+        with self._lock:
+            self._lsm.flush()
+            self._cache.clear()
+            self._conv_index.clear()
+            self._inv_index.clear()
+
     def clear_cache(self) -> None:
         """Clear in-memory cache (preserves disk storage).
 

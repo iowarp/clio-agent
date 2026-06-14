@@ -947,6 +947,26 @@ def _delete_session_messages(app: "FastAPI", session_id: str) -> None:
     _mirror_workspace_messages(app, session_id)
 
 
+def _release_session_arc(app: "FastAPI", session_id: str) -> None:
+    """Release a closed session's hot footprint from ARC (best-effort).
+
+    Persistence is write-through, so this only drops the in-memory cache/index
+    copies; it never deletes durable records. Keeps an idle server from pinning
+    every closed session's objects in the never-evicted hot path.
+    """
+
+    arc = getattr(app.state, "arc", None)
+    if arc is None:
+        return
+    release = getattr(arc, "release_session", None)
+    if release is None:
+        return
+    try:
+        release(session_id)
+    except Exception:  # noqa: BLE001 - lifecycle cleanup must never fail a request
+        pass
+
+
 def _workspace_for_session(app: "FastAPI", session_id: str) -> Any | None:
     sess = app.state.sessions.get(session_id)
     if sess is None:
@@ -12964,6 +12984,7 @@ def build_app(
             )
         _delete_session_messages(app, sid)
         _delete_session_context_files(app, sid)
+        _release_session_arc(app, sid)
         return Response(status_code=204)
 
     def _reject_rollback_while_active(sid: str, sess: Any) -> None:

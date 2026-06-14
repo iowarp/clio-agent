@@ -228,6 +228,28 @@ class BTreeIndex:
         """
         self._index.clear()
 
+    def delete_session(self, session_id: str) -> int:
+        """
+        Delete all entries belonging to a session.
+
+        Composite keys are ``(session_id, timestamp)``; this removes every
+        entry whose first component matches, used to release a closed session's
+        index footprint.
+
+        Args:
+            session_id: Session whose entries to remove.
+
+        Returns:
+            Number of entries deleted.
+
+        Examples:
+            >>> removed = index.delete_session("session_1")
+        """
+        matching = [key for key in list(self._index.keys()) if key[0] == session_id]
+        for key in matching:
+            del self._index[key]
+        return len(matching)
+
     def get_session_range(self, session_id: str) -> List[Any]:
         """
         Retrieve all values for a given session_id.
