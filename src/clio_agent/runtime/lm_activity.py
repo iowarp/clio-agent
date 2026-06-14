@@ -50,6 +50,53 @@ def _max_lm_call_seconds() -> float:
     return value if value > 0 else _DEFAULT_MAX_LM_CALL_S
 
 
+def _emit_lm_call_started(call_id: Any, instance: Any, inputs: Any) -> None:
+    """Emit a durable ``lm.call.started`` BEFORE the call returns.
+
+    The S4b ``lm.call`` capture (config.IOLoggingLM) logs in ``finally`` AFTER
+    the call returns, so a HUNG call (LM Studio stall) is never recorded -- a
+    hole in the canonical trace. This start-marker carries the full request
+    ``messages`` up front, so a stall shows up as a ``lm.call.started`` with no
+    matching ``lm.call`` (completed): the wedged call and its exact input are
+    first-class in the trace, not reconstructed. Durable-only (detail off),
+    best-effort, never breaks a call.
+    """
+
+    try:
+        from clio_agent.gact.app import (  # noqa: PLC0415
+            _ACTIVE_GACT_APP,
+            _ACTIVE_GACT_SESSION_ID,
+            _ACTIVE_GACT_TRACE_ID,
+            _ACTIVE_GACT_TURN_ID,
+            _emit_semantic_event,
+        )
+    except Exception:  # noqa: BLE001 - app may be unavailable (CLI/optimizer paths)
+        return
+    app = _ACTIVE_GACT_APP.get()
+    sid = _ACTIVE_GACT_SESSION_ID.get()
+    if app is None or not sid:
+        return
+    model = str(getattr(instance, "model", "") or "")
+    messages: Any = None
+    if isinstance(inputs, dict):
+        messages = inputs.get("messages") or inputs.get("prompt")
+    try:
+        _emit_semantic_event(
+            app,
+            sid,
+            "lm.call.started",
+            turn_id=_ACTIVE_GACT_TURN_ID.get(),
+            trace_id=_ACTIVE_GACT_TRACE_ID.get(),
+            status="running",
+            summary=f"LM call started ({model or 'lm'}).",
+            provider={"model_id": model},
+            payload={"call_id": str(call_id), "model": model, "messages": messages},
+            detail_level="off",
+        )
+    except Exception:  # noqa: BLE001 - capture must never break a call
+        pass
+
+
 def note_lm_start() -> None:
     with _LOCK:
         _STATE["inflight"] += 1
