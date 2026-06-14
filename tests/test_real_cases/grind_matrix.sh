@@ -4,7 +4,7 @@
 # run serially, so this batches all cells in one process and logs each verdict.
 #
 # PER-CELL ISOLATION (MANAGE_SERVER=1, default): the gact server is killed and
-# restarted CLEAN before every cell, each with its own lm_io log. This is the fix
+# restarted CLEAN before every cell, each with its own durable trace dir. This is the fix
 # for the cascade failure mode — a provider_timeout leaves `executor_work_may_continue`
 # server-side, which poisons the NEXT bind (config_error) on a shared long-lived
 # server. Restarting per cell means one hung tool / timed-out run can never cascade
@@ -48,11 +48,12 @@ kill_server() {
 }
 
 start_server() {
-  # $1 = per-cell lm_io log path
-  local iolog="$1" srvlog="$2"
-  rm -f "$iolog"
+  # $1 = per-cell durable-trace dir (canonical single recorder; full + live)
+  local tracedir="$1" srvlog="$2"
+  rm -rf "$tracedir"; mkdir -p "$tracedir"
   CLIO_DEBUG=med CLIO_KIT_PATH="$KIT_PATH" CLIO_ALLOWED_ROOTS="$ALLOWED_ROOTS" \
-    CLIO_LOG_LM_IO="$iolog" uv run clio-agent-gact --host 127.0.0.1 --port "$PORT" \
+    CLIO_SEMANTIC_TRACE_BACKEND=file CLIO_SEMANTIC_TRACE_PATH="$tracedir" \
+    uv run clio-agent-gact --host 127.0.0.1 --port "$PORT" \
     > "$srvlog" 2>&1 &
   local i
   for i in $(seq 1 90); do
@@ -67,12 +68,12 @@ run_one() {
   # $1=label $2=region(or empty) $3=expect(positive|negative)
   local label="$1" region="$2" expect="$3"
   local log="${LOGDIR}/grind_${CELL}_${label}.log"
-  local iolog="${LOGDIR}/lm_io_${CELL}_${label}.jsonl"
+  local tracedir="${LOGDIR}/trace_${CELL}_${label}"
   local srvlog="${LOGDIR}/gact_${CELL}_${label}.log"
   local t0 t1 verdict
   if [ "$MANAGE_SERVER" = 1 ]; then
     kill_server
-    start_server "$iolog" "$srvlog"
+    start_server "$tracedir" "$srvlog"
   fi
   t0=$(date +%s)
   CLIO_RUN_LIVE=1 CLIO_GACT_URL="$GACT_URL" CLIO_KIT_PATH="$KIT_PATH" \
