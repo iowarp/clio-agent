@@ -36,6 +36,12 @@ _STATE: dict[str, float] = {"inflight": 0.0, "started": 0.0, "last": 0.0}
 # toward a large max_tokens at ~30 tok/s can legitimately run ~15-20 min.
 _DEFAULT_MAX_LM_CALL_S = 1800.0
 
+# Inter-token idle ceiling: when the call STREAMS (token-liveness on), a call is
+# trusted only while a token arrived within this window. Generous enough to cover
+# large-context first-token (prefill) latency on a local card, but far below the
+# turn no-progress window so a true 0-token stall is caught fast.
+_DEFAULT_INTER_TOKEN_IDLE_S = 120.0
+
 
 def _max_lm_call_seconds() -> float:
     try:
@@ -48,6 +54,19 @@ def _max_lm_call_seconds() -> float:
     except (ValueError, TypeError):
         return _DEFAULT_MAX_LM_CALL_S
     return value if value > 0 else _DEFAULT_MAX_LM_CALL_S
+
+
+def _inter_token_idle_seconds() -> float:
+    try:
+        value = conf.resolve(
+            "limits.lm_inter_token_idle_s",
+            env="CLIO_LM_INTER_TOKEN_IDLE_S",
+            default=_DEFAULT_INTER_TOKEN_IDLE_S,
+            cast=conf.as_float,
+        )
+    except (ValueError, TypeError):
+        return _DEFAULT_INTER_TOKEN_IDLE_S
+    return value if value > 0 else _DEFAULT_INTER_TOKEN_IDLE_S
 
 
 def _emit_lm_call_started(call_id: Any, instance: Any, inputs: Any) -> None:
@@ -105,6 +124,18 @@ def note_lm_start() -> None:
         _STATE["last"] = now
 
 
+def note_lm_activity() -> None:
+    """Refresh the last-activity timestamp -- called per streamed token/chunk.
+
+    When token-liveness streaming is on, this turns ``lm_call_in_flight`` into an
+    inter-token-idle gate: a slow-but-generating reasoning model keeps refreshing
+    the watchdog on every chunk, while a genuinely frozen call (0 tokens) stops
+    refreshing and is aborted fast.
+    """
+    with _LOCK:
+        _STATE["last"] = time.monotonic()
+
+
 def note_lm_end() -> None:
     with _LOCK:
         _STATE["inflight"] = max(0.0, _STATE["inflight"] - 1)
@@ -112,16 +143,30 @@ def note_lm_end() -> None:
 
 
 def lm_call_in_flight() -> bool:
-    """True when an LM call is actively in flight and within the per-call ceiling.
+    """True when an LM call is actively in flight and counts as progress.
 
-    The ceiling is wedge protection: once a single call exceeds it, this returns
-    False so the no-progress watchdog regains authority and can abort a provider
-    that has genuinely hung.
+    Two regimes, picked by whether a token has actually streamed:
+    - STREAMING (``last`` > ``started`` -- ``note_lm_activity`` fired): the
+      inter-token idle window is authoritative. A genuinely generating reasoning
+      model keeps refreshing it per chunk and is never false-killed however long
+      it runs; a frozen (0-token) call stops refreshing and is abandoned at the
+      idle window. The coarse per-call ceiling does NOT apply here -- it only ever
+      existed because there was no finer wedge signal, which streaming now provides.
+    - NON-STREAMING / pre-first-token (``last`` == ``started``): no per-token
+      signal, so fall back to the per-call ceiling (wedge backstop). This also
+      covers prefill latency before the first token, so a still-prefilling call is
+      never false-killed at the idle window.
+
+    The turn-level no-progress watchdog / turn timeout remain the ultimate backstop
+    above either regime.
     """
     with _LOCK:
         if _STATE["inflight"] <= 0:
             return False
-        return (time.monotonic() - _STATE["started"]) < _max_lm_call_seconds()
+        now = time.monotonic()
+        if _STATE["last"] > _STATE["started"]:
+            return (now - _STATE["last"]) < _inter_token_idle_seconds()
+        return (now - _STATE["started"]) < _max_lm_call_seconds()
 
 
 def build_dspy_callback() -> Any | None:
@@ -157,8 +202,11 @@ def build_dspy_callback() -> Any | None:
                             txt = repr(getattr(it, "text", it))
                         parts.append(f"len={len(txt)} head={txt[:300]!r}")
                     trace.hot(
-                        "LM-RESPONSE", "call=%s n=%s :: %s",
-                        call_id, len(items), " || ".join(parts),
+                        "LM-RESPONSE",
+                        "call=%s n=%s :: %s",
+                        call_id,
+                        len(items),
+                        " || ".join(parts),
                     )
                 except Exception:  # noqa: BLE001 - diagnostic only
                     pass
