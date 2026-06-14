@@ -80,16 +80,18 @@ def test_project_history_is_deferred():
         project_history(_handoff_event())
 
 
-def test_default_trace_backend_is_file(tmp_path, monkeypatch):
-    # No env override: the durable file backend is the finalized default.
+def test_default_trace_backend_is_none_optin(tmp_path, monkeypatch):
+    # Durable file backend is OPT-IN (default none) until durable writes move
+    # off the turn event loop -- see the "safe file default" issue.
     monkeypatch.delenv("CLIO_SEMANTIC_TRACE_BACKEND", raising=False)
     monkeypatch.delenv("CLIO_SEMANTIC_TRACE_PATH", raising=False)
     backend = build_trace_backend(tmp_path / "semantic_traces")
-    assert backend.name == "file"
-
-
-def test_trace_backend_none_opt_out(tmp_path, monkeypatch):
-    monkeypatch.setenv("CLIO_SEMANTIC_TRACE_BACKEND", "none")
-    backend = build_trace_backend(tmp_path / "semantic_traces")
     assert backend.name == "none"
     assert isinstance(backend, se.NoopSemanticTraceBackend)
+
+
+def test_trace_backend_file_opt_in(tmp_path, monkeypatch):
+    monkeypatch.setenv("CLIO_SEMANTIC_TRACE_BACKEND", "file")
+    monkeypatch.setenv("CLIO_SEMANTIC_TRACE_PATH", str(tmp_path / "traces"))
+    backend = build_trace_backend(tmp_path / "semantic_traces")
+    assert backend.name == "file"

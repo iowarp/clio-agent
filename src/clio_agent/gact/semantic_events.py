@@ -292,10 +292,14 @@ def build_trace_backend(default_root: Path) -> SemanticTraceBackend:
 
     ``CLIO_SEMANTIC_TRACE_BACKEND`` accepts ``file``, ``factory``, or ``none``.
     ``CLIO_SEMANTIC_TRACE_PATH`` may point at either a JSONL file or a
-    directory. The durable file backend is now the DEFAULT: the canonical trace
-    is the substrate the unified memory underbelly is built on (ARC live view,
-    re-extract repair, research replay). Set the backend to ``none`` to opt out.
-    Live semantic SSE is independent and always on.
+    directory. The durable file backend is OPT-IN (default ``none``): it is the
+    substrate the unified memory underbelly is built on (ARC live view,
+    re-extract repair, research replay), but the current ``emit`` performs
+    synchronous file I/O on the turn's event loop, which can destabilize turn
+    cancellation/timing under load. Flipping the default on is gated on moving
+    durable writes off the loop -- see the "make file backend safe as default"
+    issue. Enable explicitly with ``CLIO_SEMANTIC_TRACE_BACKEND=file`` (the grind
+    harness and research runs do). Live semantic SSE is independent and always on.
     """
 
     from clio_agent import conf
@@ -304,7 +308,7 @@ def build_trace_backend(default_root: Path) -> SemanticTraceBackend:
         conf.resolve(
             "trace.backend",
             env="CLIO_SEMANTIC_TRACE_BACKEND",
-            default="file",
+            default="none",
             cast=conf.as_str,
         )
         .strip()

@@ -10137,6 +10137,30 @@ def _make_tool_observer(app: "FastAPI"):
                 **({"result": _bounded_tool_call_result(result)} if result is not None else {}),
                 **cancellation_metadata,
             }
+            # Append to the per-session ledger FIRST -- before the (potentially
+            # I/O-bound, e.g. durable-trace-writing) semantic emit + live parts --
+            # so the turn handler's post-forward drain never races a slow emit and
+            # drops tools_called from the assistant message metadata.
+            ledger = getattr(app.state, "tool_call_ledger", None)
+            if ledger is not None and not completed_after_cancel:
+                ledger.setdefault(sid, []).append(
+                    {
+                        "name": name,
+                        "call_id": call_id,
+                        "args": dict(args),
+                        "ok": ok,
+                        "duration_ms": duration_ms,
+                        "cached": False,
+                        "telemetry_source": "live_observer",
+                        **({"error": completion_error} if completion_error else {}),
+                        **(
+                            {"result": _bounded_tool_call_result(result)}
+                            if result is not None
+                            else {}
+                        ),
+                        **cancellation_metadata,
+                    }
+                )
             _emit_semantic_event(
                 app,
                 sid,
@@ -10189,30 +10213,6 @@ def _make_tool_observer(app: "FastAPI"):
                     },
                 ),
             )
-            # Append to the per-session ledger so the turn handler
-            # finds it post-forward and attaches to the assistant
-            # message metadata.
-            ledger = getattr(app.state, "tool_call_ledger", None)
-            if ledger is not None and not completed_after_cancel:
-                ledger.setdefault(sid, []).append(
-                    {
-                        "name": name,
-                        "call_id": call_id,
-                        "args": dict(args),
-                        "ok": ok,
-                        "duration_ms": duration_ms,
-                        "cached": False,
-                        "telemetry_source": "live_observer",
-                        **({"error": completion_error} if completion_error else {}),
-                        **(
-                            {"result": _bounded_tool_call_result(result)}
-                            if result is not None
-                            else {}
-                        ),
-                        **cancellation_metadata,
-                    }
-                )
-
     return observe
 
 
