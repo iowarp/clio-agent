@@ -12097,10 +12097,20 @@ def build_app(
     app.state.semantic_trace_backend = build_trace_backend(
         session_store_path.parent / "semantic_traces"
     )
+    # Register ARC as a live consumer so it folds the RAW semantic-event stream
+    # into its LiveRuntimeContext (Invocation/Conversation become projections of
+    # the trace). arc is set above; None on memory-disabled deployments.
+    _arc = getattr(app.state, "arc", None)
+    _live_consumers = (
+        [_arc.on_semantic_event]
+        if _arc is not None and hasattr(_arc, "on_semantic_event")
+        else None
+    )
     app.state.semantic_event_sink = SemanticEventSink(
         bus=app.state.bus,
         trace_backend=app.state.semantic_trace_backend,
         detail_level=app.state.semantic_trace_detail_level,
+        live_consumers=_live_consumers,
     )
     # CLIO-BBBBBBBBBB14: message log keyed by session_id. Populated by
     # POST /messages, read by GET /messages, and backed by per-session

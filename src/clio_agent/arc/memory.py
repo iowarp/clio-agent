@@ -21,6 +21,7 @@ from typing import Any, Dict, List, Optional
 
 from clio_agent.arc.cache import LRUCache
 from clio_agent.arc.index import BTreeIndex
+from clio_agent.arc.live import LiveRuntimeContext
 from clio_agent.arc.lsm import LSMTree
 from clio_agent.arc.schema import (
     Context,
@@ -90,6 +91,12 @@ class ARCMemory:
         # ARCStore, so ARC never touches the filesystem directly. The LSM tree
         # (below) remains a separate high-throughput subsystem.
         self._store: ARCStore = store if store is not None else LocalFSStore(self.data_dir)
+
+        # Live runtime context: folds the canonical semantic-event stream into
+        # per-session state so Invocation/Conversation are projections of the
+        # trace, not post-hoc rebuilds. Fed via on_semantic_event (registered as
+        # a sink live_consumer). Lean + released by the session lifecycle below.
+        self._live = LiveRuntimeContext()
 
         # Cache layer (hot data)
         self._cache = LRUCache(capacity=cache_capacity)
@@ -1032,6 +1039,28 @@ class ARCMemory:
         records.sort(key=lambda r: r.created_at, reverse=True)
         return records
 
+    # ---- Live runtime context (trace fold) ----
+
+    def on_semantic_event(self, event: Any) -> None:
+        """Fold one RAW semantic event into the live runtime context.
+
+        Registered as a ``live_consumer`` on the SemanticEventSink so ARC sees
+        the same events the durable trace captures. Best-effort by construction.
+        """
+        self._live.fold(event)
+
+    def get_live_context(self, session_id: str, *, max_turns: int = 5) -> Dict[str, Any]:
+        """Compact live summary of an open session's recent turns (or empty)."""
+        return self._live.view(session_id, max_turns=max_turns)
+
+    def project_live_conversation(self, session_id: str, *, user_id: str = "") -> Any:
+        """Project the live fold of a session into a Conversation (or None)."""
+        return self._live.project_conversation(session_id, user_id=user_id)
+
+    def project_live_invocations(self, session_id: str) -> List[Invocation]:
+        """Project the live fold of a session into per-expert Invocations."""
+        return self._live.project_invocations(session_id)
+
     def release_session(self, session_id: str) -> Dict[str, int]:
         """Release a session's hot footprint from cache and indexes.
 
@@ -1065,7 +1094,9 @@ class ARCMemory:
             evicted_index = self._conv_index.delete_session(session_id)
             evicted_index += self._inv_index.delete_session(session_id)
 
-            return {"cache": evicted_cache, "index": evicted_index}
+        # Outside the lock: LiveRuntimeContext has its own lock.
+        live = self._live.release(session_id)
+        return {"cache": evicted_cache, "index": evicted_index, "live": live}
 
     def flush_and_release(self) -> None:
         """Release ALL in-memory state to return to baseline (tests/memprof).
@@ -1084,6 +1115,7 @@ class ARCMemory:
             self._cache.clear()
             self._conv_index.clear()
             self._inv_index.clear()
+        self._live.clear()
 
     def clear_cache(self) -> None:
         """Clear in-memory cache (preserves disk storage).

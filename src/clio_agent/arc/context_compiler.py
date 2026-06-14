@@ -136,32 +136,66 @@ class ContextCompiler:
             "routing": [],
         }
 
-        # Get conversation data from current session
-        conv = self.arc.get_conversation(session_id)
-        if conv:
-            # Last 5 messages
-            if conv.messages:
-                recent_messages = conv.messages[-5:]
-                raw["conversation"] = [
-                    {
-                        "role": m.role,
-                        "content": m.content,
-                        "metadata": dict(getattr(m, "metadata", {}) or {}),
-                    }
-                    for m in recent_messages
-                ]
+        # Conversation: prefer the LIVE runtime context for the open session (a
+        # projection of the in-flight trace), falling back to the persisted
+        # conversation for closed/historical sessions.
+        live: Dict[str, Any] = {}
+        live_getter = getattr(self.arc, "get_live_context", None)
+        if callable(live_getter):
+            try:
+                live = live_getter(session_id) or {}
+            except Exception:
+                live = {}
 
-            # Last 3 routing decisions
-            if conv.routing_decisions:
-                recent_routing = conv.routing_decisions[-3:]
-                raw["routing"] = [
-                    {
-                        "query": rd.query[:100],
-                        "selected": rd.selected_agent,
-                        "confidence": rd.confidence,
-                    }
-                    for rd in recent_routing
-                ]
+        if live.get("turns"):
+            convo: list[Dict[str, Any]] = []
+            for t in live["turns"]:
+                if t.get("question"):
+                    convo.append({"role": "user", "content": t["question"], "metadata": {}})
+                if t.get("answer"):
+                    convo.append(
+                        {
+                            "role": "assistant",
+                            "content": t["answer"],
+                            "metadata": {"selected_expert": t.get("selected_expert", "")},
+                        }
+                    )
+            raw["conversation"] = convo[-5:]
+            raw["routing"] = [
+                {
+                    "query": str(t.get("question", ""))[:100],
+                    "selected": t.get("selected_expert", ""),
+                    "confidence": 1.0,
+                }
+                for t in live["turns"]
+                if t.get("selected_expert")
+            ][-3:]
+        else:
+            conv = self.arc.get_conversation(session_id)
+            if conv:
+                # Last 5 messages
+                if conv.messages:
+                    recent_messages = conv.messages[-5:]
+                    raw["conversation"] = [
+                        {
+                            "role": m.role,
+                            "content": m.content,
+                            "metadata": dict(getattr(m, "metadata", {}) or {}),
+                        }
+                        for m in recent_messages
+                    ]
+
+                # Last 3 routing decisions
+                if conv.routing_decisions:
+                    recent_routing = conv.routing_decisions[-3:]
+                    raw["routing"] = [
+                        {
+                            "query": rd.query[:100],
+                            "selected": rd.selected_agent,
+                            "confidence": rd.confidence,
+                        }
+                        for rd in recent_routing
+                    ]
 
         # Get dataset profiles for this session
         try:
