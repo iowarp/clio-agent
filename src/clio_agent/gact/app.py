@@ -5272,11 +5272,15 @@ def _dynamic_child_expert_tools(base_agent: Any, agent_def: "AgentDef") -> list[
     return tools
 
 
-_RETAINING_REACT_CLS: Any = None
+# Cache the retaining subclass keyed by the CURRENT dspy.ReAct base class, not
+# globally: tests monkeypatch ``dspy.ReAct`` with fakes, so a single cached
+# subclass would be stale (built from a different base -> wrong/uncallable). One
+# wrapper per base keeps the subclass correct under patching and in production.
+_RETAINING_REACT_CLS_CACHE: dict[Any, Any] = {}
 
 
 def _retaining_react_cls() -> Any:
-    """Build (once) a dspy.ReAct subclass that retains its trajectory.
+    """Build a dspy.ReAct subclass that retains its trajectory.
 
     Stock ``ReAct.forward`` builds the trajectory locally and discards it if the
     final ``extract`` step raises (e.g. a typed-output ValidationError from a
@@ -5290,13 +5294,14 @@ def _retaining_react_cls() -> Any:
     if dspy is upgraded.
     """
 
-    global _RETAINING_REACT_CLS  # noqa: PLW0603
-    if _RETAINING_REACT_CLS is not None:
-        return _RETAINING_REACT_CLS
-
     import dspy  # noqa: PLC0415
 
-    class _RetainingReAct(dspy.ReAct):  # type: ignore[name-defined,misc]
+    base = dspy.ReAct
+    cached = _RETAINING_REACT_CLS_CACHE.get(base)
+    if cached is not None:
+        return cached
+
+    class _RetainingReAct(base):  # type: ignore[misc, valid-type]
         def forward(self, **input_args: Any) -> Any:
             # Clear any prior value so a failure inside the loop (before extract)
             # never exposes a stale trajectory from an earlier forward.
@@ -5337,8 +5342,8 @@ def _retaining_react_cls() -> Any:
             )
             return dspy.Prediction(trajectory=trajectory, **extract)
 
-    _RETAINING_REACT_CLS = _RetainingReAct
-    return _RETAINING_REACT_CLS
+    _RETAINING_REACT_CLS_CACHE[base] = _RetainingReAct
+    return _RetainingReAct
 
 
 def _emit_blueprint_llm_failure(agent_def: "AgentDef", kind: str, exc: BaseException) -> None:
