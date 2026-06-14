@@ -75,7 +75,9 @@ def _memprof_dump(signum: Any, frame: Any) -> None:
         ]
         for stat in snap.statistics("lineno")[:30]:
             fr = stat.traceback[0]
-            lines.append(f"{stat.size / 1e6:8.2f}MB count={stat.count:<8} {fr.filename}:{fr.lineno}")
+            lines.append(
+                f"{stat.size / 1e6:8.2f}MB count={stat.count:<8} {fr.filename}:{fr.lineno}"
+            )
         prev = _MEMPROF_STATE["prev"]
         if prev is not None:
             lines.append("=== top 25 GROWTH since previous snapshot ===")
@@ -212,6 +214,16 @@ _ACTIVE_BLUEPRINT_TOOL_ROWS: contextvars.ContextVar[list[dict[str, Any]] | None]
         "clio_gact_active_blueprint_tool_rows",
         default=None,
     )
+)
+# Retained dspy.ReAct trajectory of the in-flight expert call. _RetainingReAct
+# publishes the (structured trajectory + the input_args needed to re-run extract)
+# here BEFORE the final extract step, so a typed-output failure on extract can be
+# (a) captured on llm.response.failed and (b) repaired by re-running ONLY extract
+# over the retained trajectory instead of the whole tool loop. None = no react
+# trajectory available (predict/CoT kinds, or a failure before the loop produced one).
+_ACTIVE_REACT_TRAJECTORY: contextvars.ContextVar[dict[str, Any] | None] = contextvars.ContextVar(
+    "clio_gact_active_react_trajectory",
+    default=None,
 )
 
 
@@ -444,7 +456,7 @@ def _provider_runtime_kind(provider_id: str) -> str:
 
 
 def _prediction_summary(pred: Any) -> dict[str, Any]:
-    return {
+    summary = {
         "selected_expert": str(getattr(pred, "selected_expert", "") or ""),
         "route_source": str(getattr(pred, "route_source", "") or ""),
         "route_reason": str(
@@ -456,6 +468,18 @@ def _prediction_summary(pred: Any) -> dict[str, Any]:
         "file_diffs": _jsonish(getattr(pred, "file_diffs", None) or []),
         "error_info": _jsonish(getattr(pred, "error_info", None)),
     }
+    # Full capture (durable trace): the dspy ReAct trajectory and the extract's
+    # chain-of-thought reasoning. These are in SENSITIVE_KEYS, so the SSE
+    # projection strips them while the canonical trace keeps them for debugging
+    # and (later) re-extract repair. Only attach when present to keep the
+    # routing/predict payloads lean.
+    trajectory = getattr(pred, "trajectory", None)
+    if trajectory:
+        summary["trajectory"] = _jsonish(trajectory)
+    reasoning = getattr(pred, "reasoning", None)
+    if reasoning:
+        summary["reasoning"] = str(reasoning)
+    return summary
 
 
 def _coerce_ask_user_action(pred: Any) -> dict[str, Any]:
@@ -5237,6 +5261,116 @@ def _dynamic_child_expert_tools(base_agent: Any, agent_def: "AgentDef") -> list[
     return tools
 
 
+_RETAINING_REACT_CLS: Any = None
+
+
+def _retaining_react_cls() -> Any:
+    """Build (once) a dspy.ReAct subclass that retains its trajectory.
+
+    Stock ``ReAct.forward`` builds the trajectory locally and discards it if the
+    final ``extract`` step raises (e.g. a typed-output ValidationError from a
+    model that completed its tool loop but dropped a required output field --
+    the common qwopus failure). This subclass publishes the trajectory + the
+    extract input_args to ``_ACTIVE_REACT_TRAJECTORY`` *before* calling extract,
+    so the failure can be captured AND repaired by re-running only extract.
+
+    NOTE: ``forward`` mirrors ``dspy.predict.react.ReAct.forward`` for the dspy
+    pinned in this venv; a unit test guards the Prediction shape. Keep in sync
+    if dspy is upgraded.
+    """
+
+    global _RETAINING_REACT_CLS  # noqa: PLW0603
+    if _RETAINING_REACT_CLS is not None:
+        return _RETAINING_REACT_CLS
+
+    import dspy  # noqa: PLC0415
+
+    class _RetainingReAct(dspy.ReAct):  # type: ignore[name-defined,misc]
+        def forward(self, **input_args: Any) -> Any:
+            # Clear any prior value so a failure inside the loop (before extract)
+            # never exposes a stale trajectory from an earlier forward.
+            _ACTIVE_REACT_TRAJECTORY.set(None)
+            trajectory: dict[str, Any] = {}
+            max_iters = input_args.pop("max_iters", self.max_iters)
+            for idx in range(max_iters):
+                try:
+                    pred = self._call_with_potential_trajectory_truncation(
+                        self.react, trajectory, **input_args
+                    )
+                except ValueError:
+                    # Agent failed to select a valid tool; end the loop and let
+                    # extract work with whatever trajectory exists so far.
+                    break
+
+                trajectory[f"thought_{idx}"] = pred.next_thought
+                trajectory[f"tool_name_{idx}"] = pred.next_tool_name
+                trajectory[f"tool_args_{idx}"] = pred.next_tool_args
+                try:
+                    trajectory[f"observation_{idx}"] = self.tools[pred.next_tool_name](
+                        **pred.next_tool_args
+                    )
+                except Exception as err:  # noqa: BLE001 - mirror dspy: errors become observations
+                    trajectory[f"observation_{idx}"] = (
+                        f"Execution error in {pred.next_tool_name}: {err}"
+                    )
+
+                if pred.next_tool_name == "finish":
+                    break
+
+            # Publish BEFORE extract: a failed extract still exposes the trajectory.
+            _ACTIVE_REACT_TRAJECTORY.set(
+                {"trajectory": dict(trajectory), "input_args": dict(input_args)}
+            )
+            extract = self._call_with_potential_trajectory_truncation(
+                self.extract, trajectory, **input_args
+            )
+            return dspy.Prediction(trajectory=trajectory, **extract)
+
+    _RETAINING_REACT_CLS = _RetainingReAct
+    return _RETAINING_REACT_CLS
+
+
+def _emit_blueprint_llm_failure(agent_def: "AgentDef", kind: str, exc: BaseException) -> None:
+    """Emit ``llm.response.failed`` carrying the retained ReAct trajectory.
+
+    Captures the one event stock dspy throws away: an expert that ran its tool
+    loop but failed the final typed-output extract. The retained trajectory rides
+    on the event so the canonical trace shows exactly what the model produced
+    before the drop -- and so the repair path can re-run extract over it. The
+    trajectory is in SENSITIVE_KEYS, so SSE strips it while the durable trace
+    keeps it. Best-effort: never let capture interfere with the repair flow.
+    """
+
+    app = _ACTIVE_GACT_APP.get()
+    sid = _ACTIVE_GACT_SESSION_ID.get()
+    if app is None or not sid:
+        return
+    retained = _ACTIVE_REACT_TRAJECTORY.get() if kind == "react" else None
+    payload: dict[str, Any] = {
+        "error": str(exc).replace("\n", " ")[:2000],
+        "error_type": type(exc).__name__,
+        "repairable": bool(_is_repairable_typed_output_error(exc)),
+    }
+    if retained and retained.get("trajectory"):
+        payload["trajectory"] = _jsonish(retained.get("trajectory"))
+    agent_id = str(getattr(agent_def, "id", "") or "")
+    try:
+        _emit_semantic_event(
+            app,
+            sid,
+            "llm.response.failed",
+            turn_id=_ACTIVE_GACT_TURN_ID.get(),
+            trace_id=_ACTIVE_GACT_TRACE_ID.get(),
+            status="failed",
+            summary=f"Expert {agent_id or '?'} extract failed: {type(exc).__name__}",
+            actor={"agent_id": agent_id},
+            provider=_llm_provider_payload(app, agent_id),
+            payload=payload,
+        )
+    except Exception:  # noqa: BLE001 - capture must never break the repair flow
+        pass
+
+
 def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
     """Compile an Agent Blueprint expert into the DSPy module declared by module.kind."""
 
@@ -5263,7 +5397,7 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                     *_dynamic_child_expert_tools(base_agent, agent_def),
                 ]
                 self.tools = tools
-                self.program = dspy.ReAct(
+                self.program = _retaining_react_cls()(
                     self.signature,
                     tools=tools,
                     max_iters=_tool_user_agent_max_iters(agent_def),
@@ -5438,6 +5572,10 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                             )
                             break
                         except Exception as exc:
+                            # Capture the failed extract WITH its retained trajectory
+                            # before doing anything else, so the canonical trace records
+                            # what the model produced even when the repair recovers it.
+                            _emit_blueprint_llm_failure(self.agent_def, self.kind, exc)
                             # Bounded repair: a typed-output SCHEMA validation miss (a
                             # required field dropped/null by a model that HAS the data)
                             # is re-askable -- feed the error back and let the SAME
@@ -5508,6 +5646,7 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                     errors=getattr(result, "errors", ""),
                     delegation=getattr(result, "delegation", ""),
                     trajectory=getattr(result, "trajectory", None),
+                    reasoning=getattr(result, "reasoning", ""),
                     tools_called=tools_called,
                     error_info=None,
                 )
@@ -5526,6 +5665,7 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                 errors=getattr(result, "errors", ""),
                 delegation=getattr(result, "delegation", ""),
                 trajectory=getattr(result, "trajectory", None),
+                reasoning=getattr(result, "reasoning", ""),
                 tools_called=tools_called,
                 error_info=None,
             )
