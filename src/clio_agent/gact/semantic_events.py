@@ -13,6 +13,7 @@ import json
 import os
 import threading
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -36,6 +37,8 @@ SENSITIVE_KEYS = {
     "prompt",
     "question",
     "raw",
+    "reasoning",
+    "reasoning_content",
     "rendered_context",
     "rendered_prompt",
     "rendered_system_prompt",
@@ -44,9 +47,16 @@ SENSITIVE_KEYS = {
     "secret",
     "text",
     "token",
+    "trajectory",
     "transcript",
     "user_input",
 }
+
+# The "body" fields of a SemanticEvent — these carry the rich, potentially
+# sensitive payloads that are captured in FULL durably but projected/redacted
+# for SSE and hooks. The envelope fields (ids, status, summary, timestamps) are
+# never redacted.
+_BODY_FIELDS = ("actor", "subject", "blueprint", "provider", "payload")
 
 
 def _utcnow_iso() -> str:
@@ -138,9 +148,18 @@ class SemanticEvent:
     occurred_at: str = field(default_factory=_utcnow_iso)
     schema_version: str = SCHEMA_VERSION
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self, projection: str = "full") -> dict[str, Any]:
+        """Serialize the event at the requested projection.
+
+        ``full`` (default) — every body field unredacted; this is what the
+        DURABLE canonical trace and live consumers (ARC) receive. ``sse`` —
+        body fields redacted per the event's ``detail_level`` (the only
+        surviving redaction path; for SSE/UI). ``metadata``/``off`` — body
+        fields emptied. The envelope (ids/status/summary/timestamps) is never
+        redacted at any projection.
+        """
         detail_level = normalize_detail_level(self.detail_level)
-        return {
+        envelope = {
             "schema_version": self.schema_version,
             "event_id": self.span_id,
             "event_type": self.event_type,
@@ -152,15 +171,68 @@ class SemanticEvent:
             "parent_span_id": self.parent_span_id,
             "status": self.status,
             "summary": self.summary,
-            "actor": _payload_for_detail(self.actor, detail_level),
-            "subject": _payload_for_detail(self.subject, detail_level),
-            "blueprint": _payload_for_detail(self.blueprint, detail_level),
-            "provider": _payload_for_detail(self.provider, detail_level),
-            "payload": _payload_for_detail(self.payload, detail_level),
             "live_observed": self.live_observed,
             "detail_level": detail_level,
             "occurred_at": self.occurred_at,
         }
+        if projection == "full":
+            bodies = {field_name: _json_safe(getattr(self, field_name)) for field_name in _BODY_FIELDS}
+        elif projection in ("metadata", "off", "none"):
+            bodies = {field_name: {} for field_name in _BODY_FIELDS}
+        else:  # "sse" (and any unknown) → honor the event's detail_level
+            bodies = {
+                field_name: _payload_for_detail(getattr(self, field_name), detail_level)
+                for field_name in _BODY_FIELDS
+            }
+        return {**envelope, **bodies}
+
+
+# --- Projection registry -----------------------------------------------------
+# One canonical event is captured at MAX fidelity; each consumer gets a
+# projection. The durable trace + live consumers (ARC) take ``project_full``;
+# SSE/hooks take a redacted view; handoff/history/research are explicit views.
+
+
+def project_full(event: SemanticEvent) -> dict[str, Any]:
+    """Unredacted view — durable canonical trace, live consumers, research."""
+    return event.to_dict("full")
+
+
+def project_sse(event: SemanticEvent) -> dict[str, Any]:
+    """Redacted view honoring detail_level — for the live SSE/UI stream."""
+    return event.to_dict("sse")
+
+
+def project_hook(event: SemanticEvent, *, full: bool = False) -> dict[str, Any]:
+    """View handed to user hooks. Redacted by default (hooks are user code)."""
+    return event.to_dict("full" if full else "sse")
+
+
+def project_research(event: SemanticEvent) -> dict[str, Any]:
+    """Full view for research consumers (IO-prefetch, error detection)."""
+    return event.to_dict("full")
+
+
+def project_handoff(event: SemanticEvent, mode: str = "FINAL") -> dict[str, Any]:
+    """Expert→parent handoff view (wired at the handoff seam in a later stage).
+
+    ``FINAL`` keeps the answer + tool evidence + workflow_state but strips the
+    heavy reasoning/trajectory; ``SUMMARY`` keeps only the answer. Reduction is
+    a projection of the full event, never a capture-time loss.
+    """
+    full = event.to_dict("full")
+    payload = dict(full.get("payload") or {})
+    if mode.upper() == "SUMMARY":
+        keep = {"answer", "result_summary"}
+    else:  # FINAL
+        keep = {"answer", "result_summary", "tools_called", "workflow_state", "evidence"}
+    full["payload"] = {k: v for k, v in payload.items() if k in keep}
+    return full
+
+
+def project_history(event: SemanticEvent) -> dict[str, Any]:
+    """dspy.History / KV-rehydration view — DEFERRED (see GitHub issue)."""
+    raise NotImplementedError("dspy.History / resume projection is deferred")
 
 
 class SemanticTraceBackend(Protocol):
@@ -200,7 +272,9 @@ class FileSemanticTraceBackend:
 
     def emit(self, event: SemanticEvent) -> None:
         path = self._path_for(event)
-        line = json.dumps(event.to_dict(), sort_keys=True)
+        # The durable canonical trace always captures the FULL event; redaction
+        # is a per-consumer projection applied elsewhere, never here.
+        line = json.dumps(event.to_dict("full"), sort_keys=True)
         with self._lock:
             path.parent.mkdir(parents=True, exist_ok=True)
             with path.open("a", encoding="utf-8") as f:
@@ -217,11 +291,24 @@ def build_trace_backend(default_root: Path) -> SemanticTraceBackend:
     by default.
     """
 
-    backend = os.environ.get("CLIO_SEMANTIC_TRACE_BACKEND", "none").strip().lower()
+    from clio_agent import conf
+
+    backend = (
+        conf.resolve(
+            "trace.backend",
+            env="CLIO_SEMANTIC_TRACE_BACKEND",
+            default="none",
+            cast=conf.as_str,
+        )
+        .strip()
+        .lower()
+    )
     if backend in {"", "none", "off", "disabled"}:
         return NoopSemanticTraceBackend()
     if backend == "file":
-        raw_path = os.environ.get("CLIO_SEMANTIC_TRACE_PATH", "").strip()
+        raw_path = conf.resolve(
+            "trace.path", env="CLIO_SEMANTIC_TRACE_PATH", default="", cast=conf.as_str
+        ).strip()
         path = Path(raw_path).expanduser() if raw_path else default_root
         return FileSemanticTraceBackend(path)
     if backend in {"factory", "python_factory", "custom"}:
@@ -265,34 +352,56 @@ class SemanticEventSink:
         bus: EventBus,
         trace_backend: SemanticTraceBackend,
         detail_level: str = DEFAULT_DETAIL_LEVEL,
+        capture: bool = True,
+        hooks_full: bool = False,
+        live_consumers: list[Callable[[SemanticEvent], None]] | None = None,
     ) -> None:
         self.bus = bus
         self.trace_backend = trace_backend
         self.detail_level = normalize_detail_level(detail_level)
+        # ``capture`` gates the DURABLE canonical write (an SSE ``detail_level``
+        # of "off" must NOT blind the canonical store — that is an SSE-only knob).
+        self.capture = capture
+        self.hooks_full = hooks_full
+        self.live_consumers: list[Callable[[SemanticEvent], None]] = list(live_consumers or [])
 
     @property
     def trace_backend_name(self) -> str:
         return self.trace_backend.name
 
+    def add_live_consumer(self, consumer: Callable[[SemanticEvent], None]) -> None:
+        """Register a live consumer (e.g. ARC) that folds the RAW full event."""
+        self.live_consumers.append(consumer)
+
     def emit(self, event: SemanticEvent) -> dict[str, Any]:
         event.detail_level = normalize_detail_level(event.detail_level or self.detail_level)
-        if event.detail_level == "off":
-            return {}
-        payload = event.to_dict()
-        self.trace_backend.emit(event)
-        self.bus.publish(
-            Event(
-                type="semantic.event",
-                session_id=event.session_id,
-                payload=payload,
+        # Durable canonical store + live consumers (ARC) ALWAYS get the FULL
+        # event, gated only on ``capture`` — never on detail_level. Projection /
+        # redaction happens per-consumer below.
+        if self.capture:
+            self.trace_backend.emit(event)
+        for consumer in self.live_consumers:
+            try:
+                consumer(event)  # raw SemanticEvent, pre-projection (ARC folds this)
+            except Exception:
+                # Live consumers are observability side-effects; never crash a turn.
+                pass
+        full = project_full(event)
+        # SSE + hooks get projected (redacted) views; SSE honors "off".
+        if event.detail_level != "off":
+            self.bus.publish(
+                Event(
+                    type="semantic.event",
+                    session_id=event.session_id,
+                    payload=project_sse(event),
+                )
             )
-        )
-        try:
-            from clio_agent.runtime.hooks import fire as _fire_hook
+            try:
+                from clio_agent.runtime.hooks import fire as _fire_hook
 
-            _fire_hook("semantic_event", payload)
-        except Exception:
-            # Semantic hooks are observability side-effects. They should
-            # never mutate or crash the turn being observed.
-            pass
-        return payload
+                _fire_hook("semantic_event", project_hook(event, full=self.hooks_full))
+            except Exception:
+                # Semantic hooks are observability side-effects. They should
+                # never mutate or crash the turn being observed.
+                pass
+        return full

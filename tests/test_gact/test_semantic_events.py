@@ -86,8 +86,15 @@ def test_semantic_events_stream_and_trace_file(tmp_path: Path, monkeypatch) -> N
         "hook.invocation.started",
         "hook.invocation.completed",
     ]
+    # The DURABLE canonical trace captures FULL (unredacted) bodies regardless of
+    # the SSE detail_level; redaction is an SSE-only projection (asserted below).
     request_row = next(row for row in rows if row["event_type"] == "llm.request.started")
-    assert request_row["payload"]["input"].startswith("[redacted]")
+    assert request_row["payload"]["input"] == "analyze this"
+    # ...while the live SSE stream for the same event stays redacted at "semantic".
+    sse_request = next(
+        e.payload for e in semantic_events if e.payload["event_type"] == "llm.request.started"
+    )
+    assert str(sse_request["payload"]["input"]).startswith("[redacted]")
 
 
 def test_full_debug_trace_includes_llm_payload(tmp_path: Path, monkeypatch) -> None:
