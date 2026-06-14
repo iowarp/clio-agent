@@ -79,6 +79,7 @@ def test_semantic_events_stream_and_trace_file(tmp_path: Path, monkeypatch) -> N
     )
     assert semantic_completed_idx < completed_idx
 
+    app.state.semantic_trace_backend.flush()  # off-loop writer: drain before reading
     trace_path = trace_dir / f"{sid}.semantic.jsonl"
     rows = [json.loads(line) for line in trace_path.read_text().splitlines()]
     assert [row["event_type"] for row in rows[:3]] == [
@@ -120,6 +121,7 @@ def test_full_debug_trace_includes_llm_payload(tmp_path: Path, monkeypatch) -> N
     sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
     complete_turn(client, sid, "show the raw prompt in full debug")
 
+    app.state.semantic_trace_backend.flush()  # off-loop writer: drain before reading
     rows = [json.loads(line) for line in trace_file.read_text().splitlines()]
     request_row = next(row for row in rows if row["event_type"] == "llm.request.started")
     response_row = next(row for row in rows if row["event_type"] == "llm.response.completed")

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import queue
 import threading
 import uuid
 from collections.abc import Callable
@@ -256,19 +257,73 @@ class NoopSemanticTraceBackend:
         return
 
 
+# ONE process-global writer thread drains ALL FileSemanticTraceBackend instances.
+# Why global + started at backend CONSTRUCTION (not per-emit): starting a thread
+# from the event-loop thread DURING a turn cancels the turn task under the
+# anyio/TestClient portal; constructing the backend happens at build_app (off the
+# turn loop), so the thread is created safely once. A single shared thread also
+# avoids one-thread-per-app (the trace is on by default) blowing up under tests.
+_TRACE_WRITE_QUEUE: "queue.Queue[tuple[Path, SemanticEvent] | None]" = queue.Queue()
+_TRACE_WRITER_THREAD: threading.Thread | None = None
+_TRACE_WRITER_LOCK = threading.Lock()
+
+
+def _trace_writer_loop() -> None:
+    while True:
+        item = _TRACE_WRITE_QUEUE.get()
+        try:
+            if item is None:  # wake/no-op; the shared writer is never stopped
+                continue
+            path, event = item
+            try:
+                # Serialize HERE (off the turn loop): json.dumps of a full event
+                # (reasoning + tool results) is non-trivial CPU; doing it on the
+                # caller's event-loop thread destabilizes turns under the portal.
+                line = json.dumps(event.to_dict("full"), sort_keys=True)
+                path.parent.mkdir(parents=True, exist_ok=True)
+                with path.open("a", encoding="utf-8") as f:
+                    f.write(line)
+                    f.write("\n")
+            except Exception:  # noqa: BLE001 - a write error must not kill the writer
+                pass
+        finally:
+            _TRACE_WRITE_QUEUE.task_done()
+
+
+def _ensure_trace_writer() -> None:
+    """Start the shared writer once, OFF the turn event loop (backend init time)."""
+    global _TRACE_WRITER_THREAD  # noqa: PLW0603
+    if _TRACE_WRITER_THREAD is not None:
+        return
+    with _TRACE_WRITER_LOCK:
+        if _TRACE_WRITER_THREAD is None:
+            thread = threading.Thread(
+                target=_trace_writer_loop, name="SemanticTraceWriter", daemon=True
+            )
+            thread.start()
+            _TRACE_WRITER_THREAD = thread
+
+
 class FileSemanticTraceBackend:
-    """Append semantic events as JSONL.
+    """Append semantic events as JSONL, written OFF the calling thread.
 
     If ``path`` is a directory, events are split into
     ``<session_id>.semantic.jsonl`` files. If it is a file path, all
     events append to that file.
+
+    ``emit`` serializes the FULL event on the caller (cheap CPU) then enqueues to
+    the shared writer thread, so the turn event loop is never blocked by file I/O
+    (the trace is ON by default). ``flush`` blocks until the queue drains
+    (tests/readers); ``close`` drains too (the shared daemon writer lives for the
+    process). The durable trace always captures the FULL event; redaction/capping
+    is a per-consumer projection applied elsewhere, never here.
     """
 
     name = "file"
 
     def __init__(self, path: Path) -> None:
         self.path = path
-        self._lock = threading.Lock()
+        _ensure_trace_writer()
 
     def _path_for(self, event: SemanticEvent) -> Path:
         if self.path.suffix:
@@ -276,15 +331,17 @@ class FileSemanticTraceBackend:
         return self.path / f"{event.session_id}.semantic.jsonl"
 
     def emit(self, event: SemanticEvent) -> None:
-        path = self._path_for(event)
-        # The durable canonical trace always captures the FULL event; redaction
-        # is a per-consumer projection applied elsewhere, never here.
-        line = json.dumps(event.to_dict("full"), sort_keys=True)
-        with self._lock:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            with path.open("a", encoding="utf-8") as f:
-                f.write(line)
-                f.write("\n")
+        # Near-zero work on the caller (which may be the turn's event-loop thread):
+        # just resolve the path + enqueue. Serialization + I/O happen in the writer.
+        _TRACE_WRITE_QUEUE.put((self._path_for(event), event))
+
+    def flush(self) -> None:
+        """Block until all enqueued events have been written (tests/readers)."""
+        _TRACE_WRITE_QUEUE.join()
+
+    def close(self) -> None:
+        """Drain pending writes (the shared daemon writer lives for the process)."""
+        _TRACE_WRITE_QUEUE.join()
 
 
 def build_trace_backend(default_root: Path) -> SemanticTraceBackend:
@@ -292,14 +349,19 @@ def build_trace_backend(default_root: Path) -> SemanticTraceBackend:
 
     ``CLIO_SEMANTIC_TRACE_BACKEND`` accepts ``file``, ``factory``, or ``none``.
     ``CLIO_SEMANTIC_TRACE_PATH`` may point at either a JSONL file or a
-    directory. The durable file backend is OPT-IN (default ``none``): it is the
-    substrate the unified memory underbelly is built on (ARC live view,
-    re-extract repair, research replay), but the current ``emit`` performs
-    synchronous file I/O on the turn's event loop, which can destabilize turn
-    cancellation/timing under load. Flipping the default on is gated on moving
-    durable writes off the loop -- see the "make file backend safe as default"
-    issue. Enable explicitly with ``CLIO_SEMANTIC_TRACE_BACKEND=file`` (the grind
-    harness and research runs do). Live semantic SSE is independent and always on.
+    directory. The durable file backend (``FileSemanticTraceBackend``) writes
+    OFF the turn event loop via a shared writer thread, so it is cheap and safe
+    to enable. It is the single canonical record the memory underbelly stands on
+    (ARC live view, re-extract repair, agent-to-agent handoff, error detection,
+    research replay) and the grind/research runs enable it (``=file``).
+
+    DEFAULT is still ``none`` (opt-in): flipping it on surfaced a separate, real
+    turn-lifecycle fragility -- a turn runs as a request-loop background task
+    (app.py create_task), and the extra writer-thread GIL load + mid-turn tool
+    observer emits push it past the request-loop teardown window, cancelling the
+    turn under the test harness. Making the durable trace the DEFAULT is gated on
+    a turn-task-robustness fix (run turns off the request loop). Until then,
+    enable explicitly. Live semantic SSE is independent and always on.
     """
 
     from clio_agent import conf

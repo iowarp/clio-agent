@@ -4593,6 +4593,7 @@ def _emit_invalid_tool_selection_event(
         "recovery_status": "failed",
         "error_type": type(exc).__name__,
         "error_message": str(exc)[:1000],
+        "error_full": str(exc),
     }
     summary = (
         f"Expert {agent_def.id!r} selected unavailable tool {requested_tool!r}; "
@@ -5165,7 +5166,10 @@ def _build_child_expert_tool(base_agent: Any, parent: "AgentDef", child: "AgentD
                 "parent_expert": parent.id,
                 "child_expert": child.id,
             },
-            payload={"return_payload": "compact_result"},
+            # Canonical trace carries the FULL child output; the tool's RETURN
+            # value (json.dumps(payload) below) keeps the compact output_summary
+            # for the parent prompt.
+            payload={**payload, "output": output},
         )
         return json.dumps(payload, sort_keys=True, default=str)
 
@@ -5236,6 +5240,9 @@ def _build_fanout_tool(base_agent: Any, parent: "AgentDef", children: list["Agen
                     {
                         "agent_id": child.id,
                         "status": "completed",
+                        # FULL output for the canonical trace; output_summary is the
+                        # compact projection for the parent.
+                        "output": str(getattr(pred, "answer", "") or ""),
                         "output_summary": _compact_dynamic_delegation_output(
                             str(getattr(pred, "answer", "") or "")
                         ),
@@ -5409,7 +5416,10 @@ def _emit_blueprint_llm_failure(agent_def: "AgentDef", kind: str, exc: BaseExcep
         return
     retained = _ACTIVE_REACT_TRAJECTORY.get() if kind == "react" else None
     payload: dict[str, Any] = {
+        # `error` is a one-line summary for SSE/UI; `error_full` is the FULL,
+        # uncapped exception (with newlines) for the canonical trace -- never cap.
         "error": str(exc).replace("\n", " ")[:2000],
+        "error_full": str(exc),
         "error_type": type(exc).__name__,
         "repairable": bool(_is_repairable_typed_output_error(exc)),
     }
@@ -7027,6 +7037,9 @@ async def _run_turn_in_background(
                     "tools_called": child_tools_called,
                     "children": nested,
                 }
+                # Canonical trace carries the FULL child output (never capped);
+                # completed_row keeps only output_summary because it flows into the
+                # parent resume prompt + live Part (projections, must stay compact).
                 _emit_semantic_event(
                     app,
                     sid,
@@ -7041,7 +7054,7 @@ async def _run_turn_in_background(
                         "provider_id": target.default_provider,
                         "model_id": target.default_model,
                     },
-                    payload=completed_row,
+                    payload={**completed_row, "output": output},
                 )
                 _append_live_assistant_part(
                     app,
@@ -10180,6 +10193,11 @@ def _make_tool_observer(app: "FastAPI"):
                         **cancellation_metadata,
                     }
                 )
+            # Canonical trace captures the FULL tool result (never capped) -- the
+            # bounded projection in `payload` is only for the wire bus event +
+            # ledger/assistant-metadata. (SSE still redacts `result` via
+            # SENSITIVE_KEYS; only the durable trace keeps the full value.)
+            trace_payload = {**payload, "result": result} if result is not None else payload
             _emit_semantic_event(
                 app,
                 sid,
@@ -10190,7 +10208,7 @@ def _make_tool_observer(app: "FastAPI"):
                 summary=result_summary,
                 actor={"tool": name},
                 subject={"call_id": call_id},
-                payload=payload,
+                payload=trace_payload,
             )
             app.state.bus.publish(
                 Event(
@@ -11960,6 +11978,14 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         )
     except Exception:
         pass
+    # Drain + stop the off-loop semantic-trace writer so no events are lost on shutdown.
+    _trace_backend = getattr(app.state, "semantic_trace_backend", None)
+    _trace_close = getattr(_trace_backend, "close", None)
+    if callable(_trace_close):
+        try:
+            _trace_close()
+        except Exception:  # pragma: no cover - defensive shutdown cleanup
+            pass
     if getattr(app.state, "tool_hooks_installed", False):
         try:
             from clio_agent.tools.execution import (  # noqa: PLC0415

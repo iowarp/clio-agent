@@ -46,6 +46,7 @@ def _settled_history(
         time.sleep(poll)
     return app.state.bus._history.get(sid, [])
 
+
 from clio_agent.gact.app import _make_tool_observer, _merge_tool_call_rows, build_app
 
 
@@ -275,8 +276,7 @@ def test_live_observer_records_completed_tool_result_evidence(tmp_path: Path) ->
     tool_results = [
         e.payload["part"]
         for e in history
-        if e.type == "message.part.added"
-        and e.payload.get("part", {}).get("type") == "tool_result"
+        if e.type == "message.part.added" and e.payload.get("part", {}).get("type") == "tool_result"
     ]
 
     assert completed[0].payload["result"] == {
@@ -310,8 +310,7 @@ def test_live_observer_preserves_failed_structured_tool_result_evidence(tmp_path
     tool_results = [
         e.payload["part"]
         for e in history
-        if e.type == "message.part.added"
-        and e.payload.get("part", {}).get("type") == "tool_result"
+        if e.type == "message.part.added" and e.payload.get("part", {}).get("type") == "tool_result"
     ]
 
     expected_result = {
@@ -357,9 +356,7 @@ def test_tool_call_merge_does_not_attach_success_result_to_failed_attempt() -> N
     assert rows[0]["ok"] is False
     assert "result" not in rows[0]
     assert rows[1]["ok"] is True
-    assert rows[1]["result"] == {
-        "dataset": {"id": "abc", "title": "EarthScope Stations Dataset"}
-    }
+    assert rows[1]["result"] == {"dataset": {"id": "abc", "title": "EarthScope Stations Dataset"}}
 
 
 def test_live_tool_observer_emits_route_context_before_tool_part(tmp_path: Path) -> None:
@@ -371,11 +368,7 @@ def test_live_tool_observer_emits_route_context_before_tool_part(tmp_path: Path)
     observer("NdpSearchDatasets", {"search_terms": "seismic"}, "started", None)
 
     history = _settled_history(app, sid)
-    added_parts = [
-        e.payload["part"]
-        for e in history
-        if e.type == "message.part.added"
-    ]
+    added_parts = [e.payload["part"] for e in history if e.type == "message.part.added"]
     assert [p["type"] for p in added_parts] == [
         "routing_decision",
         "expert_handoff",
@@ -386,3 +379,36 @@ def test_live_tool_observer_emits_route_context_before_tool_part(tmp_path: Path)
     assert added_parts[1]["metadata"]["agent_id"] == "ndp_catalog"
     assert added_parts[1]["metadata"]["parent_id"] == "data"
     assert added_parts[2]["tool_name"] == "NdpSearchDatasets"
+
+
+def test_tool_result_full_in_trace_but_bounded_in_ledger(tmp_path: Path, monkeypatch) -> None:
+    """T1: the canonical trace keeps the FULL tool result (never capped) while the
+    ledger/assistant-metadata projection stays bounded. Drives the observer
+    DIRECTLY (no full turn) under the off-loop file backend, then reads the trace."""
+    import json as _json
+
+    trace_dir = tmp_path / "traces"
+    monkeypatch.setenv("CLIO_SEMANTIC_TRACE_BACKEND", "file")
+    monkeypatch.setenv("CLIO_SEMANTIC_TRACE_PATH", str(trace_dir))
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
+    client = TestClient(app)
+    sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
+
+    observer = _make_tool_observer(app)
+    big_result = {"rows": [f"station_{i:05d}" for i in range(4000)]}  # >>12000 chars
+    observer("hdf5_dump_all", {"filepath": "x.h5"}, "started", None)
+    observer("hdf5_dump_all", {"filepath": "x.h5"}, "completed", None, big_result)
+
+    # T1: durable trace carries the FULL result (all 4000 rows, not a preview).
+    app.state.semantic_trace_backend.flush()
+    rows = [
+        _json.loads(line) for line in (trace_dir / f"{sid}.semantic.jsonl").read_text().splitlines()
+    ]
+    tcc = next(r for r in rows if r["event_type"] == "tool.call.completed")
+    assert isinstance(tcc["payload"]["result"], dict)
+    assert len(tcc["payload"]["result"]["rows"]) == 4000
+    assert tcc["payload"]["result"].get("truncated") is not True
+
+    # ...while the per-session ledger (assistant-metadata projection) is BOUNDED.
+    led = app.state.tool_call_ledger.get(sid, [])
+    assert led and isinstance(led[0]["result"], dict) and led[0]["result"].get("truncated") is True

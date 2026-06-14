@@ -549,24 +549,6 @@ def has_explicit_model_override(env: Mapping[str, str] | None = None) -> bool:
     return bool(current_env.get("CLIO_LM_MODEL", "").strip())
 
 
-def _resolve_lm_io_log_path() -> str:
-    """File path for full LM I/O logging, or '' to disable.
-
-    Resolves file -> env (``CLIO_LOG_LM_IO``) -> default '' via the conf layer.
-    When set, EVERY LM call (planner, every expert, chat) appends its rendered
-    input messages and BOTH output channels (content + reasoning_content) plus
-    finish_reason and token usage to the file -- including truncated / parse-
-    failed calls. This is the authoritative way to see what actually went into
-    and came out of a model, with no assumptions.
-    """
-    try:
-        from clio_agent.conf import resolve  # noqa: PLC0415
-
-        return str(resolve("lm.io_log_path", env="CLIO_LOG_LM_IO", default="") or "").strip()
-    except Exception:  # noqa: BLE001 - never let logging config break LM construction
-        return os.environ.get("CLIO_LOG_LM_IO", "").strip()
-
-
 _IO_LOGGING_LM_CLS: Any = None
 
 
@@ -578,16 +560,15 @@ def _io_logging_lm_cls() -> Any:
     dspy = _dspy()
 
     class IOLoggingLM(dspy.LM):  # type: ignore[name-defined,misc]
-        """dspy.LM that appends every call's input + output to a JSONL file.
+        """dspy.LM that emits a durable ``lm.call`` trace event per call.
 
         Reads ``history[-1]`` after each call (same thread as the call), so it
         captures the raw ``content`` AND ``reasoning_content`` channels even when
         the response was truncated or failed downstream parsing -- the one place
         an expert call's reasoning is reliably visible (expert LMs run in
         executors the settle path cannot reach). The happy path is unchanged.
+        The canonical trace is the single recorder (no separate JSONL mirror).
         """
-
-        _clio_io_log_path: str = ""
 
         def __call__(self, prompt=None, messages=None, **kwargs):  # type: ignore[override]
             try:
@@ -623,12 +604,10 @@ def _io_logging_lm_cls() -> Any:
             )
 
         def _clio_log_last_call(self) -> None:
-            import json as _json  # noqa: PLC0415
-
             try:
                 target = self._clio_trace_target()
-                # No consumer (no JSONL mirror, no live trace) -> skip the work.
-                if not self._clio_io_log_path and target is None:
+                # No active GACT turn -> nothing to emit (CLI/optimizer paths).
+                if target is None:
                     return
                 history = getattr(self, "history", None) or []
                 if not history or not isinstance(history[-1], dict):
@@ -671,15 +650,12 @@ def _io_logging_lm_cls() -> Any:
                     "usage": entry.get("usage"),
                     "timestamp": entry.get("timestamp"),
                 }
-                # JSONL mirror (when CLIO_LOG_LM_IO set) -- a projection of the trace.
-                if self._clio_io_log_path:
-                    with open(self._clio_io_log_path, "a", encoding="utf-8") as fh:
-                        fh.write(_json.dumps(record, default=str) + "\n")
-                # Fold the recorder into the canonical trace as a DURABLE-ONLY
-                # lm.call event: this is the one place an expert call's raw
-                # messages + reasoning_content are reliably visible (expert LMs
-                # run in executors the settle path can't reach), captured on the
-                # failure path too. detail_level="off" keeps it off SSE/UI.
+                # Emit the canonical trace's DURABLE-ONLY lm.call event: the one
+                # place an expert call's raw messages + reasoning_content are
+                # reliably visible (expert LMs run in executors the settle path
+                # can't reach), captured on the failure path too. detail_level="off"
+                # keeps it off SSE/UI. (Legacy CLIO_LOG_LM_IO JSONL mirror removed --
+                # the canonical trace is the single recorder.)
                 if target is not None:
                     app, sid, turn_id, trace_id, emit = target
                     try:
@@ -705,17 +681,13 @@ def _io_logging_lm_cls() -> Any:
 
 
 def _construct_lm(*, model: str, **lm_kwargs: Any) -> dspy.LM:
-    """Construct a dspy.LM that captures every call's full I/O.
+    """Construct a dspy.LM that emits an ``lm.call`` trace event per call.
 
-    Always uses the I/O-logging subclass so each call can fold into the
-    canonical trace as an ``lm.call`` event when a GACT turn is active. The
-    JSONL mirror stays gated on ``CLIO_LOG_LM_IO`` (empty path = no file). With
-    no active turn and no log path the capture is a cheap no-op.
+    Always uses the trace-emitting subclass so each call folds into the canonical
+    trace when a GACT turn is active; a cheap no-op otherwise (CLI/optimizer).
     """
     dspy = _dspy()
-    lm = _io_logging_lm_cls()(model=model, **lm_kwargs)
-    lm._clio_io_log_path = _resolve_lm_io_log_path()
-    return lm
+    return _io_logging_lm_cls()(model=model, **lm_kwargs)
 
 
 def create_lm(config: LMProviderConfig) -> dspy.LM:
