@@ -157,6 +157,79 @@ def test_streamed_call_propagates_lm_error(monkeypatch):
         lm._clio_streamed_call(messages=[{"role": "user", "content": "hi"}])
 
 
+class _FakeMidStreamFallbackError(Exception):
+    pass
+
+
+class _FakeAdapterParseError(Exception):
+    pass
+
+
+def test_is_transient_provider_error_classifies():
+    # Transient infra failures -> retry.
+    assert cfg._is_transient_provider_error(_FakeMidStreamFallbackError("boom"))
+    assert cfg._is_transient_provider_error(
+        RuntimeError("OpenAIException - The model has crashed without additional info")
+    )
+    assert cfg._is_transient_provider_error(ConnectionError("Connection error"))
+    # NOT transient -> the repair loop owns these, never retried as transient.
+    assert not cfg._is_transient_provider_error(_FakeAdapterParseError("bad fields"))
+    assert not cfg._is_transient_provider_error(ValueError("provider exploded"))
+
+
+def test_call_retries_transient_then_succeeds(monkeypatch):
+    lm = cfg._io_logging_lm_cls()(model="openai/dummy")
+    monkeypatch.setattr(cfg, "_lm_transient_retries", lambda: 2)
+    monkeypatch.setattr(cfg, "_lm_transient_backoff_s", lambda: 0.0)
+
+    calls = {"n": 0}
+
+    def flaky_once(self, prompt=None, messages=None, **kwargs):  # noqa: ANN001
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise _FakeMidStreamFallbackError("the model has crashed")
+        return ["RECOVERED"]
+
+    monkeypatch.setattr(type(lm), "_clio_invoke_once", flaky_once, raising=False)
+    out = lm(messages=[{"role": "user", "content": "hi"}])
+    assert out == ["RECOVERED"]
+    assert calls["n"] == 2  # crashed once, retried once, succeeded
+
+
+def test_call_does_not_retry_non_transient(monkeypatch):
+    lm = cfg._io_logging_lm_cls()(model="openai/dummy")
+    monkeypatch.setattr(cfg, "_lm_transient_retries", lambda: 3)
+    monkeypatch.setattr(cfg, "_lm_transient_backoff_s", lambda: 0.0)
+
+    calls = {"n": 0}
+
+    def always_parse_error(self, prompt=None, messages=None, **kwargs):  # noqa: ANN001
+        calls["n"] += 1
+        raise _FakeAdapterParseError("missing fields")
+
+    monkeypatch.setattr(type(lm), "_clio_invoke_once", always_parse_error, raising=False)
+    with pytest.raises(_FakeAdapterParseError):
+        lm(messages=[{"role": "user", "content": "hi"}])
+    assert calls["n"] == 1  # parse errors are NOT retried as transient
+
+
+def test_call_exhausts_transient_retries_then_raises(monkeypatch):
+    lm = cfg._io_logging_lm_cls()(model="openai/dummy")
+    monkeypatch.setattr(cfg, "_lm_transient_retries", lambda: 2)
+    monkeypatch.setattr(cfg, "_lm_transient_backoff_s", lambda: 0.0)
+
+    calls = {"n": 0}
+
+    def always_crash(self, prompt=None, messages=None, **kwargs):  # noqa: ANN001
+        calls["n"] += 1
+        raise _FakeMidStreamFallbackError("the model has crashed")
+
+    monkeypatch.setattr(type(lm), "_clio_invoke_once", always_crash, raising=False)
+    with pytest.raises(_FakeMidStreamFallbackError):
+        lm(messages=[{"role": "user", "content": "hi"}])
+    assert calls["n"] == 3  # initial + 2 retries
+
+
 def test_streamed_call_falls_back_when_plumbing_missing(monkeypatch):
     lm = cfg._io_logging_lm_cls()(model="openai/dummy")
 

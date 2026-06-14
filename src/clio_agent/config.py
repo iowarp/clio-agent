@@ -579,6 +579,71 @@ def _token_liveness_enabled() -> bool:
         return True
 
 
+# Substrings (matched against the exception's class-name chain AND its message)
+# that identify a TRANSIENT provider failure worth retrying: a local model process
+# crashing mid-inference (LM Studio "the model has crashed" -> MidStreamFallbackError),
+# a dropped connection, a 503/overloaded backend, or a request timeout. Typed-output
+# / adapter-parse / validation errors are deliberately ABSENT -- those are not
+# transient; the extract/repair loop owns them and they must not be retried here.
+_TRANSIENT_PROVIDER_MARKERS = (
+    "midstreamfallback",
+    "apiconnectionerror",
+    "serviceunavailable",
+    "internalservererror",
+    "apitimeouterror",
+    "the model has crashed",
+    "connection error",
+    "remote end closed connection",
+    "connection reset",
+    "overloaded",
+)
+
+
+def _is_transient_provider_error(exc: BaseException) -> bool:
+    """True for transient provider/infrastructure failures that a re-issue can heal
+    (vs. typed-output/parse errors, which are the repair loop's job, not retried)."""
+    names = " ".join(base.__name__.lower() for base in type(exc).__mro__)
+    text = f"{names} {exc}".lower()
+    return any(marker in text for marker in _TRANSIENT_PROVIDER_MARKERS)
+
+
+def _lm_transient_retries() -> int:
+    """Bounded retries for a transient provider failure (default 2)."""
+    try:
+        from clio_agent.conf import as_float, resolve  # noqa: PLC0415
+
+        return max(
+            0,
+            int(
+                resolve(
+                    "limits.lm_transient_retries",
+                    env="CLIO_LM_TRANSIENT_RETRIES",
+                    default=2.0,
+                    cast=as_float,
+                )
+            ),
+        )
+    except Exception:  # noqa: BLE001 - never let config break a call
+        return 2
+
+
+def _lm_transient_backoff_s() -> float:
+    """Backoff before re-issuing after a transient failure (default 8s -- enough for
+    LM Studio to JIT-reload a crashed local model on the next request)."""
+    try:
+        from clio_agent.conf import as_float, resolve  # noqa: PLC0415
+
+        value = resolve(
+            "limits.lm_transient_backoff_s",
+            env="CLIO_LM_TRANSIENT_BACKOFF_S",
+            default=8.0,
+            cast=as_float,
+        )
+        return value if value >= 0 else 8.0
+    except Exception:  # noqa: BLE001 - never let config break a call
+        return 8.0
+
+
 _IO_LOGGING_LM_CLS: Any = None
 
 
@@ -601,6 +666,31 @@ def _io_logging_lm_cls() -> Any:
         """
 
         def __call__(self, prompt=None, messages=None, **kwargs):  # type: ignore[override]
+            # Bounded retry on TRANSIENT provider failures -- e.g. a local model
+            # process crashing mid-inference (LM Studio "the model has crashed" ->
+            # MidStreamFallbackError), a dropped connection, or a 503. These abort a
+            # turn that is otherwise healthy (here: the parent crashed while routing,
+            # AFTER the catalog had already ranked 71 stations). A short backoff lets
+            # the provider JIT-reload the crashed model and the call is re-issued.
+            # Typed-output/parse/validation errors are NOT transient -- the extract
+            # repair loop owns those -- and propagate immediately on the first try.
+            attempts = _lm_transient_retries() + 1
+            last_exc: BaseException | None = None
+            for attempt in range(attempts):
+                try:
+                    return self._clio_invoke_once(prompt, messages, **kwargs)
+                except BaseException as exc:  # noqa: BLE001 - re-raised unless transient
+                    last_exc = exc
+                    if attempt + 1 < attempts and _is_transient_provider_error(exc):
+                        import time as _time  # noqa: PLC0415
+
+                        _time.sleep(_lm_transient_backoff_s())
+                        continue
+                    raise
+            assert last_exc is not None  # unreachable; loop returns or raises
+            raise last_exc
+
+        def _clio_invoke_once(self, prompt=None, messages=None, **kwargs):  # type: ignore[no-untyped-def]
             # Token-streaming liveness: when enabled AND this call is synchronous
             # (outside a running event loop -- i.e. an executor-run expert call),
             # drive it streamed so each chunk refreshes the no-progress watchdog.
