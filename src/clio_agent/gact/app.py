@@ -6606,6 +6606,30 @@ async def _run_turn_in_background(
             len(str(getattr(_pred, "next_task", "") or "")),
             len(str(getattr(_pred, "answer", "") or "")),
         )
+        # Per-expert capture: one expert.response.completed per dynamic-agent run
+        # (child or parent-resume), carrying that expert's full reasoning +
+        # trajectory via _prediction_summary. Closes the nested-expert capture
+        # gap -- each expert's own LM output is recorded under the turn's trace,
+        # correlated by actor agent_id and the parent_expert in blueprint.
+        _agent_meta = getattr(agent_def, "metadata", {}) or {}
+        _emit_semantic_event(
+            app,
+            sid,
+            "expert.response.completed",
+            turn_id=turn_id,
+            trace_id=trace_id,
+            summary=f"Expert {getattr(agent_def, 'id', '?')} produced a response.",
+            actor={"agent_id": str(getattr(agent_def, "id", "") or "")},
+            blueprint={
+                "agent_blueprint_id": str(_agent_meta.get("agent_blueprint_id") or ""),
+                "parent_expert": str(getattr(agent_def, "parent_id", "") or ""),
+            },
+            provider={
+                "provider_id": str(getattr(agent_def, "default_provider", "") or ""),
+                "model_id": str(getattr(agent_def, "default_model", "") or ""),
+            },
+            payload=_prediction_summary(_pred),
+        )
         return _pred
 
     async def _execute_delegated_experts(
@@ -8379,6 +8403,14 @@ async def _run_turn_in_background(
         completed_payload["error_info"] = error_info.model_dump(exclude_none=True)
     if assistant_metadata:
         completed_payload["metadata"] = assistant_metadata
+    # Embed the full final assistant message in the DURABLE turn.completed so the
+    # messages store is derivable from the canonical trace (the trace is the
+    # source of truth). final_message is in SENSITIVE_KEYS, so the SSE projection
+    # strips it -- the message already streams to clients via message.* events.
+    semantic_completed_payload = {
+        **completed_payload,
+        "final_message": assistant_msg.model_dump(exclude_none=True),
+    }
     _emit_semantic_event(
         app,
         sid,
@@ -8393,7 +8425,7 @@ async def _run_turn_in_background(
         ),
         actor={"agent_id": selected_agent or "orchestrator"},
         subject={"message_id": assistant_msg.id},
-        payload=completed_payload,
+        payload=semantic_completed_payload,
     )
     bus.publish(
         Event(

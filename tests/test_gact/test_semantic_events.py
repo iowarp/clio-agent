@@ -96,6 +96,16 @@ def test_semantic_events_stream_and_trace_file(tmp_path: Path, monkeypatch) -> N
     )
     assert str(sse_request["payload"]["input"]).startswith("[redacted]")
 
+    # turn.completed embeds the full final assistant message in the DURABLE trace
+    # (messages store is derivable from the trace) but strips it from SSE.
+    completed_row = next(row for row in rows if row["event_type"] == "turn.completed")
+    assert isinstance(completed_row["payload"]["final_message"], dict)
+    assert completed_row["payload"]["final_message"]["id"]
+    sse_completed = next(
+        e.payload for e in semantic_events if e.payload["event_type"] == "turn.completed"
+    )
+    assert str(sse_completed["payload"]["final_message"]).startswith("[redacted]")
+
 
 def test_full_debug_trace_includes_llm_payload(tmp_path: Path, monkeypatch) -> None:
     from .conftest import complete_turn

@@ -50,6 +50,10 @@ SENSITIVE_KEYS = {
     "trajectory",
     "transcript",
     "user_input",
+    # Full final assistant message embedded in turn.completed for the durable
+    # trace (so the messages store is derivable from the trace); stripped from
+    # the SSE projection where the message already streams via message.* events.
+    "final_message",
 }
 
 # The "body" fields of a SemanticEvent — these carry the rich, potentially
@@ -176,7 +180,9 @@ class SemanticEvent:
             "occurred_at": self.occurred_at,
         }
         if projection == "full":
-            bodies = {field_name: _json_safe(getattr(self, field_name)) for field_name in _BODY_FIELDS}
+            bodies = {
+                field_name: _json_safe(getattr(self, field_name)) for field_name in _BODY_FIELDS
+            }
         elif projection in ("metadata", "off", "none"):
             bodies = {field_name: {} for field_name in _BODY_FIELDS}
         else:  # "sse" (and any unknown) → honor the event's detail_level
@@ -240,8 +246,7 @@ class SemanticTraceBackend(Protocol):
 
     name: str
 
-    def emit(self, event: SemanticEvent) -> None:
-        ...
+    def emit(self, event: SemanticEvent) -> None: ...
 
 
 class NoopSemanticTraceBackend:
@@ -315,8 +320,7 @@ def build_trace_backend(default_root: Path) -> SemanticTraceBackend:
         factory_path = os.environ.get("CLIO_SEMANTIC_TRACE_FACTORY", "").strip()
         if not factory_path:
             raise ValueError(
-                "CLIO_SEMANTIC_TRACE_FACTORY is required when "
-                "CLIO_SEMANTIC_TRACE_BACKEND=factory"
+                "CLIO_SEMANTIC_TRACE_FACTORY is required when CLIO_SEMANTIC_TRACE_BACKEND=factory"
             )
         factory = _load_factory(factory_path)
         raw_config = os.environ.get("CLIO_SEMANTIC_TRACE_CONFIG", "").strip()
