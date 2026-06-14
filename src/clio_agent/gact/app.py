@@ -388,8 +388,15 @@ def _emit_semantic_event(
     provider: Optional[dict[str, Any]] = None,
     payload: Optional[dict[str, Any]] = None,
     live_observed: bool = True,
+    detail_level: Optional[str] = None,
 ) -> dict[str, Any]:
-    """Emit one semantic event if the app has the semantic sink wired."""
+    """Emit one semantic event if the app has the semantic sink wired.
+
+    ``detail_level`` overrides the app-wide SSE detail for this event only.
+    Pass ``"off"`` for high-volume durable-only captures (e.g. ``lm.call``):
+    the durable backend still records the FULL event, but SSE/hooks are skipped
+    so the wire/UI is not flooded.
+    """
 
     state = getattr(app, "state", None)
     sink = getattr(state, "semantic_event_sink", None)
@@ -421,7 +428,11 @@ def _emit_semantic_event(
         provider=provider or {},
         payload=event_payload,
         live_observed=live_observed,
-        detail_level=getattr(app.state, "semantic_trace_detail_level", DEFAULT_DETAIL_LEVEL),
+        detail_level=(
+            detail_level
+            if detail_level is not None
+            else getattr(app.state, "semantic_trace_detail_level", DEFAULT_DETAIL_LEVEL)
+        ),
     )
     return sink.emit(event)
 

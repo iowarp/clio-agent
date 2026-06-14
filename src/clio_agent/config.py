@@ -595,10 +595,41 @@ def _io_logging_lm_cls() -> Any:
             finally:
                 self._clio_log_last_call()
 
+        @staticmethod
+        def _clio_trace_target() -> Any:
+            """Return the active GACT trace target (app, sid, turn, trace, emit)
+            or None. Lazily imports app to avoid an import cycle; resolves the
+            turn-scoped contextvars copied into the executor running this call."""
+            try:
+                from clio_agent.gact.app import (  # noqa: PLC0415
+                    _ACTIVE_GACT_APP,
+                    _ACTIVE_GACT_SESSION_ID,
+                    _ACTIVE_GACT_TRACE_ID,
+                    _ACTIVE_GACT_TURN_ID,
+                    _emit_semantic_event,
+                )
+            except Exception:  # noqa: BLE001 - app may be unavailable (CLI/optimizer paths)
+                return None
+            app = _ACTIVE_GACT_APP.get()
+            sid = _ACTIVE_GACT_SESSION_ID.get()
+            if app is None or not sid:
+                return None
+            return (
+                app,
+                sid,
+                _ACTIVE_GACT_TURN_ID.get(),
+                _ACTIVE_GACT_TRACE_ID.get(),
+                _emit_semantic_event,
+            )
+
         def _clio_log_last_call(self) -> None:
             import json as _json  # noqa: PLC0415
 
             try:
+                target = self._clio_trace_target()
+                # No consumer (no JSONL mirror, no live trace) -> skip the work.
+                if not self._clio_io_log_path and target is None:
+                    return
                 history = getattr(self, "history", None) or []
                 if not history or not isinstance(history[-1], dict):
                     return
@@ -640,8 +671,32 @@ def _io_logging_lm_cls() -> Any:
                     "usage": entry.get("usage"),
                     "timestamp": entry.get("timestamp"),
                 }
-                with open(self._clio_io_log_path, "a", encoding="utf-8") as fh:
-                    fh.write(_json.dumps(record, default=str) + "\n")
+                # JSONL mirror (when CLIO_LOG_LM_IO set) -- a projection of the trace.
+                if self._clio_io_log_path:
+                    with open(self._clio_io_log_path, "a", encoding="utf-8") as fh:
+                        fh.write(_json.dumps(record, default=str) + "\n")
+                # Fold the recorder into the canonical trace as a DURABLE-ONLY
+                # lm.call event: this is the one place an expert call's raw
+                # messages + reasoning_content are reliably visible (expert LMs
+                # run in executors the settle path can't reach), captured on the
+                # failure path too. detail_level="off" keeps it off SSE/UI.
+                if target is not None:
+                    app, sid, turn_id, trace_id, emit = target
+                    try:
+                        emit(
+                            app,
+                            sid,
+                            "lm.call",
+                            turn_id=turn_id,
+                            trace_id=trace_id,
+                            status="completed",
+                            summary=f"LM call ({record['finish_reason'] or 'ok'}).",
+                            provider={"model_id": str(record["model"] or "")},
+                            payload=record,
+                            detail_level="off",
+                        )
+                    except Exception:  # noqa: BLE001 - capture must never fail a call
+                        pass
             except Exception:  # noqa: BLE001 - logging is best-effort, never fail a call
                 pass
 
@@ -650,13 +705,16 @@ def _io_logging_lm_cls() -> Any:
 
 
 def _construct_lm(*, model: str, **lm_kwargs: Any) -> dspy.LM:
-    """Construct a dspy.LM, swapping in the I/O-logging subclass when enabled."""
+    """Construct a dspy.LM that captures every call's full I/O.
+
+    Always uses the I/O-logging subclass so each call can fold into the
+    canonical trace as an ``lm.call`` event when a GACT turn is active. The
+    JSONL mirror stays gated on ``CLIO_LOG_LM_IO`` (empty path = no file). With
+    no active turn and no log path the capture is a cheap no-op.
+    """
     dspy = _dspy()
-    log_path = _resolve_lm_io_log_path()
-    if not log_path:
-        return dspy.LM(model=model, **lm_kwargs)
     lm = _io_logging_lm_cls()(model=model, **lm_kwargs)
-    lm._clio_io_log_path = log_path
+    lm._clio_io_log_path = _resolve_lm_io_log_path()
     return lm
 
 
@@ -841,7 +899,10 @@ def _provider_lm_kwargs(config: LMProviderConfig) -> dict[str, Any]:
     # by Qwen chat templates (verified: 8327 reasoning chars/43s → 0 chars/0.8s).
     if os.environ.get("CLIO_LM_DISABLE_THINKING", "").strip().lower() in {"1", "true", "yes"}:
         body = dict(extras.get("extra_body") or {})
-        body["chat_template_kwargs"] = {**body.get("chat_template_kwargs", {}), "enable_thinking": False}
+        body["chat_template_kwargs"] = {
+            **body.get("chat_template_kwargs", {}),
+            "enable_thinking": False,
+        }
         extras["extra_body"] = body
     if config.provider == "codex":
         extras["codex_transport"] = config.codex_transport
@@ -1083,7 +1144,11 @@ def create_chat_adapter(config: LMProviderConfig) -> Any:
     re-request). ``CLIO_DISABLE_JSON_ADAPTER_FALLBACK`` force-disables it anywhere.
     """
     use_json_fallback = not is_local_openai_compatible_backend(config)
-    if os.environ.get("CLIO_DISABLE_JSON_ADAPTER_FALLBACK", "").strip().lower() in {"1", "true", "yes"}:
+    if os.environ.get("CLIO_DISABLE_JSON_ADAPTER_FALLBACK", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+    }:
         use_json_fallback = False
     return _lenient_chat_adapter_cls()(use_json_adapter_fallback=use_json_fallback)
 
