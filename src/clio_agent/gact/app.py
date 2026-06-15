@@ -4418,15 +4418,19 @@ def _extract_repair_attempts() -> int:
 def _repair_temperature(base: float, repair_index: int) -> float:
     """Temperature for SCHEMA-REPAIR retry ``repair_index`` (1-based).
 
-    A retry must use temp>0 or it reproduces the same greedy output (dspy
-    _warn_zero_temp_rollout). Bump from a non-zero floor by +0.1 per retry to
-    expand the output space just enough to escape a format miss, capped at 1.0.
-    The ORIGINAL attempt (index 0) keeps the configured base temperature.
+    A retry must SAMPLE (vary) but must NOT raise format drift. clio runs LMs with
+    cache disabled, so a retry at the SAME temp>0 already re-samples a fresh,
+    independent output -- no temperature bump is needed for variation. Bumping temp
+    was actively harmful: higher temp increases structured-format drift (more
+    AdapterParseError / dropped fields), which is the opposite of what the
+    parse-error class needs (verified: a +0.1/retry grind regressed SD vs the
+    constant-temp baseline). So retries reuse the base temperature; the ONLY lift is
+    off greedy decoding (temp 0), where every retry would otherwise be identical
+    (dspy _warn_zero_temp_rollout) -- there we sample at a modest non-zero floor.
     """
-    if repair_index <= 0:
+    if repair_index <= 0 or base > 0.0:
         return base
-    floor = base if base > 0.0 else 0.5
-    return min(1.0, floor + 0.1 * repair_index)
+    return 0.5
 
 
 def _is_repairable_typed_output_error(exc: BaseException) -> bool:

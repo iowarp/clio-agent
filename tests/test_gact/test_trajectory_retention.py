@@ -22,18 +22,16 @@ class _AttrDict(dict):
             raise AttributeError(name) from exc
 
 
-def test_repair_temperature_bumps_and_floors():
-    # Original attempt keeps the configured base.
+def test_repair_temperature_constant_no_drift():
+    # Retries REUSE the base temp (cache-off resampling already varies them; bumping
+    # temp would raise format drift, which the parse-error class can't tolerate).
     assert gact_app._repair_temperature(0.6, 0) == 0.6
-    assert gact_app._repair_temperature(0.0, 0) == 0.0
-    # Retries bump +0.1 per attempt from the base.
-    assert gact_app._repair_temperature(0.6, 1) == pytest.approx(0.7)
-    assert gact_app._repair_temperature(0.6, 2) == pytest.approx(0.8)
-    # A temp-0 model still gets temp>0 on retry (else the retry is identical/greedy).
-    assert gact_app._repair_temperature(0.0, 1) == pytest.approx(0.6)  # floor 0.5 + 0.1
-    assert gact_app._repair_temperature(0.0, 1) > 0.0
-    # Capped at 1.0.
-    assert gact_app._repair_temperature(0.9, 9) == 1.0
+    assert gact_app._repair_temperature(0.6, 1) == 0.6  # no bump
+    assert gact_app._repair_temperature(0.6, 3) == 0.6  # no bump, no escalation
+    # The ONLY lift is off greedy temp 0 (else every retry is identical/deterministic).
+    assert gact_app._repair_temperature(0.0, 0) == 0.0  # original stays greedy
+    assert gact_app._repair_temperature(0.0, 1) == 0.5  # retry samples at a floor
+    assert gact_app._repair_temperature(0.0, 3) == 0.5
 
 
 def test_extract_repair_attempts_default_and_env(monkeypatch):
