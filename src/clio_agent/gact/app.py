@@ -145,7 +145,7 @@ _install_sigusr1_diagnostic()
 
 from collections.abc import Iterable, Mapping
 from contextlib import asynccontextmanager, contextmanager, nullcontext
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -4391,6 +4391,44 @@ def _call_recovered_dspy_tool(tool: Any, args: Mapping[str, Any]) -> Any:
     raise TypeError(f"tool is not callable: {getattr(tool, 'name', '<unknown>')}")
 
 
+def _extract_repair_attempts() -> int:
+    """How many bounded SCHEMA-REPAIR retries to attempt after the first failure.
+
+    Each retry is an INDEPENDENT sample (see _repair_temperature): dspy/Qwen note
+    that at temperature 0 a retry is identical (greedy), so retries only help at
+    temp>0 -- and a single retry leaves most recoverable cases on the table. Default
+    3 -> at ~80%/attempt recovery, 1-0.2^3 ~ 99%. Override: CLIO_EXTRACT_REPAIR_ATTEMPTS.
+    """
+    try:
+        from clio_agent import conf  # noqa: PLC0415
+
+        n = int(
+            conf.resolve(
+                "limits.extract_repair_attempts",
+                env="CLIO_EXTRACT_REPAIR_ATTEMPTS",
+                default=3.0,
+                cast=conf.as_float,
+            )
+        )
+    except Exception:  # noqa: BLE001 - never let config break a turn
+        return 3
+    return max(0, n)
+
+
+def _repair_temperature(base: float, repair_index: int) -> float:
+    """Temperature for SCHEMA-REPAIR retry ``repair_index`` (1-based).
+
+    A retry must use temp>0 or it reproduces the same greedy output (dspy
+    _warn_zero_temp_rollout). Bump from a non-zero floor by +0.1 per retry to
+    expand the output space just enough to escape a format miss, capped at 1.0.
+    The ORIGINAL attempt (index 0) keeps the configured base temperature.
+    """
+    if repair_index <= 0:
+        return base
+    floor = base if base > 0.0 else 0.5
+    return min(1.0, floor + 0.1 * repair_index)
+
+
 def _is_repairable_typed_output_error(exc: BaseException) -> bool:
     """Whether an expert's failure is a typed-output SCHEMA validation miss that a
     single re-ask can fix -- a required field was DROPPED or set null by a model
@@ -4417,17 +4455,23 @@ def _typed_output_repair_hint(exc: BaseException) -> str:
     has."""
 
     detail = str(exc).replace("\n", " ").strip()
-    if len(detail) > 600:
-        detail = detail[:600] + " …"
+    # Keep BOTH ends: the HEAD shows what the model actually produced (the rejected
+    # response the adapter echoes), the TAIL shows the actionable diff the adapter
+    # appends AFTER it ("Expected to find output fields ... Actual ..." / the missing
+    # field name / "Field required"). A head-only truncation drops exactly the part
+    # the model needs to self-correct.
+    if len(detail) > 1600:
+        detail = f"{detail[:1000]} […] {detail[-600:]}"
     return (
-        "SCHEMA-REPAIR (your previous response was REJECTED by output validation): "
+        "SCHEMA-REPAIR (your previous response was REJECTED by output validation). "
+        "Here is exactly what you produced and why it was rejected:\n"
         f"{detail}\n"
-        "Re-emit your COMPLETE response, fixing exactly that: a REQUIRED field was "
-        "missing or null. Include it with a correct, non-empty value consistent with "
-        "the evidence you already gathered -- e.g. if you set a 'ranked' status you "
-        "MUST also emit the list of station ids you ranked; a required boolean must "
-        "be true or false, never null. Do NOT add keys outside the declared schema, "
-        "and do NOT drop any other required field."
+        "Re-emit your COMPLETE response in the required format, fixing EXACTLY that: a "
+        "REQUIRED output field was missing, null, or unparseable. Emit EVERY declared "
+        "field with a correct, non-empty value consistent with the evidence you already "
+        "gathered (e.g. a 'ranked' status MUST include the list of station ids you "
+        "ranked; a required boolean must be true or false, never null). Do NOT add keys "
+        "outside the declared schema, and do NOT drop any other required field."
     )
 
 
@@ -5614,104 +5658,149 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                     _ck_q[-500:],
                 )
             try:
-                with dspy.context(
-                    lm=create_lm(self.config), adapter=create_chat_adapter(self.config)
-                ):
-                    _repair_hint = ""
-                    for _repair_attempt in range(2):  # original + ONE bounded SCHEMA-REPAIR re-ask
-                        _call_kwargs = (
-                            kwargs
-                            if not _repair_hint
-                            else {**kwargs, "question": f"{kwargs['question']}\n\n{_repair_hint}"}
-                        )
-                        try:
+                adapter = create_chat_adapter(self.config)
+                _base_temp = float(getattr(self.config, "temperature", 0.0) or 0.0)
+                _max_repairs = _extract_repair_attempts()
+                _full_reask_used = False
+                _repair_hint = ""
+                # original attempt + up to _max_repairs bounded SCHEMA-REPAIR retries
+                for _repair_attempt in range(1 + _max_repairs):
+                    # Per-attempt temperature: the original keeps the configured base;
+                    # each retry bumps temp so it is a genuinely INDEPENDENT sample (a
+                    # temp-0 retry reproduces the same greedy output and cannot recover
+                    # -- dspy _warn_zero_temp_rollout).
+                    _attempt_temp = _repair_temperature(_base_temp, _repair_attempt)
+                    _attempt_config = (
+                        self.config
+                        if _attempt_temp == _base_temp
+                        else replace(self.config, temperature=_attempt_temp)
+                    )
+                    _call_kwargs = (
+                        kwargs
+                        if not _repair_hint
+                        else {**kwargs, "question": f"{kwargs['question']}\n\n{_repair_hint}"}
+                    )
+                    try:
+                        with dspy.context(lm=create_lm(_attempt_config), adapter=adapter):
                             result = self.program(**_call_kwargs)
-                            break
-                        except _BlueprintTerminalWorkflowState as terminal_exc:
-                            terminal_state = terminal_exc.result.get("clio_runtime", {}).get(
-                                "workflow_state", {}
-                            )
-                            terminal_mapping = (
-                                dict(terminal_state) if isinstance(terminal_state, Mapping) else {}
-                            )
-                            result = dspy.Prediction(
-                                answer="The workflow reached a terminal typed state.",
-                                workflow_state=terminal_mapping,
-                                evidence=[terminal_exc.result],
-                                artifacts=[],
-                                errors=[],
-                                delegation={},
-                                trajectory=None,
-                                tools_called=[],
-                            )
-                            break
-                        except Exception as exc:
-                            # Capture the failed extract WITH its retained trajectory
-                            # before doing anything else, so the canonical trace records
-                            # what the model produced even when the repair recovers it.
-                            _emit_blueprint_llm_failure(self.agent_def, self.kind, exc)
-                            # Bounded repair: a typed-output SCHEMA validation miss (a
-                            # required field dropped/null by a model that HAS the data)
-                            # is re-askable -- feed the error back and let the SAME
-                            # expert re-emit ONCE. clio's documented behavior is to
-                            # RE-ASK when something is missing; this wires it for a
-                            # ValidationError, not just missing handoffs. Not a default,
-                            # not hiding -- the model corrects its own drop.
-                            if _repair_attempt == 0 and _is_repairable_typed_output_error(exc):
-                                hint = _typed_output_repair_hint(exc)
-                                if self.kind == "react":
-                                    # Re-run ONLY the final extract over the
-                                    # retained trajectory (S4a): the tool loop
-                                    # already gathered the evidence; the failure
-                                    # is purely the typed-output format.
-                                    reextracted = _reextract_over_retained_trajectory(
-                                        self.program, hint
-                                    )
+                        break
+                    except _BlueprintTerminalWorkflowState as terminal_exc:
+                        terminal_state = terminal_exc.result.get("clio_runtime", {}).get(
+                            "workflow_state", {}
+                        )
+                        terminal_mapping = (
+                            dict(terminal_state) if isinstance(terminal_state, Mapping) else {}
+                        )
+                        result = dspy.Prediction(
+                            answer="The workflow reached a terminal typed state.",
+                            workflow_state=terminal_mapping,
+                            evidence=[terminal_exc.result],
+                            artifacts=[],
+                            errors=[],
+                            delegation={},
+                            trajectory=None,
+                            tools_called=[],
+                        )
+                        break
+                    except Exception as exc:
+                        # Capture the failed extract WITH its retained trajectory before
+                        # anything else, so the canonical trace records what the model
+                        # produced even when the repair recovers it.
+                        _emit_blueprint_llm_failure(self.agent_def, self.kind, exc)
+                        _eid = getattr(self.agent_def, "id", "?")
+                        _esum = str(exc).replace("\n", " ")[:160]
+                        # Bounded SCHEMA-REPAIR: a typed-output validation/parse miss (a
+                        # required field dropped/null/unparseable by a model that HAS the
+                        # evidence) is re-askable. Each retry is an independent sample at a
+                        # bumped temperature; the model corrects its own drop (not a
+                        # default, not hiding).
+                        if _repair_attempt < _max_repairs and _is_repairable_typed_output_error(
+                            exc
+                        ):
+                            hint = _typed_output_repair_hint(exc)
+                            if self.kind == "react":
+                                retained = _ACTIVE_REACT_TRAJECTORY.get()
+                                has_traj = isinstance(retained, dict) and bool(
+                                    retained.get("trajectory")
+                                )
+                                if has_traj:
+                                    # Extract-format miss: re-run ONLY the final extract
+                                    # over the retained trajectory, multiple times at
+                                    # increasing temperature (cheap; no tool-loop restart).
+                                    reextracted = None
+                                    for _re_i in range(1, _max_repairs + 1):
+                                        _re_temp = _repair_temperature(_base_temp, _re_i)
+                                        with dspy.context(
+                                            lm=create_lm(
+                                                replace(self.config, temperature=_re_temp)
+                                            ),
+                                            adapter=adapter,
+                                        ):
+                                            reextracted = _reextract_over_retained_trajectory(
+                                                self.program, hint
+                                            )
+                                        if reextracted is not None:
+                                            trace.event(
+                                                "SCHEMA-REPAIR",
+                                                "%s :: re-extract-only ok (try %d temp %.2f) :: %s",
+                                                _eid,
+                                                _re_i,
+                                                _re_temp,
+                                                _esum,
+                                            )
+                                            break
                                     if reextracted is not None:
-                                        trace.event(
-                                            "SCHEMA-REPAIR",
-                                            "%s :: re-extract-only :: %s",
-                                            getattr(self.agent_def, "id", "?"),
-                                            str(exc).replace("\n", " ")[:160],
-                                        )
                                         result = reextracted
                                         break
-                                    # No usable trajectory -> do NOT full-re-ask a
-                                    # react expert: restarting the whole tool loop
-                                    # re-bloats the prompt and can stall the
-                                    # provider into a no-progress wedge (the qwopus
-                                    # MODE-A failure). Fall through to recover the
-                                    # partial intent / surface the error so the
-                                    # turn settles fast instead of hanging.
+                                    # All re-extracts failed -> recover intent / surface;
+                                    # do NOT full-re-ask (the tool loop already succeeded,
+                                    # restarting it just re-bloats the prompt).
                                     trace.event(
                                         "SCHEMA-REPAIR",
-                                        "%s :: re-extract unavailable; settling (no full re-ask) :: %s",
-                                        getattr(self.agent_def, "id", "?"),
-                                        str(exc).replace("\n", " ")[:160],
+                                        "%s :: re-extract exhausted (%d tries) :: %s",
+                                        _eid,
+                                        _max_repairs,
+                                        _esum,
                                     )
-                                else:
-                                    # predict/CoT: a single cheap re-ask is fine
-                                    # (no tool loop to restart).
+                                elif not _full_reask_used:
+                                    # No retained trajectory: the model emitted prose and
+                                    # never ran a tool (the no-retry gap). The only repair
+                                    # is a bounded FULL re-ask -- token-liveness now keeps a
+                                    # slow re-ask alive, so it no longer risks the old
+                                    # MODE-A wedge. Bounded to ONE (it restarts the tools).
+                                    _full_reask_used = True
                                     _repair_hint = hint
                                     trace.event(
                                         "SCHEMA-REPAIR",
-                                        "%s :: re-asking once :: %s",
-                                        getattr(self.agent_def, "id", "?"),
-                                        str(exc).replace("\n", " ")[:160],
+                                        "%s :: no trajectory -> bounded full re-ask :: %s",
+                                        _eid,
+                                        _esum,
                                     )
                                     continue
-                            recovered = (
-                                _recover_blueprint_react_tool_intent(
-                                    tools=self.tools,
-                                    exc=exc,
+                            else:
+                                # predict/CoT: re-ask the whole (cheap) program at the next
+                                # attempt's bumped temperature.
+                                _repair_hint = hint
+                                trace.event(
+                                    "SCHEMA-REPAIR",
+                                    "%s :: re-asking (attempt %d) :: %s",
+                                    _eid,
+                                    _repair_attempt + 1,
+                                    _esum,
                                 )
-                                if self.kind == "react"
-                                else None
+                                continue
+                        recovered = (
+                            _recover_blueprint_react_tool_intent(
+                                tools=self.tools,
+                                exc=exc,
                             )
-                            if recovered is None:
-                                raise
-                            result = recovered
-                            break
+                            if self.kind == "react"
+                            else None
+                        )
+                        if recovered is None:
+                            raise
+                        result = recovered
+                        break
             finally:
                 if blueprint_tool_rows_token is not None:
                     _ACTIVE_BLUEPRINT_TOOL_ROWS.reset(blueprint_tool_rows_token)
