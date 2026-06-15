@@ -724,13 +724,38 @@ def _io_logging_lm_cls() -> Any:
             # json/constructor-repr repair then handles its shape). Normal calls
             # (non-empty content) are untouched.
             outputs = super()._process_completion(response, merged_kwargs)
+            try:
+                choices = list(getattr(response, "choices", None) or [])
+            except Exception:  # noqa: BLE001 - defensive; fall back to no finish info
+                choices = []
+            # A legitimate formatted output (reasoning + answer + workflow_state) is a
+            # few KB; a runaway/truncated chain-of-thought is 100k+ chars. Substituting
+            # a truncated giant CoT as the "output" both fails to parse AND bloats every
+            # downstream prompt (observed: a 132k-char finish='length' reasoning blew a
+            # delegation output to 280k -> 71k-token prompt -> context overflow). So only
+            # fall back to reasoning_content when the response COMPLETED normally
+            # (finish != 'length') and is sanely sized.
+            _MAX_REASONING_FALLBACK_CHARS = 48000
             patched = []
-            for out in outputs:
+            for i, out in enumerate(outputs):
                 if isinstance(out, dict):
                     text = (out.get("text") or "").strip()
-                    rc = (out.get("reasoning_content") or "").strip()
-                    if not text and rc:
-                        out = {**out, "text": out["reasoning_content"]}
+                    rc = out.get("reasoning_content") or ""
+                    finish = ""
+                    if i < len(choices):
+                        ch = choices[i]
+                        finish = str(
+                            getattr(ch, "finish_reason", None)
+                            or (ch.get("finish_reason") if isinstance(ch, dict) else "")
+                            or ""
+                        )
+                    if (
+                        not text
+                        and rc.strip()
+                        and finish != "length"
+                        and len(rc) <= _MAX_REASONING_FALLBACK_CHARS
+                    ):
+                        out = {**out, "text": rc}
                 patched.append(out)
             return patched
 

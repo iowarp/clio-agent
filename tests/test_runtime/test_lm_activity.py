@@ -254,6 +254,55 @@ def test_process_completion_falls_back_to_reasoning_content(monkeypatch):
     assert out[3]["text"] == "WS_FALLBACK"  # whitespace-only content -> fallback
 
 
+def test_process_completion_skips_truncated_runaway_reasoning(monkeypatch):
+    # Regression guard: a runaway/truncated CoT (finish_reason='length', 100k+ chars)
+    # must NOT be substituted -- doing so bloats downstream prompts to context
+    # overflow (observed: 132k reasoning -> 280k delegation output -> 71k-token
+    # prompt -> n_keep > n_ctx).
+    from types import SimpleNamespace
+
+    import dspy.clients.base_lm as base_lm
+
+    def fake_super(self, response, merged_kwargs):  # noqa: ANN001
+        return [{"text": "", "reasoning_content": "X" * 60000}]
+
+    monkeypatch.setattr(base_lm.BaseLM, "_process_completion", fake_super)
+    lm = cfg._io_logging_lm_cls()(model="openai/dummy")
+    resp = SimpleNamespace(choices=[SimpleNamespace(finish_reason="length")])
+    out = lm._process_completion(resp, {})
+    assert out[0]["text"] == ""  # truncated runaway reasoning NOT substituted
+
+
+def test_process_completion_skips_oversized_complete_reasoning(monkeypatch):
+    from types import SimpleNamespace
+
+    import dspy.clients.base_lm as base_lm
+
+    def fake_super(self, response, merged_kwargs):  # noqa: ANN001
+        return [{"text": "", "reasoning_content": "Y" * 60000}]
+
+    monkeypatch.setattr(base_lm.BaseLM, "_process_completion", fake_super)
+    lm = cfg._io_logging_lm_cls()(model="openai/dummy")
+    resp = SimpleNamespace(choices=[SimpleNamespace(finish_reason="stop")])
+    out = lm._process_completion(resp, {})
+    assert out[0]["text"] == ""  # >48k chars: over the size cap, not substituted
+
+
+def test_process_completion_substitutes_complete_sane_reasoning(monkeypatch):
+    from types import SimpleNamespace
+
+    import dspy.clients.base_lm as base_lm
+
+    def fake_super(self, response, merged_kwargs):  # noqa: ANN001
+        return [{"text": "", "reasoning_content": '{"next_expert":"synthesis"}'}]
+
+    monkeypatch.setattr(base_lm.BaseLM, "_process_completion", fake_super)
+    lm = cfg._io_logging_lm_cls()(model="openai/dummy")
+    resp = SimpleNamespace(choices=[SimpleNamespace(finish_reason="stop")])
+    out = lm._process_completion(resp, {})
+    assert out[0]["text"] == '{"next_expert":"synthesis"}'  # complete + sane -> used
+
+
 def test_process_completion_no_fallback_without_reasoning(monkeypatch):
     import dspy.clients.base_lm as base_lm
 
