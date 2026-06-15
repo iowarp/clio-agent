@@ -9,6 +9,7 @@ so testing it directly is both faithful and deadlock-free.
 
 from __future__ import annotations
 
+import json
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -47,7 +48,13 @@ def _settled_history(
     return app.state.bus._history.get(sid, [])
 
 
-from clio_agent.gact.app import _make_tool_observer, _merge_tool_call_rows, build_app
+from clio_agent.gact.app import (
+    _bounded_tool_call_result,
+    _is_bounded_tool_result,
+    _make_tool_observer,
+    _merge_tool_call_rows,
+    build_app,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -178,6 +185,26 @@ def app_client(tmp_path: Path):
     app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
     client = TestClient(app)
     return app, client
+
+
+def test_bounded_tool_result_is_idempotent_no_nested_preview() -> None:
+    # A bounded result flows across stages (tool -> catalog -> data -> main) and was
+    # re-bounded each hop, nesting preview-of-preview (observed: a geo_filter result
+    # wrapped 22x by turn.completed -> data buried -> staged station unverifiable).
+    big = {
+        "ok": True,
+        "count": 144,
+        "points": [{"Site": f"S{i}", "lat": 47.6, "lon": -122.3} for i in range(1200)],
+    }
+    b1 = _bounded_tool_call_result(big)
+    assert _is_bounded_tool_result(b1)  # got bounded (was > limit)
+    b2 = _bounded_tool_call_result(b1)
+    assert b2 is b1  # idempotent: already-bounded payload is never re-wrapped
+    assert json.dumps(b2).count("original_chars") == 1  # exactly one preview layer
+    # A small (unbounded) result passes through untouched.
+    small = {"ok": True, "count": 1}
+    assert _bounded_tool_call_result(small) == small
+    assert not _is_bounded_tool_result(small)
 
 
 def test_posthoc_tools_called_metadata_does_not_emit_lifecycle_events(app_client) -> None:

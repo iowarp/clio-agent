@@ -3271,6 +3271,8 @@ def _extract_tools_called_from_trajectory(
     rows: list[dict[str, Any]] = []
 
     def bounded_result(value: Any) -> Any:
+        if _is_bounded_tool_result(value):
+            return value  # already bounded -> never re-wrap (idempotent)
         preview = _tool_result_preview(value)
         if len(preview) <= max_result_chars:
             return value
@@ -6005,9 +6007,29 @@ def _tool_call_has_result_evidence(call: Mapping[str, Any]) -> bool:
     return False
 
 
+def _is_bounded_tool_result(value: Any) -> bool:
+    """True if ``value`` is already a bounded-preview payload.
+
+    Bounding must be IDEMPOTENT: a bounded result
+    (``{"preview": ..., "truncated": True, "original_chars": N}``) flows across
+    stages (tool -> catalog -> data -> main) and was being re-bounded at each hop,
+    nesting preview-of-preview-of-preview (observed: a geo_filter result wrapped
+    22x by turn.completed, burying the real data so the staged station could not be
+    verified in-region). Detecting an already-bounded payload here stops the nesting.
+    """
+    return (
+        isinstance(value, Mapping)
+        and value.get("truncated") is True
+        and "preview" in value
+        and "original_chars" in value
+    )
+
+
 def _bounded_tool_call_result(value: Any, *, max_result_chars: int = 12000) -> Any:
     """Return a JSON-safe bounded result payload for assistant metadata."""
 
+    if _is_bounded_tool_result(value):
+        return value  # already bounded -> never re-wrap (idempotent)
     preview = _tool_result_preview(value)
     if len(preview) <= max_result_chars:
         return value
