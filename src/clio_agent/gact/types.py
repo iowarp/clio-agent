@@ -905,6 +905,15 @@ class LMProviderRequest(BaseModel):
     api_key: str = "x"
     temperature: float = 0.0
     max_tokens: int = 0
+    # Sampling surface forwarded to dspy.LM/LiteLLM (None = omit -> the model's own
+    # default). Greedy decoding (temperature 0) makes Qwen-family reasoning models
+    # degenerate into endless repetition; Qwen recommends temp 0.6 / top_p 0.95 /
+    # top_k 20 for thinking mode. top_p/presence_penalty are OpenAI-standard;
+    # top_k/min_p are forwarded via extra_body (llama.cpp / LM Studio / vLLM).
+    top_p: Optional[float] = None
+    top_k: Optional[int] = None
+    min_p: Optional[float] = None
+    presence_penalty: Optional[float] = None
     # Context window requested/expected for the model load. This is
     # not forwarded to DSPy/LiteLLM as a completion parameter; local
     # runtimes such as LM Studio must load the model with this context

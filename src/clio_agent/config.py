@@ -224,6 +224,18 @@ class LMProviderConfig:
     planner_temperature: float = 0.3
     planner_max_tokens: int = 0
     router_temperature: float | None = None
+    # Sampling surface (None = omit -> the provider/model's own default applies).
+    # Greedy decoding (temperature 0) makes Qwen-family REASONING models (qwopus,
+    # nemotron) degenerate into endless verbatim repetition loops -- Qwen's own docs
+    # say DO NOT use greedy decoding and recommend temp 0.6 / top_p 0.95 / top_k 20
+    # for thinking mode. These expose that full sampling surface so a reasoning model
+    # can be driven at its recommended settings instead of the temp-0 default (which
+    # only suits short non-reasoning structured routing). top_p/presence_penalty are
+    # OpenAI-standard; top_k/min_p are forwarded via extra_body (llama.cpp/LM Studio).
+    top_p: float | None = None
+    top_k: int | None = None
+    min_p: float | None = None
+    presence_penalty: float | None = None
     environment: str = "dev"
     codex_transport: Literal["exec", "sdk"] = "exec"
     claude_code_transport: Literal["exec"] = "exec"
@@ -493,6 +505,10 @@ def load_config_from_env() -> LMProviderConfig:
     )
     planner_max_tokens_str = os.environ.get("CLIO_LM_PLANNER_MAX_TOKENS", "")
     max_tokens_str = os.environ.get("CLIO_LM_MAX_TOKENS", "")
+    top_p_str = os.environ.get("CLIO_LM_TOP_P", "")
+    top_k_str = os.environ.get("CLIO_LM_TOP_K", "")
+    min_p_str = os.environ.get("CLIO_LM_MIN_P", "")
+    presence_penalty_str = os.environ.get("CLIO_LM_PRESENCE_PENALTY", "")
 
     kwargs: dict = {
         "provider": provider,
@@ -512,6 +528,14 @@ def load_config_from_env() -> LMProviderConfig:
         kwargs["planner_max_tokens"] = int(planner_max_tokens_str)
     if max_tokens_str:
         kwargs["max_tokens"] = int(max_tokens_str)
+    if top_p_str:
+        kwargs["top_p"] = float(top_p_str)
+    if top_k_str:
+        kwargs["top_k"] = int(top_k_str)
+    if min_p_str:
+        kwargs["min_p"] = float(min_p_str)
+    if presence_penalty_str:
+        kwargs["presence_penalty"] = float(presence_penalty_str)
     if codex_transport:
         kwargs["codex_transport"] = codex_transport
     if claude_code_transport:
@@ -1148,6 +1172,21 @@ def _provider_lm_kwargs(config: LMProviderConfig) -> dict[str, Any]:
             **body.get("chat_template_kwargs", {}),
             "enable_thinking": False,
         }
+        extras["extra_body"] = body
+    # Sampling surface. top_p / presence_penalty are OpenAI-standard (litellm
+    # forwards them directly); top_k / min_p are non-OpenAI, forwarded to the
+    # backend (llama.cpp / LM Studio / vLLM) via extra_body. None -> omit (use the
+    # model's own default).
+    if config.top_p is not None:
+        extras["top_p"] = config.top_p
+    if config.presence_penalty is not None:
+        extras["presence_penalty"] = config.presence_penalty
+    if config.top_k is not None or config.min_p is not None:
+        body = dict(extras.get("extra_body") or {})
+        if config.top_k is not None:
+            body["top_k"] = config.top_k
+        if config.min_p is not None:
+            body["min_p"] = config.min_p
         extras["extra_body"] = body
     if config.provider == "codex":
         extras["codex_transport"] = config.codex_transport

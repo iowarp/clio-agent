@@ -179,6 +179,20 @@ class ClioAgent(SUT):
                     )
                 ),
             }
+            # Sampling surface (env fallbacks for the sampling-exploration grind).
+            # Greedy decoding (temp 0) makes Qwen-family reasoning models degenerate
+            # into repetition loops; this lets a grind force Qwen's recommended
+            # thinking-mode sampling (temp 0.6 / top_p 0.95 / top_k 20) per run.
+            # Only sent when set, so omitted -> the model's own default applies.
+            for _key, _env, _cast in (
+                ("top_p", "CLIO_AGENTTEST_TOP_P", float),
+                ("top_k", "CLIO_AGENTTEST_TOP_K", int),
+                ("min_p", "CLIO_AGENTTEST_MIN_P", float),
+                ("presence_penalty", "CLIO_AGENTTEST_PRESENCE_PENALTY", float),
+            ):
+                _val = self._overrides.get(_key, os.environ.get(_env, ""))
+                if _val not in ("", None):
+                    payload[_key] = _cast(_val)
             if "system_prompt" in self._overrides:
                 payload["system_prompt"] = self._overrides["system_prompt"]
             http.put("/v1/providers/lm", json=payload, timeout=180.0).raise_for_status()

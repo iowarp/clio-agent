@@ -157,6 +157,33 @@ def test_streamed_call_propagates_lm_error(monkeypatch):
         lm._clio_streamed_call(messages=[{"role": "user", "content": "hi"}])
 
 
+def test_provider_lm_kwargs_exposes_sampling_surface():
+    c = cfg.LMProviderConfig(
+        provider="lm_studio",
+        model="qwopus3.5-9b-v3",
+        top_p=0.95,
+        top_k=20,
+        min_p=0.0,
+        presence_penalty=0.5,
+    )
+    extras = cfg._provider_lm_kwargs(c)
+    # OpenAI-standard -> direct kwargs.
+    assert extras["top_p"] == 0.95
+    assert extras["presence_penalty"] == 0.5
+    # Non-OpenAI -> extra_body (llama.cpp/LM Studio/vLLM).
+    assert extras["extra_body"]["top_k"] == 20
+    assert extras["extra_body"]["min_p"] == 0.0
+
+
+def test_provider_lm_kwargs_omits_unset_sampling():
+    c = cfg.LMProviderConfig(provider="lm_studio", model="m")
+    extras = cfg._provider_lm_kwargs(c)
+    assert "top_p" not in extras
+    assert "presence_penalty" not in extras
+    assert "top_k" not in (extras.get("extra_body") or {})
+    assert "min_p" not in (extras.get("extra_body") or {})
+
+
 class _FakeMidStreamFallbackError(Exception):
     pass
 

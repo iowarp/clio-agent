@@ -21430,6 +21430,10 @@ def build_app(
                 api_key=resolved_api_key or "x",
                 temperature=req.temperature,
                 max_tokens=req.max_tokens,
+                top_p=req.top_p,
+                top_k=req.top_k,
+                min_p=req.min_p,
+                presence_penalty=req.presence_penalty,
                 thinking_budget=req.thinking_budget,
                 codex_transport=req.transport or "exec",
             )
