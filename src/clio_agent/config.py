@@ -615,6 +615,7 @@ _TRANSIENT_PROVIDER_MARKERS = (
     "serviceunavailable",
     "internalservererror",
     "apitimeouterror",
+    "timeout",  # httpx ReadTimeout/ConnectTimeout/TimeoutException, litellm.Timeout
     "the model has crashed",
     "connection error",
     "remote end closed connection",

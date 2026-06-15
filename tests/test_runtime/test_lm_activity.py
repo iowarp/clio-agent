@@ -199,6 +199,13 @@ def test_is_transient_provider_error_classifies():
         RuntimeError("OpenAIException - The model has crashed without additional info")
     )
     assert cfg._is_transient_provider_error(ConnectionError("Connection error"))
+
+    # httpx/litellm timeouts are transient (provider slowness/stall) -> retry.
+    class ReadTimeout(Exception):
+        pass
+
+    assert cfg._is_transient_provider_error(ReadTimeout("Read timed out"))
+    assert cfg._is_transient_provider_error(TimeoutError("request timeout"))
     # NOT transient -> the repair loop owns these, never retried as transient.
     assert not cfg._is_transient_provider_error(_FakeAdapterParseError("bad fields"))
     assert not cfg._is_transient_provider_error(ValueError("provider exploded"))
