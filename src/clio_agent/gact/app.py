@@ -5665,7 +5665,6 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                 adapter = create_chat_adapter(self.config)
                 _base_temp = float(getattr(self.config, "temperature", 0.0) or 0.0)
                 _max_repairs = _extract_repair_attempts()
-                _full_reask_used = False
                 _repair_hint = ""
                 # original attempt + up to _max_repairs bounded SCHEMA-REPAIR retries
                 for _repair_attempt in range(1 + _max_repairs):
@@ -5766,18 +5765,22 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                                         _max_repairs,
                                         _esum,
                                     )
-                                elif not _full_reask_used:
-                                    # No retained trajectory: the model emitted prose and
-                                    # never ran a tool (the no-retry gap). The only repair
-                                    # is a bounded FULL re-ask -- token-liveness now keeps a
-                                    # slow re-ask alive, so it no longer risks the old
-                                    # MODE-A wedge. Bounded to ONE (it restarts the tools).
-                                    _full_reask_used = True
+                                else:
+                                    # No retained trajectory: the model failed at the FIRST
+                                    # react step -- it emitted PROSE instead of the
+                                    # next_tool_name/next_tool_args fields and ran NO tools
+                                    # (observed: ndp_dataset_discovery wrote "I need to
+                                    # execute three tool calls..." as prose). So a full
+                                    # re-ask is CHEAP (nothing to restart) and each is an
+                                    # INDEPENDENT sample that may format correctly. Re-ask up
+                                    # to _max_repairs via the outer loop (not just once);
+                                    # token-liveness keeps a slow re-ask alive.
                                     _repair_hint = hint
                                     trace.event(
                                         "SCHEMA-REPAIR",
-                                        "%s :: no trajectory -> bounded full re-ask :: %s",
+                                        "%s :: no trajectory -> full re-ask (attempt %d) :: %s",
                                         _eid,
+                                        _repair_attempt + 1,
                                         _esum,
                                     )
                                     continue
