@@ -710,6 +710,30 @@ def _io_logging_lm_cls() -> Any:
             finally:
                 self._clio_log_last_call()
 
+        def _process_completion(self, response, merged_kwargs):  # type: ignore[no-untyped-def]
+            # Reasoning-model content<-reasoning_content fallback. Reasoning models
+            # (qwopus, nemotron, ...) intermittently emit the FULL formatted output
+            # into the `reasoning_content` channel and leave `content` EMPTY. dspy's
+            # base adapter parses output["text"] (= content); empty -> {} -> every
+            # field missing -> ValidationError/AdapterParseError. This is the
+            # confirmed dominant cause of qwopus typed-output intermittency (verified
+            # live: a json_schema call returned schema-perfect JSON in
+            # reasoning_content with content=""). When text is empty but
+            # reasoning_content is present, use reasoning_content as the parse text so
+            # the adapter parses the actual output (the LenientChatAdapter's
+            # json/constructor-repr repair then handles its shape). Normal calls
+            # (non-empty content) are untouched.
+            outputs = super()._process_completion(response, merged_kwargs)
+            patched = []
+            for out in outputs:
+                if isinstance(out, dict):
+                    text = (out.get("text") or "").strip()
+                    rc = (out.get("reasoning_content") or "").strip()
+                    if not text and rc:
+                        out = {**out, "text": out["reasoning_content"]}
+                patched.append(out)
+            return patched
+
         @staticmethod
         def _clio_can_stream() -> bool:
             """True only when NOT inside a running event loop.

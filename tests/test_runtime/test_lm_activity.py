@@ -230,6 +230,44 @@ def test_call_exhausts_transient_retries_then_raises(monkeypatch):
     assert calls["n"] == 3  # initial + 2 retries
 
 
+def test_process_completion_falls_back_to_reasoning_content(monkeypatch):
+    # Reasoning models (qwopus) intermittently put the full formatted output in
+    # reasoning_content with content empty; dspy parses output["text"] (content) ->
+    # empty -> all fields missing. The override must substitute reasoning_content
+    # for an empty text, and leave normal outputs untouched.
+    import dspy.clients.base_lm as base_lm
+
+    def fake_super(self, response, merged_kwargs):  # noqa: ANN001
+        return [
+            {"text": "", "reasoning_content": "REASONING_JSON"},  # empty content
+            "plain-string-output",  # text-only -> untouched
+            {"text": "real-content", "reasoning_content": "ignored"},  # has content
+            {"text": "   ", "reasoning_content": "WS_FALLBACK"},  # whitespace content
+        ]
+
+    monkeypatch.setattr(base_lm.BaseLM, "_process_completion", fake_super)
+    lm = cfg._io_logging_lm_cls()(model="openai/dummy")
+    out = lm._process_completion(object(), {})
+    assert out[0]["text"] == "REASONING_JSON"  # empty content -> reasoning_content
+    assert out[1] == "plain-string-output"  # string untouched
+    assert out[2]["text"] == "real-content"  # non-empty content untouched
+    assert out[3]["text"] == "WS_FALLBACK"  # whitespace-only content -> fallback
+
+
+def test_process_completion_no_fallback_without_reasoning(monkeypatch):
+    import dspy.clients.base_lm as base_lm
+
+    def fake_super(self, response, merged_kwargs):  # noqa: ANN001
+        return [{"text": "", "reasoning_content": ""}, {"text": ""}]
+
+    monkeypatch.setattr(base_lm.BaseLM, "_process_completion", fake_super)
+    lm = cfg._io_logging_lm_cls()(model="openai/dummy")
+    out = lm._process_completion(object(), {})
+    # Nothing to fall back to -> text stays empty (real failure surfaces normally).
+    assert out[0]["text"] == ""
+    assert out[1]["text"] == ""
+
+
 def test_streamed_call_falls_back_when_plumbing_missing(monkeypatch):
     lm = cfg._io_logging_lm_cls()(model="openai/dummy")
 
