@@ -26,6 +26,8 @@ jobs:
       id-token: write   # required for PyPI Trusted Publishing (OIDC)
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - uses: astral-sh/setup-uv@v5
         with:

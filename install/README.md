@@ -23,9 +23,9 @@ Windows 10/11).
 
 - `clio-agent` (server, Python) — latest from **PyPI**, installed into a
   managed virtualenv at `$CLIO_PREFIX/clio-agent/.venv`
-- `gact` (TUI binary, Go) — latest **GitHub Release** asset for your
-  OS/arch (`gact-linux-amd64`, `gact-darwin-arm64`,
-  `gact-windows-amd64.exe`, …)
+- `gact` (CLIO-branded TUI binary, Go) — matching `clio-agent`
+  **GitHub Release** asset for your OS/arch (`clio-tui-linux-amd64`,
+  `clio-tui-darwin-arm64`, `clio-tui-windows-amd64.exe`, …)
 - `clio` launcher — a small CLI that boots the server on `:17800` if
   not already running, attaches the TUI, and manages the server
   process (`clio start|stop|restart|status|logs|doctor|report`)
@@ -40,15 +40,15 @@ That's it — no `git`, no `go`.
 
 ## Source-build mode (track unreleased work)
 
-Set `CLIO_REF` and/or `GACT_REF` to a branch/tag to clone-and-build
+Set `CLIO_REF` and optionally `GACT_REF` to a branch/tag to clone-and-build
 instead of using PyPI/GitHub Releases:
 
 ```sh
-# Linux / macOS — build clio-agent from develop, keep released gact
+# Linux / macOS — build clio-agent and its pinned GACT submodule from develop
 CLIO_REF=develop \
   curl -fsSL https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.sh | bash
 
-# Both from source
+# Build clio-agent from source and override the GACT submodule ref
 CLIO_REF=develop GACT_REF=develop \
   curl -fsSL https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.sh | bash
 ```
@@ -63,7 +63,7 @@ Source mode needs:
 
 - `git` (always)
 - `uv` (when `CLIO_REF` is set — Python deps from `uv sync`)
-- `go` 1.26+ (when `GACT_REF` is set — builds the TUI)
+- `go` 1.26+ (source mode builds the CLIO-branded TUI)
 
 If both repos are private and HTTPS clone returns 404, switch to SSH:
 
@@ -75,16 +75,17 @@ CLIO_REF=develop CLIO_GIT_PROTOCOL=ssh \
 ## Pinning a specific release
 
 ```sh
-# Pin the PyPI version for clio-agent and the gact release tag
-CLIO_VERSION=0.5.1 GACT_VERSION=v0.3.0 \
+# Pin the PyPI version and matching clio-agent GitHub release tag
+CLIO_VERSION=0.5.1 \
   curl -fsSL https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.sh | bash
 ```
 
-`CLIO_VERSION` is a PyPI version string (no `v` prefix); `GACT_VERSION`
-is a GitHub Release tag (with `v` prefix). The launcher and uninstaller
-scripts are fetched from the matching `v<CLIO_VERSION>` tag after install.
-Use `CLIO_INSTALLER_REF` only when you intentionally need a different
-launcher-script ref. Leave release pins unset to track "latest".
+`CLIO_VERSION` is a PyPI version string (no `v` prefix). The installer downloads
+`clio-tui-*`, launcher scripts, and uninstallers from the matching
+`v<CLIO_VERSION>` GitHub release. `GACT_VERSION` remains as a legacy escape hatch
+for testing an alternate TUI asset tag. Use `CLIO_INSTALLER_REF` only when you
+intentionally need a different launcher-script ref. Leave release pins unset to
+track "latest".
 
 ## Using `clio`
 

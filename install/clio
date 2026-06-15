@@ -38,6 +38,7 @@ SERVER_LOG="${CLIO_LOG:-$CLIO_PREFIX/clio-server.log}"
 GACT_LOG="$CLIO_PREFIX/gact-stderr.log"
 SERVER_BIN="$CLIO_PREFIX/clio-agent/.venv/bin/clio-agent-gact"
 GACT_BIN="$CLIO_PREFIX/gact"
+CLIO_BRAND_ROOT="$CLIO_PREFIX/clio-agent/branding"
 
 GREEN='\033[0;32m'; YELLOW='\033[0;33m'; RED='\033[0;31m'; RESET='\033[0m'
 say()  { printf "${GREEN}==>${RESET} %s\n" "$*"; }
@@ -228,7 +229,11 @@ main() {
       start_server
       # stdout stays on the terminal so the TUI renders; gact stderr is
       # captured to a log so Go panics survive for bug reports.
-      exec env GACT_BACKEND="http://127.0.0.1:$CLIO_PORT" "$GACT_BIN" "$@" 2>"$GACT_LOG"
+      exec env \
+        GACT_BACKEND="http://127.0.0.1:$CLIO_PORT" \
+        GACT_BRAND="${GACT_BRAND:-clio}" \
+        GACT_BRAND_ROOT="${GACT_BRAND_ROOT:-$CLIO_BRAND_ROOT}" \
+        "$GACT_BIN" "$@" 2>"$GACT_LOG"
       ;;
     start)        start_server ;;
     stop)         stop_server ;;

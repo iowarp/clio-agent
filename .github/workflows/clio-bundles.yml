@@ -1,0 +1,220 @@
+name: CLIO bundles
+
+on:
+  push:
+    tags:
+      - "v*"
+
+env:
+  PNPM_VERSION: "9.15.9"
+  NODE_VERSION: "20.x"
+  GACT_BRAND: clio
+
+jobs:
+  installers:
+    name: installer scripts
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            install/install.sh
+            install/install.ps1
+            install/clio
+            install/clio.cmd
+            install/clio.ps1
+            install/uninstall.sh
+            install/uninstall.ps1
+
+  tui:
+    name: tui · ${{ matrix.goos }}-${{ matrix.goarch }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { goos: linux, goarch: amd64, ext: "" }
+          - { goos: linux, goarch: arm64, ext: "" }
+          - { goos: darwin, goarch: amd64, ext: "" }
+          - { goos: darwin, goarch: arm64, ext: "" }
+          - { goos: windows, goarch: amd64, ext: ".exe" }
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.x"
+      - name: Build CLIO TUI
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+        run: |
+          set -euo pipefail
+          out="clio-tui-${GOOS}-${GOARCH}${{ matrix.ext }}"
+          ./scripts/build_clio_tui.sh "$out"
+          sha256sum "$out" > "$out.sha256"
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            clio-tui-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }}
+            clio-tui-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }}.sha256
+
+  web:
+    name: web bundle
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+          cache-dependency-path: external/gact-tui/apps/pnpm-lock.yaml
+      - name: Install
+        working-directory: external/gact-tui/apps
+        run: pnpm install --frozen-lockfile=false
+      - name: Build CLIO web
+        working-directory: external/gact-tui/apps
+        env:
+          GACT_BRAND_ROOT: ${{ github.workspace }}/branding
+        run: pnpm --filter @clio/web build
+      - name: Package
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          stage="$RUNNER_TEMP/clio-web-stage"
+          mkdir -p "$stage"
+          cp -r external/gact-tui/apps/web/dist "$stage/clio-web-$version"
+          (cd "$stage" && zip -r "clio-web-$version.zip" "clio-web-$version")
+          sha256sum "$stage/clio-web-$version.zip" > "$stage/SHA256SUMS.web.txt"
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ${{ runner.temp }}/clio-web-stage/clio-web-*.zip
+            ${{ runner.temp }}/clio-web-stage/SHA256SUMS.web.txt
+
+  desktop:
+    name: desktop · ${{ matrix.variant }} · ${{ matrix.os }} / ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [lite, bundled]
+        target:
+          - x86_64-pc-windows-msvc
+          - aarch64-apple-darwin
+          - x86_64-apple-darwin
+          - x86_64-unknown-linux-gnu
+        include:
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            bundle-args: "--bundles msi,nsis"
+          - target: aarch64-apple-darwin
+            os: macos-14
+            bundle-args: "--bundles dmg --target aarch64-apple-darwin"
+          - target: x86_64-apple-darwin
+            os: macos-13
+            bundle-args: "--bundles dmg --target x86_64-apple-darwin"
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-22.04
+            bundle-args: "--bundles deb,appimage,rpm"
+          - target: x86_64-unknown-linux-gnu
+            variant: bundled
+            bundle-args: "--bundles deb,rpm"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+          cache-dependency-path: external/gact-tui/apps/pnpm-lock.yaml
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.x"
+      - uses: astral-sh/setup-uv@v5
+        if: matrix.variant == 'bundled'
+      - name: Linux deps
+        if: matrix.os == 'ubuntu-22.04'
+        working-directory: external/gact-tui/apps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libsoup-3.0-dev librsvg2-dev libayatana-appindicator3-dev libdbus-1-dev pkg-config patchelf rpm
+      - name: Install
+        working-directory: external/gact-tui/apps
+        run: pnpm install --frozen-lockfile=false
+      - name: Build sidecar launcher
+        shell: bash
+        run: bash external/gact-tui/apps/desktop/scripts/fetch-sidecar.sh ${{ matrix.target }}
+      - name: Build embedded clio-agent runtime
+        if: matrix.variant == 'bundled' && matrix.os != 'windows-latest'
+        shell: bash
+        run: bash external/gact-tui/apps/desktop/scripts/build-clio-runtime.sh
+        env:
+          CLIO_REF: ${{ github.ref_name }}
+      - name: Build embedded clio-agent runtime (Windows)
+        if: matrix.variant == 'bundled' && matrix.os == 'windows-latest'
+        shell: pwsh
+        working-directory: external/gact-tui/apps/desktop
+        run: ./scripts/build-clio-runtime.ps1 -Ref $env:CLIO_REF
+        env:
+          CLIO_REF: ${{ github.ref_name }}
+      - name: Build web
+        working-directory: external/gact-tui/apps
+        env:
+          GACT_BRAND_ROOT: ${{ github.workspace }}/branding
+        run: pnpm --filter @clio/web build
+      - name: Tauri release build
+        working-directory: external/gact-tui/apps
+        env:
+          GACT_BRAND_ROOT: ${{ github.workspace }}/branding
+          TAURI_SIGNING_PRIVATE_KEY: ""
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
+        run: pnpm --filter @clio/desktop tauri build ${{ matrix.variant == 'bundled' && '--config src-tauri/tauri.bundled.conf.json' || '' }} --config ${{ github.workspace }}/branding/clio/tauri.clio.conf.json ${{ matrix.bundle-args }}
+      - name: Stage artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          stage="$RUNNER_TEMP/clio-desktop-stage"
+          mkdir -p "$stage"
+          root="external/gact-tui/apps/desktop/src-tauri/target/release/bundle"
+          if [ -d "external/gact-tui/apps/desktop/src-tauri/target/${{ matrix.target }}/release/bundle" ]; then
+            root="external/gact-tui/apps/desktop/src-tauri/target/${{ matrix.target }}/release/bundle"
+          fi
+          find "$root" -type f \( -iname '*.exe' -o -iname '*.msi' -o -iname '*.dmg' -o -iname '*.deb' -o -iname '*.AppImage' -o -iname '*.rpm' \) -print0 |
+            while IFS= read -r -d '' f; do
+              base="$(basename "$f")"
+              if [ "${{ matrix.variant }}" = "bundled" ]; then
+                ext="${base##*.}"
+                stem="${base%.*}"
+                base="${stem}-bundled.${ext}"
+              fi
+              cp "$f" "$stage/$base"
+            done
+          (cd "$stage" && sha256sum * > "SHA256SUMS.${{ matrix.target }}.${{ matrix.variant }}.txt")
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ runner.temp }}/clio-desktop-stage/*

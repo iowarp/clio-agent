@@ -29,8 +29,8 @@ The agent runs in three tiers: a main orchestrator (planner loop over registered
 
 ## Quick Start
 
-One line installs `clio-agent` from PyPI, downloads the prebuilt `gact` TUI
-binary for your platform, and drops a `clio` command on your PATH.
+One line installs `clio-agent` from PyPI, downloads the matching CLIO-branded
+TUI binary for your platform, and drops a `clio` command on your PATH.
 
 **Linux / macOS**
 ```sh

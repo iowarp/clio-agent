@@ -71,30 +71,38 @@ def test_matchers_pass_genuine_null_run():
 
 
 def test_region_scoped_catches_bad_region():
-    r = _impact_run(); r.extra["workflow_state"]["region"] = None
+    r = _impact_run()
+    r.extra["workflow_state"]["region"] = None
     assert not region_scoped(r)
-    r2 = _impact_run(); r2.extra["workflow_state"]["region"] = ["{{x}}", 1, 2, 3]
+    r2 = _impact_run()
+    r2.extra["workflow_state"]["region"] = ["{{x}}", 1, 2, 3]
     assert not region_scoped(r2)
 
 
 def test_computed_overlap_catches_hollow_null():
     # overlap "ran" but over zero monitors (smoke/air never acquired) -> reject
-    r = _impact_run(); r.extra["workflow_state"]["impact_overlap"] = {"monitors_total": 0, "monitors_under_smoke": 0}
+    r = _impact_run()
+    r.extra["workflow_state"]["impact_overlap"] = {"monitors_total": 0, "monitors_under_smoke": 0}
     assert not computed_overlap_over_real_monitors(r)
-    r2 = _impact_run(); r2.extra["workflow_state"]["impact_overlap"] = {}
+    r2 = _impact_run()
+    r2.extra["workflow_state"]["impact_overlap"] = {}
     assert not computed_overlap_over_real_monitors(r2)
 
 
 def test_grounded_decision_catches_unfounded_claims():
-    r = _impact_run(); r.extra["workflow_state"]["impact"] = {"present": True, "selected_fire": None}
+    r = _impact_run()
+    r.extra["workflow_state"]["impact"] = {"present": True, "selected_fire": None}
     r.extra["workflow_state"]["fire"] = {}
     assert not grounded_impact_decision(r)  # impact claimed but no fire named
-    r2 = _impact_run(); r2.extra["workflow_state"]["impact"] = {}
+    r2 = _impact_run()
+    r2.extra["workflow_state"]["impact"] = {}
     assert not grounded_impact_decision(r2)  # no decision emitted
-    r3 = _null_run(); r3.extra["workflow_state"]["impact_overlap"] = {"monitors_total": 0, "monitors_under_smoke": 0}
+    r3 = _null_run()
+    r3.extra["workflow_state"]["impact_overlap"] = {"monitors_total": 0, "monitors_under_smoke": 0}
     assert not grounded_impact_decision(r3)  # null claimed but nothing evaluated
 
 
 def test_fused_three_layers_catches_partial_map():
-    r = _impact_run(); r.tool_calls[0].output["layers"] = [{"name": "Fire", "features": 6}]
+    r = _impact_run()
+    r.tool_calls[0].output["layers"] = [{"name": "Fire", "features": 6}]
     assert not fused_three_layers(r)

@@ -37,6 +37,14 @@ go test -p 1 ./tui/internal/ui ./tui/internal/client ./emulator/pkg/gact -count=
 go build -p 1 -o tui/gact.exe ./tui
 ```
 
+Brand/distribution proof for the bundled CLIO TUI lives at:
+
+```text
+visual_loop/clio_tui_brand_intro.tape
+visual_loop/screenshots/clio_tui_brand_intro.png
+visual_loop/screenshots/clio_tui_brand_intro.gif
+```
+
 ## Recreating Long TUI Sessions
 
 The most useful live transcript source is the ALCF demo benchmark harness:

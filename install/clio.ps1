@@ -40,6 +40,7 @@ $ServerErr = Join-Path $Prefix 'clio-server.err.log'
 $GactLog   = Join-Path $Prefix 'gact-stderr.log'
 $ServerBin = Join-Path $Prefix 'clio-agent\.venv\Scripts\clio-agent-gact.exe'
 $GactBin   = Join-Path $Prefix 'gact.exe'
+$ClioBrandRoot = Join-Path $Prefix 'clio-agent\branding'
 
 function Say  ($m) { Write-Host "==> $m" -ForegroundColor Green }
 function Warn ($m) { Write-Host "!! $m"  -ForegroundColor Yellow }
@@ -231,6 +232,8 @@ switch ($Command) {
     { $_ -eq "" -or $_ -eq "attach" } {
         if (-not (Start-Server)) { exit 1 }
         $env:GACT_BACKEND = "http://127.0.0.1:$Port"
+        if (-not $env:GACT_BRAND) { $env:GACT_BRAND = 'clio' }
+        if (-not $env:GACT_BRAND_ROOT) { $env:GACT_BRAND_ROOT = $ClioBrandRoot }
         # Run gact attached to this console (stdout stays on the
         # terminal so the TUI renders) but capture its stderr to a log
         # so Go panics survive for bug reports instead of scrolling away.

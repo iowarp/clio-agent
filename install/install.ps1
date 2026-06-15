@@ -1,7 +1,7 @@
 # CLIO installer (Windows / PowerShell).
 #
 # Default: pulls clio-agent from PyPI and downloads a prebuilt
-# gact.exe from gact-tui's GitHub Releases. No `git` or `go` required;
+# CLIO-branded clio-tui.exe from clio-agent's GitHub Releases. No `git` or `go` required;
 # you only need `uv` or `pip`.
 #
 # Source-build mode (opt-in for tracking unreleased work): set
@@ -14,7 +14,7 @@
 #   CLIO_PREFIX        install root           (default: $HOME\AppData\Local\clio)
 #   CLIO_BIN_DIR       launcher location      (default: ...\WindowsApps)
 #   CLIO_VERSION       pin clio-agent         (default: latest from PyPI)
-#   GACT_VERSION       pin gact release tag   (default: latest)
+#   GACT_VERSION       legacy override for TUI release tag (default: match CLIO)
 #   CLIO_INSTALLER_REF pin launcher scripts   (default: v<installed clio-agent>)
 #   CLIO_REF           clio-agent branch      (default: release mode)
 #   GACT_REF           gact-tui branch        (default: release mode)
@@ -87,10 +87,13 @@ else {
 if ($ClioRef) {
     if (-not (Have git)) { Die "git required when CLIO_REF is set (source-build mode)" }
     if (-not (Have uv))  { Die "uv required to build clio-agent from source" }
+    if (-not (Have bash)) { Die "bash required when CLIO_REF is set so the CLIO TUI build script can run" }
+    if (-not (Have go))  { Die "go (>= 1.26) required when CLIO_REF is set so the CLIO TUI can be built" }
 }
 if ($GactRef) {
     if (-not (Have git)) { Die "git required when GACT_REF is set (source-build mode)" }
     if (-not (Have go))  { Die "go (>= 1.26) required to build gact from source" }
+    if (-not $ClioRef) { Die "GACT_REF source-build mode now requires CLIO_REF so CLIO branding scripts are available" }
 }
 
 New-Item -ItemType Directory -Force -Path $Prefix, $BinDir | Out-Null
@@ -101,7 +104,7 @@ $Venv = Join-Path $Prefix 'clio-agent\.venv'
 if ($ClioRef) {
     Say "Cloning clio-agent at $ClioRef (source-build mode)"
     RemoveTree (Join-Path $Prefix 'clio-agent')
-    RunNative git @('clone', '--quiet', '--branch', $ClioRef, '--depth', '1', $ClioRepo, (Join-Path $Prefix 'clio-agent'))
+    RunNative git @('clone', '--quiet', '--recurse-submodules', '--shallow-submodules', '--branch', $ClioRef, '--depth', '1', $ClioRepo, (Join-Path $Prefix 'clio-agent'))
     Say "Installing clio-agent deps (uv sync)"
     Push-Location (Join-Path $Prefix 'clio-agent')
     RunNative uv @('sync')
@@ -135,26 +138,37 @@ if (Test-Path $VenvPython) {
 # ---------- install gact ----------------------------------------------
 $GactExe = Join-Path $Prefix 'gact.exe'
 
-if ($GactRef) {
+if ($ClioRef -and -not $GactRef) {
+    Say "Building CLIO-branded TUI from clio-agent submodule"
+    Push-Location (Join-Path $Prefix 'clio-agent')
+    RunNative bash @('./scripts/build_clio_tui.sh', $GactExe)
+    Pop-Location
+} elseif ($GactRef) {
     Say "Cloning gact-tui at $GactRef (source-build mode)"
     $gactSrc = Join-Path $Prefix 'gact-tui'
     RemoveTree $gactSrc
     RunNative git @('clone', '--quiet', '--branch', $GactRef, '--depth', '1', $GactRepo, $gactSrc)
-    Say "Building gact"
-    Push-Location (Join-Path $gactSrc 'tui')
-    RunNative go @('build', '-o', $GactExe, '.')
+    Say "Building CLIO-branded TUI"
+    Push-Location (Join-Path $Prefix 'clio-agent')
+    $env:GACT_TUI_ROOT = $gactSrc
+    RunNative bash @('./scripts/build_clio_tui.sh', $GactExe)
+    Remove-Item Env:\GACT_TUI_ROOT -ErrorAction SilentlyContinue
     Pop-Location
 } else {
     $tag = $GactVersion
     if ($tag -eq 'latest') {
-        Say "Resolving latest gact-tui release"
-        $rel = Invoke-RestMethod -UseBasicParsing -Uri 'https://api.github.com/repos/iowarp/gact-tui/releases/latest'
-        $tag = $rel.tag_name
-        if (-not $tag) { Die "couldn't resolve gact-tui latest release tag" }
+        if ($ClioVersion) {
+            $tag = "v$ClioVersion"
+        } else {
+            Say "Resolving latest clio-agent release"
+            $rel = Invoke-RestMethod -UseBasicParsing -Uri 'https://api.github.com/repos/iowarp/clio-agent/releases/latest'
+            $tag = $rel.tag_name
+            if (-not $tag) { Die "couldn't resolve clio-agent latest release tag" }
+        }
     }
-    $asset = 'gact-windows-amd64.exe'
-    $url   = "https://github.com/iowarp/gact-tui/releases/download/$tag/$asset"
-    Say "Downloading $asset from gact-tui $tag"
+    $asset = 'clio-tui-windows-amd64.exe'
+    $url   = "https://github.com/iowarp/clio-agent/releases/download/$tag/$asset"
+    Say "Downloading $asset from clio-agent $tag"
     Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $GactExe
 }
 

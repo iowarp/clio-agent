@@ -13,12 +13,10 @@ Run live: ``CLIO_RUN_LIVE=1 pytest tests/test_real_cases/test_wildfire_case.py
 from __future__ import annotations
 
 import numbers
+import os
 from pathlib import Path
 
 import pytest
-
-import os
-
 from agent_test import matcher
 
 CASE_DIR = "benchmark/ndp-wildfire-smoke-impact"
@@ -27,7 +25,11 @@ CASE_DIR = "benchmark/ndp-wildfire-smoke-impact"
 # generalizes across distinct regions; defaults to the nationwide prompt.
 _PROMPT_FILE = os.environ.get("CLIO_WILDFIRE_PROMPT", "prompt.txt")
 PROMPT = Path(CASE_DIR, _PROMPT_FILE).read_text().strip()
-_RUN_LABEL = "acceptance-" + Path(_PROMPT_FILE).stem.replace("prompt", "").strip("_-") if _PROMPT_FILE != "prompt.txt" else "acceptance"
+_RUN_LABEL = (
+    "acceptance-" + Path(_PROMPT_FILE).stem.replace("prompt", "").strip("_-")
+    if _PROMPT_FILE != "prompt.txt"
+    else "acceptance"
+)
 
 
 @matcher
