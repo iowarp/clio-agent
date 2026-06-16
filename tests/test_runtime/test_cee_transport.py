@@ -10,6 +10,7 @@ cluster the same store spans nodes and the identical code is cross-machine.
 from __future__ import annotations
 
 import asyncio
+import os
 
 import pytest
 
@@ -199,3 +200,58 @@ async def test_two_parties_exchange_via_clio_core_cte():
         assert result.workflow_state["via"] == "clio-core"
     finally:
         store.clear()
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(
+    os.environ.get("CLIO_RUN_LIVE") != "1",
+    reason="live ALCF run: set CLIO_RUN_LIVE=1 (+ Argonne auth + CLIO_LM_* env)",
+)
+async def test_concurrent_clio_to_clio_over_cte_real_alcf():
+    """Real-deployment stress: N concurrent clio-to-clio delegations over REAL CTE,
+    each child a REAL ALCF completion. Proves the clio-core transport carries
+    concurrent traffic with no cross-talk / lost messages / orphans — the gap the
+    single happy-path CTE test missed."""
+    import uuid as _uuid
+
+    import dspy
+
+    from clio_agent.config import create_lm, load_config_from_env
+
+    cfg = load_config_from_env()
+    if str(getattr(cfg, "provider", "")) in {"lmstudio", "lm_studio"}:
+        pytest.skip("live run must target Argonne/ALCF, not LM Studio")
+    lm = create_lm(cfg)
+
+    store = make_arc_store(backend="cte")
+    mailbox = CEEMailbox(store, prefix="cee_stress_")
+
+    async def handler(req: ExpertRequest) -> ExpertResult:
+        with dspy.context(lm=lm, adapter=dspy.ChatAdapter()):
+            pred = dspy.Predict("instruction -> answer")(instruction=req.question)
+        return ExpertResult(expert_id=req.expert_id, answer=str(getattr(pred, "answer", "") or ""))
+
+    n = 4
+    markers = [f"TKN{i}{_uuid.uuid4().hex[:6].upper()}" for i in range(n)]
+    invoker = CEEExpertInvoker(mailbox, timeout=120)
+    stop = asyncio.Event()
+    workers = [
+        asyncio.ensure_future(run_worker(mailbox, handler, stop=stop, worker_id=f"w{j}"))
+        for j in range(2)
+    ]
+    try:
+        async def one(marker: str):
+            req = ExpertRequest("data", f"Reply with exactly this token and nothing else: {marker}")
+            return marker, await invoker.invoke(req)
+
+        results = await asyncio.gather(*[one(m) for m in markers])
+        # each parent got ITS OWN marker back — no cross-talk between concurrent delegations
+        for marker, res in results:
+            assert res.status == "completed", f"{marker}: {res.error}"
+            assert marker in res.answer, f"marker {marker} missing from {res.answer!r}"
+        assert mailbox.pending() == []  # no orphaned requests left in clio-core
+    finally:
+        stop.set()
+        await asyncio.gather(*workers)
+        for name, _ in list(store.scan("context", "cee_stress_")):
+            store.delete("context", name)
