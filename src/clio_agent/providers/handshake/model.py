@@ -109,6 +109,29 @@ class HandshakeReport:
                 return profile
         return None
 
+    def resolve_model(self, model_id: str) -> ModelProfile | None:
+        """Return the profile for ``model_id``, matching exactly or by
+        vendor-prefix-agnostic basename (a declared ``openai/gpt-oss-120b``
+        matches a served ``gpt-oss-120b``).
+
+        This is the single-endpoint-router availability check: against a router
+        that serves several models behind one ``api_base`` (llama.cpp native
+        router, LM Studio JIT), ``None`` means the endpoint does not serve the
+        declared model — a fail-fast signal rather than an error at call time.
+        """
+        exact = self.model(model_id)
+        if exact is not None:
+            return exact
+        want = model_id.rsplit("/", 1)[-1].lower()
+        for profile in self.models:
+            if profile.id.rsplit("/", 1)[-1].lower() == want:
+                return profile
+        return None
+
+    def available_model_ids(self) -> tuple[str, ...]:
+        """The model ids the endpoint reports serving (for fail-fast messages)."""
+        return tuple(m.id for m in self.models)
+
     def to_models_wire(self) -> dict[str, Any]:
         """Render to the legacy model-picker contract, with per-model fields added.
 
