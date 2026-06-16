@@ -4029,24 +4029,46 @@ def _user_agent_float_param(agent_def: "AgentDef", name: str, default: float) ->
 
 
 def _dynamic_agent_lm_config(base_agent: Any, agent_def: "AgentDef") -> Any:
-    """Build a provider config for a registered dynamic agent."""
+    """Build a provider config for a registered dynamic agent.
+
+    ``agent_def.default_provider`` may be either a wire *kind* (e.g. ``argonne``)
+    or a registry *preset id* (e.g. ``argonne_sophia`` / ``argonne_metis``). A
+    preset id resolves to its own endpoint + wire kind, so two experts pinned to
+    presets that share a kind (both ``argonne``) still reach distinct
+    ``api_base``s — ``LMProviderConfig.provider`` only keys defaults by kind, so
+    passing a preset id straight through would silently fall back to LM Studio.
+    """
     from clio_agent.config import (  # noqa: PLC0415
         LMProviderConfig,
         load_config_from_env,
     )
+    from clio_agent.providers.registry import get_provider  # noqa: PLC0415
 
     base_config = getattr(base_agent, "_provider_config", None)
     if base_config is None:
         base_config = load_config_from_env()
-    provider = agent_def.default_provider or base_config.provider
+    declared = agent_def.default_provider or ""
+    preset = get_provider(declared) if declared else None
+    if preset is not None:
+        provider = preset.provider_kind
+        preset_api_base = preset.api_base
+        preset_model = preset.suggested_model
+    else:
+        provider = declared or base_config.provider
+        preset_api_base = ""
+        preset_model = ""
     same_provider = provider == base_config.provider
     params = agent_def.parameters if isinstance(agent_def.parameters, Mapping) else {}
-    api_base = str(params.get("api_base") or (base_config.api_base if same_provider else ""))
+    api_base = str(
+        params.get("api_base")
+        or preset_api_base
+        or (base_config.api_base if same_provider else "")
+    )
     api_key = base_config.api_key if same_provider else ""
     new_config = LMProviderConfig(
         provider=provider,  # type: ignore[arg-type]
         api_base=api_base,
-        model=agent_def.default_model or (base_config.model if same_provider else ""),
+        model=agent_def.default_model or preset_model or (base_config.model if same_provider else ""),
         api_key=api_key,
         temperature=_user_agent_float_param(agent_def, "temperature", base_config.temperature),
         max_tokens=_user_agent_int_param(agent_def, "max_tokens", base_config.max_tokens),
