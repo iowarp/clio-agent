@@ -421,16 +421,39 @@ class ClioAgent(SUT):
         return str(created.json().get("id") or "")
 
     def _create_session(self, http: httpx.Client, workspace_id: str, blueprint_id: str) -> str:
-        created = http.post(
-            "/v1/sessions", json={"title": "agent-test", "workspace_id": workspace_id}
-        )
-        created.raise_for_status()
-        session_id = created.json()["id"]
-        if blueprint_id:
-            http.post(
+        # Bounded retry on a TRANSIENT setup hiccup: very rarely the server
+        # returns 404 ("session not found") on the agent-blueprint assignment for
+        # a session it JUST created (POST /v1/sessions returned 200) — observed
+        # once right after a heavy model-load bind, not reproducible in isolation
+        # and with no server-side exception or eviction path. This guards only the
+        # pre-LM session SETUP (infra), never the agent's actual work; on the 404
+        # we re-create the session and re-assign. A persistent failure still
+        # raises, so a real misconfiguration is not masked.
+        last_exc: httpx.HTTPStatusError | None = None
+        for attempt in range(4):
+            created = http.post(
+                "/v1/sessions", json={"title": "agent-test", "workspace_id": workspace_id}
+            )
+            created.raise_for_status()
+            session_id = created.json()["id"]
+            if not blueprint_id:
+                return session_id
+            assigned = http.post(
                 f"/v1/sessions/{session_id}/agent-blueprint", json={"blueprint_id": blueprint_id}
-            ).raise_for_status()
-        return session_id
+            )
+            if assigned.status_code == 404 and attempt < 3:
+                last_exc = httpx.HTTPStatusError(
+                    f"transient 404 assigning blueprint to {session_id}",
+                    request=assigned.request,
+                    response=assigned,
+                )
+                time.sleep(1.0 + attempt)
+                continue
+            assigned.raise_for_status()
+            return session_id
+        # Exhausted retries — surface the last transient error.
+        assert last_exc is not None
+        raise last_exc
 
     def _post_turn(
         self, http: httpx.Client, session_id: str, prompt: str, timeout_s: float
