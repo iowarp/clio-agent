@@ -81,6 +81,21 @@ async def test_concurrent_delegations_across_worker_processes(cross_arc, spawn_w
     cross_arc.put("context", f"{prefix}STOP", b"1")
 
 
+async def test_lease_prevents_double_execution(cross_arc, spawn_worker):
+    """Two workers, one request: the worker that claims holds a renewed LEASE for
+    longer than the TTL; the other must NOT reclaim and re-execute. Exactly one
+    execution — the old best-effort claim (no lease) would double-execute a slow
+    worker. (Reclaim on a genuine crash still works: a dead worker stops renewing.)"""
+    prefix = "xp_lease_"
+    spawn_worker(prefix, mode="leasehold", n=2)
+    mb = CEEMailbox(cross_arc, prefix=prefix)
+    res = await CEEExpertInvoker(mb, timeout=30).invoke(ExpertRequest("data", "once"))
+    assert res.answer == "leased:once"
+    execs = [nm for nm, _ in cross_arc.scan("context", f"{prefix}EXEC_")]
+    assert len(execs) == 1, f"expected exactly 1 execution, got {len(execs)}: {execs}"
+    cross_arc.put("context", f"{prefix}STOP", b"1")
+
+
 _ALCF = {
     "CLIO_LM_PROVIDER": "argonne",
     "CLIO_LM_API_BASE": "https://inference-api.alcf.anl.gov/resource_server/sophia/vllm/v1",

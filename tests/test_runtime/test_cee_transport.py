@@ -95,6 +95,20 @@ async def test_cee_invoker_composes_with_background_monitor(tmp_path):
         await worker
 
 
+def test_claim_lease_blocks_fresh_holder_allows_expired(tmp_path):
+    """The TTL lease: a fresh claim blocks another worker; an expired one is reclaimable;
+    renew() keeps it alive. Deterministic via injected `now` (no sleeps)."""
+    store = make_arc_store(backend="local", data_dir=str(tmp_path))
+    mb = CEEMailbox(store, prefix="cee_lease_")
+    rid = mb.submit(ExpertRequest("data", "q"))
+    t = 1000.0
+    assert mb.claim(rid, "w1", ttl=6.0, now=t) is True          # w1 takes the lease
+    assert mb.claim(rid, "w2", ttl=6.0, now=t + 1) is False     # still fresh -> w2 blocked
+    assert mb.claim(rid, "w2", ttl=6.0, now=t + 7) is True      # expired -> w2 reclaims
+    mb.renew(rid, "w2", now=t + 8)                              # w2 heartbeats
+    assert mb.claim(rid, "w1", ttl=6.0, now=t + 12) is False    # renewed -> still w2's
+
+
 async def test_successful_delegation_drains_the_mailbox(tmp_path):
     """A completed delegation leaves NO req/res/claim behind (the leak fix: invoke
     discards on success, so the mailbox doesn't grow without bound)."""

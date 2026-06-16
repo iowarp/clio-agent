@@ -26,7 +26,7 @@ MODE = sys.argv[2] if len(sys.argv) > 2 else "echo"
 PID = os.getpid()
 
 
-def _make_handler(mode: str):
+def _make_handler(mode: str, store):
     async def echo(req: ExpertRequest) -> ExpertResult:
         return ExpertResult(
             expert_id=req.expert_id,
@@ -41,6 +41,18 @@ def _make_handler(mode: str):
         # Simulate a worker process dying mid-delegation: it has claimed the request
         # but exits before publishing any result. Deterministic (no external kill race).
         os._exit(137)
+
+    async def leasehold(req: ExpertRequest) -> ExpertResult:
+        # Records THIS execution (so a test can count them) then holds the request
+        # longer than the lease TTL — the heartbeat must keep our lease alive so no
+        # other worker reclaims and double-executes.
+        store.put("context", f"{PREFIX}EXEC_{PID}", b"1")
+        await asyncio.sleep(8.0)
+        return ExpertResult(
+            expert_id=req.expert_id,
+            answer=f"leased:{req.question}",
+            workflow_state={"worker_pid": PID, "mode": "leasehold"},
+        )
 
     async def slow(req: ExpertRequest) -> ExpertResult:
         await asyncio.sleep(30)  # longer than the parent's timeout
@@ -92,14 +104,14 @@ def _make_handler(mode: str):
 
     return {
         "echo": echo, "crash": crash, "hardcrash": hardcrash, "slow": slow,
-        "alcf": alcf, "role": role,
+        "alcf": alcf, "role": role, "leasehold": leasehold,
     }[mode]
 
 
 async def main() -> None:
     store = make_arc_store(backend="cte")  # attaches to the clio_run daemon
     mb = CEEMailbox(store, prefix=PREFIX)
-    handler = _make_handler(MODE)
+    handler = _make_handler(MODE, store)
     store.put("context", f"{PREFIX}READY_{PID}", b"1")  # readiness signal for the test
     print(f"WORKER_READY pid={PID} mode={MODE}", flush=True)
 

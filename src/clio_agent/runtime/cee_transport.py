@@ -27,7 +27,9 @@ parent-driven.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
+import time
 import uuid
 from typing import Any, Awaitable, Callable, Optional
 
@@ -86,17 +88,42 @@ class CEEMailbox:
     def has_result(self, rid: str) -> bool:
         return self._store.exists(_KIND, f"{rid}.res")
 
-    def claim(self, rid: str, token: str) -> bool:
-        """Best-effort claim of ``rid`` for one worker. Returns whether this caller
-        won. NOT atomic (the store has no CAS), so a sub-millisecond race can still
-        let two workers serve — exactly-once execution needs a clio-core lease (#659).
-        Skips a request whose ``.req`` is already gone (completed + discarded by the
-        parent) so it doesn't write a stray claim blob."""
+    def _read_claim(self, rid: str) -> tuple[Optional[str], float]:
+        data = self._store.get(_KIND, f"{rid}.claim")
+        if not data:
+            return None, 0.0
+        try:
+            tok, ts = data.decode("utf-8").rsplit("|", 1)
+            return tok, float(ts)
+        except (ValueError, UnicodeDecodeError):
+            return None, 0.0
+
+    def claim(self, rid: str, token: str, *, ttl: float = 6.0, now: Optional[float] = None) -> bool:
+        """TTL-gated lease claim. Wins only if no LIVE lease is held by another worker
+        (the existing lease is absent, expired, or ours). A live worker renews via
+        :meth:`renew` so its lease never expires; a crashed worker stops renewing and
+        the lease frees in ~``ttl`` for reclaim. This is what stops a slow-but-alive
+        worker from being double-executed while still reclaiming a dead one.
+
+        NOT atomic (the store has no CAS), so a sub-millisecond *simultaneous* claim on
+        a fresh request can still double-serve — true exactly-once needs a clio-core
+        lease primitive (#659). Skips a request whose ``.req`` is already gone."""
         if not self.has_request(rid):
             return False
-        self._store.put(_KIND, f"{rid}.claim", token.encode("utf-8"))
-        got = self._store.get(_KIND, f"{rid}.claim")
-        return got is not None and got.decode("utf-8") == token
+        now = time.time() if now is None else now
+        holder, ts = self._read_claim(rid)
+        if holder is not None and holder != token and (now - ts) < ttl:
+            return False  # a live worker holds the lease
+        self._store.put(_KIND, f"{rid}.claim", f"{token}|{now}".encode("utf-8"))
+        holder2, _ = self._read_claim(rid)
+        return holder2 == token
+
+    def renew(self, rid: str, token: str, now: Optional[float] = None) -> None:
+        """Refresh our lease timestamp (heartbeat) so a long handler isn't reclaimed."""
+        holder, _ = self._read_claim(rid)
+        if holder == token:
+            stamp = time.time() if now is None else now
+            self._store.put(_KIND, f"{rid}.claim", f"{token}|{stamp}".encode("utf-8"))
 
     def discard_claim(self, rid: str) -> None:
         """Drop a stray claim blob (e.g. one written just as the request was discarded)."""
@@ -159,25 +186,49 @@ async def run_worker(
     stop: asyncio.Event,
     poll: float = 0.01,
     worker_id: str = "",
+    lease_ttl: float = 6.0,
 ) -> None:
     """A worker loop draining the mailbox until ``stop`` is set — the 'second clio on
-    the machine'. One failing/poison request can never kill the loop: ``serve_one``
-    publishes a terminal result and any unexpected error is contained per-rid."""
+    the machine'. Each request is served under a renewed lease (``lease_ttl``) so a
+    long handler isn't reclaimed and a crashed worker's lease frees fast. One
+    failing/poison request can never kill the loop."""
     token = worker_id or uuid.uuid4().hex[:8]
     while not stop.is_set():
         for rid in mailbox.pending():
-            if not mailbox.claim(rid, token):
-                continue  # another worker won the claim
-            try:
-                await serve_one(mailbox, rid, handler)
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:  # noqa: BLE001 — contain; never let one rid kill the loop
-                mailbox.publish_result(
-                    rid,
-                    ExpertResult(expert_id="", status="failed", error=f"worker_error: {exc}"),
-                )
+            if not mailbox.claim(rid, token, ttl=lease_ttl):
+                continue  # a live worker holds the lease
+            await _serve_under_lease(mailbox, rid, token, handler, lease_ttl)
         await asyncio.sleep(poll)
+
+
+async def _serve_under_lease(
+    mailbox: CEEMailbox, rid: str, token: str, handler: Handler, lease_ttl: float
+) -> None:
+    """Serve one request while renewing its lease, so a long handler isn't reclaimed.
+    A crashed worker stops renewing and the lease frees in ~lease_ttl for reclaim."""
+    hb_stop = asyncio.Event()
+
+    async def _heartbeat() -> None:
+        with contextlib.suppress(asyncio.CancelledError):
+            while not hb_stop.is_set():
+                await asyncio.sleep(max(lease_ttl / 3.0, 0.05))
+                if not hb_stop.is_set():
+                    mailbox.renew(rid, token)
+
+    hb = asyncio.ensure_future(_heartbeat())
+    try:
+        await serve_one(mailbox, rid, handler)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # noqa: BLE001 — contain; never let one rid kill the loop
+        mailbox.publish_result(
+            rid, ExpertResult(expert_id="", status="failed", error=f"worker_error: {exc}")
+        )
+    finally:
+        hb_stop.set()
+        hb.cancel()
+        with contextlib.suppress(BaseException):
+            await hb
 
 
 class CEEExpertInvoker:
