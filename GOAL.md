@@ -15,6 +15,29 @@ remaining step is swapping the loopback for clio-core's cross-machine transport 
 the distributed context (#659, #665). **Build and test everything reachable without the
 cluster, here.**
 
+## STATUS — REACHED (2026-06-16)
+
+The north star is met on a single box. Evidence (branch `feat/distributable-expert-runtime`):
+
+- **(a) #668** per-expert model — preset ids resolve to distinct endpoints; offline
+  contract + **live two-ALCF** proof (Sophia+Metis, each its own model).
+- **(a.2) #669** multi-model routing — multi-endpoint live-proven; router availability
+  resolver + docs (GPU single-endpoint router live test deferred per GPU use).
+- **(c) #670** monitor/wait_for — `BackgroundTasks` primitive, 10 tests.
+- **(e) #671** the hinge — `ExpertInvoker` (in-process parity + loopback detached seam),
+  wired into the live delegation path (default = identity parity; `CLIO_EXPERT_INVOKER=
+  loopback` routes through the boundary), and the **detached loopback proven LIVE on ALCF**
+  (a real child prediction crosses the JSON wire, parent recovers the answer).
+- **(b) #441** async — composed at the primitive level (`spawn_invocation`).
+
+1172 offline tests green (only the pre-existing #662 telemetry flake fails under load).
+
+**Hardening follow-ups (not blockers):** the loopback opt-in mode carries the core fields
+(answer/routing/workflow_state) — full-fidelity (trajectory/tools/nanoagents) and a
+full-app blueprint delegation under loopback are follow-ups; the clio-core transport will
+carry the richer payload. **Cluster step (NOT this build):** swap loopback for clio-core
+transport (#659) + build the distributed context (#665).
+
 ## Done condition (what "reached" means)
 
 An expert can:
