@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import time
 
 import pytest
 
@@ -112,6 +113,44 @@ async def test_large_payload_crosses_cte(cross_arc, spawn_worker):
     res = await CEEExpertInvoker(mb, timeout=30).invoke(ExpertRequest("data", big))
     assert res.answer == f"echo:{big}"  # 200KB+ round-tripped through clio-core intact
     cross_arc.put("context", f"{prefix}STOP", b"1")
+
+
+async def test_async_fanout_split_pools_cross_process(cross_arc, spawn_worker):
+    """The split topology, cross-process: a DATA pool (slow NDP-style staging) and a
+    COMPUTE pool (analysis) — distinct worker processes draining distinct role
+    mailboxes (= node placement, here on one machine). The main fans out N station
+    pipelines CONCURRENTLY; staging returns a HANDLE the analysis reads (data stays
+    put). Wall-clock proves the async win over running them sequentially."""
+    spawn_worker("dp_stage_", mode="stage", n=3, extra_env={"CLIO_STAGE_SECS": "2.0"})  # data pool
+    spawn_worker("dp_anal_", mode="analyze", n=2, extra_env={"CLIO_ANALYZE_SECS": "1.0"})  # compute pool
+    stage_inv = CEEExpertInvoker(CEEMailbox(cross_arc, prefix="dp_stage_"), timeout=60)
+    anal_inv = CEEExpertInvoker(CEEMailbox(cross_arc, prefix="dp_anal_"), timeout=60)
+
+    stations = [f"P{i}" for i in range(6)]
+
+    async def pipeline(station: str):
+        st = await stage_inv.invoke(ExpertRequest("data", station))
+        handle = st.workflow_state["handle"]  # a reference, not the bytes
+        an = await anal_inv.invoke(ExpertRequest("analysis", "analyze", context={"handle": handle}))
+        return station, st, an
+
+    t0 = time.monotonic()
+    results = await asyncio.gather(*[pipeline(s) for s in stations])
+    elapsed = time.monotonic() - t0
+
+    data_pids, compute_pids = set(), set()
+    for station, st, an in results:
+        assert st.workflow_state["pool"] == "data"
+        assert an.workflow_state["pool"] == "compute"
+        assert an.answer == f"analyzed:/data/{station}.csv"  # handle crossed both hops + pools
+        data_pids.add(st.workflow_state["worker_pid"])
+        compute_pids.add(an.workflow_state["worker_pid"])
+    assert data_pids.isdisjoint(compute_pids)   # the two pools are genuinely different processes
+    assert len(data_pids) >= 2                    # work spread across the data pool
+    # 6 x (2s stage + 1s analyze) = 18s sequential; concurrent across the pools is far less
+    assert elapsed < 12.0, f"no concurrency benefit: {elapsed:.1f}s"
+    cross_arc.put("context", "dp_stage_STOP", b"1")
+    cross_arc.put("context", "dp_anal_STOP", b"1")
 
 
 async def test_lease_prevents_double_execution(cross_arc, spawn_worker):

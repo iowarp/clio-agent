@@ -102,9 +102,31 @@ def _make_handler(mode: str, store):
             workflow_state={"worker_pid": PID, "role": role_prompt[:40]},
         )
 
+    async def stage(req: ExpertRequest) -> ExpertResult:
+        # "data" pool: simulate a slow NDP CSV download, then return a HANDLE (a path/
+        # reference), NOT the bytes — the data stays where it was staged.
+        await asyncio.sleep(float(os.environ.get("CLIO_STAGE_SECS", "2.0")))
+        return ExpertResult(
+            expert_id=req.expert_id,
+            answer=f"staged:{req.question}",
+            workflow_state={"worker_pid": PID, "pool": "data", "handle": f"/data/{req.question}.csv"},
+        )
+
+    async def analyze(req: ExpertRequest) -> ExpertResult:
+        # "compute" pool: analyze the data referenced by the handle (fetched via the
+        # context plane), never re-staging it.
+        await asyncio.sleep(float(os.environ.get("CLIO_ANALYZE_SECS", "1.0")))
+        handle = req.context.get("handle", "")
+        return ExpertResult(
+            expert_id=req.expert_id,
+            answer=f"analyzed:{handle}",
+            workflow_state={"worker_pid": PID, "pool": "compute", "handle": handle},
+        )
+
     return {
         "echo": echo, "crash": crash, "hardcrash": hardcrash, "slow": slow,
         "alcf": alcf, "role": role, "leasehold": leasehold,
+        "stage": stage, "analyze": analyze,
     }[mode]
 
 
