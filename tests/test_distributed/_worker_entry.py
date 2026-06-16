@@ -55,17 +55,45 @@ def _make_handler(mode: str):
             """Look up the current value of a named data metric."""
             return f"VALUE[{metric}]=42.7"
 
-        lm = create_lm(load_config_from_env())
+        cfg = load_config_from_env()
+        lm = create_lm(cfg)
         expert = dspy.ReAct("question -> answer", tools=[dspy.Tool(lookup)])
         with dspy.context(lm=lm, adapter=dspy.ChatAdapter()):
             pred = expert(question=req.question)
         return ExpertResult(
             expert_id=req.expert_id,
             answer=str(getattr(pred, "answer", "") or ""),
-            workflow_state={"worker_pid": PID, "mode": "alcf"},
+            workflow_state={
+                "worker_pid": PID,
+                "mode": "alcf",
+                "api_base": cfg.api_base,
+                "model": cfg.model,
+            },
         )
 
-    return {"echo": echo, "crash": crash, "hardcrash": hardcrash, "slow": slow, "alcf": alcf}[mode]
+    async def role(req: ExpertRequest) -> ExpertResult:
+        """A real ALCF expert with a role system prompt (CLIO_WORKER_ROLE) that takes
+        the question + the delegated context — for NDP-pipeline multi-hop tests."""
+        import dspy  # noqa: PLC0415
+
+        from clio_agent.config import create_lm, load_config_from_env  # noqa: PLC0415
+
+        role_prompt = os.environ.get("CLIO_WORKER_ROLE", "You are a helpful expert.")
+        lm = create_lm(load_config_from_env())
+        sig = dspy.Signature("question: str, context: str -> answer: str", role_prompt)
+        expert = dspy.ChainOfThought(sig)
+        with dspy.context(lm=lm, adapter=dspy.ChatAdapter()):
+            pred = expert(question=req.question, context=str(req.context))
+        return ExpertResult(
+            expert_id=req.expert_id,
+            answer=str(getattr(pred, "answer", "") or ""),
+            workflow_state={"worker_pid": PID, "role": role_prompt[:40]},
+        )
+
+    return {
+        "echo": echo, "crash": crash, "hardcrash": hardcrash, "slow": slow,
+        "alcf": alcf, "role": role,
+    }[mode]
 
 
 async def main() -> None:
