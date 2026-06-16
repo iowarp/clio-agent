@@ -83,3 +83,46 @@ async def test_get_missing_is_clean(tmp_path):
     async with Client(_server(tmp_path)) as client:
         r = _parse(await client.call_tool("context_get", {"scope": "agentA", "name": "nope"}))
         assert r["found"] is False
+
+
+@pytest.mark.asyncio
+async def test_separator_injection_is_rejected(tmp_path):
+    """('a','b::c') and ('a::b','c') must not alias to the same key — the reserved
+    separator is rejected on write so a publish can't collide with another scope."""
+    async with Client(_server(tmp_path)) as client:
+        await client.call_tool("context_publish", {"scope": "agentA", "name": "ok", "content": "x"})
+        with pytest.raises(Exception, match="reserved separator"):
+            await client.call_tool(
+                "context_publish", {"scope": "agentA", "name": "b::c", "content": "y"}
+            )
+        with pytest.raises(Exception, match="reserved separator"):
+            await client.call_tool(
+                "context_publish", {"scope": "agentA::b", "name": "c", "content": "z"}
+            )
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_bm25_search_on_real_cte():
+    """The CEE MCP over REAL clio-core CTE: semantic BM25 ranking, not the LocalFS
+    word-overlap fallback the other tests use."""
+    store = make_arc_store(backend="cte")
+    server = build_cee_server(store)
+    try:
+        async with Client(server) as client:
+            await client.call_tool("context_publish", {
+                "scope": "cee_it", "name": "hdf5",
+                "content": "HDF5 dataset chunk sizes compression filters and dataset shapes",
+            })
+            await client.call_tool("context_publish", {
+                "scope": "cee_it", "name": "seismic",
+                "content": "earthquake waveform catalog station picks magnitude and epicenter",
+            })
+            r = _parse(await client.call_tool(
+                "context_search", {"scope": "cee_it", "query": "HDF5 compression filters", "k": 3}
+            ))
+            assert r["semantic"] is True  # real BM25 on CTE, not word-overlap
+            assert r["hits"] and r["hits"][0]["name"] == "hdf5"
+    finally:
+        store.delete("context", "cee_it::hdf5")
+        store.delete("context", "cee_it::seismic")

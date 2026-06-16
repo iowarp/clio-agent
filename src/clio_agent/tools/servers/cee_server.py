@@ -24,6 +24,10 @@ _SEP = "::"
 
 
 def _key(scope: str, name: str) -> str:
+    # Reject the reserved separator so distinct (scope, name) pairs can't alias to the
+    # same key (e.g. ('a','b::c') vs ('a::b','c') would both be 'a::b::c').
+    if _SEP in scope or _SEP in name:
+        raise ValueError(f"scope and name must not contain the reserved separator {_SEP!r}")
     return f"{scope}{_SEP}{name}"
 
 

@@ -122,11 +122,18 @@ class HandshakeReport:
         exact = self.model(model_id)
         if exact is not None:
             return exact
-        want = model_id.rsplit("/", 1)[-1].lower()
-        for profile in self.models:
-            if profile.id.rsplit("/", 1)[-1].lower() == want:
-                return profile
-        return None
+        want = self._basename(model_id)
+        if not want:
+            return None
+        matches = [p for p in self.models if self._basename(p.id) == want]
+        # 0 = not served; exactly 1 = unambiguous; >1 = the bare name is ambiguous
+        # across served models, so refuse to guess (the caller must use the full id).
+        return matches[0] if len(matches) == 1 else None
+
+    @staticmethod
+    def _basename(model_id: str) -> str:
+        """Vendor-prefix-agnostic, whitespace/trailing-slash tolerant key."""
+        return model_id.strip().rstrip("/").rsplit("/", 1)[-1].lower()
 
     def available_model_ids(self) -> tuple[str, ...]:
         """The model ids the endpoint reports serving (for fail-fast messages)."""

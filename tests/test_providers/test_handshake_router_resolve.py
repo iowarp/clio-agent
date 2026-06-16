@@ -63,3 +63,24 @@ def test_available_model_ids_for_failfast_message():
 def test_resolve_is_case_insensitive_on_basename():
     rep = _router_report("Gpt-OSS-120B")
     assert rep.resolve_model("gpt-oss-120b") is not None
+
+
+def test_resolve_tolerates_whitespace():
+    # a stray leading/trailing space (copy-paste / API quirk) must still match
+    rep = _router_report("gpt-oss-120b")
+    assert rep.resolve_model("  gpt-oss-120b  ") is not None
+    assert rep.resolve_model("openai/gpt-oss-120b\n") is not None
+
+
+def test_resolve_tolerates_trailing_slash():
+    rep = _router_report("gpt-oss-120b")
+    assert rep.resolve_model("gpt-oss-120b/") is not None
+
+
+def test_ambiguous_basename_refuses_to_guess():
+    # two served models share a basename -> a bare name is ambiguous; resolve returns
+    # None rather than silently picking the first (the wrong-model bug)
+    rep = _router_report("openai/gpt-oss-120b", "meta/gpt-oss-120b")
+    assert rep.resolve_model("gpt-oss-120b") is None
+    # but an exact id is still unambiguous
+    assert rep.resolve_model("openai/gpt-oss-120b").id == "openai/gpt-oss-120b"
