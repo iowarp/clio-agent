@@ -35,6 +35,86 @@ _ALCF = {
 }
 
 
+async def test_raw_ops_reused_name(cross_arc):
+    """Raw put/get/delete over the daemon on ONE REUSED blob name. If this sustains
+    where unique names wedge, the limit is unique-name index growth (clio-agent can fix
+    via slot reuse), not a per-op daemon leak."""
+    ok = 0
+    for i in range(3000):
+        try:
+            cross_arc.put("context", "raw_slot.x", f"v{i}".encode())
+            assert cross_arc.get("context", "raw_slot.x") == f"v{i}".encode()
+            cross_arc.delete("context", "raw_slot.x")
+            ok += 1
+            if i % 200 == 0:
+                print(f"[raw-reuse] {ok} ok", flush=True)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[raw-reuse] WEDGED after {ok}: {type(exc).__name__}: {exc}", flush=True)
+            break
+    print(f"[raw-reuse] FINAL ok={ok}", flush=True)
+    assert ok > 0
+
+
+async def test_raw_ops_with_concurrent_pollers(cross_arc, spawn_worker):
+    """Solo raw ops, but with 2 worker PROCESSES idle-polling the daemon concurrently.
+    If this wedges where solo raw ops sustain 3000+, the cause is concurrent multi-client
+    access (the daemon under simultaneous clients), not op count/type."""
+    spawn_worker("conc_", mode="echo", n=2)  # 2 processes continuously polling pending()
+    ok = 0
+    for i in range(3000):
+        try:
+            cross_arc.put("context", f"cc_{i}.x", b"v")
+            cross_arc.get("context", f"cc_{i}.x")
+            cross_arc.delete("context", f"cc_{i}.x")
+            ok += 1
+            if i % 50 == 0:
+                print(f"[conc] {ok} ok", flush=True)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[conc] WEDGED after {ok}: {type(exc).__name__}: {exc}", flush=True)
+            break
+    print(f"[conc] FINAL ok={ok}", flush=True)
+    cross_arc.put("context", "conc_STOP", b"1")
+    assert ok > 0
+
+
+async def test_raw_ops_with_scan(cross_arc):
+    """Raw ops PLUS a scan (GetContainedBlobs) each iteration — the one thing the
+    delegation flow does that the clean raw probes don't. If THIS wedges ~50-70, the
+    culprit is scan, and the clio-agent fix is to stop polling via GetContainedBlobs."""
+    ok = 0
+    for i in range(3000):
+        try:
+            cross_arc.put("context", f"rs_{i}.x", b"v")
+            list(cross_arc.scan("context", "rs_"))
+            cross_arc.delete("context", f"rs_{i}.x")
+            ok += 1
+            if i % 50 == 0:
+                print(f"[raw-scan] {ok} ok", flush=True)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[raw-scan] WEDGED after {ok}: {type(exc).__name__}: {exc}", flush=True)
+            break
+    print(f"[raw-scan] FINAL ok={ok}", flush=True)
+    assert ok > 0
+
+
+async def test_raw_ops_unique_names(cross_arc):
+    """Raw put/get/delete over the daemon with a UNIQUE name each iteration."""
+    ok = 0
+    for i in range(3000):
+        try:
+            cross_arc.put("context", f"raw_uniq_{i}.x", b"v")
+            cross_arc.get("context", f"raw_uniq_{i}.x")
+            cross_arc.delete("context", f"raw_uniq_{i}.x")
+            ok += 1
+            if i % 200 == 0:
+                print(f"[raw-uniq] {ok} ok", flush=True)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[raw-uniq] WEDGED after {ok}: {type(exc).__name__}: {exc}", flush=True)
+            break
+    print(f"[raw-uniq] FINAL ok={ok}", flush=True)
+    assert ok > 0
+
+
 async def test_load_isolation(cross_arc, spawn_worker):
     """Isolate the wedge: pure SEQUENTIAL delegations, no chaos/concurrency/commands.
     How many before the daemon stops serving? Characterizes the limit (report-only)."""

@@ -18,9 +18,21 @@ hang; the daemon stops responding to all clients.
   bug is **daemon-side, not clio-agent and not the delete path.**
 - DRAM bdev is "80% of system RAM" — 700 tiny (~200B) blobs is **not** byte capacity.
 
-**Likely cause (clio-core):** a fixed daemon resource hit at ~700 ops — the per-worker
-**task queue** (`queue_depth: 1024`) or the **WAL / telemetry log** (`transaction_log_
-capacity: 32MB`). Something accumulates per op and isn't reclaimed/rotated.
+**Root-cause narrowed (a precise, minimal repro for clio-core):** a battery of isolation
+probes over the *same* daemon ruled out everything except cross-process handoff:
+- solo raw put/get/delete, **unique** names: **3000 ops clean**
+- solo raw, **reused** name: **3000 clean**
+- solo raw **+ scan (GetContainedBlobs)** every iter: **3000 clean**
+- solo raw **+ 2 worker processes idle-polling** the daemon concurrently: **3000 clean**
+- a **tuned daemon config** (queue_depth 1M, 8 threads, max_concurrent_operations 4096,
+  WAL 1GB): **no change — still wedges ~50.** So it is NOT a configurable queue/WAL bound.
+
+The ONLY thing that wedges (~44–71) is an **active cross-process delegation**: process A
+writes `<rid>.req`; a *different* process B reads it, writes `<rid>.claim` then `<rid>.res`;
+A reads `<rid>.res` and deletes all three. So the limit is in the **cross-process blob
+handoff** (write-by-one, read/write-by-another, repeated), not op count, op type, scan, or
+mere concurrent clients. Minimal repro for Luke: two processes, A puts a unique blob, B
+gets it + puts a reply blob, A gets the reply + deletes — loop; expect a wedge ~50.
 
 **Why it matters:** a real workload is millions of ops over hours. At ~700 ops the daemon
 must sustain load before *any* multi-hour or cluster run is meaningful. **This is the
