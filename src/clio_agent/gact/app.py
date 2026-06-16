@@ -4039,6 +4039,7 @@ def _dynamic_agent_lm_config(base_agent: Any, agent_def: "AgentDef") -> Any:
     passing a preset id straight through would silently fall back to LM Studio.
     """
     from clio_agent.config import (  # noqa: PLC0415
+        PROVIDER_DEFAULTS,
         LMProviderConfig,
         load_config_from_env,
     )
@@ -4049,6 +4050,16 @@ def _dynamic_agent_lm_config(base_agent: Any, agent_def: "AgentDef") -> Any:
         base_config = load_config_from_env()
     declared = agent_def.default_provider or ""
     preset = get_provider(declared) if declared else None
+    # Fail fast on a misconfigured expert: an unknown provider string (a typo'd preset
+    # id or kind) would otherwise fall through to the LM Studio default endpoint --
+    # silently routing an ALCF-intended expert at localhost. Surfacing a real config
+    # error is allowed; this is not a heuristic reroute.
+    if declared and preset is None and declared not in PROVIDER_DEFAULTS:
+        raise ValueError(
+            f"expert {getattr(agent_def, 'id', '?')!r} declares unknown provider "
+            f"{declared!r}: expected a registry preset id (e.g. 'argonne_sophia', "
+            f"'argonne_metis') or a wire kind ({', '.join(sorted(PROVIDER_DEFAULTS))})."
+        )
     if preset is not None:
         provider = preset.provider_kind
         preset_api_base = preset.api_base

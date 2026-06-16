@@ -96,3 +96,31 @@ def test_no_override_uses_base_verbatim():
     cfg = _dynamic_agent_lm_config(base, _agent_def())
     assert cfg.provider == "lm_studio"
     assert cfg.model == "base-model"
+
+
+def test_unknown_preset_raises_not_silent_lmstudio():
+    """A typo'd provider must fail loudly, not silently route to the local LM Studio
+    endpoint (the bug an ALCF-intended expert would hit)."""
+    base = _base()
+    with pytest.raises(ValueError, match="unknown provider"):
+        _dynamic_agent_lm_config(base, _agent_def("argonne_sohpia"))  # typo of _sophia
+    with pytest.raises(ValueError, match="unknown provider"):
+        _dynamic_agent_lm_config(base, _agent_def("not_a_provider"))
+
+
+def test_per_expert_params_are_honored():
+    """temperature/max_tokens/thinking_budget from the expert's parameters reach the
+    config (previously parsed but never asserted)."""
+    base = _base()
+    cfg = _dynamic_agent_lm_config(
+        base, _agent_def(temperature="0.7", max_tokens="1234", thinking_budget="555")
+    )
+    assert cfg.temperature == 0.7
+    assert cfg.max_tokens == 1234
+    assert cfg.thinking_budget == 555
+
+
+def test_invalid_param_value_raises():
+    base = _base()
+    with pytest.raises(ValueError):
+        _dynamic_agent_lm_config(base, _agent_def(temperature="not-a-number"))
