@@ -109,6 +109,30 @@ def test_post_context_op_insert_without_position_400(tmp_path):
     assert r.status_code == 400
 
 
+def test_search_context_endpoint(tmp_path):
+    arc = ARCMemory(data_dir=str(tmp_path / "arc"))
+    client = _client(tmp_path, arc)
+    sid = _session(client)
+    arc.append_segment(sid, "agentA/hdf5", "observation",
+                       {"text": "HDF5 dataset chunk compression filters"}, step=0)
+    arc.append_segment(sid, "agentA/seismic", "observation",
+                       {"text": "earthquake waveform magnitude epicenter"}, step=0)
+    r = client.get(f"/v1/sessions/{sid}/context/search", params={"q": "HDF5 compression"})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["semantic"] is False  # LocalFS in tests
+    assert body["hits"] and body["hits"][0]["scope"] == "agentA/hdf5"
+
+
+def test_search_context_404_503(tmp_path):
+    arc = ARCMemory(data_dir=str(tmp_path / "arc"))
+    client = _client(tmp_path, arc)
+    assert client.get("/v1/sessions/nope/context/search", params={"q": "x"}).status_code == 404
+    client2 = TestClient(build_app(sessions_path=tmp_path / "s2.json", arc=None))
+    sid = _session(client2)
+    assert client2.get(f"/v1/sessions/{sid}/context/search", params={"q": "x"}).status_code == 503
+
+
 def test_context_op_publishes_redacted_arc_op_frame(tmp_path, monkeypatch):
     """An applied op publishes an arc.op SSE frame to the bus, redacted to
     ids/kinds/token_count (never content)."""

@@ -12353,6 +12353,8 @@ from clio_agent.gact.types import (
     CapabilityFlags,
     ContextOpRequest,
     ContextOpResponse,
+    ContextSearchHit,
+    ContextSearchResponse,
     ContextStateResponse,
     CreateSessionRequest,
     CreateUserQuestionRequest,
@@ -13887,6 +13889,25 @@ def build_app(
             live_block_count=len(arc.render_segments(sid, req.scope)),
             tokens_by_kind=tokens_by_kind,
             pct_used=(live_tokens / window) if window else None,
+        )
+
+    @app.get("/v1/sessions/{sid}/context/search", response_model=ContextSearchResponse)
+    async def search_context(
+        sid: str, q: str, scope_prefix: str = "", k: int = 10
+    ) -> ContextSearchResponse:
+        """Semantic discovery over a session's scopes — 'which expert/scope knows
+        about X'. BM25 on the clio-core CTE backend, naive word-overlap on LocalFS."""
+        if app.state.sessions.get(sid) is None:
+            raise _session_not_found(sid)
+        arc = app.state.arc
+        if arc is None:
+            raise _arc_unavailable(sid)
+        hits = arc.search_segment_scopes(sid, q, scope_prefix=scope_prefix, k=k)
+        return ContextSearchResponse(
+            session_id=sid,
+            query=q,
+            semantic=arc.segment_search_is_semantic(),
+            hits=[ContextSearchHit(scope=s, score=score) for s, score in hits],
         )
 
     @app.delete("/v1/sessions/{sid}")

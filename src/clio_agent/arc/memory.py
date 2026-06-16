@@ -1136,6 +1136,23 @@ class ARCMemory:
         """Per-kind token attribution for a scope's live segments (compaction targeting)."""
         return self._segments.tokens_by_kind(session_id, scope)
 
+    def list_segment_scopes(self, session_id: str, scope_prefix: str = "") -> List[str]:
+        """Scopes that have context in this session (for discovery / a scope picker)."""
+        return self._segments.scan_scopes(session_id, scope_prefix)
+
+    def search_segment_scopes(
+        self, session_id: str, query_text: str, *, scope_prefix: str = "", k: int = 10
+    ) -> List[Any]:
+        """Semantic discovery: rank a session's scopes by content relevance to
+        ``query_text`` — "which expert/scope knows about X" (BM25 on CTE)."""
+        return self._segments.search_scopes(
+            session_id, query_text, scope_prefix=scope_prefix, k=k
+        )
+
+    def segment_search_is_semantic(self) -> bool:
+        """Whether scope search uses real BM25 (CTE backend) vs the naive fallback."""
+        return self._segments.supports_search()
+
     def release_session(self, session_id: str) -> Dict[str, int]:
         """Release a session's hot footprint from cache and indexes.
 

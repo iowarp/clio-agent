@@ -277,6 +277,26 @@ class ContextOpResponse(BaseModel):
     pct_used: Optional[float] = None
 
 
+class ContextSearchHit(BaseModel):
+    """One ranked scope from a context discovery search."""
+
+    scope: str
+    score: float
+
+
+class ContextSearchResponse(BaseModel):
+    """GET /v1/sessions/{sid}/context/search — semantic discovery over scopes.
+
+    'which expert/scope knows about X'. ``semantic`` is True for real BM25 (the CTE
+    backend) and False for the naive word-overlap fallback (LocalFS).
+    """
+
+    session_id: str
+    query: str
+    semantic: bool = False
+    hits: list[ContextSearchHit] = Field(default_factory=list)
+
+
 class GlobalMemoryStats(BaseModel):
     """ARC-wide totals — SPEC §6.19."""
 

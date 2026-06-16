@@ -46,6 +46,11 @@ ARC_KINDS: tuple[str, ...] = (
     "segments",  # live context plane: one record per (session_id, scope)
 )
 
+# Suffix for the optional plain-text companion blob a backend may store next to a
+# record for BM25 semantic discovery (Thread D). Companions are NOT records:
+# scan()/get() skip them. Record names must not end with this suffix.
+_SEARCH_SUFFIX = ".text"
+
 
 @runtime_checkable
 class ARCStore(Protocol):
@@ -59,8 +64,16 @@ class ARCStore(Protocol):
     multi-tier storage. This Protocol is the seam where that backend plugs in.
     """
 
-    def put(self, kind: str, name: str, data: bytes, *, tier: str = "warm") -> None:
-        """Persist ``data`` for ``(kind, name)`` (overwrites)."""
+    def put(
+        self, kind: str, name: str, data: bytes, *, tier: str = "warm",
+        search_text: Optional[str] = None,
+    ) -> None:
+        """Persist ``data`` for ``(kind, name)`` (overwrites).
+
+        ``search_text`` (optional) is a plain-text projection of the record for BM25
+        semantic discovery (Thread D); a backend may index it. ``None`` drops any
+        existing companion.
+        """
         ...
 
     def get(self, kind: str, name: str) -> Optional[bytes]:
@@ -82,6 +95,18 @@ class ARCStore(Protocol):
 
     def clear(self) -> None:
         """Delete all persisted records across all kinds."""
+        ...
+
+    def supports_search(self) -> bool:
+        """Whether :meth:`search` does real (e.g. BM25) semantic ranking."""
+        ...
+
+    def search(
+        self, kind: str, query_text: str, *, name_prefix: str = "", k: int = 10
+    ) -> list[tuple[str, float]]:
+        """Rank records in ``kind`` (name starting with ``name_prefix``) by relevance
+        to ``query_text``. Returns ``[(name, score)]`` best-first. Backends without a
+        search index may return a degraded ranking (see ``supports_search``)."""
         ...
 
 
@@ -107,8 +132,19 @@ class LocalFSStore:
         except KeyError:
             raise ValueError(f"unknown ARC kind {kind!r}; expected one of {ARC_KINDS}") from None
 
-    def put(self, kind: str, name: str, data: bytes, *, tier: str = "warm") -> None:
-        (self._dir(kind) / f"{name}.msgpack").write_bytes(data)
+    def put(
+        self, kind: str, name: str, data: bytes, *, tier: str = "warm",
+        search_text: Optional[str] = None,
+    ) -> None:
+        directory = self._dir(kind)
+        (directory / f"{name}.msgpack").write_bytes(data)
+        # Plain-text companion sidecar for search (Thread D). ``.search`` so the
+        # ``*.msgpack`` scan never picks it up as a record.
+        companion = directory / f"{name}.search"
+        if search_text is not None:
+            companion.write_text(search_text, encoding="utf-8")
+        elif companion.exists():
+            companion.unlink()
 
     def get(self, kind: str, name: str) -> Optional[bytes]:
         path = self._dir(kind) / f"{name}.msgpack"
@@ -128,14 +164,41 @@ class LocalFSStore:
             yield path.stem, data
 
     def delete(self, kind: str, name: str) -> None:
-        path = self._dir(kind) / f"{name}.msgpack"
-        if path.exists():
-            path.unlink()
+        directory = self._dir(kind)
+        for suffix in (".msgpack", ".search"):
+            path = directory / f"{name}{suffix}"
+            if path.exists():
+                path.unlink()
 
     def clear(self) -> None:
         for directory in self._dirs.values():
-            for path in directory.glob("*.msgpack"):
-                path.unlink()
+            for pattern in ("*.msgpack", "*.search"):
+                for path in directory.glob(pattern):
+                    path.unlink()
+
+    def supports_search(self) -> bool:
+        return False  # naive word-overlap, not BM25 (use CTEStore for real ranking)
+
+    def search(
+        self, kind: str, query_text: str, *, name_prefix: str = "", k: int = 10
+    ) -> list[tuple[str, float]]:
+        """Degraded fallback: rank by query-word overlap over the ``.search``
+        companions. Good enough for tests / non-CTE deployments; CTEStore does BM25."""
+        terms = {t for t in query_text.lower().split() if t}
+        if not terms:
+            return []
+        scored: list[tuple[str, float]] = []
+        for path in self._dir(kind).glob(f"{name_prefix}*.search"):
+            try:
+                text = path.read_text(encoding="utf-8", errors="ignore").lower()
+            except OSError:
+                continue
+            score = sum(1 for w in text.split() if w in terms)
+            if score > 0:
+                scored.append((path.stem, float(score)))  # .stem drops ".search"
+        scored.sort(key=lambda x: -x[1])
+        return scored[:k]
+
 
 class CTEStore:
     """ARCStore backed by the in-process clio-core CTE runtime.
@@ -202,9 +265,22 @@ class CTEStore:
 
     # ---- ARCStore Protocol ----
 
-    def put(self, kind: str, name: str, data: bytes, *, tier: str = "warm") -> None:
+    def put(
+        self, kind: str, name: str, data: bytes, *, tier: str = "warm",
+        search_text: Optional[str] = None,
+    ) -> None:
         # base64-wrap: CTE GetBlob UTF-8-decodes, so store ascii-safe bytes.
-        self._cte.Tag(kind).PutBlob(name, base64.b64encode(data), 0)
+        tag = self._cte.Tag(kind)
+        tag.PutBlob(name, base64.b64encode(data), 0)
+        # Optional plain-text companion for BM25 semantic discovery (Thread D). CTE
+        # SemanticSearch tokenises blob payloads, which the base64 record defeats —
+        # so a UTF-8 companion at <name>.text carries the searchable text. scan()/get()
+        # skip it so it is never mistaken for a record.
+        companion = name + _SEARCH_SUFFIX
+        if search_text is not None:
+            tag.PutBlob(companion, search_text.encode("utf-8"), 0)
+        elif tag.GetBlobSize(companion) > 0:
+            self._client.DelBlob(tag.GetTagId(), companion)  # drop a now-stale companion
         # ``tier`` is advisory: the default single DRAM tier makes ReorganizeBlob a
         # no-op. Wire tier->score only when a real file/HDD bdev is configured.
 
@@ -221,6 +297,8 @@ class CTEStore:
     def scan(self, kind: str, prefix: str = "") -> Iterator[tuple[str, bytes]]:
         tag = self._cte.Tag(kind)
         for blob_name in tag.GetContainedBlobs():
+            if blob_name.endswith(_SEARCH_SUFFIX):
+                continue  # search companion, not a record
             if blob_name.startswith(prefix):
                 value = self.get(kind, blob_name)
                 if value is not None:
@@ -230,7 +308,9 @@ class CTEStore:
         # Tag has no per-blob delete; go through the Client + TagId. DelBlob on a
         # missing blob returns False (no raise), satisfying the no-op contract.
         tag = self._cte.Tag(kind)
-        self._client.DelBlob(tag.GetTagId(), name)
+        tag_id = tag.GetTagId()
+        self._client.DelBlob(tag_id, name)
+        self._client.DelBlob(tag_id, name + _SEARCH_SUFFIX)  # companion (no-op if absent)
 
     def clear(self) -> None:
         for kind in ARC_KINDS:
@@ -238,6 +318,31 @@ class CTEStore:
             tag_id = tag.GetTagId()
             for blob_name in tag.GetContainedBlobs():
                 self._client.DelBlob(tag_id, blob_name)
+
+    # ---- semantic discovery (Thread D) ----
+
+    def supports_search(self) -> bool:
+        return True
+
+    def search(
+        self, kind: str, query_text: str, *, name_prefix: str = "", k: int = 10
+    ) -> list[tuple[str, float]]:
+        """BM25 semantic search over the plain-text companions. Returns
+        ``[(record_name, score)]`` ranked by relevance, with the ``.text`` suffix
+        stripped so callers get the real record names."""
+        import re  # noqa: PLC0415
+
+        blob_re = f"{re.escape(name_prefix)}.*{re.escape(_SEARCH_SUFFIX)}"
+        results = self._client.SemanticSearch(
+            kind, blob_re, query_text, k, self._cte.PoolQuery.Dynamic()
+        )
+        out: list[tuple[str, float]] = []
+        for r in results:
+            bn = r.blob_name
+            if bn.endswith(_SEARCH_SUFFIX):
+                bn = bn[: -len(_SEARCH_SUFFIX)]
+            out.append((bn, float(r.score)))
+        return out
 
 
 def make_arc_store(

@@ -156,7 +156,15 @@ class SegmentStore:
 
     def _persist(self, session_id: str, scope: str) -> None:
         segs = self._scopes[(session_id, scope)]
-        self._store.put("segments", self._record_name(session_id, scope), encode_segments(segs))
+        # search_text: the live render flattened to plain text, so semantic discovery
+        # (Thread D) can find this scope by content. Empty -> None drops the companion.
+        live_text = "\n".join(segment_text(s) for s in self._live_sorted(segs))
+        self._store.put(
+            "segments",
+            self._record_name(session_id, scope),
+            encode_segments(segs),
+            search_text=live_text or None,
+        )
 
     def _new_lt(self) -> int:
         lt = self._next_lt
@@ -508,6 +516,29 @@ class SegmentStore:
             if scope.startswith(scope_pattern):
                 out.add(scope)
         return sorted(out)
+
+    def supports_search(self) -> bool:
+        """Whether the backend does real BM25 ranking (CTE) vs the naive fallback."""
+        fn = getattr(self._store, "supports_search", None)
+        return bool(fn()) if callable(fn) else False
+
+    def search_scopes(
+        self, session_id: str, query_text: str, *, scope_prefix: str = "", k: int = 10
+    ) -> list[tuple[str, float]]:
+        """Semantic discovery (Thread D): rank a session's scopes by how well their
+        content matches ``query_text``. Returns ``[(scope, score)]`` best-first —
+        "which expert/scope knows about X". BM25 on CTE, naive word-overlap on LocalFS.
+        """
+        search = getattr(self._store, "search", None)
+        if not callable(search):
+            return []
+        prefix = f"{session_id}{_SCOPE_SEP}{scope_prefix.replace('/', _SLASH_SUB)}"
+        sep = f"{session_id}{_SCOPE_SEP}"
+        out: list[tuple[str, float]] = []
+        for record_name, score in search("segments", query_text, name_prefix=prefix, k=k):
+            if record_name.startswith(sep):
+                out.append((record_name[len(sep):].replace(_SLASH_SUB, "/"), score))
+        return out
 
     def tokens_by_kind(self, session_id: str, scope: str) -> dict[str, int]:
         """Sum ``token_count`` of LIVE segments grouped by kind — the attribution
