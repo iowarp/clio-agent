@@ -95,6 +95,22 @@ async def test_cee_invoker_composes_with_background_monitor(tmp_path):
         await worker
 
 
+async def test_successful_delegation_drains_the_mailbox(tmp_path):
+    """A completed delegation leaves NO req/res/claim behind (the leak fix: invoke
+    discards on success, so the mailbox doesn't grow without bound)."""
+    store = make_arc_store(backend="local", data_dir=str(tmp_path))
+    mailbox = CEEMailbox(store, prefix="cee_drain_")
+    stop = asyncio.Event()
+    worker = asyncio.ensure_future(run_worker(mailbox, _child_handler, stop=stop))
+    try:
+        res = await CEEExpertInvoker(mailbox, timeout=5).invoke(ExpertRequest("data", "q"))
+        assert res.answer == "handled:q"
+    finally:
+        stop.set()
+        await worker
+    assert list(store.scan("context", "cee_drain_")) == []  # nothing leaked
+
+
 # ---- failure modes (found by the depth gap analysis; confirmed by probe) ----
 
 

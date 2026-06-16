@@ -7,6 +7,7 @@ No local GPU; the echo/crash workers need no model.
 """
 from __future__ import annotations
 
+import asyncio
 import os
 
 import pytest
@@ -55,6 +56,28 @@ async def test_worker_crash_other_worker_reclaims(cross_arc, spawn_worker):
     mb = CEEMailbox(cross_arc, prefix=prefix)
     res = await CEEExpertInvoker(mb, timeout=30).invoke(ExpertRequest("data", "reclaim-me"))
     assert res.answer == "echo:reclaim-me"  # the live worker served it
+    cross_arc.put("context", f"{prefix}STOP", b"1")
+
+
+async def test_concurrent_delegations_across_worker_processes(cross_arc, spawn_worker):
+    """N concurrent delegations distributed across M real worker PROCESSES: each
+    parent gets ITS job back (no cross-talk), and the mailbox drains clean (the
+    blob-leak fix — successful delegations no longer accumulate req/res/claim)."""
+    prefix = "xp_thru_"
+    spawn_worker(prefix, mode="echo", n=3)
+    mb = CEEMailbox(cross_arc, prefix=prefix)
+    inv = CEEExpertInvoker(mb, timeout=40)
+    n = 12
+
+    async def one(job: str):
+        return job, await inv.invoke(ExpertRequest("data", job))
+
+    results = await asyncio.gather(*[one(f"job{i}") for i in range(n)])
+    for job, res in results:
+        assert res.answer == f"echo:{job}"  # ITS own job, no cross-talk
+    # mailbox fully drained — no leaked req/res/claim blobs after success
+    leftovers = [nm for nm, _ in cross_arc.scan("context", prefix) if "READY" not in nm]
+    assert leftovers == [], f"mailbox leaked: {leftovers}"
     cross_arc.put("context", f"{prefix}STOP", b"1")
 
 

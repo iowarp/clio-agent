@@ -90,10 +90,17 @@ class CEEMailbox:
         """Best-effort claim of ``rid`` for one worker. Returns whether this caller
         won. NOT atomic (the store has no CAS), so a sub-millisecond race can still
         let two workers serve — exactly-once execution needs a clio-core lease (#659).
-        """
+        Skips a request whose ``.req`` is already gone (completed + discarded by the
+        parent) so it doesn't write a stray claim blob."""
+        if not self.has_request(rid):
+            return False
         self._store.put(_KIND, f"{rid}.claim", token.encode("utf-8"))
         got = self._store.get(_KIND, f"{rid}.claim")
         return got is not None and got.decode("utf-8") == token
+
+    def discard_claim(self, rid: str) -> None:
+        """Drop a stray claim blob (e.g. one written just as the request was discarded)."""
+        self._store.delete(_KIND, f"{rid}.claim")
 
     def discard(self, rid: str) -> None:
         """Remove a request and any result/claim — orphan cleanup (e.g. on timeout)."""
@@ -122,6 +129,9 @@ async def serve_one(mailbox: CEEMailbox, rid: str, handler: Handler) -> Optional
     Cancellation propagates (cooperative shutdown).
     """
     if not mailbox.has_request(rid):
+        # The request was completed + discarded by the parent between this worker's
+        # pending() snapshot and now; drop any stray claim we wrote so it doesn't leak.
+        mailbox.discard_claim(rid)
         return None
     req = mailbox.read_request(rid)
     if req is None:  # blob present but undecodable
@@ -197,6 +207,10 @@ class CEEExpertInvoker:
                 f"clio-core delegation {rid} timed out after {self._timeout}s"
             ) from None
         result = self._mb.read_result(rid)
+        # Delegation complete: drop req/res/claim so the mailbox doesn't grow without
+        # bound over many delegations, and a late (double-executing) worker can't
+        # re-serve a request whose result the parent already consumed.
+        self._mb.discard(rid)
         if result is None:  # pragma: no cover — has_result was true
             raise RuntimeError(f"clio-core mailbox result vanished for {rid}")
         return result
