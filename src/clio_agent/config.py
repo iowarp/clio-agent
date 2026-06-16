@@ -1412,22 +1412,68 @@ def _lenient_chat_adapter_cls() -> Any:
     return _LENIENT_CHAT_ADAPTER_CLS
 
 
-def create_chat_adapter(config: LMProviderConfig) -> Any:
-    """Create the DSPy chat adapter appropriate for this provider.
+def _guided_output_enabled() -> bool:
+    """Whether to use guided/structured output (dspy.JSONAdapter) instead of the
+    text-protocol ChatAdapter.
 
-    Uses ChatAdapter's text protocol (local OpenAI-compatible servers work best
-    with it) wrapped in a lenient subclass that, on a structured-output parse
-    failure, coerces a constructor-repr field (e.g. qwopus emitting
+    Guided output makes the provider CONSTRAIN generation to the signature's
+    output schema (``response_format`` → json_schema when the signature allows,
+    else json_object on LM Studio / vLLM), so the structured fields are valid by
+    construction instead of relying on the model reproducing the
+    ``[[ ## field ## ]]`` text format. This is the reasoning-model fix: qwopus
+    drops fields (e.g. ReAct's ``next_tool_name``) under the text protocol; under
+    guided output it emits schema-conformant JSON (which, on LM Studio, lands in
+    ``reasoning_content`` and is recovered by the content←reasoning_content
+    fallback in :meth:`IOLoggingLM._process_completion`).
+
+    Configurable (``lm.guided_output`` / ``CLIO_LM_GUIDED_OUTPUT``), default OFF
+    so models that pass on the text protocol (gpt-oss/gemma/nemotron) are
+    untouched; opt in per grind / per model.
+    """
+    try:
+        from clio_agent import conf  # noqa: PLC0415
+
+        return bool(
+            conf.resolve(
+                "lm.guided_output",
+                env="CLIO_LM_GUIDED_OUTPUT",
+                default=False,
+                cast=conf.as_bool,
+            )
+        )
+    except Exception:
+        return os.environ.get("CLIO_LM_GUIDED_OUTPUT", "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+
+
+def create_chat_adapter(config: LMProviderConfig) -> Any:
+    """Create the DSPy adapter appropriate for this provider.
+
+    Default: ChatAdapter's text protocol (local OpenAI-compatible servers work
+    best with it) wrapped in a lenient subclass that, on a structured-output
+    parse failure, coerces a constructor-repr field (e.g. qwopus emitting
     ``workflow_state`` as ``Model(field=...)`` instead of JSON) into JSON and
     re-parses — fixing the model↔adapter mismatch in code, no re-request.
 
+    When guided output is enabled (:func:`_guided_output_enabled`), return
+    ``dspy.JSONAdapter`` instead: it sends ``response_format`` so the provider
+    constrains generation to the output schema — the durable fix for reasoning
+    models that drop required fields under the text protocol. LM Studio honors
+    ``response_format`` (verified live: it returns schema-conformant JSON, in
+    ``reasoning_content``, recovered by the completion fallback); the historical
+    "LM Studio rejects response_format with HTTP 400" note no longer holds.
+
     DSPy's JSON-adapter fallback is kept ONLY for remote providers. On a local
-    backend it is harmful: when it engages it retries with the JSON adapter, which
-    sends ``response_format``, and LM Studio rejects that with HTTP 400 — turning a
-    recoverable parse into a hard error. Local backends rely on the lenient
-    coercion instead (verified: it recovers qwopus's constructor-repr without any
-    re-request). ``CLIO_DISABLE_JSON_ADAPTER_FALLBACK`` force-disables it anywhere.
+    backend it was historically harmful (the JSON-mode retry's ``response_format``
+    once 400'd); local backends rely on the lenient coercion instead.
+    ``CLIO_DISABLE_JSON_ADAPTER_FALLBACK`` force-disables it anywhere.
     """
+    if _guided_output_enabled():
+        return _dspy().JSONAdapter()
     use_json_fallback = not is_local_openai_compatible_backend(config)
     if os.environ.get("CLIO_DISABLE_JSON_ADAPTER_FALLBACK", "").strip().lower() in {
         "1",
