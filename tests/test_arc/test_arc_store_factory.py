@@ -22,6 +22,35 @@ def test_factory_local(tmp_path):
     assert isinstance(store, LocalFSStore)
 
 
+def test_attach_mode_fails_fast_without_daemon(monkeypatch):
+    """CLIO_CTE_WITH_RUNTIME=0 with no daemon must fail FAST with an actionable error,
+    not hang ~30s in chimaera_init (which make_arc_store's fallback can't catch)."""
+    from clio_agent.arc.storage import CTEStore
+
+    monkeypatch.setenv("CLIO_CTE_DAEMON_PORT", "59999")  # nothing listening here
+    with pytest.raises(RuntimeError, match="no daemon is reachable"):
+        CTEStore._require_daemon_reachable()
+
+
+def test_attach_mode_does_not_silently_fall_back_to_localfs(tmp_path, monkeypatch):
+    """An explicit attach (CLIO_CTE_WITH_RUNTIME=0) that fails must SURFACE, not
+    silently drop to LocalFS -- that would give each process its own store and break
+    the cross-process sharing the operator asked for. Embedded mode still degrades."""
+
+    def _boom(**kwargs):
+        raise RuntimeError("daemon unreachable")
+
+    monkeypatch.setattr(storage, "CTEStore", _boom)
+
+    monkeypatch.setenv("CLIO_CTE_WITH_RUNTIME", "0")  # attach explicitly requested
+    with pytest.raises(RuntimeError, match="daemon unreachable"):
+        make_arc_store(backend="cte", data_dir=str(tmp_path))
+
+    monkeypatch.setenv("CLIO_CTE_WITH_RUNTIME", "1")  # embedded -> graceful fallback OK
+    store = make_arc_store(backend="cte", data_dir=str(tmp_path))
+    assert isinstance(store, LocalFSStore)
+
+
 def test_factory_env_selects_local(tmp_path, monkeypatch):
     monkeypatch.setenv("CLIO_ARC_STORE", "local")
     assert isinstance(make_arc_store(data_dir=str(tmp_path)), LocalFSStore)

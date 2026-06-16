@@ -269,6 +269,12 @@ class CTEStore:
                 "no",
                 "off",
             )
+            # Attaching to an external daemon: chimaera_init(kClient, False) BLOCKS for
+            # ~30s if no daemon is reachable and then proceeds into a broken state.
+            # Pre-check and fail fast with an actionable error (a hang can't be caught
+            # by make_arc_store's graceful fallback).
+            if not with_runtime:
+                cls._require_daemon_reachable()
             cte.chimaera_init(cte.ChimaeraMode.kClient, with_runtime)
             if with_runtime:
                 time.sleep(settle_s)  # let the embedded co-process spin up
@@ -278,6 +284,25 @@ class CTEStore:
                 "CTE runtime initialized (%s)",
                 "embedded, no daemon" if with_runtime else "attached to clio_run daemon",
             )
+
+    @staticmethod
+    def _require_daemon_reachable() -> None:
+        """Fail fast (no 30s hang) when attach mode is requested but no clio_run
+        daemon is listening. The daemon's RPC port is the readiness proxy."""
+        import socket  # noqa: PLC0415
+
+        host = os.environ.get("CLIO_CTE_DAEMON_HOST", "127.0.0.1")
+        port = int(os.environ.get("CLIO_CTE_DAEMON_PORT", "9413"))
+        try:
+            with socket.create_connection((host, port), timeout=2.0):
+                return
+        except OSError as exc:
+            raise RuntimeError(
+                f"CLIO_CTE_WITH_RUNTIME=0 (attach to a shared clio_run daemon) but no "
+                f"daemon is reachable at {host}:{port} ({exc}). Start one with "
+                f"`clio_run start`, set CLIO_CTE_DAEMON_PORT/HOST, or unset "
+                f"CLIO_CTE_WITH_RUNTIME to use an embedded per-process runtime."
+            ) from exc
 
     # ---- ARCStore Protocol ----
 
@@ -384,9 +409,21 @@ def make_arc_store(
         return LocalFSStore(data_dir)
     if choice == "cte":
         cfg = config_path or os.environ.get("CLIO_ARC_STORE_CONFIG", "")
+        # Explicit attach to a shared daemon is a deployment choice, not a capability
+        # probe: if it fails, a silent LocalFS fallback would give each process its OWN
+        # local store and silently break the cross-process sharing the operator asked
+        # for. Surface that error instead of degrading.
+        attach_mode = os.environ.get("CLIO_CTE_WITH_RUNTIME", "1").strip().lower() in (
+            "0",
+            "false",
+            "no",
+            "off",
+        )
         try:
             return CTEStore(config_path=cfg)
         except Exception as exc:  # noqa: BLE001 - binding absent or init failure
+            if attach_mode:
+                raise
             warnings.warn(
                 f"CTE store unavailable ({exc}); falling back to LocalFSStore",
                 RuntimeWarning,
