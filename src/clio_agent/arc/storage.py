@@ -188,17 +188,15 @@ class CTEStore:
             import iowarp_core  # noqa: F401, PLC0415  # isort:skip
             import clio_cte_core_ext as cte  # noqa: PLC0415  # isort:skip
 
-            devnull = os.open(os.devnull, os.O_WRONLY)
-            saved_stderr = os.dup(2)
-            os.dup2(devnull, 2)  # silence the C++ fd-level startup banner
-            try:
-                cte.chimaera_init(cte.ChimaeraMode.kClient, True)  # True => embedded runtime
-                time.sleep(settle_s)  # let the co-process spin up
-                cte.initialize_cte(config_path, cte.PoolQuery.Dynamic())  # "" => ~/.clio/clio.yaml
-            finally:
-                os.dup2(saved_stderr, 2)
-                os.close(saved_stderr)
-                os.close(devnull)
+            # Do NOT redirect fd 2 (no os.dup2 on stderr) here. Under pytest's
+            # fd-level capture that clobbers the captured fd and can SILENTLY ABORT
+            # the interpreter (exit 1, zero output) depending on capture mode +
+            # ambient CTE shared-memory state. CTP_LOG_LEVEL quiets the C++ logging;
+            # a one-time startup banner on stderr is an acceptable trade for never
+            # crashing the host process.
+            cte.chimaera_init(cte.ChimaeraMode.kClient, True)  # True => embedded runtime
+            time.sleep(settle_s)  # let the co-process spin up
+            cte.initialize_cte(config_path, cte.PoolQuery.Dynamic())  # "" => ~/.clio/clio.yaml
             cls._initialized = True
             logger.info("CTE embedded runtime initialized (no external daemon)")
 
