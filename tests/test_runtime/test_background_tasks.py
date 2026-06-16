@@ -136,6 +136,45 @@ async def test_unknown_handle_raises():
         await bt.wait("nope", timeout=0.1)
 
 
+async def test_prune_evicts_terminal_records_keeps_running():
+    bt = BackgroundTasks()
+
+    async def quick(sink):
+        return 1
+
+    async def slow(sink):
+        await asyncio.sleep(5)
+
+    t1, t2 = bt.spawn(quick), bt.spawn(quick)
+    await bt.wait(t1, timeout=1)
+    await bt.wait(t2, timeout=1)
+    t3 = bt.spawn(slow)
+    await asyncio.sleep(0.01)
+
+    assert bt.prune() == 2  # only the two completed are evicted
+    assert bt.get(t1) is None and bt.get(t2) is None
+    assert bt.get(t3) is not None  # running task kept
+
+    bt.cancel(t3)
+    await bt.wait(t3, timeout=1)
+
+
+async def test_remove_refuses_running_task():
+    bt = BackgroundTasks()
+
+    async def slow(sink):
+        await asyncio.sleep(5)
+
+    tid = bt.spawn(slow)
+    await asyncio.sleep(0.01)
+    with pytest.raises(ValueError):
+        bt.remove(tid)
+    bt.cancel(tid)
+    await bt.wait(tid, timeout=1)
+    assert bt.remove(tid) is True
+    assert bt.get(tid) is None
+
+
 async def test_list_snapshots_redact_result():
     bt = BackgroundTasks()
 

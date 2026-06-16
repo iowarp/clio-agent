@@ -181,6 +181,27 @@ class BackgroundTasks:
             return rec.task.cancel()
         return False
 
+    def remove(self, tid: str) -> bool:
+        """Drop a terminal task's record to bound memory. Returns whether it existed.
+        Refuses to drop a still-running task (cancel it first)."""
+        rec = self._records.get(tid)
+        if rec is None:
+            return False
+        if not rec.status.terminal:
+            raise ValueError(f"task {tid} is {rec.status.value}; cancel before removing")
+        self._records.pop(tid, None)
+        self._on_complete.pop(tid, None)
+        return True
+
+    def prune(self) -> int:
+        """Evict every terminal record (bounds unbounded growth in a long-running
+        registry). Returns how many were dropped; running tasks are kept."""
+        terminal = [tid for tid, rec in self._records.items() if rec.status.terminal]
+        for tid in terminal:
+            self._records.pop(tid, None)
+            self._on_complete.pop(tid, None)
+        return len(terminal)
+
     def _require(self, tid: str) -> TaskRecord:
         rec = self._records.get(tid)
         if rec is None:
