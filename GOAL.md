@@ -1,117 +1,92 @@
-# GOAL — ARC as the Live Context Plane
+# GOAL — Distributable expert runtime
 
-> Grounding goal for an ultracode (multi-agent) run. This file states the *goal*,
-> the *definition of done*, the *locked decisions*, and the *testing posture*. It
-> does NOT sequence the build — decomposition and ordering are the executor's job.
-> Full design context: [`docs/design/arc-live-context-plane.md`](docs/design/arc-live-context-plane.md).
+> Predecessor: this file previously held the **ARC live context plane** goal — now complete
+> and preserved on branch `feat/arc-live-context-plane`. That data plane is the foundation
+> this execution-plane work builds on.
 
-## The goal
+Tracking epic: **#667**. Branch: `feat/distributable-expert-runtime`, worktree
+`/home/jcernuda/clio-distributable-experts`, based on `feat/arc-live-context-plane`.
 
-Implement ARC as clio-agent's **live context plane**: the authoritative, mutable,
-ordered, scoped segment store that the DSPy ReAct loop reads from on **every**
-iteration — replacing the transient local `trajectory` dict as the source of the
-prompt. Deliver the four context operations, per-expert and per-agent scoping, 90%
-auto-compaction, and the ARC/Trace separation, as **one working system**, built and
-tested together (not as slices/MVPs), validated against **ALCF/Argonne** models as
-you go.
+## North star
 
-This is the foundation for the larger vision (a distributed team of agents that
-discover and communicate over shared context) — but THIS goal is the single-node
-live plane done correctly. Cross-node CTE backing is explicitly out of scope here
-(see Deferred).
+Reach **detangled (local + detached) expert-invocation semantics on a single box**, with the
+detached path proven over a loopback transport. Then taking this to a GPU cluster, the only
+remaining step is swapping the loopback for clio-core's cross-machine transport and building
+the distributed context (#659, #665). **Build and test everything reachable without the
+cluster, here.**
 
-## Definition of done
+## Done condition (what "reached" means)
 
-1. **ARC is provably the source.** On every iteration, the message list sent to the
-   LM is built from ARC for that scope — verified at the LM boundary:
-   - **Byte-equality**: an independent render of ARC@scope == the trajectory content
-     in the captured outgoing prompt (modulo static signature/instructions).
-   - **Mutation propagation** (the decisive tests): out-of-band mutate ARC mid-loop
-     and the *next* prompt reflects it — `append(X)`→present; **`delete(C)`→absent**;
-     **`summarize(E→E')`→shows E', not E**; `insert(mid,Y)`→present at position.
-   - The local `trajectory` dict is no longer an independent source (true by
-     construction: one store, nothing to diverge).
-2. **The four ops work** (`append`, `insert`, `delete`, `summarize`) over the segment
-   store, at **expert** and **agent** scope. `context-compaction = summarize(all)`.
-3. **90% auto-compaction** fires **per-expert**, driven by the provider's exact
-   `prompt_tokens / context_window`; threshold **configurable**; dspy's reactive
-   `truncate_trajectory` remains only as a never-fired backstop.
-4. **ARC/Trace separation holds**: every ARC op is logged to the durable Trace; ARC
-   is reconstructable from the Trace; compacting ARC never loses Trace fidelity.
-5. **Validated on real ALCF/Argonne runs**, not just synthetic tests — the acceptance
-   tests above green against a live model, end-to-end through the gact ReAct path.
+An expert can:
+1. **Run on its own declared model** — `(provider, model)` from its `.md` resolves to the
+   right endpoint, including a provider distinct from the run default, with its own context
+   window. _(a #668, a.2 #669)_
+2. **Be launched async and monitored** — spawn→handle, `status`/`poll_output`,
+   `wait(until/timeout)`, `on_complete` (model-stream event + side-effect callback),
+   `cancel`, `resume`; a parent launches a background child, continues or waits by policy,
+   and folds structured completion back into the same session lineage. _(c #670, b #441)_
+3. **Be invoked through a transport-abstracted boundary** — an `ExpertInvoker` with an
+   in-process impl (parity, regression-gated) AND a detached loopback impl (request
+   serialized, child events folded back), so swapping the transport is the only cluster
+   step. _(e #671 — the hinge)_
 
-## Testing posture
+Reached when (3) holds with both impls green, parity-tested, and the loopback path validated
+live on two ALCF providers.
 
-Build and test as a unified whole. Write the acceptance contract (recording-LM
-harness at the `dspy.BaseCallback` / `on_lm_start` boundary; byte-equality;
-mutation-propagation; prefix cross-check; trace-audit) as the spec, and make the
-system satisfy it. Exercise against ALCF/Argonne models throughout — local-model
-token-counting quirks (tiktoken mismatch) are part of what must work in reality.
+## Capability graph (dependencies, not phases)
 
-## Locked decisions
+```
+(a) #668 ──┐
+(a.2) #669 ┴──> heterogeneous experts (each its own model)
 
-**Segment schema** (the load-bearing data model — locked so parallel agents share it):
+(c) #670 ──> (b) #441   async / background experts
+                  └───┐
+(e) #671 ─────────────┴──> detangled local + detached invocation   ◀── north star
 
-| Field | Purpose |
-|---|---|
-| `id` | stable unique id — op target; survives reorder/edit |
-| `scope` | tag address `agentX/expertY` — expert/agent addressing + communication |
-| `step` | ReAct iteration index — groups thought+tool_call+observation of one iteration |
-| `order` | ordering key within scope — render order, monotonic |
-| `logical_time` | monotonic clock — as-of-T reads, concurrent-writer ordering |
-| `kind` | `system\|user\|tool_def\|thought\|tool_call\|observation\|summary` — render + token attribution |
-| `content` | payload — str (thought/observation), `{name,args}` (tool_call), schema/text (tool_def/system) |
-| `token_count` | cached per-segment estimate — attribution + compaction targeting |
-| `derived_from` | `list[id]` — provenance; for `summary` = ids it replaced (expand + Trace reconstruction) |
-| `status` | `live\|tombstoned` — deletion as tombstone; render skips tombstoned |
-| `trace_ref` | link to the Trace event/turn — ARC-derived-from-Trace |
+              ── on the GPU cluster ──>  (d) #659  +  distributed context plane #665
+```
 
-- **Granularity:** one piece per segment (thought, tool_call, observation each
-  separate), grouped by `step` — enables targeted summarize/delete of one heavy
-  segment.
-- **dspy round-trip:** *write* — `_RetainingReAct.forward` (`gact/app.py:5407`)
-  appends a segment per produced piece; *read* — override `_format_trajectory`
-  (dspy `react.py:91`) to rebuild dspy's `thought_/tool_name_/tool_args_/
-  observation_{idx}` dict from ARC's live segments (in `order`, skip tombstoned,
-  substitute `summary`). The dict dspy formats is built from ARC each call.
+Natural first beat: **(a) + (a.2)** — mostly built, independently testable, the prerequisite
+for heterogeneous teams. Then (c) → (b) → (e). The order is a dependency graph; let the
+trace drive what's next, not a schedule.
 
-**Other locked decisions** (rationale in the design doc):
-- Two structural primitives: `insert(position, content)` + `delete(range)`;
-  `summarize = delete + insert(LLM_summary)`; `append = insert(end)`.
-- Scope = address (expert | agent | cross-agent) → CTE-style tag namespaces; reads
-  are `(scope, as-of-T)`.
-- Trigger off exact provider `prompt_tokens` (not `token_counter`); `token_counter`
-  with the model-DB tokenizer is a pre-send guard only.
-- Implement ops as a working v1 behind a stable `apply(op, scope, ...)` interface;
-  the naive KV path (re-prompt, recompute from edit point) is correct-and-acceptable
-  now; KV-surgery is a later backend swap (see Deferred).
+## Testing strategy ("full faith before deploy")
 
-## Constraints (clio core principles — do not violate)
+- **Live = two ALCF providers, each serving its own model.** Heterogeneity proven
+  endpoint-wise; no local router; the local machine stays free for other systems. The
+  single-endpoint llama.cpp/LM Studio router is documented (a.2) but off the test path.
+- **Per-expert model:** offline — two experts, two declared models, assert each turn hits the
+  LM boundary with its own model (`lm.history` / PromptRecorder) and its own context window.
+  Live — same on two ALCF providers, end-to-end.
+- **Monitor/async:** unit — handle lifecycle, status transitions, `wait` timeout, `cancel`,
+  notify (both channels), `resume` preserves context. Integration — a real long-running
+  expert turn, child completion folds back, status surfaced without pretending the parent
+  finished.
+- **Invocation boundary:** parity — in-process invoker ≡ current behavior (result-identical,
+  regression-gated) across blueprint + tool-user paths. Loopback — child over the detached
+  transport folds events/results back; live on two ALCF providers.
 
-- **No deterministic decision-making in clio core** — the model (parent agent) is the
-  router/decider via structured output; clio carries results and re-asks. No keyword/
-  prose heuristics, no fabricated decisions.
-- Fix root causes in code/data-flow; do not bolt prose constraints onto expert `.md`s.
-- DSPy is the internal engine and the reference (source under `docs/ref/dspy/` in the
-  main checkout, or the installed package); honor its typed-output/adapter semantics.
-- Do not break baseline (the gact ReAct path must keep working).
+## Principles (CLAUDE.md superseding rules — these win)
 
-## Open questions for the executor (resolve in-code)
+1. **No deterministic decision-making in core.** Parent model routes/decides via structured
+   output; clio carries results, executes handoffs, re-asks on a missing one. Async/detached
+   preserve this — a detached expert is still parent-driven, never clio-heuristic-driven. No
+   prose-keyword "done"/"pending" detectors.
+2. **Fix the root in code/data-flow, not by bolting constraints onto expert prompts.**
+3. **Trace-driven driver:** run the target test, read the FULL trace, hypothesize one cause,
+   probe cheaply (~30s) before a multi-minute rerun, fix the root, one change per rerun.
+4. **DSPy is the engine + reference** (`docs/ref/dspy/`); the live fold accepts raw
+   `SemanticEvent`s from any producer (`arc/live.py`) — that's the seam detached invocation
+   rides on.
 
-- Manual **task-change** compaction trigger surface (the non-90% trigger).
-- **Scope-aware `ContextCompiler`**: how expert-private + subscribed agent-scope
-  segments merge within budget.
-- **as-of-T** read semantics for concurrent shared-scope writers (logical clock
-  source) — only relevant once agent-scope sharing is exercised.
-- Per-model **tokenizer** enrichment in the model DB + post-call self-calibration
-  against exact `prompt_tokens`.
+## Infra traps (from the ARC build — avoid re-hitting)
 
-## Deferred (out of scope for this goal — hooks present, not built)
-
-- Physical KV surgery (delete/insert/summarize without recompute) behind the
-  `apply(op, scope)` interface — clio-core `context-transfer-engine/llm-hooks/kvcache`
-  backend; a separate KVCache effort.
-- CTE-backed `ARCStore` cross-node shared plane (prove the single-node logical plane
-  first).
-- Vector/embedding semantic search (neither ARC nor CTE has it).
+- **Worktree venv is separate.** Already synced here: `uv sync --extra dev --extra optimizers
+  --extra argonne` + `git submodule update --init external/clio-agent-marketplace`. Always
+  test via `uv run python -m pytest` (never bare `uv run pytest` — it can silently fall back
+  to another worktree's venv; coverage paths pointing elsewhere are the tell).
+- **ALCF "just works"** with the `argonne` extra (globus-sdk) installed; the Globus token is
+  auto-managed on this machine. Live env: `CLIO_LM_PROVIDER=argonne`,
+  `CLIO_LM_API_BASE=...alcf.anl.gov/.../vllm/v1`, `CLIO_LM_MODEL=openai/gpt-oss-120b`,
+  `CLIO_RUN_LIVE=1`. For multi-model: a second ALCF provider/model alongside.
+- **No phased plans.** Capture context and dependencies; let the build be goal-driven.
