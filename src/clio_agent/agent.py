@@ -44,6 +44,7 @@ from clio_agent.arc.schema import (
     NanoagentSpawn,
     RoutingDecision,
 )
+from clio_agent.arc.storage import make_arc_store
 from clio_agent.config import (
     create_chat_adapter,
     create_lm,
@@ -198,8 +199,15 @@ class ClioAgent(dspy.Module):
         super().__init__()
         self.verbose = verbose
 
-        # Initialize ARC Memory
-        self.arc = ARCMemory(data_dir=f"{data_dir}/arc", cache_capacity=1000)
+        # Initialize ARC Memory. The persistence backend comes from the factory:
+        # clio-core CTE by default (the gold-standard, in-process tiered store),
+        # LocalFSStore via CLIO_ARC_STORE=local. Falls back to LocalFS if the CTE
+        # binding/runtime is unavailable.
+        self.arc = ARCMemory(
+            data_dir=f"{data_dir}/arc",
+            cache_capacity=1000,
+            store=make_arc_store(data_dir=f"{data_dir}/arc"),
+        )
         self.context_retriever = ContextRetriever(self.arc)
 
         # Initialize LSM Tree for metrics
