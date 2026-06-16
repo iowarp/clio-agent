@@ -158,15 +158,26 @@ def gact_server(request: pytest.FixtureRequest) -> Generator[GactServer, None, N
         "CLIO_SEMANTIC_TRACE_BACKEND": "file",
         "CLIO_SEMANTIC_TRACE_PATH": str(trace_dir),
     }
-    # CRITICAL: the repo-root autouse fixture (tests/conftest.py) sets
-    # XDG_CONFIG_HOME to a throwaway tmp dir to isolate UNIT tests from the real
-    # config. A live grind is the opposite case: it must resolve the blueprint by
-    # id from the user's REAL ~/.config/clio-agent/agent-blueprints (TRAP 1).
-    # Inheriting the tmp XDG points the server at an empty config root → the
-    # blueprint-assignment 404s ("agent blueprint not found"). Drop it so the
-    # server uses the real config home (and the test-only LM/model default).
-    env.pop("XDG_CONFIG_HOME", None)
-    env.pop("CLIO_LM_MODEL", None)
+    # CRITICAL: the repo-root autouse fixture (tests/conftest.py) injects
+    # UNIT-test-isolation env into os.environ, which a live grind must NOT inherit
+    # — the live server has to run like real CLIO (production runtime), not a unit
+    # test. Strip each:
+    #   - XDG_CONFIG_HOME: points the server at a throwaway tmp config root, so it
+    #     can't see the user's installed blueprint -> assignment 404s "agent
+    #     blueprint not found" (TRAP 1/5).
+    #   - CLIO_AGENT_ENABLE_LEGACY_NATIVE_EXPERTS: switches off the Agent Blueprint
+    #     runtime (app.py _agent_definition_uses_blueprint_runtime), so the
+    #     orchestrator runs as a legacy USER agent (route_source=user_agent) that
+    #     never settles its expert_handoffs -> the turn ends after main's first
+    #     call with no delegation (steps=[], end_turn). THIS is the agent-driven
+    #     routing path the grind exists to exercise.
+    #   - CLIO_LM_MODEL: a unit-test default model; the bind PUT sets the real one.
+    for _k in (
+        "XDG_CONFIG_HOME",
+        "CLIO_AGENT_ENABLE_LEGACY_NATIVE_EXPERTS",
+        "CLIO_LM_MODEL",
+    ):
+        env.pop(_k, None)
     log_fh = server_log.open("wb")
     process = subprocess.Popen(
         ["uv", "run", "clio-agent-gact", "--host", "127.0.0.1", "--port", str(GACT_PORT)],
