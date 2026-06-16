@@ -9,6 +9,24 @@ single-process throughout.* The only real cross-process artifact is `examples/cl
 a deployment test. Real = separate OS processes + a `clio_run` daemon + real ALCF models.
 The lesson: verify cross-PROCESS, not cross-coroutine.
 
+## STATUS (built — `tests/test_distributed/`, gated `CLIO_RUN_CROSS_PROCESS=1`)
+
+A real cross-process harness (session `clio_run` daemon fixture + worker-subprocess spawner +
+configurable worker entrypoint + `cross_process` marker) and **11 cross-process tests**:
+happy-path; worker `kill -9` → graceful timeout; worker crash → live-worker reclaim;
+**lease** (2 workers, 1 request → exactly 1 execution); 12- and 30-delegation throughput across
+3/5 worker processes; 200KB large payload; real-ALCF expert on a worker; **heterogeneous**
+Sophia+Metis; **NDP-pipeline multi-hop** (geospatial→data, context crossing via a needle).
+**5 real bugs found + fixed** that single-process tests could not surface: no-daemon hang,
+success-path blob leak, orphan-`.claim` race, slow-worker double-execution (TTL lease +
+heartbeat), and the silent-LocalFS-fallback on explicit attach. All committed + pushed.
+
+**Deferred (need their own effort / clio-core side):** daemon-death resilience (→ clio-core
+fault-tolerance: replication/erasure-coding, in progress upstream); wiring `CEEExpertInvoker`
+into the real gact `_execute_delegated_experts` (full settle loop cross-process); a live
+NDP-catalog worker (clio-kit MCP + network — both confirmed reachable); CEE-blackboard + ARC
+segments cross-process; true exactly-once (sub-ms simultaneous claim needs a clio-core CAS).
+
 ## Tier 0 — confirmed bugs (fix as found)
 - [x] **`CLIO_CTE_WITH_RUNTIME=0` with no daemon HANGS** ~30s in `chimaera_init` then proceeds
   broken; `make_arc_store`'s fallback can't catch a hang. FIXED: `CTEStore._require_daemon_
