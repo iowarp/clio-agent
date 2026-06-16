@@ -28,7 +28,7 @@ from typing import Any, Dict, Optional, Protocol, runtime_checkable
 
 import msgspec
 
-# The seven logical record families ARC persists. Each maps to one physical
+# The logical record families ARC persists. Each maps to one physical
 # container in a store (a directory for LocalFSStore; a namespace/key prefix
 # for a CTE-backed store). Keep this list as the single source of truth.
 ARC_KINDS: tuple[str, ...] = (
@@ -39,6 +39,7 @@ ARC_KINDS: tuple[str, ...] = (
     "profiles",
     "procedural",
     "variants",
+    "segments",  # live context plane: one record per (session_id, scope)
 )
 
 
