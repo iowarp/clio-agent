@@ -184,7 +184,7 @@ async def run_worker(
     handler: Handler,
     *,
     stop: asyncio.Event,
-    poll: float = 0.01,
+    poll: float = 0.1,
     worker_id: str = "",
     lease_ttl: float = 6.0,
 ) -> None:
@@ -238,7 +238,7 @@ class CEEExpertInvoker:
     and a clear error is raised (the parent's settle loop treats it like any failed
     child — it stays the router)."""
 
-    def __init__(self, mailbox: CEEMailbox, *, timeout: float = 60.0, poll: float = 0.01) -> None:
+    def __init__(self, mailbox: CEEMailbox, *, timeout: float = 60.0, poll: float = 0.1) -> None:
         self._mb = mailbox
         self._timeout = timeout
         self._poll = poll
