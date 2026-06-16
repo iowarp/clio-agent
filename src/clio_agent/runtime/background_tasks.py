@@ -207,3 +207,46 @@ class BackgroundTasks:
         if rec is None:
             raise KeyError(f"unknown background task: {tid}")
         return rec
+
+
+async def _run_command(
+    sink: OutputSink, command: str, *, cwd: Optional[str] = None, timeout: Optional[float] = None
+) -> dict[str, Any]:
+    proc = await asyncio.create_subprocess_shell(
+        command,
+        cwd=cwd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
+    )
+
+    async def _drain() -> None:
+        assert proc.stdout is not None
+        async for raw in proc.stdout:
+            sink.emit(raw.decode("utf-8", "replace").rstrip("\n"))
+
+    try:
+        await asyncio.wait_for(asyncio.gather(_drain(), proc.wait()), timeout=timeout)
+    except (asyncio.TimeoutError, TimeoutError):
+        proc.kill()
+        await proc.wait()
+        return {"exit_code": None, "timed_out": True}
+    return {"exit_code": proc.returncode, "timed_out": False}
+
+
+def spawn_command(
+    tasks: BackgroundTasks,
+    command: str,
+    *,
+    label: str = "",
+    cwd: Optional[str] = None,
+    timeout: Optional[float] = None,
+) -> str:
+    """Run a shell command as a monitored background task (the Bash(run_in_background)
+    shape): stdout/stderr lines stream to the handle's ``poll_output`` and the result is
+    ``{exit_code, timed_out}``. Same handle/monitor/wait/cancel contract as an expert
+    delegation — so an expert can spawn a long-running command and wait on it the same
+    way it waits on another expert."""
+    return tasks.spawn(
+        lambda sink: _run_command(sink, command, cwd=cwd, timeout=timeout),
+        label=label or "cmd",
+    )

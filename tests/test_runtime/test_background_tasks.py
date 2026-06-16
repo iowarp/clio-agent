@@ -128,6 +128,27 @@ async def test_on_complete_fires_immediately_when_already_done():
     assert seen == [tid]
 
 
+async def test_spawn_command_runs_streams_output_and_exit_code():
+    from clio_agent.runtime.background_tasks import spawn_command
+
+    bt = BackgroundTasks()
+    tid = spawn_command(bt, "echo hello; echo world")
+    rec = await bt.wait(tid, timeout=10)
+    assert rec.status is TaskStatus.COMPLETED
+    assert rec.result["exit_code"] == 0
+    assert bt.poll_output(tid) == ["hello", "world"]  # streamed to the handle
+
+
+async def test_spawn_command_nonzero_exit_is_captured():
+    from clio_agent.runtime.background_tasks import spawn_command
+
+    bt = BackgroundTasks()
+    tid = spawn_command(bt, "exit 3")
+    rec = await bt.wait(tid, timeout=10)
+    assert rec.status is TaskStatus.COMPLETED  # the task completed; the command failed
+    assert rec.result["exit_code"] == 3
+
+
 async def test_unknown_handle_raises():
     bt = BackgroundTasks()
     with pytest.raises(KeyError):
