@@ -1232,6 +1232,27 @@ def _provider_lm_kwargs(config: LMProviderConfig) -> dict[str, Any]:
         if config.min_p is not None:
             body["min_p"] = config.min_p
         extras["extra_body"] = body
+    # Reasoning-model trajectory-regurgitation stop sequences (per-model). On a long
+    # trajectory, qwopus continues/fabricates DSPy's trajectory INPUT format —
+    # underscore-numbered `thought_N`/`tool_name_N`/`tool_args_N` + invented
+    # `observation_N` tool results — instead of emitting one step (react) or the
+    # answer (extract), running away to truncation -> unparseable. The model must
+    # NEVER emit those markers (its real outputs are next_thought/next_tool_name/
+    # next_tool_args/reasoning/answer, with NO underscore-number), so they are safe
+    # stop sequences: generation halts the instant regurgitation starts and the
+    # valid leading fields survive. Override with CLIO_LM_STOP_SEQUENCES (||-joined).
+    if _reasoning_model_capability(config) and "stop" not in extras:
+        env_stop = os.environ.get("CLIO_LM_STOP_SEQUENCES", "").strip()
+        extras["stop"] = (
+            [s for s in env_stop.split("||") if s]
+            if env_stop
+            else [
+                "[[ ## observation",
+                "[[ ## thought_",
+                "[[ ## tool_name_",
+                "[[ ## tool_args_",
+            ]
+        )
     if config.provider == "codex":
         extras["codex_transport"] = config.codex_transport
     elif config.provider == "claude_code":
