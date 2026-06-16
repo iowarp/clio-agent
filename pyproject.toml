@@ -146,6 +146,7 @@ markers = [
     "benchmark: marks long real-provider stress benchmark tests",
     "real_case: end-to-end live CLIO blueprint case (a tier above unit/integration; needs CLIO_RUN_LIVE=1)",
     "live: hits a live gact server + external provider (slow; skipped unless CLIO_RUN_LIVE=1)",
+    "cross_process: real multi-process tests over a clio_run daemon (skipped unless CLIO_RUN_CROSS_PROCESS=1)",
 ]
 addopts = [
     "--verbose",

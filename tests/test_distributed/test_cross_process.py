@@ -56,3 +56,29 @@ async def test_worker_crash_other_worker_reclaims(cross_arc, spawn_worker):
     res = await CEEExpertInvoker(mb, timeout=30).invoke(ExpertRequest("data", "reclaim-me"))
     assert res.answer == "echo:reclaim-me"  # the live worker served it
     cross_arc.put("context", f"{prefix}STOP", b"1")
+
+
+_ALCF = {
+    "CLIO_LM_PROVIDER": "argonne",
+    "CLIO_LM_API_BASE": "https://inference-api.alcf.anl.gov/resource_server/sophia/vllm/v1",
+    "CLIO_LM_MODEL": "openai/gpt-oss-120b",
+    "CLIO_RUN_LIVE": "1",
+}
+
+
+@pytest.mark.skipif(
+    os.environ.get("CLIO_RUN_LIVE") != "1",
+    reason="real ALCF trace: set CLIO_RUN_LIVE=1 (+ Argonne auth)",
+)
+async def test_real_alcf_expert_cross_process(cross_arc, spawn_worker):
+    """A REAL ALCF expert runs on a worker process; the parent delegates to it across
+    the process boundary and gets the tool-grounded answer back through clio-core."""
+    prefix = "xp_alcf_"
+    spawn_worker(prefix, mode="alcf", n=1, extra_env=_ALCF)
+    mb = CEEMailbox(cross_arc, prefix=prefix)
+    res = await CEEExpertInvoker(mb, timeout=150).invoke(
+        ExpertRequest("data", "Use the lookup tool to get the 'latency' metric and report its exact value.")
+    )
+    assert res.workflow_state.get("worker_pid") != os.getpid()  # ran in the worker process
+    assert "42.7" in res.answer  # the tool-derived value crossed back through clio-core
+    cross_arc.put("context", f"{prefix}STOP", b"1")
