@@ -7269,6 +7269,26 @@ async def _run_turn_in_background(
         )
         return _pred
 
+    async def _invoke_child_expert(agent_def: "AgentDef", prompt: str) -> Any:
+        """Run a child expert through the transport-abstracted boundary.
+
+        Default is the in-process path — ``run_child_via_boundary`` returns the raw
+        prediction verbatim, so the live delegation is behavior-identical (RULE 2).
+        ``CLIO_EXPERT_INVOKER=loopback`` routes the child behind the serializable
+        :class:`ExpertInvoker`, proving the detached seam end to end (the parent's
+        answer + routing cross a JSON wire). On a cluster the loopback transport is
+        swapped for clio-core (#659) — this call is unchanged.
+        """
+        from clio_agent.gact.delegation_invoker import run_child_via_boundary  # noqa: PLC0415
+
+        return await run_child_via_boundary(
+            agent_def,
+            prompt,
+            run_child=_run_dynamic_agent_sync,
+            session_id=sid,
+            mode=os.environ.get("CLIO_EXPERT_INVOKER", "").strip().lower(),
+        )
+
     async def _execute_delegated_experts(
         parent_agent: "AgentDef",
         rows: list[dict[str, Any]],
@@ -7425,7 +7445,7 @@ async def _run_turn_in_background(
                 if isinstance(session_rows, list):
                     ledger_start = len(session_rows)
             try:
-                pred_child = await _run_dynamic_agent_sync(target, prompt)
+                pred_child = await _invoke_child_expert(target, prompt)
                 duration_ms = int((time.perf_counter() - started_at) * 1000)
                 local_output = str(getattr(pred_child, "answer", "") or "").strip()
                 local_output = _append_prediction_workflow_state(local_output, pred_child)

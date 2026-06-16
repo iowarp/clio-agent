@@ -19,7 +19,12 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-from clio_agent.runtime.expert_invoker import ExpertEvent, ExpertRequest, ExpertResult
+from clio_agent.runtime.expert_invoker import (
+    ExpertEvent,
+    ExpertRequest,
+    ExpertResult,
+    LoopbackExpertInvoker,
+)
 
 ROUTING_EVENT = "routing"
 
@@ -77,3 +82,51 @@ def routing_from_result(result: ExpertResult) -> dict[str, Any]:
         if ev.kind == ROUTING_EVENT:
             return dict(ev.payload)
     return {}
+
+
+def prediction_from_result(result: ExpertResult) -> Any:
+    """Rebuild a dspy.Prediction the settle loop can consume from a result that
+    crossed the boundary. Carries the core fields (answer, routing, workflow_state);
+    richer instrumentation (trajectory/tools) stays on the in-process path until the
+    detached transport carries it (#659)."""
+    import dspy  # noqa: PLC0415
+
+    routing = routing_from_result(result)
+    return dspy.Prediction(
+        answer=result.answer,
+        next_expert=routing.get("next_expert", ""),
+        next_task=routing.get("next_task", ""),
+        expert_handoffs=routing.get("expert_handoffs") or "",
+        workflow_state=dict(result.workflow_state),
+    )
+
+
+async def run_child_via_boundary(
+    agent_def: Any,
+    prompt: str,
+    *,
+    run_child: Any,
+    session_id: str = "",
+    mode: str = "",
+) -> Any:
+    """Run a child expert, optionally through the transport-abstracted boundary.
+
+    ``run_child`` is ``async (agent_def, prompt) -> dspy.Prediction`` (today's
+    in-process runner). Default (``mode != "loopback"``) returns that prediction
+    verbatim — full parity, zero behavior change to the live delegation path. With
+    ``mode="loopback"`` the child runs behind a :class:`LoopbackExpertInvoker`: the
+    request and result cross a JSON wire (the detached seam), proving end to end that
+    a real delegation survives serialization. On a cluster, swap the loopback for
+    clio-core transport (#659) — this call is unchanged.
+    """
+    if mode != "loopback":
+        return await run_child(agent_def, prompt)
+
+    async def _handler(req: ExpertRequest) -> ExpertResult:
+        pred = await run_child(agent_def, req.question)
+        return expert_result_from_prediction(pred, expert_id=req.expert_id)
+
+    result = await LoopbackExpertInvoker(_handler).invoke(
+        expert_request_for(agent_def, prompt, session_id=session_id)
+    )
+    return prediction_from_result(result)

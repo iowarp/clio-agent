@@ -15,6 +15,7 @@ from clio_agent.gact.delegation_invoker import (
     expert_request_for,
     expert_result_from_prediction,
     routing_from_result,
+    run_child_via_boundary,
 )
 from clio_agent.runtime.expert_invoker import (
     ExpertResult,
@@ -92,3 +93,38 @@ def test_missing_fields_default_cleanly():
     assert res.answer == "just an answer"
     assert res.workflow_state == {}
     assert routing_from_result(res)["next_expert"] == ""
+
+
+async def test_run_child_default_mode_is_raw_parity():
+    """Default mode returns the runner's prediction VERBATIM — the live path is
+    behavior-identical (RULE 2: never break baseline)."""
+    pred = _prediction()
+
+    async def run_child(agent_def, prompt):
+        return pred
+
+    out = await run_child_via_boundary(
+        SimpleNamespace(id="data"), "q", run_child=run_child, mode=""
+    )
+    assert out is pred  # identity preserved — no serialization, no field loss
+
+
+async def test_run_child_loopback_crosses_the_wire():
+    """Loopback mode runs the child behind the serializable boundary; the parent
+    gets a prediction rebuilt from what crossed the JSON wire."""
+    pred = _prediction()
+    seen = {}
+
+    async def run_child(agent_def, prompt):
+        seen["prompt"] = prompt  # the question reached the 'remote' runner
+        return pred
+
+    out = await run_child_via_boundary(
+        SimpleNamespace(id="data"), "q", run_child=run_child, session_id="s1", mode="loopback"
+    )
+    assert seen["prompt"] == "q"
+    assert out.answer == "the data shows X"
+    assert out.next_expert == "analysis"
+    assert out.next_task == "quantify X"
+    assert "analysis" in out.expert_handoffs  # routing decision survived
+    assert out.workflow_state["rows"] == 128
