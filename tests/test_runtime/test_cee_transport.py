@@ -94,6 +94,99 @@ async def test_cee_invoker_composes_with_background_monitor(tmp_path):
         await worker
 
 
+# ---- failure modes (found by the depth gap analysis; confirmed by probe) ----
+
+
+async def test_handler_exception_drains_as_failed_not_hang(tmp_path):
+    """A child that raises must NOT hang the parent to timeout — it gets a failed
+    result back (the bug: serve_one let the exception propagate, parent hung)."""
+    store = make_arc_store(backend="local", data_dir=str(tmp_path))
+    mailbox = CEEMailbox(store, prefix="cee_f_")
+
+    async def bad(req):
+        raise RuntimeError("child exploded")
+
+    invoker = CEEExpertInvoker(mailbox, timeout=2)
+    stop = asyncio.Event()
+    worker = asyncio.ensure_future(run_worker(mailbox, bad, stop=stop))
+    try:
+        result = await invoker.invoke(ExpertRequest("data", "q"))
+        assert result.status == "failed"
+        assert "child exploded" in (result.error or "")
+    finally:
+        stop.set()
+        await worker
+
+
+async def test_worker_survives_a_failing_child(tmp_path):
+    """One failing child must not kill the worker loop — the next delegation works."""
+    store = make_arc_store(backend="local", data_dir=str(tmp_path))
+    mailbox = CEEMailbox(store, prefix="cee_s_")
+
+    async def handler(req):
+        if req.question == "boom":
+            raise RuntimeError("boom")
+        return ExpertResult(expert_id=req.expert_id, answer=f"ok:{req.question}")
+
+    invoker = CEEExpertInvoker(mailbox, timeout=2)
+    stop = asyncio.Event()
+    worker = asyncio.ensure_future(run_worker(mailbox, handler, stop=stop))
+    try:
+        r1 = await invoker.invoke(ExpertRequest("data", "boom"))
+        assert r1.status == "failed"
+        r2 = await invoker.invoke(ExpertRequest("data", "good"))  # worker still alive
+        assert r2.answer == "ok:good"
+    finally:
+        stop.set()
+        await worker
+    assert not worker.cancelled()
+
+
+async def test_corrupted_request_blob_drains_as_failed(tmp_path):
+    store = make_arc_store(backend="local", data_dir=str(tmp_path))
+    mailbox = CEEMailbox(store, prefix="cee_c_")
+    store.put("context", "cee_c_badrid.req", b"{not valid json")  # poison blob
+
+    from clio_agent.runtime.cee_transport import serve_one
+
+    async def handler(req):
+        return ExpertResult(expert_id="x", answer="should not run")
+
+    res = await serve_one(mailbox, "cee_c_badrid", handler)
+    assert res.status == "failed" and "corrupted" in (res.error or "")
+
+
+async def test_timeout_discards_orphan_and_raises(tmp_path):
+    store = make_arc_store(backend="local", data_dir=str(tmp_path))
+    mailbox = CEEMailbox(store, prefix="cee_t_")
+    invoker = CEEExpertInvoker(mailbox, timeout=0.2)  # no worker -> times out
+    with pytest.raises(TimeoutError):
+        await invoker.invoke(ExpertRequest("data", "q"))
+    # the orphaned request blob must be cleaned up, not leaked in clio-core
+    assert list(store.scan("context", "cee_t_")) == []
+
+
+async def test_two_workers_single_result_intact(tmp_path):
+    """Two workers on one mailbox: the published result is exactly-once and correct
+    (execution is at-least-once; this asserts no corruption / no lost message)."""
+    store = make_arc_store(backend="local", data_dir=str(tmp_path))
+    mailbox = CEEMailbox(store, prefix="cee_2w_")
+
+    async def handler(req):
+        return ExpertResult(expert_id=req.expert_id, answer=f"done:{req.question}")
+
+    invoker = CEEExpertInvoker(mailbox, timeout=3)
+    stop = asyncio.Event()
+    w1 = asyncio.ensure_future(run_worker(mailbox, handler, stop=stop, worker_id="w1"))
+    w2 = asyncio.ensure_future(run_worker(mailbox, handler, stop=stop, worker_id="w2"))
+    try:
+        result = await invoker.invoke(ExpertRequest("data", "X"))
+        assert result.answer == "done:X"
+    finally:
+        stop.set()
+        await asyncio.gather(w1, w2)
+
+
 @pytest.mark.integration
 async def test_two_parties_exchange_via_clio_core_cte():
     """REAL clio-core: two parties share the in-process CTE runtime and hand off a

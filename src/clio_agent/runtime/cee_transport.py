@@ -8,9 +8,16 @@ store**, so this is genuine clio-to-clio handoff.
 
 Single box today (both parties attach the same in-process clio-core runtime, or a
 LocalFS store for tests); on a cluster the same store spans nodes (#659) and the
-identical code is cross-machine. This is the real transport the
-:class:`LoopbackExpertInvoker` stood in for — same `ExpertInvoker` contract, so it
-also composes with the background monitor/wait_for primitive (`spawn_invocation`).
+identical code is cross-machine. Drop-in for :class:`LoopbackExpertInvoker` (same
+``ExpertInvoker`` contract), so it also composes with the background monitor
+(``spawn_invocation``).
+
+Delivery semantics: a published result is exactly-once (``publish_result`` overwrites
+and ``pending`` drops answered ids), but *execution* is **at-least-once** — without a
+compare-and-set/lease primitive in the store, two racing workers can both run the same
+request. ``claim`` makes that rare; true exactly-once needs a clio-core lease (cluster
+#659). A failing or poison child is drained as a ``status="failed"`` result rather than
+hanging the parent or killing the worker.
 
 Principle (CLAUDE.md): the store carries the parent's request and the child's
 result/events; no clio-side routing/completion heuristic — a detached child stays
@@ -26,8 +33,8 @@ from typing import Any, Awaitable, Callable, Optional
 
 from clio_agent.runtime.expert_invoker import ExpertRequest, ExpertResult
 
-# The mailbox rides ARC's "context" record kind (a valid ARC kind on every backend);
-# names are namespaced so they never collide with real context records.
+# The mailbox rides ARC's "context" record kind (valid on every backend); names are
+# namespaced so they never collide with real context records.
 _KIND = "context"
 _PREFIX = "cee_"
 
@@ -49,9 +56,19 @@ class CEEMailbox:
         self._store.put(_KIND, f"{rid}.req", json.dumps(request.to_wire()).encode("utf-8"))
         return rid
 
+    def has_request(self, rid: str) -> bool:
+        return self._store.exists(_KIND, f"{rid}.req")
+
     def read_request(self, rid: str) -> Optional[ExpertRequest]:
+        """Decode the request, or ``None`` if absent **or corrupted** (a poison blob
+        must not crash the worker — the caller drains it as failed)."""
         data = self._store.get(_KIND, f"{rid}.req")
-        return ExpertRequest.from_wire(json.loads(data)) if data else None
+        if not data:
+            return None
+        try:
+            return ExpertRequest.from_wire(json.loads(data))
+        except (json.JSONDecodeError, ValueError, KeyError, TypeError):
+            return None
 
     def publish_result(self, rid: str, result: ExpertResult) -> None:
         """Worker: write the child's result back to the mailbox."""
@@ -59,10 +76,29 @@ class CEEMailbox:
 
     def read_result(self, rid: str) -> Optional[ExpertResult]:
         data = self._store.get(_KIND, f"{rid}.res")
-        return ExpertResult.from_wire(json.loads(data)) if data else None
+        if not data:
+            return None
+        try:
+            return ExpertResult.from_wire(json.loads(data))
+        except (json.JSONDecodeError, ValueError, KeyError, TypeError):
+            return None
 
     def has_result(self, rid: str) -> bool:
         return self._store.exists(_KIND, f"{rid}.res")
+
+    def claim(self, rid: str, token: str) -> bool:
+        """Best-effort claim of ``rid`` for one worker. Returns whether this caller
+        won. NOT atomic (the store has no CAS), so a sub-millisecond race can still
+        let two workers serve — exactly-once execution needs a clio-core lease (#659).
+        """
+        self._store.put(_KIND, f"{rid}.claim", token.encode("utf-8"))
+        got = self._store.get(_KIND, f"{rid}.claim")
+        return got is not None and got.decode("utf-8") == token
+
+    def discard(self, rid: str) -> None:
+        """Remove a request and any result/claim — orphan cleanup (e.g. on timeout)."""
+        for suffix in (".req", ".res", ".claim"):
+            self._store.delete(_KIND, f"{rid}{suffix}")
 
     def pending(self) -> list[str]:
         """Request ids awaiting a result (the worker's queue) — discovered from the
@@ -78,11 +114,30 @@ class CEEMailbox:
 
 async def serve_one(mailbox: CEEMailbox, rid: str, handler: Handler) -> Optional[ExpertResult]:
     """Worker side: read the request from clio-core, run the child, publish the
-    result back. Returns the result (or None if the request vanished)."""
-    req = mailbox.read_request(rid)
-    if req is None:
+    result back — ALWAYS publishing something terminal so the parent never hangs.
+
+    * request absent → ``None`` (nothing to do).
+    * request corrupted → publish a ``failed`` result (drains the poison blob).
+    * handler raises → publish a ``failed`` result carrying the error.
+    Cancellation propagates (cooperative shutdown).
+    """
+    if not mailbox.has_request(rid):
         return None
-    result = await handler(req)
+    req = mailbox.read_request(rid)
+    if req is None:  # blob present but undecodable
+        failed = ExpertResult(expert_id="", status="failed", error="corrupted_request")
+        mailbox.publish_result(rid, failed)
+        return failed
+    try:
+        result = await handler(req)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # noqa: BLE001 — recorded as a failed result, not raised
+        result = ExpertResult(
+            expert_id=req.expert_id,
+            status="failed",
+            error=f"{type(exc).__name__}: {exc}",
+        )
     mailbox.publish_result(rid, result)
     return result
 
@@ -93,19 +148,34 @@ async def run_worker(
     *,
     stop: asyncio.Event,
     poll: float = 0.01,
+    worker_id: str = "",
 ) -> None:
     """A worker loop draining the mailbox until ``stop`` is set — the 'second clio on
-    the machine'. Each pending request is served (child run, result published)."""
+    the machine'. One failing/poison request can never kill the loop: ``serve_one``
+    publishes a terminal result and any unexpected error is contained per-rid."""
+    token = worker_id or uuid.uuid4().hex[:8]
     while not stop.is_set():
         for rid in mailbox.pending():
-            await serve_one(mailbox, rid, handler)
+            if not mailbox.claim(rid, token):
+                continue  # another worker won the claim
+            try:
+                await serve_one(mailbox, rid, handler)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 — contain; never let one rid kill the loop
+                mailbox.publish_result(
+                    rid,
+                    ExpertResult(expert_id="", status="failed", error=f"worker_error: {exc}"),
+                )
         await asyncio.sleep(poll)
 
 
 class CEEExpertInvoker:
     """Parent-side ``ExpertInvoker`` over the clio-core mailbox: submit the request,
-    wait for a worker to publish the result. Drop-in for the loopback invoker, but
-    the transport is real clio-core context."""
+    wait for a worker to publish the result. Drop-in for the loopback invoker, but the
+    transport is real clio-core context. On timeout the orphaned request is discarded
+    and a clear error is raised (the parent's settle loop treats it like any failed
+    child — it stays the router)."""
 
     def __init__(self, mailbox: CEEMailbox, *, timeout: float = 60.0, poll: float = 0.01) -> None:
         self._mb = mailbox
@@ -119,7 +189,13 @@ class CEEExpertInvoker:
             while not self._mb.has_result(rid):
                 await asyncio.sleep(self._poll)
 
-        await asyncio.wait_for(_wait(), timeout=self._timeout)
+        try:
+            await asyncio.wait_for(_wait(), timeout=self._timeout)
+        except (asyncio.TimeoutError, TimeoutError):
+            self._mb.discard(rid)  # don't leak the orphan request blob
+            raise TimeoutError(
+                f"clio-core delegation {rid} timed out after {self._timeout}s"
+            ) from None
         result = self._mb.read_result(rid)
         if result is None:  # pragma: no cover — has_result was true
             raise RuntimeError(f"clio-core mailbox result vanished for {rid}")
