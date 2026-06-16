@@ -81,6 +81,39 @@ async def test_concurrent_delegations_across_worker_processes(cross_arc, spawn_w
     cross_arc.put("context", f"{prefix}STOP", b"1")
 
 
+async def test_scale_many_delegations_across_workers(cross_arc, spawn_worker):
+    """Load: 30 delegations distributed across 5 worker PROCESSES, all complete with
+    their own answer and the mailbox drains clean."""
+    prefix = "xp_scale_"
+    spawn_worker(prefix, mode="echo", n=5)
+    mb = CEEMailbox(cross_arc, prefix=prefix)
+    inv = CEEExpertInvoker(mb, timeout=60)
+    n = 30
+
+    async def one(job: str):
+        return job, await inv.invoke(ExpertRequest("data", job))
+
+    results = await asyncio.gather(*[one(f"j{i}") for i in range(n)])
+    assert {j for j, _ in results} == {f"j{i}" for i in range(n)}
+    for job, res in results:
+        assert res.answer == f"echo:{job}"
+    leftovers = [nm for nm, _ in cross_arc.scan("context", prefix) if "READY" not in nm]
+    assert leftovers == [], f"mailbox leaked under load: {leftovers}"
+    cross_arc.put("context", f"{prefix}STOP", b"1")
+
+
+async def test_large_payload_crosses_cte(cross_arc, spawn_worker):
+    """A large request/response (base64-bloated through CTE) crosses the process
+    boundary intact — no truncation at the blob/shared-memory boundary."""
+    prefix = "xp_big_"
+    spawn_worker(prefix, mode="echo", n=1)
+    mb = CEEMailbox(cross_arc, prefix=prefix)
+    big = "X" * 200_000
+    res = await CEEExpertInvoker(mb, timeout=30).invoke(ExpertRequest("data", big))
+    assert res.answer == f"echo:{big}"  # 200KB+ round-tripped through clio-core intact
+    cross_arc.put("context", f"{prefix}STOP", b"1")
+
+
 async def test_lease_prevents_double_execution(cross_arc, spawn_worker):
     """Two workers, one request: the worker that claims holds a renewed LEASE for
     longer than the TTL; the other must NOT reclaim and re-execute. Exactly one
