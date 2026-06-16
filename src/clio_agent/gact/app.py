@@ -10368,6 +10368,7 @@ def _make_tool_observer(app: "FastAPI"):
                     },
                 ),
             )
+
     return observe
 
 
@@ -10500,6 +10501,17 @@ class _StreamingOutputError(RuntimeError):
 
 
 _STREAM_FALLBACK_REASON_DEFINITIONS: dict[str, dict[str, Any]] = {
+    "stream_disabled_guided_output": {
+        "category": "runtime_configuration",
+        "synthetic_posthoc": True,
+        "live_streaming": False,
+        "recovery_actions": ["continue_without_live_streaming"],
+        "description": (
+            "Guided/structured output is enabled; live streaming is disabled "
+            "because the constrained response streams as reasoning_content-only "
+            "deltas. The blocking path recovers it via the completion fallback."
+        ),
+    },
     "streaming_dependency_unavailable": {
         "category": "runtime_configuration",
         "synthetic_posthoc": True,
@@ -10824,6 +10836,21 @@ async def _try_streamed_forward(
     parsable text chunks. The fallback synchronous path produces
     the same wire shape (just no live deltas).
     """
+
+    # Guided/structured output streams as reasoning_content-only deltas on
+    # LM Studio (no content deltas), which the assembly below can't fold into
+    # content -> empty content -> parse failure. Return None so the caller falls
+    # back to the blocking path, whose content<-reasoning_content fallback
+    # (_process_completion) recovers the constrained JSON. TODO: fold reasoning
+    # deltas into the stream assembly to re-enable live streaming under guided output.
+    try:
+        from clio_agent.config import _guided_output_enabled  # noqa: PLC0415
+
+        if _guided_output_enabled():
+            _record_stream_fallback(app, sid, "stream_disabled_guided_output")
+            return None
+    except Exception:  # noqa: BLE001 - never let this gate break the turn
+        pass
 
     try:
         import dspy  # noqa: PLC0415
