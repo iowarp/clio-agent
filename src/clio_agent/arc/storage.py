@@ -167,10 +167,12 @@ class CTEStore:
 
         self._cte = cte
         self._client = cte.get_cte_client()
-        logger.warning(
+        logger.info(
             "CTEStore active: clio-core CTE is the ARC backend (in-process runtime). "
-            "DEFAULT CONFIG IS DRAM-ONLY — data is NOT durable across restarts. Set "
-            "CLIO_ARC_STORE=local for disk-durable storage until a file tier is wired."
+            "The DEFAULT config is DRAM-only (not durable across restarts); durable + "
+            "fault-tolerant tiers (file bdev, replication, erasure coding) are configured "
+            "in the CTE config via CLIO_ARC_STORE_CONFIG. Use CLIO_ARC_STORE=local for "
+            "disk durability today."
         )
 
     @classmethod
