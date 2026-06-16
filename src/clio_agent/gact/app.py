@@ -44,6 +44,8 @@ import threading
 import time
 import uuid
 
+import msgspec
+
 _MEMPROF_STATE: dict[str, Any] = {"prev": None, "n": 0}
 
 
@@ -489,7 +491,7 @@ def _emit_arc_op(
     This is the injected ``op_logger`` for ``SegmentStore`` — wired in ``build_app``
     so ``arc/`` never imports ``gact/``.
     """
-    return _emit_semantic_event(
+    event = _emit_semantic_event(
         app,
         session_id,
         ARC_OP_EVENT_TYPE,
@@ -514,8 +516,40 @@ def _emit_arc_op(
             "segments_tombstoned": segments_tombstoned or [],
             "derived_from": derived_from or [],
         },
-        detail_level="off",
+        detail_level="off",  # durable-only (high volume); SSE goes via the publish below
     )
+    # The durable event is detail_level="off" (lean trace), so SemanticEventSink skips
+    # the bus. Publish a REDACTED arc.op frame explicitly so the TUI sees live
+    # insertions/deletions/compactions. Allow-list ids/kinds/token_count only —
+    # never the segment content/args/text. Observability: never break an op.
+    try:
+        bus = getattr(app.state, "bus", None)
+        if bus is not None:
+            bus.publish(
+                Event(
+                    type="arc.op",
+                    session_id=session_id,
+                    payload={
+                        "op": op,
+                        "scope": scope,
+                        "logical_time": logical_time,
+                        "step": step,
+                        "position": position,
+                        "segments_written": [
+                            {
+                                "id": s.get("id"),
+                                "kind": s.get("kind"),
+                                "token_count": s.get("token_count"),
+                            }
+                            for s in (segments_written or [])
+                        ],
+                        "segments_tombstoned": segments_tombstoned or [],
+                    },
+                )
+            )
+    except Exception:  # noqa: BLE001 - SSE streaming is observability, never fatal
+        logger.debug("arc.op bus publish failed", exc_info=True)
+    return event
 
 
 def _llm_provider_payload(app: "FastAPI", agent_id: str = "") -> dict[str, Any]:
@@ -12317,6 +12351,9 @@ from clio_agent.gact.types import (
     CacheStats,
     Capabilities,
     CapabilityFlags,
+    ContextOpRequest,
+    ContextOpResponse,
+    ContextStateResponse,
     CreateSessionRequest,
     CreateUserQuestionRequest,
     CreateWorkspaceRequest,
@@ -13741,6 +13778,115 @@ def build_app(
                 "cross_session_default": "deny_without_user_intent",
                 "global_scope_default": "deny_without_global_intent",
             },
+        )
+
+    def _arc_unavailable(sid: str) -> HTTPException:
+        return HTTPException(
+            status_code=503,
+            detail=ErrorEnvelope(
+                error=ErrorInfo(
+                    error="arc_unavailable",
+                    message="ARC memory is not enabled for this deployment",
+                    details={"session_id": sid},
+                    recoverable=True,
+                )
+            ).model_dump(exclude_none=True),
+        )
+
+    def _context_window_for_state() -> int:
+        agent = getattr(app.state, "agent", None)
+        cfg = getattr(agent, "_provider_config", None)
+        return _resolve_expert_context_window(cfg) if cfg is not None else 0
+
+    @app.get("/v1/sessions/{sid}/context/state", response_model=ContextStateResponse)
+    async def get_context_state(
+        sid: str, scope: str, as_of: int | None = None
+    ) -> ContextStateResponse:
+        """Live ARC context-plane state for a (session, scope): % window used, live
+        block count, per-kind token categorization, and the current render."""
+        if app.state.sessions.get(sid) is None:
+            raise _session_not_found(sid)
+        arc = app.state.arc
+        if arc is None:
+            raise _arc_unavailable(sid)
+        tokens_by_kind = arc.segment_tokens_by_kind(sid, scope)
+        segments = arc.render_segments(sid, scope, as_of=as_of)
+        live_tokens = sum(tokens_by_kind.values())
+        window = _context_window_for_state()
+        return ContextStateResponse(
+            session_id=sid,
+            scope=scope,
+            as_of=as_of,
+            window_tokens=window,
+            live_tokens=live_tokens,
+            pct_used=(live_tokens / window) if window else None,
+            live_block_count=len(segments),
+            tokens_by_kind=tokens_by_kind,
+            segments=[msgspec.to_builtins(s) for s in segments],
+            render_text=arc.render_segment_text(sid, scope, as_of=as_of),
+            render_keys=arc.render_segments_keys(sid, scope, as_of=as_of),
+        )
+
+    @app.post("/v1/sessions/{sid}/context/ops", response_model=ContextOpResponse)
+    async def post_context_op(sid: str, req: ContextOpRequest) -> ContextOpResponse:
+        """Apply one live-context operation (append/insert/delete/summarize) to a
+        scope. A validated passthrough to the sanctioned apply_segment_op seam —
+        clio does not choose the op, the caller does. The op auto-emits an arc.op
+        Trace event (and an SSE frame)."""
+        if app.state.sessions.get(sid) is None:
+            raise _session_not_found(sid)
+        arc = app.state.arc
+        if arc is None:
+            raise _arc_unavailable(sid)
+        # Build only the kwargs relevant to req.op.
+        if req.op in ("append", "insert"):
+            kwargs: dict[str, Any] = {
+                "kind": req.kind,
+                "content": req.content or {},
+                "step": req.step,
+                "token_count": req.token_count,
+                "trace_ref": req.trace_ref,
+            }
+            if req.op == "insert":
+                kwargs["position"] = req.position
+        elif req.op == "delete":
+            kwargs = {"ids": req.ids or []}
+        else:  # summarize
+            kwargs = {
+                "ids": req.ids or [],
+                "summary_content": req.summary_content or {},
+                "token_count": req.token_count,
+                "trace_ref": req.trace_ref,
+            }
+        try:
+            result = app.state.arc.apply_segment_op(req.op, sid, req.scope, **kwargs)
+        except (ValueError, TypeError) as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="invalid_request",
+                        message=str(exc),
+                        details={"op": req.op, "scope": req.scope},
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            ) from exc
+        tombstoned = result if req.op == "delete" else None
+        result_dict = None if req.op == "delete" else msgspec.to_builtins(result)
+        tokens_by_kind = arc.segment_tokens_by_kind(sid, req.scope)
+        live_tokens = sum(tokens_by_kind.values())
+        window = _context_window_for_state()
+        return ContextOpResponse(
+            session_id=sid,
+            scope=req.scope,
+            op=req.op,
+            applied=True,
+            result=result_dict,
+            tombstoned_count=tombstoned,
+            live_block_count=len(arc.render_segments(sid, req.scope)),
+            tokens_by_kind=tokens_by_kind,
+            pct_used=(live_tokens / window) if window else None,
         )
 
     @app.delete("/v1/sessions/{sid}")
