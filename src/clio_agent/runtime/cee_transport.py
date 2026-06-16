@@ -175,6 +175,12 @@ async def serve_one(mailbox: CEEMailbox, rid: str, handler: Handler) -> Optional
             status="failed",
             error=f"{type(exc).__name__}: {exc}",
         )
+    # The parent deletes .req when it consumes a result. If it's gone now, another worker
+    # already answered (claim race) and the parent moved on — publishing here would orphan
+    # a late .res blob (a real leak under sustained concurrency). Skip it; clean our claim.
+    if not mailbox.has_request(rid):
+        mailbox.discard_claim(rid)
+        return None
     mailbox.publish_result(rid, result)
     return result
 
