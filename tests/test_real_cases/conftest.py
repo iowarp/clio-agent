@@ -158,6 +158,15 @@ def gact_server(request: pytest.FixtureRequest) -> Generator[GactServer, None, N
         "CLIO_SEMANTIC_TRACE_BACKEND": "file",
         "CLIO_SEMANTIC_TRACE_PATH": str(trace_dir),
     }
+    # CRITICAL: the repo-root autouse fixture (tests/conftest.py) sets
+    # XDG_CONFIG_HOME to a throwaway tmp dir to isolate UNIT tests from the real
+    # config. A live grind is the opposite case: it must resolve the blueprint by
+    # id from the user's REAL ~/.config/clio-agent/agent-blueprints (TRAP 1).
+    # Inheriting the tmp XDG points the server at an empty config root → the
+    # blueprint-assignment 404s ("agent blueprint not found"). Drop it so the
+    # server uses the real config home (and the test-only LM/model default).
+    env.pop("XDG_CONFIG_HOME", None)
+    env.pop("CLIO_LM_MODEL", None)
     log_fh = server_log.open("wb")
     process = subprocess.Popen(
         ["uv", "run", "clio-agent-gact", "--host", "127.0.0.1", "--port", str(GACT_PORT)],
