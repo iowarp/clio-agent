@@ -257,11 +257,27 @@ class CTEStore:
             # ambient CTE shared-memory state. CTP_LOG_LEVEL quiets the C++ logging;
             # a one-time startup banner on stderr is an acceptable trade for never
             # crashing the host process.
-            cte.chimaera_init(cte.ChimaeraMode.kClient, True)  # True => embedded runtime
-            time.sleep(settle_s)  # let the co-process spin up
+            # Embedded by default (per-process runtime). Set CLIO_CTE_WITH_RUNTIME=0
+            # to ATTACH to a shared `clio_run` daemon instead — that is how multiple
+            # clio processes (and, across nodes, a real distributed run) share ONE
+            # clio-core runtime: the daemon owns it, every client attaches as kClient
+            # with with_runtime=False. (Proven in clio-core at 64 procs/node x ~1.2k
+            # nodes; embedded mode is single-process only.)
+            with_runtime = os.environ.get("CLIO_CTE_WITH_RUNTIME", "1").strip().lower() not in (
+                "0",
+                "false",
+                "no",
+                "off",
+            )
+            cte.chimaera_init(cte.ChimaeraMode.kClient, with_runtime)
+            if with_runtime:
+                time.sleep(settle_s)  # let the embedded co-process spin up
             cte.initialize_cte(config_path, cte.PoolQuery.Dynamic())  # "" => ~/.clio/clio.yaml
             cls._initialized = True
-            logger.info("CTE embedded runtime initialized (no external daemon)")
+            logger.info(
+                "CTE runtime initialized (%s)",
+                "embedded, no daemon" if with_runtime else "attached to clio_run daemon",
+            )
 
     # ---- ARCStore Protocol ----
 
