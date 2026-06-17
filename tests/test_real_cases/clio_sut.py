@@ -56,7 +56,14 @@ RESTRICTED_CELLS = [
 MODEL_PROFILES: dict[str, dict[str, Any]] = {
     "qwopus3.5-9b-v3": {
         "context_length": 65536,
-        "temperature": 0.6,
+        # 0.6 is Qwen's thinking-mode default, but the pipeline is dominated by
+        # multi-step ROUTING decisions (orchestrators picking next_expert), where
+        # lower temp follows the (already-thorough) grounding far more consistently
+        # — the dominant remaining failure is orchestrators intermittently ignoring
+        # their routing rules. Dropped to 0.4 for routing reliability; the
+        # stop-sequences + parse re-sample guard against any low-temp repetition.
+        # Revert toward 0.6 if reasoning experts start looping.
+        "temperature": 0.4,
         "parallel": 1,
         "turn_timeout_s": 1900.0,
     },
