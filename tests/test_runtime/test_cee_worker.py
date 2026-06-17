@@ -77,3 +77,58 @@ async def test_worker_runs_a_real_registered_child(tmp_path):
     res = await handler(ExpertRequest("calc", "What is 2 + 2? Answer with only the number."))
     assert res.status == "completed", f"{res.status} {res.error}"
     assert "4" in res.answer  # a real ALCF child, reconstructed from the wire, answered
+
+
+@pytest.mark.live
+@pytest.mark.skipif(
+    os.environ.get("CLIO_RUN_LIVE") != "1",
+    reason="live ALCF run: set CLIO_RUN_LIVE=1 (and Argonne auth + CLIO_LM_* env)",
+)
+async def test_worker_subprocess_runs_child_over_shared_store(tmp_path):
+    """FULL untangle: a real gact child runs in a SEPARATE OS process. The parent submits a
+    delegation to a shared LocalFS store and runs NO worker itself; a worker SUBPROCESS (its
+    own build_app) reconstructs + runs the child on ALCF and publishes back. No daemon -> not
+    blocked by the cross-process wedge. Proof it crossed processes: the parent runs no handler,
+    so only the subprocess could have produced the answer."""
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    from clio_agent.arc.storage import make_arc_store
+    from clio_agent.runtime.cee_transport import CEEExpertInvoker, CEEMailbox
+
+    data_dir = tmp_path / "store"
+    data_dir.mkdir()
+    prefix = "cee_calc_"
+    entry = Path(__file__).parent / "_cee_worker_entry.py"
+    log = open(tmp_path / "worker.log", "w")  # noqa: SIM115 - closed in finally
+    env = {
+        **os.environ,
+        "CLIO_RUN_LIVE": "1",
+        "CLIO_LM_PROVIDER": "argonne",
+        "CLIO_LM_API_BASE": "https://inference-api.alcf.anl.gov/resource_server/sophia/vllm/v1",
+        "CLIO_LM_MODEL": "openai/gpt-oss-120b",
+        "CLIO_ARC_STORE": "local",
+        "CLIO_ARC_DATA_DIR": str(data_dir),
+        "CLIO_CEE_PREFIX": prefix,
+        "CLIO_GACT_SESSIONS": str(tmp_path / "sessions.json"),
+        "XDG_CONFIG_HOME": str(tmp_path / "cfg"),
+        "CLIO_ALLOWED_ROOTS": f"{tmp_path}:{os.getcwd()}",
+    }
+    proc = subprocess.Popen([sys.executable, str(entry)], env=env, stdout=log, stderr=log)
+    try:
+        store = make_arc_store(backend="local", data_dir=str(data_dir))
+        invoker = CEEExpertInvoker(CEEMailbox(store, prefix=prefix), timeout=150, poll=0.1)
+        res = await invoker.invoke(
+            ExpertRequest("calc", "What is 2 + 2? Answer with only the number.", session_id="xproc")
+        )
+        assert res.status == "completed", f"{res.status} {res.error}"
+        assert "4" in res.answer  # answered by a DIFFERENT process over a shared store
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+        log.close()
