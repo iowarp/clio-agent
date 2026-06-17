@@ -26,6 +26,16 @@ probes over the *same* daemon ruled out everything except cross-process handoff:
 - solo raw **+ 2 worker processes idle-polling** the daemon concurrently: **3000 clean**
 - a **tuned daemon config** (queue_depth 1M, 8 threads, max_concurrent_operations 4096,
   WAL 1GB): **no change — still wedges ~50.** So it is NOT a configurable queue/WAL bound.
+- a **file-backed CTE storage tier** (disk bdev, score 1.0) **with the performance block
+  enabled** (`transaction_log_capacity: 1GB`, `max_concurrent_operations: 256`), passed via
+  `CLIO_SERVER_CONF=tests/test_distributed/clio_filebacked.yaml`: **no change — wedged at 32.**
+  Config-load is *verified*, not assumed — the daemon log shows
+  `config_manager.cc:58 Config at: .../clio_filebacked.yaml`. So it is NOT storage-tier /
+  DRAM-segment-coherence and NOT WAL capacity. Config cannot fix it — it's a daemon code bug
+  in the cross-process handoff RPC path.
+  *(Caveat: the file-tier dir stays empty during the probe because the ~200 B blobs live in
+  the shared-memory bdev and the run wedges in seconds, before the 10 s flush — empty dir is
+  expected, not evidence the tier was unused.)*
 
 The ONLY thing that wedges (~44–71) is an **active cross-process delegation**: process A
 writes `<rid>.req`; a *different* process B reads it, writes `<rid>.claim` then `<rid>.res`;

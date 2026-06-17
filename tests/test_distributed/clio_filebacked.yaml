@@ -1,0 +1,67 @@
+# File-backed CTE storage config for the daemon-wedge re-test (issue #659).
+# Used ONLY via CLIO_SERVER_CONF for the cross-process wedge probe — does NOT
+# replace ~/.clio/clio.yaml. Differs from the DRAM-only default in two ways the
+# wedge hypothesis cares about:
+#   1. CTE storage tier is FILE-backed (disk bdev), not `ram::` — tests whether
+#      DRAM-tier segment bookkeeping is what caps sustained ops.
+#   2. The performance block is ENABLED with a large WAL + high concurrency —
+#      tests whether the default 32MB transaction log is the cap.
+
+networking:
+  port: 9413
+  neighborhood_size: 32
+  wait_for_restart: 30
+  wait_for_restart_poll_period: 1
+
+runtime:
+  num_threads: 4
+  queue_depth: 1024
+  local_sched: "default"
+  first_busy_wait: 10000
+  learning_rate: 0.2
+
+compose:
+  # Shared-memory allocator (required) — stays DRAM.
+  - mod_name: clio_bdev
+    pool_name: "ram::chi_default_bdev"
+    pool_query: local
+    pool_id: "301.0"
+    bdev_type: ram
+    capacity: "0g"
+
+  - mod_name: clio_cae_core
+    pool_name: cae_main
+    pool_query: local
+    pool_id: "400.0"
+    next_pool_id: "512.0"
+
+  - mod_name: clio_cte_core
+    pool_name: cte_main
+    pool_query: local
+    pool_id: "512.0"
+
+    # FILE-backed storage tier (the change under test).
+    storage:
+      - path: "/home/jcernuda/.clio/cte_file_tier"
+        bdev_type: "file"
+        capacity_limit: "20GB"
+        score: 1.0
+
+    dpe:
+      dpe_type: "max_bw"
+
+    targets:
+      neighborhood: 1
+      default_target_timeout_ms: 30000
+      poll_period_ms: 5000
+
+    # Performance block ENABLED with a large WAL + high concurrency.
+    performance:
+      stat_targets_period_ms: 50
+      max_concurrent_operations: 256
+      score_threshold: 0.7
+      score_difference_threshold: 0.05
+      flush_metadata_period_ms: 5000
+      flush_data_period_ms: 10000
+      flush_data_min_persistence: 1
+      transaction_log_capacity: "1GB"
