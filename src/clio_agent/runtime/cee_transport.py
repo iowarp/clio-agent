@@ -298,3 +298,175 @@ class CEEExpertInvoker:
         if result is None:  # pragma: no cover — has_result was true
             raise RuntimeError(f"clio-core mailbox result vanished for {rid}")
         return result
+
+
+# ---------------------------------------------------------------------------------------
+# Isolated per-worker queues (the lease-free model — clio-core#559, per Luke Logan).
+#
+# The pull model above gives every worker ONE shared role queue, so workers race to claim
+# each request — which needs the (non-atomic, ~0.27%-double-exec) ``claim`` lease. Luke's
+# guidance: isolate requests to workers instead. Here the parent routes each request to ONE
+# worker's PRIVATE queue, so that worker is the SOLE reader — no race, no claim, no lease,
+# and execution is exactly-once BY CONSTRUCTION (CTE stays a simple mutable KV store; no new
+# primitive needed). Resilience: the parent already waits for the result, so on timeout it
+# re-routes to another LIVE worker. Load: the parent round-robins over a worker-presence list
+# kept OFF the request hot path (workers heartbeat a presence blob). Built additively — the
+# pull model is untouched; this is the recommended path going forward.
+# ---------------------------------------------------------------------------------------
+
+
+def _worker_queue_prefix(role: str, worker_id: str, *, prefix: str = _PREFIX) -> str:
+    """The mailbox prefix for ONE worker's private queue (only that worker drains it)."""
+    return f"{prefix}wq.{role}.{worker_id}."
+
+
+def _presence_name(role: str, worker_id: str, *, prefix: str = _PREFIX) -> str:
+    return f"{prefix}wp.{role}.{worker_id}"
+
+
+def _presence_scan_prefix(role: str, *, prefix: str = _PREFIX) -> str:
+    return f"{prefix}wp.{role}."
+
+
+def heartbeat_presence(
+    store: Any, role: str, worker_id: str, *, prefix: str = _PREFIX, now: Optional[float] = None
+) -> None:
+    """Announce/refresh a worker's presence (a timestamp blob). Off the request hot path:
+    a stale presence just drops the worker from the parent's rotation after a TTL."""
+    stamp = time.time() if now is None else now
+    store.put(_KIND, _presence_name(role, worker_id, prefix=prefix), f"{stamp}".encode("utf-8"))
+
+
+def drop_presence(store: Any, role: str, worker_id: str, *, prefix: str = _PREFIX) -> None:
+    """Remove a worker's presence blob (clean shutdown)."""
+    store.delete(_KIND, _presence_name(role, worker_id, prefix=prefix))
+
+
+def live_workers(
+    store: Any, role: str, *, prefix: str = _PREFIX, ttl: float = 6.0, now: Optional[float] = None
+) -> list[str]:
+    """The worker ids for ``role`` whose presence heartbeat is fresher than ``ttl``. A worker
+    that stopped heartbeating (crashed/exited) falls out of the list in ~``ttl``."""
+    now = time.time() if now is None else now
+    scan_prefix = _presence_scan_prefix(role, prefix=prefix)
+    out: list[str] = []
+    for name, data in store.scan(_KIND, scan_prefix):
+        try:
+            ts = float(data.decode("utf-8"))
+        except (ValueError, UnicodeDecodeError):
+            continue
+        if now - ts < ttl:
+            out.append(name[len(scan_prefix):])
+    return sorted(out)
+
+
+async def run_isolated_worker(
+    store: Any,
+    handler: Handler,
+    *,
+    role: str,
+    worker_id: str,
+    prefix: str = _PREFIX,
+    stop: asyncio.Event,
+    poll: float = 0.1,
+    presence_ttl: float = 6.0,
+) -> None:
+    """Drain THIS worker's private queue until ``stop`` is set, heartbeating presence so the
+    parent routes to it. Because the worker is the SOLE reader of its queue there is NO claim
+    and NO lease — each request runs exactly once. A failing/poison request drains as a
+    ``failed`` result (``serve_one``); it never kills the loop."""
+    mailbox = CEEMailbox(store, prefix=_worker_queue_prefix(role, worker_id, prefix=prefix))
+    heartbeat_presence(store, role, worker_id, prefix=prefix)  # announce immediately
+    last_hb = time.time()
+    hb_every = max(presence_ttl / 3.0, 0.05)
+    try:
+        while not stop.is_set():
+            for rid in mailbox.pending():
+                await serve_one(mailbox, rid, handler)  # sole reader -> no claim
+            now = time.time()
+            if now - last_hb >= hb_every:
+                heartbeat_presence(store, role, worker_id, prefix=prefix, now=now)
+                last_hb = now
+            await asyncio.sleep(poll)
+    finally:
+        drop_presence(store, role, worker_id, prefix=prefix)
+
+
+class IsolatedExpertInvoker:
+    """Parent-side ``ExpertInvoker`` for the isolated model: route a request to ONE live
+    worker's private queue (no claim/lease), wait, and re-route to another live worker on
+    timeout. Exactly-once in the common case (a single worker reads the queue); at-least-once
+    only on a reassignment after a worker dies/stalls — the unavoidable, rare resilience path,
+    where the result is still correct (the parent takes whichever worker answers).
+
+    Drop-in ``ExpertInvoker`` (``invoke(request) -> ExpertResult``) so it composes with the
+    background monitor and the gact delegation hinge exactly like the pull-model invoker."""
+
+    def __init__(
+        self,
+        store: Any,
+        *,
+        role: str,
+        prefix: str = _PREFIX,
+        timeout: float = 60.0,
+        poll: float = 0.1,
+        presence_ttl: float = 6.0,
+        max_attempts: int = 3,
+    ) -> None:
+        self._store = store
+        self._role = role
+        self._prefix = prefix
+        self._timeout = timeout
+        self._poll = poll
+        self._presence_ttl = presence_ttl
+        self._max_attempts = max_attempts
+        self._rr = 0  # round-robin cursor over the live set
+
+    def _pick(self, exclude: set[str]) -> Optional[str]:
+        workers = [
+            w
+            for w in live_workers(self._store, self._role, prefix=self._prefix, ttl=self._presence_ttl)
+            if w not in exclude
+        ]
+        if not workers:
+            return None
+        self._rr = (self._rr + 1) % len(workers)
+        return workers[self._rr]
+
+    async def invoke(self, request: ExpertRequest) -> ExpertResult:
+        tried: set[str] = set()
+        last_error: Optional[BaseException] = None
+        for _ in range(self._max_attempts):
+            worker = self._pick(tried)
+            if worker is None:
+                if tried:  # we exhausted the workers we could reach
+                    break
+                raise RuntimeError(f"no live worker for role {self._role!r}")
+            tried.add(worker)
+            mailbox = CEEMailbox(
+                self._store, prefix=_worker_queue_prefix(self._role, worker, prefix=self._prefix)
+            )
+            rid = mailbox.submit(request)
+
+            async def _wait(mb: CEEMailbox = mailbox, the_rid: str = rid) -> None:
+                while not mb.has_result(the_rid):
+                    await asyncio.sleep(self._poll)
+
+            try:
+                await asyncio.wait_for(_wait(), timeout=self._timeout)
+            except (asyncio.TimeoutError, TimeoutError):
+                # The worker died or stalled — discard and re-route to another live worker.
+                # serve_one re-checks .req before publishing, so a worker that revives mid-flight
+                # drops its result cleanly rather than orphaning it.
+                mailbox.discard(rid)
+                last_error = TimeoutError(f"worker {worker!r} for {self._role!r} timed out")
+                continue
+            except asyncio.CancelledError:
+                mailbox.discard(rid)
+                raise
+            result = mailbox.read_result(rid)
+            mailbox.discard(rid)
+            if result is not None:
+                return result
+            last_error = RuntimeError(f"isolated result vanished for {rid}")
+        raise last_error or TimeoutError(f"all workers for role {self._role!r} timed out")
