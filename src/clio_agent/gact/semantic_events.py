@@ -12,6 +12,8 @@ from __future__ import annotations
 import json
 import os
 import queue
+import re
+import socket
 import threading
 import uuid
 from collections.abc import Callable
@@ -290,6 +292,26 @@ def _trace_writer_loop() -> None:
             _TRACE_WRITE_QUEUE.task_done()
 
 
+def _sanitize_trace_tag(tag: str) -> str:
+    """Keep a process tag safe as ONE filename segment: collapse anything that isn't
+    ``[A-Za-z0-9._-]`` (path separators, spaces) to ``_`` so it can't escape the trace
+    directory or break the filename."""
+    return re.sub(r"[^A-Za-z0-9._-]", "_", tag).strip("._")
+
+
+def _resolve_trace_process_tag() -> str:
+    """The per-process trace discriminator. Empty by default (one file per session).
+    ``CLIO_SEMANTIC_TRACE_PROCESS_TAG`` sets a stable explicit id (e.g. ``node1.rank3``);
+    otherwise ``CLIO_SEMANTIC_TRACE_PER_PROCESS=1`` auto-derives ``<hostname>-<pid>`` so a
+    cluster launcher can flip one flag and every process gets its own per-session file."""
+    explicit = os.environ.get("CLIO_SEMANTIC_TRACE_PROCESS_TAG", "").strip()
+    if explicit:
+        return _sanitize_trace_tag(explicit)
+    if os.environ.get("CLIO_SEMANTIC_TRACE_PER_PROCESS", "").strip().lower() in {"1", "true", "yes", "on"}:
+        return _sanitize_trace_tag(f"{socket.gethostname()}-{os.getpid()}")
+    return ""
+
+
 def _ensure_trace_writer() -> None:
     """Start the shared writer once, OFF the turn event loop (backend init time)."""
     global _TRACE_WRITER_THREAD  # noqa: PLW0603
@@ -321,8 +343,14 @@ class FileSemanticTraceBackend:
 
     name = "file"
 
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, *, process_tag: str = "") -> None:
         self.path = path
+        # A per-process discriminator folded into per-session filenames so that several
+        # clio processes (e.g. parent + delegated workers, possibly on different nodes)
+        # sharing one trace directory on NFS never append to the SAME file concurrently
+        # (cross-host append is not atomic -> interleaved/corrupt lines). Empty by default:
+        # one ``<session>.semantic.jsonl`` per session, unchanged.
+        self._process_tag = _sanitize_trace_tag(process_tag)
         _ensure_trace_writer()
 
     # A configured path is a single JSONL file ONLY when it carries a recognised
@@ -336,6 +364,8 @@ class FileSemanticTraceBackend:
     def _path_for(self, event: SemanticEvent) -> Path:
         if self.path.suffix.lower() in self._FILE_SUFFIXES:
             return self.path
+        if self._process_tag:
+            return self.path / f"{event.session_id}.{self._process_tag}.semantic.jsonl"
         return self.path / f"{event.session_id}.semantic.jsonl"
 
     def emit(self, event: SemanticEvent) -> None:
@@ -391,7 +421,7 @@ def build_trace_backend(default_root: Path) -> SemanticTraceBackend:
             "trace.path", env="CLIO_SEMANTIC_TRACE_PATH", default="", cast=conf.as_str
         ).strip()
         path = Path(raw_path).expanduser() if raw_path else default_root
-        return FileSemanticTraceBackend(path)
+        return FileSemanticTraceBackend(path, process_tag=_resolve_trace_process_tag())
     if backend in {"factory", "python_factory", "custom"}:
         factory_path = os.environ.get("CLIO_SEMANTIC_TRACE_FACTORY", "").strip()
         if not factory_path:
