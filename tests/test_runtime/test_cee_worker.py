@@ -33,3 +33,47 @@ def test_worker_module_exposes_entrypoints():
     assert callable(cee_worker.build_worker_app)
     assert callable(cee_worker.run_cee_worker)
     assert hasattr(cee_worker, "_main")  # python -m clio_agent.runtime.cee_worker
+
+
+# --- LIVE: the worker reconstructs + runs a REAL registered child on ALCF ----------------
+
+import os  # noqa: E402
+
+import pytest  # noqa: E402
+
+
+@pytest.mark.live
+@pytest.mark.skipif(
+    os.environ.get("CLIO_RUN_LIVE") != "1",
+    reason="live ALCF run: set CLIO_RUN_LIVE=1 (and Argonne auth + CLIO_LM_* env)",
+)
+async def test_worker_runs_a_real_registered_child(tmp_path):
+    """The untangle's payload: the worker handler resolves an expert_id to a registered
+    AgentDef and runs it via run_child_expert against real ALCF, returning a real answer.
+    user_agents is isolated to tmp (sessions_path) so the upsert never touches real config.
+    This is the reconstruct-and-run that a separate worker PROCESS does; the cross-process
+    mailbox transport carrying it is already proven (test_cee_transport)."""
+    from clio_agent.agent import ClioAgent
+    from clio_agent.config import load_config_from_env, setup_dspy
+    from clio_agent.gact.app import build_app
+    from clio_agent.runtime.cee_worker import build_child_handler
+
+    cfg = load_config_from_env()
+    if str(getattr(cfg, "provider", "")) in {"lmstudio", "lm_studio"}:
+        pytest.skip("live run must target Argonne/ALCF, not LM Studio (leave it free)")
+
+    setup_dspy()
+    app = build_app(agent=ClioAgent(), sessions_path=tmp_path / "sessions.json")
+    app.state.user_agents.upsert(
+        {
+            "id": "calc",
+            "title": "Calculator",
+            "source": "expert_pack",
+            "system_prompt": "You are a precise calculator. Answer with only the number.",
+        }
+    )
+
+    handler = build_child_handler(app)
+    res = await handler(ExpertRequest("calc", "What is 2 + 2? Answer with only the number."))
+    assert res.status == "completed", f"{res.status} {res.error}"
+    assert "4" in res.answer  # a real ALCF child, reconstructed from the wire, answered
