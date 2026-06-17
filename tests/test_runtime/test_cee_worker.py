@@ -153,3 +153,81 @@ async def test_worker_handler_drains_a_raising_child_as_failed(monkeypatch):
     res = await handler(ExpertRequest("x", "q"))
     assert res.status == "failed"
     assert "child exploded" in (res.error or "")
+
+
+@pytest.mark.live
+@pytest.mark.skipif(
+    os.environ.get("CLIO_RUN_LIVE") != "1",
+    reason="live ALCF run: set CLIO_RUN_LIVE=1 (and Argonne auth + CLIO_LM_* env)",
+)
+async def test_isolated_worker_subprocesses_over_shared_store(tmp_path):
+    """The lease-free isolated model end-to-end on real ALCF: TWO worker SUBPROCESSES each
+    drain their OWN queue (no claim) over a shared LocalFS store and heartbeat presence; the
+    parent discovers them and routes real-ALCF delegations round-robin. No daemon, no lease,
+    no claim blob ever — exactly Luke's path (a) for clio-core#559."""
+    import asyncio
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    from clio_agent.arc.storage import make_arc_store
+    from clio_agent.runtime.cee_transport import IsolatedExpertInvoker, live_workers
+
+    data_dir = tmp_path / "store"
+    data_dir.mkdir()
+    role = "calc"
+    entry = Path(__file__).parent / "_cee_worker_entry.py"
+    base_env = {
+        **os.environ,
+        "CLIO_RUN_LIVE": "1",
+        "CLIO_LM_PROVIDER": "argonne",
+        "CLIO_LM_API_BASE": "https://inference-api.alcf.anl.gov/resource_server/sophia/vllm/v1",
+        "CLIO_LM_MODEL": "openai/gpt-oss-120b",
+        "CLIO_ARC_STORE": "local",
+        "CLIO_ARC_DATA_DIR": str(data_dir),
+        "CLIO_CEE_ISOLATED": "1",
+        "CLIO_CEE_ROLE": role,
+        "XDG_CONFIG_HOME": str(tmp_path / "cfg"),
+        "CLIO_ALLOWED_ROOTS": f"{tmp_path}:{os.getcwd()}",
+    }
+    procs, logs = [], []
+    try:
+        for wid in ("w1", "w2"):
+            log = open(tmp_path / f"{wid}.log", "w")  # noqa: SIM115 - closed in finally
+            logs.append(log)
+            env = {
+                **base_env,
+                "CLIO_CEE_WORKER_ID": wid,
+                "CLIO_GACT_SESSIONS": str(tmp_path / f"{wid}_sessions.json"),
+            }
+            procs.append(subprocess.Popen([sys.executable, str(entry)], env=env, stdout=log, stderr=log))
+
+        store = make_arc_store(backend="local", data_dir=str(data_dir))
+        for _ in range(1500):  # workers build_app + a ClioAgent before they announce presence
+            if len(live_workers(store, role)) >= 2:
+                break
+            await asyncio.sleep(0.1)
+        assert len(live_workers(store, role)) >= 2, f"workers never registered: {live_workers(store, role)}"
+
+        invoker = IsolatedExpertInvoker(store, role=role, timeout=180, poll=0.2)
+        cases = [
+            ("What is 2 + 2? Answer with only the number.", "4"),
+            ("What is 10 * 5? Answer with only the number.", "50"),
+        ]
+        for i, (q, needle) in enumerate(cases):
+            res = await invoker.invoke(ExpertRequest("calc", q, session_id=f"iso{i}"))
+            assert res.status == "completed", f"{q!r} -> {res.status} {res.error}"
+            assert needle in res.answer, f"{q!r} -> {res.answer!r}"
+        # the whole point: a real cross-process delegation pool with ZERO claim blobs
+        assert not any(".claim" in n for n, _ in store.scan("context", "cee"))
+    finally:
+        for p in procs:
+            p.terminate()
+        for p in procs:
+            try:
+                p.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                p.kill()
+                p.wait()
+        for log in logs:
+            log.close()

@@ -107,25 +107,62 @@ async def run_cee_worker(
     )
 
 
+async def run_isolated_cee_worker(
+    store: Any,
+    *,
+    role: str,
+    worker_id: str,
+    prefix: str = "cee_",
+    stop: Optional[asyncio.Event] = None,
+    poll: float = 0.1,
+    presence_ttl: float = 6.0,
+    app: Any = None,
+) -> None:
+    """The lease-free counterpart of :func:`run_cee_worker`: a real gact worker that drains
+    its OWN per-worker queue (no claim) and heartbeats presence, so the parent's
+    ``IsolatedExpertInvoker`` routes to it. Same child reconstruction; just isolated queueing."""
+    from clio_agent.runtime.cee_transport import run_isolated_worker  # noqa: PLC0415
+
+    if app is None:
+        app = build_worker_app()
+    if stop is None:
+        stop = asyncio.Event()
+    await run_isolated_worker(
+        store,
+        build_child_handler(app),
+        role=role,
+        worker_id=worker_id,
+        prefix=prefix,
+        stop=stop,
+        poll=poll,
+        presence_ttl=presence_ttl,
+    )
+
+
 def _main() -> None:  # pragma: no cover - process entrypoint
     """``python -m clio_agent.runtime.cee_worker`` — attach to the store from env and drain.
 
-    Env: ``CLIO_CEE_PREFIX`` (role queue, default ``cee_``); ``CLIO_CEE_WORKER_ID``; the store
-    is built via ``make_arc_store`` from ``CLIO_ARC_STORE`` + ``CLIO_ARC_DATA_DIR`` (a shared
-    LocalFS dir, or a daemon attach with ``CLIO_ARC_STORE=cte`` + ``CLIO_CTE_WITH_RUNTIME=0``).
+    Env: ``CLIO_CEE_PREFIX`` (default ``cee_``); ``CLIO_CEE_WORKER_ID``; the store is built via
+    ``make_arc_store`` from ``CLIO_ARC_STORE`` + ``CLIO_ARC_DATA_DIR`` (a shared LocalFS dir, or
+    a daemon attach with ``CLIO_ARC_STORE=cte`` + ``CLIO_CTE_WITH_RUNTIME=0``). Set
+    ``CLIO_CEE_ISOLATED=1`` + ``CLIO_CEE_ROLE`` to run the lease-free isolated model (drains
+    this worker's own queue, heartbeats presence) instead of the shared-queue pull model.
     """
     from clio_agent.arc.storage import make_arc_store  # noqa: PLC0415
 
     backend = os.environ.get("CLIO_ARC_STORE", "local")
     data_dir = os.environ.get("CLIO_ARC_DATA_DIR", "") or None
     store = make_arc_store(backend=backend, data_dir=data_dir)
-    asyncio.run(
-        run_cee_worker(
-            store,
-            prefix=os.environ.get("CLIO_CEE_PREFIX", "cee_"),
-            worker_id=os.environ.get("CLIO_CEE_WORKER_ID", ""),
+    prefix = os.environ.get("CLIO_CEE_PREFIX", "cee_")
+    worker_id = os.environ.get("CLIO_CEE_WORKER_ID", "")
+    if os.environ.get("CLIO_CEE_ISOLATED", "").strip().lower() in {"1", "true", "yes", "on"}:
+        asyncio.run(
+            run_isolated_cee_worker(
+                store, role=os.environ["CLIO_CEE_ROLE"], worker_id=worker_id, prefix=prefix
+            )
         )
-    )
+    else:
+        asyncio.run(run_cee_worker(store, prefix=prefix, worker_id=worker_id))
 
 
 if __name__ == "__main__":
