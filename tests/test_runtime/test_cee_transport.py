@@ -10,6 +10,7 @@ cluster the same store spans nodes and the identical code is cross-machine.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 
 import pytest
@@ -195,6 +196,61 @@ async def test_timeout_discards_orphan_and_raises(tmp_path):
         await invoker.invoke(ExpertRequest("data", "q"))
     # the orphaned request blob must be cleaned up, not leaked in clio-core
     assert list(store.scan("context", "cee_t_")) == []
+
+
+async def test_cancel_in_flight_invocation_discards_orphan(tmp_path):
+    """Cancelling an in-flight delegation (e.g. a cancelled spawn_invocation) must discard
+    the request, not orphan it. Regression: invoke() only cleaned up on timeout — on cancel
+    the .req leaked, and a worker could later pick it up, run the child (wasted compute), and
+    publish a result nobody consumes."""
+    store = make_arc_store(backend="local", data_dir=str(tmp_path))
+    mailbox = CEEMailbox(store, prefix="cee_c_")
+    invoker = CEEExpertInvoker(mailbox, timeout=30, poll=0.02)  # no worker -> waits
+    bt = BackgroundTasks()
+
+    tid = spawn_invocation(bt, invoker, ExpertRequest("data", "q"))
+    for _ in range(200):  # wait until the request is actually submitted
+        if list(store.scan("context", "cee_c_")):
+            break
+        await asyncio.sleep(0.01)
+    assert list(store.scan("context", "cee_c_")), "request never reached the mailbox"
+
+    assert bt.cancel(tid) is True
+    rec = await bt.wait(tid, timeout=2)
+    assert rec.status is TaskStatus.CANCELLED
+    # the mailbox drained — no orphan req/res/claim left behind
+    assert list(store.scan("context", "cee_c_")) == []
+
+
+async def test_cancel_with_slow_worker_leaves_no_orphan_result(tmp_path):
+    """Cancel races a worker that is mid-flight on the request: the parent's discard +
+    serve_one's pre-publish re-check must leave the mailbox clean (no orphan .res)."""
+    store = make_arc_store(backend="local", data_dir=str(tmp_path))
+    mailbox = CEEMailbox(store, prefix="cee_cw_")
+    started = asyncio.Event()
+
+    async def slow_handler(req):
+        started.set()
+        await asyncio.sleep(2)  # still running when we cancel
+        return ExpertResult(expert_id=req.expert_id, answer="late")
+
+    invoker = CEEExpertInvoker(mailbox, timeout=30, poll=0.02)
+    bt = BackgroundTasks()
+    stop = asyncio.Event()
+    worker = asyncio.ensure_future(run_worker(mailbox, slow_handler, stop=stop, worker_id="w", poll=0.02))
+    try:
+        tid = spawn_invocation(bt, invoker, ExpertRequest("data", "q"))
+        await asyncio.wait_for(started.wait(), timeout=5)  # worker has claimed + is running
+        assert bt.cancel(tid) is True
+        rec = await bt.wait(tid, timeout=2)
+        assert rec.status is TaskStatus.CANCELLED
+        await asyncio.sleep(2.2)  # let the slow handler finish and try to publish
+        # the worker saw .req gone (parent discarded it) and skipped publishing -> clean
+        assert list(store.scan("context", "cee_cw_")) == []
+    finally:
+        stop.set()
+        with contextlib.suppress(BaseException):
+            await asyncio.wait_for(worker, timeout=5)
 
 
 async def test_two_workers_single_result_intact(tmp_path):

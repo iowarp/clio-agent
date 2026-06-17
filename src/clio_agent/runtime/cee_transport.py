@@ -263,6 +263,14 @@ class CEEExpertInvoker:
             raise TimeoutError(
                 f"clio-core delegation {rid} timed out after {self._timeout}s"
             ) from None
+        except asyncio.CancelledError:
+            # The caller cancelled this delegation (e.g. a cancelled spawn_invocation).
+            # Discard the request so it doesn't orphan in the mailbox AND so a worker can't
+            # later pick it up, run the child (wasted compute), and publish an unconsumed
+            # result. serve_one re-checks .req before publishing, so a worker mid-flight
+            # drops its claim cleanly. Then let cancellation propagate.
+            self._mb.discard(rid)
+            raise
         result = self._mb.read_result(rid)
         # Delegation complete: drop req/res/claim so the mailbox doesn't grow without
         # bound over many delegations, and a late (double-executing) worker can't
