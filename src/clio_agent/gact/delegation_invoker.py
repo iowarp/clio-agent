@@ -175,7 +175,14 @@ async def _invoke_via_cee(
         from clio_agent.arc.storage import make_arc_store  # noqa: PLC0415
 
         tmp_dir = tempfile.mkdtemp(prefix="clio_cee_")
-        store = make_arc_store(backend="local", data_dir=tmp_dir)
+        try:
+            store = make_arc_store(backend="local", data_dir=tmp_dir)
+        except BaseException:
+            # store construction can fail (e.g. mkdir on a read-only/full mount); the
+            # delegation's cleanup finally below hasn't been entered yet, so remove the
+            # just-created temp dir here rather than orphan it.
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+            raise
 
     timeout = float(os.environ.get("CLIO_CEE_TIMEOUT", "300"))
     mailbox = CEEMailbox(store)

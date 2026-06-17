@@ -11,6 +11,8 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 
+import pytest
+
 from clio_agent.gact.delegation_invoker import (
     expert_request_for,
     expert_result_from_prediction,
@@ -25,13 +27,13 @@ from clio_agent.runtime.expert_invoker import (
 
 
 def _prediction(**kw):
-    base = dict(
-        answer="the data shows X",
-        next_expert="analysis",
-        next_task="quantify X",
-        expert_handoffs='[{"agent_id": "analysis", "question": "quantify X"}]',
-        workflow_state={"stage": "data_collected", "rows": 128},
-    )
+    base = {
+        "answer": "the data shows X",
+        "next_expert": "analysis",
+        "next_task": "quantify X",
+        "expert_handoffs": '[{"agent_id": "analysis", "question": "quantify X"}]',
+        "workflow_state": {"stage": "data_collected", "rows": 128},
+    }
     base.update(kw)
     return SimpleNamespace(**base)
 
@@ -163,3 +165,27 @@ async def test_run_child_cee_crosses_the_mailbox(tmp_path):
     assert out.workflow_state["rows"] == 128
     # the mailbox drained clean — no leaked req/res/claim blobs
     assert [n for n, _ in store.scan("context", "cee_")] == []
+
+
+async def test_cee_mode_cleans_owned_tmp_dir_when_store_creation_fails(monkeypatch):
+    """When cee mode owns its throwaway LocalFS store and store construction fails (e.g. a
+    mkdir on a read-only/full mount), the just-created temp dir must not orphan — the
+    cleanup runs even though the delegation's main try/finally was never entered."""
+    import glob
+
+    import clio_agent.arc.storage as storage
+
+    def boom(**_kwargs):
+        raise OSError("simulated mkdir failure")
+
+    monkeypatch.setattr(storage, "make_arc_store", boom)
+    before = set(glob.glob("/tmp/clio_cee_*"))
+
+    async def run_child(agent_def, prompt):
+        raise AssertionError("child must not run when the store could not be built")
+
+    with pytest.raises(OSError):
+        await run_child_via_boundary(
+            SimpleNamespace(id="data"), "q", run_child=run_child, mode="cee"  # store=None -> owns it
+        )
+    assert set(glob.glob("/tmp/clio_cee_*")) == before  # no orphaned temp dir

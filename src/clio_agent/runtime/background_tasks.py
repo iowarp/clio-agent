@@ -260,20 +260,33 @@ async def _run_command(
     )
 
     async def _drain() -> None:
+        # Read raw BYTES in fixed chunks and split on newlines ourselves, rather than
+        # `async for line in proc.stdout` — readline() raises ValueError once a single line
+        # exceeds the StreamReader limit (64KB), which would crash the drain (and, before
+        # the finally below, orphan the process). Chunked reads have no line-length limit.
         assert proc.stdout is not None
-        async for raw in proc.stdout:
-            sink.emit(raw.decode("utf-8", "replace").rstrip("\n"))
+        buf = b""
+        while True:
+            chunk = await proc.stdout.read(65536)
+            if not chunk:
+                break
+            buf += chunk
+            *complete, buf = buf.split(b"\n")
+            for line in complete:
+                sink.emit(line.decode("utf-8", "replace"))
+        if buf:
+            sink.emit(buf.decode("utf-8", "replace"))
 
     try:
         await asyncio.wait_for(asyncio.gather(_drain(), proc.wait()), timeout=timeout)
     except (asyncio.TimeoutError, TimeoutError):
-        await _terminate_process_tree(proc)
         return {"exit_code": None, "timed_out": True}
-    except asyncio.CancelledError:
-        # cancel must not orphan the child — kill the tree, then let cancellation propagate
-        # so the task settles CANCELLED.
+    finally:
+        # Kill + reap the whole process group on EVERY exit path — success, timeout, cancel,
+        # or any other exception out of the drain/gather. Without this a non-timeout/cancel
+        # error (e.g. a drain failure) orphans the shell and its children. Idempotent: a
+        # no-op once the process has exited, so the success path is unaffected.
         await _terminate_process_tree(proc)
-        raise
     return {"exit_code": proc.returncode, "timed_out": False}
 
 

@@ -334,6 +334,24 @@ async def test_spawn_command_timeout_kills_the_process_tree(tmp_path):
             os.kill(child_pid, signal.SIGKILL)
 
 
+async def test_spawn_command_streams_a_very_long_line():
+    """A command whose output has a single line longer than the stream buffer (64KB) must
+    stream cleanly and COMPLETE — not crash the drain with a StreamReader limit error
+    (which also orphaned the process before the kill-on-every-path fix). The drain reads
+    raw chunks, so there is no per-line length limit."""
+    from clio_agent.runtime.background_tasks import spawn_command
+
+    bt = BackgroundTasks()
+    n = 200_000  # >> the 64KB readline limit
+    tid = spawn_command(bt, f'python3 -c "import sys; sys.stdout.write(\'x\'*{n}); print(); print(\'tail\')"')
+    rec = await bt.wait(tid, timeout=15)
+    assert rec.status is TaskStatus.COMPLETED, f"{rec.status} {rec.error}"
+    assert rec.result["exit_code"] == 0
+    out = bt.poll_output(tid)
+    assert sum(len(s) for s in out) >= n  # the long line was captured, not dropped/crashed
+    assert out[-1] == "tail"  # lines after the long one still stream
+
+
 async def test_unknown_handle_raises():
     bt = BackgroundTasks()
     with pytest.raises(KeyError):
