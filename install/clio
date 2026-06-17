@@ -28,11 +28,17 @@ set -euo pipefail
 CLIO_PREFIX="${CLIO_PREFIX:-$HOME/.local/share/clio}"
 CLIO_PORT="${CLIO_PORT:-17800}"
 CLIO_BIN_DIR="${CLIO_BIN_DIR:-$HOME/.local/bin}"
+# clio-agent is tool-source agnostic: marketplace packs declare their own MCP
+# servers (e.g. `uvx clio-kit@<ver> mcp-server <name>`), which uvx fetches/caches
+# on demand — so the launcher sets NO CLIO_KIT_PATH and has no clio-kit coupling.
+# File access defaults to clio's active workspace + /tmp (the file policy injects
+# the workspace root); set CLIO_ALLOWED_ROOTS only to deliberately widen that.
 PIDFILE="$CLIO_PREFIX/clio-server.pid"
 SERVER_LOG="${CLIO_LOG:-$CLIO_PREFIX/clio-server.log}"
 GACT_LOG="$CLIO_PREFIX/gact-stderr.log"
 SERVER_BIN="$CLIO_PREFIX/clio-agent/.venv/bin/clio-agent-gact"
 GACT_BIN="$CLIO_PREFIX/gact"
+CLIO_BRAND_ROOT="$CLIO_PREFIX/clio-agent/branding"
 
 GREEN='\033[0;32m'; YELLOW='\033[0;33m'; RED='\033[0;31m'; RESET='\033[0m'
 say()  { printf "${GREEN}==>${RESET} %s\n" "$*"; }
@@ -40,8 +46,13 @@ warn() { printf "${YELLOW}!!${RESET} %s\n" "$*" >&2; }
 err()  { printf "${RED}xx${RESET} %s\n" "$*" >&2; }
 
 # health returns 0 when the server answers /v1/health on the port.
+# CLIO returns 503 for a reachable server whose dependencies still need
+# user configuration, such as first-run LM provider selection. Treat that
+# as "server is up" so the TUI can surface and resolve the configuration.
 health() {
-  curl -sf -m 1 "http://127.0.0.1:$CLIO_PORT/v1/health" >/dev/null 2>&1
+  local code
+  code="$(curl -sS -m 1 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$CLIO_PORT/v1/health" 2>/dev/null || true)"
+  [[ "$code" = "200" || "$code" = "503" ]]
 }
 
 # server_pid echoes a live server PID (from the pidfile, validated) or
@@ -49,15 +60,15 @@ health() {
 # outside this launcher is still manageable.
 server_pid() {
   local p=""
+  if command -v lsof >/dev/null 2>&1; then
+    p="$(lsof -ti "tcp:$CLIO_PORT" -sTCP:LISTEN 2>/dev/null | head -n1 || true)"
+    if [[ -n "$p" ]]; then echo "$p"; return 0; fi
+  fi
   if [[ -f "$PIDFILE" ]]; then
     p="$(cat "$PIDFILE" 2>/dev/null || true)"
     if [[ -n "$p" ]] && kill -0 "$p" 2>/dev/null; then
       echo "$p"; return 0
     fi
-  fi
-  if command -v lsof >/dev/null 2>&1; then
-    p="$(lsof -ti "tcp:$CLIO_PORT" -sTCP:LISTEN 2>/dev/null | head -n1 || true)"
-    if [[ -n "$p" ]]; then echo "$p"; return 0; fi
   fi
   return 1
 }
@@ -218,7 +229,11 @@ main() {
       start_server
       # stdout stays on the terminal so the TUI renders; gact stderr is
       # captured to a log so Go panics survive for bug reports.
-      exec env GACT_BACKEND="http://127.0.0.1:$CLIO_PORT" "$GACT_BIN" "$@" 2>"$GACT_LOG"
+      exec env \
+        GACT_BACKEND="http://127.0.0.1:$CLIO_PORT" \
+        GACT_BRAND="${GACT_BRAND:-clio}" \
+        GACT_BRAND_ROOT="${GACT_BRAND_ROOT:-$CLIO_BRAND_ROOT}" \
+        "$GACT_BIN" "$@" 2>"$GACT_LOG"
       ;;
     start)        start_server ;;
     stop)         stop_server ;;

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # CLIO installer (Linux / macOS).
 #
-# Default: pulls clio-agent from PyPI and downloads a prebuilt `gact`
-# binary from gact-tui's GitHub Releases. No `git` or `go` required;
+# Default: pulls clio-agent from PyPI and downloads a prebuilt CLIO-branded
+# `clio-tui` binary from clio-agent's GitHub Releases. No `git` or `go` required;
 # you only need `uv` or `pip`.
 #
 # Source-build mode (opt-in for tracking unreleased work): set
@@ -14,7 +14,8 @@
 #   CLIO_PREFIX        install root         (default: $HOME/.local/share/clio)
 #   CLIO_BIN_DIR       launcher location    (default: $HOME/.local/bin)
 #   CLIO_VERSION       pin clio-agent       (default: latest from PyPI)
-#   GACT_VERSION       pin gact release tag (default: latest)
+#   GACT_VERSION       legacy override for TUI release tag (default: match CLIO)
+#   CLIO_INSTALLER_REF pin launcher scripts (default: v<installed clio-agent>)
 #   CLIO_REF           clio-agent branch    (default: release mode)
 #   GACT_REF           gact-tui branch      (default: release mode)
 #   CLIO_GIT_PROTOCOL  https | ssh          (default: https; only used
@@ -49,6 +50,7 @@ PREFIX="${CLIO_PREFIX:-$HOME/.local/share/clio}"
 BIN_DIR="${CLIO_BIN_DIR:-$HOME/.local/bin}"
 CLIO_VERSION="${CLIO_VERSION:-}"
 GACT_VERSION="${GACT_VERSION:-latest}"
+CLIO_INSTALLER_REF="${CLIO_INSTALLER_REF:-}"
 CLIO_REF="${CLIO_REF:-}"
 GACT_REF="${GACT_REF:-}"
 CLIO_GIT_PROTOCOL="${CLIO_GIT_PROTOCOL:-https}"
@@ -95,10 +97,12 @@ fi
 if [ -n "$CLIO_REF" ]; then
   have git || die "git required when CLIO_REF is set (source-build mode)"
   have uv  || die "uv required to build clio-agent from source"
+  have go  || die "go (>= 1.26) required when CLIO_REF is set so the CLIO TUI can be built"
 fi
 if [ -n "$GACT_REF" ]; then
   have git || die "git required when GACT_REF is set (source-build mode)"
   have go  || die "go (>= 1.26) required to build gact from source"
+  [ -n "$CLIO_REF" ] || die "GACT_REF source-build mode now requires CLIO_REF so CLIO branding scripts are available"
 fi
 
 mkdir -p "$PREFIX" "$BIN_DIR"
@@ -109,11 +113,11 @@ VENV="$PREFIX/clio-agent/.venv"
 if [ -n "$CLIO_REF" ]; then
   say "Cloning clio-agent at $CLIO_REF (source-build mode)"
   rm -rf "$PREFIX/clio-agent"
-  git clone --quiet --branch "$CLIO_REF" --depth 1 "$CLIO_REPO" "$PREFIX/clio-agent"
-  say "Installing clio-agent deps (uv sync)"
-  ( cd "$PREFIX/clio-agent" && uv sync )
+  git clone --quiet --recurse-submodules --shallow-submodules --branch "$CLIO_REF" --depth 1 "$CLIO_REPO" "$PREFIX/clio-agent"
+  say "Installing clio-agent deps (uv sync --extra argonne)"
+  ( cd "$PREFIX/clio-agent" && uv sync --extra argonne )
 else
-  pkg_spec="clio-agent${CLIO_VERSION:+==$CLIO_VERSION}"
+  pkg_spec="clio-agent[argonne]${CLIO_VERSION:+==$CLIO_VERSION}"
   say "Installing $pkg_spec from PyPI"
   rm -rf "$PREFIX/clio-agent"
   mkdir -p "$PREFIX/clio-agent"
@@ -127,36 +131,52 @@ else
   fi
 fi
 
+CLIO_INSTALLED_VERSION=""
+if [ -x "$VENV/bin/python" ]; then
+  CLIO_INSTALLED_VERSION="$("$VENV/bin/python" -c 'from importlib.metadata import version; print(version("clio-agent"))' 2>/dev/null || true)"
+fi
+
 # ---------- install gact ----------------------------------------------
 GACT_BIN="$PREFIX/gact"
 
-if [ -n "$GACT_REF" ]; then
+if [ -n "$CLIO_REF" ] && [ -z "$GACT_REF" ]; then
+  say "Building CLIO-branded TUI from clio-agent submodule"
+  ( cd "$PREFIX/clio-agent" && ./scripts/build_clio_tui.sh "$GACT_BIN" )
+elif [ -n "$GACT_REF" ]; then
   say "Cloning gact-tui at $GACT_REF (source-build mode)"
   rm -rf "$PREFIX/gact-tui"
   git clone --quiet --branch "$GACT_REF" --depth 1 "$GACT_REPO" "$PREFIX/gact-tui"
-  say "Building gact"
-  ( cd "$PREFIX/gact-tui/tui" && go build -o "$GACT_BIN" . )
+  say "Building CLIO-branded TUI"
+  GACT_TUI_ROOT="$PREFIX/gact-tui" "$PREFIX/clio-agent/scripts/build_clio_tui.sh" "$GACT_BIN"
 else
   tag="$GACT_VERSION"
   if [ "$tag" = "latest" ]; then
-    say "Resolving latest gact-tui release"
-    tag="$(curl -fsSL https://api.github.com/repos/iowarp/gact-tui/releases/latest \
+    if [ -n "$CLIO_VERSION" ]; then
+      tag="v$CLIO_VERSION"
+    else
+      say "Resolving latest clio-agent release"
+      tag="$(curl -fsSL https://api.github.com/repos/iowarp/clio-agent/releases/latest \
             | sed -nE 's/.*"tag_name":\s*"([^"]+)".*/\1/p' \
             | head -n1 || true)"
-    [ -n "$tag" ] || die "couldn't resolve gact-tui latest release tag"
+      [ -n "$tag" ] || die "couldn't resolve clio-agent latest release tag"
+    fi
   fi
-  asset="gact-${OS}-${ARCH}"
-  url="https://github.com/iowarp/gact-tui/releases/download/${tag}/${asset}"
-  say "Downloading $asset from gact-tui $tag"
+  asset="clio-tui-${OS}-${ARCH}"
+  url="https://github.com/iowarp/clio-agent/releases/download/${tag}/${asset}"
+  say "Downloading $asset from clio-agent $tag"
   curl -fsSL "$url" -o "$GACT_BIN" || die "failed to download $url"
   chmod +x "$GACT_BIN"
 fi
 
 # ---------- launcher + uninstaller ------------------------------------
 # When we cloned clio-agent (source mode), the scripts are already on
-# disk. In release mode, fetch them from the version-pinned ref on
-# GitHub raw.
-launcher_ref="${CLIO_REF:-main}"
+# disk. In release mode, fetch them from the ref that matches the
+# installed PyPI version, unless an explicit installer ref is provided.
+launcher_ref="${CLIO_REF:-${CLIO_INSTALLER_REF:-}}"
+if [ -z "$launcher_ref" ] && [ -n "$CLIO_INSTALLED_VERSION" ]; then
+  launcher_ref="v$CLIO_INSTALLED_VERSION"
+fi
+launcher_ref="${launcher_ref:-main}"
 RAW="https://raw.githubusercontent.com/iowarp/clio-agent/${launcher_ref}/install"
 
 LAUNCHER="$BIN_DIR/clio"

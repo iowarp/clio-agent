@@ -130,9 +130,7 @@ class TestLSMTree:
     def test_compaction(self, temp_dir):
         """Test SSTable compaction."""
         # Create LSM with low compaction threshold
-        lsm = LSMTree(
-            data_dir=temp_dir, memtable_size=5, compaction_threshold=3
-        )
+        lsm = LSMTree(data_dir=temp_dir, memtable_size=5, compaction_threshold=3)
 
         try:
             # Write enough data to create multiple SSTables
@@ -158,6 +156,28 @@ class TestLSMTree:
                 assert result is not None
                 assert result["index"] == i
 
+        finally:
+            lsm.close()
+
+    def test_sstable_filenames_survive_clock_collision(self, temp_dir, monkeypatch):
+        """Rapid flushes must not overwrite earlier SSTables.
+
+        Windows can return identical ``time_ns`` values for back-to-back
+        calls. SSTable names need a non-clock suffix so compaction sees
+        every flushed table.
+        """
+
+        monkeypatch.setattr("clio_agent.arc.lsm.time.time_ns", lambda: 123456789)
+        lsm = LSMTree(data_dir=temp_dir, memtable_size=5, compaction_threshold=3)
+
+        try:
+            for i in range(20):
+                lsm.write(1704800000.0 + i, {"index": i})
+
+            for i in range(20):
+                result = lsm.read(1704800000.0 + i)
+                assert result is not None
+                assert result["index"] == i
         finally:
             lsm.close()
 

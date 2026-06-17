@@ -35,10 +35,12 @@ def instrumented_forward(arc_memory: Any, agent_id: str) -> Callable:
         ... def forward(self, question, file_context=""):
         ...     return dspy.Prediction(analysis="...", recommendations="...")
     """
+
     def decorator(forward_fn: Callable) -> Callable:
         @functools.wraps(forward_fn)
         def wrapper(*args, **kwargs):
             start = time.time()
+            start_ns = time.perf_counter_ns()
             trace_id = str(uuid.uuid4())
 
             # Extract input fields from args/kwargs
@@ -59,7 +61,11 @@ def instrumented_forward(arc_memory: Any, agent_id: str) -> Callable:
                 output_data = {"error": str(e)[:500]}
                 raise
             finally:
-                duration_ms = (time.time() - start) * 1000
+                completed_at = time.time()
+                duration_ms = max(
+                    (time.perf_counter_ns() - start_ns) / 1_000_000,
+                    0.001,
+                )
                 invocation = Invocation(
                     trace_id=trace_id,
                     session_id=session_id,
@@ -68,7 +74,7 @@ def instrumented_forward(arc_memory: Any, agent_id: str) -> Callable:
                     tier=2,
                     source="native",
                     started_at=start,
-                    completed_at=time.time(),
+                    completed_at=completed_at,
                     duration_ms=duration_ms,
                     status=status,
                     input=input_data,
@@ -81,6 +87,7 @@ def instrumented_forward(arc_memory: Any, agent_id: str) -> Callable:
                 arc_memory.store_invocation(invocation)
 
         return wrapper
+
     return decorator
 
 
@@ -142,7 +149,13 @@ def _extract_output(result: Any) -> Dict[str, Any]:
             pass
     else:
         # Fallback: try common expert output fields
-        for field in ("analysis", "recommendations", "visualization_description", "file_path", "answer"):
+        for field in (
+            "analysis",
+            "recommendations",
+            "visualization_description",
+            "file_path",
+            "answer",
+        ):
             val = getattr(result, field, None)
             if val is not None:
                 output_data[field] = _to_safe_text(val)[:500]

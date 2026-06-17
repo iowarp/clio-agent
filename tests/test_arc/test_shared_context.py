@@ -90,9 +90,7 @@ class TestDatasetProfile:
         """Store 3 profiles in same session, retrieve all."""
         arc.store_dataset_profile(_make_profile(filepath="/data/a.parquet"))
         arc.store_dataset_profile(_make_profile(filepath="/data/b.parquet"))
-        arc.store_dataset_profile(
-            _make_profile(filepath="/data/c.hdf5", file_format="hdf5")
-        )
+        arc.store_dataset_profile(_make_profile(filepath="/data/c.hdf5", file_format="hdf5"))
 
         profiles = arc.get_session_profiles("session-1")
         assert len(profiles) == 3
@@ -120,12 +118,8 @@ class TestDatasetProfile:
 
     def test_dataset_profile_different_sessions(self, arc):
         """Session A profiles are not visible to session B."""
-        arc.store_dataset_profile(
-            _make_profile(session_id="session-A", filepath="/data/a.parquet")
-        )
-        arc.store_dataset_profile(
-            _make_profile(session_id="session-B", filepath="/data/b.parquet")
-        )
+        arc.store_dataset_profile(_make_profile(session_id="session-A", filepath="/data/a.parquet"))
+        arc.store_dataset_profile(_make_profile(session_id="session-B", filepath="/data/b.parquet"))
 
         profiles_a = arc.get_session_profiles("session-A")
         profiles_b = arc.get_session_profiles("session-B")
@@ -171,9 +165,7 @@ class TestProceduralMemory:
 
     def test_procedural_memory_filter_by_expert(self, arc):
         """Filter procedural memories by expert_id."""
-        arc.store_procedural_memory(
-            _make_procedural(expert_id="data", description="data pattern")
-        )
+        arc.store_procedural_memory(_make_procedural(expert_id="data", description="data pattern"))
         arc.store_procedural_memory(
             _make_procedural(expert_id="analysis", description="analysis pattern")
         )
@@ -192,15 +184,9 @@ class TestProceduralMemory:
         t2 = time.time() - 50
         t3 = time.time()
 
-        arc.store_procedural_memory(
-            _make_procedural(description="oldest", learned_at=t1)
-        )
-        arc.store_procedural_memory(
-            _make_procedural(description="middle", learned_at=t2)
-        )
-        arc.store_procedural_memory(
-            _make_procedural(description="newest", learned_at=t3)
-        )
+        arc.store_procedural_memory(_make_procedural(description="oldest", learned_at=t1))
+        arc.store_procedural_memory(_make_procedural(description="middle", learned_at=t2))
+        arc.store_procedural_memory(_make_procedural(description="newest", learned_at=t3))
 
         memories = arc.get_procedural_memories("session-1")
         assert len(memories) == 3

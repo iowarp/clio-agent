@@ -64,15 +64,56 @@ class ContextRetriever:
 
         # Common English stop words to filter from keyword extraction
         self._stop_words = {
-            "a", "an", "and", "are", "as", "at", "be", "by", "for", "from",
-            "has", "he", "in", "is", "it", "its", "of", "on", "that", "the",
-            "to", "was", "will", "with", "i", "do", "how", "what", "when",
-            "where", "why", "can", "could", "would", "should", "my", "me",
-            "you", "your", "this", "these", "those"
+            "a",
+            "an",
+            "and",
+            "are",
+            "as",
+            "at",
+            "be",
+            "by",
+            "for",
+            "from",
+            "has",
+            "he",
+            "in",
+            "is",
+            "it",
+            "its",
+            "of",
+            "on",
+            "that",
+            "the",
+            "to",
+            "was",
+            "will",
+            "with",
+            "i",
+            "do",
+            "how",
+            "what",
+            "when",
+            "where",
+            "why",
+            "can",
+            "could",
+            "would",
+            "should",
+            "my",
+            "me",
+            "you",
+            "your",
+            "this",
+            "these",
+            "those",
         }
 
     def compile_expert_context(
-        self, query: str, session_id: str, tier: int = 2
+        self,
+        query: str,
+        session_id: str,
+        tier: int = 2,
+        tool_scope: str = "all",
     ) -> str:
         """Compile context using the ContextCompiler pipeline.
 
@@ -83,6 +124,7 @@ class ContextRetriever:
             query: User's current query
             session_id: Session identifier
             tier: Agent tier (1 for router, 2 for expert)
+            tool_scope: Agent/tool visibility scope for injected tool summaries.
 
         Returns:
             Compiled context string within tier's token budget.
@@ -97,7 +139,12 @@ class ContextRetriever:
             from clio_agent.arc.context_compiler import ContextCompiler
 
             self._context_compiler = ContextCompiler(self.memory)
-        return self._context_compiler.compile(query, session_id, tier=tier)
+        return self._context_compiler.compile(
+            query,
+            session_id,
+            tier=tier,
+            tool_scope=tool_scope,
+        )
 
     def retrieve_context_for_query(
         self,
@@ -141,8 +188,7 @@ class ContextRetriever:
 
         # Rank conversations by relevance
         ranked_conversations = self.rank_conversations_by_relevance(
-            query=query,
-            conversations=conversations
+            query=query, conversations=conversations
         )
 
         # Take top N most relevant
@@ -155,6 +201,7 @@ class ContextRetriever:
         # Note: Context schema is designed for domain-specific data,
         # but we use it here to return query-relevant context
         import time
+
         current_time = time.time()
         context = Context(
             domain=f"query_context_{session_id}",
@@ -173,7 +220,7 @@ class ContextRetriever:
                 pattern_type="frequent_topic",
                 pattern_data={"topic": topic, "frequency": i + 1},
                 confidence=min((10 - i) / 10.0, 1.0),  # Higher confidence for higher-ranked topics
-                learned_at=current_time
+                learned_at=current_time,
             )
             context.learned_patterns.append(pattern)
 
@@ -218,9 +265,7 @@ class ContextRetriever:
         return top_keywords
 
     def rank_conversations_by_relevance(
-        self,
-        query: str,
-        conversations: List[Conversation]
+        self, query: str, conversations: List[Conversation]
     ) -> List[Conversation]:
         """Rank conversations by relevance to query.
 
@@ -243,8 +288,7 @@ class ContextRetriever:
         """
         # Score each conversation
         scored_conversations = [
-            (self._calculate_relevance_score(query, conv), conv)
-            for conv in conversations
+            (self._calculate_relevance_score(query, conv), conv) for conv in conversations
         ]
 
         # Sort by score (descending - highest score first)
@@ -253,11 +297,7 @@ class ContextRetriever:
         # Return sorted conversations (without scores)
         return [conv for score, conv in scored_conversations]
 
-    def _calculate_relevance_score(
-        self,
-        query: str,
-        conversation: Conversation
-    ) -> float:
+    def _calculate_relevance_score(self, query: str, conversation: Conversation) -> float:
         """Calculate relevance score (0-1) between query and conversation.
 
         Uses simple keyword overlap: measures how many query keywords
@@ -334,21 +374,15 @@ class ContextRetriever:
             ['optimize', 'hdf5', 'file', 'compression']
         """
         # Tokenize: split on non-alphanumeric characters
-        tokens = re.findall(r'\b[a-z0-9]+\b', text.lower())
+        tokens = re.findall(r"\b[a-z0-9]+\b", text.lower())
 
         # Filter: remove stop words and short tokens
-        keywords = [
-            token for token in tokens
-            if token not in self._stop_words and len(token) >= 3
-        ]
+        keywords = [token for token in tokens if token not in self._stop_words and len(token) >= 3]
 
         return keywords
 
     def get_relevant_tool_results(
-        self,
-        query: str,
-        domain: str,
-        max_results: int = 5
+        self, query: str, domain: str, max_results: int = 5
     ) -> List[Dict[str, Any]]:
         """Retrieve relevant cached tool results from context.
 
@@ -396,13 +430,15 @@ class ContextRetriever:
             score = len(intersection) / len(query_keywords) if query_keywords else 0.0
 
             if score > 0:
-                scored_results.append({
-                    "score": score,
-                    "tool": tool_key,
-                    "result": cached_result.result,
-                    "hit_count": cached_result.hit_count,
-                    "cached_at": cached_result.cached_at,
-                })
+                scored_results.append(
+                    {
+                        "score": score,
+                        "tool": tool_key,
+                        "result": cached_result.result,
+                        "hit_count": cached_result.hit_count,
+                        "cached_at": cached_result.cached_at,
+                    }
+                )
 
         # Sort by score (descending)
         scored_results.sort(key=lambda x: x["score"], reverse=True)

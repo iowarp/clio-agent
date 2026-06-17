@@ -47,9 +47,7 @@ class TestInitialization:
     def test_custom_tier_policy(self, tmp_path):
         """Custom tier policy should override defaults."""
         policy = {"hot_to_warm": 2, "warm_to_cold": 14, "cold_to_archive": 60}
-        backend = IOWarpCTEBackend(
-            base_dir=str(tmp_path / "s"), tier_policy=policy
-        )
+        backend = IOWarpCTEBackend(base_dir=str(tmp_path / "s"), tier_policy=policy)
         assert backend.tier_policy["warm_to_cold"] == 14
 
     def test_performance_counters_start_at_zero(self, backend):

@@ -21,11 +21,116 @@ See PLAN.md v0.3.0 Task 2 for requirements.
 """
 
 import os
+from collections.abc import Iterator
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Protocol, runtime_checkable
 
 import msgspec
+
+# The seven logical record families ARC persists. Each maps to one physical
+# container in a store (a directory for LocalFSStore; a namespace/key prefix
+# for a CTE-backed store). Keep this list as the single source of truth.
+ARC_KINDS: tuple[str, ...] = (
+    "conversations",
+    "invocations",
+    "metrics",
+    "context",
+    "profiles",
+    "procedural",
+    "variants",
+)
+
+
+@runtime_checkable
+class ARCStore(Protocol):
+    """Narrow persistence seam for ARC's record kinds.
+
+    A record is addressed by ``(kind, name)``: ``kind`` is one of
+    :data:`ARC_KINDS`; ``name`` is the record stem (no extension). The store
+    owns the physical layout and tiering, so ARC never touches the filesystem
+    directly. :class:`LocalFSStore` writes ``<data_dir>/<kind>/<name>.msgpack``;
+    a clio-core CTE backend maps the same ``(kind, name)`` onto namespaced,
+    multi-tier storage. This Protocol is the seam where that backend plugs in.
+    """
+
+    def put(self, kind: str, name: str, data: bytes, *, tier: str = "warm") -> None:
+        """Persist ``data`` for ``(kind, name)`` (overwrites)."""
+        ...
+
+    def get(self, kind: str, name: str) -> Optional[bytes]:
+        """Return bytes for ``(kind, name)`` or ``None`` if absent."""
+        ...
+
+    def exists(self, kind: str, name: str) -> bool:
+        """Return whether a record exists for ``(kind, name)``."""
+        ...
+
+    def scan(self, kind: str, prefix: str = "") -> Iterator[tuple[str, bytes]]:
+        """Yield ``(name, data)`` for every record in ``kind`` whose name
+        starts with ``prefix`` (``""`` = all). Order is unspecified."""
+        ...
+
+    def delete(self, kind: str, name: str) -> None:
+        """Delete the record for ``(kind, name)`` if present (no-op if absent)."""
+        ...
+
+    def clear(self) -> None:
+        """Delete all persisted records across all kinds."""
+        ...
+
+
+class LocalFSStore:
+    """Default :class:`ARCStore` backed by the local filesystem.
+
+    Lays records out as ``<data_dir>/<kind>/<name>.msgpack`` -- the historical
+    on-disk format ARC has always used, so existing data directories are read
+    unchanged. This is the extraction of the filesystem code that previously
+    lived inline in ``ARCMemory``; the LSM tree remains a separate subsystem.
+    """
+
+    def __init__(self, data_dir: str | Path):
+        self.data_dir = Path(data_dir)
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        self._dirs: Dict[str, Path] = {kind: self.data_dir / kind for kind in ARC_KINDS}
+        for directory in self._dirs.values():
+            directory.mkdir(exist_ok=True)
+
+    def _dir(self, kind: str) -> Path:
+        try:
+            return self._dirs[kind]
+        except KeyError:
+            raise ValueError(f"unknown ARC kind {kind!r}; expected one of {ARC_KINDS}") from None
+
+    def put(self, kind: str, name: str, data: bytes, *, tier: str = "warm") -> None:
+        (self._dir(kind) / f"{name}.msgpack").write_bytes(data)
+
+    def get(self, kind: str, name: str) -> Optional[bytes]:
+        path = self._dir(kind) / f"{name}.msgpack"
+        if not path.exists():
+            return None
+        return path.read_bytes()
+
+    def exists(self, kind: str, name: str) -> bool:
+        return (self._dir(kind) / f"{name}.msgpack").exists()
+
+    def scan(self, kind: str, prefix: str = "") -> Iterator[tuple[str, bytes]]:
+        for path in self._dir(kind).glob(f"{prefix}*.msgpack"):
+            try:
+                data = path.read_bytes()
+            except OSError:
+                continue
+            yield path.stem, data
+
+    def delete(self, kind: str, name: str) -> None:
+        path = self._dir(kind) / f"{name}.msgpack"
+        if path.exists():
+            path.unlink()
+
+    def clear(self) -> None:
+        for directory in self._dirs.values():
+            for path in directory.glob("*.msgpack"):
+                path.unlink()
 
 
 class IOWarpCTEBackend:
@@ -66,8 +171,8 @@ class IOWarpCTEBackend:
 
         # Tier migration policy (days)
         self.tier_policy = tier_policy or {
-            "hot_to_warm": 1,      # 1 day in hot tier before eviction
-            "warm_to_cold": 7,     # 1 week in warm tier
+            "hot_to_warm": 1,  # 1 day in hot tier before eviction
+            "warm_to_cold": 7,  # 1 week in warm tier
             "cold_to_archive": 30,  # 1 month in cold tier
         }
 
@@ -243,6 +348,49 @@ class IOWarpCTEBackend:
             if data:
                 self._local_reads += 1
             return data
+
+    # ---- ARCStore Protocol ----
+    #
+    # Maps ARC's (kind, name) addressing onto this backend's flat key/tier API
+    # (key = "<kind>/<name>.msgpack"). scan/delete/clear operate over the local
+    # tier directories; native IOWarp enumeration is the deferred CEE-query seam.
+
+    def put(self, kind: str, name: str, data: bytes, *, tier: str = "warm") -> None:
+        self.write(f"{kind}/{name}.msgpack", data, tier=tier)
+
+    def get(self, kind: str, name: str) -> Optional[bytes]:
+        return self.read(f"{kind}/{name}.msgpack")
+
+    def exists(self, kind: str, name: str) -> bool:
+        return self.get(kind, name) is not None
+
+    def scan(self, kind: str, prefix: str = "") -> Iterator[tuple[str, bytes]]:
+        seen: set[str] = set()
+        for tier in ("warm", "cold", "archive"):
+            tier_dir = self._get_tier_directory(tier)
+            for path in tier_dir.glob(f"{kind}/{prefix}*.msgpack"):
+                name = path.stem
+                if name in seen:
+                    continue
+                seen.add(name)
+                try:
+                    yield name, path.read_bytes()
+                except OSError:
+                    continue
+
+    def delete(self, kind: str, name: str) -> None:
+        key = f"{kind}/{name}.msgpack"
+        for tier in ("warm", "cold", "archive"):
+            path = self._get_tier_directory(tier) / key
+            if path.exists():
+                path.unlink()
+        self._access_metadata.pop(key, None)
+
+    def clear(self) -> None:
+        for tier in ("warm", "cold", "archive"):
+            for path in self._get_tier_directory(tier).rglob("*.msgpack"):
+                path.unlink()
+        self._access_metadata.clear()
 
     def _write_iowarp(self, key: str, data: bytes, tier: str) -> None:
         """Write to IOWarp CTE via ZeroMQ.
@@ -476,9 +624,7 @@ class IOWarpCTEBackend:
 
             # Parse timestamp
             try:
-                last_accessed = datetime.fromisoformat(
-                    last_accessed_str.replace("Z", "+00:00")
-                )
+                last_accessed = datetime.fromisoformat(last_accessed_str.replace("Z", "+00:00"))
             except Exception:
                 continue
 

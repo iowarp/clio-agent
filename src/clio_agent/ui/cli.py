@@ -1,19 +1,4 @@
-#!/usr/bin/env -S uv run
-# /// script
-# requires-python = ">=3.12"
-# dependencies = [
-#   "dspy>=3.1.3",
-#   "fastmcp>=3.2.4",
-#   "h5py>=3.10.0",
-#   "pyarrow>=14.0.0",
-#   "matplotlib>=3.8.0",
-#   "rich>=14.2.0",
-#   "prompt-toolkit>=3.0.0",
-#   "sortedcontainers>=2.4.0",
-#   "msgspec>=0.18.0",
-#   "requests>=2.31.0",
-# ]
-# ///
+#!/usr/bin/env python
 
 """
 ClioAgent Command-Line Interface
@@ -21,8 +6,7 @@ ClioAgent Command-Line Interface
 Interactive ClioAgent Agent Framework TUI for scientific data I/O assistance.
 
 Features:
-- Planner loop over registered experts and tools
-- DataExpert with native tool execution and optional synthesis
+- Planner loop over registered blueprint/runtime agents and tools
 - ChatAgent for conversational responses
 - Rich TUI with syntax highlighting
 - Conversation history
@@ -66,8 +50,7 @@ class ClioAgentCLI:
     """Interactive CLI for ClioAgent data I/O expert system.
 
     Demonstrates:
-    - ClioAgent planner loop -> tools/experts/answer
-    - DataExpert native execution with MCP tools
+    - ClioAgent planner loop -> tools/blueprint agents/answer
     - ChatAgent for conversational queries
     - Observable reasoning traces
 
@@ -87,6 +70,11 @@ class ClioAgentCLI:
         self.verbose = verbose
         self.history: list[dict[str, Any]] = []
         load_project_env_file()
+        # Resolve trace verbosity after .env is loaded (file→env→default) and
+        # install the formatted log handler for this process.
+        from clio_agent.runtime import trace  # noqa: PLC0415
+
+        trace.configure()
 
         # Setup LM Studio
         try:
@@ -188,10 +176,11 @@ class ClioAgentCLI:
         self.console.print(help_table)
 
     def print_experts(self):
-        """Print available experts and their capabilities."""
-        from clio_agent.experts import get_expert_capabilities
-
-        caps = get_expert_capabilities()
+        """Print available runtime agents and their capabilities."""
+        caps = {
+            agent_id: self.agent.registry.get_capabilities(agent_id)
+            for agent_id in self.agent.registry.list_agents()
+        }
 
         experts_table = Table(title="Available Experts", show_header=True)
         experts_table.add_column("Expert", style="cyan")
@@ -199,8 +188,12 @@ class ClioAgentCLI:
         experts_table.add_column("Keywords", style="yellow")
 
         for expert_id, cap in caps.items():
-            keywords = ", ".join(cap["keywords"][:5])  # Show first 5
-            experts_table.add_row(expert_id, cap["description"][:60] + "...", keywords)
+            if cap is None:
+                continue
+            raw_keywords = getattr(cap, "keywords", [])
+            keywords = ", ".join(str(keyword) for keyword in raw_keywords[:5]) if isinstance(raw_keywords, list) else ""
+            description = str(getattr(cap, "description", "") or "")
+            experts_table.add_row(str(expert_id), description[:60] + "...", keywords)
 
         self.console.print(experts_table)
 
@@ -465,21 +458,6 @@ Planner: JSON action loop over chat, data, analysis, visualization, and none
         restored = vm.rollback(expert_id)
 
         if restored:
-            # Load variant state into running expert
-            expert_attr = {
-                "data": "data_expert",
-                "analysis": "analysis_expert",
-                "visualization": "visualization_expert",
-            }.get(expert_id)
-
-            if expert_attr and hasattr(self.agent, expert_attr):
-                try:
-                    vm.load_variant(getattr(self.agent, expert_attr), restored)
-                except Exception as e:
-                    self.console.print(
-                        f"[yellow]Warning: Could not load variant state: {e}[/yellow]"
-                    )
-
             self.console.print(f"[green]Rolled back to variant {restored}[/green]")
         else:
             self.console.print("[yellow]No previous variant to rollback to.[/yellow]")
@@ -684,6 +662,9 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
     load_project_env_file()
+    from clio_agent.runtime import trace  # noqa: PLC0415
+
+    trace.configure()
 
     if args.command == "doctor":
         sys.exit(run_doctor(json_output=args.json))
@@ -701,75 +682,11 @@ if __name__ == "__main__":
             tune_console.print(f"[red]Error setting up LM: {e}[/red]")
             sys.exit(1)
 
-        agent = ClioAgent(verbose=args.verbose)
-
-        # Step 1: Generate training set
-        from clio_agent.optimizer.trainer import TrainingSetGenerator
-
-        tune_console.print(f"Generating training set for [cyan]{expert_id}[/cyan]...")
-        generator = TrainingSetGenerator(agent.arc)
-        try:
-            trainset = generator.generate(expert_id, min_examples=30)
-        except ValueError as e:
-            tune_console.print(f"[red]{e}[/red]")
-            sys.exit(1)
-
-        tune_console.print(f"Found [green]{len(trainset)}[/green] training examples")
-
-        # Step 2: Get expert module
-        expert_map = {
-            "data": agent.data_expert,
-            "analysis": agent.analysis_expert,
-            "visualization": agent.visualization_expert,
-        }
-        expert_module = expert_map[expert_id]
-
-        # Step 3: Run SIMBA optimization
-        from clio_agent.optimizer.runner import SIMBARunner
-        from clio_agent.optimizer.variants import VariantManager
-
-        variant_manager = VariantManager(agent.arc)
-        runner = SIMBARunner(agent.arc, variant_manager)
-
-        with tune_console.status("[cyan]Running SIMBA optimization...[/cyan]", spinner="dots"):
-            try:
-                result = runner.run(expert_module, expert_id, trainset)
-            except Exception as e:
-                tune_console.print(f"[red]Optimization error: {e}[/red]")
-                sys.exit(1)
-
-        # Step 4: Display results
-        results_table = Table(title="Optimization Results", show_header=True)
-        results_table.add_column("Metric", style="cyan")
-        results_table.add_column("Value", justify="right")
-
-        results_table.add_row("Before Score", f"{result['before_score']:.2f}")
-        results_table.add_row("After Score", f"{result['after_score']:.2f}")
-        results_table.add_row("Delta", f"{result['improvement_delta']:+.4f}")
-        results_table.add_row("p-value", f"{result['p_value']:.4f}")
-        results_table.add_row(
-            "Significant",
-            "[green]Yes[/green]" if result["is_significant"] else "[red]No[/red]",
+        del expert_id
+        tune_console.print(
+            "[yellow]/optimize is design-only for Agent Blueprint artifacts in this pass.[/yellow]"
         )
-        tune_console.print(results_table)
-
-        # Step 5: Deploy prompt
-        if result["is_significant"]:
-            response = input("Deploy this variant? [y/N] ").strip().lower()
-            if response == "y":
-                variant_manager.deploy(result["variant_record"].variant_id, expert_id)
-                tune_console.print(
-                    f"[green]Variant {result['variant_record'].variant_id} deployed[/green]"
-                )
-            else:
-                tune_console.print("[yellow]Variant saved but not deployed.[/yellow]")
-        else:
-            tune_console.print(
-                "[yellow]Improvement not statistically significant. "
-                "Variant saved but not deployed.[/yellow]"
-            )
-
-        sys.exit(0)
+        sys.exit(2)
 
     # Non-interactive mode
     if args.query:
@@ -791,10 +708,10 @@ if __name__ == "__main__":
         # Ask question
         try:
             result = agent(question=args.query, session_id=args.session)
+            error_info = getattr(result, "error_info", None)
 
             if args.json:
                 # JSON output
-                error_info = getattr(result, "error_info", None)
                 output = {
                     "question": args.query,
                     "answer": result.answer,
@@ -820,7 +737,17 @@ if __name__ == "__main__":
                     )
                 else:
                     console.print(f"[bold green]Agent:[/bold green] {result.selected_expert}")
-                console.print(Panel(Markdown(result.answer), title="CLIO", border_style="green"))
+                if error_info:
+                    message = str(error_info.get("message") or "CLIO reported an error.")
+                    console.print(Panel(Markdown(message), title="CLIO Error", border_style="red"))
+                    console.print(
+                        "[dim]Use --json to inspect error_info, then retry, reconfigure "
+                        "the provider, or exit.[/dim]"
+                    )
+                else:
+                    console.print(
+                        Panel(Markdown(result.answer), title="CLIO", border_style="green")
+                    )
 
         except Exception as e:
             if args.json:

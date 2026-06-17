@@ -232,12 +232,14 @@ def test_get_invocations_by_agent_filtered():
         arc = _make_arc(tmp)
 
         # Store invocations for two agents
-        for i, (agent, status) in enumerate([
-            ("data", "success"),
-            ("data", "failure"),
-            ("analysis", "success"),
-            ("data", "success"),
-        ]):
+        for i, (agent, status) in enumerate(
+            [
+                ("data", "success"),
+                ("data", "failure"),
+                ("analysis", "success"),
+                ("data", "success"),
+            ]
+        ):
             inv = Invocation(
                 trace_id=f"trace-{i}",
                 session_id="session-1",

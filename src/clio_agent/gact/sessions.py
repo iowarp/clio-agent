@@ -18,7 +18,7 @@ Session shape mirrors GACT v0.2 §4.2:
       "id": "sess_...",
       "workspace_id": "ws_default",
       "title": "...",
-      "status": "idle" | "running" | "waiting_permission" | "error",
+      "status": "idle" | "running" | "waiting_permission" | "waiting_user" | "error",
       "created_at": "<ISO-8601 UTC>",
       "updated_at": "<ISO-8601 UTC>",
       "message_count": 0,
@@ -38,13 +38,15 @@ import os
 import threading
 import uuid
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
 
 # Keep session ids namespaced so log scraping (and humans) can tell
 # them apart from e.g. message ids at a glance.
 _SESSION_ID_PREFIX = "sess_"
+_TIME_LOCK = threading.Lock()
+_LAST_TIME: datetime | None = None
 
 
 def _utcnow_iso() -> str:
@@ -57,7 +59,13 @@ def _utcnow_iso() -> str:
     process code.
     """
 
-    return datetime.now(timezone.utc).isoformat()
+    global _LAST_TIME
+    with _TIME_LOCK:
+        now = datetime.now(timezone.utc)
+        if _LAST_TIME is not None and now <= _LAST_TIME:
+            now = _LAST_TIME + timedelta(microseconds=1)
+        _LAST_TIME = now
+        return now.isoformat()
 
 
 def _default_store_path() -> Path:
@@ -91,6 +99,8 @@ class Session:
     updated_at: str = field(default_factory=_utcnow_iso)
     message_count: int = 0
     parent_session_id: str = ""
+    model: dict[str, str] = field(default_factory=dict)
+    agent: dict[str, str] = field(default_factory=lambda: {"id": "main"})
     # CLIO-BBBBBBBBBB24: cumulative token + cost rollup. Populated
     # from Prediction.tokens / cost_usd on every turn.
     tokens_input: int = 0
@@ -114,6 +124,12 @@ class Session:
     # historical behaviour.
     routing_mode: str = "auto"
     metadata: dict[str, Any] = field(default_factory=dict)
+    # iowarp/gact-tui §audit/E-14: archive bucket toggle. Sessions with
+    # archived=True drop out of the active list (GET /v1/sessions
+    # defaults to archived=False) but stay browsable via
+    # GET /v1/sessions?archived=true. Pin / fork-lineage / autorename
+    # state lives in `metadata`.
+    archived: bool = False
 
     def to_wire(self) -> dict[str, Any]:
         """JSON-serialisable dict matching SPEC §4.2's optional-
@@ -202,6 +218,8 @@ class SessionStore:
         title: str = "",
         metadata: Optional[dict[str, Any]] = None,
         parent_session_id: str = "",
+        model: Optional[dict[str, str]] = None,
+        agent: Optional[dict[str, str]] = None,
         mode: str = "chat",
         edit_mode: str = "diff",
         routing_mode: str = "auto",
@@ -225,6 +243,8 @@ class SessionStore:
             updated_at=now,
             metadata=dict(metadata or {}),
             parent_session_id=parent_session_id,
+            model=dict(model or {}),
+            agent=dict(agent or {"id": "main"}),
             mode=mode if mode in {"chat", "plan", "edit", "architect"} else "chat",
             edit_mode=edit_mode if edit_mode in {"diff", "whole", "patch"} else "diff",
             routing_mode=routing_mode if routing_mode in valid_routing_modes else "auto",
@@ -275,7 +295,10 @@ class SessionStore:
         mode: Optional[str] = None,
         edit_mode: Optional[str] = None,
         routing_mode: Optional[str] = None,
+        model: Optional[dict[str, str]] = None,
+        agent: Optional[dict[str, str]] = None,
         metadata_patch: Optional[dict[str, Any]] = None,
+        archived: Optional[bool] = None,
     ) -> Optional[Session]:
         """Mutate a session in place.
 
@@ -308,11 +331,20 @@ class SessionStore:
             if edit_mode is not None and edit_mode in {"diff", "whole", "patch"}:
                 sess.edit_mode = edit_mode
             if routing_mode is not None and routing_mode in {
-                "auto", "chat", "experts", "reasoning_only",
+                "auto",
+                "chat",
+                "experts",
+                "reasoning_only",
             }:
                 sess.routing_mode = routing_mode
+            if model is not None:
+                sess.model = dict(model)
+            if agent is not None:
+                sess.agent = dict(agent)
             if metadata_patch is not None:
                 sess.metadata.update(metadata_patch)
+            if archived is not None:
+                sess.archived = bool(archived)
             sess.updated_at = _utcnow_iso()
             self._flush()
             return sess

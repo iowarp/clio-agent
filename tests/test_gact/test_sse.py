@@ -35,6 +35,16 @@ def test_event_envelope_carries_type_and_payload() -> None:
     assert env["type"] == "message.created"
     assert env["payload"] == {"k": "v"}
     assert env["occurred_at"]  # ISO timestamp present
+    assert "replay" not in env
+
+
+def test_replay_event_envelope_is_distinguishable() -> None:
+    e = Event(type="message.created", session_id="s1", payload={"k": "v"})
+    replay = e.replay_copy()
+
+    assert replay.id == e.id
+    assert replay.occurred_at == e.occurred_at
+    assert replay.envelope()["replay"] is True
 
 
 def test_event_ids_are_monotonic() -> None:
@@ -52,9 +62,7 @@ def test_format_sse_emits_canonical_wire_shape() -> None:
     assert "data: " in raw
     assert raw.endswith("\n\n")
     # The data line is valid JSON matching the envelope.
-    data_line = next(
-        ln for ln in raw.splitlines() if ln.startswith("data: ")
-    )
+    data_line = next(ln for ln in raw.splitlines() if ln.startswith("data: "))
     payload = json.loads(data_line.removeprefix("data: "))
     assert payload["type"] == "message.completed"
     assert payload["payload"] == {"a": 1}
@@ -103,6 +111,49 @@ async def test_eventbus_only_delivers_to_matching_session() -> None:
 
 
 @pytest.mark.asyncio
+async def test_eventbus_global_events_fan_out_to_session_subscribers() -> None:
+    bus = EventBus()
+    received: list[str] = []
+
+    async def reader() -> None:
+        async for ev in bus.subscribe("s1"):
+            received.append(ev.type)
+            if len(received) >= 2:
+                break
+
+    task = asyncio.create_task(reader())
+    await asyncio.sleep(0)
+
+    bus.publish(Event(type="lm.provider.changed", session_id="", payload={}))
+    bus.publish(Event(type="message.created", session_id="s1", payload={}))
+
+    await asyncio.wait_for(task, timeout=2.0)
+
+    assert received == ["lm.provider.changed", "message.created"]
+
+
+@pytest.mark.asyncio
+async def test_eventbus_replays_global_and_session_history_as_replay_events() -> None:
+    bus = EventBus()
+    bus.publish(Event(type="lm.provider.changed", session_id="", payload={}))
+    bus.publish(Event(type="message.created", session_id="s1", payload={}))
+
+    received: list[Event] = []
+    sub = bus.subscribe("s1")
+    async for ev in sub:
+        received.append(ev)
+        if len(received) >= 2:
+            await sub.aclose()
+            break
+
+    assert [event.type for event in received] == [
+        "lm.provider.changed",
+        "message.created",
+    ]
+    assert all(event.replay for event in received)
+
+
+@pytest.mark.asyncio
 async def test_eventbus_cleans_up_subscriber_on_drop() -> None:
     bus = EventBus()
 
@@ -146,9 +197,7 @@ class _FakeAgent:
 
 @pytest.fixture()
 def client(tmp_path: Path) -> TestClient:
-    return TestClient(
-        build_app(sessions_path=tmp_path / "s.json", agent=_FakeAgent())
-    )
+    return TestClient(build_app(sessions_path=tmp_path / "s.json", agent=_FakeAgent()))
 
 
 def test_sse_endpoint_404s_for_unknown_session(client: TestClient) -> None:

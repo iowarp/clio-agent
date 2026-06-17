@@ -1,0 +1,11 @@
+{
+  "name": "CLIO",
+  "wordmark": "CLIO",
+  "tagline": "Your local AI coding & data agent",
+  "markGlyph": "C",
+  "logoSvg": "logo.svg",
+  "accent": "#ea7b2a",
+  "themeTokens": {
+    "--color-accent": "#ea7b2a"
+  }
+}

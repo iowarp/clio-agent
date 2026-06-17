@@ -120,9 +120,7 @@ class ScheduleStore:
         )
         tmp.replace(self._path)
 
-    def add(
-        self, *, session_id: str, cron: str, question: str
-    ) -> Schedule:
+    def add(self, *, session_id: str, cron: str, question: str) -> Schedule:
         sid = "sched_" + uuid.uuid4().hex[:12]
         sch = Schedule(
             id=sid,
@@ -140,9 +138,7 @@ class ScheduleStore:
         with self._lock:
             return self._schedules.get(sid)
 
-    def list(
-        self, *, session_id: Optional[str] = None
-    ) -> list[Schedule]:
+    def list(self, *, session_id: Optional[str] = None) -> list[Schedule]:
         with self._lock:
             rows = list(self._schedules.values())
         if session_id is not None:
@@ -174,9 +170,7 @@ class ScheduleStore:
         for sch in rows:
             if not sch.enabled:
                 continue
-            if sch.last_fired_at and sch.last_fired_at.startswith(
-                when_minute
-            ):
+            if sch.last_fired_at and sch.last_fired_at.startswith(when_minute):
                 continue
             if cron_matches(sch.cron, when):
                 yield sch

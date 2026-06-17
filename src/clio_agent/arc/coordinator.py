@@ -197,9 +197,33 @@ class MultiAgentCoordinator:
         """
         self.memory = memory
 
-    def create_plan(
-        self, query: str, available_agents: Dict[str, Any]
-    ) -> CoordinationPlan:
+    def _select_agent_for_task(self, task_text: str, available_agents: Dict[str, Any]) -> str:
+        """Select an available expert for a task segment using explicit keywords."""
+        if not available_agents:
+            raise ValueError("No agents available for coordination planning")
+
+        task_lower = task_text.lower()
+        keyword_routes = (
+            ("DataExpert", ("hdf5", "file", "data", "parquet", "csv")),
+            ("AnalysisExpert", ("analysis", "statistics", "stats", "compute")),
+            ("HPCExpert", ("cluster", "hpc", "slurm")),
+            ("VisualizationExpert", ("plot", "chart", "visualization", "visualize")),
+        )
+
+        for agent_id, keywords in keyword_routes:
+            if any(keyword in task_lower for keyword in keywords):
+                if agent_id not in available_agents:
+                    raise ValueError(
+                        f"Task segment matched {agent_id}, but that agent is not available"
+                    )
+                return agent_id
+
+        raise ValueError(
+            "No available agent matched task segment. "
+            "Use more specific data, analysis, visualization, or HPC wording."
+        )
+
+    def create_plan(self, query: str, available_agents: Dict[str, Any]) -> CoordinationPlan:
         """Create coordination plan for query.
 
         Analyzes query to determine if multi-agent coordination is needed
@@ -238,8 +262,7 @@ class MultiAgentCoordinator:
         needs_coordination = any(kw in query_lower for kw in coordination_keywords)
 
         if not needs_coordination:
-            # Single agent - use first available or default to DataExpert
-            agent_id = "DataExpert" if "DataExpert" in available_agents else list(available_agents.keys())[0]
+            agent_id = self._select_agent_for_task(query, available_agents)
             task = AgentTask(
                 task_id=f"task-{uuid.uuid4()}",
                 agent_id=agent_id,
@@ -254,7 +277,11 @@ class MultiAgentCoordinator:
             parts = []
             for keyword in coordination_keywords:
                 if keyword in query_lower:
-                    parts = [p.strip() for p in query.split(keyword, 1)]
+                    keyword_idx = query_lower.find(keyword)
+                    parts = [
+                        query[:keyword_idx].strip(),
+                        query[keyword_idx + len(keyword) :].strip(),
+                    ]
                     break
 
             if len(parts) >= 2:
@@ -262,19 +289,9 @@ class MultiAgentCoordinator:
                 prev_task_id = None
 
                 for part in parts:
-                    # Determine agent based on keywords in part
-                    part_lower = part.lower()
-                    if "hdf5" in part_lower or "file" in part_lower or "data" in part_lower:
-                        agent_id = "DataExpert"
-                    elif "cluster" in part_lower or "hpc" in part_lower or "slurm" in part_lower:
-                        agent_id = "HPCExpert"
-                    else:
-                        # Default to DataExpert
-                        agent_id = "DataExpert"
-
-                    # Ensure agent exists
-                    if agent_id not in available_agents:
-                        agent_id = list(available_agents.keys())[0]
+                    if not part:
+                        raise ValueError("Coordination query produced an empty task segment")
+                    agent_id = self._select_agent_for_task(part, available_agents)
 
                     task_id = f"task-{uuid.uuid4()}"
                     task = AgentTask(
@@ -287,16 +304,7 @@ class MultiAgentCoordinator:
                     tasks.append(task)
                     prev_task_id = task_id
             else:
-                # Fallback: single task
-                agent_id = "DataExpert" if "DataExpert" in available_agents else list(available_agents.keys())[0]
-                task = AgentTask(
-                    task_id=f"task-{uuid.uuid4()}",
-                    agent_id=agent_id,
-                    query=query,
-                    context={},
-                    depends_on=[],
-                )
-                tasks.append(task)
+                raise ValueError("Could not split coordination query into task segments")
 
         execution_mode = "sequential" if needs_coordination else "sequential"
 

@@ -54,9 +54,9 @@ async def create_expert_with_tools(gateway):
         # Convert to DSPy tools (native bridge, no custom code)
         dspy_tools = [dspy.Tool.from_mcp_tool(t) for t in mcp_tools]
 
-        # Create ReAct agent with tools
+        # Create a blueprint ReAct module with the blueprint's compiled signature.
         expert = dspy.ReAct(
-            DataExpertSignature,
+            compiled_blueprint_signature,
             tools=dspy_tools,
             max_iters=5
         )

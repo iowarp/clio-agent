@@ -20,9 +20,6 @@ class MockAgent:
     def __init__(self, tmp_path):
         self.arc = ARCMemory(data_dir=str(tmp_path / "arc"))
         self.verbose = False
-        self.data_expert = MagicMock()
-        self.analysis_expert = MagicMock()
-        self.visualization_expert = MagicMock()
         self._provider_config = SimpleNamespace(provider="ollama", model="granite3.1-dense:8b")
         self.registry = MagicMock()
         self.registry.get_agent_count.return_value = 3

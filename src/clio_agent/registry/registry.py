@@ -5,10 +5,9 @@ capability-based routing for ClioAgent's 3-tier agent hierarchy.
 
 Example:
     >>> from clio_agent.registry import AgentRegistry, AgentCapability
-    >>> from clio_agent.experts.data_expert import DataExpert
     >>>
     >>> registry = AgentRegistry()
-    >>> expert = DataExpert()
+    >>> blueprint_agent = object()
     >>>
     >>> capabilities = AgentCapability(
     ...     keywords=["hdf5", "parquet", "compression"],
@@ -17,8 +16,8 @@ Example:
     ...     specialization="data_io"
     ... )
     >>>
-    >>> registry.register_agent("data_expert", expert, capabilities)
-    >>> agent = registry.get_agent("data_expert")
+    >>> registry.register_agent("data_blueprint", blueprint_agent, capabilities)
+    >>> agent = registry.get_agent("data_blueprint")
     >>> matching = registry.find_agents_by_keyword("hdf5")
 """
 
@@ -38,13 +37,20 @@ class AgentCapability:
         tools: List of tool names this agent can use
         specialization: Domain specialization (e.g., "data_io", "scheduling")
         priority: Routing priority (1=highest, 10=lowest). Default: 5
+        parent_id: Optional parent agent ID when this is a nested expert
+        source: Capability source such as builtin, user, skill, or builtin_nested
+        planner_visible: Whether planner-facing catalogs should expose this agent
         metadata: Additional agent-specific metadata
     """
+
     keywords: List[str]
     description: str
     tools: List[str]
     specialization: str
     priority: int = 5
+    parent_id: Optional[str] = None
+    source: str = "builtin"
+    planner_visible: bool = True
     metadata: Dict[str, Any] = field(default_factory=dict)
 
 
@@ -58,6 +64,7 @@ class RoutingDecision:
         matched_keywords: Keywords that triggered this agent
         fallback_agents: List of backup agent IDs if primary fails
     """
+
     selected_agent: str
     confidence: float
     matched_keywords: List[str]
@@ -75,16 +82,16 @@ class AgentRegistry:
 
     Example:
         >>> registry = AgentRegistry()
-        >>> expert = DataExpert()
+        >>> blueprint_agent = object()
         >>> caps = AgentCapability(
         ...     keywords=["hdf5", "data"],
         ...     description="Data I/O expert",
         ...     tools=["hdf5_analyze"],
         ...     specialization="data_io"
         ... )
-        >>> registry.register_agent("data_expert", expert, caps)
+        >>> registry.register_agent("data_blueprint", blueprint_agent, caps)
         >>> agents = registry.list_agents()
-        >>> ['data_expert']
+        >>> ['data_blueprint']
     """
 
     def __init__(self):
@@ -93,12 +100,7 @@ class AgentRegistry:
         self._capabilities: Dict[str, AgentCapability] = {}
         self._lock = threading.Lock()
 
-    def register_agent(
-        self,
-        agent_id: str,
-        agent: Any,
-        capabilities: AgentCapability
-    ) -> None:
+    def register_agent(self, agent_id: str, agent: Any, capabilities: AgentCapability) -> None:
         """Register an agent with its capabilities.
 
         Thread-safe registration of agents. Supports both DSPy modules
@@ -113,14 +115,14 @@ class AgentRegistry:
             ValueError: If agent_id already exists or is invalid
 
         Example:
-            >>> expert = DataExpert()
+            >>> blueprint_agent = object()
             >>> caps = AgentCapability(
             ...     keywords=["hdf5"],
             ...     description="HDF5 expert",
             ...     tools=["hdf5_analyze"],
             ...     specialization="data_io"
             ... )
-            >>> registry.register_agent("data_expert", expert, caps)
+            >>> registry.register_agent("data_blueprint", blueprint_agent, caps)
         """
         if not agent_id or not isinstance(agent_id, str):
             raise ValueError(f"Invalid agent_id: {agent_id}")
@@ -191,6 +193,26 @@ class AgentRegistry:
         """
         with self._lock:
             return sorted(self._agents.keys())
+
+    def list_child_agents(self, parent_id: str) -> List[str]:
+        """List registered child agent IDs for a parent agent."""
+
+        with self._lock:
+            return sorted(
+                agent_id
+                for agent_id, caps in self._capabilities.items()
+                if caps.parent_id == parent_id
+            )
+
+    def list_root_agents(self, *, planner_visible_only: bool = False) -> List[str]:
+        """List registered agents without a parent."""
+
+        with self._lock:
+            return sorted(
+                agent_id
+                for agent_id, caps in self._capabilities.items()
+                if caps.parent_id is None and (caps.planner_visible or not planner_visible_only)
+            )
 
     def get_capabilities(self, agent_id: str) -> Optional[AgentCapability]:
         """Get agent capabilities.
@@ -306,21 +328,13 @@ class AgentRegistry:
                     agent_scores[agent_id] = (score, matched_keywords)
 
             if not agent_scores:
-                # No keyword matches - return first agent as fallback
-                first_agent = list(self._agents.keys())[0]
-                return RoutingDecision(
-                    selected_agent=first_agent,
-                    confidence=0.1,
-                    matched_keywords=[],
-                    fallback_agents=[]
+                raise ValueError(
+                    "No registered agent capabilities matched the query. "
+                    "Use an explicit chat/no-op path or provide a more specific task."
                 )
 
             # Select agent with highest score
-            sorted_agents = sorted(
-                agent_scores.items(),
-                key=lambda x: x[1][0],
-                reverse=True
-            )
+            sorted_agents = sorted(agent_scores.items(), key=lambda x: x[1][0], reverse=True)
 
             best_agent, (best_score, matched_kw) = sorted_agents[0]
             fallbacks = [agent_id for agent_id, _ in sorted_agents[1:3]]
@@ -332,7 +346,7 @@ class AgentRegistry:
                 selected_agent=best_agent,
                 confidence=confidence,
                 matched_keywords=matched_kw,
-                fallback_agents=fallbacks
+                fallback_agents=fallbacks,
             )
 
     def get_all_capabilities(self) -> Dict[str, AgentCapability]:
