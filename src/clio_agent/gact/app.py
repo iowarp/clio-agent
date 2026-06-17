@@ -965,6 +965,17 @@ class _BlueprintTerminalWorkflowState(BaseException):
         self.result = dict(result)
 
 
+# Bounded settle for the watchdog wrapper's teardown-cancel path. When a raw
+# asyncio cancel (event-loop / TestClient portal teardown) lands AFTER the
+# executor thread's agent.forward body returned but BEFORE the run_in_executor
+# future is flagged done, the work is already uncancellable -- the future
+# resolves essentially immediately. We wait at most this long for it to settle
+# so we can surface the finished prediction instead of masking it as a cancel.
+# Kept small: genuinely-still-running work never reaches done() within it and
+# falls through to the normal cancel+re-raise.
+_TURN_SETTLE_AFTER_CANCEL_S = 0.25
+
+
 def _gact_turn_timeout_s(app: Optional["FastAPI"] = None) -> float:
     """Return the per-turn no-progress timeout in seconds; <=0 disables it.
 
@@ -7264,6 +7275,27 @@ async def _run_turn_in_background(
             # watchdog wrapper) after the result was ready -- e.g. event-loop
             # teardown cancelling pending tasks. Surface the completed result
             # rather than masking a finished turn as a cancellation.
+            #
+            # RACE: a teardown cancel can land in the sub-millisecond window
+            # AFTER the executor thread's agent.forward body returned (the
+            # live tool observer already appended its ledger row + published
+            # tool.call.completed onto the bus) but BEFORE the run_in_executor
+            # future is flagged done on the event loop. A bare task.done()
+            # check here loses that race -> we'd re-raise the cancel and skip
+            # the post-forward drain, dropping tools_called from the assistant
+            # message metadata. The executor work is *uncancellable* once its
+            # Python body has returned, so give the future a brief shielded
+            # settle: it resolves essentially immediately, after which
+            # task.done() deterministically observes the finished result and we
+            # surface the real prediction (whole turn: answer + tools), letting
+            # control flow normally into the drain. Genuine teardown/timeout
+            # where the work is truly still running falls through unchanged to
+            # the cancel+re-raise below.
+            if not task.done():
+                try:
+                    await asyncio.wait({task}, timeout=_TURN_SETTLE_AFTER_CANCEL_S)
+                except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                    pass
             if task.done() and not task.cancelled():
                 exc = task.exception()
                 if exc is None:
