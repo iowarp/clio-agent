@@ -10774,7 +10774,33 @@ def _agent_streaming_unsupported_reason(agent: Any) -> str:
     provider_kind = _provider_runtime_kind(provider)
     if provider_kind in {"claude_code", "codex"}:
         return "provider_streaming_unsupported"
+    # iowarp/clio-agent#639: normalize the preset id (argonne_sophia/_metis) to
+    # the provider kind (argonne) BEFORE the capability check. Reasoning models on
+    # the ALCF gateways stream their answer on the reasoning_content channel,
+    # which DSPy's content-only stream listeners can't fold and which fails the
+    # streamify task group ("live streaming failed before emitting output"). Route
+    # them through the robust blocking path (which recovers reasoning_content via
+    # _process_completion). Scoped to argonne reasoning models: non-reasoning ALCF
+    # (gpt-oss/gemma) still streams (#160), and lm_studio reasoning models (qwopus)
+    # stream content fine, so they are untouched.
+    if provider_kind == "argonne" and _config_is_reasoning_model(provider_config):
+        return "provider_streaming_unsupported"
     return ""
+
+
+def _config_is_reasoning_model(provider_config: Any) -> bool:
+    """Whether a provider config is a reasoning model (handshake ``is_reasoning``
+    / per-model capability). Used to keep reasoning models off streaming paths
+    that lose the reasoning_content channel."""
+
+    if provider_config is None:
+        return False
+    try:
+        from clio_agent.config import _reasoning_model_capability  # noqa: PLC0415
+
+        return bool(_reasoning_model_capability(provider_config))
+    except Exception:
+        return bool(getattr(provider_config, "is_reasoning", False))
 
 
 def _is_placeholder_api_key(value: str | None) -> bool:
@@ -10825,6 +10851,45 @@ def _stream_response_prefix(field_name: str, previous_field_name: str) -> str:
 # *a* progress event within its window (default 900s), so a 1s throttle keeps a
 # deep-reasoning turn alive without flooding the bus with one event per token.
 _REASONING_HEARTBEAT_S = 1.0
+
+
+_TEXTUAL_WORKSPACE_MIME_TYPES = frozenset(
+    {
+        "application/json",
+        "application/xml",
+        "application/javascript",
+        "application/x-yaml",
+        "application/yaml",
+        "application/x-sh",
+        "application/toml",
+    }
+)
+
+
+def _is_textual_workspace_file(name: str, raw: bytes) -> bool:
+    """Whether a workspace file should be served as decoded ``text/plain``
+    (code preview) vs. raw bytes with its real content type (binary, e.g. PNG).
+
+    Binary files (images, archives, ...) MUST be served as raw bytes with the
+    correct content type — decoding them as UTF-8 with ``errors="replace"``
+    corrupts the bytes (replacement characters) and mislabels them text/plain,
+    so a TUI/web preview can never recover the image
+    (iowarp/clio-agent#673, #676).
+    """
+    import mimetypes  # noqa: PLC0415
+
+    guessed, _ = mimetypes.guess_type(name)
+    if guessed is not None:
+        return guessed.startswith("text/") or guessed in _TEXTUAL_WORKSPACE_MIME_TYPES
+    # Unknown extension: sniff a sample. A NUL byte or invalid UTF-8 => binary.
+    sample = raw[:8192]
+    if b"\x00" in sample:
+        return False
+    try:
+        sample.decode("utf-8")
+    except UnicodeDecodeError:
+        return False
+    return True
 
 
 def _describe_stream_exc(exc: BaseException) -> str:
@@ -21083,10 +21148,13 @@ def build_app(
     async def read_workspace_file(wid: str, path: str) -> Response:
         """SPEC §6.9 — read one file's content.
 
-        Serves the raw bytes (text/plain) so the TUI's preview panel
-        can render code without a base64 decode. Refuses paths that
-        escape the workspace root (``..`` segments) and paths beyond
-        the file policy's max_file_size_bytes.
+        Text files are served decoded as ``text/plain`` so the TUI's preview
+        panel can render code without a base64 decode. BINARY files (images,
+        archives, ...) are served as RAW bytes with their real content type
+        (e.g. ``image/png``); decoding them as UTF-8 would corrupt the bytes and
+        mislabel them text/plain (iowarp/clio-agent#673, #676). Refuses paths
+        that escape the workspace root (``..`` segments) and paths beyond the
+        file policy's max_file_size_bytes.
         """
 
         ws = app.state.workspaces.get(wid)
@@ -21173,9 +21241,17 @@ def build_app(
                     )
                 ).model_dump(exclude_none=True),
             ) from exc
+        if _is_textual_workspace_file(target.name, data):
+            return Response(
+                content=data.decode("utf-8", errors="replace"),
+                media_type="text/plain; charset=utf-8",
+            )
+        import mimetypes  # noqa: PLC0415
+
+        guessed, _ = mimetypes.guess_type(target.name)
         return Response(
-            content=data.decode("utf-8", errors="replace"),
-            media_type="text/plain; charset=utf-8",
+            content=data,
+            media_type=guessed or "application/octet-stream",
         )
 
     # ---- /v1/providers/lm (CLIO-BBBBBBBBBB-D) ------------------------

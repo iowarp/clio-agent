@@ -990,7 +990,13 @@ def _load_blueprint_agents(blueprint: AgentBlueprintDefinition) -> list[AgentDef
             AgentDef(
                 id=f"{blueprint.id}.empty",
                 source="expert_pack",
-                title=f"{blueprint.title} Blueprint",
+                # Don't double the suffix when the title already ends in
+                # "Blueprint" (iowarp/clio-agent#649).
+                title=(
+                    blueprint.title
+                    if blueprint.title.rstrip().endswith("Blueprint")
+                    else f"{blueprint.title} Blueprint"
+                ),
                 description=blueprint.description,
                 metadata={
                     "agent_blueprint_id": blueprint.id,
