@@ -12,11 +12,16 @@ deterministic.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 
 import pytest
 
 from clio_agent.arc.storage import make_arc_store
-from clio_agent.runtime.clio_core_transport import IsolatedExpertInvoker, run_isolated_worker
+from clio_agent.runtime.clio_core_transport import (
+    IsolatedExpertInvoker,
+    live_workers,
+    run_isolated_worker,
+)
 from clio_agent.runtime.expert_invoker import ExpertRequest, ExpertResult
 from clio_agent.runtime.worker_fleet import (
     WorkerFleet,
@@ -171,6 +176,46 @@ async def test_fleet_routes_exactly_once_across_workers(tmp_path):
     finally:
         fleet.stop()
     await asyncio.sleep(0.1)
+
+
+async def test_busy_isolated_worker_keeps_heartbeating_presence(tmp_path):
+    """Regression (adversarial review, HIGH): a worker serving a LONG request must keep
+    refreshing presence on its own task — otherwise it ages out of live_workers mid-request and
+    a concurrent delegation sees a spurious empty pool. The handler here runs 4x the presence
+    TTL; the worker must still be 'live' the whole time and a concurrent invoke must succeed."""
+    store = make_arc_store(backend="local", data_dir=str(tmp_path))
+    ttl = 0.5
+    started = asyncio.Event()
+
+    async def slow_handler(req: ExpertRequest) -> ExpertResult:
+        started.set()
+        await asyncio.sleep(ttl * 4)  # far longer than the presence TTL
+        return ExpertResult(expert_id=req.expert_id, answer=f"done:{req.question}")
+
+    stop = asyncio.Event()
+    worker = asyncio.ensure_future(
+        run_isolated_worker(
+            store, slow_handler, role="calc", worker_id="w1", stop=stop, poll=0.02, presence_ttl=ttl
+        )
+    )
+    try:
+        for _ in range(200):
+            if live_workers(store, "calc", ttl=ttl):
+                break
+            await asyncio.sleep(0.02)
+        invoker = IsolatedExpertInvoker(store, role="calc", timeout=10, poll=0.02, presence_ttl=ttl)
+        a = asyncio.ensure_future(invoker.invoke(ExpertRequest("calc", "A")))
+        await asyncio.wait_for(started.wait(), timeout=2)
+        # while A is in flight (> ttl), presence must stay fresh thanks to the heartbeat task
+        await asyncio.sleep(ttl * 2)
+        assert live_workers(store, "calc", ttl=ttl) == ["w1"], "busy worker aged out of presence"
+        res = await asyncio.wait_for(a, timeout=10)
+        assert res.answer == "done:A"
+    finally:
+        stop.set()
+        worker.cancel()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await worker
 
 
 async def test_stop_is_idempotent(tmp_path):

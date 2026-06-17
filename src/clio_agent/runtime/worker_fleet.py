@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import os
 import signal
 import subprocess
@@ -44,7 +45,9 @@ from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from typing import Any, Optional, Protocol, runtime_checkable
 
-from clio_agent.runtime.clio_core_transport import live_workers
+from clio_agent.runtime.clio_core_transport import drop_presence, live_workers
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -127,36 +130,56 @@ class LocalSubprocessSpawner:
             os.makedirs(self._log_dir, exist_ok=True)
             log = open(os.path.join(self._log_dir, f"{role}.{worker_id}.log"), "w")  # noqa: SIM115
             stdout = log
-        proc = subprocess.Popen(
-            self._command,
-            env={**os.environ, **dict(env)},
-            stdout=stdout,
-            stderr=subprocess.STDOUT if stdout is not None else None,
-            start_new_session=True,  # own process group → terminate kills the whole tree
-        )
-        return (proc, log)
+        try:
+            proc = subprocess.Popen(
+                self._command,
+                env={**os.environ, **dict(env)},
+                stdout=stdout,
+                stderr=subprocess.STDOUT if stdout is not None else None,
+                start_new_session=True,  # own session/group: pgid == pid, killable as a tree
+            )
+        except BaseException:
+            # Popen can raise (fork EAGAIN/ENOMEM, fd exhaustion, bad command). Close the log we
+            # just opened so a failed/retried spawn doesn't leak an fd per attempt.
+            if log is not None:
+                with contextlib.suppress(Exception):
+                    log.close()
+            raise
+        # start_new_session makes the child its own process-group leader, so pgid == pid.
+        # Capture it at spawn so terminate can kill the group EVEN AFTER the leader exited
+        # (a crashed leader can leave live grandchildren that getpgid-after-reap couldn't find).
+        return (proc, log, proc.pid)
 
     def is_alive(self, handle: Any) -> bool:
-        proc, _ = handle
+        proc = handle[0]
         return proc.poll() is None
 
     def terminate(self, handle: Any, *, timeout: float = 10.0) -> None:
-        proc, log = handle
+        proc, log, pgid = handle
         try:
             if proc.poll() is None:
+                # graceful-then-hard on the whole group
                 try:
-                    os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+                    os.killpg(pgid, signal.SIGTERM)
                 except (ProcessLookupError, OSError):
                     proc.terminate()
                 try:
                     proc.wait(timeout=timeout)
                 except subprocess.TimeoutExpired:
                     try:
-                        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                        os.killpg(pgid, signal.SIGKILL)
                     except (ProcessLookupError, OSError):
                         proc.kill()
                     with contextlib.suppress(Exception):
                         proc.wait(timeout=timeout)
+            # ALWAYS sweep the group, even if the leader already exited: supervise_once calls
+            # terminate() precisely on DEAD leaders, and a crashed worker can leave live
+            # grandchildren (its MCP stdio servers) in the group. The alive-only branch above
+            # would skip them, orphaning a tree to init that piles up across respawns. killpg on
+            # an empty/gone group raises ESRCH → suppressed (the group stays valid while any
+            # member lives, so the pgid is not recycled out from under us).
+            with contextlib.suppress(ProcessLookupError, OSError):
+                os.killpg(pgid, signal.SIGKILL)
         finally:
             if log is not None:
                 with contextlib.suppress(Exception):
@@ -251,11 +274,18 @@ class WorkerFleet:
 
     def start(self, *, wait_ready: bool = True, timeout: float = 120.0, poll: float = 0.1) -> None:
         """Spawn every slot. With ``wait_ready`` (default) block until each role's presence
-        count reaches its desired count, raising :class:`TimeoutError` with diagnostics if not."""
-        for role, worker_id in self._slot_ids():
-            self._spawn_slot(role, worker_id)
-        if wait_ready:
-            self.wait_ready(timeout=timeout, poll=poll)
+        count reaches its desired count, raising :class:`TimeoutError` with diagnostics if not.
+
+        If a later slot fails to spawn (or readiness times out), the already-spawned workers are
+        torn down before re-raising — a partial start never orphans live worker processes."""
+        try:
+            for role, worker_id in self._slot_ids():
+                self._spawn_slot(role, worker_id)
+            if wait_ready:
+                self.wait_ready(timeout=timeout, poll=poll)
+        except BaseException:
+            self.stop()
+            raise
 
     async def wait_ready_async(self, *, timeout: float = 120.0, poll: float = 0.1) -> None:
         """Async form of :meth:`wait_ready` (does not block the event loop)."""
@@ -277,11 +307,18 @@ class WorkerFleet:
         import time  # noqa: PLC0415 - local to avoid a module-time Date/clock import elsewhere
 
         deadline = time.monotonic() + timeout
+        last_supervise = 0.0
         while True:
-            self.supervise_once()  # a worker that dies during startup is respawned, not lost
+            now = time.monotonic()
+            # Respawn crashed slots, but at a throttled cadence (~1/s) decoupled from ``poll``.
+            # Otherwise a worker that crash-loops on startup would be re-spawned every ``poll``
+            # (0.1s → ~1200 Popen over a 120s wait), a fork/exec storm.
+            if now - last_supervise >= 1.0:
+                self.supervise_once()
+                last_supervise = now
             if self._all_present():
                 return
-            if time.monotonic() >= deadline:
+            if now >= deadline:
                 raise TimeoutError(
                     f"fleet not ready in {timeout}s: live={self.live_counts()} "
                     f"desired={self.desired_counts()}"
@@ -304,15 +341,26 @@ class WorkerFleet:
             if handle is not None:
                 with contextlib.suppress(Exception):
                     self._spawner.terminate(handle, timeout=1.0)
+            # A crashed worker never ran its own drop_presence, so its (now stale) presence blob
+            # can still read "live" for up to presence_ttl. Clear it before respawn so the slot
+            # isn't advertised — and routed to — until the FRESH process heartbeats and is
+            # actually draining its queue.
+            with contextlib.suppress(Exception):
+                drop_presence(self._store, role, worker_id, prefix=self._prefix)
             self._spawn_slot(role, worker_id)
             respawned += 1
         return respawned
 
     async def supervise_forever(self, *, stop: asyncio.Event, interval: float = 1.0) -> None:
-        """Respawn dead slots until ``stop`` is set (the long-running keep-the-fleet-alive loop)."""
+        """Respawn dead slots until ``stop`` is set (the long-running keep-the-fleet-alive loop).
+        A failing supervise tick is logged and swallowed so one bad sweep never kills the loop —
+        the fleet must keep supervising even if a single respawn/terminate throws."""
         try:
             while not stop.is_set():
-                self.supervise_once()
+                try:
+                    self.supervise_once()
+                except Exception:
+                    logger.exception("worker-fleet supervise tick failed; continuing")
                 await asyncio.sleep(interval)
         except asyncio.CancelledError:
             raise

@@ -6856,6 +6856,8 @@ def _maybe_launch_worker_fleet(app: Any) -> None:
     spec_str = os.environ.get("CLIO_CORE_FLEET", "").strip()
     if mode != "clio_core_isolated" or not spec_str:
         return
+    if getattr(app.state, "worker_fleet", None) is not None:
+        return  # already launched — idempotent, so this is safe to call from >1 lifecycle point
     store = isolated_delegation_store(app, mode)
     if store is None:
         print(

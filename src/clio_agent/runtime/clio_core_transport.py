@@ -377,18 +377,32 @@ async def run_isolated_worker(
     ``failed`` result (``serve_one``); it never kills the loop."""
     mailbox = ClioCoreMailbox(store, prefix=_worker_queue_prefix(role, worker_id, prefix=prefix))
     heartbeat_presence(store, role, worker_id, prefix=prefix)  # announce immediately
-    last_hb = time.time()
     hb_every = max(presence_ttl / 3.0, 0.05)
+
+    async def _beat() -> None:
+        # Heartbeat on its OWN task, not inline after the drain: ``serve_one`` awaits the full
+        # child handler (a multi-minute ALCF turn), and an inline refresh would not fire until
+        # that returns — so a BUSY worker would age out of ``live_workers`` mid-request and the
+        # parent would see a spurious empty pool (capacity collapsing exactly under load). A
+        # separate task keeps presence fresh while the handler runs. Mirrors the lease _heartbeat.
+        while not stop.is_set():
+            await asyncio.sleep(hb_every)
+            with contextlib.suppress(Exception):
+                heartbeat_presence(store, role, worker_id, prefix=prefix)
+
+    beater = asyncio.ensure_future(_beat())
     try:
         while not stop.is_set():
+            served = False
             for rid in mailbox.pending():
                 await serve_one(mailbox, rid, handler)  # sole reader -> no claim
-            now = time.time()
-            if now - last_hb >= hb_every:
-                heartbeat_presence(store, role, worker_id, prefix=prefix, now=now)
-                last_hb = now
-            await asyncio.sleep(poll)
+                served = True
+            if not served:
+                await asyncio.sleep(poll)
     finally:
+        beater.cancel()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await beater
         drop_presence(store, role, worker_id, prefix=prefix)
 
 

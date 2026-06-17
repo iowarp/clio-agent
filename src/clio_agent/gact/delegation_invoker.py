@@ -180,8 +180,15 @@ async def _invoke_via_isolated(
     No in-process worker and no lease: the parent submits to one live worker's private
     queue and reads the result back; external ``run_isolated_clio_core_worker`` processes
     (same store, heartbeating presence) do the work. The shared store is mandatory — without
-    it parent and workers cannot rendezvous. ``role`` (else ``CLIO_CORE_ROLE``, else the
-    request's ``expert_id``) selects the pool; ``CLIO_CORE_PREFIX`` namespaces the mailbox.
+    it parent and workers cannot rendezvous. ``CLIO_CORE_PREFIX`` namespaces the mailbox.
+
+    ROUTING CONTRACT — the pool ``role`` is, by default, the child **expert id**: an empty
+    ``role`` resolves to ``request.expert_id``, so a fleet must serve a pool per delegated
+    expert (``CLIO_CORE_FLEET=<expert_id>:N``). Set ``CLIO_CORE_ROLE`` on the parent ONLY for
+    the advanced "one shared pool serves every expert" model (workers resolve any ``expert_id``
+    from their registry) — then every delegation pins to that single pool. A mismatch (fleet
+    role ≠ expert id, no ``CLIO_CORE_ROLE``) surfaces loudly as ``no live worker for role
+    '<expert_id>'`` rather than silently, because the requested role names the missing pool.
     """
     if store is None:
         raise ValueError(
