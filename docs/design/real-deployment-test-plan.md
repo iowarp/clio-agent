@@ -22,10 +22,21 @@ success-path blob leak, orphan-`.claim` race, slow-worker double-execution (TTL 
 heartbeat), and the silent-LocalFS-fallback on explicit attach. All committed + pushed.
 
 **Deferred (need their own effort / clio-core side):** daemon-death resilience (→ clio-core
-fault-tolerance: replication/erasure-coding, in progress upstream); wiring `CEEExpertInvoker`
-into the real gact `_execute_delegated_experts` (full settle loop cross-process); a live
-NDP-catalog worker (clio-kit MCP + network — both confirmed reachable); CEE-blackboard + ARC
-segments cross-process; true exactly-once (sub-ms simultaneous claim needs a clio-core CAS).
+fault-tolerance: replication/erasure-coding, in progress upstream); a *separate-process* gact
+worker for the full settle loop cross-process (the cee hinge is wired in-process — see Tier 4);
+a live NDP-catalog worker (clio-kit MCP + network — both confirmed reachable); CEE-blackboard +
+ARC segments cross-process; true exactly-once (sub-ms simultaneous claim needs a clio-core CAS).
+
+**NIGHT 2026-06-16 follow-up (daemon-free, NOT blocked by the wedge):** found+fixed a **6th
+real bug** — `BackgroundTasks` left a task *cancelled before its first event-loop step* stuck
+QUEUED forever (the monitor/wait_for engine; a 500-task stress test hung ~31 min). Added the
+cee hinge (Tier 4) + two daemon-free LIVE-ALCF suites that exercise the semantics without the
+cross-process wedge: **async fan-out** (3 concurrent ALCF children, monitored) and an **NDP 3-hop
+pipeline** (geo → 2 concurrent data-discovery → analysis, reference-code needle proves context
+crosses every hop). The fixture now pins a deterministic daemon storage config (was ambient
+DRAM-only). **The wedge is re-confirmed config-independent:** a file-backed tier + 1GB WAL +
+256 concurrent ops (config-load proven in the daemon log) still wedges ~32 — a clio-core code
+bug, not storage/WAL. See `docs/design/stress-findings.md`.
 
 ## Tier 0 — confirmed bugs (fix as found)
 - [x] **`CLIO_CTE_WITH_RUNTIME=0` with no daemon HANGS** ~30s in `chimaera_init` then proceeds
@@ -65,11 +76,17 @@ segments cross-process; true exactly-once (sub-ms simultaneous claim needs a cli
   after delegation through the shared clio-core.
 
 ## Tier 4 — real gact integration
-- [ ] Wire `CEEExpertInvoker` into `_execute_delegated_experts` so a REAL gact session delegates
-  to a child in a separate worker process (full settle loop, real ALCF). Today gact only uses
-  in-process/loopback invokers.
-- [ ] **Full-app `CLIO_EXPERT_INVOKER=loopback` on real ALCF** through the real settle loop —
-  does it survive the lossy prediction (no trajectory/tools)? Still undone.
+- [~] Wire `CEEExpertInvoker` into the gact delegation hinge. **DONE through the mailbox with an
+  in-process worker** (2026-06-16): `run_child_via_boundary(mode="cee")` routes a real child's
+  request/result through the clio-core mailbox (blobs + TTL-lease claim + `run_worker`); the live
+  `_invoke_child_expert` path opts in via `CLIO_EXPERT_INVOKER=cee`; default unchanged. Validated
+  LIVE on ALCF (answer + routing cross the mailbox, drains clean). **REMAINING:** a *separate-
+  process* gact worker (reconstruct the child from the wire via `build_app` + AgentDef lookup +
+  publish) — design-heavy (the child-runner is a closure in the settle loop) AND daemon-blocked
+  for sustained cross-process. Single cross-process delegation already works (clio_to_clio).
+- [x] **`CLIO_EXPERT_INVOKER=loopback` on real ALCF** through the boundary — survives the lossy
+  prediction (answer + routing preserved; trajectory/tools stay in-process until #659 carries
+  them). Live-proven (`test_delegation_invoker_live.py`), plus a `cee`-mode live twin.
 
 ## Tier 5 — scale + adversarial
 - [ ] Throughput: 10–50 concurrent delegations across M worker processes / one daemon; no lost
