@@ -82,8 +82,20 @@ bug, not storage/WAL. See `docs/design/stress-findings.md`.
   `_invoke_child_expert` path opts in via `CLIO_EXPERT_INVOKER=cee`; default unchanged. Validated
   LIVE on ALCF (answer + routing cross the mailbox, drains clean). **REMAINING:** a *separate-
   process* gact worker (reconstruct the child from the wire via `build_app` + AgentDef lookup +
-  publish) — design-heavy (the child-runner is a closure in the settle loop) AND daemon-blocked
-  for sustained cross-process. Single cross-process delegation already works (clio_to_clio).
+  publish) — daemon-blocked for sustained cross-process. Single cross-process delegation already
+  works (clio_to_clio). **Concrete path (investigated 2026-06-16, the gate is step 1):**
+    1. The child-runner `_run_dynamic_agent_sync` (`app.py:7215`) is a CLOSURE nested in the settle
+       loop (captures `sid`, app state, LM/tools/context). It must be **extracted to a module-level
+       `run_child_expert(app, agent_def, prompt, *, session_id, context) -> Prediction`** that BOTH
+       the settle loop and the worker call. This is a refactor of load-bearing code → do it with the
+       full settle-loop test suite green, NOT blind. THIS is the real work.
+    2. Worker entrypoint = `build_app()` → on each `ExpertRequest`, `agent_def =
+       AgentDef(**app.state.user_agents.get(req.expert_id).to_wire())` (lookup at `app.py:1909`) →
+       `run_child_expert(...)` → `expert_result_from_prediction` → publish. Then `run_worker`
+       drains the shared mailbox; the parent uses `mode="cee"` UNCHANGED (it already submits to the
+       mailbox — today an in-proc worker answers; then a separate process does).
+    3. Test: parent gact session with `CLIO_EXPERT_INVOKER=cee` + a separate worker process on the
+       same store; assert the child ran in the worker PID and the answer/routing crossed back.
 - [x] **`CLIO_EXPERT_INVOKER=loopback` on real ALCF** through the boundary — survives the lossy
   prediction (answer + routing preserved; trajectory/tools stay in-process until #659 carries
   them). Live-proven (`test_delegation_invoker_live.py`), plus a `cee`-mode live twin.
