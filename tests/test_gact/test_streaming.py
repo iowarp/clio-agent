@@ -143,6 +143,8 @@ def test_stream_fallback_reasons_are_audited_and_reject_unknowns(tmp_path: Path)
     catalog = _stream_fallback_reason_capabilities()
 
     assert {
+        "stream_disabled_guided_output",
+        "stream_disabled_live_streaming",
         "streaming_dependency_unavailable",
         "agent_not_available",
         "agent_not_streamable",

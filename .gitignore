@@ -177,3 +177,7 @@ tmp/
 
 # handshake DB runtime mismatch log
 src/clio_agent/providers/handshake/sources/data/model_limits.mismatches.jsonl
+
+# durable live-grind artifacts (server logs + full semantic traces) — kept out of
+# /tmp so a run is inspectable/reproducible later, but they are run evidence, not source
+.grind/

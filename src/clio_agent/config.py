@@ -587,7 +587,16 @@ def _token_liveness_enabled() -> bool:
     The mechanism (see IOLoggingLM._clio_streamed_call) only engages for
     synchronous calls outside a running event loop -- i.e. the executor-run expert
     calls -- and defers to the normal blocking path everywhere else.
+
+    Force-OFF under guided output: a guided/structured response streams as
+    ``reasoning_content``-only deltas (no ``content`` deltas) on LM Studio, which
+    the stream assembly can't fold into content -> empty content -> parse failure.
+    The blocking path applies the ``content<-reasoning_content`` fallback
+    (``_process_completion``), so guided output uses blocking calls. (TODO: fold
+    reasoning deltas into the stream assembly to re-enable liveness here.)
     """
+    if _guided_output_enabled():
+        return False
     try:
         from clio_agent.conf import as_bool, resolve  # noqa: PLC0415
 
@@ -615,6 +624,7 @@ _TRANSIENT_PROVIDER_MARKERS = (
     "serviceunavailable",
     "internalservererror",
     "apitimeouterror",
+    "timeout",  # httpx ReadTimeout/ConnectTimeout/TimeoutException, litellm.Timeout
     "the model has crashed",
     "connection error",
     "remote end closed connection",
@@ -690,6 +700,27 @@ def _io_logging_lm_cls() -> Any:
         """
 
         def __call__(self, prompt=None, messages=None, **kwargs):  # type: ignore[override]
+            # LM Studio response_format shim (guided output only). DSPy's
+            # JSONAdapter sends ``response_format={"type":"json_object"}`` for any
+            # signature with an open-ended field (qwopus experts: main's
+            # delegation/workflow_state, ReAct's next_tool_args:dict). LM Studio
+            # REJECTS json_object ("'response_format.type' must be 'json_schema'
+            # or 'text'"), 400-ing the call. Translate it to a permissive
+            # json_schema (constrain to a valid JSON object -- json_object
+            # semantics -- in the form LM Studio accepts). Strict per-signature
+            # schemas (clean signatures) already flow through as pydantic models
+            # and are untouched. No-op when guided output is off.
+            if _guided_output_enabled():
+                _rf = kwargs.get("response_format")
+                if isinstance(_rf, dict) and _rf.get("type") == "json_object":
+                    kwargs["response_format"] = {
+                        "type": "json_schema",
+                        "json_schema": {
+                            "name": "output",
+                            "strict": False,
+                            "schema": {"type": "object", "additionalProperties": True},
+                        },
+                    }
             # Bounded retry on TRANSIENT provider failures -- e.g. a local model
             # process crashing mid-inference (LM Studio "the model has crashed" ->
             # MidStreamFallbackError), a dropped connection, or a 503. These abort a
@@ -748,6 +779,12 @@ def _io_logging_lm_cls() -> Any:
             # json/constructor-repr repair then handles its shape). Normal calls
             # (non-empty content) are untouched.
             outputs = super()._process_completion(response, merged_kwargs)
+            # Per-model: only reasoning models (qwopus/qwen ...) route output into
+            # reasoning_content and need this extraction. Non-reasoning models never
+            # leave content empty, so this is a no-op for them, but gate it
+            # explicitly per model (set in create_lm) rather than running globally.
+            if not getattr(self, "_clio_reasoning_fallback", True):
+                return outputs
             try:
                 choices = list(getattr(response, "choices", None) or [])
             except Exception:  # noqa: BLE001 - defensive; fall back to no finish info
@@ -1006,7 +1043,7 @@ def create_lm(config: LMProviderConfig) -> dspy.LM:
     model_name = _resolve_model_name(config)
 
     extras = _provider_lm_kwargs(config)
-    return _construct_lm(
+    lm = _construct_lm(
         model=model_name,
         api_base=config.api_base,
         api_key=config.api_key,
@@ -1021,6 +1058,13 @@ def create_lm(config: LMProviderConfig) -> dspy.LM:
         cache=False,
         **extras,
     )
+    # Per-model gate for the content<-reasoning_content extraction in
+    # IOLoggingLM._process_completion (reasoning models only; today qwopus/qwen).
+    try:
+        lm._clio_reasoning_fallback = _reasoning_model_capability(config)  # type: ignore[attr-defined]
+    except Exception:  # noqa: BLE001 - never let tagging break LM construction
+        pass
+    return lm
 
 
 def _ensure_provider_registered(config: LMProviderConfig) -> None:
@@ -1188,6 +1232,27 @@ def _provider_lm_kwargs(config: LMProviderConfig) -> dict[str, Any]:
         if config.min_p is not None:
             body["min_p"] = config.min_p
         extras["extra_body"] = body
+    # Reasoning-model trajectory-regurgitation stop sequences (per-model). On a long
+    # trajectory, qwopus continues/fabricates DSPy's trajectory INPUT format —
+    # underscore-numbered `thought_N`/`tool_name_N`/`tool_args_N` + invented
+    # `observation_N` tool results — instead of emitting one step (react) or the
+    # answer (extract), running away to truncation -> unparseable. The model must
+    # NEVER emit those markers (its real outputs are next_thought/next_tool_name/
+    # next_tool_args/reasoning/answer, with NO underscore-number), so they are safe
+    # stop sequences: generation halts the instant regurgitation starts and the
+    # valid leading fields survive. Override with CLIO_LM_STOP_SEQUENCES (||-joined).
+    if _reasoning_model_capability(config) and "stop" not in extras:
+        env_stop = os.environ.get("CLIO_LM_STOP_SEQUENCES", "").strip()
+        extras["stop"] = (
+            [s for s in env_stop.split("||") if s]
+            if env_stop
+            else [
+                "[[ ## observation",
+                "[[ ## thought_",
+                "[[ ## tool_name_",
+                "[[ ## tool_args_",
+            ]
+        )
     if config.provider == "codex":
         extras["codex_transport"] = config.codex_transport
     elif config.provider == "claude_code":
@@ -1335,6 +1400,7 @@ def _lenient_chat_adapter_cls() -> Any:
 
     from dspy.adapters.chat_adapter import field_header_pattern  # noqa: PLC0415
     from dspy.adapters.utils import parse_value  # noqa: PLC0415
+    from dspy.utils.exceptions import AdapterParseError  # noqa: PLC0415
 
     class LenientChatAdapter(dspy.ChatAdapter):  # type: ignore[name-defined]
         """ChatAdapter that recovers a structured output field a model emitted as a
@@ -1395,6 +1461,60 @@ def _lenient_chat_adapter_cls() -> Any:
                 )
                 return fields
 
+        def _clio_resample_attempts(self) -> int:
+            return int(getattr(self, "_clio_parse_retry", 0) or 0)
+
+        @staticmethod
+        def _clio_trace_resample(attempt: int, exc: Exception) -> None:
+            from clio_agent.runtime import trace  # noqa: PLC0415
+
+            trace.event(
+                "ADAPTER-RESAMPLE",
+                "parse failed (attempt %d), re-sampling the LM call: %s",
+                attempt + 1,
+                str(exc)[:160],
+            )
+
+        def __call__(self, lm, lm_kwargs, signature, demos, inputs):  # type: ignore[no-untyped-def]
+            # Bounded re-SAMPLE on an unrecoverable parse failure. The lenient
+            # parse() above repairs SHAPE (constructor-repr, dropped brace); it
+            # CANNOT recover a genuinely missing field -- e.g. a reasoning model
+            # that writes the tool call as prose inside `next_thought` and omits
+            # the `next_tool_name`/`next_tool_args` sections entirely. That is a
+            # single bad DRAW, not a systematic format: with cache=False at temp>0
+            # an independent re-draw almost always emits the full sections. Re-issue
+            # the whole call (re-format + re-sample + re-parse) up to N times, then
+            # surface the error so the extract-repair / error path still owns it.
+            # N is per-model (reasoning models only) -- see create_chat_adapter.
+            attempts = self._clio_resample_attempts() + 1
+            last_exc: Exception | None = None
+            for i in range(attempts):
+                try:
+                    return super().__call__(lm, lm_kwargs, signature, demos, inputs)
+                except AdapterParseError as exc:
+                    last_exc = exc
+                    if i + 1 < attempts:
+                        self._clio_trace_resample(i, exc)
+                        continue
+                    raise
+            assert last_exc is not None
+            raise last_exc
+
+        async def acall(self, lm, lm_kwargs, signature, demos, inputs):  # type: ignore[no-untyped-def]
+            attempts = self._clio_resample_attempts() + 1
+            last_exc: Exception | None = None
+            for i in range(attempts):
+                try:
+                    return await super().acall(lm, lm_kwargs, signature, demos, inputs)
+                except AdapterParseError as exc:
+                    last_exc = exc
+                    if i + 1 < attempts:
+                        self._clio_trace_resample(i, exc)
+                        continue
+                    raise
+            assert last_exc is not None
+            raise last_exc
+
     # DSPy's streaming support is gated by an allowlist keyed on the adapter's
     # CLASS NAME STRING (dspy/streaming/streaming_listener.py: it checks
     # ``settings.adapter.__class__.__name__ in {"ChatAdapter","XMLAdapter",
@@ -1411,22 +1531,253 @@ def _lenient_chat_adapter_cls() -> Any:
     return _LENIENT_CHAT_ADAPTER_CLS
 
 
-def create_chat_adapter(config: LMProviderConfig) -> Any:
-    """Create the DSPy chat adapter appropriate for this provider.
+def _guided_output_enabled() -> bool:
+    """Whether to use guided/structured output (dspy.JSONAdapter) instead of the
+    text-protocol ChatAdapter.
 
-    Uses ChatAdapter's text protocol (local OpenAI-compatible servers work best
-    with it) wrapped in a lenient subclass that, on a structured-output parse
-    failure, coerces a constructor-repr field (e.g. qwopus emitting
+    Guided output makes the provider CONSTRAIN generation to the signature's
+    output schema (``response_format`` → json_schema when the signature allows,
+    else json_object on LM Studio / vLLM), so the structured fields are valid by
+    construction instead of relying on the model reproducing the
+    ``[[ ## field ## ]]`` text format. This is the reasoning-model fix: qwopus
+    drops fields (e.g. ReAct's ``next_tool_name``) under the text protocol; under
+    guided output it emits schema-conformant JSON (which, on LM Studio, lands in
+    ``reasoning_content`` and is recovered by the content←reasoning_content
+    fallback in :meth:`IOLoggingLM._process_completion`).
+
+    Configurable (``lm.guided_output`` / ``CLIO_LM_GUIDED_OUTPUT``), default OFF
+    so models that pass on the text protocol (gpt-oss/gemma/nemotron) are
+    untouched; opt in per grind / per model.
+    """
+    try:
+        from clio_agent import conf  # noqa: PLC0415
+
+        return bool(
+            conf.resolve(
+                "lm.guided_output",
+                env="CLIO_LM_GUIDED_OUTPUT",
+                default=False,
+                cast=conf.as_bool,
+            )
+        )
+    except Exception:
+        return os.environ.get("CLIO_LM_GUIDED_OUTPUT", "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+
+
+def _live_streaming_enabled() -> bool:
+    """Whether the top-level GACT turn streams the agent's answer live
+    (``dspy.streamify`` in :func:`gact.app._try_streamed_forward`) or runs the
+    canonical BLOCKING path instead.
+
+    Default ON — unchanged behavior for every model that streams cleanly
+    (gpt-oss / gemma / qwopus). The escape hatch exists because some
+    reasoning-model + provider combinations stream their answer entirely on the
+    ``reasoning_content`` delta channel — which DSPy's content-only stream
+    listeners cannot fold into the answer, and which bypasses the
+    ``content←reasoning_content`` recovery in
+    :meth:`IOLoggingLM._process_completion` (that recovery only runs on the
+    blocking path). Symptoms (observed on nvidia/nemotron over ALCF Sophia):
+    an empty answer (``stream_completed_without_chunks`` → ``empty_response``)
+    or a streamify async ``ExceptionGroup`` ("live streaming failed before
+    emitting output"). Disabling live streaming routes such a model through the
+    blocking path, where the reasoning channel is recovered and there is no
+    streamify task group to fail.
+
+    Configurable (``runtime.live_streaming`` / ``CLIO_LIVE_STREAMING``), default
+    ON; opt OUT per grind / per model.
+    """
+    try:
+        from clio_agent import conf  # noqa: PLC0415
+
+        return bool(
+            conf.resolve(
+                "runtime.live_streaming",
+                env="CLIO_LIVE_STREAMING",
+                default=True,
+                cast=conf.as_bool,
+            )
+        )
+    except Exception:
+        raw = os.environ.get("CLIO_LIVE_STREAMING", "").strip().lower()
+        if raw in {"0", "false", "no", "off"}:
+            return False
+        return True
+
+
+def _reasoning_model_capability(config: LMProviderConfig) -> bool:
+    """Per-model: is this a reasoning model (qwopus / qwen3-family ...)?
+
+    Reasoning models route their real output into the ``reasoning_content``
+    channel and, under the text protocol, intermittently drop a field on a single
+    draw. Two reasoning-only behaviors hang off this flag — the
+    ``content<-reasoning_content`` extraction (:meth:`IOLoggingLM._process_completion`)
+    and the bounded parse re-sample (the lenient adapter) — so both are applied
+    PER MODEL, not globally (today only qwopus/qwen match; others are untouched).
+
+    Override with ``CLIO_LM_REASONING_MODEL`` (1/0); otherwise the per-model
+    capability (the handshake ``is_reasoning`` flag, else the name-marker
+    detection that reliably identifies qwopus/qwen) decides. This is the interim
+    home for what tasks #33/#34 move into the model DB.
+    """
+    raw = os.environ.get("CLIO_LM_REASONING_MODEL", "").strip().lower()
+    if raw in {"1", "true", "yes", "on"}:
+        return True
+    if raw in {"0", "false", "no", "off"}:
+        return False
+    if bool(getattr(config, "is_reasoning", False)):
+        return True
+    return _uses_local_reasoning_model_profile(config.provider, config.model)
+
+
+def _parse_retry_attempts(config: LMProviderConfig) -> int:
+    """How many times to re-sample the LM on an unrecoverable adapter parse
+    failure. Per-model: reasoning models (temp>0, independent re-draws) benefit;
+    greedy/non-reasoning models would just repeat the same bad draw, so 0.
+    Override with ``CLIO_LM_PARSE_RETRY_ATTEMPTS``."""
+    raw = os.environ.get("CLIO_LM_PARSE_RETRY_ATTEMPTS", "").strip()
+    if raw:
+        try:
+            return max(0, int(raw))
+        except ValueError:
+            pass
+    return 2 if _reasoning_model_capability(config) else 0
+
+
+def _fix_guided_schema(part: Any) -> None:
+    """In-place: pin declared object keys (``additionalProperties=false`` so a
+    native-tool-calling model can't substitute its own ``{tool, arguments}``
+    shape) while leaving open-ended objects (e.g. ReAct's ``next_tool_args``)
+    permissive. Recurses into properties/items/$defs."""
+    if not isinstance(part, dict):
+        return
+    if part.get("type") == "object":
+        props = part.get("properties")
+        if props:
+            part["additionalProperties"] = False
+            for sub in props.values():
+                _fix_guided_schema(sub)
+        else:
+            part["additionalProperties"] = True
+    if part.get("type") == "array" and isinstance(part.get("items"), dict):
+        _fix_guided_schema(part["items"])
+    for key in ("$defs", "definitions"):
+        for sub in (part.get(key) or {}).values():
+            _fix_guided_schema(sub)
+
+
+def _signature_strict_response_format(signature: Any) -> dict[str, Any]:
+    """Build a ``json_schema`` response_format that PINS a DSPy signature's output
+    field NAMES (required-as-declared, no extra keys), so a reasoning model that
+    natively emits ``{tool, arguments}`` (qwopus) is forced into the requested
+    ``{next_thought, next_tool_name, next_tool_args}`` shape.
+
+    Reuses DSPy's pydantic-based schema generation (handles Literal/list/nested),
+    but replaces DSPy's open-ended guard+enforce_required (which raises on, or
+    over-constrains, ``dict[str, Any]`` leaves) with :func:`_fix_guided_schema`.
+    ``strict: false`` because open-ended leaves keep ``additionalProperties:true``
+    (incompatible with OpenAI strict mode); LM Studio honors it (verified live).
+    """
+    import pydantic  # noqa: PLC0415
+
+    fields: dict[str, Any] = {}
+    for name, field_info in signature.output_fields.items():
+        annotation = field_info.annotation
+        default = field_info.default if hasattr(field_info, "default") else ...
+        fields[name] = (annotation, default)
+    model = pydantic.create_model(
+        "ClioGuidedOutputs",
+        __config__=pydantic.ConfigDict(extra="forbid"),
+        **fields,
+    )
+    schema = model.model_json_schema()
+    for prop in schema.get("properties", {}).values():
+        if isinstance(prop, dict):
+            prop.pop("json_schema_extra", None)
+    _fix_guided_schema(schema)
+    return {
+        "type": "json_schema",
+        "json_schema": {"name": "clio_output", "strict": False, "schema": schema},
+    }
+
+
+_STRICT_GUIDED_ADAPTER_CLS: Any = None
+
+
+def _strict_guided_json_adapter_cls() -> Any:
+    """Build (once) a JSONAdapter subclass that sends a field-name-pinned strict
+    json_schema (see :func:`_signature_strict_response_format`) instead of DSPy's
+    ``{"type":"json_object"}`` fallback.
+
+    DSPy's JSONAdapter falls back to loose ``json_object`` for any signature with
+    an open-ended field, and (a) LM Studio rejects that form, (b) loose lets the
+    model emit its native ``{tool, arguments}`` keys -> 0 fields parsed. This
+    subclass overrides __call__/acall to set our pinned schema and dispatch via
+    ChatAdapter (which uses ``self.parse`` = JSONAdapter's JSON parse). On any
+    schema-build failure it defers to stock JSONAdapter behavior.
+    """
+    global _STRICT_GUIDED_ADAPTER_CLS  # noqa: PLW0603
+    if _STRICT_GUIDED_ADAPTER_CLS is not None:
+        return _STRICT_GUIDED_ADAPTER_CLS
+    dspy = _dspy()
+
+    class StrictGuidedJSONAdapter(dspy.JSONAdapter):  # type: ignore[name-defined]
+        def __call__(self, lm, lm_kwargs, signature, demos, inputs):  # type: ignore[no-untyped-def]
+            if "response_format" in getattr(lm, "supported_params", []):
+                try:
+                    kwargs = {
+                        **lm_kwargs,
+                        "response_format": _signature_strict_response_format(signature),
+                    }
+                    return dspy.ChatAdapter.__call__(self, lm, kwargs, signature, demos, inputs)
+                except Exception:  # noqa: BLE001 - fall back to stock JSONAdapter
+                    pass
+            return dspy.JSONAdapter.__call__(self, lm, lm_kwargs, signature, demos, inputs)
+
+        async def acall(self, lm, lm_kwargs, signature, demos, inputs):  # type: ignore[no-untyped-def]
+            if "response_format" in getattr(lm, "supported_params", []):
+                try:
+                    kwargs = {
+                        **lm_kwargs,
+                        "response_format": _signature_strict_response_format(signature),
+                    }
+                    return await dspy.ChatAdapter.acall(self, lm, kwargs, signature, demos, inputs)
+                except Exception:  # noqa: BLE001 - fall back to stock JSONAdapter
+                    pass
+            return await dspy.JSONAdapter.acall(self, lm, lm_kwargs, signature, demos, inputs)
+
+    _STRICT_GUIDED_ADAPTER_CLS = StrictGuidedJSONAdapter
+    return _STRICT_GUIDED_ADAPTER_CLS
+
+
+def create_chat_adapter(config: LMProviderConfig) -> Any:
+    """Create the DSPy adapter appropriate for this provider.
+
+    Default: ChatAdapter's text protocol (local OpenAI-compatible servers work
+    best with it) wrapped in a lenient subclass that, on a structured-output
+    parse failure, coerces a constructor-repr field (e.g. qwopus emitting
     ``workflow_state`` as ``Model(field=...)`` instead of JSON) into JSON and
     re-parses — fixing the model↔adapter mismatch in code, no re-request.
 
+    When guided output is enabled (:func:`_guided_output_enabled`), return
+    ``dspy.JSONAdapter`` instead: it sends ``response_format`` so the provider
+    constrains generation to the output schema — the durable fix for reasoning
+    models that drop required fields under the text protocol. LM Studio honors
+    ``response_format`` (verified live: it returns schema-conformant JSON, in
+    ``reasoning_content``, recovered by the completion fallback); the historical
+    "LM Studio rejects response_format with HTTP 400" note no longer holds.
+
     DSPy's JSON-adapter fallback is kept ONLY for remote providers. On a local
-    backend it is harmful: when it engages it retries with the JSON adapter, which
-    sends ``response_format``, and LM Studio rejects that with HTTP 400 — turning a
-    recoverable parse into a hard error. Local backends rely on the lenient
-    coercion instead (verified: it recovers qwopus's constructor-repr without any
-    re-request). ``CLIO_DISABLE_JSON_ADAPTER_FALLBACK`` force-disables it anywhere.
+    backend it was historically harmful (the JSON-mode retry's ``response_format``
+    once 400'd); local backends rely on the lenient coercion instead.
+    ``CLIO_DISABLE_JSON_ADAPTER_FALLBACK`` force-disables it anywhere.
     """
+    if _guided_output_enabled():
+        return _strict_guided_json_adapter_cls()()
     use_json_fallback = not is_local_openai_compatible_backend(config)
     if os.environ.get("CLIO_DISABLE_JSON_ADAPTER_FALLBACK", "").strip().lower() in {
         "1",
@@ -1434,7 +1785,12 @@ def create_chat_adapter(config: LMProviderConfig) -> Any:
         "yes",
     }:
         use_json_fallback = False
-    return _lenient_chat_adapter_cls()(use_json_adapter_fallback=use_json_fallback)
+    adapter = _lenient_chat_adapter_cls()(use_json_adapter_fallback=use_json_fallback)
+    # Per-model bounded re-sample on an unrecoverable parse failure (reasoning
+    # models only; see _parse_retry_attempts). This is the base-case fix for a
+    # reasoning model dropping a section (e.g. ReAct's next_tool_name) on one draw.
+    adapter._clio_parse_retry = _parse_retry_attempts(config)
+    return adapter
 
 
 # ============================================================================

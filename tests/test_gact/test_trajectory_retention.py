@@ -22,6 +22,40 @@ class _AttrDict(dict):
             raise AttributeError(name) from exc
 
 
+def test_repair_temperature_constant_no_drift():
+    # Retries REUSE the base temp (cache-off resampling already varies them; bumping
+    # temp would raise format drift, which the parse-error class can't tolerate).
+    assert gact_app._repair_temperature(0.6, 0) == 0.6
+    assert gact_app._repair_temperature(0.6, 1) == 0.6  # no bump
+    assert gact_app._repair_temperature(0.6, 3) == 0.6  # no bump, no escalation
+    # The ONLY lift is off greedy temp 0 (else every retry is identical/deterministic).
+    assert gact_app._repair_temperature(0.0, 0) == 0.0  # original stays greedy
+    assert gact_app._repair_temperature(0.0, 1) == 0.5  # retry samples at a floor
+    assert gact_app._repair_temperature(0.0, 3) == 0.5
+
+
+def test_extract_repair_attempts_default_and_env(monkeypatch):
+    monkeypatch.delenv("CLIO_EXTRACT_REPAIR_ATTEMPTS", raising=False)
+    assert gact_app._extract_repair_attempts() == 3
+    monkeypatch.setenv("CLIO_EXTRACT_REPAIR_ATTEMPTS", "5")
+    assert gact_app._extract_repair_attempts() == 5
+    monkeypatch.setenv("CLIO_EXTRACT_REPAIR_ATTEMPTS", "0")
+    assert gact_app._extract_repair_attempts() == 0
+
+
+def test_repair_hint_keeps_both_ends_and_shows_output():
+    # A long AdapterParseError: the model's echoed response (head) + the actionable
+    # field diff (tail). The hint must surface BOTH and frame it as "what you produced".
+    head = "Adapter ChatAdapter failed to parse the LM response. LM Response: " + "X" * 1500
+    tail = "Expected to find output fields: [station_ids]. Actual: []."
+    exc = ValueError(head + " " + tail)
+    hint = gact_app._typed_output_repair_hint(exc)
+    assert "what you produced and why it was rejected" in hint
+    assert "Expected to find output fields" in hint  # tail survived truncation
+    assert "Adapter ChatAdapter failed to parse" in hint  # head survived too
+    assert "[…]" in hint  # middle elided, both ends kept
+
+
 def test_retaining_react_is_react_subclass():
     cls = gact_app._retaining_react_cls()
     assert issubclass(cls, dspy.ReAct)

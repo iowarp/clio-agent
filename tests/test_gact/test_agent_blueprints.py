@@ -1745,13 +1745,13 @@ def test_earthscope_synthesis_prompt_filters_scan_limited_cadence_claims(
     prompt = prompt_path.read_text(encoding="utf-8")
     normalized_prompt = " ".join(prompt.split())
 
-    assert "Never convert `rows_scanned`, `rows_examined`, `rows_profiled`" in prompt
-    assert "scan-limited profile row count is coverage evidence only" in prompt
-    assert "Treat numeric summaries as covering" in prompt
-    assert 'Do not write `Hz`, "hours", "days", "duration", "complete"' in normalized_prompt
-    assert 'Do not infer a "30-day record" from `.30`' in normalized_prompt
-    assert 'unqualified "high suitability"' in normalized_prompt
-    assert "omit that inference and keep only the grounded facts" in normalized_prompt
+    assert "Don't convert `rows_scanned`/`rows_profiled` into" in normalized_prompt
+    assert "cadence, duration, Hz, completeness" in normalized_prompt
+    assert "a scan-limited profile is coverage evidence only" in normalized_prompt
+    assert "Preserve uncertainty units" in normalized_prompt
+    assert "not sub-cm" in normalized_prompt
+    assert "Don't cite external sources (USGS/UNAVCO" in normalized_prompt
+    assert "`model_geographic_prior`" in normalized_prompt
 
 
 @pytest.mark.parametrize(
@@ -2031,9 +2031,9 @@ def test_earthscope_final_prompts_guard_scan_limited_profile_scope(
     )
 
     assert "rows_profiled`/`numeric_summary_rows" in combined
-    assert "numeric_summary.time.min/max" in combined
-    assert "only for `numeric_summary_rows`" in combined
-    assert "Do not estimate total file row count from byte size" in combined
+    assert "appears in `numeric_summary`" in combined
+    assert "belongs only to `numeric_summary_rows`" in combined
+    assert "say only that the run produced a scan-limited profile" in combined
     assert '"30-s cadence"' in combined
     assert '"no missing values"' in combined
     assert '"low noise"' in combined
@@ -2045,7 +2045,7 @@ def test_earthscope_final_prompts_guard_scan_limited_profile_scope(
     assert "Uncertainty means are descriptive statistics" in combined
     assert "provenance=model_geographic_prior" in combined
     assert "do not cite USGS, UNAVCO" in combined
-    assert "Named geographic provenance is allowed only when a tool result" in combined
+    assert "Named source provenance is allowed only when a tool result" in combined
 
 
 

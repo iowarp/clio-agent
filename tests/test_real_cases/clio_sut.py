@@ -38,6 +38,38 @@ RESTRICTED_CELLS = [
 ]
 
 
+# Committed per-model LM bind profile — the reproducible "model DB" (tasks
+# #33/#34), keyed by model id. This is the durable home for the LM settings that
+# used to live in the throwaway /tmp grind shell (CTX=/TEMP=/sampling env): a run
+# is now reproducible from committed config alone, no shell incantation to
+# remember. Applied as DEFAULTS in bind(), so an explicit --override or a
+# CLIO_AGENTTEST_* env still wins for ad-hoc experiments.
+#
+# Why these values (qwopus, a Qwen-family reasoning model): it MUST NOT run
+# greedy (temp 0 collapses reasoning models into repetition); 0.6 is Qwen's
+# recommended thinking-mode temperature. And it needs a real context window — the
+# EarthScope pipeline accumulates ~50-60k tokens of reasoning + evidence, so a
+# 32768 window truncates the model mid-thought exactly when it is reasoning
+# through messy/unexpected data (which is the whole point of an agent vs a
+# script). parallel=1 serializes the single-GPU box; turn_timeout_s drives the
+# server's progress-aware watchdog for a slow-but-advancing reasoning run.
+MODEL_PROFILES: dict[str, dict[str, Any]] = {
+    "qwopus3.5-9b-v3": {
+        "context_length": 65536,
+        # 0.6 is Qwen's thinking-mode default, but the pipeline is dominated by
+        # multi-step ROUTING decisions (orchestrators picking next_expert), where
+        # lower temp follows the (already-thorough) grounding far more consistently
+        # — the dominant remaining failure is orchestrators intermittently ignoring
+        # their routing rules. Dropped to 0.4 for routing reliability; the
+        # stop-sequences + parse re-sample guard against any low-temp repetition.
+        # Revert toward 0.6 if reasoning experts start looping.
+        "temperature": 0.4,
+        "parallel": 1,
+        "turn_timeout_s": 1900.0,
+    },
+}
+
+
 def _cells_from_env() -> list[tuple[str, str]] | None:
     """Optional explicit cell list from config, e.g.
     ``CLIO_AGENTTEST_CELLS="argonne_metis:gpt-oss-120b"``.
@@ -108,7 +140,9 @@ class ClioAgent(SUT):
                 return False
         return bool(row.get("is_authenticated"))
 
-    def bind(self, provider: str, model: str, overrides: dict[str, Any] | None = None) -> "ClioAgent":
+    def bind(
+        self, provider: str, model: str, overrides: dict[str, Any] | None = None
+    ) -> "ClioAgent":
         """Configure the live LM for this cell. This is the model-iteration
         seam: provider/model come from the matrix, not the test body."""
         self._provider, self._model, self._overrides = provider, model, dict(overrides or {})
@@ -128,6 +162,10 @@ class ClioAgent(SUT):
                 self._overrides.get("api_base") or env_api_base or row.get("api_base") or ""
             )
             model_id = model or str(row.get("default_model") or "")
+            # Committed per-model defaults (the reproducible model DB). Precedence
+            # for every knob below: explicit --override > CLIO_AGENTTEST_* env >
+            # this profile > hardcoded fallback.
+            profile = MODEL_PROFILES.get(model_id, {})
             # CLEAN SLATE before handing off to clio: eject EVERY loaded instance of
             # this model from LM Studio first, so a prior crashed/duplicate/wrong-config
             # instance (e.g. a stale parallel=4 load) can never co-reside with the one
@@ -142,7 +180,10 @@ class ClioAgent(SUT):
                 "model": model_id,
                 "api_key": os.environ.get("CLIO_LM_API_KEY", "x"),
                 "temperature": float(
-                    self._overrides.get("temperature", float(env_temp) if env_temp else 0.0)
+                    self._overrides.get(
+                        "temperature",
+                        float(env_temp) if env_temp else profile.get("temperature", 0.0),
+                    )
                 ),
                 "max_tokens": int(
                     self._overrides.get(
@@ -158,12 +199,18 @@ class ClioAgent(SUT):
                 "context_length": int(
                     self._overrides.get(
                         "context_length",
-                        int(os.environ.get("CLIO_AGENTTEST_CONTEXT_LENGTH") or 0),
+                        int(
+                            os.environ.get("CLIO_AGENTTEST_CONTEXT_LENGTH")
+                            or profile.get("context_length", 0)
+                        ),
                     )
                 ),
                 "parallel": int(
                     self._overrides.get(
-                        "parallel", int(os.environ.get("CLIO_AGENTTEST_PARALLEL") or 0)
+                        "parallel",
+                        int(
+                            os.environ.get("CLIO_AGENTTEST_PARALLEL") or profile.get("parallel", 0)
+                        ),
                     )
                 ),
                 # Drive the SERVER's per-turn no-progress watchdog on the SAME
@@ -175,7 +222,10 @@ class ClioAgent(SUT):
                 "turn_timeout_s": float(
                     self._overrides.get(
                         "turn_timeout_s",
-                        float(os.environ.get("CLIO_AGENTTEST_NO_PROGRESS_S") or 0),
+                        float(
+                            os.environ.get("CLIO_AGENTTEST_NO_PROGRESS_S")
+                            or profile.get("turn_timeout_s", 0)
+                        ),
                     )
                 ),
             }
@@ -190,7 +240,7 @@ class ClioAgent(SUT):
                 ("min_p", "CLIO_AGENTTEST_MIN_P", float),
                 ("presence_penalty", "CLIO_AGENTTEST_PRESENCE_PENALTY", float),
             ):
-                _val = self._overrides.get(_key, os.environ.get(_env, ""))
+                _val = self._overrides.get(_key, os.environ.get(_env, "") or profile.get(_key, ""))
                 if _val not in ("", None):
                     payload[_key] = _cast(_val)
             if "system_prompt" in self._overrides:
@@ -315,18 +365,27 @@ class ClioAgent(SUT):
             if spec.get("marketplace_source"):
                 http.post(
                     "/v1/agent-blueprints/install",
-                    json={"source": spec["marketplace_source"], "scope": "workspace", "workspace_id": workspace_id},
+                    json={
+                        "source": spec["marketplace_source"],
+                        "scope": "workspace",
+                        "workspace_id": workspace_id,
+                    },
                     timeout=180.0,
                 ).raise_for_status()
             session_id = self._create_session(http, workspace_id, blueprint_id)
             assistant = self._post_turn(http, session_id, prompt, timeout_s)
             messages = http.get(f"/v1/sessions/{session_id}/messages").json()["messages"]
-            children = [r for r in http.get("/v1/sessions").json()["sessions"]
-                        if r.get("parent_session_id") == session_id]
+            children = [
+                r
+                for r in http.get("/v1/sessions").json()["sessions"]
+                if r.get("parent_session_id") == session_id
+            ]
             active = http.get(f"/v1/sessions/{session_id}/agent-blueprint").json()
 
         trace_path = self._resolve_trace_path(spec)
-        run = self._to_run(assistant, messages, children, active, session_id, blueprint_id, trace_path)
+        run = self._to_run(
+            assistant, messages, children, active, session_id, blueprint_id, trace_path
+        )
         if trace_path:
             self._dump_trace(trace_path, run, messages, children, active)
         return run
@@ -357,23 +416,36 @@ class ClioAgent(SUT):
         for row in http.get("/v1/workspaces").json().get("workspaces", []):
             if str(row.get("root_path") or "") == target:
                 return str(row.get("id") or "")
-        created = http.post("/v1/workspaces", json={
-            "name": "agent-test", "root_path": target, "storage_root": str(Path(target) / ".clio")})
+        created = http.post(
+            "/v1/workspaces",
+            json={
+                "name": "agent-test",
+                "root_path": target,
+                "storage_root": str(Path(target) / ".clio"),
+            },
+        )
         created.raise_for_status()
         return str(created.json().get("id") or "")
 
     def _create_session(self, http: httpx.Client, workspace_id: str, blueprint_id: str) -> str:
-        created = http.post("/v1/sessions", json={"title": "agent-test", "workspace_id": workspace_id})
+        created = http.post(
+            "/v1/sessions", json={"title": "agent-test", "workspace_id": workspace_id}
+        )
         created.raise_for_status()
         session_id = created.json()["id"]
         if blueprint_id:
-            http.post(f"/v1/sessions/{session_id}/agent-blueprint",
-                      json={"blueprint_id": blueprint_id}).raise_for_status()
+            http.post(
+                f"/v1/sessions/{session_id}/agent-blueprint", json={"blueprint_id": blueprint_id}
+            ).raise_for_status()
         return session_id
 
-    def _post_turn(self, http: httpx.Client, session_id: str, prompt: str, timeout_s: float) -> dict[str, Any]:
-        ack = http.post(f"/v1/sessions/{session_id}/messages",
-                        json={"parts": [{"type": "text", "text": prompt}]})
+    def _post_turn(
+        self, http: httpx.Client, session_id: str, prompt: str, timeout_s: float
+    ) -> dict[str, Any]:
+        ack = http.post(
+            f"/v1/sessions/{session_id}/messages",
+            json={"parts": [{"type": "text", "text": prompt}]},
+        )
         ack.raise_for_status()
         user_id = ack.json()["message_id"]
         # Progress-based wait: NO per-session/per-experiment wall. Keep waiting as
@@ -414,7 +486,10 @@ class ClioAgent(SUT):
                     if message.get("id") == user_id:
                         if index > 0 and messages[index - 1].get("role") == "assistant":
                             assistant = messages[index - 1]
-                            if str(assistant.get("stop_reason") or "") or assistant.get("error_info") is not None:
+                            if (
+                                str(assistant.get("stop_reason") or "")
+                                or assistant.get("error_info") is not None
+                            ):
                                 return assistant
                         break
             now = time.monotonic()
@@ -437,8 +512,16 @@ class ClioAgent(SUT):
                 out.append(str(part.get("text") or ""))
         return "\n".join(t for t in out if t)
 
-    def _to_run(self, assistant: dict, messages: list[dict], children: list[dict],
-                active: dict, session_id: str, blueprint_id: str, trace_path: Path | None = None) -> Run:
+    def _to_run(
+        self,
+        assistant: dict,
+        messages: list[dict],
+        children: list[dict],
+        active: dict,
+        session_id: str,
+        blueprint_id: str,
+        trace_path: Path | None = None,
+    ) -> Run:
         import json as _json
 
         tool_calls: list[ToolCall] = []
@@ -450,7 +533,7 @@ class ClioAgent(SUT):
                 continue
             cost += float(message.get("cost_usd") or 0.0)
             meta = message.get("metadata") or {}
-            for tool in (meta.get("tools_called") or []):
+            for tool in meta.get("tools_called") or []:
                 if not isinstance(tool, dict):
                     continue
                 result = tool.get("result")
@@ -459,13 +542,18 @@ class ClioAgent(SUT):
                         result = _json.loads(result)
                     except _json.JSONDecodeError:
                         pass
-                tool_calls.append(ToolCall(
-                    name=str(tool.get("name") or ""),
-                    args=tool.get("args") if isinstance(tool.get("args"), dict) else {},
-                    output=result,
-                ))
-            handoffs = [str(h.get("agent_id") or h.get("to") or h.get("delegate_to") or "")
-                        for h in (meta.get("expert_handoffs") or []) if isinstance(h, dict)]
+                tool_calls.append(
+                    ToolCall(
+                        name=str(tool.get("name") or ""),
+                        args=tool.get("args") if isinstance(tool.get("args"), dict) else {},
+                        output=result,
+                    )
+                )
+            handoffs = [
+                str(h.get("agent_id") or h.get("to") or h.get("delegate_to") or "")
+                for h in (meta.get("expert_handoffs") or [])
+                if isinstance(h, dict)
+            ]
             handoffs = [h for h in handoffs if h]
             if handoffs:
                 steps.append(handoffs)
@@ -567,15 +655,21 @@ class ClioAgent(SUT):
                 result.append(p)
         return result
 
-    def _dump_trace(self, path: str, run: Run, messages: list, children: list, active: dict) -> None:
+    def _dump_trace(
+        self, path: str | Path, run: Run, messages: list, children: list, active: dict
+    ) -> None:
         import json
 
         out = Path(path)
         out.parent.mkdir(parents=True, exist_ok=True)
         with out.open("w", encoding="utf-8") as fh:
             fh.write(json.dumps({"record": "run", "run": run.to_dict()}, default=str) + "\n")
-            fh.write(json.dumps({"record": "agent_blueprint", "active": active}, default=str) + "\n")
+            fh.write(
+                json.dumps({"record": "agent_blueprint", "active": active}, default=str) + "\n"
+            )
             for child in children:
-                fh.write(json.dumps({"record": "child_session", "child": child}, default=str) + "\n")
+                fh.write(
+                    json.dumps({"record": "child_session", "child": child}, default=str) + "\n"
+                )
             for message in messages:
                 fh.write(json.dumps({"record": "message", "message": message}, default=str) + "\n")
