@@ -21,7 +21,14 @@ def main() -> None:
     )
 
     setup_dspy()
-    app = build_app(agent=ClioAgent(), sessions_path=Path(os.environ["CLIO_GACT_SESSIONS"]))
+    # A fleet shares one env across workers, so the per-worker sessions path may be unset —
+    # fall back to a private temp file so two workers never fight over one sessions store.
+    sessions = os.environ.get("CLIO_GACT_SESSIONS")
+    if not sessions:
+        import tempfile
+
+        sessions = str(Path(tempfile.mkdtemp(prefix="wfleet_")) / "sessions.json")
+    app = build_app(agent=ClioAgent(), sessions_path=Path(sessions))
     # this worker's registry — the parent only sends an expert_id; the worker reconstructs it
     app.state.user_agents.upsert(
         {

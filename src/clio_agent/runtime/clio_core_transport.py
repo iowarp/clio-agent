@@ -412,6 +412,7 @@ class IsolatedExpertInvoker:
         poll: float = 0.1,
         presence_ttl: float = 6.0,
         max_attempts: int = 3,
+        ready_timeout: float = 0.0,
     ) -> None:
         self._store = store
         self._role = role
@@ -420,6 +421,10 @@ class IsolatedExpertInvoker:
         self._poll = poll
         self._presence_ttl = presence_ttl
         self._max_attempts = max_attempts
+        # How long to wait for a live worker to APPEAR before giving up. Default 0.0 keeps the
+        # historical fail-fast behavior; a positive value lets a parent tolerate a fleet that is
+        # still coming up (e.g. just launched on startup) instead of failing the first delegation.
+        self._ready_timeout = ready_timeout
         self._rr = 0  # round-robin cursor over the live set
 
     def _pick(self, exclude: set[str]) -> Optional[str]:
@@ -433,15 +438,31 @@ class IsolatedExpertInvoker:
         self._rr = (self._rr + 1) % len(workers)
         return workers[self._rr]
 
+    async def _pick_ready(self, exclude: set[str]) -> Optional[str]:
+        """Pick a live (untried) worker, waiting up to ``ready_timeout`` for one to appear.
+        With ``ready_timeout == 0`` this is exactly ``_pick`` (immediate). Returns ``None`` if
+        none becomes available in time — the caller decides whether that's a cold-pool error
+        (nothing tried yet) or exhaustion (every reachable worker already tried)."""
+        waited = 0.0
+        while True:
+            worker = self._pick(exclude)
+            if worker is not None or waited >= self._ready_timeout:
+                return worker
+            await asyncio.sleep(self._poll)
+            waited += self._poll
+
     async def invoke(self, request: ExpertRequest) -> ExpertResult:
         tried: set[str] = set()
         last_error: Optional[BaseException] = None
         for _ in range(self._max_attempts):
-            worker = self._pick(tried)
+            worker = await self._pick_ready(tried)
             if worker is None:
                 if tried:  # we exhausted the workers we could reach
                     break
-                raise RuntimeError(f"no live worker for role {self._role!r}")
+                raise RuntimeError(
+                    f"no live worker for role {self._role!r}"
+                    + (f" within {self._ready_timeout}s" if self._ready_timeout else "")
+                )
             tried.add(worker)
             mailbox = ClioCoreMailbox(
                 self._store, prefix=_worker_queue_prefix(self._role, worker, prefix=self._prefix)

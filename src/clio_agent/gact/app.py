@@ -147,7 +147,7 @@ def _install_sigusr1_diagnostic() -> None:
 _install_sigusr1_diagnostic()
 
 from collections.abc import Awaitable, Callable, Iterable, Mapping
-from contextlib import asynccontextmanager, contextmanager, nullcontext
+from contextlib import asynccontextmanager, contextmanager, nullcontext, suppress
 from dataclasses import asdict, replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -6839,6 +6839,89 @@ def isolated_delegation_store(app: Any, mode: str) -> Any:
     return getattr(arc, "store", None)
 
 
+def _maybe_launch_worker_fleet(app: Any) -> None:
+    """Bring up + supervise an isolated worker fleet for this deployment when configured.
+
+    Opt-in, single-box / co-located convenience: only fires when
+    ``CLIO_EXPERT_INVOKER=clio_core_isolated`` AND ``CLIO_CORE_FLEET`` (a
+    ``"role:replicas,..."`` spec) are both set. The workers attach to the agent's OWN store
+    (the same mailbox the parent routes through), so a real delegating turn reaches a separate
+    PROCESS. On a cluster you typically leave ``CLIO_CORE_FLEET`` unset and let the scheduler
+    place one worker per node — the parent still routes the same way; only the launcher differs.
+
+    Never blocks agent readiness (workers come up async; the invoker waits for presence) and
+    never crashes the app — a failed launch just means delegations wait/fail until workers exist.
+    """
+    mode = os.environ.get("CLIO_EXPERT_INVOKER", "").strip().lower()
+    spec_str = os.environ.get("CLIO_CORE_FLEET", "").strip()
+    if mode != "clio_core_isolated" or not spec_str:
+        return
+    store = isolated_delegation_store(app, mode)
+    if store is None:
+        print(
+            "[clio-agent-gact] CLIO_CORE_FLEET set but the agent has no store; "
+            "skipping fleet launch.",
+            flush=True,
+        )
+        return
+    try:
+        from clio_agent.runtime.worker_fleet import (  # noqa: PLC0415
+            LocalSubprocessSpawner,
+            WorkerFleet,
+            cte_worker_env,
+            localfs_worker_env,
+            parse_fleet_spec,
+        )
+
+        specs = parse_fleet_spec(spec_str)
+        worker_env = (
+            localfs_worker_env(store)
+            if getattr(store, "data_dir", None) is not None
+            else cte_worker_env()
+        )
+        log_dir = os.environ.get("CLIO_CORE_FLEET_LOG_DIR", "") or None
+        fleet = WorkerFleet(
+            store,
+            specs,
+            spawner=LocalSubprocessSpawner(log_dir=log_dir),
+            worker_env=worker_env,
+            prefix=os.environ.get("CLIO_CORE_PREFIX", "clio_core_"),
+        )
+        fleet.start(wait_ready=False)  # don't block readiness; the invoker waits for presence
+        stop = asyncio.Event()
+        app.state.worker_fleet = fleet
+        app.state.worker_fleet_stop = stop
+        app.state.worker_fleet_task = asyncio.create_task(fleet.supervise_forever(stop=stop))
+        print(
+            f"[clio-agent-gact] launched isolated worker fleet {fleet.desired_counts()} "
+            "(CLIO_EXPERT_INVOKER=clio_core_isolated).",
+            flush=True,
+        )
+    except Exception as exc:  # noqa: BLE001 - a fleet failure must not crash the agent
+        print(
+            f"[clio-agent-gact] worker fleet launch failed ({exc!r}); delegations will fail "
+            "until workers appear.",
+            flush=True,
+        )
+
+
+async def _shutdown_worker_fleet(app: Any) -> None:
+    """Stop the supervise loop and terminate every worker process (lifespan shutdown)."""
+    stop = getattr(app.state, "worker_fleet_stop", None)
+    task = getattr(app.state, "worker_fleet_task", None)
+    fleet = getattr(app.state, "worker_fleet", None)
+    if stop is not None:
+        stop.set()
+    if task is not None and not task.done():
+        task.cancel()
+        with suppress(asyncio.CancelledError, Exception):
+            await task
+    if fleet is not None:
+        with suppress(Exception):
+            # fleet.stop() blocks on subprocess teardown — keep the loop free
+            await asyncio.get_running_loop().run_in_executor(None, fleet.stop)
+
+
 async def run_child_expert(
     app: "FastAPI",
     agent_def: "AgentDef",
@@ -12626,6 +12709,9 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     yield
 
+    # Tear down a worker fleet this deployment launched (no-op if none).
+    await _shutdown_worker_fleet(app)
+
     lm_config_task = getattr(app.state, "lm_config_task", None)
     for t in (task, agent_task, lm_config_task):
         if t is None:
@@ -12716,6 +12802,10 @@ async def _construct_agent_async(app: "FastAPI") -> None:
 
     app.state.agent = agent
     app.state.arc = agent.arc
+
+    # If this deployment opts into the detached isolated model with a configured fleet,
+    # bring up + supervise the worker processes now that the shared store exists.
+    _maybe_launch_worker_fleet(app)
 
     # Install the deferred permission gate + tool observer now that we
     # know an agent exists to gate. See build_app for why these aren't

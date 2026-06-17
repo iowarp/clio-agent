@@ -195,8 +195,11 @@ async def _invoke_via_isolated(
         raise ValueError("clio_core_isolated needs a role (set CLIO_CORE_ROLE or an expert id)")
     prefix = os.environ.get("CLIO_CORE_PREFIX", "clio_core_")
     timeout = float(os.environ.get("CLIO_CORE_TIMEOUT", "300"))
+    # Tolerate a fleet that is still coming up (just-launched workers): wait this long for a
+    # live worker to appear before failing the delegation. CLIO_CORE_READY_TIMEOUT=0 fails fast.
+    ready_timeout = float(os.environ.get("CLIO_CORE_READY_TIMEOUT", "60"))
     invoker = IsolatedExpertInvoker(
-        store, role=resolved_role, prefix=prefix, timeout=timeout, poll=0.1
+        store, role=resolved_role, prefix=prefix, timeout=timeout, poll=0.1, ready_timeout=ready_timeout
     )
     return await invoker.invoke(request)
 
