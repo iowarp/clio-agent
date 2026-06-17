@@ -9,7 +9,10 @@ from __future__ import annotations
 
 import asyncio
 import os
+import subprocess
+import sys
 import time
+from pathlib import Path
 
 import pytest
 
@@ -266,3 +269,51 @@ async def test_ndp_pipeline_multihop_cross_process(cross_arc, spawn_worker):
     assert "NDP-" in dd.answer and "7Q4Z" in dd.answer
     cross_arc.put("context", "xp_geo_STOP", b"1")
     cross_arc.put("context", "xp_dd_STOP", b"1")
+
+
+@pytest.mark.live
+@pytest.mark.skipif(
+    os.environ.get("CLIO_RUN_LIVE") != "1",
+    reason="live ALCF run: set CLIO_RUN_LIVE=1 (and Argonne auth + CLIO_LM_* env)",
+)
+async def test_cee_worker_subprocess_over_daemon(cross_arc, clio_daemon, tmp_path):
+    """The untangle over the REAL clio_run daemon (CTE transport): a worker SUBPROCESS
+    attaches to the daemon, reconstructs a registered child from the wire, runs it on real
+    ALCF, and publishes back — while the parent (this process) runs no worker. ONE delegation
+    (~10 CTE ops) is well under any wedge. Completes the cross-process untangle proof over the
+    actual transport (the LocalFS twin lives in test_cee_worker)."""
+    prefix = "cee_wkr_"
+    entry = Path(__file__).resolve().parent.parent / "test_runtime" / "_cee_worker_entry.py"
+    log_path = tmp_path / "worker.log"
+    log = open(log_path, "w")  # noqa: SIM115 - closed in finally
+    env = dict(os.environ)
+    env.update(
+        {
+            "CLIO_CTE_WITH_RUNTIME": "0",  # attach the worker to the daemon, don't embed
+            "CLIO_ARC_STORE": "cte",
+            "CLIO_RUN_LIVE": "1",
+            "CLIO_LM_PROVIDER": "argonne",
+            "CLIO_LM_API_BASE": "https://inference-api.alcf.anl.gov/resource_server/sophia/vllm/v1",
+            "CLIO_LM_MODEL": "openai/gpt-oss-120b",
+            "CLIO_CEE_PREFIX": prefix,
+            "CLIO_GACT_SESSIONS": str(tmp_path / "sessions.json"),
+            "XDG_CONFIG_HOME": str(tmp_path / "cfg"),
+        }
+    )
+    proc = subprocess.Popen([sys.executable, str(entry)], env=env, stdout=log, stderr=log)
+    try:
+        invoker = CEEExpertInvoker(CEEMailbox(cross_arc, prefix=prefix), timeout=200, poll=0.2)
+        res = await invoker.invoke(
+            ExpertRequest("calc", "What is 2 + 2? Answer with only the number.", session_id="xproc")
+        )
+        tail = log_path.read_text()[-900:] if log_path.exists() else ""
+        assert res.status == "completed", f"{res.status} {res.error}\n--- worker log ---\n{tail}"
+        assert "4" in res.answer, f"answer={res.answer!r}\n--- worker log ---\n{tail}"
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+        log.close()

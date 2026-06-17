@@ -28,7 +28,12 @@ def main() -> None:
             "system_prompt": "You are a precise calculator. Answer with only the number.",
         }
     )
-    store = make_arc_store(backend="local", data_dir=os.environ["CLIO_ARC_DATA_DIR"])
+    # local (shared dir) by default; CLIO_ARC_STORE=cte + CLIO_CTE_WITH_RUNTIME=0 attaches
+    # the worker to a running clio_run daemon (the real cross-node transport).
+    store = make_arc_store(
+        backend=os.environ.get("CLIO_ARC_STORE", "local"),
+        data_dir=os.environ.get("CLIO_ARC_DATA_DIR") or None,
+    )
     asyncio.run(
         run_cee_worker(store, prefix=os.environ.get("CLIO_CEE_PREFIX", "cee_"), app=app)
     )
