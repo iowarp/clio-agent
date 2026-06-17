@@ -3383,6 +3383,57 @@ def _extract_tools_called_from_trajectory(
     return rows
 
 
+def _propose_edit_diffs_from_pred(pred: Any) -> list[dict[str, Any]]:
+    """Promote successful ``fs_propose_edit`` tool results into file-diff proposals.
+
+    A dynamic tool agent calls ``fs_propose_edit`` as a TOOL; unlike the builtin
+    edit experts it does not populate ``pred.file_diffs``, so the returned
+    proposal (path + unified_diff + new_content) never became a ``file_diff``
+    part or a pending ``/v1/sessions/{sid}/diffs`` row — the TUI could see the
+    tool call but never the diff (iowarp/clio-agent#674). Recover the proposals
+    from the turn's tool results so the standard materialization picks them up.
+
+    Reads ``pred.tools_called`` (which already carries each call's structured
+    result), falling back to parsing ``pred.trajectory``. Only successful
+    (``ok``) calls whose result carries a ``path`` and a diff/new_content are
+    promoted; duplicates by (path, diff-prefix) are collapsed.
+    """
+
+    rows: list[Any] = list(getattr(pred, "tools_called", None) or [])
+    if not rows:
+        rows = _extract_tools_called_from_trajectory(getattr(pred, "trajectory", None))
+    diffs: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for row in rows:
+        if not isinstance(row, Mapping):
+            continue
+        name = str(row.get("name") or row.get("tool") or "")
+        if "propose_edit" not in name:
+            continue
+        if row.get("ok") is False:
+            continue
+        result = row.get("result")
+        if not isinstance(result, Mapping):
+            continue
+        path = str(result.get("path") or "").strip()
+        unified_diff = result.get("unified_diff") or ""
+        new_content = result.get("new_content")
+        if not path or (not unified_diff and new_content is None):
+            continue
+        key = (path, str(unified_diff)[:64])
+        if key in seen:
+            continue
+        seen.add(key)
+        diff: dict[str, Any] = {"path": path, "unified_diff": unified_diff}
+        if new_content is not None:
+            diff["new_content"] = new_content
+        for extra in ("edit_mode", "lines_added", "lines_removed"):
+            if extra in result:
+                diff[extra] = result[extra]
+        diffs.append(diff)
+    return diffs
+
+
 def _dynamic_agent_runtime_provenance(
     app: "FastAPI",
     agent_def: "AgentDef",
@@ -7985,6 +8036,11 @@ async def _run_turn_in_background(
         if not turn_cost:
             turn_cost = float(getattr(pred, "cost_usd", 0.0) or 0.0)
         proposed_diffs = list(getattr(pred, "file_diffs", None) or [])
+        if not proposed_diffs:
+            # Dynamic tool agents call fs_propose_edit as a TOOL and never set
+            # pred.file_diffs; promote those results so they materialize as
+            # file_diff parts + pending /diffs rows (iowarp/clio-agent#674).
+            proposed_diffs = _propose_edit_diffs_from_pred(pred)
         nanoagents = list(getattr(pred, "nanoagents_spawned", None) or [])
         for req in getattr(pred, "permissions_requested", None) or []:
             src = (

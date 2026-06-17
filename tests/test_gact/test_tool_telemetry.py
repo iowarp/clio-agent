@@ -53,8 +53,78 @@ from clio_agent.gact.app import (
     _is_bounded_tool_result,
     _make_tool_observer,
     _merge_tool_call_rows,
+    _propose_edit_diffs_from_pred,
     build_app,
 )
+
+
+class _FakePred:
+    def __init__(self, **kw):
+        self.__dict__.update(kw)
+
+
+def test_propose_edit_promotes_tool_result_to_file_diff() -> None:
+    # iowarp/clio-agent#674: a dynamic tool agent's fs_propose_edit result must
+    # be promoted into a file-diff proposal (it never lands in pred.file_diffs).
+    pred = _FakePred(
+        tools_called=[
+            {"name": "fs_read_file", "ok": True, "result": {"content": "x"}},
+            {
+                "name": "fs_propose_edit",
+                "ok": True,
+                "result": {
+                    "path": "handlers.go",
+                    "unified_diff": "@@ -1 +1 @@\n-old\n+new\n",
+                    "new_content": "new\n",
+                    "lines_added": 1,
+                    "lines_removed": 1,
+                },
+            },
+        ]
+    )
+    diffs = _propose_edit_diffs_from_pred(pred)
+    assert len(diffs) == 1
+    assert diffs[0]["path"] == "handlers.go"
+    assert diffs[0]["unified_diff"].startswith("@@")
+    assert diffs[0]["new_content"] == "new\n"
+    assert diffs[0]["lines_added"] == 1
+
+
+def test_propose_edit_skips_failed_calls_and_dedups() -> None:
+    pred = _FakePred(
+        tools_called=[
+            {
+                "name": "fs_propose_edit",
+                "ok": False,
+                "result": {"path": "a.py", "unified_diff": "d"},
+            },
+            {
+                "name": "fs_propose_edit",
+                "ok": True,
+                "result": {"path": "b.py", "unified_diff": "x"},
+            },
+            {
+                "name": "fs_propose_edit",
+                "ok": True,
+                "result": {"path": "b.py", "unified_diff": "x"},
+            },
+        ]
+    )
+    diffs = _propose_edit_diffs_from_pred(pred)
+    assert [d["path"] for d in diffs] == ["b.py"]  # failed dropped, dup collapsed
+
+
+def test_propose_edit_falls_back_to_trajectory() -> None:
+    pred = _FakePred(
+        tools_called=[],
+        trajectory={
+            "tool_name_0": "fs_propose_edit",
+            "tool_args_0": {"path": "c.py"},
+            "observation_0": {"path": "c.py", "unified_diff": "@@ x @@", "new_content": "c"},
+        },
+    )
+    diffs = _propose_edit_diffs_from_pred(pred)
+    assert len(diffs) == 1 and diffs[0]["path"] == "c.py"
 
 
 @pytest.fixture(autouse=True)
