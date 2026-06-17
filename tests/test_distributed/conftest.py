@@ -35,11 +35,19 @@ def _iowarp_lib_bin() -> tuple[Path, Path]:
     return base / "lib", base / "bin"
 
 
+_DEFAULT_DAEMON_CONF = Path(__file__).resolve().parent / "clio_test_daemon.yaml"
+
+
 def _daemon_env() -> dict[str, str]:
     lib, bind = _iowarp_lib_bin()
     env = dict(os.environ)
     env["LD_LIBRARY_PATH"] = f"{lib}:{bind}:" + env.get("LD_LIBRARY_PATH", "")
     env["CTP_LOG_LEVEL"] = "error"
+    # Pin the daemon's storage config so it's deterministic and checked in, not
+    # whatever happens to be in ~/.clio/clio.yaml (which was a DRAM-only default with
+    # the WAL/perf block commented out). A developer-set CLIO_SERVER_CONF still wins —
+    # e.g. clio_filebacked.yaml to retest the wedge on a disk tier (#659).
+    env.setdefault("CLIO_SERVER_CONF", str(_DEFAULT_DAEMON_CONF))
     return env
 
 

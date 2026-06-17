@@ -1,0 +1,64 @@
+# Default daemon config for the cross-process test fixture (issue #659).
+# The fixture points CLIO_SERVER_CONF here so the daemon's storage config is
+# DETERMINISTIC and checked in — not whatever happens to be in ~/.clio/clio.yaml.
+# (An ambient CLIO_SERVER_CONF still wins: the fixture only sets this when unset,
+# so a developer can override with a file-backed config, e.g. clio_filebacked.yaml.)
+#
+# DRAM tier (no disk artifacts for tests) but with the performance block ENABLED
+# and generous, so the cross-process wedge can't be blamed on an unconfigured WAL.
+
+networking:
+  port: 9413
+  neighborhood_size: 32
+  wait_for_restart: 30
+  wait_for_restart_poll_period: 1
+
+runtime:
+  num_threads: 4
+  queue_depth: 4096
+  local_sched: "default"
+  first_busy_wait: 10000
+  learning_rate: 0.2
+
+compose:
+  - mod_name: clio_bdev
+    pool_name: "ram::chi_default_bdev"
+    pool_query: local
+    pool_id: "301.0"
+    bdev_type: ram
+    capacity: "0g"
+
+  - mod_name: clio_cae_core
+    pool_name: cae_main
+    pool_query: local
+    pool_id: "400.0"
+    next_pool_id: "512.0"
+
+  - mod_name: clio_cte_core
+    pool_name: cte_main
+    pool_query: local
+    pool_id: "512.0"
+
+    storage:
+      - path: "ram::cte_ram_tier1"
+        bdev_type: "ram"
+        capacity_limit: "0g"
+        score: 1.0
+
+    dpe:
+      dpe_type: "max_bw"
+
+    targets:
+      neighborhood: 1
+      default_target_timeout_ms: 30000
+      poll_period_ms: 5000
+
+    performance:
+      stat_targets_period_ms: 50
+      max_concurrent_operations: 256
+      score_threshold: 0.7
+      score_difference_threshold: 0.05
+      flush_metadata_period_ms: 5000
+      flush_data_period_ms: 10000
+      flush_data_min_persistence: 1
+      transaction_log_capacity: "256MB"
