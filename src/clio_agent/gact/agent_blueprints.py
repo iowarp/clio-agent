@@ -63,6 +63,12 @@ class AgentBlueprintDefinition:
         payload["root"] = str(self.root)
         payload["root_path"] = str(self.root_path)
         payload["definition_path"] = str(self.root_path)
+        # kind discriminator (iowarp/clio-agent#663): a *blueprint* is a
+        # structured workflow with a root orchestrator (root_expert set); a
+        # *pack* is a loose collection of experts with no orchestrator root.
+        # Same install/update/delete lifecycle; the kind is a property of the
+        # installed artifact, surfaced so the UI can render and filter them.
+        payload["kind"] = "blueprint" if str(self.root_expert).strip() else "pack"
         return payload
 
 

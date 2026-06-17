@@ -19551,6 +19551,39 @@ def build_app(
                 ).model_dump(exclude_none=True),
             ) from exc
 
+    # ---- /v1/expert-packs/* — thin aliases of the agent-blueprint lifecycle
+    # (iowarp/clio-agent#663). A blueprint (structured workflow with a root
+    # orchestrator) and a pack (loose collection of experts) share ONE
+    # install/update/delete engine; the installed row's ``kind`` field
+    # distinguishes them. These delegate to the blueprint route handlers so
+    # there is exactly one implementation, one provenance model, one set of
+    # structured error envelopes.
+    @app.post("/v1/expert-packs/install", status_code=201)
+    async def install_expert_pack_route(req: dict[str, Any]) -> dict[str, Any]:
+        """Install an expert pack from a source URL/path/ref into workspace or
+        global scope. Alias of ``POST /v1/agent-blueprints/install``; the
+        returned rows carry ``kind`` (blueprint|pack)."""
+        return await install_agent_blueprint_route(req)
+
+    @app.post("/v1/expert-packs/{pack_id:path}/update")
+    async def update_expert_pack_route(
+        pack_id: str,
+        req: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Update an installed expert pack from recorded source provenance.
+        Alias of ``POST /v1/agent-blueprints/{id}/update``."""
+        return await update_agent_blueprint_route(pack_id, req)
+
+    @app.delete("/v1/expert-packs/{pack_id:path}")
+    async def delete_expert_pack_route(
+        pack_id: str,
+        scope: str = "workspace",
+        workspace_id: str = "",
+    ) -> dict[str, Any]:
+        """Delete an installed expert pack from workspace or global scope.
+        Alias of ``DELETE /v1/agent-blueprints/{id}``."""
+        return await delete_agent_blueprint_route(pack_id, scope, workspace_id)
+
     @app.post("/v1/agent-blueprints/{blueprint_id:path}/mcp/{descriptor_id}/enable")
     async def enable_agent_blueprint_mcp_descriptor(
         blueprint_id: str,
