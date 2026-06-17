@@ -146,7 +146,7 @@ def _install_sigusr1_diagnostic() -> None:
 
 _install_sigusr1_diagnostic()
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Awaitable, Callable, Iterable, Mapping
 from contextlib import asynccontextmanager, contextmanager, nullcontext
 from dataclasses import asdict, replace
 from datetime import datetime, timezone
@@ -6813,6 +6813,55 @@ def _unsupported_model_ref_error(
     )
 
 
+async def run_child_expert(
+    app: "FastAPI",
+    agent_def: "AgentDef",
+    prompt: str,
+    *,
+    session_id: str,
+    cancel_requested: "Callable[[], bool] | None" = None,
+    await_work: "Callable[[Any], Awaitable[Any]] | None" = None,
+) -> Any:
+    """Run ONE child-expert turn and return its ``dspy.Prediction``.
+
+    Extracted (module level) from the ``_run_dynamic_agent_sync`` closure so that BOTH
+    callers run a child identically:
+
+    * the in-turn settle loop passes its turn's ``cancel_requested`` (the cancel event) and
+      ``await_work`` (the turn-progress watchdog), preserving today's behavior exactly;
+    * a **separate-process gact worker** (which has no parent turn) passes neither — it just
+      ``build_app``s, looks up the ``AgentDef`` by id, and runs it to completion.
+
+    The blueprint signature is rebuilt inside the executor keyed on
+    ``_ACTIVE_GACT_SESSION_ID``, so it is set on the copied context here (otherwise children
+    resolve empty and routing collapses to ``finish``).
+    """
+    cancel_requested = cancel_requested or (lambda: False)
+    runner = _blueprint_runner_for_agent(agent_def)
+    loop = asyncio.get_running_loop()
+    with _gact_app_context(app), _tool_session_context(session_id):
+        _sid_tok = _ACTIVE_GACT_SESSION_ID.set(session_id)
+        try:
+            turn_context = contextvars.copy_context()
+        finally:
+            _ACTIVE_GACT_SESSION_ID.reset(_sid_tok)
+    exec_awaitable = loop.run_in_executor(
+        None,
+        lambda: turn_context.run(
+            _run_dynamic_agent_compat,
+            runner,
+            app.state.agent,
+            agent_def,
+            prompt,
+            session_id,
+            cancel_requested,
+        ),
+    )
+    if await_work is not None:
+        return await await_work(exec_awaitable)
+    return await exec_awaitable
+
+
 async def _run_turn_in_background(
     app: "FastAPI",
     sid: str,
@@ -7213,32 +7262,16 @@ async def _run_turn_in_background(
             raise
 
     async def _run_dynamic_agent_sync(agent_def: "AgentDef", prompt: str) -> Any:
-        runner = _blueprint_runner_for_agent(agent_def)
-        loop = asyncio.get_running_loop()
-        with _gact_app_context(app), _tool_session_context(sid):
-            # The signature is rebuilt inside the executor (via _build_blueprint_dspy_module);
-            # its routing Literal[children, "finish"] resolves children from the active
-            # blueprint keyed on _ACTIVE_GACT_SESSION_ID. Set it here so the copied context
-            # carries it -- otherwise children resolve empty and next_expert collapses to
-            # Literal["finish"], forcing the agent to finish immediately.
-            _sid_tok = _ACTIVE_GACT_SESSION_ID.set(sid)
-            try:
-                turn_context = contextvars.copy_context()
-            finally:
-                _ACTIVE_GACT_SESSION_ID.reset(_sid_tok)
-        _pred = await _await_turn_work(
-            loop.run_in_executor(
-                None,
-                lambda: turn_context.run(
-                    _run_dynamic_agent_compat,
-                    runner,
-                    app.state.agent,
-                    agent_def,
-                    prompt,
-                    sid,
-                    cancel_requested,
-                ),
-            ),
+        # The core child run is the module-level run_child_expert (shared with a
+        # separate-process worker); this closure passes the turn's cancel signal + the
+        # progress watchdog and keeps the turn-scoped instrumentation below.
+        _pred = await run_child_expert(
+            app,
+            agent_def,
+            prompt,
+            session_id=sid,
+            cancel_requested=cancel_requested,
+            await_work=_await_turn_work,
         )
         # RAW-ROUTE instrumentation: what did THIS agent's LM actually emit as
         # structured expert_handoffs (before any continuation-contract injection)?
