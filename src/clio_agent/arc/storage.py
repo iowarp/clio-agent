@@ -24,6 +24,7 @@ import base64
 import contextlib
 import logging
 import os
+import tempfile
 import threading
 import time
 import warnings
@@ -158,31 +159,42 @@ class LocalFSStore:
             companion.unlink()
 
     def put_if_absent(self, kind: str, name: str, data: bytes) -> bool:
-        """Atomically create ``<name>.msgpack`` iff absent (``O_EXCL``); return whether WE
-        created it. Concurrent creators race to exactly one winner — the kernel guarantees
-        only one ``O_CREAT|O_EXCL`` open succeeds — which is what makes a fresh claim
-        exactly-once. No ``.search`` companion (claim blobs are not searched)."""
-        path = self._dir(kind) / f"{name}.msgpack"
-        try:
-            fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
-        except FileExistsError:
+        """Atomically create ``<name>.msgpack`` iff absent; return whether WE created it.
+        Among concurrent creators exactly one gets ``True`` — the basis for an exactly-once
+        fresh claim.
+
+        Done as write-temp-then-``os.link``, NOT a bare ``O_CREAT|O_EXCL`` write: O_EXCL
+        creates the file BEFORE its content is written, so a racing reader can observe a
+        0-byte file mid-write and mistake it for an abandoned husk (the claim self-heal then
+        overwrites the true winner — an at-least-once double-claim under load). We instead
+        write the full content into a private temp file in the SAME directory and then
+        ``os.link`` it into place: ``link`` is an atomic create-that-fails-if-target-exists,
+        and because the target is a hardlink to the already-complete temp it is NEVER visible
+        empty. So a fresh ``.claim`` is either absent or fully written — no husk window, no
+        double-claim. (A backend without an atomic create — CTE today, clio-core#559 — stays
+        best-effort.) No ``.search`` companion (claim blobs are not searched)."""
+        directory = self._dir(kind)
+        path = directory / f"{name}.msgpack"
+        if path.exists():  # cheap fast-path; the link below is the authoritative gate
             return False
+        fd, tmp_name = tempfile.mkstemp(dir=directory, prefix=f".{name}.", suffix=".tmp")
         try:
             view = memoryview(data)
             written = 0
             while written < len(view):
                 written += os.write(fd, view[written:])  # os.write may short-write
-        except BaseException:
-            # Don't leave a 0-byte husk on a write failure (ENOSPC) or interrupt: an empty
-            # .claim reads back as "no holder", which would PERMANENTLY poison the claim —
-            # every worker re-creates -> FileExists -> False, and the TTL-reclaim path never
-            # runs because the holder stays None. Remove it so a retry can re-create + claim.
             os.close(fd)
+            fd = -1
+            try:
+                os.link(tmp_name, path)  # atomic: fails iff the target already exists
+            except FileExistsError:
+                return False  # another creator won the race
+            return True
+        finally:
+            if fd != -1:
+                os.close(fd)
             with contextlib.suppress(OSError):
-                os.unlink(path)
-            raise
-        os.close(fd)
-        return True
+                os.unlink(tmp_name)  # drop the temp; the target keeps the content via its link
 
     def get(self, kind: str, name: str) -> Optional[bytes]:
         path = self._dir(kind) / f"{name}.msgpack"
