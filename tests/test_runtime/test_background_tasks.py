@@ -102,6 +102,69 @@ async def test_cancel_settles_to_cancelled():
     assert rec.status is TaskStatus.CANCELLED
 
 
+async def test_cancel_before_first_step_settles_immediately():
+    """Cancel right after spawn, before the loop ever runs the task. The coroutine body
+    never executes, so the runner's finally can't settle it — cancel() must. Regression
+    for the hang where such a task stayed QUEUED and every wait() blocked the full timeout."""
+    bt = BackgroundTasks()
+    fired: list[TaskStatus] = []
+
+    async def work(sink):
+        await asyncio.sleep(5)
+        return "should-not-reach"
+
+    tid = bt.spawn(work)
+    bt.on_complete(tid, lambda r: fired.append(r.status))
+    assert bt.status(tid) is TaskStatus.QUEUED  # never ran
+    assert bt.cancel(tid) is True
+    # settled synchronously, without ever entering the coroutine
+    assert bt.status(tid) is TaskStatus.CANCELLED
+    assert bt.get(tid).done.is_set()
+    assert fired == [TaskStatus.CANCELLED]  # on_complete fired exactly once
+    rec = await bt.wait(tid, timeout=0.5)  # must NOT block the timeout
+    assert rec.status is TaskStatus.CANCELLED
+
+
+async def test_double_cancel_is_idempotent():
+    """Cancelling twice settles once: status stays CANCELLED and on_complete fires once."""
+    bt = BackgroundTasks()
+    fired: list[str] = []
+
+    async def work(sink):
+        await asyncio.sleep(5)
+
+    tid = bt.spawn(work)
+    bt.on_complete(tid, lambda r: fired.append(r.id))
+    bt.cancel(tid)
+    bt.cancel(tid)  # second cancel must not re-fire or flip status
+    await bt.wait(tid, timeout=0.5)
+    assert bt.status(tid) is TaskStatus.CANCELLED
+    assert fired == [tid]
+
+
+async def test_cancel_unblocks_a_pending_until_wait():
+    """A waiter parked on a never-satisfied until-predicate is released when the task is
+    cancelled (done flips), rather than spinning until its own timeout."""
+    bt = BackgroundTasks()
+
+    async def work(sink):
+        await asyncio.sleep(5)
+        sink.emit("late")  # the predicate target that never arrives
+
+    tid = bt.spawn(work)
+    await asyncio.sleep(0.01)  # let it start
+
+    async def _cancel_soon():
+        await asyncio.sleep(0.05)
+        bt.cancel(tid)
+
+    canceller = asyncio.ensure_future(_cancel_soon())
+    rec = await bt.wait(tid, until=lambda r: len(r.output) >= 1, timeout=5)
+    await canceller
+    assert rec.status is TaskStatus.CANCELLED  # released by cancellation, not timeout
+    assert rec.output == []  # the predicate never actually held
+
+
 async def test_on_complete_notifies():
     bt = BackgroundTasks()
     seen: list[TaskStatus] = []
