@@ -364,3 +364,16 @@ def test_mailbox_claim_fresh_request_is_exactly_once_under_threads(tmp_path):
     with ThreadPoolExecutor(max_workers=n) as ex:
         wins = list(ex.map(worker, range(n)))
     assert sum(wins) == 1  # exactly one worker claimed the fresh request — no double-claim
+
+
+def test_claim_self_heals_an_empty_husk(tmp_path):
+    """An empty/torn .claim husk (a worker killed mid-write) must not permanently poison the
+    request — claim() overwrites the husk and succeeds instead of dead-ending forever."""
+    store = make_arc_store(backend="local", data_dir=str(tmp_path))
+    mb = CEEMailbox(store, prefix="cee_husk_")
+    rid = mb.submit(ExpertRequest("data", "q"))
+    store.put("context", f"{rid}.claim", b"")  # plant the husk exactly as a torn write leaves
+
+    assert mb.claim(rid, "w1", ttl=6.0) is True  # before the fix this was False forever
+    holder, _ = mb._read_claim(rid)
+    assert holder == "w1"

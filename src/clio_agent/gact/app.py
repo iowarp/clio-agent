@@ -6836,7 +6836,13 @@ async def run_child_expert(
     ``_ACTIVE_GACT_SESSION_ID``, so it is set on the copied context here (otherwise children
     resolve empty and routing collapses to ``finish``).
     """
-    cancel_requested = cancel_requested or (lambda: False)
+    # When the caller gives no cancel signal (the separate-process worker path), back one
+    # with a flag we trip on cancellation, so the child running in the executor THREAD can
+    # cooperatively abort (its runner polls cancel_requested) instead of wedging the thread
+    # until the call finishes. The in-turn path passes its own cancel_requested + watchdog.
+    _cancel_flag = threading.Event()
+    if cancel_requested is None:
+        cancel_requested = _cancel_flag.is_set
     runner = _blueprint_runner_for_agent(agent_def)
     loop = asyncio.get_running_loop()
     with _gact_app_context(app), _tool_session_context(session_id):
@@ -6857,9 +6863,13 @@ async def run_child_expert(
             cancel_requested,
         ),
     )
-    if await_work is not None:
-        return await await_work(exec_awaitable)
-    return await exec_awaitable
+    try:
+        if await_work is not None:
+            return await await_work(exec_awaitable)
+        return await exec_awaitable
+    except asyncio.CancelledError:
+        _cancel_flag.set()  # signal the executor thread's cooperative-cancel checks
+        raise
 
 
 async def _run_turn_in_background(

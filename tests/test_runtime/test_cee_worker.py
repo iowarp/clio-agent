@@ -132,3 +132,24 @@ async def test_worker_subprocess_runs_child_over_shared_store(tmp_path):
             proc.kill()
             proc.wait()
         log.close()
+
+
+async def test_worker_handler_drains_a_raising_child_as_failed(monkeypatch):
+    """Defense-in-depth: a child that RAISES drains as a failed result from the handler
+    itself (not propagating), so the guarantee holds even outside serve_one's containment."""
+    from types import SimpleNamespace
+
+    import clio_agent.gact.app as appmod
+    from clio_agent.runtime.cee_worker import build_child_handler
+
+    monkeypatch.setattr(appmod, "_resolve_dynamic_agent", lambda app, eid: SimpleNamespace(id=eid))
+
+    async def boom(*_a, **_k):
+        raise RuntimeError("child exploded")
+
+    monkeypatch.setattr(appmod, "run_child_expert", boom)
+
+    handler = build_child_handler(object())  # app unused — lookup + run are stubbed
+    res = await handler(ExpertRequest("x", "q"))
+    assert res.status == "failed"
+    assert "child exploded" in (res.error or "")

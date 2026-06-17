@@ -32,10 +32,15 @@ Handler = Callable[[ExpertRequest], Awaitable[ExpertResult]]
 def build_child_handler(app: Any) -> Handler:
     """A mailbox handler that reconstructs and runs a child expert in ``app``.
 
-    An ``expert_id`` not in this worker's registry drains as a ``failed`` result (it never
-    hangs the parent); ``run_child_expert`` itself records a child that raises as a failed
-    prediction, so one bad delegation can't kill the worker loop.
+    An ``expert_id`` not in this worker's registry drains as a ``failed`` result. A child
+    that RAISES is contained two ways: ``serve_one``/``_serve_under_lease`` (cee_transport)
+    publish a failed/worker_error result for the worker loop, and — so the guarantee holds
+    for ANY caller, not just via serve_one — this handler itself turns a raising run into a
+    ``failed`` ExpertResult (``run_child_expert`` does NOT catch). Either way one bad
+    delegation never hangs the parent or kills the loop.
     """
+    import asyncio  # noqa: PLC0415
+
     from clio_agent.gact.app import _resolve_dynamic_agent, run_child_expert  # noqa: PLC0415
     from clio_agent.gact.delegation_invoker import expert_result_from_prediction  # noqa: PLC0415
 
@@ -47,12 +52,19 @@ def build_child_handler(app: Any) -> Handler:
                 status="failed",
                 error=f"unknown expert {req.expert_id!r} in this worker's registry",
             )
-        pred = await run_child_expert(
-            app,
-            agent_def,
-            req.question,
-            session_id=req.session_id or f"cee-worker:{req.expert_id}",
-        )
+        try:
+            pred = await run_child_expert(
+                app,
+                agent_def,
+                req.question,
+                session_id=req.session_id or f"cee-worker:{req.expert_id}",
+            )
+        except asyncio.CancelledError:
+            raise  # cooperative shutdown — never swallow
+        except Exception as exc:  # noqa: BLE001 - drain as failed, never hang the parent
+            return ExpertResult(
+                expert_id=req.expert_id, status="failed", error=f"{type(exc).__name__}: {exc}"
+            )
         return expert_result_from_prediction(pred, expert_id=req.expert_id)
 
     return handler

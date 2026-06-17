@@ -121,7 +121,13 @@ class CEEMailbox:
                 return True
             holder, ts = self._read_claim(rid)  # lost the create race — the winner holds it
             if holder is None:
-                return False
+                # The .claim blob exists but is empty/torn (a husk from an interrupted write,
+                # e.g. a worker killed between create and write), NOT a live lease. Overwrite
+                # it to take the claim rather than dead-end forever — the TTL-reclaim path
+                # below can never run while holder stays None.
+                self._store.put(_KIND, f"{rid}.claim", f"{token}|{now}".encode("utf-8"))
+                holder2, _ = self._read_claim(rid)
+                return holder2 == token
         if holder != token and (now - ts) < ttl:
             return False  # a live worker holds the lease
         # An EXISTING claim that is ours, or another's that has EXPIRED -> (re)take it. This

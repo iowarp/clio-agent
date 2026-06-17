@@ -323,3 +323,15 @@ def test_resolve_trace_process_tag_from_env(monkeypatch) -> None:
     monkeypatch.setenv("CLIO_SEMANTIC_TRACE_PER_PROCESS", "1")
     auto = se._resolve_trace_process_tag()
     assert auto and str(os.getpid()) in auto  # auto-derives <hostname>-<pid>
+
+
+def test_resolve_trace_tag_falls_back_when_sanitized_empty(monkeypatch):
+    """An explicit tag that sanitizes to '' must NOT silently revert to the shared filename
+    (defeating isolation) — it falls back to a guaranteed-unique pid tag."""
+    import os as _os
+
+    from clio_agent.gact import semantic_events as se
+
+    monkeypatch.setenv("CLIO_SEMANTIC_TRACE_PROCESS_TAG", "///")  # sanitizes to ""
+    tag = se._resolve_trace_process_tag()
+    assert tag and str(_os.getpid()) in tag  # isolation preserved via pid fallback, not ""

@@ -140,3 +140,21 @@ def test_put_if_absent_is_atomic_under_thread_race(tmp_path):
     assert store.get("context", "claimx") == f"w{winner}".encode()  # winner's bytes intact
     assert store.put_if_absent("context", "claimx", b"late") is False  # existing -> no overwrite
     assert store.get("context", "claimx") == f"w{winner}".encode()
+
+
+def test_put_if_absent_cleans_up_on_write_failure(tmp_path, monkeypatch):
+    """A write failure must NOT leave a 0-byte husk — an empty record would read back as
+    'no holder' and permanently poison a claim. The file is removed so a retry can claim."""
+
+    store = make_arc_store(backend="local", data_dir=str(tmp_path))
+
+    def boom(_fd, _data):
+        raise OSError(28, "ENOSPC")
+
+    monkeypatch.setattr("clio_agent.arc.storage.os.write", boom)
+    with pytest.raises(OSError):
+        store.put_if_absent("context", "rid_a.claim", b"tok|123.0")
+    monkeypatch.undo()
+
+    assert store.get("context", "rid_a.claim") is None  # no husk left behind
+    assert store.put_if_absent("context", "rid_a.claim", b"tok|456.0") is True  # retry works

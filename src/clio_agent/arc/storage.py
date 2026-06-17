@@ -21,6 +21,7 @@ See PLAN.md v0.3.0 Task 2 for requirements.
 """
 
 import base64
+import contextlib
 import logging
 import os
 import threading
@@ -167,9 +168,20 @@ class LocalFSStore:
         except FileExistsError:
             return False
         try:
-            os.write(fd, data)
-        finally:
+            view = memoryview(data)
+            written = 0
+            while written < len(view):
+                written += os.write(fd, view[written:])  # os.write may short-write
+        except BaseException:
+            # Don't leave a 0-byte husk on a write failure (ENOSPC) or interrupt: an empty
+            # .claim reads back as "no holder", which would PERMANENTLY poison the claim —
+            # every worker re-creates -> FileExists -> False, and the TTL-reclaim path never
+            # runs because the holder stays None. Remove it so a retry can re-create + claim.
             os.close(fd)
+            with contextlib.suppress(OSError):
+                os.unlink(path)
+            raise
+        os.close(fd)
         return True
 
     def get(self, kind: str, name: str) -> Optional[bytes]:

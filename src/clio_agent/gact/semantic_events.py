@@ -305,9 +305,13 @@ def _resolve_trace_process_tag() -> str:
     otherwise ``CLIO_SEMANTIC_TRACE_PER_PROCESS=1`` auto-derives ``<hostname>-<pid>`` so a
     cluster launcher can flip one flag and every process gets its own per-session file."""
     explicit = os.environ.get("CLIO_SEMANTIC_TRACE_PROCESS_TAG", "").strip()
+    auto = os.environ.get("CLIO_SEMANTIC_TRACE_PER_PROCESS", "").strip().lower() in {"1", "true", "yes", "on"}
     if explicit:
-        return _sanitize_trace_tag(explicit)
-    if os.environ.get("CLIO_SEMANTIC_TRACE_PER_PROCESS", "").strip().lower() in {"1", "true", "yes", "on"}:
+        tag = _sanitize_trace_tag(explicit)
+        # The operator asked for per-process isolation; if their tag sanitized to nothing,
+        # do NOT silently fall back to the SHARED filename — use a guaranteed-unique pid tag.
+        return tag or _sanitize_trace_tag(f"{socket.gethostname()}-{os.getpid()}")
+    if auto:
         return _sanitize_trace_tag(f"{socket.gethostname()}-{os.getpid()}")
     return ""
 
@@ -351,6 +355,10 @@ class FileSemanticTraceBackend:
         # (cross-host append is not atomic -> interleaved/corrupt lines). Empty by default:
         # one ``<session>.semantic.jsonl`` per session, unchanged.
         self._process_tag = _sanitize_trace_tag(process_tag)
+        # Resolve single-file vs directory-of-per-session-files ONCE (not per emit): a path is
+        # a single JSONL file only when it carries a recognised trace suffix AND is not an
+        # existing directory (a dir named like "trace.jsonl" must still be a directory).
+        self._single_file = path.suffix.lower() in self._FILE_SUFFIXES and not path.is_dir()
         _ensure_trace_writer()
 
     # A configured path is a single JSONL file ONLY when it carries a recognised
@@ -362,11 +370,10 @@ class FileSemanticTraceBackend:
     _FILE_SUFFIXES = frozenset({".jsonl", ".json", ".ndjson", ".log"})
 
     def _path_for(self, event: SemanticEvent) -> Path:
-        if self.path.suffix.lower() in self._FILE_SUFFIXES:
+        if self._single_file:
             return self.path
-        if self._process_tag:
-            return self.path / f"{event.session_id}.{self._process_tag}.semantic.jsonl"
-        return self.path / f"{event.session_id}.semantic.jsonl"
+        stem = f"{event.session_id}.{self._process_tag}" if self._process_tag else event.session_id
+        return self.path / f"{stem}.semantic.jsonl"
 
     def emit(self, event: SemanticEvent) -> None:
         # Near-zero work on the caller (which may be the turn's event-loop thread):
