@@ -10512,6 +10512,19 @@ _STREAM_FALLBACK_REASON_DEFINITIONS: dict[str, dict[str, Any]] = {
             "deltas. The blocking path recovers it via the completion fallback."
         ),
     },
+    "stream_disabled_live_streaming": {
+        "category": "runtime_configuration",
+        "synthetic_posthoc": True,
+        "live_streaming": False,
+        "recovery_actions": ["continue_without_live_streaming"],
+        "description": (
+            "Live streaming is disabled by configuration "
+            "(runtime.live_streaming / CLIO_LIVE_STREAMING=0); the blocking path "
+            "runs instead so reasoning_content-channel answers are recovered and "
+            "no streamify task group can fail. Opt-out for reasoning models whose "
+            "provider streams the answer on the reasoning channel."
+        ),
+    },
     "streaming_dependency_unavailable": {
         "category": "runtime_configuration",
         "synthetic_posthoc": True,
@@ -10814,6 +10827,22 @@ def _stream_response_prefix(field_name: str, previous_field_name: str) -> str:
 _REASONING_HEARTBEAT_S = 1.0
 
 
+def _describe_stream_exc(exc: BaseException) -> str:
+    """Format a streaming exception for logging, UNWRAPPING ``ExceptionGroup``.
+
+    ``streamify`` runs the agent forward inside an anyio task group, so a failure
+    surfaces as ``ExceptionGroup`` whose ``str()`` is only the opaque wrapper
+    ("unhandled errors in a TaskGroup (1 sub-exception)") — the real cause lives
+    in ``.exceptions``. Recurse into the leaves so the captured detail names the
+    actual provider/transport error instead of the wrapper.
+    """
+    group = getattr(exc, "exceptions", None)
+    if group:
+        leaves = "; ".join(_describe_stream_exc(sub) for sub in group)
+        return f"{type(exc).__name__}[{leaves}]"
+    return f"{type(exc).__name__}: {exc}"
+
+
 async def _try_streamed_forward(
     app: "FastAPI",
     enriched_text: str,
@@ -10848,6 +10877,21 @@ async def _try_streamed_forward(
 
         if _guided_output_enabled():
             _record_stream_fallback(app, sid, "stream_disabled_guided_output")
+            return None
+    except Exception:  # noqa: BLE001 - never let this gate break the turn
+        pass
+
+    # Some reasoning-model + provider combos stream the answer entirely on the
+    # reasoning_content delta channel (which content-only stream listeners miss
+    # and which bypasses _process_completion's content<-reasoning_content
+    # recovery) or fail the streamify task group outright. Routing them through
+    # the blocking path recovers the answer. Default ON (unchanged for every
+    # model that streams cleanly); opt out per model via CLIO_LIVE_STREAMING=0.
+    try:
+        from clio_agent.config import _live_streaming_enabled  # noqa: PLC0415
+
+        if not _live_streaming_enabled():
+            _record_stream_fallback(app, sid, "stream_disabled_live_streaming")
             return None
     except Exception:  # noqa: BLE001 - never let this gate break the turn
         pass
@@ -10989,17 +11033,20 @@ async def _try_streamed_forward(
                     except Exception:  # noqa: BLE001 - heartbeat is best-effort
                         pass
     except Exception as exc:
+        detail = _describe_stream_exc(exc)
         if emitted_any:
             raise _StreamingOutputError(
-                f"live streaming failed after emitting output: {exc}"
+                f"live streaming failed after emitting output: {detail}"
             ) from exc
         _record_stream_fallback(
             app,
             sid,
             "stream_failed_before_output",
-            f"{type(exc).__name__}: {exc}",
+            detail,
         )
-        raise _StreamingOutputError(f"live streaming failed before emitting output: {exc}") from exc
+        raise _StreamingOutputError(
+            f"live streaming failed before emitting output: {detail}"
+        ) from exc
     if emitted_any and final_pred is None:
         raise _StreamingOutputError(
             "live streaming ended after emitting output without a final prediction"

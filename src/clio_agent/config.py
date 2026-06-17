@@ -1569,6 +1569,46 @@ def _guided_output_enabled() -> bool:
         }
 
 
+def _live_streaming_enabled() -> bool:
+    """Whether the top-level GACT turn streams the agent's answer live
+    (``dspy.streamify`` in :func:`gact.app._try_streamed_forward`) or runs the
+    canonical BLOCKING path instead.
+
+    Default ON — unchanged behavior for every model that streams cleanly
+    (gpt-oss / gemma / qwopus). The escape hatch exists because some
+    reasoning-model + provider combinations stream their answer entirely on the
+    ``reasoning_content`` delta channel — which DSPy's content-only stream
+    listeners cannot fold into the answer, and which bypasses the
+    ``content←reasoning_content`` recovery in
+    :meth:`IOLoggingLM._process_completion` (that recovery only runs on the
+    blocking path). Symptoms (observed on nvidia/nemotron over ALCF Sophia):
+    an empty answer (``stream_completed_without_chunks`` → ``empty_response``)
+    or a streamify async ``ExceptionGroup`` ("live streaming failed before
+    emitting output"). Disabling live streaming routes such a model through the
+    blocking path, where the reasoning channel is recovered and there is no
+    streamify task group to fail.
+
+    Configurable (``runtime.live_streaming`` / ``CLIO_LIVE_STREAMING``), default
+    ON; opt OUT per grind / per model.
+    """
+    try:
+        from clio_agent import conf  # noqa: PLC0415
+
+        return bool(
+            conf.resolve(
+                "runtime.live_streaming",
+                env="CLIO_LIVE_STREAMING",
+                default=True,
+                cast=conf.as_bool,
+            )
+        )
+    except Exception:
+        raw = os.environ.get("CLIO_LIVE_STREAMING", "").strip().lower()
+        if raw in {"0", "false", "no", "off"}:
+            return False
+        return True
+
+
 def _reasoning_model_capability(config: LMProviderConfig) -> bool:
     """Per-model: is this a reasoning model (qwopus / qwen3-family ...)?
 
