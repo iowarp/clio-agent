@@ -96,10 +96,23 @@ bug, not storage/WAL. See `docs/design/stress-findings.md`.
        LIVE on ALCF: the real hinge delegates to TWO worker SUBPROCESSES that register presence in the
        agent's store; a child runs in a separate process and the answer folds back, ZERO claim blobs,
        parent's `run_child` never touched. Commit `3b33406`.
-  REMAINING (smaller): the same over the real `clio_run` daemon (CTE transport) with the `io_depth:256`
-  stopgap (clio-core#561); and carrying routing/`expert_handoffs` back through the *settle loop* for the
-  in-process `mode="clio_core"` path (the isolated mode already folds answer+routing back via
-  `prediction_from_result`; the in-process-worker settle consumption is the remaining lossy seam).
+    5. ✅ **Topology/orchestration + the live default** (`runtime/worker_fleet.py`, commit `06d0783`):
+       `WorkerFleet` spawns N isolated workers per role over the shared store, supervises (respawns a
+       dead slot), and tears down; the `Spawner` seam is `LocalSubprocessSpawner` here and a node-placing
+       scheduler (srun/k8s) on a cluster. The app lifespan auto-launches+supervises a fleet when
+       `CLIO_EXPERT_INVOKER=clio_core_isolated` + `CLIO_CORE_FLEET=<spec>`; `IsolatedExpertInvoker`
+       gained `ready_timeout` so the first delegation tolerates a still-starting fleet. Proven LIVE on
+       ALCF end-to-end through the FULL settle loop: a real POSTed delegating TURN
+       (`_execute_delegated_experts` → `_invoke_child_expert` → isolated → fleet) runs its child in a
+       separate worker PROCESS and folds the real answer into the turn's `expert_handoffs` — the parent's
+       planner rigged to fail if it ever ran the child, so a pass proves out-of-process execution.
+  REMAINING — **the one external blocker, not ours**: all isolated proofs are over a shared **LocalFS**
+  store (single box). On a cluster the identical code uses the CTE attached to `clio_run`, which still
+  WEDGES (clio-core#561); until clio-core fixes that, the isolated path cannot be proven over the real
+  cross-node transport. The code is store-agnostic (`app.state.arc.store`), so no clio-agent change is
+  pending — but **NOT multinode-ready** until #561 lands. (Lesser: carrying routing/`expert_handoffs`
+  back through the settle loop for the in-process `mode="clio_core"` path; the isolated mode already
+  folds answer+routing back via `prediction_from_result`.)
 - [x] **`CLIO_EXPERT_INVOKER=loopback` on real ALCF** through the boundary — survives the lossy
   prediction (answer + routing preserved; trajectory/tools stay in-process until #659 carries
   them). Live-proven (`test_delegation_invoker_live.py`), plus a `clio_core`-mode live twin.
