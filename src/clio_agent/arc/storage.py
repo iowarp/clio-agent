@@ -76,6 +76,16 @@ class ARCStore(Protocol):
         """
         ...
 
+    def put_if_absent(self, kind: str, name: str, data: bytes) -> bool:
+        """Atomically create ``(kind, name)`` only if it does not exist; return whether
+        THIS caller created it. The atomicity contract is the basis for an exactly-once
+        claim/lease: among concurrent callers exactly one gets ``True``.
+        :class:`LocalFSStore` is atomic (``O_EXCL``); a backend without an atomic
+        put-if-absent (CTE today — see clio-core#559) is best-effort and may let two
+        racing creators both win, so strict exactly-once across processes depends on the
+        backend providing real compare-and-swap."""
+        ...
+
     def get(self, kind: str, name: str) -> Optional[bytes]:
         """Return bytes for ``(kind, name)`` or ``None`` if absent."""
         ...
@@ -145,6 +155,22 @@ class LocalFSStore:
             companion.write_text(search_text, encoding="utf-8")
         elif companion.exists():
             companion.unlink()
+
+    def put_if_absent(self, kind: str, name: str, data: bytes) -> bool:
+        """Atomically create ``<name>.msgpack`` iff absent (``O_EXCL``); return whether WE
+        created it. Concurrent creators race to exactly one winner — the kernel guarantees
+        only one ``O_CREAT|O_EXCL`` open succeeds — which is what makes a fresh claim
+        exactly-once. No ``.search`` companion (claim blobs are not searched)."""
+        path = self._dir(kind) / f"{name}.msgpack"
+        try:
+            fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+        except FileExistsError:
+            return False
+        try:
+            os.write(fd, data)
+        finally:
+            os.close(fd)
+        return True
 
     def get(self, kind: str, name: str) -> Optional[bytes]:
         path = self._dir(kind) / f"{name}.msgpack"
@@ -324,6 +350,18 @@ class CTEStore:
             self._client.DelBlob(tag.GetTagId(), companion)  # drop a now-stale companion
         # ``tier`` is advisory: the default single DRAM tier makes ReorganizeBlob a
         # no-op. Wire tier->score only when a real file/HDD bdev is configured.
+
+    def put_if_absent(self, kind: str, name: str, data: bytes) -> bool:
+        """Best-effort create-if-absent. NOT atomic on CTE today: PutBlob overwrites
+        unconditionally and there is no put-if-absent / compare-and-swap primitive
+        (clio-core#559), so two simultaneous creators can both observe 'absent' and both
+        write. This narrows the window (a prior holder blocks) but cannot close it —
+        strict exactly-once across processes needs the CTE CAS. Returns whether we believe
+        we created it."""
+        if self.exists(kind, name):
+            return False
+        self.put(kind, name, data)
+        return True
 
     def get(self, kind: str, name: str) -> Optional[bytes]:
         tag = self._cte.Tag(kind)

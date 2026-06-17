@@ -112,8 +112,21 @@ class CEEMailbox:
             return False
         now = time.time() if now is None else now
         holder, ts = self._read_claim(rid)
-        if holder is not None and holder != token and (now - ts) < ttl:
+        if holder is None:
+            # FRESH request: atomically create the claim. On a store with an atomic
+            # put_if_absent (LocalFS O_EXCL) two workers racing a brand-new request can no
+            # longer BOTH win — exactly-once. (CTE is best-effort until clio-core#559's
+            # CAS lands; this still narrows the window.)
+            if self._store.put_if_absent(_KIND, f"{rid}.claim", f"{token}|{now}".encode("utf-8")):
+                return True
+            holder, ts = self._read_claim(rid)  # lost the create race — the winner holds it
+            if holder is None:
+                return False
+        if holder != token and (now - ts) < ttl:
             return False  # a live worker holds the lease
+        # An EXISTING claim that is ours, or another's that has EXPIRED -> (re)take it. This
+        # reclaim overwrite stays non-atomic (needs the CAS), but it is far rarer than the
+        # fresh-claim race and bounded by the TTL.
         self._store.put(_KIND, f"{rid}.claim", f"{token}|{now}".encode("utf-8"))
         holder2, _ = self._read_claim(rid)
         return holder2 == token

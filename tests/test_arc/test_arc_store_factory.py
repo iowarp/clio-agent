@@ -115,3 +115,28 @@ def test_cte_backs_the_live_segment_plane():
     arc2 = ARCMemory(store=make_arc_store(backend="cte"))
     assert len(arc2.render_segments(sid, scope)) == 2
     arc.clear_all()
+
+
+def test_put_if_absent_is_atomic_under_thread_race(tmp_path):
+    """O_EXCL: many threads racing to create the SAME record yield exactly one winner —
+    the basis for an exactly-once claim. Serialized single-process calls can't show this;
+    real OS threads race the open() syscall (the GIL is released around it)."""
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    store = make_arc_store(backend="local", data_dir=str(tmp_path))
+    n = 64
+    barrier = threading.Barrier(n)
+
+    def attempt(i: int) -> bool:
+        barrier.wait()  # release all threads at once to maximize the race
+        return store.put_if_absent("context", "claimx", f"w{i}".encode())
+
+    with ThreadPoolExecutor(max_workers=n) as ex:
+        results = list(ex.map(attempt, range(n)))
+
+    assert sum(results) == 1  # exactly one creator won
+    winner = results.index(True)
+    assert store.get("context", "claimx") == f"w{winner}".encode()  # winner's bytes intact
+    assert store.put_if_absent("context", "claimx", b"late") is False  # existing -> no overwrite
+    assert store.get("context", "claimx") == f"w{winner}".encode()

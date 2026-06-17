@@ -341,3 +341,26 @@ async def test_concurrent_clio_to_clio_over_cte_real_alcf():
         await asyncio.gather(*workers)
         for name, _ in list(store.scan("context", "cee_stress_")):
             store.delete("context", name)
+
+
+def test_mailbox_claim_fresh_request_is_exactly_once_under_threads(tmp_path):
+    """The fresh-claim race behind at-least-once double-execution: many workers claiming
+    ONE brand-new request must yield exactly one winner now that the fresh claim is an
+    atomic O_EXCL create. Real OS threads, so put_if_absent actually races. (With the old
+    non-atomic read-then-write this could occasionally return 2 — the double-claim.)"""
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    store = make_arc_store(backend="local", data_dir=str(tmp_path))
+    mb = CEEMailbox(store, prefix="cl_")
+    rid = mb.submit(ExpertRequest("data", "q"))
+    n = 32
+    barrier = threading.Barrier(n)
+
+    def worker(i: int) -> bool:
+        barrier.wait()
+        return mb.claim(rid, f"w{i}", ttl=6.0)
+
+    with ThreadPoolExecutor(max_workers=n) as ex:
+        wins = list(ex.map(worker, range(n)))
+    assert sum(wins) == 1  # exactly one worker claimed the fresh request — no double-claim
