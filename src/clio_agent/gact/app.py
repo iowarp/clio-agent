@@ -10966,6 +10966,28 @@ def _is_textual_workspace_file(name: str, raw: bytes) -> bool:
     return True
 
 
+def _latency_stat(samples: list[float]) -> Any:
+    """Build a ``MetricsLatencyStat`` (count/p50/p95/max) from latency samples.
+
+    Nearest-rank percentiles over the positive samples; empty -> all-zero stat.
+    Used to populate ``GET /v1/metrics.latencies`` from real recorded tool-call
+    durations (iowarp/clio-agent#655) so the TUI's live-profiling gate sees a
+    non-empty signal on a real backend instead of always ``{}``."""
+    from clio_agent.gact.types import MetricsLatencyStat  # noqa: PLC0415
+
+    vals = sorted(float(s) for s in samples if isinstance(s, (int, float)) and s > 0)
+    if not vals:
+        return MetricsLatencyStat()
+
+    def pct(p: float) -> float:
+        if len(vals) == 1:
+            return vals[0]
+        idx = min(len(vals) - 1, int(round((p / 100.0) * (len(vals) - 1))))
+        return vals[idx]
+
+    return MetricsLatencyStat(count=len(vals), p50_ms=pct(50), p95_ms=pct(95), max_ms=vals[-1])
+
+
 def _describe_stream_exc(exc: BaseException) -> str:
     """Format a streaming exception for logging, UNWRAPPING ``ExceptionGroup``.
 
@@ -21126,10 +21148,25 @@ def build_app(
 
         message_total = 0
         role_counts: dict[str, int] = {}
+        # iowarp/clio-agent#655: aggregate real tool-call latencies (recorded as
+        # duration_ms on each message's tools_called metadata) into the metrics
+        # envelope, keyed per tool plus an overall "tool_call" bucket, so the
+        # endpoint reports live timing instead of an always-empty {}.
+        latency_samples: dict[str, list[float]] = {}
         for rows in app.state.messages.values():
             message_total += len(rows)
             for m in rows:
                 role_counts[m.role] = role_counts.get(m.role, 0) + 1
+                for call in (getattr(m, "metadata", None) or {}).get("tools_called") or []:
+                    if not isinstance(call, dict):
+                        continue
+                    dur = call.get("duration_ms")
+                    if not isinstance(dur, (int, float)) or dur <= 0:
+                        continue
+                    name = str(call.get("name") or call.get("tool") or "tool")
+                    latency_samples.setdefault(f"tool:{name}", []).append(float(dur))
+                    latency_samples.setdefault("tool_call", []).append(float(dur))
+        latencies = {key: _latency_stat(vals) for key, vals in latency_samples.items()}
 
         # CLIO-BBBBBBBBBB24: tokens + cost rollup across every
         # session's cumulative counters.
@@ -21155,6 +21192,7 @@ def build_app(
                 output_total=tokens_output,
             ),
             cost=MetricsCost(total_usd=cost_total),
+            latencies=latencies,
         )
 
     # ---- /v1/workspaces (CLIO-BBBBBBBBBB-WS) -------------------------

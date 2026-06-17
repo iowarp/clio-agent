@@ -133,7 +133,23 @@ subscribers; the UI sees MCP/provider status on the session stream. No backend c
 the backend so a pure-web `EventSource` to `/v1/sessions/{sid}/events` works. Deploy/UI-config
 action, not a code gap.
 
-### 2.9 ⏸️ #672 — `_UnsupportedSessionAgent` in the isolated gate
+### 2.9 🟩 #655 — `/v1/metrics.latencies` now populated
+`GET /v1/metrics` previously always returned `latencies: {}`, so the TUI's strict
+live-profiling gate (gact-tui#160/#151) couldn't tell a real backend from an emulator.
+- **Now**: `latencies` aggregates real recorded tool-call durations, keyed per tool
+  (`tool:<name>`) plus an overall `tool_call` bucket, each a
+  `{count, p50_ms, p95_ms, max_ms}` stat. Non-empty whenever a turn has run tools.
+- **UI action**: render the Metrics tab / active-stream metrics from `latencies`; a
+  non-empty `latencies` is the live-backend signal.
+
+### 2.10 ✅ #640 — durable Agent Blueprint marketplace-source registry (already implemented)
+List/add(git URL, https+ssh)/refresh/delete with durable persistence to
+`~/.config/clio-agent/agent-blueprint-sources.json` (survives restarts/fresh workspaces):
+`GET/POST /v1/agent-blueprints/sources`, `POST /v1/agent-blueprints/sources/{id}/refresh`,
+`DELETE /v1/agent-blueprints/sources/{id}`, and install-by-`source_id` via
+`POST /v1/agent-blueprints/install`. No backend change needed — **gact-tui#128 unblocked**.
+
+### 2.11 ⏸️ #672 — `_UnsupportedSessionAgent` in the isolated gate
 Deploy/config (CLIO_KIT_PATH / blueprint install in the isolated config), not a backend bug
 — pending close confirmation with the team.
 
