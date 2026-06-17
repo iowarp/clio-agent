@@ -111,15 +111,23 @@ class BackgroundTasks:
                 rec.status = TaskStatus.FAILED
                 rec.error = f"{type(exc).__name__}: {exc}"
             finally:
-                rec.done.set()
-                for cb in tuple(self._on_complete.get(tid, ())):
-                    try:
-                        cb(rec)
-                    except Exception:  # noqa: BLE001 — a bad notifier can't break completion
-                        pass
+                self._finalize(rec)
 
         rec.task = asyncio.ensure_future(_runner())
         return tid
+
+    def _finalize(self, rec: "TaskRecord") -> None:
+        """Set ``done`` and fire completion callbacks exactly once. Both the runner's
+        finally and the cancel-before-start path route through here, so a task settles
+        once and only once regardless of which path reaches it first."""
+        if rec.done.is_set():
+            return
+        rec.done.set()
+        for cb in tuple(self._on_complete.get(rec.id, ())):
+            try:
+                cb(rec)
+            except Exception:  # noqa: BLE001 — a bad notifier can't break completion
+                pass
 
     def get(self, tid: str) -> Optional[TaskRecord]:
         return self._records.get(tid)
@@ -175,11 +183,24 @@ class BackgroundTasks:
 
     def cancel(self, tid: str) -> bool:
         """Request cancellation. Returns whether a cancel was delivered; the status
-        settles to CANCELLED once the task unwinds (await the handle to observe it)."""
+        settles to CANCELLED once the task unwinds (await the handle to observe it).
+
+        A task cancelled *before its first step* (e.g. cancel right after spawn, before
+        the loop runs it) never enters its coroutine body, so the runner's finally — the
+        thing that sets ``done`` and fires callbacks — never runs. Left alone, that task
+        stays QUEUED forever and any ``wait`` on it blocks the full timeout. So when the
+        record is still QUEUED at cancel time (cancel() is synchronous; the loop can't
+        start the task mid-call), settle it here. Idempotent via :meth:`_finalize`: if the
+        coroutine did start and takes its own CancelledError path, ``done`` is already set
+        and this is a no-op."""
         rec = self._require(tid)
-        if rec.task is not None and not rec.task.done():
-            return rec.task.cancel()
-        return False
+        if rec.task is None or rec.task.done():
+            return False
+        delivered = rec.task.cancel()
+        if delivered and rec.status is TaskStatus.QUEUED:
+            rec.status = TaskStatus.CANCELLED
+            self._finalize(rec)
+        return delivered
 
     def remove(self, tid: str) -> bool:
         """Drop a terminal task's record to bound memory. Returns whether it existed.

@@ -128,6 +128,50 @@ async def test_on_complete_fires_immediately_when_already_done():
     assert seen == [tid]
 
 
+async def test_background_tasks_high_concurrency_stress():
+    """500 concurrent tasks with mixed outcomes (complete / slow / fail / cancel),
+    on_complete on every one, then prune — asserts correct terminal states, every
+    on_complete fires exactly once, and the registry fully evicts (no leak)."""
+    bt = BackgroundTasks()
+    n = 500
+    fired = {"n": 0}
+    handles: list[tuple[int, str]] = []
+    for i in range(n):
+        kind = i % 4
+
+        async def work(sink, x=i, k=kind):
+            if k == 0:
+                sink.emit(f"line{x}")
+                return x
+            if k == 1:
+                await asyncio.sleep(0.05)
+                return x
+            if k == 2:
+                raise RuntimeError(f"boom{x}")
+            await asyncio.sleep(3)  # long -> will be cancelled
+            return x
+
+        h = bt.spawn(work, label=f"t{i}")
+        bt.on_complete(h, lambda rec: fired.__setitem__("n", fired["n"] + 1))
+        handles.append((kind, h))
+
+    for kind, h in handles:
+        if kind == 3:
+            bt.cancel(h)
+
+    counts = {TaskStatus.COMPLETED: 0, TaskStatus.FAILED: 0, TaskStatus.CANCELLED: 0}
+    for _, h in handles:
+        rec = await bt.wait(h, timeout=15)
+        counts[rec.status] = counts.get(rec.status, 0) + 1
+
+    assert counts[TaskStatus.COMPLETED] == n // 2  # kinds 0 + 1
+    assert counts[TaskStatus.FAILED] == n // 4      # kind 2
+    assert counts[TaskStatus.CANCELLED] == n // 4   # kind 3
+    assert fired["n"] == n                          # every on_complete fired exactly once
+    assert bt.prune() == n                          # all terminal -> fully evicted
+    assert bt.list() == []                          # registry empty (no leak)
+
+
 async def test_spawn_command_runs_streams_output_and_exit_code():
     from clio_agent.runtime.background_tasks import spawn_command
 
