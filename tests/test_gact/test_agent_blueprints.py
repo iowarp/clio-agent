@@ -130,8 +130,6 @@ REMOTE BLUEPRINT ORCHESTRATOR MARKER.
     )
 
 
-
-
 def _write_default_registry_blueprint(home: Path) -> Path:
     root = home / ".config" / "clio-agent" / "agent-blueprints" / DEFAULT_AGENT_BLUEPRINT_ID
     _write_blueprint(root, blueprint_id=DEFAULT_AGENT_BLUEPRINT_ID)
@@ -199,10 +197,6 @@ def test_builtin_agents_are_loaded_from_default_registry_snapshot(
     assert agents["root"].metadata["source_blueprint"] == "default_registry"
     assert "agent_blueprints/builtin" not in agents["root"].metadata["definition_path"]
     assert agents["variant"].metadata["install"]["commit"] == DEFAULT_REGISTRY_COMMIT
-
-
-
-
 
 
 def test_workflow_state_normalizes_unicode_hyphens_in_path_fields() -> None:
@@ -609,22 +603,6 @@ def test_user_agent_bool_param_parses_depth_chain_opt_in() -> None:
     )
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 def test_workflow_state_merge_preserves_staged_acquisition_over_metadata_only(
     tmp_path: Path,
 ) -> None:
@@ -904,8 +882,6 @@ def test_workflow_state_merge_preserves_non_empty_tool_provenance(tmp_path: Path
     )
 
 
-
-
 def test_workflow_state_extraction_preserves_nested_child_structured_evidence() -> None:
     state = _workflow_state_from_outputs(
         [
@@ -985,12 +961,6 @@ def test_workflow_state_reclassifies_data_available_without_staged_local_path() 
     assert state["resource_candidate"]["status"] == "ready"
 
 
-
-
-
-
-
-
 def test_strict_depth_bubble_prefers_resumed_child_subtree_over_parent_draft() -> None:
     rows = [
         {
@@ -1039,14 +1009,6 @@ def test_strict_depth_bubble_prefers_resumed_child_subtree_over_parent_draft() -
     )
 
 
-
-
-
-
-
-
-
-
 def test_skipped_delegated_handoff_does_not_execute_even_with_delegate_target() -> None:
     assert not _should_execute_delegated_handoff(
         {
@@ -1055,8 +1017,6 @@ def test_skipped_delegated_handoff_does_not_execute_even_with_delegate_target() 
             "skip_reason": "completed_sync_child_already_returned",
         }
     )
-
-
 
 
 def test_compacted_delegation_output_retains_parseable_workflow_state() -> None:
@@ -1134,14 +1094,6 @@ def test_user_facing_summary_removes_clio_typed_state_blocks() -> None:
     assert "CLIO typed workflow state" not in visible
     assert "CLIO inferred typed tool state" not in visible
     assert "workflow_state" not in visible
-
-
-
-
-
-
-
-
 
 
 def test_latest_final_child_output_prefers_synthesis_summary() -> None:
@@ -2048,22 +2000,6 @@ def test_earthscope_final_prompts_guard_scan_limited_profile_scope(
     assert "Named source provenance is allowed only when a tool result" in combined
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 def test_generated_child_expert_tool_emits_semantic_delegation_events(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2291,8 +2227,6 @@ def test_fallback_answer_from_delegation_uses_latest_completed_parent_resume() -
         )
         == "final"
     )
-
-
 
 
 def test_native_domain_expert_modules_are_not_runtime_importable(tmp_path: Path) -> None:
@@ -2930,6 +2864,94 @@ Updated behavior.
         assert deleted.status_code == 200, deleted.text
 
     assert not (workspace / ".clio" / "agent-blueprints" / "genomics").exists()
+
+
+def test_expert_pack_lifecycle_aliases_blueprint_engine(tmp_path: Path) -> None:
+    # iowarp/clio-agent#663: /v1/expert-packs/* install/update/delete are thin
+    # aliases of the one agent-blueprint lifecycle engine; installed rows carry
+    # a kind discriminator. A blueprint (explicit root_expert) -> kind="blueprint".
+    marketplace = tmp_path / "marketplace"
+    _write_blueprint(marketplace / "genomics")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    with TestClient(app) as client:
+        wid = client.post(
+            "/v1/workspaces",
+            json={
+                "name": "W",
+                "root_path": str(workspace),
+                "storage_root": str(workspace / ".clio"),
+            },
+        ).json()["id"]
+        resp = client.post(
+            "/v1/expert-packs/install",
+            json={"source": str(marketplace), "scope": "workspace", "workspace_id": wid},
+        )
+        assert resp.status_code == 201, resp.text
+        installed = resp.json()["installed"]
+        assert installed and installed[0]["kind"] == "blueprint", installed
+
+        upd = client.post(
+            "/v1/expert-packs/genomics/update",
+            json={"scope": "workspace", "workspace_id": wid},
+        )
+        assert upd.status_code == 200, upd.text
+
+        deleted = client.delete(
+            "/v1/expert-packs/genomics",
+            params={"scope": "workspace", "workspace_id": wid},
+        )
+        assert deleted.status_code == 200, deleted.text
+    assert not (workspace / ".clio" / "agent-blueprints" / "genomics").exists()
+
+
+def test_expert_pack_kind_is_pack_without_root_orchestrator(tmp_path: Path) -> None:
+    # A loose pack: AGENT.md with NO explicit root_expert + a single root
+    # expert -> installs through the shared engine, kind == "pack".
+    pack = tmp_path / "marketplace" / "toolkit"
+    (pack / "experts").mkdir(parents=True)
+    pack.joinpath("AGENT.md").write_text(
+        """---
+id: toolkit
+version: 0.1.0
+title: Toolkit Pack
+---
+A loose pack of experts.
+""",
+        encoding="utf-8",
+    )
+    pack.joinpath("experts", "helper.md").write_text(
+        """---
+id: helper
+title: Helper Expert
+tier: 1
+---
+A helper.
+""",
+        encoding="utf-8",
+    )
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    with TestClient(app) as client:
+        wid = client.post(
+            "/v1/workspaces",
+            json={
+                "name": "W",
+                "root_path": str(workspace),
+                "storage_root": str(workspace / ".clio"),
+            },
+        ).json()["id"]
+        resp = client.post(
+            "/v1/expert-packs/install",
+            json={"source": str(pack.parent), "scope": "workspace", "workspace_id": wid},
+        )
+        assert resp.status_code == 201, resp.text
+        kinds = {r["id"]: r["kind"] for r in resp.json()["installed"]}
+        assert kinds.get("toolkit") == "pack", kinds
 
 
 def test_active_agent_blueprint_drives_turn_runtime_and_overrides_builtin_ids(

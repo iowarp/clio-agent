@@ -879,6 +879,24 @@ def _gact_turn_timeout_s(app: Optional["FastAPI"] = None) -> float:
         return 900.0
 
 
+def _mcp_reconnect_timeout_s() -> float:
+    """Return the MCP reconnect/probe timeout in seconds.
+
+    Bounds the connect + ``list_tools`` round-trip in
+    ``POST /v1/mcp/servers/{sid}/reconnect`` so a hung MCP server cannot
+    block the route indefinitely. Defaults to 15s (a sensible ceiling for
+    a stdio spawn + first tool listing) and is overridable via
+    ``CLIO_GACT_MCP_RECONNECT_TIMEOUT_S``. A non-positive or unparseable
+    value falls back to the 15s default rather than disabling the guard."""
+
+    raw = os.environ.get("CLIO_GACT_MCP_RECONNECT_TIMEOUT_S", "15").strip()
+    try:
+        value = float(raw)
+    except ValueError:
+        return 15.0
+    return value if value > 0 else 15.0
+
+
 def _keyword_user_agent_routing_enabled() -> bool:
     """Return whether legacy keyword routing into user agents is enabled."""
 
@@ -3363,6 +3381,57 @@ def _extract_tools_called_from_trajectory(
 
     visit(trajectory)
     return rows
+
+
+def _propose_edit_diffs_from_pred(pred: Any) -> list[dict[str, Any]]:
+    """Promote successful ``fs_propose_edit`` tool results into file-diff proposals.
+
+    A dynamic tool agent calls ``fs_propose_edit`` as a TOOL; unlike the builtin
+    edit experts it does not populate ``pred.file_diffs``, so the returned
+    proposal (path + unified_diff + new_content) never became a ``file_diff``
+    part or a pending ``/v1/sessions/{sid}/diffs`` row — the TUI could see the
+    tool call but never the diff (iowarp/clio-agent#674). Recover the proposals
+    from the turn's tool results so the standard materialization picks them up.
+
+    Reads ``pred.tools_called`` (which already carries each call's structured
+    result), falling back to parsing ``pred.trajectory``. Only successful
+    (``ok``) calls whose result carries a ``path`` and a diff/new_content are
+    promoted; duplicates by (path, diff-prefix) are collapsed.
+    """
+
+    rows: list[Any] = list(getattr(pred, "tools_called", None) or [])
+    if not rows:
+        rows = _extract_tools_called_from_trajectory(getattr(pred, "trajectory", None))
+    diffs: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for row in rows:
+        if not isinstance(row, Mapping):
+            continue
+        name = str(row.get("name") or row.get("tool") or "")
+        if "propose_edit" not in name:
+            continue
+        if row.get("ok") is False:
+            continue
+        result = row.get("result")
+        if not isinstance(result, Mapping):
+            continue
+        path = str(result.get("path") or "").strip()
+        unified_diff = result.get("unified_diff") or ""
+        new_content = result.get("new_content")
+        if not path or (not unified_diff and new_content is None):
+            continue
+        key = (path, str(unified_diff)[:64])
+        if key in seen:
+            continue
+        seen.add(key)
+        diff: dict[str, Any] = {"path": path, "unified_diff": unified_diff}
+        if new_content is not None:
+            diff["new_content"] = new_content
+        for extra in ("edit_mode", "lines_added", "lines_removed"):
+            if extra in result:
+                diff[extra] = result[extra]
+        diffs.append(diff)
+    return diffs
 
 
 def _dynamic_agent_runtime_provenance(
@@ -7967,6 +8036,11 @@ async def _run_turn_in_background(
         if not turn_cost:
             turn_cost = float(getattr(pred, "cost_usd", 0.0) or 0.0)
         proposed_diffs = list(getattr(pred, "file_diffs", None) or [])
+        if not proposed_diffs:
+            # Dynamic tool agents call fs_propose_edit as a TOOL and never set
+            # pred.file_diffs; promote those results so they materialize as
+            # file_diff parts + pending /diffs rows (iowarp/clio-agent#674).
+            proposed_diffs = _propose_edit_diffs_from_pred(pred)
         nanoagents = list(getattr(pred, "nanoagents_spawned", None) or [])
         for req in getattr(pred, "permissions_requested", None) or []:
             src = (
@@ -10774,7 +10848,33 @@ def _agent_streaming_unsupported_reason(agent: Any) -> str:
     provider_kind = _provider_runtime_kind(provider)
     if provider_kind in {"claude_code", "codex"}:
         return "provider_streaming_unsupported"
+    # iowarp/clio-agent#639: normalize the preset id (argonne_sophia/_metis) to
+    # the provider kind (argonne) BEFORE the capability check. Reasoning models on
+    # the ALCF gateways stream their answer on the reasoning_content channel,
+    # which DSPy's content-only stream listeners can't fold and which fails the
+    # streamify task group ("live streaming failed before emitting output"). Route
+    # them through the robust blocking path (which recovers reasoning_content via
+    # _process_completion). Scoped to argonne reasoning models: non-reasoning ALCF
+    # (gpt-oss/gemma) still streams (#160), and lm_studio reasoning models (qwopus)
+    # stream content fine, so they are untouched.
+    if provider_kind == "argonne" and _config_is_reasoning_model(provider_config):
+        return "provider_streaming_unsupported"
     return ""
+
+
+def _config_is_reasoning_model(provider_config: Any) -> bool:
+    """Whether a provider config is a reasoning model (handshake ``is_reasoning``
+    / per-model capability). Used to keep reasoning models off streaming paths
+    that lose the reasoning_content channel."""
+
+    if provider_config is None:
+        return False
+    try:
+        from clio_agent.config import _reasoning_model_capability  # noqa: PLC0415
+
+        return bool(_reasoning_model_capability(provider_config))
+    except Exception:
+        return bool(getattr(provider_config, "is_reasoning", False))
 
 
 def _is_placeholder_api_key(value: str | None) -> bool:
@@ -10825,6 +10925,67 @@ def _stream_response_prefix(field_name: str, previous_field_name: str) -> str:
 # *a* progress event within its window (default 900s), so a 1s throttle keeps a
 # deep-reasoning turn alive without flooding the bus with one event per token.
 _REASONING_HEARTBEAT_S = 1.0
+
+
+_TEXTUAL_WORKSPACE_MIME_TYPES = frozenset(
+    {
+        "application/json",
+        "application/xml",
+        "application/javascript",
+        "application/x-yaml",
+        "application/yaml",
+        "application/x-sh",
+        "application/toml",
+    }
+)
+
+
+def _is_textual_workspace_file(name: str, raw: bytes) -> bool:
+    """Whether a workspace file should be served as decoded ``text/plain``
+    (code preview) vs. raw bytes with its real content type (binary, e.g. PNG).
+
+    Binary files (images, archives, ...) MUST be served as raw bytes with the
+    correct content type — decoding them as UTF-8 with ``errors="replace"``
+    corrupts the bytes (replacement characters) and mislabels them text/plain,
+    so a TUI/web preview can never recover the image
+    (iowarp/clio-agent#673, #676).
+    """
+    import mimetypes  # noqa: PLC0415
+
+    guessed, _ = mimetypes.guess_type(name)
+    if guessed is not None:
+        return guessed.startswith("text/") or guessed in _TEXTUAL_WORKSPACE_MIME_TYPES
+    # Unknown extension: sniff a sample. A NUL byte or invalid UTF-8 => binary.
+    sample = raw[:8192]
+    if b"\x00" in sample:
+        return False
+    try:
+        sample.decode("utf-8")
+    except UnicodeDecodeError:
+        return False
+    return True
+
+
+def _latency_stat(samples: list[float]) -> Any:
+    """Build a ``MetricsLatencyStat`` (count/p50/p95/max) from latency samples.
+
+    Nearest-rank percentiles over the positive samples; empty -> all-zero stat.
+    Used to populate ``GET /v1/metrics.latencies`` from real recorded tool-call
+    durations (iowarp/clio-agent#655) so the TUI's live-profiling gate sees a
+    non-empty signal on a real backend instead of always ``{}``."""
+    from clio_agent.gact.types import MetricsLatencyStat  # noqa: PLC0415
+
+    vals = sorted(float(s) for s in samples if isinstance(s, (int, float)) and s > 0)
+    if not vals:
+        return MetricsLatencyStat()
+
+    def pct(p: float) -> float:
+        if len(vals) == 1:
+            return vals[0]
+        idx = min(len(vals) - 1, int(round((p / 100.0) * (len(vals) - 1))))
+        return vals[idx]
+
+    return MetricsLatencyStat(count=len(vals), p50_ms=pct(50), p95_ms=pct(95), max_ms=vals[-1])
 
 
 def _describe_stream_exc(exc: BaseException) -> str:
@@ -16619,6 +16780,214 @@ def build_app(
         installed.pop(sid, None)
         return None
 
+    @app.post("/v1/mcp/servers/{sid}/reconnect")
+    async def reconnect_mcp_server(sid: str) -> dict[str, Any]:
+        """Re-probe a previously-installed external MCP server (#636/#523).
+
+        fastmcp.Client connections are ephemeral (re-created per
+        dispatch), so there is no persistent socket to tear down —
+        reconnect simply re-opens the stored transport spec, re-lists the
+        tools, and updates the registry row in place. Non-destructive, so
+        (unlike DELETE) no permission guard. Bundled in-process servers
+        (mcp_fs/mcp_hdf5/mcp_parquet) are not in the external registry, so
+        they 404 here (they cannot be reconnected)."""
+
+        installed = getattr(app.state, "external_mcp_servers", {}) or {}
+        info = installed.get(sid)
+        if info is None:
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="not_found",
+                        message=f"no externally-installed MCP server: {sid}",
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+
+        try:
+            from fastmcp import Client
+            from fastmcp.client.transports import (
+                StdioTransport,
+                StreamableHttpTransport,
+            )
+        except Exception as exc:
+            raise HTTPException(
+                status_code=503,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="dependency_missing",
+                        message=f"fastmcp Client unavailable: {exc!r}",
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
+            ) from exc
+
+        # Validate the stored transport spec BEFORE touching the registry row
+        # or attempting any connection. A malformed spec — stdio without a
+        # command, http/sse without a url, or an unknown transport — is a
+        # client-actionable 4xx (mcp_spec_invalid), not an unhandled internal
+        # exception. Short-circuit so the registry row is never left
+        # half-updated by a spec we could never have reconnected anyway.
+        spec = info.get("spec") or {}
+        transport_kind = str(spec.get("transport") or "").lower()
+
+        def _spec_invalid(message: str) -> HTTPException:
+            return HTTPException(
+                status_code=422,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="mcp_spec_invalid",
+                        message=message,
+                        details={"id": sid, "transport": transport_kind, "spec": spec},
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+
+        if transport_kind == "stdio":
+            command = spec.get("command")
+            if not (isinstance(command, str) and command.strip()):
+                raise _spec_invalid(
+                    f"MCP server {sid} has a stdio transport spec with no "
+                    "'command'; cannot reconnect"
+                )
+            transport: Any = StdioTransport(
+                command=command,
+                args=spec.get("args") or [],
+            )
+        elif transport_kind in {"http", "streamable-http", "sse"}:
+            url = spec.get("url")
+            if not (isinstance(url, str) and url.strip()):
+                raise _spec_invalid(
+                    f"MCP server {sid} has an {transport_kind} transport spec "
+                    "with no 'url'; cannot reconnect"
+                )
+            transport = StreamableHttpTransport(url=url)
+        else:
+            raise _spec_invalid(
+                f"MCP server {sid} has no reconnectable transport spec "
+                f"(transport={transport_kind or 'missing'!r}); expected "
+                "stdio or http"
+            )
+
+        # Re-probe identically to install: open, list tools, close. The whole
+        # connect + list-tools round-trip is bounded by a timeout so a hung
+        # MCP server cannot hang the route.
+        reconnect_timeout = _mcp_reconnect_timeout_s()
+        tool_names: list[str] = []
+        connect_error: Optional[str] = None
+        timed_out = False
+
+        async def _probe() -> list[str]:
+            async with Client(transport) as client:
+                tools = await client.list_tools()
+                return [t.name for t in tools]
+
+        try:
+            tool_names = await asyncio.wait_for(_probe(), timeout=reconnect_timeout)
+        except (asyncio.TimeoutError, TimeoutError):
+            timed_out = True
+        except Exception as exc:  # noqa: BLE001
+            connect_error = repr(exc)
+
+        # On timeout, leave the registry row in a coherent error state — never
+        # half-updated. Mark status="error" with a timeout message but preserve
+        # the previously-known tool list (a hung probe tells us nothing new),
+        # then surface the timeout to SSE clients and return a structured 504.
+        if timed_out:
+            timeout_msg = f"MCP server reconnect timed out after {reconnect_timeout:g}s"
+            info["status"] = "error"
+            info["error"] = timeout_msg
+            installed[sid] = info  # tools untouched: registry stays consistent
+
+            app.state.bus.publish(
+                Event(
+                    type="mcp.server.error",
+                    session_id="",
+                    payload={
+                        "server_id": sid,
+                        "name": info.get("name", ""),
+                        "status": "error",
+                        "error": timeout_msg,
+                    },
+                )
+            )
+            raise HTTPException(
+                status_code=504,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="mcp_reconnect_timeout",
+                        message=timeout_msg,
+                        details={
+                            "id": sid,
+                            "spec": spec,
+                            "timeout_s": reconnect_timeout,
+                        },
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+
+        # Update the registry row in place.
+        info["status"] = "ready" if connect_error is None else "error"
+        info["tools"] = tool_names
+        if connect_error:
+            info["error"] = connect_error
+        else:
+            info.pop("error", None)
+        installed[sid] = info
+
+        if connect_error is not None:
+            # Global status event (session_id="" like lm.provider.*).
+            app.state.bus.publish(
+                Event(
+                    type="mcp.server.error",
+                    session_id="",
+                    payload={
+                        "server_id": sid,
+                        "name": info.get("name", ""),
+                        "status": "error",
+                        "error": connect_error,
+                    },
+                )
+            )
+            raise HTTPException(
+                status_code=502,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="upstream_unavailable",
+                        message=f"MCP server reconnect failed: {connect_error}",
+                        details={"id": sid, "spec": spec},
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+
+        app.state.bus.publish(
+            Event(
+                type="mcp.server.reconnected",
+                session_id="",
+                payload={
+                    "server_id": sid,
+                    "name": info.get("name", ""),
+                    "status": "ready",
+                    "transport": info.get("transport", ""),
+                    "tools": tool_names,
+                },
+            )
+        )
+        return {
+            "id": sid,
+            "name": info.get("name", ""),
+            "status": "ready",
+            "transport": info.get("transport", ""),
+            "tools_count": len(tool_names),
+            "tools": tool_names,
+            "spec": spec,
+        }
+
     @app.get("/v1/mcp/servers/{sid}")
     async def get_mcp_server(sid: str) -> dict[str, Any]:
         """SPEC §6.7 detail endpoint for one MCP server row."""
@@ -19260,6 +19629,39 @@ def build_app(
                 ).model_dump(exclude_none=True),
             ) from exc
 
+    # ---- /v1/expert-packs/* — thin aliases of the agent-blueprint lifecycle
+    # (iowarp/clio-agent#663). A blueprint (structured workflow with a root
+    # orchestrator) and a pack (loose collection of experts) share ONE
+    # install/update/delete engine; the installed row's ``kind`` field
+    # distinguishes them. These delegate to the blueprint route handlers so
+    # there is exactly one implementation, one provenance model, one set of
+    # structured error envelopes.
+    @app.post("/v1/expert-packs/install", status_code=201)
+    async def install_expert_pack_route(req: dict[str, Any]) -> dict[str, Any]:
+        """Install an expert pack from a source URL/path/ref into workspace or
+        global scope. Alias of ``POST /v1/agent-blueprints/install``; the
+        returned rows carry ``kind`` (blueprint|pack)."""
+        return await install_agent_blueprint_route(req)
+
+    @app.post("/v1/expert-packs/{pack_id:path}/update")
+    async def update_expert_pack_route(
+        pack_id: str,
+        req: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Update an installed expert pack from recorded source provenance.
+        Alias of ``POST /v1/agent-blueprints/{id}/update``."""
+        return await update_agent_blueprint_route(pack_id, req)
+
+    @app.delete("/v1/expert-packs/{pack_id:path}")
+    async def delete_expert_pack_route(
+        pack_id: str,
+        scope: str = "workspace",
+        workspace_id: str = "",
+    ) -> dict[str, Any]:
+        """Delete an installed expert pack from workspace or global scope.
+        Alias of ``DELETE /v1/agent-blueprints/{id}``."""
+        return await delete_agent_blueprint_route(pack_id, scope, workspace_id)
+
     @app.post("/v1/agent-blueprints/{blueprint_id:path}/mcp/{descriptor_id}/enable")
     async def enable_agent_blueprint_mcp_descriptor(
         blueprint_id: str,
@@ -20746,10 +21148,25 @@ def build_app(
 
         message_total = 0
         role_counts: dict[str, int] = {}
+        # iowarp/clio-agent#655: aggregate real tool-call latencies (recorded as
+        # duration_ms on each message's tools_called metadata) into the metrics
+        # envelope, keyed per tool plus an overall "tool_call" bucket, so the
+        # endpoint reports live timing instead of an always-empty {}.
+        latency_samples: dict[str, list[float]] = {}
         for rows in app.state.messages.values():
             message_total += len(rows)
             for m in rows:
                 role_counts[m.role] = role_counts.get(m.role, 0) + 1
+                for call in (getattr(m, "metadata", None) or {}).get("tools_called") or []:
+                    if not isinstance(call, dict):
+                        continue
+                    dur = call.get("duration_ms")
+                    if not isinstance(dur, (int, float)) or dur <= 0:
+                        continue
+                    name = str(call.get("name") or call.get("tool") or "tool")
+                    latency_samples.setdefault(f"tool:{name}", []).append(float(dur))
+                    latency_samples.setdefault("tool_call", []).append(float(dur))
+        latencies = {key: _latency_stat(vals) for key, vals in latency_samples.items()}
 
         # CLIO-BBBBBBBBBB24: tokens + cost rollup across every
         # session's cumulative counters.
@@ -20775,6 +21192,7 @@ def build_app(
                 output_total=tokens_output,
             ),
             cost=MetricsCost(total_usd=cost_total),
+            latencies=latencies,
         )
 
     # ---- /v1/workspaces (CLIO-BBBBBBBBBB-WS) -------------------------
@@ -21083,10 +21501,13 @@ def build_app(
     async def read_workspace_file(wid: str, path: str) -> Response:
         """SPEC §6.9 — read one file's content.
 
-        Serves the raw bytes (text/plain) so the TUI's preview panel
-        can render code without a base64 decode. Refuses paths that
-        escape the workspace root (``..`` segments) and paths beyond
-        the file policy's max_file_size_bytes.
+        Text files are served decoded as ``text/plain`` so the TUI's preview
+        panel can render code without a base64 decode. BINARY files (images,
+        archives, ...) are served as RAW bytes with their real content type
+        (e.g. ``image/png``); decoding them as UTF-8 would corrupt the bytes and
+        mislabel them text/plain (iowarp/clio-agent#673, #676). Refuses paths
+        that escape the workspace root (``..`` segments) and paths beyond the
+        file policy's max_file_size_bytes.
         """
 
         ws = app.state.workspaces.get(wid)
@@ -21173,9 +21594,17 @@ def build_app(
                     )
                 ).model_dump(exclude_none=True),
             ) from exc
+        if _is_textual_workspace_file(target.name, data):
+            return Response(
+                content=data.decode("utf-8", errors="replace"),
+                media_type="text/plain; charset=utf-8",
+            )
+        import mimetypes  # noqa: PLC0415
+
+        guessed, _ = mimetypes.guess_type(target.name)
         return Response(
-            content=data.decode("utf-8", errors="replace"),
-            media_type="text/plain; charset=utf-8",
+            content=data,
+            media_type=guessed or "application/octet-stream",
         )
 
     # ---- /v1/providers/lm (CLIO-BBBBBBBBBB-D) ------------------------

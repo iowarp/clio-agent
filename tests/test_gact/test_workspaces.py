@@ -171,3 +171,37 @@ def test_workspace_file_read_returns_plain_text_not_json(tmp_path: Path) -> None
     assert resp.headers["content-type"].startswith("text/plain")
     assert resp.text == "hello picker\n"
     assert resp.content == b"hello picker\n"
+
+
+def test_workspace_file_read_serves_png_as_raw_bytes(tmp_path: Path) -> None:
+    # iowarp/clio-agent#673, #676: binary files (PNG) must be served as RAW
+    # bytes with their real content type, not UTF-8-decoded into text/plain
+    # (which corrupts the bytes with replacement characters).
+    c = _client(tmp_path)
+    c.app.state.workspaces.update("ws_default", root_path=str(tmp_path))
+    # PNG signature + bytes that are invalid UTF-8 (0xFF 0xFE) — must survive.
+    png_bytes = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\xff\xfe\x01\x02"
+    target = tmp_path / "validation_plot.png"
+    target.write_bytes(png_bytes)
+
+    resp = c.get("/v1/workspaces/ws_default/files/read", params={"path": "validation_plot.png"})
+
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "image/png"
+    assert resp.content == png_bytes
+    assert int(resp.headers["content-length"]) == len(png_bytes)
+
+
+def test_workspace_file_read_sniffs_unknown_binary_as_octet_stream(tmp_path: Path) -> None:
+    # Unknown extension + binary content (NUL byte) -> raw octet-stream, not text.
+    c = _client(tmp_path)
+    c.app.state.workspaces.update("ws_default", root_path=str(tmp_path))
+    blob = b"\x00\x01\x02\xff\xfedata"
+    target = tmp_path / "artifact.unknownext"
+    target.write_bytes(blob)
+
+    resp = c.get("/v1/workspaces/ws_default/files/read", params={"path": "artifact.unknownext"})
+
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "application/octet-stream"
+    assert resp.content == blob
