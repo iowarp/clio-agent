@@ -89,10 +89,17 @@ bug, not storage/WAL. See `docs/design/stress-findings.md`.
     3. ✅ Proven LIVE on ALCF: a worker SUBPROCESS reconstructs + runs a real registered child over a
        shared LocalFS store while the parent runs NO worker (only the subprocess could answer).
        Commit `884bb49`. No daemon → not wedge-blocked.
+    4. ✅ **Isolated detached pool WIRED into the live parent** (the multinode hinge): the production
+       seam `_invoke_child_expert` resolves the agent's own ARC store via `isolated_delegation_store(app)`
+       and, for `CLIO_EXPERT_INVOKER=clio_core_isolated`, routes through `IsolatedExpertInvoker`
+       (lease-free, per-worker queue, exactly-once by construction — clio-core#559 option (a)). Proven
+       LIVE on ALCF: the real hinge delegates to TWO worker SUBPROCESSES that register presence in the
+       agent's store; a child runs in a separate process and the answer folds back, ZERO claim blobs,
+       parent's `run_child` never touched. Commit `3b33406`.
   REMAINING (smaller): the same over the real `clio_run` daemon (CTE transport) with the `io_depth:256`
-  stopgap (clio-core#561); and carrying routing/`expert_handoffs` back from the worker (the worker maps
-  answer+routing via `expert_result_from_prediction`, but the *parent settle loop* consuming a
-  worker-produced result through `mode="clio_core"` end-to-end is the in-process path today).
+  stopgap (clio-core#561); and carrying routing/`expert_handoffs` back through the *settle loop* for the
+  in-process `mode="clio_core"` path (the isolated mode already folds answer+routing back via
+  `prediction_from_result`; the in-process-worker settle consumption is the remaining lossy seam).
 - [x] **`CLIO_EXPERT_INVOKER=loopback` on real ALCF** through the boundary — survives the lossy
   prediction (answer + routing preserved; trajectory/tools stay in-process until #659 carries
   them). Live-proven (`test_delegation_invoker_live.py`), plus a `clio_core`-mode live twin.
