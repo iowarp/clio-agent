@@ -20,6 +20,9 @@ this layer carries status/result/output and never decides "done enough" itself.
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import os
+import signal
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum
@@ -230,6 +233,21 @@ class BackgroundTasks:
         return rec
 
 
+async def _terminate_process_tree(proc: "asyncio.subprocess.Process") -> None:
+    """Kill the command's whole process group (the shell AND any children it spawned)
+    and reap it. ``start_new_session=True`` made the shell a process-group leader, so one
+    ``killpg`` takes down the tree — otherwise a cancelled ``sleep``/child outlives the
+    shell and orphans. Idempotent: a no-op if the process already exited."""
+    if proc.returncode is not None:
+        return
+    with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
+        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    with contextlib.suppress(ProcessLookupError):
+        proc.kill()  # fallback if the group kill didn't apply
+    with contextlib.suppress(BaseException):
+        await proc.wait()
+
+
 async def _run_command(
     sink: OutputSink, command: str, *, cwd: Optional[str] = None, timeout: Optional[float] = None
 ) -> dict[str, Any]:
@@ -238,6 +256,7 @@ async def _run_command(
         cwd=cwd,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT,
+        start_new_session=True,  # own process group, so cancel/timeout kills the whole tree
     )
 
     async def _drain() -> None:
@@ -248,9 +267,13 @@ async def _run_command(
     try:
         await asyncio.wait_for(asyncio.gather(_drain(), proc.wait()), timeout=timeout)
     except (asyncio.TimeoutError, TimeoutError):
-        proc.kill()
-        await proc.wait()
+        await _terminate_process_tree(proc)
         return {"exit_code": None, "timed_out": True}
+    except asyncio.CancelledError:
+        # cancel must not orphan the child — kill the tree, then let cancellation propagate
+        # so the task settles CANCELLED.
+        await _terminate_process_tree(proc)
+        raise
     return {"exit_code": proc.returncode, "timed_out": False}
 
 

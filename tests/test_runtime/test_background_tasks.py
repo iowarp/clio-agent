@@ -6,6 +6,9 @@ Pure asyncio — no LM, no network. pytest-asyncio is in auto mode.
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import os
+import signal
 
 import pytest
 
@@ -254,6 +257,81 @@ async def test_spawn_command_nonzero_exit_is_captured():
     rec = await bt.wait(tid, timeout=10)
     assert rec.status is TaskStatus.COMPLETED  # the task completed; the command failed
     assert rec.result["exit_code"] == 3
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+async def test_spawn_command_cancel_kills_the_process_tree(tmp_path):
+    """Cancelling a spawn_command must kill the whole process TREE (the shell AND any
+    children it spawned), not merely mark the task CANCELLED. Regression: the cancel path
+    only propagated CancelledError and left the subprocess running — a long bash job an
+    expert cancels would orphan and leak. The shell runs in its own process group so the
+    cancel can killpg the tree."""
+    from clio_agent.runtime.background_tasks import spawn_command
+
+    bt = BackgroundTasks()
+    sh_file, ch_file = tmp_path / "shell.pid", tmp_path / "child.pid"
+    # shell records its own PID, spawns a CHILD `sleep` (records that PID too), then waits
+    cmd = f"echo $$ > {sh_file}; (sleep 30 & echo $! > {ch_file}; wait)"
+    tid = spawn_command(bt, cmd)
+
+    async def _ready() -> bool:
+        return (
+            sh_file.exists() and ch_file.exists()
+            and sh_file.read_text().strip() and ch_file.read_text().strip()
+        )
+
+    for _ in range(250):  # wait for the whole tree to come up
+        if await _ready():
+            break
+        await asyncio.sleep(0.02)
+    shell_pid, child_pid = int(sh_file.read_text()), int(ch_file.read_text())
+    assert _pid_alive(shell_pid) and _pid_alive(child_pid), "process tree never started"
+
+    try:
+        assert bt.cancel(tid) is True
+        rec = await bt.wait(tid, timeout=5)
+        assert rec.status is TaskStatus.CANCELLED
+
+        for _ in range(150):  # let the SIGKILL land + reap
+            if not _pid_alive(shell_pid) and not _pid_alive(child_pid):
+                break
+            await asyncio.sleep(0.02)
+        assert not _pid_alive(shell_pid), "shell leaked after cancel"
+        assert not _pid_alive(child_pid), "child process leaked after cancel"
+    finally:
+        for pid in (shell_pid, child_pid):  # never leak a real process out of the test
+            with contextlib.suppress(OSError):
+                os.kill(pid, signal.SIGKILL)
+
+
+async def test_spawn_command_timeout_kills_the_process_tree(tmp_path):
+    """The timeout path likewise kills the whole tree (not just the shell)."""
+    from clio_agent.runtime.background_tasks import spawn_command
+
+    bt = BackgroundTasks()
+    ch_file = tmp_path / "child.pid"
+    cmd = f"(sleep 30 & echo $! > {ch_file}; wait)"
+    tid = spawn_command(bt, cmd, timeout=0.4)
+    rec = await bt.wait(tid, timeout=5)
+    assert rec.status is TaskStatus.COMPLETED  # task finished; command was killed
+    assert rec.result["timed_out"] is True
+    child_pid = int(ch_file.read_text())
+    try:
+        for _ in range(150):
+            if not _pid_alive(child_pid):
+                break
+            await asyncio.sleep(0.02)
+        assert not _pid_alive(child_pid), "child process leaked after timeout"
+    finally:
+        with contextlib.suppress(OSError):
+            os.kill(child_pid, signal.SIGKILL)
 
 
 async def test_unknown_handle_raises():
