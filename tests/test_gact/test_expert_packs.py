@@ -1607,7 +1607,7 @@ def test_tool_agent_invalid_tool_selection_emits_semantic_event(
         parent_id="genomics",
         tier=3,
         tools=["genomics_summarize_vcf"],
-        default_provider="alcf",
+        default_provider="argonne_metis",  # the ALCF Metis preset ("alcf" is not a provider id)
         default_model="metis",
     )
 

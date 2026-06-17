@@ -268,43 +268,45 @@ def test_artifact_and_builtin_command_semantic_events(tmp_path: Path, monkeypatc
 
 
 # --- per-process trace files (shared-NFS collision fix, blocker for multinode) --------
+# These assert the filename-resolution logic (_path_for) directly rather than driving the
+# shared, process-global async trace-writer thread: emitting through it adds GIL load that
+# races the timing-sensitive turn-settle in test_tool_telemetry (see build_trace_backend's
+# note). The generic emit->file write is already covered by the file-backend tests above.
 
-def _emit_one(backend, session_id: str, trace_id: str) -> None:
+def _event(session_id: str):
     from clio_agent.gact.semantic_events import SemanticEvent
 
-    backend.emit(SemanticEvent(event_type="t.event", session_id=session_id, trace_id=trace_id))
-    backend.flush()
+    return SemanticEvent(event_type="t.event", session_id=session_id, trace_id="t1")
 
 
 def test_trace_file_default_is_one_file_per_session(tmp_path: Path) -> None:
     from clio_agent.gact.semantic_events import FileSemanticTraceBackend
 
-    _emit_one(FileSemanticTraceBackend(tmp_path), "sess_x", "t1")
-    assert (tmp_path / "sess_x.semantic.jsonl").exists()
-    assert [p.name for p in tmp_path.glob("*.semantic.jsonl")] == ["sess_x.semantic.jsonl"]
+    be = FileSemanticTraceBackend(tmp_path)
+    assert be._path_for(_event("sess_x")) == tmp_path / "sess_x.semantic.jsonl"
 
 
 def test_trace_file_per_process_tag_isolates_writers(tmp_path: Path) -> None:
-    """Two processes writing the SAME session into the SAME directory land in DIFFERENT
+    """Two processes writing the SAME session into the SAME directory resolve to DIFFERENT
     files when each carries a process tag — so a shared NFS trace dir never sees two hosts
     appending to one file (non-atomic across hosts -> corruption)."""
     from clio_agent.gact.semantic_events import FileSemanticTraceBackend
 
-    _emit_one(FileSemanticTraceBackend(tmp_path, process_tag="node1.rank0"), "sess_x", "t1")
-    _emit_one(FileSemanticTraceBackend(tmp_path, process_tag="node2.rank1"), "sess_x", "t2")
-    assert (tmp_path / "sess_x.node1.rank0.semantic.jsonl").exists()
-    assert (tmp_path / "sess_x.node2.rank1.semantic.jsonl").exists()
-    assert not (tmp_path / "sess_x.semantic.jsonl").exists()  # no shared file, no collision
+    ev = _event("sess_x")
+    a = FileSemanticTraceBackend(tmp_path, process_tag="node1.rank0")
+    b = FileSemanticTraceBackend(tmp_path, process_tag="node2.rank1")
+    assert a._path_for(ev) == tmp_path / "sess_x.node1.rank0.semantic.jsonl"
+    assert b._path_for(ev) == tmp_path / "sess_x.node2.rank1.semantic.jsonl"
+    assert a._path_for(ev) != b._path_for(ev)  # different files -> no cross-host collision
 
 
 def test_trace_process_tag_is_sanitized(tmp_path: Path) -> None:
     """A tag with path separators / spaces can't escape the trace dir or break the name."""
     from clio_agent.gact.semantic_events import FileSemanticTraceBackend
 
-    _emit_one(FileSemanticTraceBackend(tmp_path, process_tag="../evil/rank 7"), "sess_x", "t1")
-    files = list(tmp_path.glob("sess_x.*.semantic.jsonl"))
-    assert len(files) == 1
-    assert ".." not in files[0].name and "/" not in files[0].name
+    p = FileSemanticTraceBackend(tmp_path, process_tag="../evil/rank 7")._path_for(_event("sess_x"))
+    assert p.parent == tmp_path  # the tag did not escape the directory
+    assert ".." not in p.name and "/" not in p.name and " " not in p.name
 
 
 def test_resolve_trace_process_tag_from_env(monkeypatch) -> None:
