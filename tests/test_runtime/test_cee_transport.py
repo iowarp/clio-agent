@@ -274,6 +274,43 @@ async def test_two_workers_single_result_intact(tmp_path):
         await asyncio.gather(w1, w2)
 
 
+async def test_heartbeat_keeps_slow_worker_lease_no_double_exec(tmp_path):
+    """A worker whose handler runs far LONGER than the lease TTL must keep its lease alive
+    via the heartbeat, so a later worker never reclaims and double-executes. The competitor
+    is started only AFTER the first worker has claimed and begun — isolating the heartbeat
+    from the separate (non-atomic) simultaneous-claim race so this is deterministic."""
+    store = make_arc_store(backend="local", data_dir=str(tmp_path))
+    mailbox = CEEMailbox(store, prefix="cee_hb_")
+    execs: list[str] = []
+    started = asyncio.Event()
+
+    async def slow_handler(req):
+        execs.append(req.question)
+        started.set()
+        await asyncio.sleep(1.2)  # >> lease_ttl=0.3 -> heartbeat must renew or we get reclaimed
+        return ExpertResult(expert_id=req.expert_id, answer=f"done:{req.question}")
+
+    invoker = CEEExpertInvoker(mailbox, timeout=10, poll=0.02)
+    stop = asyncio.Event()
+    w_a = asyncio.ensure_future(
+        run_worker(mailbox, slow_handler, stop=stop, worker_id="A", lease_ttl=0.3, poll=0.02)
+    )
+    inv_task = asyncio.ensure_future(invoker.invoke(ExpertRequest("data", "X")))
+    try:
+        await asyncio.wait_for(started.wait(), timeout=5)  # A has claimed + is running
+        # B joins after A's lease is live; with the heartbeat it must never reclaim
+        w_b = asyncio.ensure_future(
+            run_worker(mailbox, slow_handler, stop=stop, worker_id="B", lease_ttl=0.3, poll=0.02)
+        )
+        result = await asyncio.wait_for(inv_task, timeout=10)
+        assert result.answer == "done:X"
+    finally:
+        stop.set()
+        await asyncio.gather(w_a, w_b, return_exceptions=True)
+    assert execs == ["X"], f"slow worker reclaimed/double-executed despite heartbeat: {execs}"
+    assert list(store.scan("context", "cee_hb_")) == []
+
+
 @pytest.mark.integration
 async def test_two_parties_exchange_via_clio_core_cte():
     """REAL clio-core: two parties share the in-process CTE runtime and hand off a
