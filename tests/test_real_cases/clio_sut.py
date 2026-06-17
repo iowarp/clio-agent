@@ -174,6 +174,12 @@ class ClioAgent(SUT):
             # user/other instances; the harness owns its own hygiene. lm_studio only.
             if kind == "lm_studio":
                 self._eject_lm_studio_model(api_base, model_id)
+                # Then LOAD at the profile's context/parallel via the native REST
+                # API instead of relying on clio's bind / LM Studio's JIT default
+                # (the 8192-context, parallel-4 trap that starves a multi-stage
+                # pipeline and collapses a single GPU). The harness owns LM Studio
+                # hygiene; this guarantees a reproducible load config per cell.
+                self._load_lm_studio_model(api_base, model_id, profile)
             payload = {
                 "provider": kind,
                 "api_base": api_base,
@@ -305,6 +311,48 @@ class ClioAgent(SUT):
         if ejected:
             print(f"[clean-slate] ejected LM Studio instances of {model!r}: {ejected}")
         return ejected
+
+    def _load_lm_studio_model(self, api_base: str, model: str, profile: dict[str, Any]) -> bool:
+        """Load ``model`` into LM Studio at the profile's context/parallel via the
+        native REST load API (``POST /api/v1/models/load``), so the grind never
+        depends on LM Studio's JIT default (the 8192-context / parallel-4 trap).
+
+        Best-effort, never raises. Run AFTER ``_eject_lm_studio_model`` so the
+        freshly-loaded instance is the only one. flash_attention + KV-cache GPU
+        offload are kept on (the validated qwopus stack). lm_studio only."""
+        from urllib.parse import urlsplit, urlunsplit
+
+        if not api_base or not model:
+            return False
+        parts = urlsplit(api_base.rstrip("/"))
+        root = urlunsplit((parts.scheme, parts.netloc, "", "", ""))
+        cfg = {
+            "model": model,
+            "context_length": int(profile.get("context_length") or 0) or 65536,
+            "parallel": int(profile.get("parallel") or 0) or 1,
+            "flash_attention": True,
+            "offload_kv_cache_to_gpu": True,
+        }
+        headers = {"Content-Type": "application/json"}
+        token = (
+            os.environ.get("LM_STUDIO_API_TOKEN", "").strip()
+            or os.environ.get("LM_API_TOKEN", "").strip()
+        )
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        try:
+            with httpx.Client(timeout=300.0) as h:
+                r = h.post(f"{root}/api/v1/models/load", headers=headers, json=cfg)
+                if r.status_code < 400:
+                    print(
+                        f"[clean-slate] loaded {model!r} at "
+                        f"ctx={cfg['context_length']} parallel={cfg['parallel']}"
+                    )
+                    return True
+                print(f"[clean-slate] load {model!r} failed: {r.status_code} {r.text[:200]}")
+        except Exception as exc:  # noqa: BLE001 - load hygiene is best-effort
+            print(f"[clean-slate] load {model!r} error: {exc}")
+        return False
 
     def _wait_lm_ready(self, http: httpx.Client, *, timeout_s: float) -> None:
         """LM wiring is async after PUT; await readiness via the server-side
