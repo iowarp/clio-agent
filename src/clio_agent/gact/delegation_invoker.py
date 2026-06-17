@@ -130,7 +130,7 @@ async def run_child_via_boundary(
 
     * ``"loopback"`` — request/result cross a JSON wire in memory and fold back,
       proving the contract is serialization-clean without any store.
-    * ``"cee"`` — request/result cross the clio-core **mailbox**: serialized to blobs
+    * ``"clio_core"`` — request/result cross the clio-core **mailbox**: serialized to blobs
       in an ``ARCStore`` (LocalFS single-box, or attached CTE on a cluster), discovered
       by a ``run_worker`` loop via a ``pending()`` scan, claimed under a TTL lease, and
       read back. This exercises the FULL detached transport against a real delegation —
@@ -138,11 +138,11 @@ async def run_child_via_boundary(
       worker to a separate process (a gact worker on another node, same store) is a
       deployment change, not a change to this call.
 
-    ``store`` supplies the mailbox backend for ``"cee"``; when omitted a throwaway
-    LocalFS store is created and cleaned up (the single-box proof). ``CLIO_CEE_TIMEOUT``
+    ``store`` supplies the mailbox backend for ``"clio_core"``; when omitted a throwaway
+    LocalFS store is created and cleaned up (the single-box proof). ``CLIO_CORE_TIMEOUT``
     bounds the wait (default 300s — real ALCF children are slow).
     """
-    if mode not in ("loopback", "cee"):
+    if mode not in ("loopback", "clio_core"):
         return await run_child(agent_def, prompt)
 
     async def _handler(req: ExpertRequest) -> ExpertResult:
@@ -155,26 +155,30 @@ async def run_child_via_boundary(
         )
         return prediction_from_result(result)
 
-    result = await _invoke_via_cee(
+    result = await _invoke_via_clio_core(
         _handler, expert_request_for(agent_def, prompt, session_id=session_id), store=store
     )
     return prediction_from_result(result)
 
 
-async def _invoke_via_cee(
+async def _invoke_via_clio_core(
     handler: Any, request: ExpertRequest, *, store: Any = None
 ) -> ExpertResult:
     """Route one delegation through the clio-core mailbox with an in-process worker
     draining it. Same transport a cross-node worker uses; only the worker's locality
     differs. Owns (and cleans up) a throwaway LocalFS store when none is supplied."""
-    from clio_agent.runtime.cee_transport import CEEExpertInvoker, CEEMailbox, run_worker
+    from clio_agent.runtime.clio_core_transport import (
+        ClioCoreExpertInvoker,
+        ClioCoreMailbox,
+        run_worker,
+    )
 
     owns_store = store is None
     tmp_dir = ""
     if owns_store:
         from clio_agent.arc.storage import make_arc_store  # noqa: PLC0415
 
-        tmp_dir = tempfile.mkdtemp(prefix="clio_cee_")
+        tmp_dir = tempfile.mkdtemp(prefix="clio_core_")
         try:
             store = make_arc_store(backend="local", data_dir=tmp_dir)
         except BaseException:
@@ -184,12 +188,12 @@ async def _invoke_via_cee(
             shutil.rmtree(tmp_dir, ignore_errors=True)
             raise
 
-    timeout = float(os.environ.get("CLIO_CEE_TIMEOUT", "300"))
-    mailbox = CEEMailbox(store)
+    timeout = float(os.environ.get("CLIO_CORE_TIMEOUT", "300"))
+    mailbox = ClioCoreMailbox(store)
     stop = asyncio.Event()
     worker = asyncio.ensure_future(run_worker(mailbox, handler, stop=stop, poll=0.05))
     try:
-        return await CEEExpertInvoker(mailbox, timeout=timeout, poll=0.05).invoke(request)
+        return await ClioCoreExpertInvoker(mailbox, timeout=timeout, poll=0.05).invoke(request)
     finally:
         stop.set()
         worker.cancel()

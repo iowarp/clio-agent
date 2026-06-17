@@ -15,7 +15,7 @@ import pytest
 from fastmcp import Client
 
 from clio_agent.runtime.background_tasks import BackgroundTasks
-from clio_agent.runtime.cee_transport import CEEExpertInvoker, CEEMailbox
+from clio_agent.runtime.clio_core_transport import ClioCoreExpertInvoker, ClioCoreMailbox
 from clio_agent.runtime.placement import make_placement
 from clio_agent.tools.servers.delegate_server import build_delegate_server
 
@@ -35,9 +35,9 @@ def _parse(result: object) -> dict:
 
 
 def _delegate_server(cross_arc, placement, tasks):
-    # placement lives in the factory: role -> CEEExpertInvoker over that role's queue
+    # placement lives in the factory: role -> ClioCoreExpertInvoker over that role's queue
     def factory(role: str):
-        return CEEExpertInvoker(CEEMailbox(cross_arc, prefix=placement.mailbox_for(role)), timeout=150)
+        return ClioCoreExpertInvoker(ClioCoreMailbox(cross_arc, prefix=placement.mailbox_for(role)), timeout=150)
 
     return build_delegate_server(tasks, factory)
 

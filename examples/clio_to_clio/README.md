@@ -42,7 +42,7 @@ delegation crossed between them.
 
 ## What carries it
 
-- `runtime/cee_transport.py` — `CEEMailbox` + `CEEExpertInvoker`: the request/result
+- `runtime/clio_core_transport.py` — `ClioCoreMailbox` + `ClioCoreExpertInvoker`: the request/result
   cross through clio-core context blobs; parties share only the store.
 - `arc/storage.py` — `CTEStore` with `CLIO_CTE_WITH_RUNTIME=0` attaches to the daemon.
 

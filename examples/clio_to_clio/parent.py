@@ -9,7 +9,7 @@ import sys
 os.environ.setdefault("CLIO_CTE_WITH_RUNTIME", "0")  # attach to the daemon, don't embed
 
 from clio_agent.arc.storage import make_arc_store  # noqa: E402
-from clio_agent.runtime.cee_transport import CEEExpertInvoker, CEEMailbox  # noqa: E402
+from clio_agent.runtime.clio_core_transport import ClioCoreExpertInvoker, ClioCoreMailbox  # noqa: E402
 from clio_agent.runtime.expert_invoker import ExpertRequest  # noqa: E402
 
 PREFIX = sys.argv[1] if len(sys.argv) > 1 else "x2c_"
@@ -19,8 +19,8 @@ QUESTION = "Use the lookup tool to get the 'throughput' metric and report its ex
 
 async def main() -> None:
     store = make_arc_store(backend="cte")  # attaches to the SAME clio_run daemon
-    mb = CEEMailbox(store, prefix=PREFIX)
-    inv = CEEExpertInvoker(mb, timeout=90)
+    mb = ClioCoreMailbox(store, prefix=PREFIX)
+    inv = ClioCoreExpertInvoker(mb, timeout=90)
     print(f"[parent {PID}] delegating to the data expert via clio-core...", flush=True)
     try:
         res = await inv.invoke(ExpertRequest("data", QUESTION, session_id="x-sess"))

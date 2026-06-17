@@ -17,9 +17,9 @@ import pytest
 
 from clio_agent.arc.storage import make_arc_store
 from clio_agent.runtime.background_tasks import BackgroundTasks, TaskStatus
-from clio_agent.runtime.cee_transport import (
-    CEEExpertInvoker,
-    CEEMailbox,
+from clio_agent.runtime.clio_core_transport import (
+    ClioCoreExpertInvoker,
+    ClioCoreMailbox,
     run_worker,
 )
 from clio_agent.runtime.expert_invoker import (
@@ -41,8 +41,8 @@ async def _child_handler(req: ExpertRequest) -> ExpertResult:
 async def _exchange(store) -> ExpertResult:
     """Party A submits + waits; Party B independently drains the mailbox. They share
     only `store`."""
-    mailbox = CEEMailbox(store, prefix="cee_t_")
-    invoker = CEEExpertInvoker(mailbox, timeout=10)
+    mailbox = ClioCoreMailbox(store, prefix="clio_core_t_")
+    invoker = ClioCoreExpertInvoker(mailbox, timeout=10)
     stop = asyncio.Event()
     worker = asyncio.ensure_future(run_worker(mailbox, _child_handler, stop=stop))
     try:
@@ -63,7 +63,7 @@ async def test_two_parties_exchange_via_shared_store_localfs(tmp_path):
 
 async def test_mailbox_pending_discovers_unanswered_requests(tmp_path):
     store = make_arc_store(backend="local", data_dir=str(tmp_path))
-    mailbox = CEEMailbox(store, prefix="cee_p_")
+    mailbox = ClioCoreMailbox(store, prefix="clio_core_p_")
     rid = mailbox.submit(ExpertRequest("data", "q1"))
     # a worker that never saw the request in memory still finds it via the store
     assert mailbox.pending() == [rid]
@@ -73,16 +73,16 @@ async def test_mailbox_pending_discovers_unanswered_requests(tmp_path):
 
 
 async def serve_one_compat(mailbox, rid):
-    from clio_agent.runtime.cee_transport import serve_one
+    from clio_agent.runtime.clio_core_transport import serve_one
 
     await serve_one(mailbox, rid, _child_handler)
 
 
-async def test_cee_invoker_composes_with_background_monitor(tmp_path):
+async def test_clio_core_invoker_composes_with_background_monitor(tmp_path):
     """(b)+(c)+(d): a clio-to-clio child runs as a monitored background task."""
     store = make_arc_store(backend="local", data_dir=str(tmp_path))
-    mailbox = CEEMailbox(store, prefix="cee_bg_")
-    invoker = CEEExpertInvoker(mailbox, timeout=10)
+    mailbox = ClioCoreMailbox(store, prefix="clio_core_bg_")
+    invoker = ClioCoreExpertInvoker(mailbox, timeout=10)
     tasks = BackgroundTasks()
     stop = asyncio.Event()
     worker = asyncio.ensure_future(run_worker(mailbox, _child_handler, stop=stop))
@@ -100,7 +100,7 @@ def test_claim_lease_blocks_fresh_holder_allows_expired(tmp_path):
     """The TTL lease: a fresh claim blocks another worker; an expired one is reclaimable;
     renew() keeps it alive. Deterministic via injected `now` (no sleeps)."""
     store = make_arc_store(backend="local", data_dir=str(tmp_path))
-    mb = CEEMailbox(store, prefix="cee_lease_")
+    mb = ClioCoreMailbox(store, prefix="clio_core_lease_")
     rid = mb.submit(ExpertRequest("data", "q"))
     t = 1000.0
     assert mb.claim(rid, "w1", ttl=6.0, now=t) is True          # w1 takes the lease
@@ -114,16 +114,16 @@ async def test_successful_delegation_drains_the_mailbox(tmp_path):
     """A completed delegation leaves NO req/res/claim behind (the leak fix: invoke
     discards on success, so the mailbox doesn't grow without bound)."""
     store = make_arc_store(backend="local", data_dir=str(tmp_path))
-    mailbox = CEEMailbox(store, prefix="cee_drain_")
+    mailbox = ClioCoreMailbox(store, prefix="clio_core_drain_")
     stop = asyncio.Event()
     worker = asyncio.ensure_future(run_worker(mailbox, _child_handler, stop=stop))
     try:
-        res = await CEEExpertInvoker(mailbox, timeout=5).invoke(ExpertRequest("data", "q"))
+        res = await ClioCoreExpertInvoker(mailbox, timeout=5).invoke(ExpertRequest("data", "q"))
         assert res.answer == "handled:q"
     finally:
         stop.set()
         await worker
-    assert list(store.scan("context", "cee_drain_")) == []  # nothing leaked
+    assert list(store.scan("context", "clio_core_drain_")) == []  # nothing leaked
 
 
 # ---- failure modes (found by the depth gap analysis; confirmed by probe) ----
@@ -133,12 +133,12 @@ async def test_handler_exception_drains_as_failed_not_hang(tmp_path):
     """A child that raises must NOT hang the parent to timeout — it gets a failed
     result back (the bug: serve_one let the exception propagate, parent hung)."""
     store = make_arc_store(backend="local", data_dir=str(tmp_path))
-    mailbox = CEEMailbox(store, prefix="cee_f_")
+    mailbox = ClioCoreMailbox(store, prefix="clio_core_f_")
 
     async def bad(req):
         raise RuntimeError("child exploded")
 
-    invoker = CEEExpertInvoker(mailbox, timeout=2)
+    invoker = ClioCoreExpertInvoker(mailbox, timeout=2)
     stop = asyncio.Event()
     worker = asyncio.ensure_future(run_worker(mailbox, bad, stop=stop))
     try:
@@ -153,14 +153,14 @@ async def test_handler_exception_drains_as_failed_not_hang(tmp_path):
 async def test_worker_survives_a_failing_child(tmp_path):
     """One failing child must not kill the worker loop — the next delegation works."""
     store = make_arc_store(backend="local", data_dir=str(tmp_path))
-    mailbox = CEEMailbox(store, prefix="cee_s_")
+    mailbox = ClioCoreMailbox(store, prefix="clio_core_s_")
 
     async def handler(req):
         if req.question == "boom":
             raise RuntimeError("boom")
         return ExpertResult(expert_id=req.expert_id, answer=f"ok:{req.question}")
 
-    invoker = CEEExpertInvoker(mailbox, timeout=2)
+    invoker = ClioCoreExpertInvoker(mailbox, timeout=2)
     stop = asyncio.Event()
     worker = asyncio.ensure_future(run_worker(mailbox, handler, stop=stop))
     try:
@@ -176,26 +176,26 @@ async def test_worker_survives_a_failing_child(tmp_path):
 
 async def test_corrupted_request_blob_drains_as_failed(tmp_path):
     store = make_arc_store(backend="local", data_dir=str(tmp_path))
-    mailbox = CEEMailbox(store, prefix="cee_c_")
-    store.put("context", "cee_c_badrid.req", b"{not valid json")  # poison blob
+    mailbox = ClioCoreMailbox(store, prefix="clio_core_c_")
+    store.put("context", "clio_core_c_badrid.req", b"{not valid json")  # poison blob
 
-    from clio_agent.runtime.cee_transport import serve_one
+    from clio_agent.runtime.clio_core_transport import serve_one
 
     async def handler(req):
         return ExpertResult(expert_id="x", answer="should not run")
 
-    res = await serve_one(mailbox, "cee_c_badrid", handler)
+    res = await serve_one(mailbox, "clio_core_c_badrid", handler)
     assert res.status == "failed" and "corrupted" in (res.error or "")
 
 
 async def test_timeout_discards_orphan_and_raises(tmp_path):
     store = make_arc_store(backend="local", data_dir=str(tmp_path))
-    mailbox = CEEMailbox(store, prefix="cee_t_")
-    invoker = CEEExpertInvoker(mailbox, timeout=0.2)  # no worker -> times out
+    mailbox = ClioCoreMailbox(store, prefix="clio_core_t_")
+    invoker = ClioCoreExpertInvoker(mailbox, timeout=0.2)  # no worker -> times out
     with pytest.raises(TimeoutError):
         await invoker.invoke(ExpertRequest("data", "q"))
     # the orphaned request blob must be cleaned up, not leaked in clio-core
-    assert list(store.scan("context", "cee_t_")) == []
+    assert list(store.scan("context", "clio_core_t_")) == []
 
 
 async def test_cancel_in_flight_invocation_discards_orphan(tmp_path):
@@ -204,29 +204,29 @@ async def test_cancel_in_flight_invocation_discards_orphan(tmp_path):
     the .req leaked, and a worker could later pick it up, run the child (wasted compute), and
     publish a result nobody consumes."""
     store = make_arc_store(backend="local", data_dir=str(tmp_path))
-    mailbox = CEEMailbox(store, prefix="cee_c_")
-    invoker = CEEExpertInvoker(mailbox, timeout=30, poll=0.02)  # no worker -> waits
+    mailbox = ClioCoreMailbox(store, prefix="clio_core_c_")
+    invoker = ClioCoreExpertInvoker(mailbox, timeout=30, poll=0.02)  # no worker -> waits
     bt = BackgroundTasks()
 
     tid = spawn_invocation(bt, invoker, ExpertRequest("data", "q"))
     for _ in range(200):  # wait until the request is actually submitted
-        if list(store.scan("context", "cee_c_")):
+        if list(store.scan("context", "clio_core_c_")):
             break
         await asyncio.sleep(0.01)
-    assert list(store.scan("context", "cee_c_")), "request never reached the mailbox"
+    assert list(store.scan("context", "clio_core_c_")), "request never reached the mailbox"
 
     assert bt.cancel(tid) is True
     rec = await bt.wait(tid, timeout=2)
     assert rec.status is TaskStatus.CANCELLED
     # the mailbox drained — no orphan req/res/claim left behind
-    assert list(store.scan("context", "cee_c_")) == []
+    assert list(store.scan("context", "clio_core_c_")) == []
 
 
 async def test_cancel_with_slow_worker_leaves_no_orphan_result(tmp_path):
     """Cancel races a worker that is mid-flight on the request: the parent's discard +
     serve_one's pre-publish re-check must leave the mailbox clean (no orphan .res)."""
     store = make_arc_store(backend="local", data_dir=str(tmp_path))
-    mailbox = CEEMailbox(store, prefix="cee_cw_")
+    mailbox = ClioCoreMailbox(store, prefix="clio_core_cw_")
     started = asyncio.Event()
 
     async def slow_handler(req):
@@ -234,7 +234,7 @@ async def test_cancel_with_slow_worker_leaves_no_orphan_result(tmp_path):
         await asyncio.sleep(2)  # still running when we cancel
         return ExpertResult(expert_id=req.expert_id, answer="late")
 
-    invoker = CEEExpertInvoker(mailbox, timeout=30, poll=0.02)
+    invoker = ClioCoreExpertInvoker(mailbox, timeout=30, poll=0.02)
     bt = BackgroundTasks()
     stop = asyncio.Event()
     worker = asyncio.ensure_future(run_worker(mailbox, slow_handler, stop=stop, worker_id="w", poll=0.02))
@@ -246,7 +246,7 @@ async def test_cancel_with_slow_worker_leaves_no_orphan_result(tmp_path):
         assert rec.status is TaskStatus.CANCELLED
         await asyncio.sleep(2.2)  # let the slow handler finish and try to publish
         # the worker saw .req gone (parent discarded it) and skipped publishing -> clean
-        assert list(store.scan("context", "cee_cw_")) == []
+        assert list(store.scan("context", "clio_core_cw_")) == []
     finally:
         stop.set()
         with contextlib.suppress(BaseException):
@@ -257,12 +257,12 @@ async def test_two_workers_single_result_intact(tmp_path):
     """Two workers on one mailbox: the published result is exactly-once and correct
     (execution is at-least-once; this asserts no corruption / no lost message)."""
     store = make_arc_store(backend="local", data_dir=str(tmp_path))
-    mailbox = CEEMailbox(store, prefix="cee_2w_")
+    mailbox = ClioCoreMailbox(store, prefix="clio_core_2w_")
 
     async def handler(req):
         return ExpertResult(expert_id=req.expert_id, answer=f"done:{req.question}")
 
-    invoker = CEEExpertInvoker(mailbox, timeout=3)
+    invoker = ClioCoreExpertInvoker(mailbox, timeout=3)
     stop = asyncio.Event()
     w1 = asyncio.ensure_future(run_worker(mailbox, handler, stop=stop, worker_id="w1"))
     w2 = asyncio.ensure_future(run_worker(mailbox, handler, stop=stop, worker_id="w2"))
@@ -310,7 +310,7 @@ async def test_concurrent_clio_to_clio_over_cte_real_alcf():
     lm = create_lm(cfg)
 
     store = make_arc_store(backend="cte")
-    mailbox = CEEMailbox(store, prefix="cee_stress_")
+    mailbox = ClioCoreMailbox(store, prefix="clio_core_stress_")
 
     async def handler(req: ExpertRequest) -> ExpertResult:
         with dspy.context(lm=lm, adapter=dspy.ChatAdapter()):
@@ -319,7 +319,7 @@ async def test_concurrent_clio_to_clio_over_cte_real_alcf():
 
     n = 4
     markers = [f"TKN{i}{_uuid.uuid4().hex[:6].upper()}" for i in range(n)]
-    invoker = CEEExpertInvoker(mailbox, timeout=120)
+    invoker = ClioCoreExpertInvoker(mailbox, timeout=120)
     stop = asyncio.Event()
     workers = [
         asyncio.ensure_future(run_worker(mailbox, handler, stop=stop, worker_id=f"w{j}"))
@@ -339,7 +339,7 @@ async def test_concurrent_clio_to_clio_over_cte_real_alcf():
     finally:
         stop.set()
         await asyncio.gather(*workers)
-        for name, _ in list(store.scan("context", "cee_stress_")):
+        for name, _ in list(store.scan("context", "clio_core_stress_")):
             store.delete("context", name)
 
 
@@ -352,7 +352,7 @@ def test_mailbox_claim_fresh_request_is_exactly_once_under_threads(tmp_path):
     from concurrent.futures import ThreadPoolExecutor
 
     store = make_arc_store(backend="local", data_dir=str(tmp_path))
-    mb = CEEMailbox(store, prefix="cl_")
+    mb = ClioCoreMailbox(store, prefix="cl_")
     rid = mb.submit(ExpertRequest("data", "q"))
     n = 32
     barrier = threading.Barrier(n)
@@ -370,7 +370,7 @@ def test_claim_self_heals_an_empty_husk(tmp_path):
     """An empty/torn .claim husk (a worker killed mid-write) must not permanently poison the
     request — claim() overwrites the husk and succeeds instead of dead-ending forever."""
     store = make_arc_store(backend="local", data_dir=str(tmp_path))
-    mb = CEEMailbox(store, prefix="cee_husk_")
+    mb = ClioCoreMailbox(store, prefix="clio_core_husk_")
     rid = mb.submit(ExpertRequest("data", "q"))
     store.put("context", f"{rid}.claim", b"")  # plant the husk exactly as a torn write leaves
 

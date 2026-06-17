@@ -14,7 +14,11 @@ import time
 import pytest
 
 from clio_agent.arc.storage import make_arc_store
-from clio_agent.runtime.cee_transport import CEEExpertInvoker, CEEMailbox, run_worker
+from clio_agent.runtime.clio_core_transport import (
+    ClioCoreExpertInvoker,
+    ClioCoreMailbox,
+    run_worker,
+)
 from clio_agent.runtime.expert_invoker import ExpertRequest, ExpertResult
 
 _SECS = float(os.environ.get("CLIO_STRESS_SECS", "0"))
@@ -29,8 +33,8 @@ _LEASE = float(os.environ.get("CLIO_SOAK_LEASE", "1.0"))
 @pytest.mark.skipif(_SECS <= 0, reason="set CLIO_STRESS_SECS>0 to run the soak")
 async def test_localfs_highvolume_soak(tmp_path):
     store = make_arc_store(backend="local", data_dir=str(tmp_path))
-    mb = CEEMailbox(store, prefix="soak_")
-    inv = CEEExpertInvoker(mb, timeout=30, poll=0.02)
+    mb = ClioCoreMailbox(store, prefix="soak_")
+    inv = ClioCoreExpertInvoker(mb, timeout=30, poll=0.02)
     execs: dict[str, int] = {}  # job -> times executed (detect double-execution)
     pad = "x" * _PAYLOAD
 

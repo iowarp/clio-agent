@@ -19,7 +19,7 @@ import time
 import pytest
 
 from clio_agent.runtime.background_tasks import BackgroundTasks, TaskStatus, spawn_command
-from clio_agent.runtime.cee_transport import CEEExpertInvoker, CEEMailbox
+from clio_agent.runtime.clio_core_transport import ClioCoreExpertInvoker, ClioCoreMailbox
 from clio_agent.runtime.expert_invoker import ExpertRequest
 
 pytestmark = pytest.mark.cross_process
@@ -120,7 +120,7 @@ async def test_load_isolation(cross_arc, spawn_worker):
     How many before the daemon stops serving? Characterizes the limit (report-only)."""
     prefix = "st_iso_"
     spawn_worker(prefix, mode="echo", n=2)
-    inv = CEEExpertInvoker(CEEMailbox(cross_arc, prefix=prefix), timeout=8)
+    inv = ClioCoreExpertInvoker(ClioCoreMailbox(cross_arc, prefix=prefix), timeout=8)
     ok = 0
     for i in range(2000):
         try:
@@ -143,8 +143,8 @@ async def test_stress_soak(cross_arc, spawn_worker):
     if _LIVE:
         spawn_worker(alcf_prefix, mode="alcf", n=2, extra_env=_ALCF)
 
-    echo_inv = CEEExpertInvoker(CEEMailbox(cross_arc, prefix=echo_prefix), timeout=60)
-    alcf_inv = CEEExpertInvoker(CEEMailbox(cross_arc, prefix=alcf_prefix), timeout=180)
+    echo_inv = ClioCoreExpertInvoker(ClioCoreMailbox(cross_arc, prefix=echo_prefix), timeout=60)
+    alcf_inv = ClioCoreExpertInvoker(ClioCoreMailbox(cross_arc, prefix=alcf_prefix), timeout=180)
     cmd_tasks = BackgroundTasks()
 
     stats = {"echo": 0, "alcf": 0, "cmd": 0, "crashes": 0, "leaks": 0, "errors": 0}
@@ -160,7 +160,7 @@ async def test_stress_soak(cross_arc, spawn_worker):
         res = await asyncio.gather(
             *[echo_inv.invoke(ExpertRequest("data", j)) for j in batch], return_exceptions=True
         )
-        for j, r in zip(batch, res):
+        for j, r in zip(batch, res, strict=True):
             if isinstance(r, BaseException) or getattr(r, "answer", None) != f"echo:{j}":
                 stats["errors"] += 1
                 failures.append(f"echo {j} -> {r!r}")

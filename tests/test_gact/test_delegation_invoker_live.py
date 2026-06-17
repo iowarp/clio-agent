@@ -60,7 +60,7 @@ async def test_loopback_carries_a_real_alcf_child_answer():
     assert "4" in answer  # the real answer survived serialization round-trip
 
 
-async def test_cee_mailbox_carries_a_real_alcf_child_answer(tmp_path):
+async def test_clio_core_mailbox_carries_a_real_alcf_child_answer(tmp_path):
     """The detached seam over the REAL clio-core mailbox transport: a real ALCF child's
     prediction crosses as blobs in an ARCStore (claimed under a TTL lease, served by a
     worker loop) and the parent recovers its answer. This is the cross-node path on a
@@ -82,12 +82,12 @@ async def test_cee_mailbox_carries_a_real_alcf_child_answer(tmp_path):
         SimpleNamespace(id="data"),
         "What is 2+2? Answer with only the number.",
         run_child=run_child,
-        session_id="live-cee",
-        mode="cee",
+        session_id="live-clio_core",
+        mode="clio_core",
         store=store,
     )
     answer = str(getattr(out, "answer", "") or "")
-    assert answer.strip(), "cee child answer was lost crossing the mailbox"
+    assert answer.strip(), "clio_core child answer was lost crossing the mailbox"
     assert "4" in answer  # the real ALCF answer survived the clio-core mailbox transport
     # the mailbox drained clean after the delegation completed
-    assert [n for n, _ in store.scan("context", "cee_")] == []
+    assert [n for n, _ in store.scan("context", "clio_core_")] == []

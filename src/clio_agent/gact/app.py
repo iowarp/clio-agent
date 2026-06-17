@@ -7362,7 +7362,7 @@ async def _run_turn_in_background(
         prediction verbatim, so the live delegation is behavior-identical (RULE 2).
         ``CLIO_EXPERT_INVOKER=loopback`` routes the child behind the serializable
         :class:`ExpertInvoker` (answer + routing cross a JSON wire);
-        ``CLIO_EXPERT_INVOKER=cee`` routes it through the clio-core mailbox transport
+        ``CLIO_EXPERT_INVOKER=clio_core`` routes it through the clio-core mailbox transport
         (blobs + TTL-lease claim + a worker loop) — the same path a cross-node worker
         takes, with only the worker's locality differing (#659). This call is unchanged.
         """

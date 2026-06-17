@@ -29,7 +29,11 @@ import pytest
 from clio_agent.arc.storage import make_arc_store
 from clio_agent.config import create_lm, load_config_from_env
 from clio_agent.runtime.background_tasks import BackgroundTasks, TaskStatus
-from clio_agent.runtime.cee_transport import CEEExpertInvoker, CEEMailbox, run_worker
+from clio_agent.runtime.clio_core_transport import (
+    ClioCoreExpertInvoker,
+    ClioCoreMailbox,
+    run_worker,
+)
 from clio_agent.runtime.expert_invoker import ExpertRequest, ExpertResult, spawn_invocation
 
 pytestmark = [
@@ -72,7 +76,7 @@ async def test_ndp_pipeline_real_alcf(tmp_path):
     lm = create_lm(cfg)
 
     store = make_arc_store(backend="local", data_dir=str(tmp_path))
-    mailbox = CEEMailbox(store)
+    mailbox = ClioCoreMailbox(store)
 
     async def handler(req: ExpertRequest) -> ExpertResult:
         role = req.context.get("role", "You are a helpful scientific expert.")
@@ -91,7 +95,7 @@ async def test_ndp_pipeline_real_alcf(tmp_path):
         asyncio.ensure_future(run_worker(mailbox, handler, stop=stop, worker_id=f"w{i}", poll=0.05))
         for i in range(3)
     ]
-    invoker = CEEExpertInvoker(mailbox, timeout=300, poll=0.05)
+    invoker = ClioCoreExpertInvoker(mailbox, timeout=300, poll=0.05)
     tasks = BackgroundTasks()
     needle = "NDP-7Q4Z"  # the reference code that must survive every hop
 
@@ -161,4 +165,4 @@ async def test_ndp_pipeline_real_alcf(tmp_path):
     assert needle in r_inland.result.answer, f"inland lost the code: {r_inland.result.answer!r}"
     assert needle in an.answer, f"analysis lost the code: {an.answer!r}"
     # the mailbox drained clean — no leaked req/res/claim across the multi-hop pipeline
-    assert [n for n, _ in store.scan("context", "cee_")] == []
+    assert [n for n, _ in store.scan("context", "clio_core_")] == []

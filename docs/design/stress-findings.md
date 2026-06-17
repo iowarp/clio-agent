@@ -54,7 +54,7 @@ single most important thing to fix for distributed deployment**, and it's upstre
 (`clio.yaml` file bdev) in case DRAM-tier bookkeeping is the limit.
 
 ## Mitigations applied (clio-agent side)
-- Poll interval 10ms → 100ms in `CEEExpertInvoker` + `run_worker` (≈10× fewer daemon ops
+- Poll interval 10ms → 100ms in `ClioCoreExpertInvoker` + `run_worker` (≈10× fewer daemon ops
   while idle/waiting; marginal latency cost — negligible for real ALCF experts). Moved the
   wedge 44→71 but did not remove it (it's per-delegation ops, not just polling).
 - Further op-reduction per delegation (fewer get/has checks in claim/serve) would push the

@@ -134,8 +134,8 @@ async def test_run_child_loopback_crosses_the_wire():
     assert out.workflow_state["rows"] == 128
 
 
-async def test_run_child_cee_crosses_the_mailbox(tmp_path):
-    """CEE mode runs the child behind the clio-core mailbox transport: the request and
+async def test_run_child_clio_core_crosses_the_mailbox(tmp_path):
+    """clio-core mode runs the child behind the clio-core mailbox transport: the request and
     result cross as blobs in an ARCStore, served by an in-process worker loop. The
     parent recovers a prediction rebuilt from what crossed the mailbox — answer and the
     full routing decision intact. (Same transport a cross-node worker uses.)"""
@@ -154,7 +154,7 @@ async def test_run_child_cee_crosses_the_mailbox(tmp_path):
         "q",
         run_child=run_child,
         session_id="s1",
-        mode="cee",
+        mode="clio_core",
         store=store,
     )
     assert seen["prompt"] == "q"
@@ -164,11 +164,11 @@ async def test_run_child_cee_crosses_the_mailbox(tmp_path):
     assert "analysis" in out.expert_handoffs  # routing decision survived the mailbox
     assert out.workflow_state["rows"] == 128
     # the mailbox drained clean — no leaked req/res/claim blobs
-    assert [n for n, _ in store.scan("context", "cee_")] == []
+    assert [n for n, _ in store.scan("context", "clio_core_")] == []
 
 
-async def test_cee_mode_cleans_owned_tmp_dir_when_store_creation_fails(monkeypatch):
-    """When cee mode owns its throwaway LocalFS store and store construction fails (e.g. a
+async def test_clio_core_mode_cleans_owned_tmp_dir_when_store_creation_fails(monkeypatch):
+    """When clio_core mode owns its throwaway LocalFS store and store construction fails (e.g. a
     mkdir on a read-only/full mount), the just-created temp dir must not orphan — the
     cleanup runs even though the delegation's main try/finally was never entered."""
     import glob
@@ -179,13 +179,13 @@ async def test_cee_mode_cleans_owned_tmp_dir_when_store_creation_fails(monkeypat
         raise OSError("simulated mkdir failure")
 
     monkeypatch.setattr(storage, "make_arc_store", boom)
-    before = set(glob.glob("/tmp/clio_cee_*"))
+    before = set(glob.glob("/tmp/clio_core_*"))
 
     async def run_child(agent_def, prompt):
         raise AssertionError("child must not run when the store could not be built")
 
     with pytest.raises(OSError):
         await run_child_via_boundary(
-            SimpleNamespace(id="data"), "q", run_child=run_child, mode="cee"  # store=None -> owns it
+            SimpleNamespace(id="data"), "q", run_child=run_child, mode="clio_core"  # store=None -> owns it
         )
-    assert set(glob.glob("/tmp/clio_cee_*")) == before  # no orphaned temp dir
+    assert set(glob.glob("/tmp/clio_core_*")) == before  # no orphaned temp dir

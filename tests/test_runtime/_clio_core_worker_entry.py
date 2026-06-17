@@ -1,6 +1,6 @@
 """Test worker entrypoint (NOT collected — leading underscore). A real gact worker in its
 OWN process: builds an app, registers a 'calc' expert into an isolated config, and drains a
-shared LocalFS mailbox via run_cee_worker. Spawned by test_cee_worker's cross-process test.
+shared LocalFS mailbox via run_clio_core_worker. Spawned by test_clio_core_worker's cross-process test.
 """
 
 from __future__ import annotations
@@ -15,7 +15,10 @@ def main() -> None:
     from clio_agent.arc.storage import make_arc_store
     from clio_agent.config import setup_dspy
     from clio_agent.gact.app import build_app
-    from clio_agent.runtime.cee_worker import run_cee_worker, run_isolated_cee_worker
+    from clio_agent.runtime.clio_core_worker import (
+        run_clio_core_worker,
+        run_isolated_clio_core_worker,
+    )
 
     setup_dspy()
     app = build_app(agent=ClioAgent(), sessions_path=Path(os.environ["CLIO_GACT_SESSIONS"]))
@@ -34,19 +37,19 @@ def main() -> None:
         backend=os.environ.get("CLIO_ARC_STORE", "local"),
         data_dir=os.environ.get("CLIO_ARC_DATA_DIR") or None,
     )
-    prefix = os.environ.get("CLIO_CEE_PREFIX", "cee_")
-    if os.environ.get("CLIO_CEE_ISOLATED"):  # the lease-free per-worker-queue model
+    prefix = os.environ.get("CLIO_CORE_PREFIX", "clio_core_")
+    if os.environ.get("CLIO_CORE_ISOLATED"):  # the lease-free per-worker-queue model
         asyncio.run(
-            run_isolated_cee_worker(
+            run_isolated_clio_core_worker(
                 store,
-                role=os.environ["CLIO_CEE_ROLE"],
-                worker_id=os.environ["CLIO_CEE_WORKER_ID"],
+                role=os.environ["CLIO_CORE_ROLE"],
+                worker_id=os.environ["CLIO_CORE_WORKER_ID"],
                 prefix=prefix,
                 app=app,
             )
         )
     else:
-        asyncio.run(run_cee_worker(store, prefix=prefix, app=app))
+        asyncio.run(run_clio_core_worker(store, prefix=prefix, app=app))
 
 
 if __name__ == "__main__":

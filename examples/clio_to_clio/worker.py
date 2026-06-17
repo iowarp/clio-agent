@@ -12,7 +12,7 @@ import dspy  # noqa: E402
 
 from clio_agent.arc.storage import make_arc_store  # noqa: E402
 from clio_agent.config import create_lm, load_config_from_env  # noqa: E402
-from clio_agent.runtime.cee_transport import CEEMailbox, run_worker  # noqa: E402
+from clio_agent.runtime.clio_core_transport import ClioCoreMailbox, run_worker  # noqa: E402
 from clio_agent.runtime.expert_invoker import ExpertRequest, ExpertResult  # noqa: E402
 
 PREFIX = sys.argv[1] if len(sys.argv) > 1 else "x2c_"
@@ -26,7 +26,7 @@ def lookup(metric: str) -> str:
 
 async def main() -> None:
     store = make_arc_store(backend="cte")  # attaches to the clio_run daemon
-    mb = CEEMailbox(store, prefix=PREFIX)
+    mb = ClioCoreMailbox(store, prefix=PREFIX)
     lm = create_lm(load_config_from_env())
     expert = dspy.ReAct("question -> answer", tools=[dspy.Tool(lookup)])
     print(f"[worker {PID}] attached to clio-core daemon; data-expert ready", flush=True)

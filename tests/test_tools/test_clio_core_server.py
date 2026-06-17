@@ -1,4 +1,4 @@
-"""Tests for the clio-core CEE context-plane MCP server (epic #667).
+"""Tests for the clio-core context-plane MCP server (epic #667).
 
 In-memory via ``Client(server)`` (RULE 8) over a LocalFS store: an expert publishes
 context under a scope and another discovers/retrieves it — the blackboard primitive.
@@ -12,7 +12,7 @@ import pytest
 from fastmcp import Client
 
 from clio_agent.arc.storage import make_arc_store
-from clio_agent.tools.servers.cee_server import build_cee_server
+from clio_agent.tools.servers.clio_core_server import build_clio_core_server
 
 
 def _parse(result: object) -> dict:
@@ -25,7 +25,7 @@ def _parse(result: object) -> dict:
 
 
 def _server(tmp_path):
-    return build_cee_server(make_arc_store(backend="local", data_dir=str(tmp_path)))
+    return build_clio_core_server(make_arc_store(backend="local", data_dir=str(tmp_path)))
 
 
 @pytest.mark.asyncio
@@ -104,25 +104,25 @@ async def test_separator_injection_is_rejected(tmp_path):
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_bm25_search_on_real_cte():
-    """The CEE MCP over REAL clio-core CTE: semantic BM25 ranking, not the LocalFS
+    """The clio-core MCP over REAL clio-core CTE: semantic BM25 ranking, not the LocalFS
     word-overlap fallback the other tests use."""
     store = make_arc_store(backend="cte")
-    server = build_cee_server(store)
+    server = build_clio_core_server(store)
     try:
         async with Client(server) as client:
             await client.call_tool("context_publish", {
-                "scope": "cee_it", "name": "hdf5",
+                "scope": "clio_core_it", "name": "hdf5",
                 "content": "HDF5 dataset chunk sizes compression filters and dataset shapes",
             })
             await client.call_tool("context_publish", {
-                "scope": "cee_it", "name": "seismic",
+                "scope": "clio_core_it", "name": "seismic",
                 "content": "earthquake waveform catalog station picks magnitude and epicenter",
             })
             r = _parse(await client.call_tool(
-                "context_search", {"scope": "cee_it", "query": "HDF5 compression filters", "k": 3}
+                "context_search", {"scope": "clio_core_it", "query": "HDF5 compression filters", "k": 3}
             ))
             assert r["semantic"] is True  # real BM25 on CTE, not word-overlap
             assert r["hits"] and r["hits"][0]["name"] == "hdf5"
     finally:
-        store.delete("context", "cee_it::hdf5")
-        store.delete("context", "cee_it::seismic")
+        store.delete("context", "clio_core_it::hdf5")
+        store.delete("context", "clio_core_it::seismic")

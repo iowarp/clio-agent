@@ -5,7 +5,7 @@ deep-test designs. Tracking the fix work here. Confirmed bugs marked ✅REPRO.
 
 ## Tier 1 — confirmed / high-severity correctness bugs (flaky-for-real)
 
-### cee_transport (CONFIRMED via probe — 3 bugs in one run)
+### clio_core_transport (CONFIRMED via probe — 3 bugs in one run)
 - [ ] ✅REPRO **Handler exception hangs the parent** — `serve_one` lets the child exception
   propagate, never publishes a result → `invoke` waits the full timeout. FIX: catch → publish
   `status="failed"`.
@@ -33,7 +33,7 @@ deep-test designs. Tracking the fix work here. Confirmed bugs marked ✅REPRO.
 - [ ] **Parent continues after child failure** over real CTE (timeout → graceful, non-empty answer).
 - [ ] **Tool-backed child trajectory crossing the boundary**.
 
-## Tier 4 — cee_server
+## Tier 4 — clio_core_server
 - [ ] `::` separator injection (scope/name collision). FIX: encode/validate.
 - [ ] **CTE backend + BM25 untested** (tests are LocalFS-only). Add integration test on real CTE.
 - [ ] concurrent publishes to same (scope,name).

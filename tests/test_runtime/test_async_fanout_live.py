@@ -23,7 +23,11 @@ import pytest
 from clio_agent.arc.storage import make_arc_store
 from clio_agent.config import create_lm, load_config_from_env
 from clio_agent.runtime.background_tasks import BackgroundTasks, TaskStatus
-from clio_agent.runtime.cee_transport import CEEExpertInvoker, CEEMailbox, run_worker
+from clio_agent.runtime.clio_core_transport import (
+    ClioCoreExpertInvoker,
+    ClioCoreMailbox,
+    run_worker,
+)
 from clio_agent.runtime.expert_invoker import ExpertRequest, ExpertResult, spawn_invocation
 
 pytestmark = [
@@ -42,7 +46,7 @@ async def test_async_fanout_real_alcf_children(tmp_path):
     lm = create_lm(cfg)
 
     store = make_arc_store(backend="local", data_dir=str(tmp_path))
-    mailbox = CEEMailbox(store)
+    mailbox = ClioCoreMailbox(store)
 
     async def handler(req: ExpertRequest) -> ExpertResult:
         # a REAL ALCF completion answers the child's question
@@ -58,7 +62,7 @@ async def test_async_fanout_real_alcf_children(tmp_path):
         asyncio.ensure_future(run_worker(mailbox, handler, stop=stop, worker_id=f"w{i}", poll=0.05))
         for i in range(3)
     ]
-    invoker = CEEExpertInvoker(mailbox, timeout=300, poll=0.05)
+    invoker = ClioCoreExpertInvoker(mailbox, timeout=300, poll=0.05)
     tasks = BackgroundTasks()
 
     cases = [
@@ -100,4 +104,4 @@ async def test_async_fanout_real_alcf_children(tmp_path):
         assert needle in answer.lower(), f"{q!r} -> {answer!r} (wanted {needle!r})"
 
     # the mailbox drained clean — every req/res/claim consumed
-    assert [n for n, _ in store.scan("context", "cee_")] == []
+    assert [n for n, _ in store.scan("context", "clio_core_")] == []

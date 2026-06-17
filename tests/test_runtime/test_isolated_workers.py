@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 
 from clio_agent.arc.storage import make_arc_store
-from clio_agent.runtime.cee_transport import (
+from clio_agent.runtime.clio_core_transport import (
     IsolatedExpertInvoker,
     drop_presence,
     heartbeat_presence,
@@ -86,9 +86,9 @@ async def test_isolated_is_exactly_once_with_no_claim_blobs(tmp_path):
     assert len(execs) == n
     assert all(count == 1 for count in execs.values()), f"double-exec: {execs}"  # exactly-once
     # the lease-free guarantee: NO claim blobs were ever written
-    assert not any(".claim" in name for name, _ in store.scan("context", "cee"))
+    assert not any(".claim" in name for name, _ in store.scan("context", "clio_core"))
     # and the per-worker queues drained clean
-    assert not any(name.endswith(".req") or name.endswith(".res") for name, _ in store.scan("context", "cee"))
+    assert not any(name.endswith(".req") or name.endswith(".res") for name, _ in store.scan("context", "clio_core"))
 
 
 def test_presence_reflects_live_and_dead_workers(tmp_path):
@@ -134,3 +134,48 @@ async def test_reassigns_to_a_live_worker_on_timeout(tmp_path):
     finally:
         stop.set()
         await asyncio.gather(phantom, real, return_exceptions=True)
+
+
+async def test_isolated_high_concurrency_exactly_once_and_parallel(tmp_path):
+    """The replacement holds the bar: under N concurrent delegations round-robined across M
+    isolated workers, every request runs EXACTLY ONCE (no shared queue to double-claim -> no
+    duplications), every parent gets ITS own answer (hand-off intact, no cross-talk), the M
+    workers execute CONCURRENTLY (wall-clock ~ N/M x per-call, not serial), and zero .claim
+    blobs are written. Same M-way parallelism as the pull model, without the lease."""
+    import time
+
+    store = make_arc_store(backend="local", data_dir=str(tmp_path))
+    M, N, work = 5, 40, 0.1
+    execs: dict[str, int] = {}
+
+    async def handler(req: ExpertRequest) -> ExpertResult:
+        execs[req.question] = execs.get(req.question, 0) + 1
+        await asyncio.sleep(work)  # real-ish work, to force concurrency across workers
+        return ExpertResult(expert_id=req.expert_id, answer=f"ok:{req.question}")
+
+    stop = asyncio.Event()
+    workers = [
+        asyncio.ensure_future(
+            run_isolated_worker(store, handler, role="data", worker_id=f"w{i}", stop=stop, poll=0.005)
+        )
+        for i in range(M)
+    ]
+    try:
+        await _wait_for_workers(store, "data", M)
+        invoker = IsolatedExpertInvoker(store, role="data", timeout=20, poll=0.005)
+        t0 = time.monotonic()
+        results = await asyncio.gather(
+            *[invoker.invoke(ExpertRequest("data", f"j{i}")) for i in range(N)]
+        )
+        elapsed = time.monotonic() - t0
+    finally:
+        stop.set()
+        await asyncio.gather(*workers, return_exceptions=True)
+
+    assert sorted(r.answer for r in results) == sorted(f"ok:j{i}" for i in range(N))  # hand-off
+    assert len(execs) == N
+    dupes = [q for q, c in execs.items() if c != 1]
+    assert not dupes, f"DUPLICATIONS: {dupes}"  # exactly-once by construction
+    # M-way parallelism: N x work over M workers is ~ (N/M)*work; serial would be N*work (4s).
+    assert elapsed < work * (N / M) * 3, f"lost parallelism: {elapsed:.2f}s (serial would be {N*work:.1f}s)"
+    assert not any(".claim" in n for n, _ in store.scan("context", "clio_core"))

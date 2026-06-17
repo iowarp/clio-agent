@@ -18,7 +18,7 @@ import sys
 os.environ.setdefault("CLIO_CTE_WITH_RUNTIME", "0")  # attach to the daemon
 
 from clio_agent.arc.storage import make_arc_store  # noqa: E402
-from clio_agent.runtime.cee_transport import CEEMailbox, run_worker  # noqa: E402
+from clio_agent.runtime.clio_core_transport import ClioCoreMailbox, run_worker  # noqa: E402
 from clio_agent.runtime.expert_invoker import ExpertRequest, ExpertResult  # noqa: E402
 
 PREFIX = sys.argv[1]
@@ -132,7 +132,7 @@ def _make_handler(mode: str, store):
 
 async def main() -> None:
     store = make_arc_store(backend="cte")  # attaches to the clio_run daemon
-    mb = CEEMailbox(store, prefix=PREFIX)
+    mb = ClioCoreMailbox(store, prefix=PREFIX)
     handler = _make_handler(MODE, store)
     store.put("context", f"{PREFIX}READY_{PID}", b"1")  # readiness signal for the test
     print(f"WORKER_READY pid={PID} mode={MODE}", flush=True)

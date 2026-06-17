@@ -31,7 +31,7 @@ class RoleQueuePlacement(Placement):
     """Default: one queue per role; idle role-workers pull (work-stealing). Hints are
     ignored — the caller is fully decoupled from where a role's workers physically run."""
 
-    def __init__(self, prefix: str = "cee_") -> None:
+    def __init__(self, prefix: str = "clio_core_") -> None:
         self._prefix = prefix
 
     def mailbox_for(self, role: str, *, hints: Optional[Mapping[str, object]] = None) -> str:
@@ -45,7 +45,7 @@ class NodeAffinityPlacement(Placement):
     node's role queue ("run where the data is"); otherwise fall back to the plain role
     queue. Demonstrates the seam extending without changing any caller."""
 
-    def __init__(self, prefix: str = "cee_", hint_key: str = "node") -> None:
+    def __init__(self, prefix: str = "clio_core_", hint_key: str = "node") -> None:
         self._prefix = prefix
         self._hint_key = hint_key
 
@@ -56,7 +56,7 @@ class NodeAffinityPlacement(Placement):
         return f"{self._prefix}{node}_{role}" if node else f"{self._prefix}{role}"
 
 
-def make_placement(kind: Optional[str] = None, *, prefix: str = "cee_") -> Placement:
+def make_placement(kind: Optional[str] = None, *, prefix: str = "clio_core_") -> Placement:
     """Build a :class:`Placement` (factory). ``kind`` defaults to ``CLIO_PLACEMENT`` env
     or ``role``. Extend by adding a branch + impl here; callers are unaffected."""
     kind = (kind or os.environ.get("CLIO_PLACEMENT", "role")).strip().lower()

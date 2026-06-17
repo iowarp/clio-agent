@@ -1,5 +1,5 @@
 """Separate-process gact worker (epic #667, #671): reconstructs + runs a delegated child
-in its own build_app, the cross-process counterpart to the in-process cee invoker.
+in its own build_app, the cross-process counterpart to the in-process clio_core invoker.
 
 The unknown-expert path is unit-testable with no LM (it never reaches a child run). The
 full cross-process run of a REAL child lives in the live suite.
@@ -14,7 +14,7 @@ async def test_worker_handler_unknown_expert_drains_as_failed():
     """A request for an expert NOT in this worker's registry drains as a failed result —
     never hanging the parent — and without invoking an LM (the lookup fails first)."""
     from clio_agent.gact.app import build_app
-    from clio_agent.runtime.cee_worker import build_child_handler
+    from clio_agent.runtime.clio_core_worker import build_child_handler
 
     app = build_app()  # no ClioAgent needed: the unknown-expert path never runs a child
     handler = build_child_handler(app)
@@ -27,12 +27,12 @@ async def test_worker_handler_unknown_expert_drains_as_failed():
 
 def test_worker_module_exposes_entrypoints():
     """The worker exposes the build + run surface a launcher / test harness drives."""
-    from clio_agent.runtime import cee_worker
+    from clio_agent.runtime import clio_core_worker
 
-    assert callable(cee_worker.build_child_handler)
-    assert callable(cee_worker.build_worker_app)
-    assert callable(cee_worker.run_cee_worker)
-    assert hasattr(cee_worker, "_main")  # python -m clio_agent.runtime.cee_worker
+    assert callable(clio_core_worker.build_child_handler)
+    assert callable(clio_core_worker.build_worker_app)
+    assert callable(clio_core_worker.run_clio_core_worker)
+    assert hasattr(clio_core_worker, "_main")  # python -m clio_agent.runtime.clio_core_worker
 
 
 # --- LIVE: the worker reconstructs + runs a REAL registered child on ALCF ----------------
@@ -52,11 +52,11 @@ async def test_worker_runs_a_real_registered_child(tmp_path):
     AgentDef and runs it via run_child_expert against real ALCF, returning a real answer.
     user_agents is isolated to tmp (sessions_path) so the upsert never touches real config.
     This is the reconstruct-and-run that a separate worker PROCESS does; the cross-process
-    mailbox transport carrying it is already proven (test_cee_transport)."""
+    mailbox transport carrying it is already proven (test_clio_core_transport)."""
     from clio_agent.agent import ClioAgent
     from clio_agent.config import load_config_from_env, setup_dspy
     from clio_agent.gact.app import build_app
-    from clio_agent.runtime.cee_worker import build_child_handler
+    from clio_agent.runtime.clio_core_worker import build_child_handler
 
     cfg = load_config_from_env()
     if str(getattr(cfg, "provider", "")) in {"lmstudio", "lm_studio"}:
@@ -95,12 +95,12 @@ async def test_worker_subprocess_runs_child_over_shared_store(tmp_path):
     from pathlib import Path
 
     from clio_agent.arc.storage import make_arc_store
-    from clio_agent.runtime.cee_transport import CEEExpertInvoker, CEEMailbox
+    from clio_agent.runtime.clio_core_transport import ClioCoreExpertInvoker, ClioCoreMailbox
 
     data_dir = tmp_path / "store"
     data_dir.mkdir()
-    prefix = "cee_calc_"
-    entry = Path(__file__).parent / "_cee_worker_entry.py"
+    prefix = "clio_core_calc_"
+    entry = Path(__file__).parent / "_clio_core_worker_entry.py"
     log = open(tmp_path / "worker.log", "w")  # noqa: SIM115 - closed in finally
     env = {
         **os.environ,
@@ -110,7 +110,7 @@ async def test_worker_subprocess_runs_child_over_shared_store(tmp_path):
         "CLIO_LM_MODEL": "openai/gpt-oss-120b",
         "CLIO_ARC_STORE": "local",
         "CLIO_ARC_DATA_DIR": str(data_dir),
-        "CLIO_CEE_PREFIX": prefix,
+        "CLIO_CORE_PREFIX": prefix,
         "CLIO_GACT_SESSIONS": str(tmp_path / "sessions.json"),
         "XDG_CONFIG_HOME": str(tmp_path / "cfg"),
         "CLIO_ALLOWED_ROOTS": f"{tmp_path}:{os.getcwd()}",
@@ -118,7 +118,7 @@ async def test_worker_subprocess_runs_child_over_shared_store(tmp_path):
     proc = subprocess.Popen([sys.executable, str(entry)], env=env, stdout=log, stderr=log)
     try:
         store = make_arc_store(backend="local", data_dir=str(data_dir))
-        invoker = CEEExpertInvoker(CEEMailbox(store, prefix=prefix), timeout=150, poll=0.1)
+        invoker = ClioCoreExpertInvoker(ClioCoreMailbox(store, prefix=prefix), timeout=150, poll=0.1)
         res = await invoker.invoke(
             ExpertRequest("calc", "What is 2 + 2? Answer with only the number.", session_id="xproc")
         )
@@ -140,7 +140,7 @@ async def test_worker_handler_drains_a_raising_child_as_failed(monkeypatch):
     from types import SimpleNamespace
 
     import clio_agent.gact.app as appmod
-    from clio_agent.runtime.cee_worker import build_child_handler
+    from clio_agent.runtime.clio_core_worker import build_child_handler
 
     monkeypatch.setattr(appmod, "_resolve_dynamic_agent", lambda app, eid: SimpleNamespace(id=eid))
 
@@ -171,12 +171,12 @@ async def test_isolated_worker_subprocesses_over_shared_store(tmp_path):
     from pathlib import Path
 
     from clio_agent.arc.storage import make_arc_store
-    from clio_agent.runtime.cee_transport import IsolatedExpertInvoker, live_workers
+    from clio_agent.runtime.clio_core_transport import IsolatedExpertInvoker, live_workers
 
     data_dir = tmp_path / "store"
     data_dir.mkdir()
     role = "calc"
-    entry = Path(__file__).parent / "_cee_worker_entry.py"
+    entry = Path(__file__).parent / "_clio_core_worker_entry.py"
     base_env = {
         **os.environ,
         "CLIO_RUN_LIVE": "1",
@@ -185,8 +185,8 @@ async def test_isolated_worker_subprocesses_over_shared_store(tmp_path):
         "CLIO_LM_MODEL": "openai/gpt-oss-120b",
         "CLIO_ARC_STORE": "local",
         "CLIO_ARC_DATA_DIR": str(data_dir),
-        "CLIO_CEE_ISOLATED": "1",
-        "CLIO_CEE_ROLE": role,
+        "CLIO_CORE_ISOLATED": "1",
+        "CLIO_CORE_ROLE": role,
         "XDG_CONFIG_HOME": str(tmp_path / "cfg"),
         "CLIO_ALLOWED_ROOTS": f"{tmp_path}:{os.getcwd()}",
     }
@@ -197,7 +197,7 @@ async def test_isolated_worker_subprocesses_over_shared_store(tmp_path):
             logs.append(log)
             env = {
                 **base_env,
-                "CLIO_CEE_WORKER_ID": wid,
+                "CLIO_CORE_WORKER_ID": wid,
                 "CLIO_GACT_SESSIONS": str(tmp_path / f"{wid}_sessions.json"),
             }
             procs.append(subprocess.Popen([sys.executable, str(entry)], env=env, stdout=log, stderr=log))
@@ -219,7 +219,7 @@ async def test_isolated_worker_subprocesses_over_shared_store(tmp_path):
             assert res.status == "completed", f"{q!r} -> {res.status} {res.error}"
             assert needle in res.answer, f"{q!r} -> {res.answer!r}"
         # the whole point: a real cross-process delegation pool with ZERO claim blobs
-        assert not any(".claim" in n for n, _ in store.scan("context", "cee"))
+        assert not any(".claim" in n for n, _ in store.scan("context", "clio_core"))
     finally:
         for p in procs:
             p.terminate()

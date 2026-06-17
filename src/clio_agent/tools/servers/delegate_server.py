@@ -14,7 +14,7 @@ monitor/wait/cancel contract:
 
 ``build_delegate_server(tasks, invoker_factory)`` injects the task registry and an
 ``invoker_factory(role) -> ExpertInvoker`` — which is where *placement* lives (it picks
-the role's mailbox). In-process for tests, the clio-core ``CEEExpertInvoker`` over the
+the role's mailbox). In-process for tests, the clio-core ``ClioCoreExpertInvoker`` over the
 role queue in production. Same handle works either way.
 
 Principle (CLAUDE.md): the MODEL decides to delegate — a tool call IS its action — and

@@ -1,4 +1,4 @@
-"""clio-core CEE context-plane MCP server (epic #667; clio-core-integration idea #1).
+"""clio-core context-plane MCP server (epic #667; clio-core-integration idea #1).
 
 A small, curated blackboard over clio-core's context store: an expert publishes a
 piece of context under an agent *scope*, and another expert (now or later, here or
@@ -8,7 +8,7 @@ surface onto the same convergent context plane the live ReAct loop reads from â€
 
 Backed by an ``ARCStore`` (clio-core CTE in production, LocalFS for a single box /
 tests), so the bytes live in clio-core and span nodes on a cluster. Five curated
-tools (RULE 5); ``build_cee_server(store)`` injects the backend so the server is
+tools (RULE 5); ``build_clio_core_server(store)`` injects the backend so the server is
 testable in-memory with ``Client(server)``.
 """
 
@@ -31,9 +31,9 @@ def _key(scope: str, name: str) -> str:
     return f"{scope}{_SEP}{name}"
 
 
-def build_cee_server(store: Any) -> FastMCP:
-    """Build the CEE context-plane MCP server over ``store`` (an ``ARCStore``)."""
-    mcp = FastMCP("cee")
+def build_clio_core_server(store: Any) -> FastMCP:
+    """Build the clio-core context-plane MCP server over ``store`` (an ``ARCStore``)."""
+    mcp = FastMCP("clio_core")
 
     @mcp.tool()
     def context_publish(scope: str, name: str, content: str) -> dict[str, Any]:

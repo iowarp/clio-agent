@@ -38,12 +38,12 @@ from clio_agent.runtime.expert_invoker import ExpertRequest, ExpertResult
 # The mailbox rides ARC's "context" record kind (valid on every backend); names are
 # namespaced so they never collide with real context records.
 _KIND = "context"
-_PREFIX = "cee_"
+_PREFIX = "clio_core_"
 
 Handler = Callable[[ExpertRequest], Awaitable[ExpertResult]]
 
 
-class CEEMailbox:
+class ClioCoreMailbox:
     """A request/result mailbox over any clio-core context store (an ``ARCStore``:
     CTE for real clio-core, LocalFS for a single box / tests). Parties communicate
     only by reading/writing blobs here."""
@@ -165,7 +165,7 @@ class CEEMailbox:
         return out
 
 
-async def serve_one(mailbox: CEEMailbox, rid: str, handler: Handler) -> Optional[ExpertResult]:
+async def serve_one(mailbox: ClioCoreMailbox, rid: str, handler: Handler) -> Optional[ExpertResult]:
     """Worker side: read the request from clio-core, run the child, publish the
     result back — ALWAYS publishing something terminal so the parent never hangs.
 
@@ -205,7 +205,7 @@ async def serve_one(mailbox: CEEMailbox, rid: str, handler: Handler) -> Optional
 
 
 async def run_worker(
-    mailbox: CEEMailbox,
+    mailbox: ClioCoreMailbox,
     handler: Handler,
     *,
     stop: asyncio.Event,
@@ -227,7 +227,7 @@ async def run_worker(
 
 
 async def _serve_under_lease(
-    mailbox: CEEMailbox, rid: str, token: str, handler: Handler, lease_ttl: float
+    mailbox: ClioCoreMailbox, rid: str, token: str, handler: Handler, lease_ttl: float
 ) -> None:
     """Serve one request while renewing its lease, so a long handler isn't reclaimed.
     A crashed worker stops renewing and the lease frees in ~lease_ttl for reclaim."""
@@ -256,14 +256,14 @@ async def _serve_under_lease(
             await hb
 
 
-class CEEExpertInvoker:
+class ClioCoreExpertInvoker:
     """Parent-side ``ExpertInvoker`` over the clio-core mailbox: submit the request,
     wait for a worker to publish the result. Drop-in for the loopback invoker, but the
     transport is real clio-core context. On timeout the orphaned request is discarded
     and a clear error is raised (the parent's settle loop treats it like any failed
     child — it stays the router)."""
 
-    def __init__(self, mailbox: CEEMailbox, *, timeout: float = 60.0, poll: float = 0.1) -> None:
+    def __init__(self, mailbox: ClioCoreMailbox, *, timeout: float = 60.0, poll: float = 0.1) -> None:
         self._mb = mailbox
         self._timeout = timeout
         self._poll = poll
@@ -375,7 +375,7 @@ async def run_isolated_worker(
     parent routes to it. Because the worker is the SOLE reader of its queue there is NO claim
     and NO lease — each request runs exactly once. A failing/poison request drains as a
     ``failed`` result (``serve_one``); it never kills the loop."""
-    mailbox = CEEMailbox(store, prefix=_worker_queue_prefix(role, worker_id, prefix=prefix))
+    mailbox = ClioCoreMailbox(store, prefix=_worker_queue_prefix(role, worker_id, prefix=prefix))
     heartbeat_presence(store, role, worker_id, prefix=prefix)  # announce immediately
     last_hb = time.time()
     hb_every = max(presence_ttl / 3.0, 0.05)
@@ -443,12 +443,12 @@ class IsolatedExpertInvoker:
                     break
                 raise RuntimeError(f"no live worker for role {self._role!r}")
             tried.add(worker)
-            mailbox = CEEMailbox(
+            mailbox = ClioCoreMailbox(
                 self._store, prefix=_worker_queue_prefix(self._role, worker, prefix=self._prefix)
             )
             rid = mailbox.submit(request)
 
-            async def _wait(mb: CEEMailbox = mailbox, the_rid: str = rid) -> None:
+            async def _wait(mb: ClioCoreMailbox = mailbox, the_rid: str = rid) -> None:
                 while not mb.has_result(the_rid):
                     await asyncio.sleep(self._poll)
 
