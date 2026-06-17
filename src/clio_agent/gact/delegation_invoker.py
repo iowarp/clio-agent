@@ -121,6 +121,7 @@ async def run_child_via_boundary(
     session_id: str = "",
     mode: str = "",
     store: Any = None,
+    role: str = "",
 ) -> Any:
     """Run a child expert, optionally through the transport-abstracted boundary.
 
@@ -133,32 +134,71 @@ async def run_child_via_boundary(
     * ``"clio_core"`` — request/result cross the clio-core **mailbox**: serialized to blobs
       in an ``ARCStore`` (LocalFS single-box, or attached CTE on a cluster), discovered
       by a ``run_worker`` loop via a ``pending()`` scan, claimed under a TTL lease, and
-      read back. This exercises the FULL detached transport against a real delegation —
-      identical to the cross-node path except the worker is in-process here. Moving the
-      worker to a separate process (a gact worker on another node, same store) is a
-      deployment change, not a change to this call.
+      read back. The worker runs IN-PROCESS here (driven by ``run_child``) — it exercises
+      the full transport against a real delegation, identical to the cross-node path except
+      the worker's locality.
+    * ``"clio_core_isolated"`` — the DETACHED model: the child runs in a SEPARATE PROCESS.
+      The parent routes the request to one live worker's private queue (no claim/lease,
+      exactly-once by construction — clio-core#559 path (a)) via
+      :class:`IsolatedExpertInvoker` and reads the result back. ``run_child`` is NOT used
+      here — external ``run_isolated_clio_core_worker`` processes (one per node, same
+      ``store``) reconstruct and run the child. This is the real multinode delegation hinge.
 
-    ``store`` supplies the mailbox backend for ``"clio_core"``; when omitted a throwaway
-    LocalFS store is created and cleaned up (the single-box proof). ``CLIO_CORE_TIMEOUT``
+    ``store`` supplies the mailbox backend. For ``"clio_core"`` a throwaway LocalFS store is
+    created+cleaned when omitted (the single-box proof); for ``"clio_core_isolated"`` it is
+    REQUIRED (the parent and its detached workers must share one store) — typically the
+    agent's own ARC store (``app.state.arc.store``). ``role`` selects the worker pool for the
+    isolated model (defaults to ``CLIO_CORE_ROLE`` env, else the expert id). ``CLIO_CORE_TIMEOUT``
     bounds the wait (default 300s — real ALCF children are slow).
     """
-    if mode not in ("loopback", "clio_core"):
+    if mode not in ("loopback", "clio_core", "clio_core_isolated"):
         return await run_child(agent_def, prompt)
+
+    request = expert_request_for(agent_def, prompt, session_id=session_id)
+
+    if mode == "clio_core_isolated":
+        result = await _invoke_via_isolated(request, store=store, role=role)
+        return prediction_from_result(result)
 
     async def _handler(req: ExpertRequest) -> ExpertResult:
         pred = await run_child(agent_def, req.question)
         return expert_result_from_prediction(pred, expert_id=req.expert_id)
 
     if mode == "loopback":
-        result = await LoopbackExpertInvoker(_handler).invoke(
-            expert_request_for(agent_def, prompt, session_id=session_id)
-        )
+        result = await LoopbackExpertInvoker(_handler).invoke(request)
         return prediction_from_result(result)
 
-    result = await _invoke_via_clio_core(
-        _handler, expert_request_for(agent_def, prompt, session_id=session_id), store=store
-    )
+    result = await _invoke_via_clio_core(_handler, request, store=store)
     return prediction_from_result(result)
+
+
+async def _invoke_via_isolated(
+    request: ExpertRequest, *, store: Any, role: str = ""
+) -> ExpertResult:
+    """Route one delegation to the isolated detached worker pool over a SHARED store.
+
+    No in-process worker and no lease: the parent submits to one live worker's private
+    queue and reads the result back; external ``run_isolated_clio_core_worker`` processes
+    (same store, heartbeating presence) do the work. The shared store is mandatory — without
+    it parent and workers cannot rendezvous. ``role`` (else ``CLIO_CORE_ROLE``, else the
+    request's ``expert_id``) selects the pool; ``CLIO_CORE_PREFIX`` namespaces the mailbox.
+    """
+    if store is None:
+        raise ValueError(
+            "clio_core_isolated needs a shared store (parent + detached workers must share "
+            "one mailbox backend); pass store=app.state.arc.store"
+        )
+    from clio_agent.runtime.clio_core_transport import IsolatedExpertInvoker  # noqa: PLC0415
+
+    resolved_role = role or os.environ.get("CLIO_CORE_ROLE", "") or request.expert_id
+    if not resolved_role:
+        raise ValueError("clio_core_isolated needs a role (set CLIO_CORE_ROLE or an expert id)")
+    prefix = os.environ.get("CLIO_CORE_PREFIX", "clio_core_")
+    timeout = float(os.environ.get("CLIO_CORE_TIMEOUT", "300"))
+    invoker = IsolatedExpertInvoker(
+        store, role=resolved_role, prefix=prefix, timeout=timeout, poll=0.1
+    )
+    return await invoker.invoke(request)
 
 
 async def _invoke_via_clio_core(

@@ -131,6 +131,15 @@ class ARCMemory:
         # Index eviction configuration
         self._index_max_entries = 10000  # Maximum entries per index before eviction
 
+    @property
+    def store(self) -> ARCStore:
+        """The underlying persistence backend (LocalFS single-box, or a clio-core CTE
+        attached to a shared daemon on a cluster). Exposed read-only so the distributable
+        delegation transport can use the SAME store the agent persists memory through —
+        a cross-process parent and its detached expert workers thereby share one blackboard.
+        """
+        return self._store
+
     def _maybe_evict_index(self, index: BTreeIndex) -> None:
         """Evict old entries from index if it exceeds maximum size.
 

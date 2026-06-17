@@ -6824,6 +6824,21 @@ def _unsupported_model_ref_error(
     )
 
 
+def isolated_delegation_store(app: Any, mode: str) -> Any:
+    """The shared store the detached (``clio_core_isolated``) delegation model rendezvouses on.
+
+    Only the isolated model needs one — the parent and its separate-process workers must use
+    the SAME store (the agent's ARC backend, a clio-core CTE on a cluster). For every other
+    mode there is no shared-store requirement, so this returns ``None`` (the in-process /
+    loopback / single-box-throwaway paths supply their own). Extracted module-level so the
+    seam is unit-testable against a real ``build_app`` without driving a full turn.
+    """
+    if mode != "clio_core_isolated":
+        return None
+    arc = getattr(app.state, "arc", None)
+    return getattr(arc, "store", None)
+
+
 async def run_child_expert(
     app: "FastAPI",
     agent_def: "AgentDef",
@@ -7363,17 +7378,26 @@ async def _run_turn_in_background(
         ``CLIO_EXPERT_INVOKER=loopback`` routes the child behind the serializable
         :class:`ExpertInvoker` (answer + routing cross a JSON wire);
         ``CLIO_EXPERT_INVOKER=clio_core`` routes it through the clio-core mailbox transport
-        (blobs + TTL-lease claim + a worker loop) — the same path a cross-node worker
-        takes, with only the worker's locality differing (#659). This call is unchanged.
+        (blobs + TTL-lease claim + an in-process worker loop) — same transport a cross-node
+        worker uses, with only the worker's locality differing (#659);
+        ``CLIO_EXPERT_INVOKER=clio_core_isolated`` is the DETACHED multinode hinge — the
+        child runs in a SEPARATE PROCESS drained from the agent's shared ARC store (the
+        cluster's clio-core daemon), routed exactly-once to a live isolated worker pool.
+        The default path is unchanged.
         """
         from clio_agent.gact.delegation_invoker import run_child_via_boundary  # noqa: PLC0415
 
+        mode = os.environ.get("CLIO_EXPERT_INVOKER", "").strip().lower()
+        # The isolated (detached) model needs the agent's own store so the parent and its
+        # external workers rendezvous on one shared mailbox (clio-core CTE on a cluster).
+        store = isolated_delegation_store(app, mode)
         return await run_child_via_boundary(
             agent_def,
             prompt,
             run_child=_run_dynamic_agent_sync,
             session_id=sid,
-            mode=os.environ.get("CLIO_EXPERT_INVOKER", "").strip().lower(),
+            mode=mode,
+            store=store,
         )
 
     async def _execute_delegated_experts(

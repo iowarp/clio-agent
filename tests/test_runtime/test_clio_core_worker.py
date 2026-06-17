@@ -32,7 +32,30 @@ def test_worker_module_exposes_entrypoints():
     assert callable(clio_core_worker.build_child_handler)
     assert callable(clio_core_worker.build_worker_app)
     assert callable(clio_core_worker.run_clio_core_worker)
+    assert callable(clio_core_worker.run_isolated_clio_core_worker)  # the detached worker
     assert hasattr(clio_core_worker, "_main")  # python -m clio_agent.runtime.clio_core_worker
+
+
+def test_isolated_delegation_store_resolves_the_agents_arc_store():
+    """The production parent seam (``_invoke_child_expert``) pulls the agent's OWN ARC store
+    for the detached model, so parent and external workers share one mailbox. Prove that
+    resolution against a REAL build_app+ClioAgent (no LM): isolated mode yields a usable
+    ARCStore; every other mode yields None (no shared-store requirement)."""
+    from clio_agent.agent import ClioAgent
+    from clio_agent.gact.app import build_app, isolated_delegation_store
+
+    agent = ClioAgent()
+    # production wires app.state.arc = agent.arc during lifespan startup; mirror that end state
+    app = build_app(agent=agent, arc=agent.arc)
+    store = isolated_delegation_store(app, "clio_core_isolated")
+    # it IS the agent's persistence backend, and it's a working store (put/scan round-trips)
+    assert store is app.state.arc.store
+    store.put("context", "probe_xyz", b"1")
+    assert any(n == "probe_xyz" for n, _ in store.scan("context", "probe_"))
+    # no other mode asks for a shared store
+    assert isolated_delegation_store(app, "clio_core") is None
+    assert isolated_delegation_store(app, "loopback") is None
+    assert isolated_delegation_store(app, "") is None
 
 
 # --- LIVE: the worker reconstructs + runs a REAL registered child on ALCF ----------------
@@ -219,6 +242,105 @@ async def test_isolated_worker_subprocesses_over_shared_store(tmp_path):
             assert res.status == "completed", f"{q!r} -> {res.status} {res.error}"
             assert needle in res.answer, f"{q!r} -> {res.answer!r}"
         # the whole point: a real cross-process delegation pool with ZERO claim blobs
+        assert not any(".claim" in n for n, _ in store.scan("context", "clio_core"))
+    finally:
+        for p in procs:
+            p.terminate()
+        for p in procs:
+            try:
+                p.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                p.kill()
+                p.wait()
+        for log in logs:
+            log.close()
+
+
+@pytest.mark.live
+@pytest.mark.skipif(
+    os.environ.get("CLIO_RUN_LIVE") != "1",
+    reason="live ALCF run: set CLIO_RUN_LIVE=1 (and Argonne auth + CLIO_LM_* env)",
+)
+async def test_parent_hinge_delegates_via_isolated_pool_over_real_alcf(tmp_path, monkeypatch):
+    """END-TO-END of the WIRED parent: the production delegation hinge a real turn calls
+    (``run_child_via_boundary`` with ``store = isolated_delegation_store(app, ...)`` — exactly
+    what ``_invoke_child_expert`` does for ``CLIO_EXPERT_INVOKER=clio_core_isolated``) routes a
+    delegation to the DETACHED isolated worker pool. The parent runs a REAL build_app+ClioAgent
+    but executes NO child itself (``run_child`` raises if touched); a separate worker PROCESS
+    reconstructs + runs the child on ALCF and folds the answer back. Proves the wiring, not just
+    the transport: store resolved from the live agent, routed exactly-once, zero claim blobs."""
+    import asyncio
+    import subprocess
+    import sys
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    from clio_agent.agent import ClioAgent
+    from clio_agent.config import load_config_from_env, setup_dspy
+    from clio_agent.gact.app import build_app, isolated_delegation_store
+    from clio_agent.gact.delegation_invoker import run_child_via_boundary
+    from clio_agent.runtime.clio_core_transport import live_workers
+
+    cfg = load_config_from_env()
+    if str(getattr(cfg, "provider", "")) in {"lmstudio", "lm_studio"}:
+        pytest.skip("live run must target Argonne/ALCF, not LM Studio (leave it free)")
+
+    # the parent's ARC store must be a shared on-disk dir the workers can attach to
+    monkeypatch.setenv("CLIO_ARC_STORE", "local")
+    role = "calc"
+    setup_dspy()
+    agent = ClioAgent(data_dir=str(tmp_path / "agent"))
+    # production wires app.state.arc = agent.arc during lifespan startup; mirror that end state
+    app = build_app(agent=agent, arc=agent.arc, sessions_path=tmp_path / "sessions.json")
+    # resolve the shared store EXACTLY as the production parent seam does
+    store = isolated_delegation_store(app, "clio_core_isolated")
+    assert store is not None, "agent store did not resolve for the isolated model"
+    store_dir = str(store.data_dir)  # the workers attach to this same LocalFS dir
+
+    async def parent_run_child(agent_def, prompt):
+        raise AssertionError("parent must NOT run the child — the detached pool does")
+
+    entry = Path(__file__).parent / "_clio_core_worker_entry.py"
+    base_env = {
+        **os.environ,
+        "CLIO_RUN_LIVE": "1",
+        "CLIO_LM_PROVIDER": "argonne",
+        "CLIO_LM_API_BASE": "https://inference-api.alcf.anl.gov/resource_server/sophia/vllm/v1",
+        "CLIO_LM_MODEL": "openai/gpt-oss-120b",
+        "CLIO_ARC_STORE": "local",
+        "CLIO_ARC_DATA_DIR": store_dir,
+        "CLIO_CORE_ISOLATED": "1",
+        "CLIO_CORE_ROLE": role,
+        "XDG_CONFIG_HOME": str(tmp_path / "cfg"),
+        "CLIO_ALLOWED_ROOTS": f"{tmp_path}:{os.getcwd()}",
+    }
+    procs, logs = [], []
+    try:
+        for wid in ("w1", "w2"):
+            log = open(tmp_path / f"{wid}.log", "w")  # noqa: SIM115 - closed in finally
+            logs.append(log)
+            env = {**base_env, "CLIO_CORE_WORKER_ID": wid,
+                   "CLIO_GACT_SESSIONS": str(tmp_path / f"{wid}_sessions.json")}
+            procs.append(subprocess.Popen([sys.executable, str(entry)], env=env, stdout=log, stderr=log))
+
+        for _ in range(1500):  # workers build_app + ClioAgent before announcing presence
+            if len(live_workers(store, role)) >= 1:
+                break
+            await asyncio.sleep(0.1)
+        assert live_workers(store, role), f"no worker registered: {live_workers(store, role)}"
+
+        # THE WIRED HINGE: same call _invoke_child_expert makes for clio_core_isolated.
+        out = await run_child_via_boundary(
+            SimpleNamespace(id="calc"),
+            "What is 2 + 2? Answer with only the number.",
+            run_child=parent_run_child,  # never called — the parent does not run the child
+            session_id="iso-e2e",
+            mode="clio_core_isolated",
+            store=store,
+            role=role,
+        )
+        assert "4" in str(getattr(out, "answer", "")), f"answer from detached worker: {out.answer!r}"
+        # exactly-once detached model — never a claim/lease blob
         assert not any(".claim" in n for n, _ in store.scan("context", "clio_core"))
     finally:
         for p in procs:

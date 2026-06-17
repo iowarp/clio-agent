@@ -189,3 +189,74 @@ async def test_clio_core_mode_cleans_owned_tmp_dir_when_store_creation_fails(mon
             SimpleNamespace(id="data"), "q", run_child=run_child, mode="clio_core"  # store=None -> owns it
         )
     assert set(glob.glob("/tmp/clio_core_*")) == before  # no orphaned temp dir
+
+
+async def test_run_child_isolated_routes_to_a_detached_worker_pool(tmp_path):
+    """clio_core_isolated mode is the DETACHED hinge: the parent does NOT run the child
+    (``run_child`` is never called); it routes the request to a live isolated worker over a
+    shared store and folds the worker's result back. Here an in-process isolated worker stands
+    in for the separate-process worker (identical code path), proving the hinge drives
+    ``IsolatedExpertInvoker`` and recovers answer + routing + workflow_state intact."""
+    import asyncio
+
+    from clio_agent.arc.storage import make_arc_store
+    from clio_agent.runtime.clio_core_transport import run_isolated_worker
+
+    store = make_arc_store(backend="local", data_dir=str(tmp_path))
+    pred = _prediction()
+    seen = {}
+
+    async def worker_handler(req):
+        # the DETACHED worker owns the child run; it produces the result the parent reads back
+        seen["worker_q"] = req.question
+        return expert_result_from_prediction(pred, expert_id=req.expert_id)
+
+    async def parent_run_child(agent_def, prompt):
+        raise AssertionError("isolated mode must NOT run the child on the parent side")
+
+    stop = asyncio.Event()
+    worker = asyncio.ensure_future(
+        run_isolated_worker(store, worker_handler, role="data", worker_id="w1", stop=stop, poll=0.05)
+    )
+    try:
+        # wait until the worker has announced presence so the parent can route to it
+        from clio_agent.runtime.clio_core_transport import live_workers  # noqa: PLC0415
+
+        for _ in range(200):
+            if live_workers(store, "data"):
+                break
+            await asyncio.sleep(0.02)
+
+        out = await run_child_via_boundary(
+            SimpleNamespace(id="data"),
+            "q",
+            run_child=parent_run_child,
+            session_id="s1",
+            mode="clio_core_isolated",
+            store=store,
+            role="data",
+        )
+    finally:
+        stop.set()
+        worker.cancel()
+        with pytest.raises((asyncio.CancelledError, Exception)):
+            await worker
+
+    assert seen["worker_q"] == "q"  # the detached worker, not the parent, ran it
+    assert out.answer == "the data shows X"
+    assert out.next_expert == "analysis"
+    assert "analysis" in out.expert_handoffs  # routing decision crossed the isolated mailbox
+    assert out.workflow_state["rows"] == 128
+
+
+async def test_isolated_mode_requires_a_shared_store():
+    """The detached model can't rendezvous without a shared store — the hinge raises a clear
+    error rather than silently degrading to an in-process run (RULE: surface reality)."""
+
+    async def run_child(agent_def, prompt):
+        raise AssertionError("must not run the child")
+
+    with pytest.raises(ValueError, match="shared store"):
+        await run_child_via_boundary(
+            SimpleNamespace(id="data"), "q", run_child=run_child, mode="clio_core_isolated", store=None
+        )
