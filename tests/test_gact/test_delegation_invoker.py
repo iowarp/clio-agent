@@ -37,7 +37,9 @@ def _prediction(**kw):
 
 
 def test_request_builder_pulls_agent_id():
-    req = expert_request_for(SimpleNamespace(id="data"), "find X", session_id="s1", scope="agentA/data")
+    req = expert_request_for(
+        SimpleNamespace(id="data"), "find X", session_id="s1", scope="agentA/data"
+    )
     assert req.expert_id == "data" and req.question == "find X"
     assert req.session_id == "s1" and req.scope == "agentA/data"
 
@@ -128,3 +130,36 @@ async def test_run_child_loopback_crosses_the_wire():
     assert out.next_task == "quantify X"
     assert "analysis" in out.expert_handoffs  # routing decision survived
     assert out.workflow_state["rows"] == 128
+
+
+async def test_run_child_cee_crosses_the_mailbox(tmp_path):
+    """CEE mode runs the child behind the clio-core mailbox transport: the request and
+    result cross as blobs in an ARCStore, served by an in-process worker loop. The
+    parent recovers a prediction rebuilt from what crossed the mailbox — answer and the
+    full routing decision intact. (Same transport a cross-node worker uses.)"""
+    from clio_agent.arc.storage import make_arc_store
+
+    store = make_arc_store(backend="local", data_dir=str(tmp_path))
+    pred = _prediction()
+    seen = {}
+
+    async def run_child(agent_def, prompt):
+        seen["prompt"] = prompt  # the question reached the worker that drained the mailbox
+        return pred
+
+    out = await run_child_via_boundary(
+        SimpleNamespace(id="data"),
+        "q",
+        run_child=run_child,
+        session_id="s1",
+        mode="cee",
+        store=store,
+    )
+    assert seen["prompt"] == "q"
+    assert out.answer == "the data shows X"
+    assert out.next_expert == "analysis"
+    assert out.next_task == "quantify X"
+    assert "analysis" in out.expert_handoffs  # routing decision survived the mailbox
+    assert out.workflow_state["rows"] == 128
+    # the mailbox drained clean — no leaked req/res/claim blobs
+    assert [n for n, _ in store.scan("context", "cee_")] == []

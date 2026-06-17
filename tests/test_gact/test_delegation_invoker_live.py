@@ -58,3 +58,36 @@ async def test_loopback_carries_a_real_alcf_child_answer():
     answer = str(getattr(loop, "answer", "") or "")
     assert answer.strip(), "loopback child answer was lost crossing the wire"
     assert "4" in answer  # the real answer survived serialization round-trip
+
+
+async def test_cee_mailbox_carries_a_real_alcf_child_answer(tmp_path):
+    """The detached seam over the REAL clio-core mailbox transport: a real ALCF child's
+    prediction crosses as blobs in an ARCStore (claimed under a TTL lease, served by a
+    worker loop) and the parent recovers its answer. This is the cross-node path on a
+    single box (LocalFS store, in-process worker) — no daemon, no behavior change to the
+    default delegation."""
+    from clio_agent.arc.storage import make_arc_store
+
+    cfg = load_config_from_env()
+    if str(getattr(cfg, "provider", "")) in {"lmstudio", "lm_studio"}:
+        pytest.skip("live run must target Argonne/ALCF, not LM Studio (leave it free)")
+    lm = create_lm(cfg)
+    store = make_arc_store(backend="local", data_dir=str(tmp_path))
+
+    async def run_child(agent_def, prompt: str):
+        with dspy.context(lm=lm, adapter=dspy.ChatAdapter()):
+            return dspy.Predict("question -> answer")(question=prompt)
+
+    out = await run_child_via_boundary(
+        SimpleNamespace(id="data"),
+        "What is 2+2? Answer with only the number.",
+        run_child=run_child,
+        session_id="live-cee",
+        mode="cee",
+        store=store,
+    )
+    answer = str(getattr(out, "answer", "") or "")
+    assert answer.strip(), "cee child answer was lost crossing the mailbox"
+    assert "4" in answer  # the real ALCF answer survived the clio-core mailbox transport
+    # the mailbox drained clean after the delegation completed
+    assert [n for n, _ in store.scan("context", "cee_")] == []

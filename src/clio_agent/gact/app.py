@@ -7286,9 +7286,10 @@ async def _run_turn_in_background(
         Default is the in-process path — ``run_child_via_boundary`` returns the raw
         prediction verbatim, so the live delegation is behavior-identical (RULE 2).
         ``CLIO_EXPERT_INVOKER=loopback`` routes the child behind the serializable
-        :class:`ExpertInvoker`, proving the detached seam end to end (the parent's
-        answer + routing cross a JSON wire). On a cluster the loopback transport is
-        swapped for clio-core (#659) — this call is unchanged.
+        :class:`ExpertInvoker` (answer + routing cross a JSON wire);
+        ``CLIO_EXPERT_INVOKER=cee`` routes it through the clio-core mailbox transport
+        (blobs + TTL-lease claim + a worker loop) — the same path a cross-node worker
+        takes, with only the worker's locality differing (#659). This call is unchanged.
         """
         from clio_agent.gact.delegation_invoker import run_child_via_boundary  # noqa: PLC0415
 

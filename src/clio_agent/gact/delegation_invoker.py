@@ -16,6 +16,11 @@ it survives the wire verbatim — clio carries the decision, it does not re-deri
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
+import os
+import shutil
+import tempfile
 from collections.abc import Mapping
 from typing import Any
 
@@ -30,7 +35,12 @@ ROUTING_EVENT = "routing"
 
 
 def expert_request_for(
-    agent_def: Any, prompt: str, *, session_id: str = "", scope: str = "", context: dict | None = None
+    agent_def: Any,
+    prompt: str,
+    *,
+    session_id: str = "",
+    scope: str = "",
+    context: dict | None = None,
 ) -> ExpertRequest:
     """Build the serializable request a child expert is invoked with."""
     return ExpertRequest(
@@ -60,7 +70,9 @@ def expert_result_from_prediction(
     """Map a dspy.Prediction to a serializable :class:`ExpertResult`, preserving the
     answer, the typed ``workflow_state``, and the parent's routing decision."""
     ws = getattr(pred, "workflow_state", None)
-    workflow_state = {str(k): _jsonable(v) for k, v in ws.items()} if isinstance(ws, Mapping) else {}
+    workflow_state = (
+        {str(k): _jsonable(v) for k, v in ws.items()} if isinstance(ws, Mapping) else {}
+    )
     routing = {
         "next_expert": str(getattr(pred, "next_expert", "") or ""),
         "next_task": str(getattr(pred, "next_task", "") or ""),
@@ -108,25 +120,74 @@ async def run_child_via_boundary(
     run_child: Any,
     session_id: str = "",
     mode: str = "",
+    store: Any = None,
 ) -> Any:
     """Run a child expert, optionally through the transport-abstracted boundary.
 
     ``run_child`` is ``async (agent_def, prompt) -> dspy.Prediction`` (today's
-    in-process runner). Default (``mode != "loopback"``) returns that prediction
-    verbatim — full parity, zero behavior change to the live delegation path. With
-    ``mode="loopback"`` the child runs behind a :class:`LoopbackExpertInvoker`: the
-    request and result cross a JSON wire (the detached seam), proving end to end that
-    a real delegation survives serialization. On a cluster, swap the loopback for
-    clio-core transport (#659) — this call is unchanged.
+    in-process runner). Default (unknown ``mode``) returns that prediction verbatim —
+    full parity, zero behavior change to the live delegation path. The boundary modes:
+
+    * ``"loopback"`` — request/result cross a JSON wire in memory and fold back,
+      proving the contract is serialization-clean without any store.
+    * ``"cee"`` — request/result cross the clio-core **mailbox**: serialized to blobs
+      in an ``ARCStore`` (LocalFS single-box, or attached CTE on a cluster), discovered
+      by a ``run_worker`` loop via a ``pending()`` scan, claimed under a TTL lease, and
+      read back. This exercises the FULL detached transport against a real delegation —
+      identical to the cross-node path except the worker is in-process here. Moving the
+      worker to a separate process (a gact worker on another node, same store) is a
+      deployment change, not a change to this call.
+
+    ``store`` supplies the mailbox backend for ``"cee"``; when omitted a throwaway
+    LocalFS store is created and cleaned up (the single-box proof). ``CLIO_CEE_TIMEOUT``
+    bounds the wait (default 300s — real ALCF children are slow).
     """
-    if mode != "loopback":
+    if mode not in ("loopback", "cee"):
         return await run_child(agent_def, prompt)
 
     async def _handler(req: ExpertRequest) -> ExpertResult:
         pred = await run_child(agent_def, req.question)
         return expert_result_from_prediction(pred, expert_id=req.expert_id)
 
-    result = await LoopbackExpertInvoker(_handler).invoke(
-        expert_request_for(agent_def, prompt, session_id=session_id)
+    if mode == "loopback":
+        result = await LoopbackExpertInvoker(_handler).invoke(
+            expert_request_for(agent_def, prompt, session_id=session_id)
+        )
+        return prediction_from_result(result)
+
+    result = await _invoke_via_cee(
+        _handler, expert_request_for(agent_def, prompt, session_id=session_id), store=store
     )
     return prediction_from_result(result)
+
+
+async def _invoke_via_cee(
+    handler: Any, request: ExpertRequest, *, store: Any = None
+) -> ExpertResult:
+    """Route one delegation through the clio-core mailbox with an in-process worker
+    draining it. Same transport a cross-node worker uses; only the worker's locality
+    differs. Owns (and cleans up) a throwaway LocalFS store when none is supplied."""
+    from clio_agent.runtime.cee_transport import CEEExpertInvoker, CEEMailbox, run_worker
+
+    owns_store = store is None
+    tmp_dir = ""
+    if owns_store:
+        from clio_agent.arc.storage import make_arc_store  # noqa: PLC0415
+
+        tmp_dir = tempfile.mkdtemp(prefix="clio_cee_")
+        store = make_arc_store(backend="local", data_dir=tmp_dir)
+
+    timeout = float(os.environ.get("CLIO_CEE_TIMEOUT", "300"))
+    mailbox = CEEMailbox(store)
+    stop = asyncio.Event()
+    worker = asyncio.ensure_future(run_worker(mailbox, handler, stop=stop, poll=0.05))
+    try:
+        return await CEEExpertInvoker(mailbox, timeout=timeout, poll=0.05).invoke(request)
+    finally:
+        stop.set()
+        worker.cancel()
+        with contextlib.suppress(BaseException):
+            await worker
+        if owns_store and tmp_dir:
+            with contextlib.suppress(OSError):
+                shutil.rmtree(tmp_dir, ignore_errors=True)
