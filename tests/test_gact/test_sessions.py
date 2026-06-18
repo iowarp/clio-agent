@@ -38,6 +38,23 @@ def test_create_returns_session_with_id_and_timestamps(mem_store: SessionStore) 
     assert sess.updated_at == sess.created_at  # matches on creation
     assert sess.message_count == 0
     assert sess.metadata == {}
+    assert sess.agent == {"id": "main"}
+    assert sess.model == {}
+
+
+def test_create_persists_agent_and_model_refs(mem_store: SessionStore) -> None:
+    sess = mem_store.create(
+        workspace_id="ws_default",
+        title="with refs",
+        agent={"id": "code_reviewer", "mode": "review"},
+        model={"provider_id": "lm_studio", "model_id": "qwopus3.5-9b-v3"},
+    )
+
+    assert sess.agent == {"id": "code_reviewer", "mode": "review"}
+    assert sess.model == {
+        "provider_id": "lm_studio",
+        "model_id": "qwopus3.5-9b-v3",
+    }
 
 
 def test_create_default_title_uses_id_suffix(mem_store: SessionStore) -> None:
@@ -85,12 +102,19 @@ def test_update_patches_fields_and_bumps_updated_at(
     original_updated = sess.updated_at
 
     patched = mem_store.update(
-        sess.id, title="new", status="running", metadata_patch={"k": "v"}
+        sess.id,
+        title="new",
+        status="running",
+        metadata_patch={"k": "v"},
+        agent={"id": "data"},
+        model={"provider_id": "openai", "model_id": "gpt-4o-mini"},
     )
     assert patched is not None
     assert patched.title == "new"
     assert patched.status == "running"
     assert patched.metadata == {"k": "v"}
+    assert patched.agent == {"id": "data"}
+    assert patched.model == {"provider_id": "openai", "model_id": "gpt-4o-mini"}
     # updated_at at least not earlier than creation (clock could be
     # equal if called in the same second — allow equality).
     assert patched.updated_at >= original_updated

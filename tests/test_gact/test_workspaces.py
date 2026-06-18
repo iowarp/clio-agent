@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from fastapi.testclient import TestClient
 
 from clio_agent.gact.app import build_app
+from clio_agent.gact.types import Message, Part
 
 
 def _client(tmp_path: Path) -> TestClient:
@@ -40,6 +42,70 @@ def test_create_workspace_persists(tmp_path: Path) -> None:
     assert fetched["id"] == new["id"]
     body = c.get("/v1/workspaces").json()
     assert {w["name"] for w in body["workspaces"]} >= {"default", "iowarp"}
+
+
+def test_workspace_exposes_default_and_configured_storage_root(tmp_path: Path) -> None:
+    c = _client(tmp_path)
+    project = tmp_path / "project"
+    project.mkdir()
+    custom = tmp_path / "custom-clio-store"
+
+    default_ws = c.post(
+        "/v1/workspaces",
+        json={"name": "default-storage", "root_path": str(project)},
+    ).json()
+    custom_ws = c.post(
+        "/v1/workspaces",
+        json={
+            "name": "custom-storage",
+            "root_path": str(project),
+            "storage_root": str(custom),
+        },
+    ).json()
+
+    assert default_ws["storage_root"] == str(project / ".clio")
+    assert custom_ws["storage_root"] == str(custom)
+
+
+def test_session_and_messages_are_mirrored_to_workspace_storage(tmp_path: Path) -> None:
+    c = _client(tmp_path)
+    project = tmp_path / "project"
+    project.mkdir()
+    ws = c.post(
+        "/v1/workspaces",
+        json={"name": "project", "root_path": str(project)},
+    ).json()
+    sid = c.post(
+        "/v1/sessions",
+        json={"workspace_id": ws["id"], "title": "workspace local"},
+    ).json()["id"]
+    storage_root = project / ".clio"
+    sessions_path = storage_root / "sessions.json"
+
+    data = json.loads(sessions_path.read_text(encoding="utf-8"))
+    assert data[sid]["workspace_id"] == ws["id"]
+    assert data[sid]["metadata"]["workspace_storage_root"] == str(storage_root)
+
+    from clio_agent.gact.app import _replace_session_messages
+
+    _replace_session_messages(
+        c.app,
+        sid,
+        [
+            Message(
+                id="msg_1",
+                session_id=sid,
+                role="user",
+                created_at="2026-05-28T00:00:00+00:00",
+                updated_at="2026-05-28T00:00:00+00:00",
+                parts=[Part(id="part_1", type="text", text="workspace-local memory")],
+            )
+        ],
+    )
+
+    message_path = storage_root / "messages" / f"{sid}.json"
+    messages = json.loads(message_path.read_text(encoding="utf-8"))
+    assert messages[0]["parts"][0]["text"] == "workspace-local memory"
 
 
 def test_create_session_validates_workspace(tmp_path: Path) -> None:
@@ -91,3 +157,51 @@ def test_persistence_round_trip(tmp_path: Path) -> None:
     c2 = TestClient(build_app(sessions_path=tmp_path / "s.json"))
     body = c2.get("/v1/workspaces").json()
     assert any(w["name"] == "persistent" for w in body["workspaces"])
+
+
+def test_workspace_file_read_returns_plain_text_not_json(tmp_path: Path) -> None:
+    c = _client(tmp_path)
+    c.app.state.workspaces.update("ws_default", root_path=str(tmp_path))
+    target = tmp_path / "notes.md"
+    target.write_text("hello picker\n", encoding="utf-8")
+
+    resp = c.get("/v1/workspaces/ws_default/files/read", params={"path": "notes.md"})
+
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("text/plain")
+    assert resp.text == "hello picker\n"
+    assert resp.content == b"hello picker\n"
+
+
+def test_workspace_file_read_serves_png_as_raw_bytes(tmp_path: Path) -> None:
+    # iowarp/clio-agent#673, #676: binary files (PNG) must be served as RAW
+    # bytes with their real content type, not UTF-8-decoded into text/plain
+    # (which corrupts the bytes with replacement characters).
+    c = _client(tmp_path)
+    c.app.state.workspaces.update("ws_default", root_path=str(tmp_path))
+    # PNG signature + bytes that are invalid UTF-8 (0xFF 0xFE) — must survive.
+    png_bytes = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\xff\xfe\x01\x02"
+    target = tmp_path / "validation_plot.png"
+    target.write_bytes(png_bytes)
+
+    resp = c.get("/v1/workspaces/ws_default/files/read", params={"path": "validation_plot.png"})
+
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "image/png"
+    assert resp.content == png_bytes
+    assert int(resp.headers["content-length"]) == len(png_bytes)
+
+
+def test_workspace_file_read_sniffs_unknown_binary_as_octet_stream(tmp_path: Path) -> None:
+    # Unknown extension + binary content (NUL byte) -> raw octet-stream, not text.
+    c = _client(tmp_path)
+    c.app.state.workspaces.update("ws_default", root_path=str(tmp_path))
+    blob = b"\x00\x01\x02\xff\xfedata"
+    target = tmp_path / "artifact.unknownext"
+    target.write_bytes(blob)
+
+    resp = c.get("/v1/workspaces/ws_default/files/read", params={"path": "artifact.unknownext"})
+
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "application/octet-stream"
+    assert resp.content == blob

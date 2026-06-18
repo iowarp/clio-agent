@@ -1,5 +1,6 @@
 """Tests for file access policy validation."""
 
+from clio_agent.tools import file_policy
 from clio_agent.tools.file_policy import FileAccessPolicy, FilePolicyError
 
 
@@ -48,11 +49,17 @@ def test_validate_read_rejects_large_file(tmp_path):
     assert result["error"]["details"]["size_bytes"] == 10
 
 
-def test_validate_read_rejects_symlink_by_default(tmp_path):
+def test_validate_read_rejects_symlink_by_default(tmp_path, monkeypatch):
     real_file = tmp_path / "real.h5"
     real_file.write_bytes(b"content")
     link = tmp_path / "link.h5"
-    link.symlink_to(real_file)
+    try:
+        link.symlink_to(real_file)
+    except OSError as exc:
+        if getattr(exc, "winerror", None) == 1314:
+            monkeypatch.setattr(file_policy, "_has_symlink", lambda _path: True)
+        else:
+            raise
     policy = FileAccessPolicy(allowed_roots=(tmp_path,))
 
     try:

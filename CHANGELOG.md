@@ -4,6 +4,14 @@ All notable changes to clio-agent's GACT-contract surface are
 documented in this file. Internal changes that don't affect the
 TUI/HTTP surface aren't tracked here.
 
+## Unreleased
+
+### Removed
+- Retired the legacy Codex HTTP bridge process. Switch
+  `provider=codex` to the LiteLLM CustomLLM path; no bridge process is
+  needed. Users pointing at `:18900/v1` should re-pick the `codex`
+  preset so config resolves through the registered provider.
+
 ## [0.3.1] — 2026-04-27
 
 The "every advertised capability actually works" release. Every flag
@@ -44,7 +52,7 @@ downgrades anywhere; if a flag is true, it works.**
   instead of asyncify-in-executor (which was stripping the send_stream
   ContextVar). Single StreamListener bound to `answer` for clean chat
   output. Live per-token timing depends on the upstream provider —
-  Meridian buffers, OpenRouter passes through.
+  some OpenAI-compatible gateways buffer, OpenRouter passes through.
 - **Permission audit trail (#7 closed strict).** `_apply_edit_to_disk`
   records an auto-approved permission row (action=allow,
   reason=`user_clicked_apply`) for every diff/apply. `/v1/permissions`
@@ -61,16 +69,16 @@ downgrades anywhere; if a flag is true, it works.**
   being called positionally where it declared `field` as keyword-only.
 - **Edit-intent honored across providers.** `_direct_chat_completion`
   timeout 60s → 180s for slower providers.
-- **Test infra reliability.** `tests/test_integration_v0_2/conftest.py`
-  httpx client timeout 30s → 90s to absorb Meridian tail latency.
+- **Test infra reliability.** `tests/test_integration_contract/conftest.py`
+  httpx client timeout 30s → 90s to absorb proxy tail latency.
 
 ### Performance
-- Full integration_v0_2 suite is 16/16 strict in ~95s (was ~25min before
+- Full integration_contract suite is 16/16 strict in ~95s (was ~25min before
   the streaming + adapter fixes earlier in this release cycle).
 
 ### Removed
 - All `@pytest.mark.xfail` decorators in
-  `tests/test_integration_v0_2/test_real_capabilities.py`. Suite is
+  `tests/test_integration_contract/test_real_capabilities.py`. Suite is
   now strict-only.
 
 ## [0.3.0] — 2026-04-25
@@ -135,8 +143,8 @@ downgrades anywhere; if a flag is true, it works.**
 - Doubled provider prefix (`openai/openai/claude-haiku-4-5`) when
   the API was sent a model id that already included the prefix.
   Strip + reapply once.
-- 5 of 16 integration tests in `tests/test_integration_v0_2/` were
-  flaking on Meridian tail-latency. Bumped LM-driven turn timeouts
+- 5 of 16 integration tests in `tests/test_integration_contract/` were
+  flaking on proxy tail latency. Bumped LM-driven turn timeouts
   from 120s to 300s. Suite is now 11 passed + 5 honest xfails (each
   xfail links the GitHub issue tracking the gap).
 

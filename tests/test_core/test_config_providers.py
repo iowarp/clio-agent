@@ -1,10 +1,10 @@
 """
 Tests for multi-provider LM configuration.
 
-Tests LMProviderConfig, load_config_from_env, create_lm, and create_router_lm.
+Tests LMProviderConfig, load_config_from_env, create_lm, and create_planner_lm.
 """
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import dspy
 import pytest
@@ -12,6 +12,7 @@ import pytest
 from clio_agent.config import (
     LMProviderConfig,
     create_lm,
+    create_planner_lm,
     create_router_lm,
     load_config_from_env,
 )
@@ -29,7 +30,7 @@ class TestLMProviderConfig:
         """LM Studio defaults should match PROVIDER_DEFAULTS."""
         config = LMProviderConfig(provider="lm_studio")
         assert config.api_base == "http://127.0.0.1:1234/v1"
-        assert config.model == "ibm/granite-4-h-tiny"
+        assert config.model == ""
         assert config.api_key == "lm-studio"
 
     def test_ollama_defaults(self):
@@ -68,24 +69,89 @@ class TestLMProviderConfig:
         assert config.api_key == "custom-key"
 
     def test_default_temperature(self):
-        """Default temperature should be 1.0."""
+        """Default agentic temperature should be 0.0 (deterministic structured output)."""
         config = LMProviderConfig()
-        assert config.temperature == 1.0
+        assert config.temperature == 0.0
 
-    def test_default_router_temperature(self):
-        """Default router temperature should be 0.3."""
+    def test_default_planner_temperature(self):
+        """Default planner temperature should be 0.3."""
         config = LMProviderConfig()
+        assert config.planner_temperature == 0.3
         assert config.router_temperature == 0.3
+
+    def test_router_temperature_alias(self):
+        """Legacy router_temperature constructor arg should still configure the planner."""
+        config = LMProviderConfig(router_temperature=0.2)
+        assert config.planner_temperature == 0.2
+        assert config.router_temperature == 0.2
 
     def test_default_max_tokens(self):
         """Default max_tokens should be 32000."""
         config = LMProviderConfig()
         assert config.max_tokens == 32000
+        assert config.planner_max_tokens == 32000
+
+    def test_qwopus_profile_hardens_planner_defaults(self):
+        """Qwopus should get deterministic planning and a planner token floor."""
+        config = LMProviderConfig(
+            provider="lm_studio",
+            model="qwopus3.5-9b-v3",
+            max_tokens=1024,
+        )
+        assert config.max_tokens == 1024
+        assert config.planner_temperature == 0.0
+        assert config.router_temperature == 0.0
+        assert config.planner_max_tokens == 4096
+
+    def test_qwopus_profile_respects_temperature_but_enforces_planner_token_floor(self):
+        """Qwopus should keep manual temperature but reject too-small planner caps."""
+        config = LMProviderConfig(
+            provider="lm_studio",
+            model="qwopus3.5-9b-v3",
+            max_tokens=1024,
+            planner_temperature=0.2,
+            planner_max_tokens=2048,
+        )
+        assert config.planner_temperature == 0.2
+        assert config.planner_max_tokens == 4096
+
+    def test_qwopus_profile_respects_explicit_planner_cap_above_floor(self):
+        """Explicit planner caps above the local reasoning floor should win."""
+        config = LMProviderConfig(
+            provider="lm_studio",
+            model="qwopus3.5-9b-v3",
+            max_tokens=1024,
+            planner_max_tokens=8192,
+        )
+        assert config.planner_max_tokens == 8192
 
     def test_default_environment(self):
         """Default environment should be 'dev'."""
         config = LMProviderConfig()
         assert config.environment == "dev"
+
+    def test_default_codex_transport(self):
+        """Codex transport should default to exec."""
+        config = LMProviderConfig(provider="codex")
+        assert config.codex_transport == "exec"
+
+    def test_invalid_codex_transport_rejected(self):
+        """Invalid Codex transport should fail during config construction."""
+        with pytest.raises(ValueError, match="codex_transport"):
+            LMProviderConfig(provider="codex", codex_transport="telepathy")  # type: ignore[arg-type]
+
+    def test_claude_code_defaults(self):
+        """Claude Code should not require an API key."""
+        config = LMProviderConfig(provider="claude_code")
+        assert config.api_base == "claude-code://exec"
+        assert config.model == "sonnet"
+        assert config.api_key == ""
+        assert config.claude_code_transport == "exec"
+
+    def test_invalid_claude_code_transport_rejected(self):
+        """Invalid Claude Code transport should fail during config construction."""
+        with pytest.raises(ValueError, match="claude_code_transport"):
+            LMProviderConfig(provider="claude_code", claude_code_transport="sdk")  # type: ignore[arg-type]
 
 
 class TestLoadConfigFromEnv:
@@ -141,6 +207,39 @@ class TestLoadConfigFromEnv:
             config = load_config_from_env()
             assert config.max_tokens == 8192
 
+    def test_env_planner_max_tokens_override(self):
+        """CLIO_LM_PLANNER_MAX_TOKENS should override planner max tokens."""
+        env = {"CLIO_LM_PLANNER_MAX_TOKENS": "2048"}
+        with patch.dict("os.environ", env, clear=True):
+            config = load_config_from_env()
+            assert config.max_tokens == 32000
+            assert config.planner_max_tokens == 2048
+
+    def test_env_qwopus_profile_without_manual_planner_tuning(self):
+        """Qwopus via LM Studio should apply its planner profile from env config."""
+        env = {
+            "CLIO_LM_PROVIDER": "lm_studio",
+            "CLIO_LM_MODEL": "qwopus3.5-9b-v3",
+            "CLIO_LM_MAX_TOKENS": "1024",
+        }
+        with patch.dict("os.environ", env, clear=True):
+            config = load_config_from_env()
+            assert config.planner_temperature == 0.0
+            assert config.planner_max_tokens == 4096
+
+    def test_env_qwopus_profile_raises_too_small_manual_planner_cap(self):
+        """Qwopus planner caps below the known reliable floor are raised."""
+        env = {
+            "CLIO_LM_PROVIDER": "lm_studio",
+            "CLIO_LM_MODEL": "qwopus3.5-9b-v3",
+            "CLIO_LM_MAX_TOKENS": "8192",
+            "CLIO_LM_PLANNER_MAX_TOKENS": "1024",
+        }
+        with patch.dict("os.environ", env, clear=True):
+            config = load_config_from_env()
+            assert config.max_tokens == 8192
+            assert config.planner_max_tokens == 4096
+
     def test_env_environment(self):
         """CLIO_ENVIRONMENT should set environment field."""
         env = {"CLIO_ENVIRONMENT": "production"}
@@ -176,27 +275,87 @@ class TestLoadConfigFromEnv:
             config = load_config_from_env()
             assert config.api_key == "sk-native"
 
+    def test_codex_transport_from_env(self):
+        """CLIO_CODEX_TRANSPORT should select the Codex transport mode."""
+        env = {"CLIO_LM_PROVIDER": "codex", "CLIO_CODEX_TRANSPORT": "sdk"}
+        with patch.dict("os.environ", env, clear=True):
+            config = load_config_from_env()
+            assert config.codex_transport == "sdk"
+
+    def test_claude_code_transport_from_env(self):
+        """CLIO_CLAUDE_CODE_TRANSPORT should select the Claude Code transport mode."""
+        env = {"CLIO_LM_PROVIDER": "claude_code", "CLIO_CLAUDE_CODE_TRANSPORT": "exec"}
+        with patch.dict("os.environ", env, clear=True):
+            config = load_config_from_env()
+            assert config.claude_code_transport == "exec"
+
 
 class TestCreateLM:
     """Test create_lm function."""
 
     def test_returns_dspy_lm(self):
         """create_lm should return a dspy.LM instance."""
-        config = LMProviderConfig(provider="lm_studio")
+        config = LMProviderConfig(provider="lm_studio", model="loaded-model")
         lm = create_lm(config)
         assert isinstance(lm, dspy.LM)
 
     def test_lm_studio_uses_openai_prefix(self):
         """LM Studio models should get openai/ prefix."""
-        config = LMProviderConfig(provider="lm_studio")
+        config = LMProviderConfig(provider="lm_studio", model="loaded-model")
         lm = create_lm(config)
         assert "openai/" in lm.model
+
+    def test_lm_studio_empty_model_discovers_loaded_model(self):
+        """Blank LM Studio model means use the currently loaded model."""
+        config = LMProviderConfig(provider="lm_studio")
+        with patch("clio_agent.config.list_lm_studio_models", return_value=["qwopus3.5-9b-v3"]):
+            lm = create_lm(config)
+        assert lm.model == "openai/qwopus3.5-9b-v3"
 
     def test_ollama_uses_openai_prefix(self):
         """Ollama models should get openai/ prefix."""
         config = LMProviderConfig(provider="ollama")
         lm = create_lm(config)
         assert "openai/" in lm.model
+
+    def test_argonne_sophia_preserves_openai_prefixed_model_ids(self):
+        """Sophia GPT-OSS ids include openai/ as part of the served model id."""
+        config = LMProviderConfig(
+            provider="argonne",
+            api_base="https://inference-api.alcf.anl.gov/resource_server/sophia/vllm/v1",
+            model="openai/gpt-oss-120b",
+            api_key="token",
+        )
+
+        lm = create_lm(config)
+
+        assert lm.model == "openai/openai/gpt-oss-120b"
+
+    def test_argonne_metis_keeps_single_openai_provider_prefix(self):
+        """Metis GPT-OSS ids do not need Sophia's double-prefix workaround."""
+        config = LMProviderConfig(
+            provider="argonne",
+            api_base="https://inference-api.alcf.anl.gov/resource_server/metis/api/v1",
+            model="openai/gpt-oss-120b",
+            api_key="token",
+        )
+
+        lm = create_lm(config)
+
+        assert lm.model == "openai/gpt-oss-120b"
+
+    def test_argonne_sophia_huggingface_ids_keep_single_provider_prefix(self):
+        """Sophia non-openai model ids still use the normal LiteLLM provider prefix."""
+        config = LMProviderConfig(
+            provider="argonne",
+            api_base="https://inference-api.alcf.anl.gov/resource_server/sophia/vllm/v1",
+            model="meta-llama/Llama-4-Scout-17B-16E-Instruct",
+            api_key="token",
+        )
+
+        lm = create_lm(config)
+
+        assert lm.model == "openai/meta-llama/Llama-4-Scout-17B-16E-Instruct"
 
     def test_openai_uses_native_prefix(self):
         """OpenAI models should get openai/ prefix (native)."""
@@ -212,42 +371,97 @@ class TestCreateLM:
             lm = create_lm(config)
             assert lm.model.startswith("anthropic/")
 
+    def test_codex_uses_custom_provider_prefix_with_internal_marker(self):
+        """Codex should keep user-facing model ids clean and mark internally."""
+        config = LMProviderConfig(provider="codex", model="gpt-5.5")
+        lm = create_lm(config)
+        assert lm.model == "codex/cdx-gpt-5.5"
+        assert lm.kwargs["codex_transport"] == "exec"
+
+    def test_codex_model_marker_is_not_doubled(self):
+        """Codex should accept already-prefixed config values idempotently."""
+        config = LMProviderConfig(provider="codex", model="codex/cdx-gpt-5.5")
+        lm = create_lm(config)
+        assert lm.model == "codex/cdx-gpt-5.5"
+
+    def test_codex_sdk_transport_passes_litellm_kwarg(self):
+        """Codex SDK transport should flow into dspy.LM kwargs."""
+        config = LMProviderConfig(
+            provider="codex",
+            model="gpt-5.5",
+            codex_transport="sdk",
+        )
+        lm = create_lm(config)
+        assert lm.kwargs["codex_transport"] == "sdk"
+
+    def test_claude_code_uses_custom_provider_prefix(self):
+        """Claude Code should keep user-facing model ids clean and mark internally."""
+        config = LMProviderConfig(provider="claude_code", model="sonnet")
+        lm = create_lm(config)
+        assert lm.model == "claude_code/cc-sonnet"
+        assert lm.kwargs["claude_code_transport"] == "exec"
+
+    def test_claude_code_model_marker_is_not_doubled(self):
+        """Claude Code should accept already-prefixed config values idempotently."""
+        config = LMProviderConfig(provider="claude_code", model="claude_code/cc-sonnet")
+        lm = create_lm(config)
+        assert lm.model == "claude_code/cc-sonnet"
+
     def test_each_provider_returns_lm(self):
         """All providers should produce valid dspy.LM instances."""
         for provider in ("lm_studio", "ollama"):
-            config = LMProviderConfig(provider=provider)
+            model = "loaded-model" if provider == "lm_studio" else ""
+            config = LMProviderConfig(provider=provider, model=model)
             lm = create_lm(config)
             assert isinstance(lm, dspy.LM), f"Failed for {provider}"
 
 
-class TestCreateRouterLM:
-    """Test create_router_lm function."""
+class TestCreatePlannerLM:
+    """Test create_planner_lm function."""
 
     def test_returns_dspy_lm(self):
-        """create_router_lm should return a dspy.LM instance."""
-        config = LMProviderConfig(provider="lm_studio")
-        lm = create_router_lm(config)
+        """create_planner_lm should return a dspy.LM instance."""
+        config = LMProviderConfig(provider="lm_studio", model="loaded-model")
+        lm = create_planner_lm(config)
         assert isinstance(lm, dspy.LM)
 
-    def test_uses_router_temperature(self):
-        """Router LM should use router_temperature, not temperature."""
+    def test_uses_planner_temperature(self):
+        """Planner LM should use planner_temperature, not temperature."""
         config = LMProviderConfig(
             provider="lm_studio",
+            model="loaded-model",
             temperature=1.0,
-            router_temperature=0.3,
+            planner_temperature=0.3,
         )
-        lm = create_router_lm(config)
+        lm = create_planner_lm(config)
         # The temperature is set on the LM kwargs
         assert lm.kwargs.get("temperature") == 0.3
 
-    def test_custom_router_temperature(self):
-        """Router LM should respect custom router_temperature."""
+    def test_uses_planner_max_tokens(self):
+        """Planner LM should use planner_max_tokens, not answer max_tokens."""
+        config = LMProviderConfig(
+            provider="lm_studio",
+            model="loaded-model",
+            max_tokens=1024,
+            planner_max_tokens=4096,
+        )
+        lm = create_planner_lm(config)
+        assert lm.kwargs.get("max_tokens") == 4096
+
+    def test_custom_planner_temperature(self):
+        """Planner LM should respect custom planner_temperature."""
         config = LMProviderConfig(
             provider="ollama",
-            router_temperature=0.1,
+            planner_temperature=0.1,
         )
-        lm = create_router_lm(config)
+        lm = create_planner_lm(config)
         assert lm.kwargs.get("temperature") == 0.1
+
+    def test_router_lm_alias(self):
+        """create_router_lm remains as a compatibility alias."""
+        config = LMProviderConfig(provider="lm_studio", model="loaded-model")
+        lm = create_router_lm(config)
+        assert isinstance(lm, dspy.LM)
 
 
 class TestSetupDspy:
@@ -257,7 +471,7 @@ class TestSetupDspy:
         """setup_dspy should return a dspy.LM instance."""
         from clio_agent.config import setup_dspy
 
-        with patch.dict("os.environ", {}, clear=True):
+        with patch.dict("os.environ", {"CLIO_LM_MODEL": "loaded-model"}, clear=True):
             lm = setup_dspy(verbose=False)
             assert isinstance(lm, dspy.LM)
 
@@ -273,7 +487,7 @@ class TestSetupDspy:
         """setup_dspy with verbose=True should print config info."""
         from clio_agent.config import setup_dspy
 
-        with patch.dict("os.environ", {}, clear=True):
+        with patch.dict("os.environ", {"CLIO_LM_MODEL": "loaded-model"}, clear=True):
             setup_dspy(verbose=True)
             captured = capsys.readouterr()
             assert "LM configured" in captured.out
@@ -326,74 +540,80 @@ class TestSetupDspy:
         assert adapter.use_json_adapter_fallback is True
 
 
-class TestFetchLmStudioModels:
-    """Test fetch_lm_studio_models with mocked HTTP."""
+class TestListLmStudioModels:
+    """``list_lm_studio_models`` is the single CLI discovery path: it delegates to
+    the unified :class:`LMStudioHandshake` (so there is no second HTTP probe to
+    rot) while preserving the one CLI-specific behaviour — *retry while LM Studio
+    is still loading a model*, and hard-fail (never a silent ``[]``) when nothing
+    ever loads. The low-level ``/api/v0`` parsing is the handshake's job and is
+    covered in ``tests/test_providers``; here we pin the wrapper contract against
+    mocked handshake reports. The wrapper imports ``run_handshake_sync`` from the
+    handshake package, so we patch it at its source module."""
 
-    def test_successful_fetch(self):
-        """Should return model list on successful response."""
-        from clio_agent.config import fetch_lm_studio_models
+    _PATCH = "clio_agent.providers.handshake.run_handshake_sync"
 
-        mock_response = {"data": [{"id": "model-1"}, {"id": "model-2"}]}
-        with patch("clio_agent.config.requests.get") as mock_get:
-            mock_resp = MagicMock()
-            mock_resp.json.return_value = mock_response
-            mock_resp.raise_for_status.return_value = None
-            mock_get.return_value = mock_resp
+    @staticmethod
+    def _report(*, ok: bool, models: tuple[str, ...] = (), error: str | None = None):
+        """Minimal stand-in for a HandshakeReport (only the fields the wrapper reads)."""
+        from types import SimpleNamespace
 
-            models = fetch_lm_studio_models(max_retries=1)
-            assert models == ["model-1", "model-2"]
+        return SimpleNamespace(
+            ok=ok,
+            models=tuple(SimpleNamespace(id=m) for m in models),
+            error=error,
+        )
 
-    def test_fetch_accepts_api_base_with_v1_suffix(self):
-        """Configured LM Studio api_base values may already include /v1."""
-        from clio_agent.config import fetch_lm_studio_models
+    def test_returns_loaded_model_ids(self):
+        """A reachable backend with loaded models yields their ids in one probe."""
+        from clio_agent.config import list_lm_studio_models
 
-        with patch("clio_agent.config.requests.get") as mock_get:
-            mock_resp = MagicMock()
-            mock_resp.json.return_value = {"data": [{"id": "nemotron"}]}
-            mock_resp.raise_for_status.return_value = None
-            mock_get.return_value = mock_resp
+        rep = self._report(ok=True, models=("model-1", "model-2"))
+        with patch(self._PATCH, return_value=rep) as mock_hs:
+            models = list_lm_studio_models(max_retries=1)
+        assert models == ["model-1", "model-2"]
+        assert mock_hs.call_count == 1
 
-            models = fetch_lm_studio_models(
-                base_url="http://192.168.86.143:1234/v1",
-                max_retries=1,
-            )
+    def test_recovers_after_a_loading_delay(self):
+        """Empty first probe, loaded second -> returns once the model loads."""
+        from clio_agent.config import list_lm_studio_models
 
+        reports = [
+            self._report(ok=True, models=()),
+            self._report(ok=True, models=("granite",)),
+        ]
+        with patch(self._PATCH, side_effect=reports), patch("time.sleep"):
+            models = list_lm_studio_models(max_retries=5, retry_delay=0)
+        assert models == ["granite"]
+
+    def test_empty_models_retries_then_surfaces_configuration_error(self):
+        """A persistently empty (but reachable) backend must not collapse to []."""
+        from clio_agent.config import LMStudioDiscoveryError, list_lm_studio_models
+
+        rep = self._report(ok=True, models=())
+        with patch(self._PATCH, return_value=rep) as mock_hs, patch("time.sleep"):
+            with pytest.raises(LMStudioDiscoveryError, match="no loaded models"):
+                list_lm_studio_models(max_retries=3, retry_delay=0)
+        assert mock_hs.call_count == 3
+
+    def test_unreachable_surfaces_endpoint_error(self):
+        """An unreachable backend preserves the handshake's connectivity error."""
+        from clio_agent.config import LMStudioDiscoveryError, list_lm_studio_models
+
+        rep = self._report(ok=False, models=(), error="ConnectionError: refused")
+        with patch(self._PATCH, return_value=rep) as mock_hs, patch("time.sleep"):
+            with pytest.raises(LMStudioDiscoveryError, match="refused"):
+                list_lm_studio_models(max_retries=2, retry_delay=0)
+        assert mock_hs.call_count == 2
+
+    def test_discovery_is_names_only_offline(self):
+        """Model discovery must not trigger the external context cascade."""
+        from clio_agent.config import list_lm_studio_models
+
+        rep = self._report(ok=True, models=("nemotron",))
+        with patch(self._PATCH, return_value=rep) as mock_hs:
+            models = list_lm_studio_models(base_url="http://192.168.86.143:1234/v1", max_retries=1)
         assert models == ["nemotron"]
-        mock_get.assert_called_once_with("http://192.168.86.143:1234/v1/models", timeout=10)
-
-    def test_empty_models_retries(self):
-        """Should retry when models list is empty."""
-        from clio_agent.config import fetch_lm_studio_models
-
-        with patch("clio_agent.config.requests.get") as mock_get:
-            mock_resp = MagicMock()
-            mock_resp.json.return_value = {"data": []}
-            mock_resp.raise_for_status.return_value = None
-            mock_get.return_value = mock_resp
-
-            with patch("time.sleep"):
-                models = fetch_lm_studio_models(max_retries=2, retry_delay=0)
-                assert models == []
-
-    def test_connection_error_retries(self):
-        """Should retry on ConnectionError."""
-        import requests as req
-
-        from clio_agent.config import fetch_lm_studio_models
-
-        with patch("clio_agent.config.requests.get") as mock_get:
-            mock_get.side_effect = req.exceptions.ConnectionError("refused")
-
-            with patch("time.sleep"):
-                models = fetch_lm_studio_models(max_retries=2, retry_delay=0)
-                assert models == []
-
-    def test_generic_error_returns_empty(self):
-        """Should return empty on generic exception."""
-        from clio_agent.config import fetch_lm_studio_models
-
-        with patch("clio_agent.config.requests.get") as mock_get:
-            mock_get.side_effect = Exception("weird error")
-
-            models = fetch_lm_studio_models(max_retries=1)
-            assert models == []
+        ctx = mock_hs.call_args.args[0]
+        assert ctx.provider_kind == "lm_studio"
+        assert ctx.api_base == "http://192.168.86.143:1234/v1"
+        assert ctx.allow_external_sources is False

@@ -1,12 +1,11 @@
 """
 Tests for clio_agent.errors module.
 
-Tests structured error types, format_error_response, and with_degradation.
+Tests structured error types and format_error_response.
 """
 
-import pytest
-
 from clio_agent.errors import (
+    CancellationError,
     ClioError,
     ConfigError,
     ExpertError,
@@ -14,7 +13,6 @@ from clio_agent.errors import (
     RoutingError,
     ToolError,
     format_error_response,
-    with_degradation,
 )
 
 
@@ -80,6 +78,12 @@ class TestErrorSubclasses:
         assert err.error_type == "config_error"
         assert err.to_dict()["error"] == "config_error"
 
+    def test_cancellation_error_type(self):
+        """CancellationError should have error_type='cancelled'."""
+        err = CancellationError("Turn cancelled")
+        assert err.error_type == "cancelled"
+        assert err.to_dict()["error"] == "cancelled"
+
     def test_subclass_with_details(self):
         """Subclasses should accept and store details."""
         err = ExpertError("fail", details={"expert": "data"})
@@ -87,7 +91,14 @@ class TestErrorSubclasses:
 
     def test_all_are_clio_errors(self):
         """All subclasses should be ClioError instances."""
-        for cls in (ProviderError, RoutingError, ExpertError, ToolError, ConfigError):
+        for cls in (
+            ProviderError,
+            RoutingError,
+            ExpertError,
+            ToolError,
+            ConfigError,
+            CancellationError,
+        ):
             assert isinstance(cls("msg"), ClioError)
 
 
@@ -123,60 +134,3 @@ class TestFormatErrorResponse:
         resp = format_error_response(err)
         assert resp["error"] == "provider_error"
         assert resp["details"]["provider"] == "ollama"
-
-
-class TestWithDegradation:
-    """Test with_degradation function."""
-
-    def test_primary_succeeds(self):
-        """Should return primary result when it succeeds."""
-        result = with_degradation(lambda: 42, lambda: 0)
-        assert result == 42
-
-    def test_fallback_on_primary_failure(self):
-        """Should call fallback when primary fails."""
-        def primary():
-            raise RuntimeError("primary broke")
-
-        result = with_degradation(primary, lambda: "fallback_value")
-        assert result == "fallback_value"
-
-    def test_raises_when_both_fail(self):
-        """Should raise error_cls when both primary and fallback fail."""
-        def primary():
-            raise RuntimeError("primary")
-
-        def fallback():
-            raise RuntimeError("fallback")
-
-        with pytest.raises(ClioError) as exc_info:
-            with_degradation(primary, fallback)
-
-        err = exc_info.value
-        assert "Primary failed" in err.message
-        assert "Fallback failed" in err.message
-        assert err.details["primary_error"] == "primary"
-        assert err.details["fallback_error"] == "fallback"
-
-    def test_custom_error_class(self):
-        """Should raise the specified error_cls when both fail."""
-        def primary():
-            raise RuntimeError("p")
-
-        def fallback():
-            raise RuntimeError("f")
-
-        with pytest.raises(ProviderError):
-            with_degradation(primary, fallback, error_cls=ProviderError)
-
-    def test_fallback_not_called_on_success(self):
-        """Fallback should not be called when primary succeeds."""
-        fallback_called = False
-
-        def fallback():
-            nonlocal fallback_called
-            fallback_called = True
-            return "nope"
-
-        with_degradation(lambda: "ok", fallback)
-        assert not fallback_called

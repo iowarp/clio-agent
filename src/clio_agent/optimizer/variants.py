@@ -137,9 +137,7 @@ class VariantManager:
         """
         variant_path = self._variants_dir / f"{variant_id}.json"
         if not variant_path.exists():
-            raise FileNotFoundError(
-                f"Variant file not found: {variant_path}"
-            )
+            raise FileNotFoundError(f"Variant file not found: {variant_path}")
 
         existing_module.load(path=str(variant_path))
         return existing_module
@@ -169,9 +167,7 @@ class VariantManager:
                 found = True
 
         if not found:
-            raise ValueError(
-                f"Variant '{variant_id}' not found for agent '{agent_id}'"
-            )
+            raise ValueError(f"Variant '{variant_id}' not found for agent '{agent_id}'")
 
         # Deactivate all, then activate target
         for record in records:

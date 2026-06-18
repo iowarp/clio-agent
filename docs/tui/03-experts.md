@@ -1,89 +1,79 @@
-# 03 — Experts
+# 03 - Experts
 
-> CLIO routes work to specialised Expert agents. This doc describes what an Expert IS, the current roster, and how the TUI should render their lifecycle.
+> CLIO routes scientific work to registry-loaded Agent Blueprint experts. This
+> doc describes the current expert model and how the TUI should render their
+> lifecycle.
 
-## What is an Expert?
+## What Is An Expert?
 
-An Expert is a `dspy.Module` subclass (`src/clio_agent/agent.py:37`) with:
+An expert is an Agent Blueprint node loaded from the registry/marketplace store
+and compiled at runtime into a DSPy module. CLIO core supplies the runtime
+substrate: registry bootstrap, tool adapters, MCP descriptors, workspace policy,
+semantic events, permissions, memory, and provenance.
 
-- A **DSPy Signature** defining input/output contract (e.g. `DataExpertSignature` — `question, file_context → analysis, recommendations`).
-- A **ReAct pattern** loop (reason → act via tools → observe → iterate, max 5 iterations — `data_expert.py:85`).
-- **Real MCP tools** wired in via the `MCPToolBridge` (`data_expert.py:72-86`) which converts async FastMCP tools into sync `dspy.Tool` objects consumable by the ReAct agent.
-- Optional **ARC memory** for caching tool results (hidden from the LLM schema via FastMCP `Depends()`).
-- A static `get_capabilities()` method that registers keywords + tool names + specialisation with the Agent Registry.
+Expert definitions are not privileged Python classes in `clio_agent.experts`.
+The production native `DataExpert`, `AnalysisExpert`, `VisualizationExpert`,
+`NDPExpert`, and `SACFormatExpert` paths have been removed from the runtime.
 
-## Current roster (v0.2)
+## Current Default Registry
 
-| Expert | Purpose | Tools | Signature | Source |
-|---|---|---|---|---|
-| **DataExpert** | HDF5 + Parquet optimisation, I/O analysis | `hdf5_list_datasets`, `hdf5_analyze`, `hdf5_optimize`, `hdf5_check_compression`, `hdf5_analyze_file` | `DataExpertSignature` | `experts/data_expert.py:37-131` |
-| **AnalysisExpert** | Statistical profiling, column-level analysis | `parquet_analyze_schema`, `parquet_query_data`, `parquet_compute_statistics` | `AnalysisExpertSignature` | `experts/analysis_expert.py:37-137` |
-| **VisualizationExpert** | Charts / plots / visual summaries | `plot_histogram`, `plot_bar_chart`, `plot_scatter`, `plot_summary` | `VisualizationExpertSignature` | `experts/__init__.py` |
-| **ChatAgent** | Conversational fallback (no tools) | — | `ChatAgentSignature` | `agent.py:~144` |
+The default baseline comes from the pinned marketplace registry:
 
-Planned (not live): `HPCExpert` (SLURM/MPI/Darshan), `ResearchExpert` (papers/citations), plus A2A-bridged external agents (LangChain / CrewAI / AutoGen). (`CLIO_AGENT_ARCHITECTURE.md:110-157`, `PLAN.md:113-134`)
+| Field | Value |
+|---|---|
+| Registry | `git@github.com:JaimeCernuda/clio-agent-marketplace.git` |
+| Ref | `main` |
+| Commit | `908e013d68a80b1e13d5e7d633309d1f6813d970` |
+| Submodule | `external/clio-agent-marketplace` |
+| Default blueprint | `data-semantics` |
 
-## Registration
+At runtime the default blueprint installs into the normal blueprint store and
+surfaces as registry rows such as `main`, `data`, `analysis`, and
+`visualization`, each with `agent_blueprint` and `pack.definition_path`
+metadata.
 
-All three experts register in `ClioAgent.__init__` (`agent.py:160-215`):
+## Blueprint Contract
 
-```python
-registry.register_agent(
-    agent_id="data",
-    agent=self.data_expert,
-    capabilities=AgentCapability(
-        keywords=["hdf5", "compression", "chunking", "data", "io"],
-        description="Data I/O optimization expert with HDF5 tools",
-        tools=["hdf5_list_datasets", "hdf5_analyze_dataset", ...],
-        specialization="data_io",
-    ),
-)
-```
+Blueprint experts declare:
 
-Keywords are what the heuristic router (`agent.py:386-402`) reads to skip the LM entirely.
+- `module.kind`: `predict`, `chain_of_thought`, or `react`.
+- `signature`: ordered input/output fields. Empty declarations default to
+  `system_prompt`, `question`, and `answer`.
+- `structured_outputs`: normalized `evidence`, `artifacts`, `errors`,
+  `delegation`, and `expert_handoffs` fields.
+- `tools`: allowed tool names. Tool lists scope access; they do not select the
+  module kind.
+- `children`: declared child experts available for synchronous delegation.
 
-## How an Expert runs
+The compiler maps module kinds to DSPy as follows:
 
-Given `selected == "data"` (`agent.py:307-329`):
+| `module.kind` | Runtime module |
+|---|---|
+| `predict` | `dspy.Predict(signature)` |
+| `chain_of_thought` | `dspy.ChainOfThought(signature)` |
+| `react` | `dspy.ReAct(signature, tools=allowed_tools + child_expert_tools)` |
 
-1. **Fast path**: `_direct_tool_answer(selected, question, file_context)`. If the query is deterministic (e.g. "list datasets in X.h5"), the tool is called directly with no LM involvement.
-2. **ReAct fallback**: `self.data_expert(question=question, file_context=file_context)` runs the full DSPy ReAct loop.
-3. Returns `expert_result` with `.analysis` + `.recommendations` fields.
-4. `answer = f"{expert_result.analysis}\n\nRecommendations:\n{expert_result.recommendations}"`
+## What The TUI Should Show
 
-Experts are **not chained by default** — multi-expert collaboration is a Phase-2 item (`CLIO_AGENT_ARCHITECTURE.md:759`).
+- Active expert id and title.
+- Blueprint id, version, scope, install commit, and definition path.
+- Module kind and structured-output availability.
+- Tool calls with tool name, args summary, result/error, duration, and
+  cached/fresh state.
+- Child delegation lifecycle: started, completed, failed, parent resumed.
+- Provider/model provenance.
+- Structured `error_info` and stream fallback metadata when present.
 
-## What the TUI should show
-
-- **Active-expert badge** — e.g. `[DataExpert]` chip near the assistant message, coloured per specialisation (`data_io`, `data_analysis`, `data_visualization`, `chat`).
-- **Tool calls** — inline rows under the expert activity: tool name, args summary, result length, and a cached/fresh glyph (read `arc_stats` to decide; `⚡` fresh, `✓` cache hit).
-- **Routing confidence** — the routing decision carries a confidence score (0–1.0) from the LM router; display when present.
-- **Registry panel** — `/experts` view: tiles showing `id`, `description`, `keywords`, `tools` count for each registered expert.
-
-## Expert signatures (internal, don't surface)
-
-| Signature | Input fields | Output fields | Module | Compile time |
-|---|---|---|---|---|
-| `RouterSignature` | `question` | `selected_expert: Literal[...]` | `ChainOfThought` | runtime |
-| `ChatAgentSignature` | `question, session_context` | `answer` | `Predict` | runtime |
-| `DataExpertSignature` | `question, file_context` | `analysis, recommendations` | `ReAct` | Phase 3: SIMBA compile |
-| `AnalysisExpertSignature` | `question, file_context` | `analysis, recommendations` | `ReAct` | Phase 3: SIMBA compile |
-| `VisualizationExpertSignature` | `question, file_context` | `visualization_description, file_path` | `ReAct` | Phase 3: SIMBA compile |
-
-DSPy is an **implementation detail**. The TUI must not display DSPy-specific errors or types (`CLAUDE.md` Rule 3).
-
-## SIMBA compile-time variants (future)
-
-`optimizer/runner.py` runs DSPy SIMBA to tune expert prompts offline; A/B'd variants are versioned in ARC (`optimizer/variants.py`). Once this lands, the TUI can display "variant v3" badges or a Settings affordance to trigger `--tune` — but it's gated on Phase 3+. (`CLIO_VISION.md:51`, `PLAN.md:290-335`)
-
-## Error paths per expert
-
-From `errors.py` (see `08-semantics-and-lifecycle.md` for full details):
+## Error Paths
 
 | Error | Meaning | TUI rendering |
 |---|---|---|
-| `RoutingError` | Router failed to classify — falls back to chat | Transient warning, not a fatal |
-| `ExpertError` | Expert's ReAct loop blew up | Red toast + muted "degraded" badge, keep session open |
-| `ToolError` | MCP tool call failed | Inline under the tool row, don't kill the turn |
-| `ProviderError` | LM unavailable / timeout | Offer retry; surface provider name |
-| `ConfigError` | `CLIO_LM_*` missing / invalid | Route user to Settings / `/doctor` |
+| `routing_error` | Planner could not select or validate a safe action | Show retry/reconfigure/exit actions when present |
+| `agent_error` | Blueprint/user-agent execution failed | Failed assistant message with runtime/provenance details |
+| `tool_error` | MCP/tool call failed | Inline under the tool row |
+| `provider_error` | LM unavailable, timed out, or auth failed | Offer retry and provider reconfiguration |
+| `config_error` | Provider/configuration invalid | Route user to Settings or doctor output |
+
+DSPy remains an implementation detail. The TUI should surface CLIO concepts:
+agent ids, blueprint provenance, module kind, tools, structured outputs,
+semantic events, and durable evidence.

@@ -40,18 +40,23 @@ $ServerErr = Join-Path $Prefix 'clio-server.err.log'
 $GactLog   = Join-Path $Prefix 'gact-stderr.log'
 $ServerBin = Join-Path $Prefix 'clio-agent\.venv\Scripts\clio-agent-gact.exe'
 $GactBin   = Join-Path $Prefix 'gact.exe'
+$ClioBrandRoot = Join-Path $Prefix 'clio-agent\branding'
 
 function Say  ($m) { Write-Host "==> $m" -ForegroundColor Green }
 function Warn ($m) { Write-Host "!! $m"  -ForegroundColor Yellow }
 function Err  ($m) { Write-Host "xx $m"  -ForegroundColor Red }
 
 # Test-Health returns $true when the server answers /v1/health.
+# CLIO returns 503 for a reachable server whose dependencies still need
+# user configuration, such as first-run LM provider selection. Treat that
+# as "server is up" so the TUI can surface and resolve the configuration.
 function Test-Health {
     try {
         $r = Invoke-WebRequest -Uri "http://127.0.0.1:$Port/v1/health" -UseBasicParsing -TimeoutSec 1
-        return ($r.StatusCode -eq 200)
+        return ($r.StatusCode -eq 200 -or $r.StatusCode -eq 503)
     } catch {
-        return $false
+        $status = $_.Exception.Response.StatusCode.value__
+        return ($status -eq 503)
     }
 }
 
@@ -227,6 +232,8 @@ switch ($Command) {
     { $_ -eq "" -or $_ -eq "attach" } {
         if (-not (Start-Server)) { exit 1 }
         $env:GACT_BACKEND = "http://127.0.0.1:$Port"
+        if (-not $env:GACT_BRAND) { $env:GACT_BRAND = 'clio' }
+        if (-not $env:GACT_BRAND_ROOT) { $env:GACT_BRAND_ROOT = $ClioBrandRoot }
         # Run gact attached to this console (stdout stays on the
         # terminal so the TUI renders) but capture its stderr to a log
         # so Go panics survive for bug reports instead of scrolling away.

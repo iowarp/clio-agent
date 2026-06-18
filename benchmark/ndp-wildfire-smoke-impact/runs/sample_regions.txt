@@ -1,0 +1,12 @@
+southwest 1: FAIL @ region_scoped
+southwest 2: PASS
+southwest 3: PASS
+southwest 4: FAIL @ region_scoped
+southwest 5: PASS
+southwest 6: PASS
+southwest 7: FAIL @ region_scoped
+southwest 8: PASS
+southwest 9: FAIL @ region_scoped
+southwest 10: PASS
+=== REGION southwest: 6/10 ===
+west 1: FAIL @ region_scoped

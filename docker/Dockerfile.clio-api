@@ -1,0 +1,31 @@
+FROM python:3.12-slim
+
+LABEL org.opencontainers.image.title="CLIO API" \
+      org.opencontainers.image.description="CLIO gact REST/SSE backend (clio-agent-gact)." \
+      org.opencontainers.image.source="https://github.com/iowarp/clio-agent" \
+      org.opencontainers.image.vendor="iowarp" \
+      org.opencontainers.image.licenses="BSD-3-Clause"
+
+WORKDIR /app
+ENV PYTHONUNBUFFERED=1 \
+    CLIO_GACT_HOST=0.0.0.0 \
+    CLIO_GACT_PORT=7777
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY pyproject.toml README.md uv.lock ./
+COPY src ./src
+RUN pip install --no-cache-dir '.[argonne]'
+
+RUN useradd --create-home --uid 10001 clio
+USER clio
+WORKDIR /home/clio
+ENV HOME=/home/clio
+
+EXPOSE 7777
+HEALTHCHECK --interval=15s --timeout=5s --start-period=20s --retries=5 \
+  CMD curl -fsS "http://127.0.0.1:${CLIO_GACT_PORT}/v1/capabilities" >/dev/null || exit 1
+
+ENTRYPOINT ["sh", "-c", "exec clio-agent-gact --host \"${CLIO_GACT_HOST}\" --port \"${CLIO_GACT_PORT}\""]

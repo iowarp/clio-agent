@@ -1,11 +1,11 @@
 """
 REST API Server for ClioAgent
 
-FastAPI application with SSE streaming, health checks, expert discovery,
+FastAPI application with legacy SSE completion events, health checks, expert discovery,
 and per-expert metrics. All errors are structured JSON (never raw tracebacks).
 
 Endpoints:
-    POST /query    -- Query the agent (JSON or SSE streaming response)
+    POST /query    -- Query the agent (JSON or legacy SSE completion response)
     GET  /health   -- Health check with provider info
     GET  /experts  -- List registered experts with capabilities
     GET  /metrics  -- Per-expert performance metrics
@@ -134,10 +134,9 @@ async def lifespan(app: FastAPI):
         # Store config even on failure for health endpoint
         try:
             app.state.provider_config = load_config_from_env()
-        except Exception:
-            from clio_agent.config import LMProviderConfig
-
-            app.state.provider_config = LMProviderConfig()
+        except Exception as config_error:
+            logger.error("Failed to load provider config after startup failure: %s", config_error)
+            app.state.provider_config = None
 
     yield
 
@@ -268,7 +267,12 @@ async def _json_response(agent: Any, req: QueryRequest) -> JSONResponse:
 
 
 async def _stream_response(agent: Any, req: QueryRequest):
-    """SSE generator: routing -> chunk(s) -> done | error events."""
+    """Legacy SSE generator: routing -> done | error events.
+
+    This endpoint does not have provider-token streaming. It emits a single
+    completed answer with explicit batch provenance instead of
+    slicing the answer into fake partial chunks.
+    """
     try:
         start = time.time()
         result = await asyncio.to_thread(agent, question=req.question, session_id=req.session_id)
@@ -286,16 +290,30 @@ async def _stream_response(agent: Any, req: QueryRequest):
             ),
         }
 
-        # Event: chunk -- split answer into word chunks for SSE infrastructure
-        words = result.answer.split()
-        chunk_size = max(1, len(words) // 5) if words else 1
-        for i in range(0, len(words), chunk_size):
-            chunk_text = " ".join(words[i : i + chunk_size])
+        error_info = getattr(result, "error_info", None)
+        if error_info is not None:
             yield {
-                "event": "chunk",
-                "data": json.dumps({"text": chunk_text}),
+                "event": "error",
+                "data": json.dumps(
+                    {
+                        "error_info": error_info,
+                        "answer": result.answer,
+                        "selected_expert": result.selected_expert,
+                        "route_source": getattr(result, "route_source", ""),
+                        "route_reason": getattr(result, "route_reason", ""),
+                        "duration_ms": duration_ms,
+                    }
+                ),
             }
-            await asyncio.sleep(0.02)
+            return
+
+        stream_fallback = {
+            "reason": "legacy_query_sync_path",
+            "message": "Legacy /query returns a completed answer after agent execution.",
+            "synthetic_posthoc": True,
+            "live_streaming": False,
+            "recovery_actions": ["use_gact_streaming", "continue_without_live_streaming"],
+        }
 
         # Event: done
         yield {
@@ -308,6 +326,8 @@ async def _stream_response(agent: Any, req: QueryRequest):
                     "route_reason": getattr(result, "route_reason", ""),
                     "duration_ms": duration_ms,
                     "error_info": getattr(result, "error_info", None),
+                    "stream_source": "batch",
+                    "stream_fallback": stream_fallback,
                 }
             ),
         }

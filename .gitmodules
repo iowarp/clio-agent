@@ -1,0 +1,7 @@
+[submodule "external/clio-agent-marketplace"]
+	path = external/clio-agent-marketplace
+	url = git@github.com:JaimeCernuda/clio-agent-marketplace.git
+	branch = main
+[submodule "external/gact-tui"]
+	path = external/gact-tui
+	url = https://github.com/iowarp/gact-tui.git

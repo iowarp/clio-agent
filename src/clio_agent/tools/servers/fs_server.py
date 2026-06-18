@@ -27,14 +27,20 @@ from typing import Any
 
 from fastmcp import FastMCP
 
+from clio_agent import conf
 from clio_agent.tools.file_policy import (
     validate_non_empty_string,
     validate_read_path,
+    validate_write_path,
 )
+from clio_agent.tools.fs_write import write_text_with_policy
 
 fs_server = FastMCP("fs")
 
-_MAX_READ_BYTES = 256 * 1024  # 256 KB cap on direct reads
+# 256 KB cap on direct reads — resolved file → env → default (clio_agent.conf).
+_MAX_READ_BYTES = conf.resolve(
+    "limits.fs_read_bytes", env="CLIO_FS_MAX_READ_BYTES", default=256 * 1024, cast=conf.as_int
+)
 
 
 @fs_server.tool()
@@ -42,8 +48,8 @@ def read_file(filepath: str) -> dict[str, Any]:
     """Read a file's contents from disk.
 
     Capped at 256 KB. Larger files return ``truncated: true`` plus
-    the head; the agent should fall back to a streaming reader for
-    big files (HDF5/Parquet have their own dedicated tools).
+    the head; the agent should fall back to a format-specific reader
+    for big files when one is available.
 
     Path validated through file_policy — only files inside the
     configured allowed roots are readable.
@@ -74,34 +80,37 @@ def propose_edit(filepath: str, new_content: str) -> dict[str, Any]:
     the user approves via /v1/sessions/{sid}/diffs/apply, which
     triggers apply_edit.
 
-    Returns ``{path, unified_diff, lines_added, lines_removed}``.
+    Returns ``{path, unified_diff, new_content, lines_added,
+    lines_removed}`` so GACT can later apply the accepted diff without
+    trying to replay a patch.
     """
 
     validate_non_empty_string(filepath, field="filepath")
-    safe = validate_read_path(filepath)
-    p = Path(safe)
+    safe_write = validate_write_path(filepath, field="filepath")
+    p = Path(safe_write)
     if not p.exists():
         # Treat as a new file — diff against empty.
         old = ""
     else:
+        safe_read = validate_read_path(str(p), field="filepath")
+        p = Path(safe_read)
         old = p.read_text(encoding="utf-8", errors="replace")
     new = new_content if isinstance(new_content, str) else str(new_content)
-    diff_lines = list(difflib.unified_diff(
-        old.splitlines(keepends=True),
-        new.splitlines(keepends=True),
-        fromfile=f"a/{p.name}",
-        tofile=f"b/{p.name}",
-        lineterm="",
-    ))
-    added = sum(
-        1 for ln in diff_lines if ln.startswith("+") and not ln.startswith("+++")
+    diff_lines = list(
+        difflib.unified_diff(
+            old.splitlines(keepends=True),
+            new.splitlines(keepends=True),
+            fromfile=f"a/{p.name}",
+            tofile=f"b/{p.name}",
+            lineterm="",
+        )
     )
-    removed = sum(
-        1 for ln in diff_lines if ln.startswith("-") and not ln.startswith("---")
-    )
+    added = sum(1 for ln in diff_lines if ln.startswith("+") and not ln.startswith("+++"))
+    removed = sum(1 for ln in diff_lines if ln.startswith("-") and not ln.startswith("---"))
     return {
         "path": str(p),
         "unified_diff": "\n".join(diff_lines),
+        "new_content": new,
         "lines_added": added,
         "lines_removed": removed,
     }
@@ -119,17 +128,7 @@ def apply_edit_write(filepath: str, new_content: str) -> dict[str, Any]:
     fragile; we always write the whole file.)
     """
 
-    validate_non_empty_string(filepath, field="filepath")
-    safe = validate_read_path(filepath)
-    p = Path(safe)
-    p.parent.mkdir(parents=True, exist_ok=True)
-    body = new_content if isinstance(new_content, str) else str(new_content)
-    p.write_text(body, encoding="utf-8")
-    return {
-        "path": str(p),
-        "size_bytes": p.stat().st_size,
-        "ok": True,
-    }
+    return write_text_with_policy(filepath, new_content)
 
 
 __all__ = ["fs_server"]

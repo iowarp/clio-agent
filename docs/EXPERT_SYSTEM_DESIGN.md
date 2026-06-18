@@ -15,6 +15,12 @@ version: "1.0"
 
 # Multi-Expert Orchestration
 
+> Historical design note: this document predates #629. Production CLIO no
+> longer implements domain experts as privileged Python classes such as
+> `DataExpert` or `AnalysisExpert`. Current expert behavior is loaded from
+> registry Agent Blueprints and compiled through the DSPy Blueprint runtime
+> described in `DSPY_BLUEPRINT_EXPERT_RUNTIME.md`.
+
 ## Expert Architecture Pattern
 
 ```python

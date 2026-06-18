@@ -32,7 +32,7 @@ def test_module_exports_build_app_and_main() -> None:
 
 def test_health_returns_v0_2_shape(client: TestClient) -> None:
     resp = client.get("/v1/health")
-    assert resp.status_code == 200
+    assert resp.status_code in {200, 503}
     body = resp.json()
     # The default build_app() has no agent + no ARC wired, so the
     # integrations table flags both as unavailable/degraded and the
@@ -63,6 +63,20 @@ def test_capabilities_advertises_v0_2(client: TestClient) -> None:
     assert caps["integration_health"] is True, (
         "/v1/health returns integrations[], so this must be True"
     )
+    assert caps["x_clio_cancellation"] == "best_effort"
+    assert caps["x_clio_executor_cancellation"] is False
+    assert caps["x_clio_text_streaming"] == "best_effort_live"
+    assert caps["x_clio_synthetic_posthoc_streaming"] is False
+    fallback_reasons = caps["x_clio_stream_fallback_reasons"]
+    assert fallback_reasons["stream_completed_without_chunks"]["live_streaming"] is False
+    assert fallback_reasons["stream_setup_failed"]["recovery_actions"]
+    assert caps["x_clio_direct_delete_permissions"] is True
+    gaps = caps["x_clio_capability_gaps"]
+    assert gaps["voice"]["advertised"] is False
+    assert gaps["voice"]["client_behavior"] == "render_disabled"
+    assert gaps["lsp"]["status"] == "unsupported"
+    assert gaps["optimizer_command"]["status"] == "unavailable"
+    assert gaps["optimizer_command"]["related_commands"] == ["/optimize"]
     # Landed capabilities.
     for flag in (
         "sessions",
@@ -78,9 +92,41 @@ def test_capabilities_advertises_v0_2(client: TestClient) -> None:
         "subagents",
         "tool_telemetry",
     ):
-        assert caps[flag] is True, (
-            f"{flag} implemented — must advertise True"
-        )
+        assert caps[flag] is True, f"{flag} implemented — must advertise True"
+
+
+def test_capability_gaps_endpoint_returns_disabled_future_capabilities(
+    client: TestClient,
+) -> None:
+    resp = client.get("/v1/capability-gaps")
+    assert resp.status_code == 200
+    body = resp.json()
+    gaps = body["capability_gaps"]
+
+    assert set(gaps) >= {"voice", "lsp", "optimizer_command"}
+    voice = gaps["voice"]
+    assert voice["status"] == "unsupported"
+    assert voice["advertised"] is False
+    assert voice["client_behavior"] == "render_disabled"
+    assert "/v1/sessions/{sid}/voice/transcribe" in voice["related_endpoints"]
+
+    lsp = gaps["lsp"]
+    assert lsp["status"] == "unsupported"
+    assert lsp["recovery_actions"] == [
+        "use_files_and_diffs",
+        "hide_or_disable_lsp_controls",
+    ]
+
+    optimize = gaps["optimizer_command"]
+    assert optimize["status"] == "unavailable"
+    assert optimize["advertised"] is True
+    assert optimize["category"] == "deferred_command"
+    assert optimize["client_behavior"] == "render_disabled"
+    assert optimize["related_commands"] == ["/optimize"]
+    assert optimize["recovery_actions"] == [
+        "render_optimize_disabled",
+        "retry_after_optimizer_support_lands",
+    ]
 
 
 def test_stubbed_routes_return_501_with_v0_2_envelope() -> None:
@@ -130,3 +176,44 @@ def test_stubbed_routes_return_501_with_v0_2_envelope() -> None:
     body = resp.json()
     assert body["error"]["error"] == "config_error"
     assert "capability not yet implemented" in body["error"]["message"]
+
+
+def test_unknown_route_uses_structured_error_envelope(client: TestClient) -> None:
+    resp = client.get("/v1/does-not-exist")
+
+    assert resp.status_code == 404
+    body = resp.json()
+    assert "detail" not in body
+    assert body["error"]["error"] == "not_found"
+    assert body["error"]["message"] == "Not Found"
+
+
+def test_request_validation_uses_structured_error_envelope(
+    client: TestClient,
+) -> None:
+    resp = client.get("/v1/workspaces/ws_default/files/read")
+
+    assert resp.status_code == 422
+    body = resp.json()
+    assert "detail" not in body
+    assert body["error"]["error"] == "validation_error"
+    assert body["error"]["message"] == "Request validation failed."
+    assert body["error"]["details"]["errors"][0]["loc"] == ["query", "path"]
+
+
+def test_unhandled_exception_uses_structured_error_envelope() -> None:
+    app = build_app()
+
+    @app.get("/v1/_boom")
+    def _boom() -> None:
+        raise RuntimeError("boom probe")
+
+    resp = TestClient(app, raise_server_exceptions=False).get("/v1/_boom")
+
+    assert resp.status_code == 500
+    assert resp.headers["content-type"].startswith("application/json")
+    body = resp.json()
+    assert "detail" not in body
+    assert body["error"]["error"] == "internal_error"
+    assert body["error"]["message"] == "Unhandled server error."
+    assert body["error"]["details"]["original_error"] == "RuntimeError"

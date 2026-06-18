@@ -35,6 +35,8 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
+from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger("clio_agent.providers.argonne_auth")
@@ -46,9 +48,7 @@ logger = logging.getLogger("clio_agent.providers.argonne_auth")
 APP_NAME = "alcf_agentics_workflow"
 AUTH_CLIENT_ID = "58fdd3bc-e1c3-4ce5-80ea-8d6b87cfb944"
 GATEWAY_CLIENT_ID = "681c10cc-f684-4540-bcd7-0b4df3bc26ef"
-GATEWAY_SCOPE = (
-    f"https://auth.globus.org/scopes/{GATEWAY_CLIENT_ID}/action_all"
-)
+GATEWAY_SCOPE = f"https://auth.globus.org/scopes/{GATEWAY_CLIENT_ID}/action_all"
 ALLOWED_DOMAINS = ["anl.gov", "alcf.anl.gov"]
 
 TOKENS_PATH = os.path.join(
@@ -162,9 +162,47 @@ def _get_authorizer(force: bool = False) -> Any:
 # ---------------------------------------------------------------------------
 
 
+def token_paths() -> tuple[str, ...]:
+    """Return token paths used by Globus SDK versions on supported platforms."""
+    paths = [
+        Path(TOKENS_PATH),
+    ]
+    if sys.platform == "win32":
+        local_app_data = os.environ.get("LOCALAPPDATA", "").strip()
+        if local_app_data:
+            paths.append(
+                Path(local_app_data) / "globus" / "app" / AUTH_CLIENT_ID / APP_NAME / "tokens.json"
+            )
+    else:
+        xdg_data_home = os.environ.get("XDG_DATA_HOME", "").strip()
+        if xdg_data_home:
+            paths.append(
+                Path(xdg_data_home) / "globus" / "app" / AUTH_CLIENT_ID / APP_NAME / "tokens.json"
+            )
+        paths.append(
+            Path.home()
+            / ".local"
+            / "share"
+            / "globus"
+            / "app"
+            / AUTH_CLIENT_ID
+            / APP_NAME
+            / "tokens.json"
+        )
+
+    seen: set[str] = set()
+    out: list[str] = []
+    for path in paths:
+        resolved = str(path)
+        if resolved not in seen:
+            seen.add(resolved)
+            out.append(resolved)
+    return tuple(out)
+
+
 def tokens_exist() -> bool:
     """Whether stored tokens exist on disk (cheap, no globus import)."""
-    return os.path.isfile(TOKENS_PATH)
+    return any(os.path.isfile(path) for path in token_paths())
 
 
 def get_access_token(force_refresh: bool = False) -> str:
@@ -189,9 +227,7 @@ def get_access_token(force_refresh: bool = False) -> str:
     except GlobusUnavailable:
         raise
     except Exception as exc:
-        raise GlobusAuthError(
-            f"Failed to obtain ALCF access token: {exc}"
-        ) from exc
+        raise GlobusAuthError(f"Failed to obtain ALCF access token: {exc}") from exc
 
 
 def check_auth_status() -> bool:
@@ -218,8 +254,9 @@ def authenticate(force: bool = False) -> None:
     """Run the OAuth flow explicitly. Wired to the CLI ``/argonne login``
     command (and equivalent TUI button). On a fresh machine this
     prints a URL the user must visit; on machines that already have
-    tokens it's a no-op unless ``force=True``."""
-    _get_authorizer(force=force)
+    tokens it validates or refreshes the gateway access token unless
+    ``force=True`` redrives the interactive Globus login first."""
+    get_access_token(force_refresh=force)
 
 
 # ---------------------------------------------------------------------------
@@ -250,12 +287,10 @@ def _main() -> None:  # pragma: no cover - thin CLI wrapper
 
     if args.action == "authenticate":
         authenticate(force=args.force)
-        print("Authentication complete.")
+        print("ALCF access token validated.")
     elif args.action == "get-access-token":
         if not tokens_exist():
-            raise SystemExit(
-                "No tokens on disk; run 'authenticate' first."
-            )
+            raise SystemExit("No tokens on disk; run 'authenticate' first.")
         print(get_access_token(force_refresh=args.force))
     elif args.action == "status":
         ok = check_auth_status()

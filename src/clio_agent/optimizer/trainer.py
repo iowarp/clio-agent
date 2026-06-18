@@ -13,13 +13,22 @@ from typing import Any
 
 import dspy
 
-from clio_agent.arc.schema import Invocation, decode_invocation
+from clio_agent.arc.schema import Invocation
 
 # Error keywords that indicate problematic output
-_ERROR_KEYWORDS = frozenset([
-    "error:", "error,", "traceback", "exception:", "failed to",
-    "could not", "unable to", "runtime error", "type error",
-])
+_ERROR_KEYWORDS = frozenset(
+    [
+        "error:",
+        "error,",
+        "traceback",
+        "exception:",
+        "failed to",
+        "could not",
+        "unable to",
+        "runtime error",
+        "type error",
+    ]
+)
 
 
 class TrainingSetGenerator:
@@ -46,9 +55,7 @@ class TrainingSetGenerator:
         """
         self._arc = arc_memory
 
-    def generate(
-        self, agent_id: str, min_examples: int = 30
-    ) -> list[dspy.Example]:
+    def generate(self, agent_id: str, min_examples: int = 30) -> list[dspy.Example]:
         """Generate training set from ARC invocations for a specific expert.
 
         Calls arc_memory.get_invocations_by_agent with status="success",
@@ -73,9 +80,7 @@ class TrainingSetGenerator:
             >>> assert len(examples) >= 30
             >>> assert "question" in examples[0].inputs()
         """
-        invocations = self._arc.get_invocations_by_agent(
-            agent_id, status="success"
-        )
+        invocations = self._arc.get_invocations_by_agent(agent_id, status="success")
 
         if len(invocations) < min_examples:
             raise ValueError(
@@ -115,21 +120,14 @@ class TrainingSetGenerator:
         """
         counts: dict[str, int] = {}
 
-        for fpath in self._arc._inv_dir.glob("*.msgpack"):
-            try:
-                encoded = fpath.read_bytes()
-                inv = decode_invocation(encoded)
-                if inv.status == "success":
-                    counts[inv.agent_id] = counts.get(inv.agent_id, 0) + 1
-            except Exception:
-                continue
+        for inv in self._arc.iter_invocations():
+            if inv.status == "success":
+                counts[inv.agent_id] = counts.get(inv.agent_id, 0) + 1
 
         return counts
 
     @staticmethod
-    def _invocation_to_example(
-        inv: Invocation, agent_id: str
-    ) -> dspy.Example | None:
+    def _invocation_to_example(inv: Invocation, agent_id: str) -> dspy.Example | None:
         """Convert a single Invocation to a dspy.Example.
 
         Maps invocation input/output fields to expert signature fields.
@@ -182,9 +180,7 @@ class TrainingSetGenerator:
             return None
 
 
-def clio_expert_metric(
-    example: dspy.Example, pred: Any, trace: Any = None
-) -> float | bool:
+def clio_expert_metric(example: dspy.Example, pred: Any, trace: Any = None) -> float | bool:
     """Multi-signal metric for CLIO expert optimization.
 
     Scores expert outputs on three weighted signals:

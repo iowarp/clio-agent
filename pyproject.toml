@@ -1,6 +1,6 @@
 [project]
 name = "clio-agent"
-version = "0.5.1"
+version = "0.5.3"
 description = "CLIO Agent — Autonomous AI agent framework for scientific data management. Part of the IOWarp platform."
 authors = [
     { name = "Antonis Kougkas", email = "a.kougkas@gmail.com" },
@@ -63,6 +63,22 @@ tools = [
     # pyarrow moved to core dependencies (v0.2.0)
 ]
 
+adios = [
+    # Optional because PyPI wheels are not available for all Windows/Python
+    # combinations; CLIO still exposes BP container/profiling inspection
+    # without this package and surfaces structured dependency errors for
+    # variable reads.
+    "adios2>=2.10.0; platform_system != 'Windows'",
+]
+
+codex = [
+    # openai_codex Python SDK — controls the local Codex app-server
+    # over JSON-RPC. Used by clio_agent.providers.codex_litellm's
+    # in-process transport (`CLIO_CODEX_TRANSPORT=sdk`). The package
+    # is not published on PyPI; bump this commit deliberately.
+    "openai-codex @ git+https://github.com/openai/codex.git@79f044ed34c60af815feef12e8e665f35d54871e#subdirectory=sdk/python",
+]
+
 iowarp = [
     "pyzmq>=25.0.0",             # ZeroMQ Python bindings for IOWarp CTE runtime
 ]
@@ -83,7 +99,7 @@ dev = [
 ]
 
 all = [
-    "clio-agent[optimizers,tools,iowarp,argonne,dev]",
+    "clio-agent[optimizers,tools,adios,iowarp,argonne,dev]",
 ]
 
 [project.urls]
@@ -104,6 +120,11 @@ clio-agent-gact = "clio_agent.gact.app:main"
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+# Hatch requires this opt-in to allow git URLs in dependencies (we use
+# one for the optional [codex] extra — openai_codex isn't on PyPI yet).
+[tool.hatch.metadata]
+allow-direct-references = true
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/clio_agent"]
 
@@ -115,6 +136,9 @@ python_functions = ["test_*"]
 asyncio_mode = "auto"  # CLIO-BBBBBBBBBB13: SSE tests use async httpx
 markers = [
     "integration: marks tests requiring full-stack/external runtime behavior",
+    "benchmark: marks long real-provider stress benchmark tests",
+    "real_case: end-to-end live CLIO blueprint case (a tier above unit/integration; needs CLIO_RUN_LIVE=1)",
+    "live: hits a live gact server + external provider (slow; skipped unless CLIO_RUN_LIVE=1)",
 ]
 addopts = [
     "--verbose",

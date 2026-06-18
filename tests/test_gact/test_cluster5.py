@@ -88,11 +88,10 @@ def test_share_expiry(client: TestClient) -> None:
     """ttl_s=1 returns a token that 410s after we trick the clock."""
 
     sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
-    share = client.post(
-        f"/v1/sessions/{sid}/share", json={"ttl_s": 1}
-    ).json()
+    share = client.post(f"/v1/sessions/{sid}/share", json={"ttl_s": 1}).json()
     # Force expiry by overwriting the row's expires_at.
     import time
+
     state = client.app.state
     state.shared_tokens[share["token"]]["expires_at"] = time.time() - 10
     resp = client.get(f"/v1/shared/{share['token']}")
@@ -118,19 +117,27 @@ def test_extract_agent_from_sessions(client: TestClient) -> None:
         (sid1, ["hdf5_list_datasets", "hdf5_analyze_file"]),
         (sid2, ["hdf5_list_datasets", "parquet_analyze_schema"]),
     ]:
-        state.messages.setdefault(sid, []).append(Message(
-            id="msg_user_x", session_id=sid, role="user",
-            created_at="2026-04-25T00:00:00Z",
-            updated_at="2026-04-25T00:00:00Z",
-            parts=[Part(id="part_x", type="text", text=f"analyze {sid}")],
-        ))
-        state.messages[sid].append(Message(
-            id=f"msg_asst_{sid}", session_id=sid, role="assistant",
-            created_at="2026-04-25T00:00:00Z",
-            updated_at="2026-04-25T00:00:00Z",
-            parts=[Part(id="part_y", type="text", text="done")],
-            metadata={"tools_called": [{"name": t} for t in tools]},
-        ))
+        state.messages.setdefault(sid, []).append(
+            Message(
+                id="msg_user_x",
+                session_id=sid,
+                role="user",
+                created_at="2026-04-25T00:00:00Z",
+                updated_at="2026-04-25T00:00:00Z",
+                parts=[Part(id="part_x", type="text", text=f"analyze {sid}")],
+            )
+        )
+        state.messages[sid].append(
+            Message(
+                id=f"msg_asst_{sid}",
+                session_id=sid,
+                role="assistant",
+                created_at="2026-04-25T00:00:00Z",
+                updated_at="2026-04-25T00:00:00Z",
+                parts=[Part(id="part_y", type="text", text="done")],
+                metadata={"tools_called": [{"name": t} for t in tools]},
+            )
+        )
 
     resp = client.post(
         "/v1/agents/extract",

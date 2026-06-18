@@ -1,0 +1,11 @@
+run 1: PASS
+run 2: PASS
+run 3: PASS
+run 4: PASS
+run 5: PASS
+run 6: FAIL @ grounded_impact_decision
+run 7: PASS
+run 8: FAIL @ region_scoped
+run 9: PASS
+run 10: PASS
+=== HONEST_SAMPLE: 8/10 ===

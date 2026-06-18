@@ -14,35 +14,33 @@ discovered.
 | `cd ../gact-tui/tui && go build -o gact .` | ~3s | |
 | `clio-agent-gact --port 17900` (boot) | ~3-5s | clean boot; `/v1/health` returns 28/30 caps before LM is wired |
 | `PUT /v1/providers/lm` (configure) | <1s | accepts any openai-compatible preset |
-| First chat turn | ~5-10s | depends on the upstream LM (Meridian + Claude haiku ≈ 5s) |
+| First chat turn | ~5-10s | depends on the upstream LM and gateway latency |
 
 ## Rough edges (none release-blocking, all documented)
 
 - **Chat agent fallback was not unconditional** — the original v0.3.1
   RC had `is_local_openai_compatible_backend` gating the
-  `_direct_chat_completion` recovery path, which excluded
-  `provider="openai-compatible"` (the canonical preset for Meridian +
-  OpenRouter). Symptom: `"I encountered an issue with the chat
-  expert"` on simple prompts. **Fixed** in commit `9f1c701` — the
-  fallback now runs for every provider, since the recovery path is
-  generic (requests.post against the configured api_base).
+  `_direct_chat_completion` recovery path, which excluded custom
+  OpenAI-compatible gateways. Symptom: `"I encountered an issue with
+  the chat expert"` on simple prompts. **Fixed** in commit `9f1c701`;
+  the fallback ran for every provider at the time because the recovery
+  path was generic HTTP against the configured `api_base`.
 
 - **`_direct_chat_completion` was sending the doubled provider prefix**
-  to Meridian (e.g. `openai/claude-haiku-4-5` instead of
-  `claude-haiku-4-5`). Meridian rejected. **Fixed** in commit `15fc2aa`
-  — the prefix is stripped before the HTTP call.
+  to OpenAI-compatible gateways (e.g. `openai/claude-haiku-4-5`
+  instead of `claude-haiku-4-5`). Some gateways rejected it. **Fixed**
+  in commit `15fc2aa`; the prefix is stripped before the HTTP call.
 
-- **OpenRouter free-tier rate limits.** The shared key in tests works
-  for low-traffic verification, but heavy use (e.g. running the full
-  16-test integration suite back-to-back via OpenRouter) hits 429s
-  pretty quickly. The suite swaps to OpenRouter only for the
-  streaming-temporal-distribution test; other tests use Meridian /
-  Claude. If a lab user wants to drive everything through OpenRouter,
-  expect occasional rate-limit failures.
+- **Provider rate limits.** The 16-test integration suite uses the
+  backend's configured provider by default. If a lab user opts into a
+  free-tier or rate-limited provider through explicit
+  `CLIO_INTEGRATION_STREAM_*` settings, repeated full-suite runs may
+  hit provider 429s. The suite must not rely on shared embedded keys.
 
-- **Meridian streaming is buffered.** `data: [DONE]` only — Meridian
-  doesn't actually proxy SSE chunks from upstream. Live per-token
-  streaming requires OpenRouter or a direct-API setup.
+- **Some gateway streaming is buffered.** A gateway may return only a
+  terminal `data: [DONE]` event instead of upstream SSE chunks. Live
+  per-token streaming requires a provider path that passes SSE chunks
+  through.
 
 ## Smoke flow that worked end-to-end
 
@@ -80,8 +78,8 @@ text starts with "I'm CLIO, specialized in scientific data..."
 
 ## Recommendations for the lab announcement
 
-- Mention all three providers (OpenAI / Meridian / OpenRouter) in the
-  intro — the chat path now works for all three.
+- Mention the supported providers (OpenAI / Anthropic / OpenRouter /
+  Codex) in the intro — the chat path works across the provider stack.
 - Point users at `docs/CAPABILITIES_MATRIX.md` so they know what the
   binary can actually do.
 - The 28/30 number (only LSP + voice false) is real — every other

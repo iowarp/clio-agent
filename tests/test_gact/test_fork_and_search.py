@@ -30,13 +30,12 @@ class _Agent:
 
 
 def _client(tmp_path: Path) -> TestClient:
-    return TestClient(
-        build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
-    )
+    return TestClient(build_app(sessions_path=tmp_path / "s.json", agent=_Agent()))
 
 
 def _turn(client: TestClient, sid: str, text: str) -> dict:
     from .conftest import complete_turn
+
     return complete_turn(client, sid, text)
 
 
@@ -54,6 +53,25 @@ def test_fork_copies_messages_and_sets_parent(tmp_path: Path) -> None:
 
     rows = client.get(f"/v1/sessions/{new['id']}/messages").json()["messages"]
     assert len(rows) == 4  # 2 turns × (user + assistant)
+
+
+def test_fork_copies_context_files(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    src = client.post("/v1/sessions", json={"title": "src"}).json()["id"]
+    target = tmp_path / "notes.md"
+    target.write_text("important context\n")
+    client.post(
+        f"/v1/sessions/{src}/context/files",
+        json={"path": str(target), "mode": "read"},
+    )
+
+    new = client.post(f"/v1/sessions/{src}/fork", json={}).json()
+
+    original = client.get(f"/v1/sessions/{src}/context/files").json()["files"]
+    forked = client.get(f"/v1/sessions/{new['id']}/context/files").json()["files"]
+    assert forked == original
+    forked[0]["mode"] = "edit"
+    assert client.app.state.context_files[src][str(target)]["mode"] == "read"
 
 
 def test_fork_truncates_at_message_id(tmp_path: Path) -> None:
@@ -80,9 +98,7 @@ def test_search_returns_ranked_snippets(tmp_path: Path) -> None:
     _turn(client, sid, "load /tmp/alpha.parquet")
     _turn(client, sid, "compare /tmp/alpha.parquet to /tmp/beta.parquet")
 
-    body = client.get(
-        f"/v1/sessions/{sid}/messages/search?q=alpha.parquet"
-    ).json()
+    body = client.get(f"/v1/sessions/{sid}/messages/search?q=alpha.parquet").json()
     matches = body["matches"]
     assert len(matches) >= 2
     for m in matches:

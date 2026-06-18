@@ -9,11 +9,17 @@ auto-resolve paths work.
 | Endpoint | Verb | Purpose |
 |---|---|---|
 | `/v1/permissions` | GET | List pending + recent permission rows |
-| `/v1/permissions/{pid}` | POST | Resolve one (`{"action": "allow"}` or `"deny"` or `"always_allow"`) |
+| `/v1/permissions/{pid}` | POST | Resolve one (`{"action": "allow"}`, `"deny"`, `"allow_session"`, or `"allow_workspace"`) |
+| `/v1/policies` | GET/PUT | List or replace declarative allow/deny/ask policy rules |
 
 Each row carries `id`, `session_id`, `tool_call.{tool_name, input}`,
 `summary`, `created_at`, `status`, `action`, optional `resolved_at` +
 `reason`.
+
+Policy updates are atomic. `PUT /v1/policies` rejects malformed rows with a
+structured `422 invalid_request` and leaves the previous policy set unchanged;
+the backend never silently drops typoed scopes/actions or stores rules that it
+cannot enforce.
 
 ## What triggers the gate
 
@@ -53,6 +59,14 @@ Three resolution paths:
   - `w` — always-allow-this-session (whitelists the tool)
 - **Handler**: `handlePermissionKey` at `app.go:1918`. Pops the
   oldest pending permission, POSTs the resolution.
+
+This is the current wired behavior. The broader TUI surfacing plan for durable
+policy rules, audit visibility, and discoverability is tracked separately in
+`PERMISSION_SURFACING_DESIGN.md`. The important distinction is:
+
+- CLIO already has the backend permission system.
+- The remaining work is making that system understandable and manageable from
+  GACT/TUI without implying permissions are missing.
 
 ## Verifying it's wired
 
@@ -95,8 +109,10 @@ curl -s -X POST http://127.0.0.1:17800/v1/sessions/$SID/messages \
 When the LM calls `fs_apply_edit_write` directly, the gate fires the
 interactive path → TUI banner → user keypress → backend resolves.
 
-## Known gap
+## Diff apply write path
 
-The `_apply_edit_to_disk` write doesn't always actually flush to disk
-when the gate auto-approves via the user-click path. Tracked separately
-(see TODO).
+`/v1/sessions/{sid}/diffs/apply` keeps its user-click auto-approval and
+permission audit row in the GACT layer, then delegates the actual disk write
+to the same policy-enforced implementation used by `fs_apply_edit_write`.
+This keeps direct tool calls and user-approved diff applies aligned on path
+validation, text encoding, and structured failure behavior.

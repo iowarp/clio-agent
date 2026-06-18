@@ -6,30 +6,33 @@ Release date: 2026-04-27
 
 ## Slack / email body
 
-> **CLIO v0.3.1 + GACT TUI v0.2.1 are out — give it a spin.**
+> **CLIO v0.5.1 + GACT TUI v0.3.0 are out — give it a spin.**
 >
 > CLIO is the lab's scientific-data agent (HDF5 / Parquet inspection +
 > analysis + visualization, plus arbitrary MCP tools). The new release
 > ships with a full terminal UI and supports any LM provider you use
-> daily — OpenAI / ChatGPT, Claude (direct or via Meridian), or any
-> openai-compatible endpoint.
+> daily — OpenAI / ChatGPT, Anthropic Claude, OpenRouter, Codex, or
+> another OpenAI-compatible endpoint.
 >
 > **Five-minute install:**
 >
 > ```sh
-> # 1. Clone + install both pieces (one-time setup).
-> git clone --branch v0.3.1 https://github.com/iowarp/clio-agent
-> git clone --branch v0.2.1 https://github.com/iowarp/gact-tui
-> cd clio-agent && uv pip install -e .
-> cd ../gact-tui/tui && go build -o gact .
->
-> # 2. Boot the agent server.
-> cd ../../clio-agent && uv run clio-agent-gact --port 17800 &
->
-> # 3. Connect the TUI. The LM-config modal pops on first connect —
-> #    pick OpenAI / Claude / OpenRouter, paste your API key, save.
-> GACT_BACKEND=http://127.0.0.1:17800 ./gact
+> # Linux / macOS
+> curl -fsSL https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.sh | bash
+> clio
 > ```
+>
+> ```powershell
+> # Windows PowerShell
+> irm https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.ps1 | iex
+> clio
+> ```
+>
+> The installer pulls `clio-agent` from PyPI and downloads the matching
+> prebuilt `gact` binary from GitHub Releases. No local Go build or git
+> checkout is needed for the default path. The LM-config modal pops on
+> first connect; pick OpenAI / Anthropic / OpenRouter / Codex / LM
+> Studio / Ollama / ALCF, paste a key if the provider needs one, and save.
 >
 > **Try one of these to see it in action:**
 > - `Inspect /path/to/your.h5` — data expert + HDF5 tools
@@ -39,7 +42,7 @@ Release date: 2026-04-27
 > - `propose an edit to /path/to/file.py — switch to f-string` — diff
 >   path with apply/reject
 >
-> **What's new in v0.3.1**
+> **What's notable**
 > - Every advertised capability (28/30 — only LSP + voice intentionally
 >   off) is verified end-to-end. See
 >   [CAPABILITIES_MATRIX.md](https://github.com/iowarp/clio-agent/blob/main/docs/CAPABILITIES_MATRIX.md).
@@ -50,12 +53,13 @@ Release date: 2026-04-27
 >   audit trail for every destructive operation.
 >
 > **Setup help:**
-> - `clio-agent/docs/SETUP.md` covers each provider with troubleshooting.
+> - `clio-agent/docs/SETUP.md` covers install modes and each provider
+>   with troubleshooting.
 > - `clio-agent/docs/LAB_USER_NOTES.md` has the install timing + rough
 >   edges I hit during the rehearsal.
 >
 > **File bugs at**
-> https://github.com/iowarp/clio-agent/issues — tag with `v0.3.1`.
+> https://github.com/iowarp/clio-agent/issues — tag with `v0.5.1`.
 >
 > The TUI side is at https://github.com/iowarp/gact-tui/issues
 > for UI-specific things (rendering, key bindings, etc.).
@@ -64,7 +68,7 @@ Release date: 2026-04-27
 
 ## Hero screenshots to attach
 
-Each one is in `gact-tui/screenshots/` on the v0.2.1 tag:
+Each one is in `gact-tui/screenshots/` on the v0.3.0 tag:
 
 1. `clio_doctor_caps_final.png` — capability scorecard (28/30 ✓ ✓ ✓)
 2. `clio_real_turn.png` — real chat turn with cost meter visible
@@ -75,9 +79,10 @@ Each one is in `gact-tui/screenshots/` on the v0.2.1 tag:
 ## If someone asks "is it stable?"
 
 - Full integration suite: 16/16 strict in 95s, zero `xfail` markers.
-- Smoke install rehearsal documented in `LAB_USER_NOTES.md`.
-- Two real bugs caught + fixed during the rehearsal (chat fallback
-  gating, model-prefix doubling for Meridian) — both shipped in 0.3.1.
+- Release-mode install uses PyPI for CLIO and prebuilt GACT release
+  assets; source-build mode remains available via `CLIO_REF` / `GACT_REF`.
+- Older source-build rehearsal notes remain in `LAB_USER_NOTES.md` for
+  historical debugging context.
 
 ## Contact
 

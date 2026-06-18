@@ -14,20 +14,37 @@ from typing import Any, Literal, Mapping
 
 from clio_agent.arc.schema import ToolCall
 
-RouteTarget = Literal["chat", "data", "analysis", "visualization", "none"]
-RouteSource = Literal["deterministic", "dspy", "guard"]
+RouteTarget = str
+RouteSource = Literal["deterministic", "dspy", "guard", "recovery"]
 ExpertSource = Literal["deterministic", "dspy", "fallback"]
 
+# Generic path-detection regex: suffixes recognized when extracting candidate
+# file paths from free text. Structural grounding only (is a file referenced),
+# NOT keyword->format inference — no branch depends on which alternative matched.
+SCIENTIFIC_PATH_SUFFIX_PATTERN = (
+    r"(?:hdf5|h5|parquet|csv|bp5|bp4|bp|sac|tar|tgz|gz|"
+    r"fasta|fna|fa|vcf|cif|geojson|png|mzml)"
+)
+
 FILE_PATH_RE = re.compile(
-    r"(?P<path>(?:~|/|\.{1,2}/)?[^\s'\"`]+?\.(?:h5|hdf5|parquet|csv))",
+    rf"(?P<path>(?:~|/|\.{{1,2}}/)?[^\s'\"`]+?\.{SCIENTIFIC_PATH_SUFFIX_PATTERN})",
+    re.IGNORECASE,
+)
+QUOTED_FILE_PATH_RE = re.compile(
+    rf"(?P<quote>['\"`])(?P<path>.+?\.{SCIENTIFIC_PATH_SUFFIX_PATTERN})(?P=quote)",
+    re.IGNORECASE,
+)
+WINDOWS_FILE_PATH_RE = re.compile(
+    rf"(?<![A-Za-z])(?P<path>[A-Za-z]:[^\r\n'\"`]*?\.{SCIENTIFIC_PATH_SUFFIX_PATTERN})",
+    re.IGNORECASE,
+)
+ROOTED_FILE_PATH_RE = re.compile(
+    rf"(?<![A-Za-z0-9_.-])(?P<path>(?:~|/|\.{{1,2}}/)[^\r\n'\"`]*?\.{SCIENTIFIC_PATH_SUFFIX_PATTERN})",
     re.IGNORECASE,
 )
 
-ROUTE_TARGETS: tuple[RouteTarget, ...] = (
+SPECIAL_ROUTE_TARGETS: tuple[RouteTarget, ...] = (
     "chat",
-    "data",
-    "analysis",
-    "visualization",
     "none",
 )
 
@@ -43,21 +60,34 @@ class RouteDecision:
     capabilities: tuple[str, ...] = ()
 
     @classmethod
-    def from_dspy(cls, raw_target: Any) -> "RouteDecision":
-        """Normalize and validate a DSPy router output."""
+    def from_dspy(
+        cls,
+        raw_target: Any,
+        *,
+        available_targets: Sequence[str] | None = None,
+    ) -> "RouteDecision":
+        """Normalize and validate a DSPy-selected route target.
+
+        Agent route targets are runtime registry entries, not a closed enum.
+        Callers with a live registry should pass ``available_targets`` so newly
+        installed experts or skills validate without code changes.
+        """
         target = str(raw_target or "").strip().lower()
-        if target in ROUTE_TARGETS:
+        valid_targets = {
+            str(item).strip().lower()
+            for item in (available_targets or SPECIAL_ROUTE_TARGETS)
+            if str(item).strip()
+        }
+        if target in valid_targets:
             return cls(
-                target=target,  # type: ignore[arg-type]
+                target=target,
                 source="dspy",
-                reason="DSPy router selected a valid CLIO route.",
+                reason="DSPy planner selected a valid CLIO route.",
                 confidence=0.7,
             )
-        return cls(
-            target="chat",
-            source="guard",
-            reason=f"Router produced invalid target {target!r}; kept control in chat.",
-            confidence=0.0,
+        raise ValueError(
+            f"Planner produced invalid route target {target!r}. "
+            f"Expected one of: {', '.join(sorted(valid_targets))}."
         )
 
 
@@ -80,6 +110,40 @@ class ToolObservation:
             duration_ms=self.duration_ms,
             cached=False,
         )
+
+
+@dataclass(frozen=True)
+class ExpertHandoff:
+    """A concrete expert or child-expert invocation observed during one CLIO run."""
+
+    agent_id: str
+    parent_id: str | None
+    dispatch_target: str
+    stage: str
+    status: Literal["success", "failure"]
+    input_summary: str
+    output_summary: str = ""
+    duration_ms: float = 0.0
+    error: str | None = None
+    metadata: Mapping[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return a JSON-safe benchmark/API representation."""
+        row: dict[str, Any] = {
+            "agent_id": self.agent_id,
+            "dispatch_target": self.dispatch_target,
+            "stage": self.stage,
+            "status": self.status,
+            "input_summary": self.input_summary,
+            "output_summary": self.output_summary,
+            "duration_ms": self.duration_ms,
+            "metadata": _json_safe(self.metadata),
+        }
+        if self.parent_id:
+            row["parent_id"] = self.parent_id
+        if self.error:
+            row["error"] = self.error
+        return row
 
 
 @dataclass(frozen=True)
@@ -125,6 +189,7 @@ class RunTrace:
     trace_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     started_at: float = field(default_factory=time.time)
     tools: list[ToolObservation] = field(default_factory=list)
+    expert_handoffs: list[ExpertHandoff] = field(default_factory=list)
 
     def record_tool(
         self,
@@ -143,6 +208,36 @@ class RunTrace:
                 result=result,
                 duration_ms=duration_ms,
                 ok=ok,
+            )
+        )
+
+    def record_expert_handoff(
+        self,
+        *,
+        agent_id: str,
+        parent_id: str | None,
+        dispatch_target: str,
+        stage: str,
+        status: Literal["success", "failure"],
+        input_summary: str,
+        output_summary: str = "",
+        duration_ms: float = 0.0,
+        error: str | None = None,
+        metadata: Mapping[str, Any] | None = None,
+    ) -> None:
+        """Append an expert handoff observation to this run."""
+        self.expert_handoffs.append(
+            ExpertHandoff(
+                agent_id=agent_id,
+                parent_id=parent_id,
+                dispatch_target=dispatch_target,
+                stage=stage,
+                status=status,
+                input_summary=input_summary,
+                output_summary=output_summary,
+                duration_ms=duration_ms,
+                error=error,
+                metadata=dict(metadata or {}),
             )
         )
 
@@ -171,20 +266,37 @@ def extract_file_paths(question: str, file_context: str, suffixes: set[str]) -> 
     paths: list[Path] = []
     seen: set[str] = set()
 
+    def add_path(raw_path: str, *, include_missing: bool) -> None:
+        raw_path = raw_path.rstrip(".,;:)]}")
+        path = Path(raw_path).expanduser()
+        if path.suffix.lower() not in suffixes:
+            return
+        if not path.is_absolute():
+            path = path.resolve()
+        if not include_missing and not path.exists():
+            return
+        key = str(path)
+        if key not in seen:
+            paths.append(path)
+            seen.add(key)
+
     def add_matches(text: str, *, include_missing: bool) -> None:
+        candidates: list[tuple[int, int, int, str]] = []
+        for match in QUOTED_FILE_PATH_RE.finditer(text):
+            candidates.append((match.start(), match.end(), 0, match.group("path")))
+        for match in ROOTED_FILE_PATH_RE.finditer(text):
+            candidates.append((match.start(), match.end(), 1, match.group("path")))
+        for match in WINDOWS_FILE_PATH_RE.finditer(text):
+            candidates.append((match.start(), match.end(), 2, match.group("path")))
         for match in FILE_PATH_RE.finditer(text):
-            raw = match.group("path").rstrip(".,;:)]}")
-            path = Path(raw).expanduser()
-            if path.suffix.lower() not in suffixes:
+            candidates.append((match.start(), match.end(), 3, match.group("path")))
+
+        handled_spans: list[tuple[int, int]] = []
+        for start, end, _priority, raw_path in sorted(candidates):
+            if any(span_start <= start < span_end for span_start, span_end in handled_spans):
                 continue
-            if not path.is_absolute():
-                path = path.resolve()
-            if not include_missing and not path.exists():
-                continue
-            key = str(path)
-            if key not in seen:
-                paths.append(path)
-                seen.add(key)
+            handled_spans.append((start, end))
+            add_path(raw_path, include_missing=include_missing)
 
     add_matches(question, include_missing=True)
     add_matches(file_context, include_missing=False)
@@ -244,6 +356,10 @@ def normalize_tool_error(
             value = error.get(key)
             if value is not None:
                 normalized[key] = str(value)
+        if error.get("handled") is not None:
+            normalized["handled"] = bool(error.get("handled"))
+        if error.get("handled_reason") is not None:
+            normalized["handled_reason"] = str(error.get("handled_reason"))
         if error.get("details") is not None:
             normalized["details"] = _json_safe(error["details"])
     else:

@@ -13,6 +13,7 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
+from clio_agent.arc.schema import ToolCall
 from clio_agent.gact.app import build_app
 
 
@@ -29,6 +30,7 @@ class _PredWithTools:
     selected_expert: str = "data_expert"
     routing_rationale: str = "keyword match"
     tools_called: object = None
+    expert_handoffs: object = None
 
 
 class _Agent:
@@ -40,11 +42,7 @@ class _Agent:
 
 
 def _client(tmp_path: Path, pred) -> TestClient:
-    return TestClient(
-        build_app(
-            sessions_path=tmp_path / "sessions.json", agent=_Agent(pred)
-        )
-    )
+    return TestClient(build_app(sessions_path=tmp_path / "sessions.json", agent=_Agent(pred)))
 
 
 def test_no_tools_called_keeps_metadata_empty(tmp_path: Path) -> None:
@@ -71,13 +69,24 @@ def test_tools_called_propagates_to_message_and_completion(tmp_path: Path) -> No
             "cached": False,
         },
         # One already wrapped as a msgspec-like with attribute access:
-        type("ToolCall", (), {
-            "name": "parquet_summarise",
-            "args": {},
-            "ok": True,
-            "duration_ms": 12.0,
-            "cached": True,
-        })(),
+        type(
+            "ToolCall",
+            (),
+            {
+                "name": "parquet_summarise",
+                "args": {},
+                "ok": True,
+                "duration_ms": 12.0,
+                "cached": True,
+            },
+        )(),
+        ToolCall(
+            tool="hdf5_list_datasets",
+            params={"filepath": "/tmp/x.h5"},
+            result={"datasets": []},
+            duration_ms=8.0,
+            cached=False,
+        ),
     ]
     pred = _PredWithTools(tools_called=tools)
     client = _client(tmp_path, pred)
@@ -87,12 +96,62 @@ def test_tools_called_propagates_to_message_and_completion(tmp_path: Path) -> No
     md = a["metadata"]
     assert "tools_called" in md
     rows = md["tools_called"]
-    assert len(rows) == 2
+    assert len(rows) == 3
     assert rows[0]["name"] == "hdf5_analyze"
     assert rows[0]["ok"] is True
     assert rows[0]["duration_ms"] == 42.5
     assert rows[0]["cached"] is False
+    assert rows[0]["telemetry_source"] == "posthoc_prediction"
     # The second row came from an object-with-attrs, not a dict;
     # the extractor should still have normalised it to the same wire shape.
     assert rows[1]["name"] == "parquet_summarise"
     assert rows[1]["cached"] is True
+    # ARC ToolCall uses ``tool`` + ``params``; GACT normalises that
+    # to the same ``name`` + ``args`` wire shape.
+    assert rows[2]["name"] == "hdf5_list_datasets"
+    assert rows[2]["args"] == {"filepath": "/tmp/x.h5"}
+    assert rows[2]["result"] == {"datasets": []}
+    assert rows[2]["ok"] is True
+    assert rows[2]["duration_ms"] == 8.0
+    assert rows[2]["telemetry_source"] == "agent_trace"
+
+
+def test_expert_handoffs_propagate_to_message_metadata(tmp_path: Path) -> None:
+    from .conftest import complete_turn
+
+    handoffs = [
+        {
+            "agent_id": "data",
+            "dispatch_target": "data",
+            "stage": "planner_dispatch",
+            "status": "success",
+            "input_summary": "find data",
+            "output_summary": "staged waveform archive",
+            "duration_ms": 12.0,
+            "metadata": {"expert": "ndp_catalog"},
+        },
+        {
+            "agent_id": "ndp_catalog",
+            "parent_id": "data",
+            "dispatch_target": "ndp_catalog",
+            "stage": "planner_dispatch_child",
+            "status": "success",
+            "input_summary": "find data",
+            "output_summary": "staged waveform archive",
+            "duration_ms": 12.0,
+            "metadata": {"observed_through": "data"},
+        },
+    ]
+    pred = _PredWithTools(expert_handoffs=handoffs)
+    client = _client(tmp_path, pred)
+
+    sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
+    assistant = complete_turn(client, sid, "find seismic data")
+
+    assert assistant["metadata"]["expert_handoffs"] == handoffs
+    handoff_parts = [part for part in assistant["parts"] if part["type"] == "expert_handoff"]
+    assert len(handoff_parts) == 2
+    assert handoff_parts[0]["metadata"]["agent_id"] == "data"
+    assert handoff_parts[0]["text"].startswith("data | success")
+    assert handoff_parts[1]["metadata"]["parent_id"] == "data"
+    assert "data -> ndp_catalog" in handoff_parts[1]["text"]

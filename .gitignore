@@ -45,6 +45,8 @@ tool_cache/
 
 # Tool-generated files
 tool_output/
+.clio-agent-artifacts/
+.clio/
 *.tool.log
 mcp_*.log
 
@@ -152,6 +154,7 @@ Desktop.ini
 ai-docs/_archived/
 ANTHONY/
 .research/
+docs/ref/
 
 
 
@@ -159,3 +162,22 @@ ANTHONY/
 /b.py
 /x.py
 scratch/
+
+# benchmark run logs & artifacts (evidence, not source)
+benchmark/**/runs/*
+!benchmark/**/runs/
+!benchmark/**/runs/REVIEW_LOG.md
+benchmark/**/trace*.jsonl
+benchmark/**/report-*.md
+/tmp/
+tmp/
+/ca_warnings_full.geojson
+/cimis_fresno_weather.png
+/artifacts/
+
+# handshake DB runtime mismatch log
+src/clio_agent/providers/handshake/sources/data/model_limits.mismatches.jsonl
+
+# durable live-grind artifacts (server logs + full semantic traces) — kept out of
+# /tmp so a run is inspectable/reproducible later, but they are run evidence, not source
+.grind/

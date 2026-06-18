@@ -23,16 +23,17 @@ TIER 1 — CLIO Main Agent (orchestrator)
   · Parses user query
   · Extracts required capabilities
   · Queries the Agent Registry for expert matches
-  · Routes to a native Expert or an external agent
+  · Routes to a registry-loaded Agent Blueprint expert, generic tool, or external agent
 
 TIER 2 — Expert Agents (persistent specialists)
-  · DataExpert      HDF5 / ADIOS / Parquet  (live)
-  · HPCExpert       SLURM / MPI / Darshan   (planned)
-  · ResearchExpert  papers / citations      (planned)
+  · data-semantics/data           metadata and file inspection blueprint expert
+  · data-semantics/analysis       semantic/statistical review blueprint expert
+  · data-semantics/visualization  visualization-planning blueprint expert
+  · Other marketplace Agent Blueprints installed per registry/session/workspace
   · External agents LangChain, CrewAI, AutoGen via A2A protocol
 
-TIER 3 — Nanoagents (ephemeral workers, future)
-  · Spawned by Tier 2 via dspy.Parallel for sub-tasks
+TIER 3 — Child experts / nanoagents
+  · Declared by the active blueprint graph and invoked through bounded runtime primitives
 ```
 
 (`docs/CLIO_AGENT_ARCHITECTURE.md` L110–157; `README.md` L50–85)
@@ -55,7 +56,7 @@ User query (CLI / REST / A2A)
 
 | Term | What it means | Why the TUI cares |
 |---|---|---|
-| **Expert** | A Tier-2 persistent specialist (currently `DataExpert`), given ≤7 curated MCP tools, runs a ReAct loop, registers capabilities in the Registry. | TUI should show *which expert is active*, stream its Thought / Action / Observation steps. (`README.md` L203–220) |
+| **Expert** | A registry-loaded Agent Blueprint node compiled into a DSPy `predict`, `chain_of_thought`, or `react` module. Tools scope access only; they do not imply native Python expert dispatch. | TUI should show the active expert id, blueprint provenance, module kind, tool calls, and child-delegation lifecycle. |
 | **ARC** (Agent Runtime Context) | CLIO's native memory: LRU cache (hot, O(1)) + B-tree index (search, O(log N)) + LSM tree (write-heavy metrics). Stores conversations, invocations, metrics, cached tool results. Integrates with IOWarp CTE multi-tier storage. | TUI can surface memory stats (`/memory`) + expose cached-vs-cold responses. (`README.md` L269–289) |
 | **DSPy** | Stanford framework for *programming* LMs (signatures, modules, `dspy.Tool.from_mcp_tool`, SIMBA optimiser). Implementation detail — not user-facing. | Don't expose in TUI UI. (`README.md` L570–572, `CLAUDE.md` L30–133) |
 | **FastMCP** | MCP 3.x protocol / gateway CLIO uses to mount tool namespaces (`hdf5_list_datasets`, `parquet_analyze_schema`…) and inject dependencies like ARC. | Sources of truth for what tools exist. (`CLAUDE.md` L135–180) |
@@ -82,7 +83,7 @@ User query (CLI / REST / A2A)
 |---|---|---|---|---|
 | `/health` | GET | — | `{"status":"ok","timestamp":...}` | ✅ |
 | `/query` | POST | `{"question": str}` | `{"answer": str, "trace": [...]}` | ✅ |
-| `/experts` | GET | — | `[{"name":"DataExpert","capabilities":[...]}]` | ✅ |
+| `/experts` | GET | — | registry rows with blueprint provenance and tool/capability refs | ✅ |
 | `/metrics` | GET | — | `{"agent_id":"...","success_rate":0.95,...}` | ✅ |
 | `/doctor` | GET | — | `{"lm":"ready","gateway":"ready","clio_core":"unavailable",...}` | ✅ |
 
@@ -99,7 +100,7 @@ $ uv run src/clio_agent/ui/cli.py
 Rich-based REPL. Slash commands (`README.md` L374–401):
 
 - `/help` — commands
-- `/experts` — registered agents (native + external)
+- `/experts` — registered agents and active Agent Blueprint experts
 - `/registry` — Agent Registry status
 - `/memory` — ARC stats
 - `/tools` — available MCP tools

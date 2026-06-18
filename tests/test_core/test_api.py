@@ -10,6 +10,7 @@ from unittest.mock import MagicMock
 
 import dspy
 import pytest
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from clio_agent.registry.registry import AgentCapability, AgentRegistry
@@ -142,6 +143,24 @@ class TestHealth:
         assert body["status"] == "degraded"
         assert body["error"] == "LM Studio unreachable"
 
+    @pytest.mark.asyncio
+    async def test_lifespan_config_failure_does_not_invent_default_provider(self, monkeypatch):
+        from clio_agent.ui import api as api_module
+
+        monkeypatch.setattr(api_module, "load_project_env_file", lambda: None)
+        monkeypatch.setattr(
+            api_module,
+            "load_config_from_env",
+            MagicMock(side_effect=ValueError("bad CLIO_LM_PROVIDER")),
+        )
+        test_app = FastAPI()
+
+        async with api_module.lifespan(test_app):
+            assert test_app.state.agent is None
+            assert test_app.state.healthy is False
+            assert test_app.state.startup_error == "bad CLIO_LM_PROVIDER"
+            assert test_app.state.provider_config is None
+
     def test_health_includes_integration_details(self, client, monkeypatch):
         from clio_agent.runtime.status import (
             IntegrationState,
@@ -252,10 +271,10 @@ class TestQuerySSE:
     def test_stream_events(self, client):
         resp = client.post("/query", json={"question": "Stream me", "stream": True})
         text = resp.text
-        # Must contain routing, chunk, and done events
+        # Legacy /query SSE is an envelope, not live token streaming.
         assert "event: routing" in text
-        assert "event: chunk" in text
         assert "event: done" in text
+        assert "event: chunk" not in text
 
     def test_stream_error_event(self, client, mock_agent):
         mock_agent.side_effect = RuntimeError("boom")
@@ -270,7 +289,25 @@ class TestQuerySSE:
                 assert data["error"] == "internal_error"
                 break
 
-    def test_stream_done_event_includes_error_info(self, client, mock_agent):
+    def test_stream_success_done_is_marked_batch_without_chunks(self, client):
+        resp = client.post("/query", json={"question": "Stream me", "stream": True})
+        lines = resp.text.splitlines()
+
+        assert "event: chunk" not in resp.text
+        for i, line in enumerate(lines):
+            if line.strip() == "event: done":
+                for j in range(i + 1, min(i + 3, len(lines))):
+                    if lines[j].startswith("data:"):
+                        data = json.loads(lines[j][len("data:") :].strip())
+                        assert data["stream_source"] == "batch"
+                        assert data["stream_fallback"]["reason"] == ("legacy_query_sync_path")
+                        assert data["stream_fallback"]["synthetic_posthoc"] is True
+                        assert data["stream_fallback"]["live_streaming"] is False
+                        assert "use_gact_streaming" in data["stream_fallback"]["recovery_actions"]
+                        return
+        raise AssertionError("No done event found in SSE stream")
+
+    def test_stream_prediction_error_info_emits_error_event(self, client, mock_agent):
         prediction = dspy.Prediction(
             answer="handled failure",
             selected_expert="data",
@@ -289,13 +326,16 @@ class TestQuerySSE:
 
         lines = resp.text.splitlines()
         for i, line in enumerate(lines):
-            if line.strip() == "event: done":
+            if line.strip() == "event: error":
                 for j in range(i + 1, min(i + 3, len(lines))):
                     if lines[j].startswith("data:"):
                         data = json.loads(lines[j][len("data:") :].strip())
                         assert data["error_info"]["error"] == "tool_error"
+                        assert data["answer"] == "handled failure"
+                        assert data["selected_expert"] == "data"
+                        assert "event: done" not in resp.text
                         return
-        raise AssertionError("No done event found in SSE stream")
+        raise AssertionError("No error event found in SSE stream")
 
 
 # ---------------------------------------------------------------------------
@@ -409,6 +449,8 @@ class TestAPIMain:
                     if lines[j].startswith("data:"):
                         data = json.loads(lines[j][len("data:") :].strip())
                         assert "answer" in data
+                        assert data["stream_source"] == "batch"
+                        assert data["stream_fallback"]["reason"] == ("legacy_query_sync_path")
                         found_done = True
                         break
                 break

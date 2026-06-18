@@ -8,11 +8,11 @@ CLIO's `LMProviderConfig` (`config.py:75-115`) ships with four built-in provider
 
 | `CLIO_LM_PROVIDER` | Default `API_BASE` | Default `MODEL` | `API_KEY` source |
 |---|---|---|---|
-| `lm_studio` (default) | `http://127.0.0.1:1234/v1` | `ibm/granite-4-h-tiny` | literal `"lm-studio"` |
+| `lm_studio` (default) | `http://127.0.0.1:1234/v1` | auto-discovered from `/v1/models` when blank | literal `"lm-studio"` |
 | `ollama` | `http://127.0.0.1:11434/v1` | `granite3.1-dense:8b` | literal `"ollama"` |
 | `openai` | `https://api.openai.com/v1` | `gpt-4o-mini` | `OPENAI_API_KEY` env |
 | `anthropic` | `https://api.anthropic.com/v1` | `claude-sonnet-4-20250514` | `ANTHROPIC_API_KEY` env |
-| `argonne` | `https://inference-api.alcf.anl.gov/resource_server/sophia/vllm/v1` | `meta-llama/Meta-Llama-3.1-8B-Instruct` | Globus Auth (lazy) or `CLIO_ARGONNE_TOKEN` env |
+| `argonne` | `https://inference-api.alcf.anl.gov/resource_server/sophia/vllm/v1` | `openai/gpt-oss-120b` | Globus Auth (lazy) or `CLIO_ARGONNE_TOKEN` env |
 
 (`config.py:40-72`)
 
@@ -30,18 +30,28 @@ pip install 'clio-agent[argonne]'
 # 2. Run the OAuth flow once per machine:
 python -m clio_agent.providers.argonne_auth authenticate
 
-# 3. Point CLIO at Sophia (default) — or Polaris:
+# 3. Discover the currently loaded model ids:
+python scripts/list_alcf_models.py
+
+# 4. Point CLIO at Sophia with a currently loaded modern model:
 export CLIO_LM_PROVIDER=argonne
 export CLIO_LM_API_BASE=https://inference-api.alcf.anl.gov/resource_server/sophia/vllm/v1
-export CLIO_LM_MODEL=meta-llama/Meta-Llama-3.1-8B-Instruct
+export CLIO_LM_MODEL=openai/gpt-oss-120b
 clio-agent
 ```
 
+ALCF model availability is dynamic because hosted models are tied to running
+gateway jobs. Prefer currently loaded modern models such as
+`openai/gpt-oss-120b`, `openai/gpt-oss-20b`, `gpt-oss-120b` on Metis, or Llama
+4 variants. Treat older Llama 3.1 ids as compatibility examples, not as the
+recommended stress-test baseline.
+
 The TUI's Settings → Model picker also exposes "ALCF Sophia (Globus
-Auth)", "ALCF Polaris (Globus Auth)", and "ALCF local vLLM (compute-
-node)" presets — picking one issues `PUT /v1/providers/lm` with
-`provider=argonne`, and the backend resolves a token via
-`providers.argonne_auth` if the request body leaves `api_key` blank.
+Auth)", "ALCF Metis (Globus Auth)", and "vLLM (localhost)" presets.
+The ALCF presets issue `PUT /v1/providers/lm` with `provider=argonne`,
+and the backend resolves a token via `providers.argonne_auth` if the
+request body leaves `api_key` blank. The local vLLM preset is plain
+OpenAI-compatible localhost configuration and does not use Globus.
 
 `/health` and `/doctor` report on Argonne separately:
 
@@ -61,7 +71,9 @@ All overridable with `CLIO_LM_API_BASE`, `CLIO_LM_MODEL`, `CLIO_LM_API_KEY`.
 | `CLIO_LM_API_BASE` | provider-specific | endpoint URL |
 | `CLIO_LM_MODEL` | provider-specific | model ID |
 | `CLIO_LM_API_KEY` | provider-specific or env | API key |
-| `CLIO_LM_TEMPERATURE` | `1.0` | sampling temperature (reasoner); router is forced to `0.3` |
+| `CLIO_LM_TEMPERATURE` | `1.0` | sampling temperature for reasoner/chat paths |
+| `CLIO_LM_PLANNER_TEMPERATURE` | `0.3` | sampling temperature for planner action selection |
+| `CLIO_LM_PLANNER_MAX_TOKENS` | `CLIO_LM_MAX_TOKENS` | planner-only token cap for structured JSON actions |
 | `CLIO_LM_MAX_TOKENS` | `32000` | per-response cap |
 | `CLIO_ENVIRONMENT` | `dev` | `dev` / `staging` / `production` |
 | `CLIO_ARC_BACKEND` | `local` | `local` or `cte` (future) |
@@ -80,40 +92,22 @@ All overridable with `CLIO_LM_API_BASE`, `CLIO_LM_MODEL`, `CLIO_LM_API_KEY`.
 
 Two LMs exist:
 
-- **Router LM** — low temperature (`0.3`), model defaults to `ibm/granite-4-h-tiny`. Drives `RouterSignature` classification.
-- **Reasoner LM** — default temperature `1.0`, same model by default. Drives all expert ReAct loops.
+- **Planner LM** — low temperature (`0.3`), model defaults to `ibm/granite-4-h-tiny`. Drives `AgentActionSignature` planning for direct tools, experts, chat answers, or explicit no-action decisions. Known local reasoning models such as Qwopus/Qwen use a deterministic planner profile (`planner_temperature=0`, planner token floor 4096) so hidden reasoning tokens do not starve JSON action output.
+- **Reasoner LM** — default temperature `1.0`, same model by default. Drives expert ReAct loops, chat answers, and synthesis after tool observations.
 
 Both are scoped per request via `dspy.context()` — no global model mutation (`CLAUDE.md` L30–133).
 
-## Provider path for Claude Max via Meridian
+### Validated local reasoning profile
 
-DSPy's built-in Anthropic provider expects a pay-as-you-go API key. For dev on a **Claude Max subscription** (OAuth), use [Meridian](https://github.com/rynfar/meridian) — a TypeScript/Bun proxy that bridges Anthropic's official SDK (OAuth) to an OpenAI-compatible endpoint. CLIO + Meridian looks identical to "CLIO + any openai-compatible backend":
+`qwopus3.5-9b-v3` has been validated through LM Studio's ROCm runtime on an AMD Radeon RX 6950 XT with 32k context loaded. CLIO applies the local reasoning-model planner profile automatically when the LM Studio/Ollama model id contains `qwopus`, `qwen3`, `qwen-3`, `qwen35`, or `qwen-3.5`.
 
-```sh
-# 1. Run meridian (follow its README for OAuth bootstrap):
-meridian serve --port 4141 &
+Validation baseline:
 
-# 2. Point CLIO at it:
-export CLIO_LM_PROVIDER=openai
-export CLIO_LM_API_BASE=http://127.0.0.1:4141/v1
-export CLIO_LM_API_KEY=any-placeholder      # meridian owns real auth
-export CLIO_LM_MODEL=claude-sonnet-4-5
+- direct LM Studio smoke returned `LMSTUDIO_QWOPUS_OK`
+- CLIO smoke returned `CLIO_QWOPUS_OK` with `error_info=null`
+- long-context push used 26,056 prompt tokens and returned `CTX32K_QWOPUS_OK`
 
-# 3. Launch CLIO as usual:
-clio-agent-api --host 127.0.0.1 --port 8000
-```
-
-Meridian's README lists Crush / OpenCode / Aider / Cline as known-good clients; CLIO slots into the same integration pattern. No DSPy or CLIO changes required — the proxy is invisible to both ends.
-
-Tradeoffs vs a native DSPy/Anthropic integration:
-
-- **+** No API-key cost during development.
-- **+** Reuses the user's existing Claude Max subscription session.
-- **+** Same knobs as any other openai-compatible setup (`CLIO_LM_PROVIDER=openai`, swap `API_BASE`).
-- **−** One extra process to supervise. If we ship this in a `gact agent deploy clio` adapter, the adapter should spawn/supervise meridian the same way it supervises `clio-agent-api`.
-- **−** Latency adds ~10–30 ms per hop (negligible relative to LM inference itself).
-
-For CI and non-interactive use where OAuth flow isn't viable, fall back to `openai` / `anthropic` with a real API key.
+If a reasoning model still cannot produce valid planner JSON, CLIO should surface a structured `routing_error` with retry/reconfigure/exit actions rather than returning a fallback answer.
 
 ## Deployment modes
 
