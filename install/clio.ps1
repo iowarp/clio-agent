@@ -5,6 +5,7 @@
 # they let you manage the backing server without hunting PIDs.
 #
 #   clio                 ensure server is up, then attach the TUI
+#   clio web | --web     ensure server is up, then open the web UI in a browser
 #   clio start           start the server (no TUI)
 #   clio stop            stop the server
 #   clio restart         stop then start
@@ -41,6 +42,7 @@ $GactLog   = Join-Path $Prefix 'gact-stderr.log'
 $ServerBin = Join-Path $Prefix 'clio-agent\.venv\Scripts\clio-agent-gact.exe'
 $GactBin   = Join-Path $Prefix 'gact.exe'
 $ClioBrandRoot = Join-Path $Prefix 'clio-agent\branding'
+$WebDir    = Join-Path $Prefix 'clio-agent\web'
 
 function Say  ($m) { Write-Host "==> $m" -ForegroundColor Green }
 function Warn ($m) { Write-Host "!! $m"  -ForegroundColor Yellow }
@@ -58,6 +60,24 @@ function Test-Health {
         $status = $_.Exception.Response.StatusCode.value__
         return ($status -eq 503)
     }
+}
+
+# Test-ServingWeb returns $true when the running server is serving the web
+# SPA at "/" (the web mount is only wired when CLIO_WEB_DIR was set at
+# server startup). Used to decide whether an already-running server needs a
+# restart to pick up the web bundle.
+function Test-ServingWeb {
+    try {
+        $r = Invoke-WebRequest -Uri "http://127.0.0.1:$Port/" -UseBasicParsing -TimeoutSec 1
+        return ($r.Content -match '(?i)<html|<!doctype html')
+    } catch {
+        return $false
+    }
+}
+
+# Open-Url launches the default browser (best-effort, non-blocking).
+function Open-Url ($url) {
+    try { Start-Process $url | Out-Null } catch { Warn "open $url in your browser" }
 }
 
 # Get-ServerPid returns a live server PID (validated pidfile, or the
@@ -104,11 +124,15 @@ function Start-Server {
         -WorkingDirectory (Join-Path $Prefix 'clio-agent') `
         -WindowStyle Hidden -PassThru
     Set-Content -Path $PidFile -Value $proc.Id -Encoding ascii
-    for ($i = 0; $i -lt 30; $i++) {
+    # First-run startup is slow (ARC/LSM init + MCP server spawn) and can take
+    # 30-60s; only fail after a generous window so a healthy-but-slow start
+    # isn't reported as a failure (the server keeps coming up in the background
+    # anyway). Mirrors install/clio (bash): 180 * 0.5s = ~90s.
+    for ($i = 0; $i -lt 180; $i++) {
         if (Test-Health) { Say "  healthy (pid $($proc.Id))"; return $true }
         Start-Sleep -Milliseconds 500
     }
-    Err "server did not become healthy in ~15s - check $ServerLog / $ServerErr"
+    Err "server did not become healthy in ~90s - check $ServerLog / $ServerErr"
     return $false
 }
 
@@ -202,7 +226,7 @@ function Write-Completion ($shell) {
 @'
 Register-ArgumentCompleter -CommandName clio -ScriptBlock {
     param($wordToComplete, $commandAst, $cursorPosition)
-    @('start','stop','restart','status','ps','logs','doctor','report','completion','uninstall','attach','help') |
+    @('web','start','stop','restart','status','ps','logs','doctor','report','completion','uninstall','attach','help') |
         Where-Object { $_ -like "$wordToComplete*" } |
         ForEach-Object { [System.Management.Automation.CompletionResult]::new($_, $_, 'ParameterValue', $_) }
 }
@@ -228,6 +252,15 @@ function Show-Usage {
 # ---------- dispatch --------------------------------------------------
 if (-not $Rest) { $Rest = @() }
 
+# PowerShell's -File binder routes a leading "--web"/"-web" into $Rest rather
+# than the positional $Command (tokens starting with '-' aren't bound
+# positionally). The bash launcher accepts both `web` and `--web`, so the
+# clio.cmd shim forwards `--web` here - normalize it back to the `web` command.
+if ($Command -eq "" -and $Rest.Count -gt 0 -and ($Rest[0] -eq "--web" -or $Rest[0] -eq "-web")) {
+    $Command = "web"
+    if ($Rest.Count -gt 1) { $Rest = $Rest[1..($Rest.Count - 1)] } else { $Rest = @() }
+}
+
 switch ($Command) {
     { $_ -eq "" -or $_ -eq "attach" } {
         if (-not (Start-Server)) { exit 1 }
@@ -247,6 +280,25 @@ switch ($Command) {
         if ($Rest.Count -gt 0) { $spArgs['ArgumentList'] = $Rest }
         $proc = Start-Process @spArgs
         exit $proc.ExitCode
+    }
+    { $_ -eq "web" -or $_ -eq "--web" } {
+        if (-not (Test-Path (Join-Path $WebDir 'index.html')) -and -not $env:CLIO_WEB_DIR) {
+            Err "web bundle not found at $WebDir"
+            Err "reinstall CLIO with the web bundle, or set CLIO_WEB_DIR to a built web dist"
+            exit 1
+        }
+        if (-not $env:CLIO_WEB_DIR) { $env:CLIO_WEB_DIR = $WebDir }
+        # The web mount is wired at server startup, so a server already running
+        # WITHOUT the web bundle must be restarted to pick it up.
+        if ((Test-Health) -and -not (Test-ServingWeb)) {
+            Say "restarting server in web mode"
+            Stop-Server
+        }
+        if (-not (Start-Server)) { exit 1 }
+        $url = "http://127.0.0.1:$Port/"
+        Say "CLIO web UI: $url"
+        Open-Url $url
+        exit 0
     }
     "start"   { if (Start-Server) { exit 0 } else { exit 1 } }
     "stop"    { Stop-Server; exit 0 }
