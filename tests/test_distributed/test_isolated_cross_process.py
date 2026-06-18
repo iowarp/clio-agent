@@ -24,6 +24,9 @@ from pathlib import Path
 import pytest
 
 _ISOLATED_WORKER = Path(__file__).resolve().parent / "_isolated_cte_worker.py"
+# the FULL gact worker entry (build_app + ClioAgent + registers 'calc'): the real deployment
+# worker, used for the fleet-orchestrated end-to-end over CTE with a real child.
+_GACT_WORKER = Path(__file__).resolve().parent.parent / "test_runtime" / "_clio_core_worker_entry.py"
 
 
 @pytest.mark.cross_process
@@ -206,3 +209,119 @@ def test_isolated_delegation_sustained_soak_over_cte(clio_daemon):
             except subprocess.TimeoutExpired:
                 p.kill()
                 p.wait()
+
+
+@pytest.mark.cross_process
+@pytest.mark.live
+@pytest.mark.skipif(
+    os.environ.get("CLIO_RUN_LIVE") != "1",
+    reason="full-stack cluster proof: set CLIO_RUN_LIVE=1 + CLIO_RUN_CROSS_PROCESS=1 (+ ALCF auth)",
+)
+def test_fleet_orchestrated_isolated_delegation_over_cte_with_real_child(clio_daemon, tmp_path):
+    """THE cluster-readiness proof, on one box, over the REAL transport.
+
+    Composes the entire distributable stack against a real ``clio_run`` daemon:
+      * orchestration — ``WorkerFleet`` spawns + supervises real gact worker PROCESSES
+        (``build_app`` + ``ClioAgent``) attached to the daemon over CTE (``cte_worker_env``),
+      * live default — the production hinge ``run_child_via_boundary(mode="clio_core_isolated")``
+        (exactly what ``_invoke_child_expert`` calls) routes a delegation to that pool,
+      * real inference — a worker runs a real ALCF child and the answer folds back,
+      * exactly-once — lease-free, zero claim blobs.
+    The parent's ``run_child`` is rigged to fail if touched, so a pass proves out-of-process
+    execution over CTE. The ONLY thing a GPU cluster adds is cross-node networking (clio-core's,
+    identical code). Gated by CLIO_RUN_LIVE=1 + CLIO_RUN_CROSS_PROCESS=1.
+    """
+    import time
+    from types import SimpleNamespace
+
+    from clio_agent.config import load_config_from_env
+    from clio_agent.gact.delegation_invoker import run_child_via_boundary
+    from clio_agent.runtime.clio_core_transport import live_workers
+    from clio_agent.runtime.worker_fleet import (
+        LocalSubprocessSpawner,
+        WorkerFleet,
+        WorkerSpec,
+        cte_worker_env,
+    )
+
+    cfg = load_config_from_env()
+    if str(getattr(cfg, "provider", "")) in {"lmstudio", "lm_studio"}:
+        pytest.skip("live run must target Argonne/ALCF, not LM Studio (leave it free)")
+
+    daemon_env = clio_daemon["env"]
+    # the parent (this process) attaches to the SAME daemon over CTE
+    for k in ("LD_LIBRARY_PATH", "CLIO_SERVER_CONF"):
+        if k in daemon_env:
+            os.environ[k] = daemon_env[k]
+    os.environ["CLIO_CTE_WITH_RUNTIME"] = "0"
+    os.environ["CLIO_ARC_STORE"] = "cte"
+
+    from clio_agent.arc.storage import make_arc_store
+
+    store = make_arc_store(backend="cte")
+
+    role = "calc"
+    prefix = f"fleetcte_{os.getpid()}_"
+    # the parent's isolated invoker reads these from the env (via _invoke_via_isolated)
+    os.environ["CLIO_CORE_PREFIX"] = prefix
+    os.environ["CLIO_CORE_READY_TIMEOUT"] = "180"
+    os.environ["CLIO_CORE_TIMEOUT"] = "240"
+    os.environ.pop("CLIO_CORE_ROLE", None)  # role defaults to the expert id
+
+    # worker env: attach to the daemon over CTE + ALCF creds (NOT HOME — the ~/.globus token
+    # lives under the real HOME; overriding it breaks worker auth).
+    worker_env = {
+        **{k: daemon_env[k] for k in ("LD_LIBRARY_PATH", "CLIO_SERVER_CONF") if k in daemon_env},
+        **cte_worker_env(),
+        "CLIO_RUN_LIVE": "1",
+        "CLIO_LM_PROVIDER": os.environ.get("CLIO_LM_PROVIDER", "argonne"),
+        "CLIO_LM_API_BASE": os.environ.get(
+            "CLIO_LM_API_BASE",
+            "https://inference-api.alcf.anl.gov/resource_server/sophia/vllm/v1",
+        ),
+        "CLIO_LM_MODEL": os.environ.get("CLIO_LM_MODEL", "openai/gpt-oss-120b"),
+        "XDG_CONFIG_HOME": str(tmp_path / "cfg"),
+        "CLIO_ALLOWED_ROOTS": f"{tmp_path}:{os.getcwd()}",
+    }
+
+    fleet = WorkerFleet(
+        store,
+        [WorkerSpec(role, replicas=2)],
+        spawner=LocalSubprocessSpawner(
+            command=[sys.executable, str(_GACT_WORKER)], log_dir=str(tmp_path / "wlogs")
+        ),
+        worker_env=worker_env,
+        prefix=prefix,
+    )
+
+    async def parent_run_child(agent_def, prompt):
+        raise AssertionError("parent must NOT run the child — the detached CTE pool does")
+
+    try:
+        fleet.start(wait_ready=False)
+        # real gact workers build_app + ClioAgent before announcing presence (slow); wait
+        deadline = time.monotonic() + 180
+        while time.monotonic() < deadline:
+            if live_workers(store, role, prefix=prefix):
+                break
+            time.sleep(0.2)
+        assert live_workers(store, role, prefix=prefix), "no gact worker registered over CTE"
+
+        out = asyncio.run(
+            run_child_via_boundary(
+                SimpleNamespace(id=role),
+                "What is 2 + 2? Answer with only the number.",
+                run_child=parent_run_child,
+                session_id="fleetcte",
+                mode="clio_core_isolated",
+                store=store,
+                role=role,
+            )
+        )
+        assert "4" in str(getattr(out, "answer", "")), f"answer from CTE worker: {out.answer!r}"
+        claim_blobs = [n for n in store.iter_names("context", prefix) if ".claim" in n]
+        assert claim_blobs == [], f"unexpected claim blobs: {claim_blobs}"
+    finally:
+        fleet.stop()
+        for k in ("CLIO_CORE_PREFIX", "CLIO_CORE_READY_TIMEOUT", "CLIO_CORE_TIMEOUT"):
+            os.environ.pop(k, None)
