@@ -71,13 +71,11 @@ adios = [
     "adios2>=2.10.0; platform_system != 'Windows'",
 ]
 
-codex = [
-    # openai_codex Python SDK — controls the local Codex app-server
-    # over JSON-RPC. Used by clio_agent.providers.codex_litellm's
-    # in-process transport (`CLIO_CODEX_TRANSPORT=sdk`). The package
-    # is not published on PyPI; bump this commit deliberately.
-    "openai-codex @ git+https://github.com/openai/codex.git@79f044ed34c60af815feef12e8e665f35d54871e#subdirectory=sdk/python",
-]
+# NOTE: the optional Codex SDK transport (CLIO_CODEX_TRANSPORT=sdk) needs
+# `openai-codex` from git (not on PyPI). A direct URL dependency cannot ship in
+# PyPI package metadata (upload is rejected with "Can't have direct dependency"),
+# so it is intentionally NOT a declared extra. Install it manually when needed:
+#   uv pip install "openai-codex @ git+https://github.com/openai/codex.git@79f044ed34c60af815feef12e8e665f35d54871e#subdirectory=sdk/python"
 
 iowarp = [
     "pyzmq>=25.0.0",             # ZeroMQ Python bindings for IOWarp CTE runtime
