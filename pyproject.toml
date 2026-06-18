@@ -126,6 +126,18 @@ allow-direct-references = true
 [tool.hatch.build.targets.wheel]
 packages = ["src/clio_agent"]
 
+[tool.hatch.build.targets.sdist]
+# Keep the source tarball small + PyPI-uploadable (project limit is 100 MB): ship
+# only the package source + build metadata, NOT the repo's vendored/large dirs
+# (docs/ref, the external/ submodules, benchmark/, .grind/, tmp/) which otherwise
+# balloon the sdist to >200 MB and get rejected ("400 File too large").
+include = [
+    "src/clio_agent",
+    "pyproject.toml",
+    "README.md",
+    "uv.lock",
+]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
