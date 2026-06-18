@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CLIO — Your local AI coding &amp; data agent</title>
+  <meta name="description" content="CLIO is an autonomous AI agent for scientific data and code — it runs locally, on your models and your data." />
+  <link rel="icon" href="assets/logo.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+
+  <!-- ===== Nav ===== -->
+  <header class="nav">
+    <div class="wrap nav-inner">
+      <a class="brand" href="index.html">
+        <img src="assets/logo.svg" alt="CLIO logo" />
+        <span class="wordmark">CLIO</span>
+      </a>
+      <button class="nav-toggle" id="navToggle" aria-label="Toggle navigation">☰</button>
+      <nav class="nav-links" id="navLinks">
+        <a href="#install">Install</a>
+        <a href="#desktop">Desktop</a>
+        <a href="#docker">Docker</a>
+        <a href="contributing.html">Contributing</a>
+        <a class="ghbtn" href="https://github.com/iowarp/clio-agent" target="_blank" rel="noopener">GitHub ↗</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <!-- ===== Hero ===== -->
+    <section class="hero wrap">
+      <img class="hero-logo" src="assets/logo.svg" alt="CLIO" />
+      <h1>CLIO</h1>
+      <p class="tagline">Your local AI coding &amp; data agent</p>
+      <p class="subtitle">Autonomous AI agent for scientific data and code — runs locally, on your models and your data.</p>
+
+      <div class="hero-code">
+        <div class="code" data-copy="curl -fsSL https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.sh | bash">
+          <pre><span class="prompt">$ </span>curl -fsSL https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.sh | bash</pre>
+          <button class="copy-btn" type="button">Copy</button>
+        </div>
+      </div>
+
+      <div class="hero-actions">
+        <a class="btn btn-primary" href="#desktop">Download desktop app</a>
+        <a class="btn" href="https://github.com/iowarp/clio-agent" target="_blank" rel="noopener">View on GitHub</a>
+      </div>
+    </section>
+
+    <!-- ===== Install ===== -->
+    <section id="install" class="wrap">
+      <div class="section-head">
+        <p class="eyebrow">Install</p>
+        <h2>One command, then you're running</h2>
+        <p class="section-sub">Install the CLI on macOS, Linux, or Windows. No accounts, no cloud lock-in — point it at whatever model you like.</p>
+      </div>
+
+      <div class="tabs" role="tablist">
+        <button class="tab active" type="button" data-tab="unix" role="tab">macOS / Linux</button>
+        <button class="tab" type="button" data-tab="win" role="tab">Windows (PowerShell)</button>
+      </div>
+
+      <div class="tabpane active" data-pane="unix">
+        <div class="code" data-copy="curl -fsSL https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.sh | bash">
+          <pre><span class="prompt">$ </span>curl -fsSL https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.sh | bash</pre>
+          <button class="copy-btn" type="button">Copy</button>
+        </div>
+      </div>
+
+      <div class="tabpane" data-pane="win">
+        <div class="code" data-copy="irm https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.ps1 | iex">
+          <pre><span class="prompt">PS&gt; </span>irm https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.ps1 | iex</pre>
+          <button class="copy-btn" type="button">Copy</button>
+        </div>
+      </div>
+
+      <p class="hint">Then run <code>clio</code> for the terminal UI, or <code>clio --web</code> to open it in your browser.</p>
+    </section>
+
+    <!-- ===== Screenshots ===== -->
+    <section id="screens" class="wrap">
+      <div class="section-head">
+        <p class="eyebrow">Screenshots</p>
+        <h2>See it work</h2>
+        <p class="section-sub">From sub-agent orchestration to reviewing proposed edits — CLIO keeps you in the loop.</p>
+      </div>
+
+      <div class="carousel" id="carousel">
+        <div class="carousel-frame">
+          <button class="car-arrow prev" id="carPrev" type="button" aria-label="Previous slide">‹</button>
+          <div class="slides">
+            <div class="slide active"><img src="assets/shots/clio_subagent.png" alt="Sub-agent orchestration" loading="lazy" /></div>
+            <div class="slide"><img src="assets/shots/25-metrics.png" alt="Live metrics" loading="lazy" /></div>
+            <div class="slide"><img src="assets/shots/52-catalog-tools.png" alt="Curated tool catalog" loading="lazy" /></div>
+            <div class="slide"><img src="assets/shots/20-context-files.png" alt="Context files" loading="lazy" /></div>
+            <div class="slide"><img src="assets/shots/aurora_11_propose_edit.png" alt="Propose &amp; review edits" loading="lazy" /></div>
+          </div>
+          <button class="car-arrow next" id="carNext" type="button" aria-label="Next slide">›</button>
+        </div>
+        <p class="car-caption" id="carCaption"></p>
+        <div class="car-dots" id="carDots"></div>
+      </div>
+    </section>
+
+    <!-- ===== Desktop ===== -->
+    <section id="desktop" class="wrap">
+      <div class="section-head">
+        <p class="eyebrow">Desktop</p>
+        <h2>The desktop app</h2>
+        <p class="section-sub">A native build of CLIO for your machine. We picked the right download for you.</p>
+      </div>
+
+      <div class="desktop-card">
+        <div class="desktop-primary">
+          <a class="btn btn-primary" id="desktopPrimary" href="https://github.com/iowarp/clio-agent/releases/latest" target="_blank" rel="noopener">Download CLIO Desktop</a>
+          <span class="os-note" id="osNote">Detecting your platform…</span>
+        </div>
+
+        <details class="other-platforms" id="otherPlatforms">
+          <summary>Other platforms</summary>
+          <div class="platform-grid" id="platformGrid">
+            <a href="https://github.com/iowarp/clio-agent/releases/latest" data-os="macos" target="_blank" rel="noopener">macOS <span>.dmg</span></a>
+            <a href="https://github.com/iowarp/clio-agent/releases/latest" data-os="windows" target="_blank" rel="noopener">Windows <span>.msi / .exe</span></a>
+            <a href="https://github.com/iowarp/clio-agent/releases/latest" data-os="linux" target="_blank" rel="noopener">Linux <span>.AppImage / .deb / .rpm</span></a>
+          </div>
+        </details>
+      </div>
+    </section>
+
+    <!-- ===== Docker ===== -->
+    <section id="docker" class="wrap">
+      <div class="section-head">
+        <p class="eyebrow">Docker</p>
+        <h2>Run it in a container</h2>
+        <p class="section-sub">Prebuilt images for the web UI, the terminal UI, and a headless backend.</p>
+      </div>
+
+      <div class="docker-cards">
+        <details class="card" open>
+          <summary>Web UI <span class="tag">quickest</span></summary>
+          <div class="card-body">
+            <div class="code" data-copy="docker run --rm -p 8080:80 ghcr.io/iowarp/clio-web:latest">
+              <pre><span class="prompt">$ </span>docker run --rm -p 8080:80 ghcr.io/iowarp/clio-web:latest</pre>
+              <button class="copy-btn" type="button">Copy</button>
+            </div>
+            <p class="hint">Then open <code>http://localhost:8080</code>.</p>
+          </div>
+        </details>
+
+        <details class="card">
+          <summary>Terminal UI</summary>
+          <div class="card-body">
+            <div class="code" data-copy="docker run -it --rm ghcr.io/iowarp/clio-tui:latest">
+              <pre><span class="prompt">$ </span>docker run -it --rm ghcr.io/iowarp/clio-tui:latest</pre>
+              <button class="copy-btn" type="button">Copy</button>
+            </div>
+          </div>
+        </details>
+
+        <details class="card">
+          <summary>Headless backend <span class="tag">scale-out</span></summary>
+          <div class="card-body">
+            <div class="code" data-copy="docker run --rm -p 7777:7777 ghcr.io/iowarp/clio-api:latest">
+              <pre><span class="prompt">$ </span>docker run --rm -p 7777:7777 ghcr.io/iowarp/clio-api:latest</pre>
+              <button class="copy-btn" type="button">Copy</button>
+            </div>
+          </div>
+        </details>
+      </div>
+
+      <p class="docker-note">Point CLIO at your model with <code>-e CLIO_LM_API_BASE=...</code>.</p>
+    </section>
+
+    <!-- ===== Contributing teaser ===== -->
+    <section class="wrap tight">
+      <div class="teaser">
+        <div>
+          <h3>Build from source</h3>
+          <p>CLIO is open source under BSD-3-Clause. Clone the repo, run it with <code>uv</code>, and send a pull request.</p>
+        </div>
+        <a class="btn btn-primary" href="contributing.html">Contributing →</a>
+      </div>
+    </section>
+  </main>
+
+  <!-- ===== Footer ===== -->
+  <footer class="footer">
+    <div class="wrap footer-inner">
+      <div class="footer-links">
+        <a href="https://github.com/iowarp/clio-agent" target="_blank" rel="noopener">GitHub</a>
+        <a href="https://pypi.org/project/clio-agent/" target="_blank" rel="noopener">PyPI</a>
+        <a href="contributing.html">Contributing</a>
+        <a href="https://github.com/iowarp/clio-agent/blob/main/LICENSE" target="_blank" rel="noopener">License · BSD-3-Clause</a>
+      </div>
+      <div class="credit">
+        <span class="accent">Gnosis Research Center</span> · Illinois Tech
+      </div>
+    </div>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>

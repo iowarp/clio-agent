@@ -3,10 +3,12 @@ name = "clio-agent"
 version = "0.5.4"
 description = "CLIO Agent — Autonomous AI agent framework for scientific data management. Part of the IOWarp platform."
 authors = [
+    { name = "Jaime Cernuda", email = "jcernudagarcia@illinoistech.edu" },
     { name = "Antonis Kougkas", email = "a.kougkas@gmail.com" },
     { name = "Gnosis Research Center", email = "gra@iit.edu" }
 ]
 maintainers = [
+    { name = "Jaime Cernuda", email = "jcernudagarcia@illinoistech.edu" },
     { name = "Antonis Kougkas", email = "a.kougkas@gmail.com" }
 ]
 readme = "README.md"
