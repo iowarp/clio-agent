@@ -3,6 +3,7 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/iowarp/clio-agent/releases"><img src="https://img.shields.io/badge/status-beta-ea7b2a.svg" alt="Beta"></a>
   <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.12+-blue.svg" alt="Python 3.12+"></a>
   <a href="https://github.com/astral-sh/uv"><img src="https://img.shields.io/badge/UV-enabled-orange.svg" alt="UV"></a>
   <a href="https://github.com/jlowin/fastmcp"><img src="https://img.shields.io/badge/FastMCP-enabled-purple.svg" alt="FastMCP"></a>
@@ -10,6 +11,9 @@
 </p>
 
 ---
+
+> ⚠️ **Beta.** CLIO is under active development — interfaces, blueprints, and on-disk
+> formats may change between releases. Pin a version for reproducibility.
 
 ## What is CLIO Agent?
 

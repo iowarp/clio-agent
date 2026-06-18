@@ -10,12 +10,16 @@
 </head>
 <body>
 
+  <!-- ===== Beta ribbon ===== -->
+  <a class="beta-ribbon" href="https://github.com/iowarp/clio-agent/releases" target="_blank" rel="noopener" aria-label="CLIO is in beta">BETA</a>
+
   <!-- ===== Nav ===== -->
   <header class="nav">
     <div class="wrap nav-inner">
       <a class="brand" href="index.html">
         <img src="assets/logo.svg" alt="CLIO logo" />
         <span class="wordmark">CLIO</span>
+        <span class="beta-tag">Beta</span>
       </a>
       <button class="nav-toggle" id="navToggle" aria-label="Toggle navigation">☰</button>
       <nav class="nav-links" id="navLinks">
@@ -32,9 +36,10 @@
     <!-- ===== Hero ===== -->
     <section class="hero wrap">
       <img class="hero-logo" src="assets/logo.svg" alt="CLIO" />
-      <h1>CLIO</h1>
+      <h1>CLIO <span class="hero-beta">Beta</span></h1>
       <p class="tagline">Your local AI coding &amp; data agent</p>
       <p class="subtitle">Autonomous AI agent for scientific data and code — runs locally, on your models and your data.</p>
+      <p class="beta-note">⚠ Beta software — interfaces, blueprints, and on-disk formats may change between releases.</p>
 
       <div class="hero-code">
         <div class="code" data-copy="curl -fsSL https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.sh | bash">
