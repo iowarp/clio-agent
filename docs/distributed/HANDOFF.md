@@ -150,13 +150,24 @@ Run the gated proofs locally first: `CLIO_RUN_CROSS_PROCESS=1 uv run pytest test
 
 ## 6. Known limitations (don't be surprised)
 
-- **Throughput ~9/s (poll-dominated).** Each delegation crosses two ~50ms poll quanta (worker
-  pickup + parent result-wait) + a ~28ms `GetContainedBlobs`. The daemon is NOT the bottleneck
-  (it sat at 66MB). The real fix is a **push/blocking transport**, which needs a **clio-core
-  blob-notify primitive that DOES NOT EXIST** (the CTE API is `PutBlob/GetBlob/GetBlobSize/
-  GetContainedBlobs/DelBlob/BlobQuery/Semantic/TemporalSearch` — no notify/subscribe/watch). So
-  cross-process "push" is currently impossible over pure CTE; pull-with-configurable-rate is the
-  lever. **This is the single biggest thing to raise with the clio-core team.**
+- **Push vs pull — both exist, but they map to different topologies.**
+  - **Push (zero-poll) IS supported** for *in-process / co-located* delegation: `mode=""`
+    (direct) and `mode="loopback"` await the handler immediately — no polling, no quanta. Use
+    this when the worker can run in the parent's process.
+  - **Pull is the *distributable* path** (`mode="clio_core_isolated"`, separate process/node).
+    It runs ~**9/s, poll-dominated**: each delegation crosses two ~50ms poll quanta (worker
+    pickup + parent result-wait) + a ~28ms `GetContainedBlobs`. The daemon is NOT the
+    bottleneck (it sat at ~66MB).
+  - **The missing combination is "distributed + push."** Push works because parent + worker
+    share memory; once the worker is a separate process (the point of this runtime), the
+    in-memory wakeup can't reach it, and the clio-core CTE API has **no cross-process
+    blob-notify** (`PutBlob/GetBlob/GetBlobSize/GetContainedBlobs/DelBlob/BlobQuery/Semantic/
+    TemporalSearch` — no notify/subscribe/watch). So distributed-push needs EITHER a clio-core
+    notify primitive (the clean fix — **the single biggest upstream ask**, #691) OR an
+    out-of-band socket doorbell alongside the CTE data (a real "in the meantime" option, NOT
+    built — it bolts a second signaling mesh onto clio-core's, so weigh it carefully).
+  - For now, the distributable lever is **pull with a configurable/tuned poll rate**
+    (`transport.poll_interval`).
 - **`pool_query: broadcast` is config-wired but unverified cross-node** (couldn't test on one box).
 - The deployer's `Spawner` seam is built for SSH; a `SrunSpawner` (SLURM-native placement) would
   be a clean addition if ssh-between-nodes is awkward on Delta.
