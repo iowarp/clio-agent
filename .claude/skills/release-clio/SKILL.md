@@ -89,6 +89,13 @@ gh run list --workflow=docker.yml --limit 1                                 # gh
 - **Submodule gitlink must be committed.** `git submodule status` showing a leading `+` means the checked-out commit isn't recorded in the parent — commit the gitlink before tagging or the release ships the old submodule.
 - **ghcr `403 Forbidden` on first push** = org hasn't allowed Actions to create the org-level package. Fixes: org Settings→Packages allow creation, OR bootstrap each package once with a `write:packages` PAT (`docker login ghcr.io` + push), then link the repo (package Settings → Manage Actions access → add repo, Write). Repo default workflow permission + workflow `packages: write` are necessary but NOT sufficient for first creation.
 - **Desktop sub-version** (`external/gact-tui/apps/desktop/package.json`/`tauri.conf.json`) is versioned independently by the gact-tui team — don't edit inside the submodule; just pin the gact-tui release tag.
+- **Cross-platform CI gotchas (the 0.5.5–0.5.8 install-pathway saga — verify bundles actually upload, don't assume):**
+  - `build_clio_tui.sh`: absolutize `$OUT` BEFORE the `cd` into gact-tui, and treat Windows drive-letters (`C:/…`) + backslashes as absolute — a relative `-o` lands the binary in the wrong dir → no `clio-tui-*` assets.
+  - `tauri build` rejects **multiple `--config`** — deep-merge the bundled + branding configs (`jq -s '.[0] * .[1]'`) and pass one. Two `--config` flags fail every bundled-desktop job.
+  - Use **`shasum -a 256`**, NOT `sha256sum`, in any step that runs on macOS runners (no `sha256sum` on macOS) — it silently fails the mac `.dmg` AFTER it built.
+  - POSIX-only APIs crash Windows at import: `faulthandler.register(signal.SIGUSR1)` raises `AttributeError` on Windows (no SIGUSR1) — guard with `hasattr(signal, "SIGUSR1")`. This blocked the entire Windows server.
+  - The **Windows launcher `clio.ps1`** must stay at parity with the bash `install/clio` (e.g. `web`/`--web`, the 90s startup wait) — they drift.
+  - **Intel-mac (`macos-13`) runners are being deprecated** by GitHub → those desktop jobs queue forever; Apple-Silicon (`macos-14`) covers modern Macs.
 
 ## Install pathways — verify ALL are real every release (none aspirational)
 CLIO ships **1 engine + 3 frontends** across **4 mechanisms / 6 experiences** (see
