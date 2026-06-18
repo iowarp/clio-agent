@@ -166,7 +166,11 @@ if ($ClioRef -and -not $GactRef) {
             if (-not $tag) { Die "couldn't resolve clio-agent latest release tag" }
         }
     }
-    $asset = 'clio-tui-windows-amd64.exe'
+    # Pick the native TUI for the host CPU. Windows on ARM can run the x64
+    # binary via emulation, but ship the native arm64 build when on ARM.
+    $cpu = "$env:PROCESSOR_ARCHITECTURE $env:PROCESSOR_ARCHITEW6432"
+    if ($cpu -match 'ARM64') { $asset = 'clio-tui-windows-arm64.exe' }
+    else                     { $asset = 'clio-tui-windows-amd64.exe' }
     $url   = "https://github.com/iowarp/clio-agent/releases/download/$tag/$asset"
     Say "Downloading $asset from clio-agent $tag"
     Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $GactExe
