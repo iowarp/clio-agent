@@ -265,3 +265,50 @@ def test_artifact_and_builtin_command_semantic_events(tmp_path: Path, monkeypatc
     assert artifact["subject"]["path"] == "result.txt"
     assert artifact["payload"]["new_content"].startswith("[redacted]")
     assert command["subject"]["command"] == "/cache-stats"
+
+
+def test_lm_token_delta_projection_contract():
+    """#693: the live LM-stream highway. One lm.token.delta event must feed every
+    consumer correctly via the existing projections: the answer delta reaches SSE
+    (live UI), while chain-of-thought is redacted to a heartbeat on SSE but kept
+    verbatim on the durable/full projection (trace + ARC)."""
+    from clio_agent.gact.semantic_events import (
+        LM_TOKEN_DELTA,
+        SemanticEvent,
+        lm_token_delta_payload,
+        project_full,
+        project_sse,
+    )
+
+    ev = SemanticEvent(
+        event_type=LM_TOKEN_DELTA,
+        session_id="sess_x",
+        trace_id="trace_x",
+        turn_id="turn_x",
+        actor={"agent_id": "synthesis", "role": "expert"},
+        payload=lm_token_delta_payload(content="Hello ", reasoning="let me think...", field="answer"),
+    )
+
+    sse = project_sse(ev)
+    full = project_full(ev)
+
+    # Envelope categorization rides every projection (by session/turn/expert).
+    assert sse["session_id"] == "sess_x" and sse["turn_id"] == "turn_x"
+    assert sse["actor"].get("agent_id") == "synthesis"
+
+    # Answer delta survives to the live UI; reasoning is redacted to a heartbeat.
+    assert sse["payload"]["delta"] == "Hello "
+    assert sse["payload"]["field"] == "answer"
+    assert sse["payload"]["reasoning"] != "let me think..."
+    assert "redacted" in str(sse["payload"]["reasoning"]).lower()
+
+    # The durable/full view (trace + ARC) keeps both verbatim.
+    assert full["payload"]["delta"] == "Hello "
+    assert full["payload"]["reasoning"] == "let me think..."
+
+
+def test_lm_token_delta_payload_omits_empty_channels():
+    from clio_agent.gact.semantic_events import lm_token_delta_payload
+
+    assert lm_token_delta_payload(content="x") == {"field": "answer", "delta": "x"}
+    assert lm_token_delta_payload(reasoning="y") == {"field": "answer", "reasoning": "y"}
