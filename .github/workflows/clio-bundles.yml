@@ -189,11 +189,24 @@ jobs:
         run: pnpm --filter @clio/web build
       - name: Tauri release build
         working-directory: external/gact-tui/apps
+        shell: bash
         env:
           GACT_BRAND_ROOT: ${{ github.workspace }}/branding
           TAURI_SIGNING_PRIVATE_KEY: ""
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
-        run: pnpm --filter @clio/desktop tauri build ${{ matrix.variant == 'bundled' && '--config src-tauri/tauri.bundled.conf.json' || '' }} --config ${{ github.workspace }}/branding/clio/tauri.clio.conf.json ${{ matrix.bundle-args }}
+        run: |
+          set -euo pipefail
+          brand="${{ github.workspace }}/branding/clio/tauri.clio.conf.json"
+          # The tauri CLI rejects multiple --config flags, so for the bundled
+          # variant we deep-merge the bundled config + the CLIO branding overlay
+          # into a single config (branding wins on conflicts) and pass it once.
+          if [ "${{ matrix.variant }}" = "bundled" ]; then
+            cfg="$RUNNER_TEMP/tauri.merged.conf.json"
+            jq -s '.[0] * .[1]' desktop/src-tauri/tauri.bundled.conf.json "$brand" > "$cfg"
+          else
+            cfg="$brand"
+          fi
+          pnpm --filter @clio/desktop tauri build --config "$cfg" ${{ matrix.bundle-args }}
       - name: Stage artifacts
         shell: bash
         run: |

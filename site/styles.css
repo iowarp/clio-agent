@@ -120,6 +120,11 @@ img { max-width: 100%; display: block; }
   position: relative;
   z-index: 1;
 }
+/* A `section.wrap` would otherwise lose the `section` vertical padding to
+   `.wrap`'s class-specificity (padding: 0 24px), collapsing the gaps between
+   sections to almost nothing. Restore the vertical rhythm (hero has its own). */
+section.wrap:not(.hero) { padding-top: 80px; padding-bottom: 80px; }
+section.wrap.tight { padding-top: 56px; padding-bottom: 56px; }
 
 /* ---------- Nav ---------- */
 .nav {
@@ -333,7 +338,19 @@ h2 { font-size: clamp(26px, 4vw, 36px); font-weight: 700; letter-spacing: -0.01e
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
 }
+.run-mode .run-mode-label {
+  flex: 1 1 auto;
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 600;
+}
+.run-mode .run-mode-sep {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 14px;
+}
 .run-mode code {
+  flex: 0 0 auto;
   font-family: var(--mono);
   font-size: 14px;
   color: var(--accent);
@@ -343,7 +360,8 @@ h2 { font-size: clamp(26px, 4vw, 36px); font-weight: 700; letter-spacing: -0.01e
   padding: 3px 8px;
   white-space: nowrap;
 }
-.run-mode span { color: var(--muted); font-size: 14px; }
+.reassure { color: var(--muted); font-size: 14px; margin-top: 14px; }
+.reassure a { font-weight: 600; }
 .no-install { color: var(--muted); font-size: 14px; margin-top: 14px; }
 .no-install a { font-weight: 600; }
 
@@ -462,9 +480,14 @@ h2 { font-size: clamp(26px, 4vw, 36px); font-weight: 700; letter-spacing: -0.01e
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  cursor: pointer;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease;
 }
-.os-card:hover { border-color: var(--accent-line); }
+.os-card:hover {
+  border-color: var(--accent-line);
+  transform: translateY(-3px);
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.4);
+}
 .os-logo {
   width: 48px;
   height: 48px;
@@ -591,6 +614,28 @@ details.card .card-body .hint { margin-top: 12px; }
 .doc ul li code, .doc p code { font-family: var(--mono); background: var(--panel); padding: 2px 6px; border-radius: 6px; border: 1px solid var(--border); color: var(--text); font-size: 0.92em; }
 .doc-links { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 36px; }
 
+/* ---------- Uninstall cards ---------- */
+.uninstall-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 16px;
+  margin: 24px 0 8px;
+}
+.uninstall-card {
+  display: flex;
+  flex-direction: column;
+  padding: 24px 24px 22px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.uninstall-card h3 { font-size: 19px; font-weight: 700; margin: 0 0 8px; }
+.uninstall-card p { color: var(--muted); margin: 0 0 12px; }
+.uninstall-card .uninstall-keeps { color: var(--text); font-size: 0.92rem; }
+.uninstall-card .uninstall-keeps strong { color: var(--accent); }
+.uninstall-card .code { margin-top: auto; }
+.uninstall-card .hint { margin: 14px 0 8px; }
+
 /* ---------- Footer ---------- */
 .footer {
   border-top: 1px solid var(--border-soft);
@@ -629,4 +674,5 @@ details.card .card-body .hint { margin-top: 12px; }
   .car-arrow { width: 36px; height: 36px; }
   .os-grid { grid-template-columns: 1fr; }
   .family-grid { grid-template-columns: 1fr; }
+  .uninstall-grid { grid-template-columns: 1fr; }
 }

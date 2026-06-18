@@ -1,4 +1,4 @@
-/* CLIO landing site — vanilla JS. Works as static files (file:// or GitHub Pages). */
+/* CLIO landing site: vanilla JS. Works as static files (file:// or GitHub Pages). */
 (function () {
   "use strict";
 
@@ -120,11 +120,11 @@
     if (!slides.length) return;
 
     var captions = [
-      "<strong>Inspect generated plots</strong> — artifacts shown in context",
-      "<strong>Rendered reports &amp; evidence</strong> — tables, checklists, Markdown",
-      "<strong>Generated artifacts</strong> — image &amp; file previews inline",
-      "<strong>Review proposed edits</strong> — see diffs before anything changes",
-      "<strong>Live, streaming responses</strong> — watch the work as it happens"
+      "<strong>Inspect generated plots</strong>: artifacts shown in context",
+      "<strong>Rendered reports &amp; evidence</strong>: tables, checklists, Markdown",
+      "<strong>Generated artifacts</strong>: image &amp; file previews inline",
+      "<strong>Review proposed edits</strong>: see diffs before anything changes",
+      "<strong>Live, streaming responses</strong>: watch the work as it happens"
     ];
 
     var prev = document.getElementById("carPrev");
@@ -287,7 +287,7 @@
           if (url) {
             link.href = url;
           } else {
-            // No matching asset in this release — hide the dead link.
+            // No matching asset in this release: hide the dead link.
             link.style.display = "none";
           }
         });
@@ -298,6 +298,21 @@
   }
 
   /* ---------- Boot ---------- */
+  /* Make the whole OS card act like a button: a click anywhere on it triggers
+     that card's primary download (clicks on the actual links still work as-is). */
+  function initOsCards() {
+    var cards = document.querySelectorAll(".os-card");
+    for (var i = 0; i < cards.length; i++) {
+      (function (card) {
+        card.addEventListener("click", function (e) {
+          if (e.target.closest("a")) return; // a real link was clicked
+          var primary = card.querySelector(".btn-primary[href], a[data-dl][href]");
+          if (primary && primary.href) window.open(primary.href, "_blank", "noopener");
+        });
+      })(cards[i]);
+    }
+  }
+
   function init() {
     initCopy();
     initTabs();
@@ -305,6 +320,7 @@
     initSmoothScroll();
     initCarousel();
     initDesktop();
+    initOsCards();
   }
 
   if (document.readyState === "loading") {
