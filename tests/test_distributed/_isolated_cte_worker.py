@@ -22,7 +22,9 @@ def main() -> None:
     wid = os.environ["CLIO_CORE_WORKER_ID"]
     role = os.environ["CLIO_CORE_ROLE"]
     prefix = os.environ["CLIO_CORE_PREFIX"]
-    stop_key = os.environ["CLIO_CORE_STOP_KEY"]
+    # Optional: a sentinel-blob stop (test-driven). Unset = run until the process is signalled
+    # (how the cluster deployer manages workers — SIGTERM, not a stop blob).
+    stop_key = os.environ.get("CLIO_CORE_STOP_KEY", "")
 
     async def handler(req: ExpertRequest) -> ExpertResult:
         # tag the answer with THIS process's pid so the parent can prove it ran out-of-process
@@ -30,18 +32,20 @@ def main() -> None:
 
     async def run() -> None:
         stop = asyncio.Event()
-
-        async def watch() -> None:
-            while not store.exists("context", stop_key):
-                await asyncio.sleep(0.1)
-            stop.set()
-
-        await asyncio.gather(
+        coros = [
             run_isolated_worker(
                 store, handler, role=role, worker_id=wid, prefix=prefix, stop=stop, poll=0.05
-            ),
-            watch(),
-        )
+            )
+        ]
+        if stop_key:
+
+            async def watch() -> None:
+                while not store.exists("context", stop_key):
+                    await asyncio.sleep(0.1)
+                stop.set()
+
+            coros.append(watch())
+        await asyncio.gather(*coros)
 
     asyncio.run(run())
 

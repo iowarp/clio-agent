@@ -1,0 +1,61 @@
+# Example CLIO multinode deployment — the single file that DEFINES a cluster.
+#
+# Point clio-cluster at it (or export CLIO_CLUSTER_CONFIG):
+#     clio-cluster validate -c clio-cluster.yaml
+#     clio-cluster up       -c clio-cluster.yaml      # start daemons + isolated workers
+#     clio-cluster status   -c clio-cluster.yaml
+#     clio-cluster down     -c clio-cluster.yaml
+# Then start the parent agent with CLIO_EXPERT_INVOKER=clio_core_isolated and the SAME
+# CLIO_CLUSTER_CONFIG; it routes delegations to the workers this brought up.
+#
+# Everything resolves config-file > env > default. Values here override the environment.
+
+# ---- transport (the distributable runtime semantics) -----------------------------------
+transport:
+  # pull (the isolated mailbox, cross-process; this is what a cluster uses) — push semantics
+  # (zero-latency) only exist in-process; cross-process push needs a clio-core notify primitive.
+  mode: clio_core_isolated
+  poll_interval: 0.05          # pull poll rate (s): lower = lower latency, more daemon RPCs
+  ready_timeout: 60            # wait this long for a worker to appear before failing a delegation
+  timeout: 300
+  # cross-node blob visibility: a worker on node B reading a blob the parent wrote on node A
+  # needs `broadcast` (search all nodes). Single-node can use `dynamic` (local-first, faster).
+  pool_query: broadcast
+
+# ---- cluster (the deployment topology) -------------------------------------------------
+cluster:
+  # NFS / shared mount, SAME path on every node. The rendered daemon config + hostfile land
+  # here; clio-core reads the IDENTICAL config on every node (it identifies its own node by
+  # gethostname() against the hostfile, not by per-node config).
+  shared_dir: /shared/clio-agent
+
+  python: python3                       # interpreter on each node (clio_agent + clio-core installed)
+
+  clio_core:
+    bin: clio_run
+    # MANDATORY: ssh does not load a login profile, so every remote command carries this.
+    ld_library_path: /opt/iowarp/lib:/opt/iowarp/bin
+    port: 9413
+
+  ssh:
+    user: ""                            # default: the current user
+    force_ssh: false                    # true also routes the local host over ssh (testing)
+
+  # LINE ORDER == clio-core node_id (load-bearing — reordering renumbers the cluster).
+  # host = the name each node's gethostname() matches; addr = the address peers/the master dial.
+  nodes:
+    - { host: gpu-node-0, addr: 10.0.0.10 }
+    - { host: gpu-node-1, addr: 10.0.0.11 }
+    - { host: gpu-node-2, addr: 10.0.0.12 }
+
+  # Worker placement: how many isolated workers per role, on which nodes (default: all nodes).
+  # The pool role IS the delegated expert id (the parent routes by expert id).
+  workers:
+    - { role: data,     replicas: 2 }
+    - { role: analysis, replicas: 1, nodes: [gpu-node-0] }
+
+  # Env every worker process needs (e.g. the model provider for the real child it runs).
+  worker_env:
+    CLIO_LM_PROVIDER: argonne
+    CLIO_LM_API_BASE: https://inference-api.alcf.anl.gov/resource_server/sophia/vllm/v1
+    CLIO_LM_MODEL: openai/gpt-oss-120b
