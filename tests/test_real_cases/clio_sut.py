@@ -54,6 +54,16 @@ RESTRICTED_CELLS = [
 # script). parallel=1 serializes the single-GPU box; turn_timeout_s drives the
 # server's progress-aware watchdog for a slow-but-advancing reasoning run.
 MODEL_PROFILES: dict[str, dict[str, Any]] = {
+    # gemma4 on ALCF/Sophia (the generalization driver, #682). Non-reasoning, so
+    # temp 0 is the right call for the routing-dominated pipeline (typed
+    # next_expert decisions follow the grounding most consistently at temp 0 —
+    # see the routing-temperature note). Remote inference: context_length is the
+    # request window, not an LM Studio load size; gemma-4 exposes a large window.
+    "google/gemma-4-31B-it": {
+        "context_length": 262144,
+        "temperature": 0.0,
+        "turn_timeout_s": 1800.0,
+    },
     "qwopus3.5-9b-v3": {
         "context_length": 65536,
         # 0.6 is Qwen's thinking-mode default, but the pipeline is dominated by
@@ -421,7 +431,22 @@ class ClioAgent(SUT):
                     timeout=180.0,
                 ).raise_for_status()
             session_id = self._create_session(http, workspace_id, blueprint_id)
-            assistant = self._post_turn(http, session_id, prompt, timeout_s)
+            # Multi-turn: a "turns" list runs several prompts on the SAME session
+            # (progressive exploration — #687). Single "task" is the one-turn case.
+            turns = spec.get("turns")
+            prompts = [str(t) for t in turns] if turns else [prompt]
+            turn_runs: list[Run] = []
+            seen_ids: set[str] = set()
+            assistant: dict[str, Any] = {}
+            for turn_prompt in prompts:
+                assistant = self._post_turn(http, session_id, turn_prompt, timeout_s)
+                snapshot = http.get(f"/v1/sessions/{session_id}/messages").json()["messages"]
+                if turns:
+                    fresh = [m for m in snapshot if str(m.get("id")) not in seen_ids]
+                    turn_runs.append(
+                        self._to_run(assistant, fresh, [], {}, session_id, blueprint_id, None)
+                    )
+                seen_ids.update(str(m.get("id")) for m in snapshot)
             messages = http.get(f"/v1/sessions/{session_id}/messages").json()["messages"]
             children = [
                 r
@@ -434,6 +459,11 @@ class ClioAgent(SUT):
         run = self._to_run(
             assistant, messages, children, active, session_id, blueprint_id, trace_path
         )
+        # Per-turn sub-runs (multi-turn case): each carries that turn's own
+        # tool_calls / steps / artifacts so a test can assert turn-by-turn
+        # (e.g. turn 1 discovers but does not plot; later turns reuse state).
+        if turn_runs:
+            run.extra["turn_runs"] = [tr.to_dict() for tr in turn_runs]
         if trace_path:
             self._dump_trace(trace_path, run, messages, children, active)
         return run

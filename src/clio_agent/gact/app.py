@@ -1503,6 +1503,46 @@ def _message_text_excerpt(message: "Message", *, max_chars: int = 360) -> str:
     return text[: max_chars - 3].rstrip() + "..."
 
 
+# Multi-turn continuity: how many prior messages to carry and how much of each.
+_HISTORY_MAX_MESSAGES = 6
+_HISTORY_MAX_CHARS_PER_MESSAGE = 1200
+
+
+def _compile_session_conversation_history(
+    app: "FastAPI", session_id: str, current_prompt: str
+) -> str:
+    """Prepend a compact transcript of THIS session's prior turns to the turn's
+    prompt so a multi-turn orchestrator can reuse what earlier turns already
+    established (the resolved region, ranked stations, staged file paths) instead of
+    restarting blind on a follow-up like "now plot it". General to any blueprint and
+    a NO-OP on the first turn (no prior messages), so single-turn behaviour is
+    unchanged. The orchestrator otherwise receives only the latest user message."""
+    messages = list(app.state.messages.get(session_id, []))
+    prior = [m for m in messages if getattr(m, "role", "") in {"user", "assistant"}]
+    # The current user message is already appended before the turn runs — drop the
+    # trailing user message(s) so only PRIOR turns are carried.
+    while prior and prior[-1].role == "user":
+        prior.pop()
+    if not prior:
+        return current_prompt
+    lines: list[str] = []
+    for message in prior[-_HISTORY_MAX_MESSAGES:]:
+        text = _message_text_excerpt(message, max_chars=_HISTORY_MAX_CHARS_PER_MESSAGE)
+        if not text:
+            continue
+        speaker = "User" if message.role == "user" else "Assistant"
+        lines.append(f"{speaker}: {text}")
+    if not lines:
+        return current_prompt
+    transcript = "\n".join(lines)
+    return (
+        "Earlier turns in THIS conversation — reuse what was already resolved "
+        "(region/coordinates, ranked stations, staged file paths) rather than "
+        "starting over; only the request after the marker is new:\n"
+        f"{transcript}\n\n=== Current request ===\n{current_prompt}"
+    )
+
+
 def _memory_session_summary(app: "FastAPI", session_id: str) -> dict[str, Any]:
     sess = app.state.sessions.get(session_id)
     if sess is None:
@@ -2506,8 +2546,12 @@ def _dynamic_parent_resume_prompt(
         "Continue from these results. Decide the next step via your next_expert / "
         "next_task output: route to the next child the task still needs, or set "
         "next_expert='finish' and write the final answer when the work is genuinely "
-        "complete. Do NOT re-delegate to a child whose result is already present in the "
-        "typed workflow_state above."
+        "complete. You MAY go back and re-invoke a child you already ran when you need "
+        "MORE or DIFFERENT results from it (e.g. more candidates, a wider search, the "
+        "next-ranked item, a retry with corrected arguments) — give it a NEW, specific "
+        "sub-task that says what additional result you need. Only restriction: do NOT "
+        "re-delegate to repeat work that is ALREADY captured in the typed workflow_state "
+        "above (same task, same result already present) — that is a loop, not progress."
     )
 
 
@@ -6581,6 +6625,9 @@ async def _run_turn_in_background(
             enriched_text,
             user_msg,
         )
+        # Carry prior turns of this session so a follow-up ("now plot it") can reuse
+        # the region/stations/paths already resolved. No-op on the first turn.
+        enriched_text = _compile_session_conversation_history(app, sid, enriched_text)
     except _ContextFileAccessError as exc:
         enriched_text = user_text
         context_file_error = exc.error_info
