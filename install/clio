@@ -107,12 +107,15 @@ start_server() {
     nohup "$SERVER_BIN" --port "$CLIO_PORT" >"$SERVER_LOG" 2>&1 &
     echo $! >"$PIDFILE"
   )
+  # First-run startup is slow (ARC/LSM init + MCP server spawn) and can take
+  # 30-60s; only fail after a generous window so a healthy-but-slow start isn't
+  # reported as a failure (the server keeps coming up in the background anyway).
   local i
-  for i in $(seq 1 30); do
+  for i in $(seq 1 180); do
     if health; then say "  healthy (pid $(cat "$PIDFILE" 2>/dev/null || echo '?'))"; return 0; fi
     sleep 0.5
   done
-  err "server did not become healthy in ~15s - check $SERVER_LOG"
+  err "server did not become healthy in ~90s - check $SERVER_LOG"
   return 1
 }
 
