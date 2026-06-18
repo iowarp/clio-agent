@@ -237,10 +237,10 @@ jobs:
               fi
               cp "$f" "$stage/$base"
             done
-          # shasum -a 256 (not sha256sum) so this works on macOS runners too —
-          # macOS has no `sha256sum`, which silently failed the mac desktop bundle
-          # AFTER the .dmg was already built.
-          (cd "$stage" && shasum -a 256 * > "SHA256SUMS.${{ matrix.target }}.${{ matrix.variant }}.txt")
+          # Cross-platform checksum: Linux has both, macOS has only `shasum`,
+          # Windows git-bash has only `sha256sum`. Prefer sha256sum, else shasum.
+          if command -v sha256sum >/dev/null 2>&1; then SUM="sha256sum"; else SUM="shasum -a 256"; fi
+          (cd "$stage" && $SUM * > "SHA256SUMS.${{ matrix.target }}.${{ matrix.variant }}.txt")
       - uses: softprops/action-gh-release@v2
         with:
           files: ${{ runner.temp }}/clio-desktop-stage/*
