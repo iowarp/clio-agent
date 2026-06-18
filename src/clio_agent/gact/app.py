@@ -23055,6 +23055,30 @@ def build_app(
             content=envelope.model_dump(exclude_none=True),
         )
 
+    # --- optional web UI (`clio web`): serve the built SPA bundle same-origin ---
+    # Gated on CLIO_WEB_DIR so the default server (TUI / headless API) is byte-for-
+    # byte unchanged unless web mode is explicitly enabled. Mounted LAST so every
+    # /v1 API route (and /docs, /openapi.json) registered above takes precedence;
+    # an SPA fallback serves index.html for unknown non-API paths so client-side
+    # (history) routing works. The bundle's API calls are same-origin (relative
+    # /v1/...), so no CORS/proxy is needed — this is the in-process equivalent of
+    # the docker clio-web nginx setup.
+    _web_dir = os.environ.get("CLIO_WEB_DIR", "").strip()
+    if _web_dir and (Path(_web_dir) / "index.html").is_file():
+        from fastapi.staticfiles import StaticFiles
+        from starlette.responses import FileResponse
+
+        class _SPAStaticFiles(StaticFiles):
+            async def get_response(self, path: str, scope: Any) -> Any:
+                try:
+                    return await super().get_response(path, scope)
+                except StarletteHTTPException as exc:
+                    if exc.status_code == 404:
+                        return FileResponse(Path(_web_dir) / "index.html")
+                    raise
+
+        app.mount("/", _SPAStaticFiles(directory=_web_dir, html=True), name="web")
+
     return app
 
 

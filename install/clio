@@ -7,6 +7,7 @@
 # server process without hunting PIDs.
 #
 #   clio                 ensure server is up, then attach the TUI
+#   clio web | --web     ensure server is up, then open the web UI in a browser
 #   clio start           start the server (no TUI)
 #   clio stop            stop the server
 #   clio restart         stop then start
@@ -39,6 +40,7 @@ GACT_LOG="$CLIO_PREFIX/gact-stderr.log"
 SERVER_BIN="$CLIO_PREFIX/clio-agent/.venv/bin/clio-agent-gact"
 GACT_BIN="$CLIO_PREFIX/gact"
 CLIO_BRAND_ROOT="$CLIO_PREFIX/clio-agent/branding"
+WEB_DIR="$CLIO_PREFIX/clio-agent/web"
 
 GREEN='\033[0;32m'; YELLOW='\033[0;33m'; RED='\033[0;31m'; RESET='\033[0m'
 say()  { printf "${GREEN}==>${RESET} %s\n" "$*"; }
@@ -53,6 +55,20 @@ health() {
   local code
   code="$(curl -sS -m 1 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$CLIO_PORT/v1/health" 2>/dev/null || true)"
   [[ "$code" = "200" || "$code" = "503" ]]
+}
+
+# serving_web returns 0 when the running server is serving the web SPA at "/".
+serving_web() {
+  curl -sS -m 1 "http://127.0.0.1:$CLIO_PORT/" 2>/dev/null | grep -qiE "<html|<!doctype html"
+}
+
+# open_url launches the default browser cross-platform (best-effort, backgrounded).
+open_url() {
+  local url="$1"
+  if command -v xdg-open >/dev/null 2>&1; then xdg-open "$url" >/dev/null 2>&1 &
+  elif command -v open >/dev/null 2>&1; then open "$url" >/dev/null 2>&1 &
+  elif command -v explorer.exe >/dev/null 2>&1; then explorer.exe "$url" >/dev/null 2>&1 &
+  else warn "open $url in your browser"; fi
 }
 
 # server_pid echoes a live server PID (from the pidfile, validated) or
@@ -187,7 +203,7 @@ report() {
 }
 
 completion() {
-  local cmds="start stop restart status ps logs doctor report completion uninstall attach help"
+  local cmds="web start stop restart status ps logs doctor report completion uninstall attach help"
   case "${1:-}" in
     bash)
       cat <<EOF
@@ -234,6 +250,25 @@ main() {
         GACT_BRAND="${GACT_BRAND:-clio}" \
         GACT_BRAND_ROOT="${GACT_BRAND_ROOT:-$CLIO_BRAND_ROOT}" \
         "$GACT_BIN" "$@" 2>"$GACT_LOG"
+      ;;
+    web|--web)
+      shift || true
+      if [[ ! -f "$WEB_DIR/index.html" && -z "${CLIO_WEB_DIR:-}" ]]; then
+        err "web bundle not found at $WEB_DIR"
+        err "reinstall CLIO with the web bundle, or set CLIO_WEB_DIR to a built web dist"
+        return 1
+      fi
+      export CLIO_WEB_DIR="${CLIO_WEB_DIR:-$WEB_DIR}"
+      # The web mount is wired at server startup, so a server already running
+      # WITHOUT the web bundle must be restarted to pick it up.
+      if health && ! serving_web; then
+        say "restarting server in web mode"
+        stop_server
+      fi
+      start_server
+      url="http://127.0.0.1:$CLIO_PORT/"
+      say "CLIO web UI: $url"
+      open_url "$url"
       ;;
     start)        start_server ;;
     stop)         stop_server ;;

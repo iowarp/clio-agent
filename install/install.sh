@@ -166,6 +166,23 @@ else
   say "Downloading $asset from clio-agent $tag"
   curl -fsSL "$url" -o "$GACT_BIN" || die "failed to download $url"
   chmod +x "$GACT_BIN"
+
+  # Web UI bundle (powers `clio --web`): optional, best-effort. The release
+  # ships clio-web-<version>.zip containing a clio-web-<version>/ dist dir; we
+  # unpack it into $PREFIX/clio-agent/web, which the launcher serves same-origin.
+  webver="${tag#v}"
+  web_url="https://github.com/iowarp/clio-agent/releases/download/${tag}/clio-web-${webver}.zip"
+  if command -v unzip >/dev/null 2>&1 && curl -fsSL "$web_url" -o "$PREFIX/clio-web.zip" 2>/dev/null; then
+    rm -rf "$PREFIX/_webtmp" "$PREFIX/clio-agent/web"
+    unzip -q -o "$PREFIX/clio-web.zip" -d "$PREFIX/_webtmp"
+    mkdir -p "$PREFIX/clio-agent/web"
+    cp -r "$PREFIX/_webtmp/clio-web-${webver}/." "$PREFIX/clio-agent/web/" 2>/dev/null \
+      || cp -r "$PREFIX/_webtmp/." "$PREFIX/clio-agent/web/"
+    rm -rf "$PREFIX/_webtmp" "$PREFIX/clio-web.zip"
+    say "Web UI bundle installed (run: clio --web)"
+  else
+    warn "web UI bundle unavailable for $tag — 'clio --web' disabled until reinstalled with it"
+  fi
 fi
 
 # ---------- launcher + uninstaller ------------------------------------
