@@ -4,6 +4,14 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 GACT_ROOT="${GACT_TUI_ROOT:-$ROOT/external/gact-tui}"
 OUT="${1:-$ROOT/dist/clio-tui}"
+# Absolutize OUT *before* the `cd "$GACT_ROOT/tui"` below — otherwise a relative
+# output path (the release workflow passes "clio-tui-<os>-<arch>") makes
+# `go build -o "$OUT"` write the binary inside the gact-tui/tui subdir instead of
+# the caller's cwd, so the caller's sha256sum/upload can't find it (silent break).
+case "$OUT" in
+  /*) ;;
+  *) OUT="$PWD/$OUT" ;;
+esac
 
 mkdir -p "$(dirname "$OUT")"
 
