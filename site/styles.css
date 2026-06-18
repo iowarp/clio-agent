@@ -221,6 +221,24 @@ h2 { font-size: clamp(26px, 4vw, 36px); font-weight: 700; letter-spacing: -0.01e
 .hero-code { max-width: 680px; margin: 0 auto 24px; text-align: left; }
 .hero-actions { display: flex; flex-wrap: wrap; gap: 12px; justify-content: center; }
 
+/* Hero product showcase image */
+.hero-showcase {
+  max-width: 960px;
+  margin: 48px auto 0;
+  padding: 10px;
+  background: #08090b;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 26px 70px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(234, 123, 42, 0.08);
+}
+.hero-showcase img {
+  width: 100%;
+  height: auto;
+  object-fit: contain;
+  border-radius: calc(var(--radius) - 6px);
+  display: block;
+}
+
 /* ---------- Code blocks ---------- */
 .code {
   position: relative;
@@ -344,47 +362,96 @@ h2 { font-size: clamp(26px, 4vw, 36px); font-weight: 700; letter-spacing: -0.01e
 .dot.active { background: var(--accent); transform: scale(1.25); }
 
 /* ---------- Desktop ---------- */
-.desktop-card {
+.os-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 16px;
+}
+.os-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 14px;
+  padding: 32px 24px 28px;
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  padding: 32px;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
-.desktop-primary { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; }
-.os-note { color: var(--muted); font-size: 14px; }
-.other-platforms { margin-top: 22px; }
-.other-platforms summary {
-  cursor: pointer;
-  color: var(--muted);
-  font-size: 14px;
-  font-weight: 600;
-  list-style: none;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-}
-.other-platforms summary::-webkit-details-marker { display: none; }
-.other-platforms summary::before { content: "▸"; color: var(--accent); transition: transform 0.15s; }
-.other-platforms[open] summary::before { transform: rotate(90deg); }
-.other-platforms summary:hover { color: var(--text); }
-.platform-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-  gap: 12px;
-  margin-top: 18px;
-}
-.platform-grid a {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding: 14px 16px;
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
+.os-card:hover { border-color: var(--accent-line); }
+.os-logo {
+  width: 48px;
+  height: 48px;
   color: var(--text);
 }
-.platform-grid a:hover { border-color: var(--accent-line); text-decoration: none; }
-.platform-grid a span { color: var(--muted); font-size: 13px; font-family: var(--mono); }
+.os-logo svg { width: 100%; height: 100%; display: block; }
+.os-name { font-size: 20px; font-weight: 700; margin: 0; }
+.os-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  margin-top: auto;
+}
+.os-actions .btn { width: 100%; justify-content: center; }
+.os-alt {
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 600;
+  font-family: var(--mono);
+}
+.os-alt:hover { color: var(--accent); text-decoration: none; }
+.os-alt-row { display: flex; gap: 18px; align-items: center; }
+
+/* "Your platform" badge — hidden unless the card is the detected OS. */
+.os-badge {
+  position: absolute;
+  top: -11px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: none;
+  padding: 3px 12px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: #1a1206;
+  font: 700 11px/1.4 var(--sans);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.os-card.is-detected {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent), 0 0 34px rgba(234, 123, 42, 0.28);
+}
+.os-card.is-detected .os-logo { color: var(--accent); }
+.os-card.is-detected .os-badge { display: block; }
+
+/* Native-shell screenshot */
+.desktop-shot {
+  margin: 36px 0 0;
+  padding: 10px;
+  background: #08090b;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 22px 60px rgba(0, 0, 0, 0.45);
+}
+.desktop-shot img {
+  width: 100%;
+  height: auto;
+  object-fit: contain;
+  border-radius: calc(var(--radius) - 6px);
+  display: block;
+}
+.desktop-shot figcaption {
+  text-align: center;
+  color: var(--muted);
+  font-size: 14px;
+  margin-top: 12px;
+  padding-bottom: 4px;
+}
 
 /* ---------- Docker ---------- */
 .docker-cards { display: grid; gap: 14px; }
@@ -466,5 +533,5 @@ details.card .card-body .hint { margin-top: 12px; }
     color: var(--text); border-radius: 8px; padding: 8px 12px; cursor: pointer; font-size: 18px; line-height: 1;
   }
   .car-arrow { width: 36px; height: 36px; }
-  .desktop-card { padding: 24px; }
+  .os-grid { grid-template-columns: 1fr; }
 }

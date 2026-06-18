@@ -101,11 +101,11 @@
     if (!slides.length) return;
 
     var captions = [
-      "<strong>Sub-agent orchestration</strong> — delegate work to focused experts",
-      "<strong>Live metrics</strong> — watch tokens, tools, and timing in real time",
-      "<strong>Curated tool catalog</strong> — a tight set of high-level tools per expert",
-      "<strong>Context files</strong> — bring your own data and docs into the run",
-      "<strong>Propose &amp; review edits</strong> — nothing changes without your approval"
+      "<strong>Inspect generated plots</strong> — artifacts shown in context",
+      "<strong>Rendered reports &amp; evidence</strong> — tables, checklists, Markdown",
+      "<strong>Generated artifacts</strong> — image &amp; file previews inline",
+      "<strong>Review proposed edits</strong> — see diffs before anything changes",
+      "<strong>Live, streaming responses</strong> — watch the work as it happens"
     ];
 
     var prev = document.getElementById("carPrev");
@@ -172,7 +172,16 @@
     return "unknown";
   }
 
-  var OS_LABEL = { macos: "macOS", windows: "Windows", linux: "Linux" };
+  // Each download link maps to the file extension(s) of its release asset,
+  // in priority order. The first matching asset wins.
+  var DL_EXT = {
+    "windows-msi": [".msi"],
+    "windows-exe": [".exe"],
+    "macos-dmg": [".dmg"],
+    "linux-appimage": [".appimage"],
+    "linux-deb": [".deb"],
+    "linux-rpm": [".rpm"]
+  };
 
   function pickAsset(assets, extensions) {
     // extensions in priority order; return first matching browser_download_url
@@ -187,38 +196,21 @@
   }
 
   function initDesktop() {
-    var primary = document.getElementById("desktopPrimary");
-    var note = document.getElementById("osNote");
-    var grid = document.getElementById("platformGrid");
-    if (!primary) return;
+    var grid = document.getElementById("osGrid");
+    if (!grid) return;
 
+    // ----- OS detection: highlight + reorder the matching card -----
     var os = detectOS();
-    var primaryOS = (os === "macos" || os === "windows" || os === "linux") ? os : "macos";
-
-    if (note) {
-      note.textContent = (os === "mobile" || os === "unknown")
-        ? "Pick your platform below."
-        : "We detected " + OS_LABEL[primaryOS] + ".";
-    }
-    primary.textContent = "Download for " + OS_LABEL[primaryOS];
-
-    var extMap = {
-      macos: [".dmg"],
-      windows: [".msi", ".exe"],
-      linux: [".appimage", ".deb", ".rpm"]
-    };
-
-    function applyLinks(links) {
-      // links: { macos, windows, linux } of urls (or null)
-      if (links[primaryOS]) primary.href = links[primaryOS];
-      if (grid) {
-        grid.querySelectorAll("a[data-os]").forEach(function (a) {
-          var k = a.getAttribute("data-os");
-          if (links[k]) a.href = links[k];
-        });
+    if (os === "macos" || os === "windows" || os === "linux") {
+      var card = grid.querySelector('.os-card[data-os="' + os + '"]');
+      if (card) {
+        card.classList.add("is-detected");
+        grid.insertBefore(card, grid.firstChild);
       }
     }
+    // mobile/unknown → no highlight, keep default order.
 
+    // ----- Resolve download hrefs from the latest GitHub release -----
     fetch("https://api.github.com/repos/" + REPO + "/releases/latest", {
       headers: { Accept: "application/vnd.github+json" }
     })
@@ -228,16 +220,21 @@
       })
       .then(function (data) {
         var assets = (data && data.assets) || [];
-        var links = {
-          macos: pickAsset(assets, extMap.macos) || RELEASES_PAGE,
-          windows: pickAsset(assets, extMap.windows) || RELEASES_PAGE,
-          linux: pickAsset(assets, extMap.linux) || RELEASES_PAGE
-        };
-        applyLinks(links);
+        document.querySelectorAll("[data-dl]").forEach(function (link) {
+          var key = link.getAttribute("data-dl");
+          var exts = DL_EXT[key];
+          if (!exts) return;
+          var url = pickAsset(assets, exts);
+          if (url) {
+            link.href = url;
+          } else {
+            // No matching asset in this release — hide the dead link.
+            link.style.display = "none";
+          }
+        });
       })
       .catch(function () {
-        // graceful fallback: everything points at the releases page (already the default hrefs)
-        applyLinks({ macos: RELEASES_PAGE, windows: RELEASES_PAGE, linux: RELEASES_PAGE });
+        // graceful fallback: leave the default releases-page hrefs and show all buttons.
       });
   }
 

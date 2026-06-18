@@ -52,6 +52,10 @@
         <a class="btn btn-primary" href="#desktop">Download desktop app</a>
         <a class="btn" href="https://github.com/iowarp/clio-agent" target="_blank" rel="noopener">View on GitHub</a>
       </div>
+
+      <div class="hero-showcase">
+        <img src="assets/hero.png" alt="CLIO running a live EarthScope GNSS workflow" loading="lazy" />
+      </div>
     </section>
 
     <!-- ===== Install ===== -->
@@ -96,11 +100,11 @@
         <div class="carousel-frame">
           <button class="car-arrow prev" id="carPrev" type="button" aria-label="Previous slide">‹</button>
           <div class="slides">
-            <div class="slide active"><img src="assets/shots/clio_subagent.png" alt="Sub-agent orchestration" loading="lazy" /></div>
-            <div class="slide"><img src="assets/shots/25-metrics.png" alt="Live metrics" loading="lazy" /></div>
-            <div class="slide"><img src="assets/shots/52-catalog-tools.png" alt="Curated tool catalog" loading="lazy" /></div>
-            <div class="slide"><img src="assets/shots/20-context-files.png" alt="Context files" loading="lazy" /></div>
-            <div class="slide"><img src="assets/shots/aurora_11_propose_edit.png" alt="Propose &amp; review edits" loading="lazy" /></div>
+            <div class="slide active"><img src="assets/shots/1-artifact.png" alt="Inspect generated plots in context" loading="lazy" /></div>
+            <div class="slide"><img src="assets/shots/2-markdown.png" alt="Rendered reports &amp; evidence" loading="lazy" /></div>
+            <div class="slide"><img src="assets/shots/3-image.png" alt="Generated artifacts &amp; image previews" loading="lazy" /></div>
+            <div class="slide"><img src="assets/shots/4-diff.png" alt="Review proposed edits as diffs" loading="lazy" /></div>
+            <div class="slide"><img src="assets/shots/5-streaming.png" alt="Live, streaming responses" loading="lazy" /></div>
           </div>
           <button class="car-arrow next" id="carNext" type="button" aria-label="Next slide">›</button>
         </div>
@@ -114,24 +118,62 @@
       <div class="section-head">
         <p class="eyebrow">Desktop</p>
         <h2>The desktop app</h2>
-        <p class="section-sub">A native build of CLIO for your machine. We picked the right download for you.</p>
+        <p class="section-sub">A native build of CLIO for your machine. Grab the installer that fits your platform.</p>
       </div>
 
-      <div class="desktop-card">
-        <div class="desktop-primary">
-          <a class="btn btn-primary" id="desktopPrimary" href="https://github.com/iowarp/clio-agent/releases/latest" target="_blank" rel="noopener">Download CLIO Desktop</a>
-          <span class="os-note" id="osNote">Detecting your platform…</span>
+      <div class="os-grid" id="osGrid">
+        <!-- Windows -->
+        <div class="os-card" data-os="windows" id="osCardWindows">
+          <span class="os-badge">Your platform</span>
+          <div class="os-logo" aria-hidden="true">
+            <svg viewBox="0 0 48 48" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
+              <path d="M6 9.5 22 7.3v15.4H6V9.5zM24 7l18-2.5v18.2H24V7zM6 24.9h16v15.4L6 38.1V24.9zM24 24.9h18v18.6L24 41V24.9z"/>
+            </svg>
+          </div>
+          <h3 class="os-name">Windows</h3>
+          <div class="os-actions">
+            <a class="btn btn-primary" data-dl="windows-msi" href="https://github.com/iowarp/clio-agent/releases/latest" target="_blank" rel="noopener">Download (.msi)</a>
+            <a class="os-alt" data-dl="windows-exe" href="https://github.com/iowarp/clio-agent/releases/latest" target="_blank" rel="noopener">.exe installer</a>
+          </div>
         </div>
 
-        <details class="other-platforms" id="otherPlatforms">
-          <summary>Other platforms</summary>
-          <div class="platform-grid" id="platformGrid">
-            <a href="https://github.com/iowarp/clio-agent/releases/latest" data-os="macos" target="_blank" rel="noopener">macOS <span>.dmg</span></a>
-            <a href="https://github.com/iowarp/clio-agent/releases/latest" data-os="windows" target="_blank" rel="noopener">Windows <span>.msi / .exe</span></a>
-            <a href="https://github.com/iowarp/clio-agent/releases/latest" data-os="linux" target="_blank" rel="noopener">Linux <span>.AppImage / .deb / .rpm</span></a>
+        <!-- macOS -->
+        <div class="os-card" data-os="macos" id="osCardMacos">
+          <span class="os-badge">Your platform</span>
+          <div class="os-logo" aria-hidden="true">
+            <svg viewBox="0 0 48 48" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
+              <path d="M33.9 25.4c-.05-4.5 3.67-6.66 3.84-6.77-2.1-3.06-5.36-3.48-6.52-3.53-2.77-.28-5.41 1.63-6.82 1.63-1.4 0-3.57-1.59-5.87-1.55-3.02.04-5.8 1.76-7.36 4.46-3.14 5.44-.8 13.5 2.25 17.92 1.49 2.17 3.27 4.6 5.6 4.51 2.25-.09 3.1-1.45 5.82-1.45 2.72 0 3.48 1.45 5.86 1.41 2.42-.04 3.95-2.21 5.43-4.39 1.71-2.52 2.42-4.96 2.46-5.08-.05-.02-4.72-1.81-4.77-7.16zM29.4 11.6c1.24-1.5 2.07-3.58 1.84-5.66-1.78.07-3.94 1.19-5.22 2.69-1.15 1.33-2.16 3.45-1.89 5.48 1.99.15 4.02-1.01 5.27-2.51z"/>
+            </svg>
           </div>
-        </details>
+          <h3 class="os-name">macOS</h3>
+          <div class="os-actions">
+            <a class="btn btn-primary" data-dl="macos-dmg" href="https://github.com/iowarp/clio-agent/releases/latest" target="_blank" rel="noopener">Download (.dmg)</a>
+          </div>
+        </div>
+
+        <!-- Linux -->
+        <div class="os-card" data-os="linux" id="osCardLinux">
+          <span class="os-badge">Your platform</span>
+          <div class="os-logo" aria-hidden="true">
+            <svg viewBox="0 0 48 48" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
+              <path d="M24 3c-4.3 0-7 3.4-7 8.2 0 2.9.2 4.7-.9 6.7-.8 1.5-2 2.7-3.1 4.4-1.3 1.9-2.6 4-3 7-.2 1.4.1 2.4.8 3 .3.3.1.8-.2 1.2-.6.9-1 1.9-.6 3 .3.9 1.1 1.3 2.1 1.5 1 .2 2.2.2 3.4.6 1.2.4 2.2 1.2 3.6 1.4 1.4.2 3-.4 3.9-1.6.9.3 1.9.3 2.8 0 .9 1.2 2.5 1.8 3.9 1.6 1.4-.2 2.4-1 3.6-1.4 1.2-.4 2.4-.4 3.4-.6 1-.2 1.8-.6 2.1-1.5.4-1.1 0-2.1-.6-3-.3-.4-.5-.9-.2-1.2.7-.6 1-1.6.8-3-.4-3-1.7-5.1-3-7-1.1-1.7-2.3-2.9-3.1-4.4-1.1-2-.9-3.8-.9-6.7C31 6.4 28.3 3 24 3zm-3.4 6.2c.8 0 1.5.9 1.5 2s-.7 2-1.5 2-1.5-.9-1.5-2 .7-2 1.5-2zm6.8 0c.8 0 1.5.9 1.5 2s-.7 2-1.5 2-1.5-.9-1.5-2 .7-2 1.5-2zM24 14c1.6 0 3.4.7 4.4 1.6.5.5.3 1-.4 1.4-.9.5-2.4 1.4-4 1.4s-3.1-.9-4-1.4c-.7-.4-.9-.9-.4-1.4 1-.9 2.8-1.6 4.4-1.6z"/>
+            </svg>
+          </div>
+          <h3 class="os-name">Linux</h3>
+          <div class="os-actions">
+            <a class="btn btn-primary" data-dl="linux-appimage" href="https://github.com/iowarp/clio-agent/releases/latest" target="_blank" rel="noopener">AppImage</a>
+            <div class="os-alt-row">
+              <a class="os-alt" data-dl="linux-deb" href="https://github.com/iowarp/clio-agent/releases/latest" target="_blank" rel="noopener">.deb</a>
+              <a class="os-alt" data-dl="linux-rpm" href="https://github.com/iowarp/clio-agent/releases/latest" target="_blank" rel="noopener">.rpm</a>
+            </div>
+          </div>
+        </div>
       </div>
+
+      <figure class="desktop-shot">
+        <img src="assets/desktop-shell.png" alt="CLIO native desktop app" loading="lazy" />
+        <figcaption>The native desktop app</figcaption>
+      </figure>
     </section>
 
     <!-- ===== Docker ===== -->

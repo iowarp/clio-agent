@@ -181,3 +181,9 @@ src/clio_agent/providers/handshake/sources/data/model_limits.mismatches.jsonl
 # durable live-grind artifacts (server logs + full semantic traces) — kept out of
 # /tmp so a run is inspectable/reproducible later, but they are run evidence, not source
 .grind/
+
+# Site product screenshots are staged from the gact-tui submodule at Pages deploy
+# time (.github/workflows/pages.yml) so they never go stale in git.
+site/assets/hero.png
+site/assets/desktop-shell.png
+site/assets/shots/
