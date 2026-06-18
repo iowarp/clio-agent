@@ -90,5 +90,19 @@ gh run list --workflow=docker.yml --limit 1                                 # gh
 - **ghcr `403 Forbidden` on first push** = org hasn't allowed Actions to create the org-level package. Fixes: org Settings→Packages allow creation, OR bootstrap each package once with a `write:packages` PAT (`docker login ghcr.io` + push), then link the repo (package Settings → Manage Actions access → add repo, Write). Repo default workflow permission + workflow `packages: write` are necessary but NOT sufficient for first creation.
 - **Desktop sub-version** (`external/gact-tui/apps/desktop/package.json`/`tauri.conf.json`) is versioned independently by the gact-tui team — don't edit inside the submodule; just pin the gact-tui release tag.
 
+## Install pathways — verify ALL are real every release (none aspirational)
+CLIO ships **1 engine + 3 frontends** across **4 mechanisms / 6 experiences** (see
+`docs/INSTALL.md`). A release must keep every one working — verify after the tag:
+- **a) script → CLI/TUI**: `install.sh`/`install.ps1` install clio-agent (PyPI) + `clio-tui-{os}-{arch}` + the `clio` launcher. Confirm `clio-tui-*` assets are on the GH release (clio-bundles.yml).
+- **b) docker TUI (no-install)**: `docker run -it ghcr.io/iowarp/clio-tui:<ver>`. Confirm docker.yml pushed it.
+- **c) `clio --web`**: launcher `web`/`--web` → gact serves the SPA same-origin via `CLIO_WEB_DIR`; `install.sh` unpacks `clio-web-<ver>.zip` into `$PREFIX/clio-agent/web`. Confirm the web zip asset exists; offline-test the mount (build_app with `CLIO_WEB_DIR` set: GET `/` = index.html, SPA fallback works, `/v1/*` not shadowed).
+- **d) docker compose (scaled web)**: `docker compose up clio-web` / `--profile api`. Confirm `ghcr.io/iowarp/clio-{web,api}` pushed.
+- **e) desktop**: `.msi/.dmg/.deb/.AppImage/.rpm` on the release (clio-bundles.yml desktop job).
+- **f) git clone**: `uv sync` / `uv run`.
+
+Anything not green → fix before announcing, or mark it explicitly in `docs/INSTALL.md` as
+not-yet-available (never leave a pathway claimed-but-broken). The multi-spawn port/state
+clash across `clio` / `clio --web` / desktop is tracked in #698.
+
 ## Validation (optional, before release)
 Run the EarthScope grind on the demo model(s) to confirm no regression — see [[grind-clio-case]] and the ALCF hot-model routing note (check `/jobs` for the live cluster; route gpt-oss → `argonne_sophia:openai/gpt-oss-120b`).
