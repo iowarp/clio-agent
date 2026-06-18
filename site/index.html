@@ -41,11 +41,27 @@
       <p class="subtitle">Autonomous AI agent for scientific data — runs locally, on your models and your data.</p>
       <p class="beta-note">⚠ Beta software — interfaces, blueprints, and on-disk formats may change between releases.</p>
 
-      <div class="hero-code">
-        <div class="code" data-copy="curl -fsSL https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.sh | bash">
-          <pre><span class="prompt">$ </span>curl -fsSL https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.sh | bash</pre>
-          <button class="copy-btn" type="button">Copy</button>
+      <div class="hero-code" id="install">
+        <div class="tabs" role="tablist">
+          <button class="tab active" type="button" data-tab="unix" role="tab">macOS / Linux</button>
+          <button class="tab" type="button" data-tab="win" role="tab">Windows (PowerShell)</button>
         </div>
+
+        <div class="tabpane active" data-pane="unix">
+          <div class="code" data-copy="curl -fsSL https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.sh | bash">
+            <pre><span class="prompt">$ </span>curl -fsSL https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.sh | bash</pre>
+            <button class="copy-btn" type="button" aria-label="Copy command" title="Copy command"></button>
+          </div>
+        </div>
+
+        <div class="tabpane" data-pane="win">
+          <div class="code" data-copy="irm https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.ps1 | iex">
+            <pre><span class="prompt">PS&gt; </span>irm https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.ps1 | iex</pre>
+            <button class="copy-btn" type="button" aria-label="Copy command" title="Copy command"></button>
+          </div>
+        </div>
+
+        <p class="hint">Then run <code>clio</code> for the terminal UI, or <code>clio --web</code> to open it in your browser.</p>
       </div>
 
       <div class="hero-actions">
@@ -56,36 +72,6 @@
       <div class="hero-showcase">
         <img src="assets/hero.png" alt="CLIO running a live EarthScope GNSS workflow" loading="lazy" />
       </div>
-    </section>
-
-    <!-- ===== Install ===== -->
-    <section id="install" class="wrap">
-      <div class="section-head">
-        <p class="eyebrow">Install</p>
-        <h2>One command, then you're running</h2>
-        <p class="section-sub">Install the CLI on macOS, Linux, or Windows. No accounts, no cloud lock-in — point it at whatever model you like.</p>
-      </div>
-
-      <div class="tabs" role="tablist">
-        <button class="tab active" type="button" data-tab="unix" role="tab">macOS / Linux</button>
-        <button class="tab" type="button" data-tab="win" role="tab">Windows (PowerShell)</button>
-      </div>
-
-      <div class="tabpane active" data-pane="unix">
-        <div class="code" data-copy="curl -fsSL https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.sh | bash">
-          <pre><span class="prompt">$ </span>curl -fsSL https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.sh | bash</pre>
-          <button class="copy-btn" type="button">Copy</button>
-        </div>
-      </div>
-
-      <div class="tabpane" data-pane="win">
-        <div class="code" data-copy="irm https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.ps1 | iex">
-          <pre><span class="prompt">PS&gt; </span>irm https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.ps1 | iex</pre>
-          <button class="copy-btn" type="button">Copy</button>
-        </div>
-      </div>
-
-      <p class="hint">Then run <code>clio</code> for the terminal UI, or <code>clio --web</code> to open it in your browser.</p>
     </section>
 
     <!-- ===== Screenshots ===== -->
@@ -192,7 +178,7 @@
           <div class="card-body">
             <div class="code" data-copy="docker run --rm -p 8080:80 ghcr.io/iowarp/clio-web:latest">
               <pre><span class="prompt">$ </span>docker run --rm -p 8080:80 ghcr.io/iowarp/clio-web:latest</pre>
-              <button class="copy-btn" type="button">Copy</button>
+              <button class="copy-btn" type="button" aria-label="Copy command" title="Copy command"></button>
             </div>
             <p class="hint">Then open <code>http://localhost:8080</code>.</p>
           </div>

@@ -3,20 +3,34 @@
   "use strict";
 
   /* ---------- Copy-to-clipboard for [data-copy] blocks ---------- */
+  var ICON_COPY =
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" ' +
+    'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+    '<rect x="9" y="9" width="11" height="11" rx="2"></rect>' +
+    '<path d="M5 15V5a2 2 0 0 1 2-2h10"></path></svg>';
+  var ICON_CHECK =
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" ' +
+    'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+    '<path d="M20 6 9 17l-5-5"></path></svg>';
+
   function initCopy() {
     document.querySelectorAll("[data-copy]").forEach(function (block) {
       var btn = block.querySelector(".copy-btn");
       if (!btn) return;
+      btn.innerHTML = ICON_COPY;
+      var resetTimer = null;
       btn.addEventListener("click", function () {
         var text = block.getAttribute("data-copy") || "";
         copyText(text).then(function (ok) {
-          var original = "Copy";
-          btn.textContent = ok ? "Copied!" : "Copy failed";
+          btn.innerHTML = ok ? ICON_CHECK : ICON_COPY;
           btn.classList.toggle("copied", ok);
-          window.setTimeout(function () {
-            btn.textContent = original;
+          btn.setAttribute("title", ok ? "Copied" : "Copy command");
+          if (resetTimer) window.clearTimeout(resetTimer);
+          resetTimer = window.setTimeout(function () {
+            btn.innerHTML = ICON_COPY;
             btn.classList.remove("copied");
-          }, 1600);
+            btn.setAttribute("title", "Copy command");
+          }, 1200);
         });
       });
     });
@@ -50,20 +64,25 @@
   }
 
   /* ---------- Install tabs (Unix / Windows) ---------- */
+  function selectTab(key) {
+    document.querySelectorAll(".tab[data-tab]").forEach(function (t) {
+      t.classList.toggle("active", t.getAttribute("data-tab") === key);
+    });
+    document.querySelectorAll(".tabpane[data-pane]").forEach(function (p) {
+      p.classList.toggle("active", p.getAttribute("data-pane") === key);
+    });
+  }
+
   function initTabs() {
     var tabs = document.querySelectorAll(".tab[data-tab]");
     if (!tabs.length) return;
     tabs.forEach(function (tab) {
       tab.addEventListener("click", function () {
-        var key = tab.getAttribute("data-tab");
-        document.querySelectorAll(".tab[data-tab]").forEach(function (t) {
-          t.classList.toggle("active", t === tab);
-        });
-        document.querySelectorAll(".tabpane[data-pane]").forEach(function (p) {
-          p.classList.toggle("active", p.getAttribute("data-pane") === key);
-        });
+        selectTab(tab.getAttribute("data-tab"));
       });
     });
+    // Auto-select the tab for the visitor's OS: Windows → PowerShell, else macOS/Linux.
+    selectTab(detectOS() === "windows" ? "win" : "unix");
   }
 
   /* ---------- Mobile nav toggle ---------- */
@@ -172,6 +191,33 @@
     return "unknown";
   }
 
+  // Detect CPU architecture as either "arm64" or "x64".
+  // Most modern Macs are Apple Silicon, so when uncertain on a Mac we
+  // default to arm64; Windows/Linux default to x64.
+  function detectArch(os) {
+    var hint = (navigator.userAgentData && navigator.userAgentData.architecture) || "";
+    hint = hint.toLowerCase();
+    if (hint) {
+      if (/arm|aarch/.test(hint)) return "arm64";
+      if (/x86|amd|x64/.test(hint)) return "x64";
+    }
+    var ua = ((navigator.userAgent || "") + " " + (navigator.platform || "")).toLowerCase();
+    if (/aarch64|arm64|armv8/.test(ua)) return "arm64";
+    if (/x86_64|x64|amd64|win64|wow64|intel/.test(ua)) {
+      // "Intel" appears in many Apple-Silicon UA strings via Rosetta; keep
+      // the Mac default below unless an explicit 64-bit token is present.
+      if (os === "macos" && !/x86_64|x64|amd64/.test(ua)) return "arm64";
+      return "x64";
+    }
+    // Uncertain: Apple Silicon is the safe default on Mac; x64 elsewhere.
+    return os === "macos" ? "arm64" : "x64";
+  }
+
+  var ARCH_TOKENS = {
+    arm64: ["arm64", "aarch64"],
+    x64: ["x64", "x86_64", "amd64"]
+  };
+
   // Each download link maps to the file extension(s) of its release asset,
   // in priority order. The first matching asset wins.
   var DL_EXT = {
@@ -183,13 +229,25 @@
     "linux-rpm": [".rpm"]
   };
 
-  function pickAsset(assets, extensions) {
-    // extensions in priority order; return first matching browser_download_url
+  function pickAsset(assets, extensions, arch) {
+    var tokens = ARCH_TOKENS[arch] || [];
+    // 1) Prefer an asset matching BOTH extension and the detected arch.
     for (var e = 0; e < extensions.length; e++) {
       var ext = extensions[e].toLowerCase();
       for (var a = 0; a < assets.length; a++) {
         var name = (assets[a].name || "").toLowerCase();
-        if (name.endsWith(ext)) return assets[a].browser_download_url;
+        if (!name.endsWith(ext)) continue;
+        for (var t = 0; t < tokens.length; t++) {
+          if (name.indexOf(tokens[t]) !== -1) return assets[a].browser_download_url;
+        }
+      }
+    }
+    // 2) Fall back to any asset with a matching extension.
+    for (var e2 = 0; e2 < extensions.length; e2++) {
+      var ext2 = extensions[e2].toLowerCase();
+      for (var a2 = 0; a2 < assets.length; a2++) {
+        var name2 = (assets[a2].name || "").toLowerCase();
+        if (name2.endsWith(ext2)) return assets[a2].browser_download_url;
       }
     }
     return null;
@@ -201,6 +259,7 @@
 
     // ----- OS detection: highlight + reorder the matching card -----
     var os = detectOS();
+    var arch = detectArch(os);
     if (os === "macos" || os === "windows" || os === "linux") {
       var card = grid.querySelector('.os-card[data-os="' + os + '"]');
       if (card) {
@@ -224,7 +283,7 @@
           var key = link.getAttribute("data-dl");
           var exts = DL_EXT[key];
           if (!exts) return;
-          var url = pickAsset(assets, exts);
+          var url = pickAsset(assets, exts, arch);
           if (url) {
             link.href = url;
           } else {
