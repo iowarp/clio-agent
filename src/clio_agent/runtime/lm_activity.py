@@ -20,8 +20,10 @@ still fires when a provider truly hangs (no tokens, dead socket).
 
 from __future__ import annotations
 
+import asyncio
 import threading
 import time
+from contextvars import ContextVar
 from typing import Any
 
 from clio_agent import conf
@@ -29,6 +31,89 @@ from clio_agent.runtime import trace
 
 _LOCK = threading.Lock()
 _STATE: dict[str, float] = {"inflight": 0.0, "started": 0.0, "last": 0.0}
+
+# --- Unified LM token highway (#693) -----------------------------------------
+# The single LM-stream tap (config.IOLoggingLM._clio_streamed_call) feeds the live
+# answer text to the SAME chat publisher (_emit_chunk) so a blueprint/expert call
+# running in an executor thread streams to the UI exactly like a chat turn — no
+# separate streaming path. The turn sets (loop, async _emit_chunk) here; the tap
+# schedules the answer delta onto that loop. ContextVar so it's copied into the
+# executor that runs the expert (and is naturally absent off-turn = no-op).
+_LIVE_CHUNK_EMITTER: ContextVar[tuple[Any, Any] | None] = ContextVar(
+    "clio_live_chunk_emitter", default=None
+)
+
+
+def set_live_chunk_emitter(loop: Any, emit_coro: Any) -> Any:
+    """Bind the turn's (event loop, async answer-chunk publisher). Returns a token
+    to pass to :func:`reset_live_chunk_emitter`."""
+    return _LIVE_CHUNK_EMITTER.set((loop, emit_coro))
+
+
+def reset_live_chunk_emitter(token: Any) -> None:
+    try:
+        _LIVE_CHUNK_EMITTER.reset(token)
+    except Exception:  # noqa: BLE001 - reset across contexts is best-effort
+        pass
+
+
+def note_lm_answer_delta(text: str) -> None:
+    """Stream an answer-field delta to the live UI via the turn's chat publisher.
+
+    Scheduled cross-thread onto the turn's loop (the tap runs in an executor), so
+    it reuses _emit_chunk's message/part bookkeeping and the final message
+    reconciles to ONE assistant message. No-op off-turn or when nothing is bound.
+    """
+    if not text:
+        return
+    emitter = _LIVE_CHUNK_EMITTER.get()
+    if not emitter:
+        return
+    loop, emit_coro = emitter
+    try:
+        asyncio.run_coroutine_threadsafe(emit_coro(text), loop)
+    except Exception:  # noqa: BLE001 - live streaming is best-effort, never break the call
+        pass
+
+
+def note_lm_token_event(content: str, reasoning: str, *, field: str = "answer") -> None:
+    """Emit an ``lm.token.delta`` semantic event onto the highway (durable trace +
+    ARC live fold). Answer text rides ``delta`` (reaches SSE); reasoning rides the
+    redacted ``reasoning`` key (heartbeat on SSE, full in trace). Best-effort."""
+    if not content and not reasoning:
+        return
+    try:
+        from clio_agent.gact.app import (  # noqa: PLC0415
+            _ACTIVE_GACT_APP,
+            _ACTIVE_GACT_SESSION_ID,
+            _ACTIVE_GACT_TRACE_ID,
+            _ACTIVE_GACT_TURN_ID,
+            _emit_semantic_event,
+        )
+        from clio_agent.gact.semantic_events import (  # noqa: PLC0415
+            LM_TOKEN_DELTA,
+            lm_token_delta_payload,
+        )
+    except Exception:  # noqa: BLE001 - app unavailable (CLI/optimizer paths)
+        return
+    app = _ACTIVE_GACT_APP.get()
+    sid = _ACTIVE_GACT_SESSION_ID.get()
+    if app is None or not sid:
+        return
+    try:
+        _emit_semantic_event(
+            app,
+            sid,
+            LM_TOKEN_DELTA,
+            turn_id=_ACTIVE_GACT_TURN_ID.get(),
+            trace_id=_ACTIVE_GACT_TRACE_ID.get(),
+            status="running",
+            summary="LM token delta.",
+            payload=lm_token_delta_payload(content=content, reasoning=reasoning, field=field),
+            detail_level="semantic",
+        )
+    except Exception:  # noqa: BLE001 - capture must never break a call
+        pass
 
 # Hard ceiling on how long a single in-flight LM call is trusted as "progress".
 # Past this, the call is assumed wedged and stops refreshing the watchdog so the

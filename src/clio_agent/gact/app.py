@@ -6823,6 +6823,18 @@ async def _run_turn_in_background(
             )
         )
 
+    # Unified LM token highway (#693): bind this turn's loop + chat publisher so a
+    # blueprint/expert LM call streamed in an executor thread feeds the SAME
+    # _emit_chunk — one streaming path for chat AND blueprint turns, instead of
+    # the old executor drain-and-discard. The executor inherits this binding via
+    # the contextvars.copy_context() at the forward sites below.
+    try:
+        from clio_agent.runtime.lm_activity import set_live_chunk_emitter  # noqa: PLC0415
+
+        set_live_chunk_emitter(asyncio.get_running_loop(), _emit_chunk)
+    except Exception:  # noqa: BLE001 - live-stream wiring is best-effort
+        pass
+
     # iowarp/clio-agent#8: snapshot LM history before the turn so we
     # can sum every call this turn made. ContextVars don't propagate
     # to asyncio executor threads (so dspy.settings.usage_tracker is

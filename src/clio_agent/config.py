@@ -863,10 +863,18 @@ def _io_logging_lm_cls() -> Any:
             import asyncio as _asyncio  # noqa: PLC0415
 
             try:
+                import time as _time  # noqa: PLC0415
+
                 import anyio as _anyio  # noqa: PLC0415
 
                 from clio_agent.runtime.lm_activity import (  # noqa: PLC0415
                     note_lm_activity,
+                    note_lm_answer_delta,
+                    note_lm_token_event,
+                )
+                from clio_agent.runtime.lm_stream import (  # noqa: PLC0415
+                    AnswerFieldExtractor,
+                    extract_delta,
                 )
             except Exception as exc:  # noqa: BLE001 - plumbing missing -> blocking
                 raise _StreamingPlumbingError from exc
@@ -888,11 +896,43 @@ def _io_logging_lm_cls() -> Any:
                     finally:
                         await send.aclose()
 
+                extractor = AnswerFieldExtractor("answer")
+                acc_answer = ""
+                acc_reasoning = ""
+                last_event = _time.monotonic()
                 async with _anyio.create_task_group() as tg:
                     tg.start_soon(_produce)
                     async with recv:
                         async for _chunk in recv:
-                            note_lm_activity()
+                            note_lm_activity()  # watchdog liveness (per token)
+                            content, reasoning = extract_delta(_chunk)
+                            if content:
+                                answer_delta = extractor.feed(content)
+                                if answer_delta:
+                                    # live UI: only PROSE answers (synthesis) — an
+                                    # intermediate expert's answer field is a
+                                    # structured object and must not show as UI text.
+                                    # One streaming path for chat AND blueprint turns.
+                                    if not extractor.is_structured():
+                                        note_lm_answer_delta(answer_delta)
+                                    acc_answer += answer_delta  # highway gets all
+                            if reasoning:
+                                acc_reasoning += reasoning
+                            # highway event (trace + ARC), coalesced so the durable
+                            # stream isn't one event per token.
+                            now = _time.monotonic()
+                            if now - last_event >= 0.25 and (acc_answer or acc_reasoning):
+                                note_lm_token_event(acc_answer, acc_reasoning)
+                                acc_answer = ""
+                                acc_reasoning = ""
+                                last_event = now
+                    tail = extractor.flush()
+                    if tail:
+                        if not extractor.is_structured():
+                            note_lm_answer_delta(tail)
+                        acc_answer += tail
+                    if acc_answer or acc_reasoning:
+                        note_lm_token_event(acc_answer, acc_reasoning)
                 if "exc" in holder:
                     raise holder["exc"]
                 return holder.get("result")

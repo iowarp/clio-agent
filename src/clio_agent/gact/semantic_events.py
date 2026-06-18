@@ -242,6 +242,42 @@ def project_history(event: SemanticEvent) -> dict[str, Any]:
     raise NotImplementedError("dspy.History / resume projection is deferred")
 
 
+# --- lm.token.delta: the live token stream on the highway (#693) --------------
+# The single LM-stream tap emits ``lm.token.delta`` events so the live token
+# stream rides the SAME highway as every other semantic event (one capture, N
+# projections) instead of being read ad-hoc by streamify + the watchdog drain.
+
+LM_TOKEN_DELTA = "lm.token.delta"
+
+
+def lm_token_delta_payload(
+    *,
+    content: str = "",
+    reasoning: str = "",
+    field: str = "answer",
+) -> dict[str, Any]:
+    """Build the payload for an ``lm.token.delta`` so ONE event feeds every
+    consumer correctly through the existing projection rules:
+
+    - user-facing answer text goes under ``delta`` — deliberately NOT a
+      ``SENSITIVE_KEYS`` name — so it SURVIVES ``project_sse`` and reaches the
+      live UI as the streaming answer chunk;
+    - chain-of-thought goes under ``reasoning`` — which IS in ``SENSITIVE_KEYS``
+      — so ``project_sse`` redacts it to an activity heartbeat (length only,
+      refreshing the watchdog / "thinking" indicator) while ``project_full``
+      (durable trace + ARC) keeps it verbatim.
+
+    Categorization (session/turn/span/parent_span/actor=expert) rides the event
+    envelope, set upstream at emit — the consumer never re-derives it.
+    """
+    payload: dict[str, Any] = {"field": field}
+    if content:
+        payload["delta"] = content
+    if reasoning:
+        payload["reasoning"] = reasoning
+    return payload
+
+
 class SemanticTraceBackend(Protocol):
     """Durable sink for semantic events."""
 
