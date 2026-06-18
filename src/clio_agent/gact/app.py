@@ -112,7 +112,14 @@ def _install_sigusr1_diagnostic() -> None:
     ``debug.memprof`` (env ``CLIO_DEBUG_MEMPROF``) is on, SIGUSR1 instead dumps a
     tracemalloc heap snapshot (heap attribution) — the in-core replacement for
     ad-hoc sitecustomize profiling, and it does not fight faulthandler.
+
+    SIGUSR1 and ``faulthandler.register`` are POSIX-only — on Windows neither
+    exists and merely referencing them raises ``AttributeError`` (not the
+    ``ValueError``/``OSError`` guarded below), which would crash server import.
+    This diagnostic is therefore a no-op on platforms without SIGUSR1.
     """
+    if not hasattr(_signal, "SIGUSR1"):
+        return
     memprof = False
     try:
         from clio_agent import conf
