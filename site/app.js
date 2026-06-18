@@ -284,12 +284,9 @@
           var exts = DL_EXT[key];
           if (!exts) return;
           var url = pickAsset(assets, exts, arch);
-          if (url) {
-            link.href = url;
-          } else {
-            // No matching asset in this release: hide the dead link.
-            link.style.display = "none";
-          }
+          // Resolve to the exact asset when found; otherwise fall back to the
+          // releases page so every control always works and no card looks empty.
+          link.href = url || RELEASES_PAGE;
         });
       })
       .catch(function () {

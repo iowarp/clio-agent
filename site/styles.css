@@ -467,6 +467,7 @@ h2 { font-size: clamp(26px, 4vw, 36px); font-weight: 700; letter-spacing: -0.01e
 .os-grid {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
+  align-items: stretch;
   gap: 16px;
 }
 .os-card {
@@ -475,7 +476,7 @@ h2 { font-size: clamp(26px, 4vw, 36px); font-weight: 700; letter-spacing: -0.01e
   flex-direction: column;
   align-items: center;
   text-align: center;
-  gap: 14px;
+  gap: 10px;
   padding: 32px 24px 28px;
   background: var(--panel);
   border: 1px solid var(--border);
@@ -495,23 +496,60 @@ h2 { font-size: clamp(26px, 4vw, 36px); font-weight: 700; letter-spacing: -0.01e
 }
 .os-logo svg { width: 100%; height: 100%; display: block; }
 .os-name { font-size: 20px; font-weight: 700; margin: 0; }
+/* Architecture sublabel under each OS name. */
+.os-arch {
+  color: var(--muted);
+  font-size: 13px;
+  margin: 0;
+}
+
+/* Download area: pushed to the bottom so primary buttons line up across cards. */
 .os-actions {
   display: flex;
   flex-direction: column;
-  align-items: center;
+  align-items: stretch;
   gap: 12px;
   width: 100%;
   margin-top: auto;
+  padding-top: 18px;
 }
-.os-actions .btn { width: 100%; justify-content: center; }
-.os-alt {
+.os-primary { width: 100%; justify-content: center; }
+
+/* Secondary formats: a row of small outlined pill buttons that light up on hover.
+   Reserve a consistent min-height so cards with no secondary format (macOS)
+   stay the same height and primary buttons stay aligned. */
+.os-formats {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+}
+.os-format {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 5px 12px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
   color: var(--muted);
   font-size: 13px;
   font-weight: 600;
   font-family: var(--mono);
+  transition: border-color 0.15s ease, color 0.15s ease;
 }
-.os-alt:hover { color: var(--accent); text-decoration: none; }
-.os-alt-row { display: flex; gap: 18px; align-items: center; }
+.os-format:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+  text-decoration: none;
+}
+/* Subtle muted note for cards with no secondary formats (keeps height parity). */
+.os-formats-note {
+  color: var(--muted);
+  font-size: 13px;
+}
 
 /* "Your platform" badge — hidden unless the card is the detected OS. */
 .os-badge {
