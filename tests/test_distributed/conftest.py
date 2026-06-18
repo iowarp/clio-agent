@@ -43,11 +43,14 @@ def _daemon_env() -> dict[str, str]:
     env = dict(os.environ)
     env["LD_LIBRARY_PATH"] = f"{lib}:{bind}:" + env.get("LD_LIBRARY_PATH", "")
     env["CTP_LOG_LEVEL"] = "error"
-    # Pin the daemon's storage config so it's deterministic and checked in, not
-    # whatever happens to be in ~/.clio/clio.yaml (which was a DRAM-only default with
-    # the WAL/perf block commented out). A developer-set CLIO_SERVER_CONF still wins —
-    # e.g. clio_filebacked.yaml to retest the wedge on a disk tier (#659).
+    # Pin the daemon's storage config so it's deterministic and checked in (a BOUNDED dram
+    # allocator + a file tier — see the header in clio_test_daemon.yaml for why "0g" was wrong
+    # and got misdiagnosed as clio-core#561). A developer-set CLIO_SERVER_CONF still wins.
     env.setdefault("CLIO_SERVER_CONF", str(_DEFAULT_DAEMON_CONF))
+    # The CTE file tier writes to /tmp/clio_cte_test/; the bdev create fails if the parent
+    # dir is absent, so ensure it exists before the daemon starts.
+    with contextlib.suppress(OSError):
+        Path("/tmp/clio_cte_test").mkdir(parents=True, exist_ok=True)
     return env
 
 

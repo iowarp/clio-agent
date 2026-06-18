@@ -101,6 +101,12 @@ class ARCStore(Protocol):
         starts with ``prefix`` (``""`` = all). Order is unspecified."""
         ...
 
+    def iter_names(self, kind: str, prefix: str = "") -> Iterator[str]:
+        """Yield just the NAMES under ``(kind, prefix)`` — no value fetch. For callers that
+        only need to know which records exist (e.g. a mailbox poll), this avoids reading every
+        value, which over CTE is both costly and racy (a value can be deleted mid-read)."""
+        ...
+
     def delete(self, kind: str, name: str) -> None:
         """Delete the record for ``(kind, name)`` if present (no-op if absent)."""
         ...
@@ -212,6 +218,10 @@ class LocalFSStore:
             except OSError:
                 continue
             yield path.stem, data
+
+    def iter_names(self, kind: str, prefix: str = "") -> Iterator[str]:
+        for path in self._dir(kind).glob(f"{prefix}*.msgpack"):
+            yield path.stem
 
     def delete(self, kind: str, name: str) -> None:
         directory = self._dir(kind)
@@ -392,7 +402,14 @@ class CTEStore:
         size = tag.GetBlobSize(name)  # 0 for a missing blob (does not raise)
         if size == 0:
             return None
-        return base64.b64decode(tag.GetBlob(name, size, 0))
+        try:
+            raw = tag.GetBlob(name, size, 0)
+        except RuntimeError:
+            # TOCTOU: the blob was deleted between GetBlobSize and GetBlob — a parent's discard
+            # racing a worker's read of the SAME mailbox blob. A vanished blob is simply absent,
+            # not an error, so return None instead of letting the read crash the caller.
+            return None
+        return base64.b64decode(raw)
 
     def exists(self, kind: str, name: str) -> bool:
         return self._cte.Tag(kind).GetBlobSize(name) > 0
@@ -406,6 +423,14 @@ class CTEStore:
                 value = self.get(kind, blob_name)
                 if value is not None:
                     yield blob_name, value
+
+    def iter_names(self, kind: str, prefix: str = "") -> Iterator[str]:
+        tag = self._cte.Tag(kind)
+        for blob_name in tag.GetContainedBlobs():
+            if blob_name.endswith(_SEARCH_SUFFIX):
+                continue  # search companion, not a record
+            if blob_name.startswith(prefix):
+                yield blob_name
 
     def delete(self, kind: str, name: str) -> None:
         # Tag has no per-blob delete; go through the Client + TagId. DelBlob on a

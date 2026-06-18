@@ -48,15 +48,32 @@ class ClioCoreMailbox:
     CTE for real clio-core, LocalFS for a single box / tests). Parties communicate
     only by reading/writing blobs here."""
 
-    def __init__(self, store: Any, *, prefix: str = _PREFIX) -> None:
+    def __init__(self, store: Any, *, prefix: str = _PREFIX, doorbell: bool = False) -> None:
         self._store = store
         self._prefix = prefix
+        # The doorbell is an isolated-model optimization (a per-queue wake signal so an idle
+        # worker avoids the expensive tag-scan). The pull model doesn't use it, and leaving it
+        # off keeps that path's "mailbox fully drained" invariant a literal empty scan.
+        self._doorbell = doorbell
 
     def submit(self, request: ExpertRequest) -> str:
-        """Parent: place a request in the mailbox, return its id."""
+        """Parent: place a request in the mailbox, return its id (ringing the doorbell if on)."""
         rid = f"{self._prefix}{uuid.uuid4().hex[:12]}"
         self._store.put(_KIND, f"{rid}.req", json.dumps(request.to_wire()).encode("utf-8"))
+        if self._doorbell:
+            self.ring()  # cheap point write AFTER the .req exists, so a woken worker finds it
         return rid
+
+    # Doorbell: a single per-queue blob the parent bumps on submit. A worker polls THIS (a
+    # ~0.5ms point read) and only runs the expensive pending() tag-scan (~30ms over a clio-core
+    # daemon, independent of count) when it changes — so an idle worker stops hammering the
+    # daemon with scans. The value is a monotonic token; concurrent rings just race to "newer",
+    # and the scan finds ALL pending regardless, so a lost ring at most delays to the next scan.
+    def ring(self) -> None:
+        self._store.put(_KIND, f"{self._prefix}bell", str(time.monotonic_ns()).encode("utf-8"))
+
+    def doorbell(self) -> bytes:
+        return self._store.get(_KIND, f"{self._prefix}bell") or b""
 
     def has_request(self, rid: str) -> bool:
         return self._store.exists(_KIND, f"{rid}.req")
@@ -157,7 +174,9 @@ class ClioCoreMailbox:
         """Request ids awaiting a result (the worker's queue) — discovered from the
         store, so a worker that never saw the request in memory still finds it."""
         out: list[str] = []
-        for name, _ in self._store.scan(_KIND, self._prefix):
+        # NAMES only — pending() never needs the request payloads, and fetching every value
+        # here was both wasteful and the source of a GetBlob-vs-discard race over CTE.
+        for name in self._store.iter_names(_KIND, self._prefix):
             if name.endswith(".req"):
                 rid = name[:-4]
                 if not self.has_result(rid):
@@ -375,7 +394,9 @@ async def run_isolated_worker(
     parent routes to it. Because the worker is the SOLE reader of its queue there is NO claim
     and NO lease — each request runs exactly once. A failing/poison request drains as a
     ``failed`` result (``serve_one``); it never kills the loop."""
-    mailbox = ClioCoreMailbox(store, prefix=_worker_queue_prefix(role, worker_id, prefix=prefix))
+    mailbox = ClioCoreMailbox(
+        store, prefix=_worker_queue_prefix(role, worker_id, prefix=prefix), doorbell=True
+    )
     heartbeat_presence(store, role, worker_id, prefix=prefix)  # announce immediately
     hb_every = max(presence_ttl / 3.0, 0.05)
 
@@ -391,14 +412,26 @@ async def run_isolated_worker(
                 heartbeat_presence(store, role, worker_id, prefix=prefix)
 
     beater = asyncio.ensure_future(_beat())
+    last_bell: bytes = b""
+    last_scan = time.monotonic()
+    safety_scan_every = max(presence_ttl / 2.0, 1.0)  # a backstop scan in case a ring was lost
     try:
         while not stop.is_set():
-            served = False
-            for rid in mailbox.pending():
-                await serve_one(mailbox, rid, handler)  # sole reader -> no claim
-                served = True
-            if not served:
-                await asyncio.sleep(poll)
+            # Only run the expensive pending() tag-scan when the doorbell changed (new work) or
+            # the safety interval elapsed — an idle worker just does a ~0.5ms point read here
+            # instead of a ~30ms scan every poll, which is what saturated the daemon under load.
+            bell = mailbox.doorbell()
+            now = time.monotonic()
+            if bell != last_bell or (now - last_scan) >= safety_scan_every:
+                last_bell = bell
+                last_scan = now
+                served = False
+                for rid in mailbox.pending():
+                    await serve_one(mailbox, rid, handler)  # sole reader -> no claim
+                    served = True
+                if served:
+                    continue  # drained something — loop again immediately to catch a fresh ring
+            await asyncio.sleep(poll)
     finally:
         beater.cancel()
         with contextlib.suppress(asyncio.CancelledError, Exception):
@@ -427,6 +460,7 @@ class IsolatedExpertInvoker:
         presence_ttl: float = 6.0,
         max_attempts: int = 3,
         ready_timeout: float = 0.0,
+        presence_refresh: float = 1.0,
     ) -> None:
         self._store = store
         self._role = role
@@ -439,14 +473,31 @@ class IsolatedExpertInvoker:
         # historical fail-fast behavior; a positive value lets a parent tolerate a fleet that is
         # still coming up (e.g. just launched on startup) instead of failing the first delegation.
         self._ready_timeout = ready_timeout
+        # The presence list (live_workers) is a tag SCAN — a ~30ms RPC over a clio-core daemon
+        # regardless of count. Scanning it on every invoke saturates the daemon under load, so
+        # cache it: presence changes slowly (TTL-gated), and a dead worker is still caught by the
+        # per-request timeout + reassignment. Refresh at most every ``presence_refresh`` seconds.
+        self._presence_refresh = presence_refresh
+        self._cached_workers: list[str] = []
+        self._cached_at: Optional[float] = None
         self._rr = 0  # round-robin cursor over the live set
 
+    def _live(self) -> list[str]:
+        now = time.monotonic()
+        if self._cached_at is None or (now - self._cached_at) >= self._presence_refresh:
+            self._cached_workers = live_workers(
+                self._store, self._role, prefix=self._prefix, ttl=self._presence_ttl
+            )
+            self._cached_at = now
+        return self._cached_workers
+
     def _pick(self, exclude: set[str]) -> Optional[str]:
-        workers = [
-            w
-            for w in live_workers(self._store, self._role, prefix=self._prefix, ttl=self._presence_ttl)
-            if w not in exclude
-        ]
+        workers = [w for w in self._live() if w not in exclude]
+        if not workers:
+            # Force a fresh read before concluding the pool is empty — the cache may simply be
+            # stale (a worker just appeared, or all cached ones are excluded after a timeout).
+            self._cached_at = None
+            workers = [w for w in self._live() if w not in exclude]
         if not workers:
             return None
         self._rr = (self._rr + 1) % len(workers)
@@ -479,7 +530,9 @@ class IsolatedExpertInvoker:
                 )
             tried.add(worker)
             mailbox = ClioCoreMailbox(
-                self._store, prefix=_worker_queue_prefix(self._role, worker, prefix=self._prefix)
+                self._store,
+                prefix=_worker_queue_prefix(self._role, worker, prefix=self._prefix),
+                doorbell=True,  # ring the worker so it scans on arrival, not on every poll
             )
             rid = mailbox.submit(request)
 

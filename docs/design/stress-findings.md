@@ -5,6 +5,20 @@ critical limit for sustained / multi-hour / cluster operation.
 
 ## FINDING 1 (CRITICAL): the clio_run daemon wedges after ~700 CTE ops
 
+> **RETRACTED 2026-06-17 — this was NOT a clio-core bug. It was OUR config + OUR transport.**
+> Two root causes, both ours: (1) the daemon config used `capacity: "0g"` = 80% of system RAM
+> (a memory bomb on a busy box); a BOUNDED 2GB allocator + a file storage tier sustains 128
+> concurrent client processes with zero failures. (2) The delegation path itself was the
+> "wedge": every poll did a ~30ms `GetContainedBlobs` tag-scan (a fixed RPC cost, independent
+> of blob count) and a `GetBlob` that raced the parent's `discard`, so a few dozen delegations
+> saturated the daemon's scan-RPC capacity and a crash killed the worker. With the transport
+> fixed (parent caches the presence scan; a per-queue **doorbell** lets idle workers skip the
+> scan; `GetBlob` tolerates a concurrent delete; `pending()` lists names without fetching
+> values) the SAME daemon runs **1000 delegations / ~10,000 CTE ops with zero failures and
+> rising throughput** — 14× past the old "~700-op wedge." See
+> `tests/test_distributed/test_isolated_cross_process.py`. **clio-core#561 should be closed.**
+> The analysis below is preserved for history but its "daemon code bug" conclusion is wrong.
+
 **Symptom:** under sustained delegation load over a real `clio_run` daemon, the whole
 worker pool stops serving — every subsequent delegation 60s-timeouts. Not a clio-agent
 hang; the daemon stops responding to all clients.

@@ -1,11 +1,15 @@
-# Default daemon config for the cross-process test fixture (issue #659).
+# Default daemon config for the cross-process test fixture (issues #659/#561).
 # The fixture points CLIO_SERVER_CONF here so the daemon's storage config is
 # DETERMINISTIC and checked in — not whatever happens to be in ~/.clio/clio.yaml.
-# (An ambient CLIO_SERVER_CONF still wins: the fixture only sets this when unset,
-# so a developer can override with a file-backed config, e.g. clio_filebacked.yaml.)
 #
-# DRAM tier (no disk artifacts for tests) but with the performance block ENABLED
-# and generous, so the cross-process wedge can't be blamed on an unconfigured WAL.
+# CORRECTED 2026-06-17 (clio-core#561): the previous config used `capacity: "0g"` /
+# `capacity_limit: "0g"`, which mean "80% of total system DRAM" (kDefaultRamCapacityFraction
+# in clio-core bdev_tasks.h). On a busy box that grabs nearly all RAM and the daemon falls
+# over under sustained load — which we MISDIAGNOSED as a clio-core "wedge at ~32 concurrent."
+# It was OUR config. With a BOUNDED dram allocator + a small RAM tier that spills to a FILE
+# tier, a properly-configured daemon sustains 128 concurrent client processes with zero
+# failures (RSS bounded ~430MB). So: bound the allocator, and give CTE a disk tier so blobs
+# land on disk instead of filling memory.
 
 networking:
   port: 9413
@@ -26,7 +30,7 @@ compose:
     pool_query: local
     pool_id: "301.0"
     bdev_type: ram
-    capacity: "0g"
+    capacity: "2GB"              # BOUNDED shared-mem allocator (was "0g" = 80% of system RAM)
 
   - mod_name: clio_cae_core
     pool_name: cae_main
@@ -42,8 +46,12 @@ compose:
     storage:
       - path: "ram::cte_ram_tier1"
         bdev_type: "ram"
-        capacity_limit: "0g"
+        capacity_limit: "512MB"      # small fast tier — fills, then spills to disk below
         score: 1.0
+      - path: "/tmp/clio_cte_test/tier_file.bin"
+        bdev_type: "file"
+        capacity_limit: "8GB"        # DISK tier: blobs land here so RAM stays bounded
+        score: 0.0
 
     dpe:
       dpe_type: "max_bw"
