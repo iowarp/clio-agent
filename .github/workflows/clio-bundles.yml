@@ -134,6 +134,12 @@ jobs:
           - target: x86_64-apple-darwin
             os: macos-14
             bundle-args: "--bundles dmg --target x86_64-apple-darwin"
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-22.04
+            bundle-args: "--bundles deb,appimage,rpm"
+          - target: x86_64-unknown-linux-gnu
+            variant: bundled
+            bundle-args: "--bundles deb,rpm"
         exclude:
           # The bundled variant embeds a host-built Python runtime; on an arm64
           # runner that runtime is arm64, so a cross-built x86 .dmg would ship the
@@ -141,12 +147,6 @@ jobs:
           # x86 runtime cross-build exists (tracked in the packaging-parity issue).
           - variant: bundled
             target: x86_64-apple-darwin
-          - target: x86_64-unknown-linux-gnu
-            os: ubuntu-22.04
-            bundle-args: "--bundles deb,appimage,rpm"
-          - target: x86_64-unknown-linux-gnu
-            variant: bundled
-            bundle-args: "--bundles deb,rpm"
     steps:
       - uses: actions/checkout@v4
         with:
