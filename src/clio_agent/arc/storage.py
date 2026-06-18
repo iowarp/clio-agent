@@ -30,7 +30,7 @@ import time
 import warnings
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Dict, Optional, Protocol, runtime_checkable
+from typing import Any, Dict, Optional, Protocol, runtime_checkable
 
 logger = logging.getLogger(__name__)
 
@@ -260,6 +260,19 @@ class LocalFSStore:
         return scored[:k]
 
 
+def _resolve_pool_query(cte: Any) -> Any:
+    """The clio-core PoolQuery for cross-node routing, from ``CLIO_CORE_POOL_QUERY``
+    (config-driven; apply_to_env pushes the config-file value here). ``broadcast`` searches
+    ALL nodes (a worker reading another node's blob); ``local`` is this node only; ``dynamic``
+    (default) is automatic/local-first. Falls back to Dynamic on an unknown value."""
+    mode = os.environ.get("CLIO_CORE_POOL_QUERY", "dynamic").strip().lower()
+    if mode == "broadcast":
+        return cte.PoolQuery.Broadcast()
+    if mode == "local":
+        return cte.PoolQuery.Local()
+    return cte.PoolQuery.Dynamic()
+
+
 class CTEStore:
     """ARCStore backed by the in-process clio-core CTE runtime.
 
@@ -338,7 +351,11 @@ class CTEStore:
             cte.chimaera_init(cte.ChimaeraMode.kClient, with_runtime)
             if with_runtime:
                 time.sleep(settle_s)  # let the embedded co-process spin up
-            cte.initialize_cte(config_path, cte.PoolQuery.Dynamic())  # "" => ~/.clio/clio.yaml
+            # The client-wide routing query. For a MULTINODE cluster a worker on node B must
+            # see blobs the parent wrote on node A, which needs Broadcast (search all nodes);
+            # single-node uses Dynamic (local-first, faster). Config-driven via
+            # CLIO_CORE_POOL_QUERY (dynamic | broadcast | local) — see cluster_config.py.
+            cte.initialize_cte(config_path, _resolve_pool_query(cte))  # "" => ~/.clio/clio.yaml
             cls._initialized = True
             logger.info(
                 "CTE runtime initialized (%s)",
@@ -462,7 +479,7 @@ class CTEStore:
 
         blob_re = f"{re.escape(name_prefix)}.*{re.escape(_SEARCH_SUFFIX)}"
         results = self._client.SemanticSearch(
-            kind, blob_re, query_text, k, self._cte.PoolQuery.Dynamic()
+            kind, blob_re, query_text, k, _resolve_pool_query(self._cte)
         )
         out: list[tuple[str, float]] = []
         for r in results:

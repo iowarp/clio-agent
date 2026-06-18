@@ -205,8 +205,11 @@ async def _invoke_via_isolated(
     # Tolerate a fleet that is still coming up (just-launched workers): wait this long for a
     # live worker to appear before failing the delegation. CLIO_CORE_READY_TIMEOUT=0 fails fast.
     ready_timeout = float(os.environ.get("CLIO_CORE_READY_TIMEOUT", "60"))
+    # Pull-transport poll rate (config-driven via CLIO_CORE_POLL): the latency/daemon-load
+    # trade-off for the result wait — smaller = lower latency, more RPCs.
+    poll = float(os.environ.get("CLIO_CORE_POLL", "0.05"))
     invoker = IsolatedExpertInvoker(
-        store, role=resolved_role, prefix=prefix, timeout=timeout, poll=0.1, ready_timeout=ready_timeout
+        store, role=resolved_role, prefix=prefix, timeout=timeout, poll=poll, ready_timeout=ready_timeout
     )
     return await invoker.invoke(request)
 

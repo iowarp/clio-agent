@@ -150,15 +150,22 @@ def _main() -> None:  # pragma: no cover - process entrypoint
     """
     from clio_agent.arc.storage import make_arc_store  # noqa: PLC0415
 
+    # A config file (CLIO_CLUSTER_CONFIG) wins over env wins over defaults: apply it first so
+    # the CLIO_* reads below pick up file-defined values.
+    from clio_agent.runtime.cluster_config import ClusterConfig  # noqa: PLC0415
+
+    ClusterConfig().apply_to_env()
+
     backend = os.environ.get("CLIO_ARC_STORE", "local")
     data_dir = os.environ.get("CLIO_ARC_DATA_DIR", "") or None
     store = make_arc_store(backend=backend, data_dir=data_dir)
     prefix = os.environ.get("CLIO_CORE_PREFIX", "clio_core_")
     worker_id = os.environ.get("CLIO_CORE_WORKER_ID", "")
+    poll = float(os.environ.get("CLIO_CORE_POLL", "0.1"))
     if os.environ.get("CLIO_CORE_ISOLATED", "").strip().lower() in {"1", "true", "yes", "on"}:
         asyncio.run(
             run_isolated_clio_core_worker(
-                store, role=os.environ["CLIO_CORE_ROLE"], worker_id=worker_id, prefix=prefix
+                store, role=os.environ["CLIO_CORE_ROLE"], worker_id=worker_id, prefix=prefix, poll=poll
             )
         )
     else:

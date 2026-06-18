@@ -4,10 +4,22 @@ from __future__ import annotations
 
 import os
 
+import pytest
+
 from clio_agent.runtime.cluster_config import (
     ClusterConfig,
     default_daemon_config_path,
 )
+
+
+@pytest.fixture(autouse=True)
+def _restore_env():
+    """apply_to_env / build_app write os.environ DIRECTLY (not via monkeypatch). Snapshot and
+    restore so these tests never leak CLIO_* into later tests in the same process."""
+    snap = dict(os.environ)
+    yield
+    os.environ.clear()
+    os.environ.update(snap)
 
 
 def test_precedence_config_over_env_over_default(monkeypatch):
@@ -77,3 +89,51 @@ def test_cluster_section_accessor():
     cfg = ClusterConfig(data={"cluster": {"nodes": [{"host": "n0", "addr": "10.0.0.1"}]}})
     assert cfg.cluster["nodes"][0]["host"] == "n0"
     assert ClusterConfig(data={}).cluster == {}
+
+
+def test_resolve_pool_query_modes(monkeypatch):
+    from clio_agent.arc.storage import _resolve_pool_query
+
+    class _FakePoolQuery:
+        @staticmethod
+        def Broadcast():
+            return "BCAST"
+
+        @staticmethod
+        def Dynamic():
+            return "DYN"
+
+        @staticmethod
+        def Local():
+            return "LOCAL"
+
+    class _FakeCte:
+        PoolQuery = _FakePoolQuery
+
+    cte = _FakeCte()
+    monkeypatch.setenv("CLIO_CORE_POOL_QUERY", "broadcast")
+    assert _resolve_pool_query(cte) == "BCAST"
+    monkeypatch.setenv("CLIO_CORE_POOL_QUERY", "local")
+    assert _resolve_pool_query(cte) == "LOCAL"
+    monkeypatch.setenv("CLIO_CORE_POOL_QUERY", "dynamic")
+    assert _resolve_pool_query(cte) == "DYN"
+    monkeypatch.delenv("CLIO_CORE_POOL_QUERY", raising=False)
+    assert _resolve_pool_query(cte) == "DYN"  # default
+    monkeypatch.setenv("CLIO_CORE_POOL_QUERY", "bogus")
+    assert _resolve_pool_query(cte) == "DYN"  # unknown -> dynamic
+
+
+def test_build_app_applies_cluster_config_when_set(monkeypatch, tmp_path):
+    import yaml
+
+    from clio_agent.gact.app import build_app
+
+    cfg_path = tmp_path / "clio-cluster.yaml"
+    cfg_path.write_text(
+        yaml.safe_dump({"transport": {"poll_interval": 0.011, "pool_query": "broadcast"}})
+    )
+    monkeypatch.setenv("CLIO_CLUSTER_CONFIG", str(cfg_path))
+    monkeypatch.delenv("CLIO_CORE_POLL", raising=False)
+    build_app()  # applies the config file to the env
+    assert os.environ["CLIO_CORE_POLL"] == "0.011"
+    assert os.environ["CLIO_CORE_POOL_QUERY"] == "broadcast"

@@ -12908,6 +12908,14 @@ def build_app(
     constructs a real ``ClioAgent`` and passes it here.
     """
 
+    # A deployment-provided config file (config > env > default): push its values into the
+    # environment once, before anything reads CLIO_*. Guarded so the default (no config file)
+    # path is untouched.
+    if os.environ.get("CLIO_CLUSTER_CONFIG"):
+        from clio_agent.runtime.cluster_config import ClusterConfig  # noqa: PLC0415
+
+        ClusterConfig().apply_to_env()
+
     app = FastAPI(
         title="CLIO GACT v0.2",
         version=GACT_BACKEND_VERSION,
