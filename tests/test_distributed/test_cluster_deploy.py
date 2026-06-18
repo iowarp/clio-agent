@@ -98,12 +98,37 @@ _CROSS = os.environ.get("CLIO_RUN_CROSS_PROCESS") == "1"
 _ECHO_WORKER = Path(__file__).resolve().parent / "_isolated_cte_worker.py"
 
 
+def _ssh_localhost_ok() -> bool:
+    import subprocess
+
+    try:
+        r = subprocess.run(
+            ["ssh", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no", "localhost", "true"],
+            capture_output=True, timeout=12,
+        )
+        return r.returncode == 0
+    except Exception:
+        return False
+
+
 @pytest.mark.cross_process
 @pytest.mark.skipif(not _CROSS, reason="set CLIO_RUN_CROSS_PROCESS=1")
-def test_local_deploy_up_presence_status_down(tmp_path):
-    """The deployer brings up a real daemon + isolated worker PROCESSES on one box (local mode,
-    no ssh), the workers attach over CTE and announce presence, status reflects them, and down
-    tears it all back down. Validates the full orchestration before a real cluster."""
+@pytest.mark.parametrize(
+    "force_ssh",
+    [
+        False,
+        pytest.param(
+            True,
+            marks=pytest.mark.skipif(not _ssh_localhost_ok(), reason="no passwordless ssh localhost"),
+        ),
+    ],
+    ids=["local", "ssh"],
+)
+def test_local_deploy_up_presence_status_down(tmp_path, force_ssh):
+    """The deployer brings up a real daemon + isolated worker PROCESSES on one box, the workers
+    attach over CTE and announce presence, status reflects them, and down tears it down. Runs
+    BOTH paths: ``local`` (no ssh hop) and ``ssh`` (force_ssh -> the real ssh-localhost exec path,
+    when passwordless ssh is available). Validates the full orchestration before a real cluster."""
     import iowarp_core
 
     pkg = os.path.dirname(iowarp_core.__file__)
@@ -111,7 +136,7 @@ def test_local_deploy_up_presence_status_down(tmp_path):
     os.environ["LD_LIBRARY_PATH"] = f"{libdir}:{bindir}:" + os.environ.get("LD_LIBRARY_PATH", "")
     os.makedirs("/tmp/clio_cte_tier", exist_ok=True)  # the bundled config's file-tier dir
 
-    prefix = f"deploy_{os.getpid()}_"
+    prefix = f"deploy_{'ssh' if force_ssh else 'loc'}_{os.getpid()}_"
     spec = ClusterSpec(
         shared_dir=str(tmp_path / "shared"),
         nodes=[Node("localhost", "127.0.0.1")],
@@ -119,6 +144,7 @@ def test_local_deploy_up_presence_status_down(tmp_path):
         python=sys.executable,
         clio_core_bin=os.path.join(bindir, "clio_run"),
         ld_library_path=f"{libdir}:{bindir}",
+        force_ssh=force_ssh,  # True -> every command actually goes over ssh localhost
         worker_command=[sys.executable, str(_ECHO_WORKER)],
         worker_env={"CLIO_CORE_PREFIX": prefix},
     )

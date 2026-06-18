@@ -137,3 +137,67 @@ def test_build_app_applies_cluster_config_when_set(monkeypatch, tmp_path):
     build_app()  # applies the config file to the env
     assert os.environ["CLIO_CORE_POLL"] == "0.011"
     assert os.environ["CLIO_CORE_POOL_QUERY"] == "broadcast"
+
+
+async def test_config_file_drives_a_live_isolated_delegation(tmp_path, monkeypatch):
+    """End-to-end: a config FILE (not env) sets the pull transport's prefix/poll, and a real
+    isolated delegation runs with them in effect. If the file had NOT driven the prefix, the
+    parent would route to the default 'clio_core_' queue and miss the worker on 'cfgdriven_'."""
+    import asyncio
+    import contextlib
+    from types import SimpleNamespace
+
+    import yaml
+
+    from clio_agent.arc.storage import make_arc_store
+    from clio_agent.gact.delegation_invoker import (
+        expert_result_from_prediction,
+        run_child_via_boundary,
+    )
+    from clio_agent.runtime.clio_core_transport import live_workers, run_isolated_worker
+    from clio_agent.runtime.cluster_config import ClusterConfig
+
+    prefix = "cfgdriven_"
+    cfg_file = tmp_path / "clio-cluster.yaml"
+    cfg_file.write_text(
+        yaml.safe_dump(
+            {"transport": {"poll_interval": 0.02, "prefix": prefix, "ready_timeout": 10}}
+        )
+    )
+    # wipe env so a pass PROVES the values came from the file, not the environment
+    for k in ("CLIO_CORE_POLL", "CLIO_CORE_PREFIX", "CLIO_CORE_READY_TIMEOUT", "CLIO_CORE_ROLE"):
+        monkeypatch.delenv(k, raising=False)
+    ClusterConfig(path=str(cfg_file)).apply_to_env()
+    assert os.environ["CLIO_CORE_PREFIX"] == prefix and os.environ["CLIO_CORE_POLL"] == "0.02"
+
+    store = make_arc_store(backend="local", data_dir=str(tmp_path / "store"))
+    pred = SimpleNamespace(
+        answer="42", next_expert="", next_task="", expert_handoffs="", workflow_state={}
+    )
+
+    async def worker_handler(req):
+        return expert_result_from_prediction(pred, expert_id=req.expert_id)
+
+    stop = asyncio.Event()
+    worker = asyncio.ensure_future(
+        run_isolated_worker(store, worker_handler, role="data", worker_id="w1", prefix=prefix, stop=stop, poll=0.02)
+    )
+    try:
+        for _ in range(200):
+            if live_workers(store, "data", prefix=prefix):
+                break
+            await asyncio.sleep(0.02)
+
+        async def parent_run_child(agent_def, prompt):
+            raise AssertionError("isolated mode must not run the child in the parent")
+
+        out = await run_child_via_boundary(
+            SimpleNamespace(id="data"), "q",
+            run_child=parent_run_child, mode="clio_core_isolated", store=store, role="data",
+        )
+        assert out.answer == "42"  # delegated over the config-file-driven prefix
+    finally:
+        stop.set()
+        worker.cancel()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await worker
