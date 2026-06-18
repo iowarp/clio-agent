@@ -10,6 +10,11 @@ RUN GACT_BRAND=clio GACT_BRAND_ROOT=/build/branding pnpm --filter @clio/web buil
     && test -f web/dist/index.html
 
 FROM python:3.12-slim
+LABEL org.opencontainers.image.title="CLIO Web" \
+      org.opencontainers.image.description="CLIO web UI (gact-tui apps/web, GACT_BRAND=clio) + gact backend." \
+      org.opencontainers.image.source="https://github.com/iowarp/clio-agent" \
+      org.opencontainers.image.vendor="iowarp" \
+      org.opencontainers.image.licenses="BSD-3-Clause"
 ENV PYTHONUNBUFFERED=1 \
     CLIO_GACT_HOST=127.0.0.1 \
     CLIO_GACT_PORT=7777 \

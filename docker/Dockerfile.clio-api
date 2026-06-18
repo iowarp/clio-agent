@@ -1,5 +1,11 @@
 FROM python:3.12-slim
 
+LABEL org.opencontainers.image.title="CLIO API" \
+      org.opencontainers.image.description="CLIO gact REST/SSE backend (clio-agent-gact)." \
+      org.opencontainers.image.source="https://github.com/iowarp/clio-agent" \
+      org.opencontainers.image.vendor="iowarp" \
+      org.opencontainers.image.licenses="BSD-3-Clause"
+
 WORKDIR /app
 ENV PYTHONUNBUFFERED=1 \
     CLIO_GACT_HOST=0.0.0.0 \
