@@ -170,6 +170,35 @@ if ($ClioRef -and -not $GactRef) {
     $url   = "https://github.com/iowarp/clio-agent/releases/download/$tag/$asset"
     Say "Downloading $asset from clio-agent $tag"
     Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $GactExe
+
+    # Web UI bundle (powers `clio --web`): optional, best-effort. The release
+    # ships clio-web-<version>.zip containing a clio-web-<version>/ dist dir;
+    # unpack it into $Prefix\clio-agent\web, which the launcher serves
+    # same-origin. Mirrors install.sh.
+    $webver = $tag -replace '^v', ''
+    $webUrl = "https://github.com/iowarp/clio-agent/releases/download/$tag/clio-web-$webver.zip"
+    $webZip = Join-Path $Prefix 'clio-web.zip'
+    try {
+        Invoke-WebRequest -UseBasicParsing -Uri $webUrl -OutFile $webZip -ErrorAction Stop
+        $webTmp = Join-Path $Prefix '_webtmp'
+        $webDir = Join-Path $Prefix 'clio-agent\web'
+        RemoveTree $webTmp
+        RemoveTree $webDir
+        Expand-Archive -LiteralPath $webZip -DestinationPath $webTmp -Force
+        New-Item -ItemType Directory -Force -Path $webDir | Out-Null
+        $webInner = Join-Path $webTmp "clio-web-$webver"
+        if (Test-Path $webInner) {
+            Copy-Item (Join-Path $webInner '*') $webDir -Recurse -Force
+        } else {
+            Copy-Item (Join-Path $webTmp '*') $webDir -Recurse -Force
+        }
+        Remove-Item $webZip -Force -ErrorAction SilentlyContinue
+        Remove-Item $webTmp -Recurse -Force -ErrorAction SilentlyContinue
+        Say "Web UI bundle installed (run: clio --web)"
+    } catch {
+        Remove-Item $webZip -Force -ErrorAction SilentlyContinue
+        Warn "web UI bundle unavailable for $tag - 'clio --web' disabled until reinstalled with it"
+    }
 }
 
 # ---------- launcher + uninstaller ------------------------------------
