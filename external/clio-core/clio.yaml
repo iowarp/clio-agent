@@ -1,0 +1,76 @@
+# Default clio-core (IOWarp) daemon config for CLIO distributable deployments.
+#
+# This is the SINGLE source of truth for the clio_run daemon. clio-agent defaults
+# CLIO_SERVER_CONF to this file, so a bare `clio_run start` uses a sane, BOUNDED,
+# disk-backed config instead of the dangerous "80% of RAM" default.
+#
+# Every node in a cluster reads the IDENTICAL config (clio-core identifies which node
+# it is by gethostname() against the hostfile, NOT by per-node config) — so on a shared
+# mount (NFS) it is written ONCE and read everywhere.
+#
+#   SINGLE NODE  : leave networking.hostfile unset -> binds 0.0.0.0 (all interfaces).
+#   MULTI  NODE  : `clio cluster up` renders networking.hostfile (one host per line,
+#                  line order == node_id) and every node reads it from the shared path.
+
+networking:
+  port: 9413                            # RPC listener; clients reach the daemon at port+3
+  neighborhood_size: 32
+  wait_for_restart: 30                  # seconds to wait for peers on startup
+  wait_for_restart_poll_period: 1
+  # hostfile: /shared/clio-agent/hostfile   # MULTINODE: uncomment + point at the shared file
+
+runtime:
+  num_threads: 4
+  queue_depth: 4096
+  local_sched: "default"
+  first_busy_wait: 10000
+
+compose:
+  # Shared-memory allocator. BOUNDED — never "0g", which means 80% of system RAM
+  # (kDefaultRamCapacityFraction in clio-core) and OOMs a busy box under load.
+  - mod_name: clio_bdev
+    pool_name: "ram::chi_default_bdev"
+    pool_query: local
+    pool_id: "301.0"
+    bdev_type: ram
+    capacity: "2GB"
+
+  - mod_name: clio_cae_core
+    pool_name: cae_main
+    pool_query: local
+    pool_id: "400.0"
+    next_pool_id: "512.0"
+
+  - mod_name: clio_cte_core
+    pool_name: cte_main
+    pool_query: local
+    pool_id: "512.0"
+
+    storage:
+      # Small fast DRAM tier; fills then spills to the node-local disk tier below.
+      - path: "ram::cte_ram_tier1"
+        bdev_type: "ram"
+        capacity_limit: "512MB"
+        score: 1.0
+      # NODE-LOCAL disk (each node's own /tmp — NOT the shared mount; you do not want
+      # every node's CTE data funnelled onto one NFS). The path string is identical on
+      # every node and resolves to that node's local disk.
+      - path: "/tmp/clio_cte_tier/tier.bin"
+        bdev_type: "file"
+        capacity_limit: "8GB"
+        score: 0.0
+
+    dpe:
+      dpe_type: "max_bw"
+
+    targets:
+      neighborhood: 1
+      default_target_timeout_ms: 30000
+      poll_period_ms: 5000
+
+    performance:
+      max_concurrent_operations: 256
+      stat_targets_period_ms: 50
+      flush_data_period_ms: 5000
+      flush_data_min_persistence: 1
+      transaction_log_capacity: "256MB"
