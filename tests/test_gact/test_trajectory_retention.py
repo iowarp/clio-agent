@@ -225,6 +225,79 @@ def test_retaining_react_step_capture_is_best_effort(monkeypatch):
         gact_app._ACTIVE_GACT_APP.reset(app_token)
 
 
+def test_retaining_react_emits_expert_lifecycle_boundary(monkeypatch):
+    """The expert lifecycle (start + extract output to parent) rides the highway."""
+    cls = gact_app._retaining_react_cls()
+    inst = object.__new__(cls)
+    inst.max_iters = 3
+    inst.react = object()
+    inst.extract = object()
+    inst.tools = {"finish": lambda: "done"}
+    inst._clio_expert_id = "geospatial"
+
+    def fake_trunc(module, trajectory, **input_args):
+        if module is inst.react:
+            return _AttrDict(next_thought="t", next_tool_name="finish", next_tool_args={})
+        return _AttrDict(answer="the full region report", reasoning="r")
+
+    inst._call_with_potential_trajectory_truncation = fake_trunc
+
+    emitted: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        gact_app, "_emit_semantic_event", lambda app, sid, et, **kw: emitted.append((et, kw)) or {}
+    )
+    app_token = gact_app._ACTIVE_GACT_APP.set(object())
+    sid_token = gact_app._ACTIVE_GACT_SESSION_ID.set("sess_test")
+    traj_token = gact_app._ACTIVE_REACT_TRAJECTORY.set(None)
+    try:
+        inst.forward(question="region near San Diego")
+    finally:
+        gact_app._ACTIVE_REACT_TRAJECTORY.reset(traj_token)
+        gact_app._ACTIVE_GACT_SESSION_ID.reset(sid_token)
+        gact_app._ACTIVE_GACT_APP.reset(app_token)
+
+    started = [kw["payload"] for (et, kw) in emitted if et == "expert.lifecycle.started"]
+    extracted = [kw["payload"] for (et, kw) in emitted if et == "expert.extract.completed"]
+    assert len(started) == 1 and len(extracted) == 1
+    assert started[0]["expert_id"] == "geospatial"
+    assert "region near San Diego" in str(started[0]["input"])
+    # The extract output (what returns to the parent) is FULL on the highway.
+    assert extracted[0]["output"] == "the full region report"
+    assert extracted[0]["expert_id"] == "geospatial"
+    # start + extract share the expert's correlation span.
+    assert started[0]["expert_span_id"] == extracted[0]["expert_span_id"]
+
+
+def test_emit_semantic_event_nests_under_active_span():
+    """Events auto-nest under the active span unless a parent is pinned explicitly."""
+    import types
+
+    captured: dict = {}
+
+    class _Sink:
+        def emit(self, event):
+            captured["event"] = event
+            return {}
+
+    app = types.SimpleNamespace(
+        state=types.SimpleNamespace(
+            semantic_event_sink=_Sink(), sessions={}, semantic_trace_detail_level="semantic"
+        )
+    )
+
+    gact_app._emit_semantic_event(app, "sid", "x.y", payload={})
+    assert captured["event"].parent_span_id == ""  # no active span -> empty
+
+    tok = gact_app._ACTIVE_PARENT_SPAN_ID.set("EXPSPAN")
+    try:
+        gact_app._emit_semantic_event(app, "sid", "x.y", payload={})
+        assert captured["event"].parent_span_id == "EXPSPAN"  # auto-nests
+        gact_app._emit_semantic_event(app, "sid", "x.y", payload={}, parent_span_id="EXPLICIT")
+        assert captured["event"].parent_span_id == "EXPLICIT"  # explicit wins
+    finally:
+        gact_app._ACTIVE_PARENT_SPAN_ID.reset(tok)
+
+
 def test_prediction_summary_attaches_trajectory_and_reasoning():
     pred = _AttrDict(
         answer="A",

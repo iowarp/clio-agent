@@ -233,6 +233,17 @@ _ACTIVE_REACT_TRAJECTORY: contextvars.ContextVar[dict[str, Any] | None] = contex
     default=None,
 )
 
+# The span the current scope nests under, so the recursive trajectory
+# (agent lifecycle -> expert lifecycle -> ReAct step -> lm.call/tool.call) forms a
+# coherent tree on the highway WITHOUT every emitter threading a parent by hand.
+# _emit_semantic_event falls back to this when no explicit parent_span_id is given;
+# _RetainingReAct.forward sets it to the expert's span for the duration of the
+# expert, and it propagates into delegated children via contextvars.copy_context().
+_ACTIVE_PARENT_SPAN_ID: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "clio_gact_active_parent_span_id",
+    default="",
+)
+
 
 @contextmanager
 def _tool_session_context(sid: str) -> Iterator[None]:
@@ -426,7 +437,9 @@ def _emit_semantic_event(
         workspace_id=workspace_id,
         trace_id=trace_id or _semantic_trace_id(turn_id),
         turn_id=turn_id,
-        parent_span_id=parent_span_id,
+        # Auto-nest under the active span (expert/step) unless the caller pins a
+        # parent explicitly, so the highway forms the recursive trajectory tree.
+        parent_span_id=parent_span_id or _ACTIVE_PARENT_SPAN_ID.get(),
         status=status,
         summary=summary,
         actor=actor or {},
@@ -498,6 +511,45 @@ def _emit_react_step_event(
                 "observation": _jsonish(observation),
                 "is_finish": bool(is_finish),
             },
+        )
+    except Exception:  # noqa: BLE001 - capture must never break the expert loop
+        pass
+
+
+def _emit_expert_lifecycle_event(
+    event_type: str,
+    *,
+    expert_id: str,
+    expert_span_id: str,
+    status: str,
+    payload: dict[str, Any],
+) -> None:
+    """Mark an expert-lifecycle boundary on the highway.
+
+    An expert lifecycle starts when a parent delegates to it and ends with the
+    ``dspy.extract`` output it returns. ``expert.lifecycle.started`` is emitted
+    BEFORE the active span is switched to this expert (so it nests under the
+    delegating scope); ``expert.extract.completed`` is emitted while the active
+    span IS this expert (so it nests under the lifecycle). The extract output is
+    carried FULL/uncapped — what the parent ultimately filters to is a downstream
+    projection (#710), not a capture-time loss. Best-effort.
+    """
+
+    app = _ACTIVE_GACT_APP.get()
+    sid = _ACTIVE_GACT_SESSION_ID.get()
+    if app is None or not sid:
+        return
+    try:
+        _emit_semantic_event(
+            app,
+            sid,
+            event_type,
+            turn_id=_active_semantic_turn_id(),
+            trace_id=_active_semantic_trace_id(),
+            status=status,
+            summary=f"expert {expert_id or '?'} {event_type.rsplit('.', 1)[-1]}",
+            actor={"agent_id": expert_id, "role": "expert"},
+            payload={"expert_id": expert_id, "expert_span_id": expert_span_id, **payload},
         )
     except Exception:  # noqa: BLE001 - capture must never break the expert loop
         pass
@@ -5593,54 +5645,86 @@ def _retaining_react_cls() -> Any:
             # One span per expert lifecycle so the highway's per-step events of a
             # single expert trajectory can be grouped by consumers.
             expert_span_id = uuid.uuid4().hex[:16]
-            max_iters = input_args.pop("max_iters", self.max_iters)
-            for idx in range(max_iters):
-                try:
-                    pred = self._call_with_potential_trajectory_truncation(
-                        self.react, trajectory, **input_args
-                    )
-                except ValueError:
-                    # Agent failed to select a valid tool; end the loop and let
-                    # extract work with whatever trajectory exists so far.
-                    break
+            # Open the expert lifecycle on the highway. Emitted BEFORE the active
+            # span is switched to this expert, so it nests under the delegating
+            # scope (the parent expert / the turn).
+            _emit_expert_lifecycle_event(
+                "expert.lifecycle.started",
+                expert_id=expert_id,
+                expert_span_id=expert_span_id,
+                status="running",
+                payload={"input": _jsonish(dict(input_args))},
+            )
+            # Everything emitted during this expert (ReAct steps, tool.call,
+            # lm.call, delegations to children) nests under the expert span; the
+            # context propagates into delegated children via copy_context().
+            parent_token = _ACTIVE_PARENT_SPAN_ID.set(expert_span_id)
+            try:
+                max_iters = input_args.pop("max_iters", self.max_iters)
+                for idx in range(max_iters):
+                    try:
+                        pred = self._call_with_potential_trajectory_truncation(
+                            self.react, trajectory, **input_args
+                        )
+                    except ValueError:
+                        # Agent failed to select a valid tool; end the loop and let
+                        # extract work with whatever trajectory exists so far.
+                        break
 
-                trajectory[f"thought_{idx}"] = pred.next_thought
-                trajectory[f"tool_name_{idx}"] = pred.next_tool_name
-                trajectory[f"tool_args_{idx}"] = pred.next_tool_args
-                try:
-                    trajectory[f"observation_{idx}"] = self.tools[pred.next_tool_name](
-                        **pred.next_tool_args
-                    )
-                except Exception as err:  # noqa: BLE001 - mirror dspy: errors become observations
-                    trajectory[f"observation_{idx}"] = (
-                        f"Execution error in {pred.next_tool_name}: {err}"
+                    trajectory[f"thought_{idx}"] = pred.next_thought
+                    trajectory[f"tool_name_{idx}"] = pred.next_tool_name
+                    trajectory[f"tool_args_{idx}"] = pred.next_tool_args
+                    try:
+                        trajectory[f"observation_{idx}"] = self.tools[pred.next_tool_name](
+                            **pred.next_tool_args
+                        )
+                    except Exception as err:  # noqa: BLE001 - mirror dspy: errors become observations
+                        trajectory[f"observation_{idx}"] = (
+                            f"Execution error in {pred.next_tool_name}: {err}"
+                        )
+
+                    # Put this ReAct Step (LLM response + tool act/observe) on the
+                    # highway with FULL content BEFORE the loop discards everything
+                    # but the final extract.
+                    _emit_react_step_event(
+                        expert_id=expert_id,
+                        expert_span_id=expert_span_id,
+                        step_index=idx,
+                        thought=pred.next_thought,
+                        tool_name=pred.next_tool_name,
+                        tool_args=pred.next_tool_args,
+                        observation=trajectory[f"observation_{idx}"],
+                        is_finish=pred.next_tool_name == "finish",
                     )
 
-                # Put this ReAct Step (LLM response + tool act/observe) on the
-                # highway with FULL content BEFORE the loop discards everything but
-                # the final extract.
-                _emit_react_step_event(
+                    if pred.next_tool_name == "finish":
+                        break
+
+                # Publish BEFORE extract: a failed extract still exposes the trajectory.
+                _ACTIVE_REACT_TRAJECTORY.set(
+                    {"trajectory": dict(trajectory), "input_args": dict(input_args)}
+                )
+                extract = self._call_with_potential_trajectory_truncation(
+                    self.extract, trajectory, **input_args
+                )
+                final_pred = dspy.Prediction(trajectory=trajectory, **extract)
+                # Close the expert lifecycle with the extract output — the typed
+                # result that returns to the parent. FULL/uncapped on the highway;
+                # the parent's filter to just this is a downstream projection.
+                _emit_expert_lifecycle_event(
+                    "expert.extract.completed",
                     expert_id=expert_id,
                     expert_span_id=expert_span_id,
-                    step_index=idx,
-                    thought=pred.next_thought,
-                    tool_name=pred.next_tool_name,
-                    tool_args=pred.next_tool_args,
-                    observation=trajectory[f"observation_{idx}"],
-                    is_finish=pred.next_tool_name == "finish",
+                    status="completed",
+                    payload={
+                        "output": str(getattr(final_pred, "answer", "") or ""),
+                        "structured": _prediction_structured_metadata(final_pred),
+                        "step_count": sum(1 for k in trajectory if k.startswith("tool_name_")),
+                    },
                 )
-
-                if pred.next_tool_name == "finish":
-                    break
-
-            # Publish BEFORE extract: a failed extract still exposes the trajectory.
-            _ACTIVE_REACT_TRAJECTORY.set(
-                {"trajectory": dict(trajectory), "input_args": dict(input_args)}
-            )
-            extract = self._call_with_potential_trajectory_truncation(
-                self.extract, trajectory, **input_args
-            )
-            return dspy.Prediction(trajectory=trajectory, **extract)
+                return final_pred
+            finally:
+                _ACTIVE_PARENT_SPAN_ID.reset(parent_token)
 
     _RETAINING_REACT_CLS_CACHE[base] = _RetainingReAct
     return _RetainingReAct
