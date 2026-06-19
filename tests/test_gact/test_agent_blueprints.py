@@ -1879,9 +1879,15 @@ def test_earthscope_geospatial_prompt_does_not_invent_named_source_provenance(
     prompt = prompt_path.read_text(encoding="utf-8")
     normalized_prompt = " ".join(prompt.split())
 
-    assert '`provenance="model_geographic_prior"`' in prompt
-    assert "Do not cite USGS, EarthScope, UNAVCO, station catalogs" in prompt
-    assert "unless a tool result or user input actually provided that source" in normalized_prompt
+    # The geospatial expert may only set a GROUNDED provenance — verbatim user
+    # coordinates or a real geocoder lookup — and must never invent coordinates or
+    # a source from memory. (The blueprint was generalized: the old
+    # `model_geographic_prior` provenance + the named-catalog citation ban were
+    # de-hardcoded into these two grounded cases plus the anti-invention rule.)
+    assert 'provenance="user-provided"' in prompt
+    assert 'provenance="osm_nominatim"' in prompt
+    assert "do not fall back to guessing a center from memory" in normalized_prompt
+    assert "do NOT invent coordinates" in normalized_prompt
 
 
 @pytest.mark.parametrize(
@@ -1909,7 +1915,7 @@ def test_earthscope_resolver_prompt_uses_typed_station_resource_frontier(
     assert "in `dataset_title` (NOT `resource_name`, which 502s)" in normalized_prompt
     # The resolver works the ranked station list; it must not widen past it into
     # free-text / city-name searches.
-    assert "don't widen beyond the ranked list" in normalized_prompt
+    assert "never widen beyond the ranked list" in normalized_prompt
     # An out-of-region / no-candidate region is not coverage and must not be
     # searched or staged.
     assert "Do NOT search or stage anything, do NOT" in normalized_prompt
@@ -1989,7 +1995,7 @@ def test_earthscope_final_prompts_guard_scan_limited_profile_scope(
     assert '"30-s cadence"' in combined
     assert '"no missing values"' in combined
     assert '"low noise"' in combined
-    assert "Plot success only proves" in combined
+    assert "A successful plot proves only that" in combined
     assert "full-file cadence/duration/gap quality was not verified" in combined
     assert "missing_values_scope=profiled_rows" in combined
     assert "Do not interpret `qChannel` numeric values as decoded quality" in combined

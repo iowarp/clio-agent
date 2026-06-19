@@ -444,6 +444,65 @@ def _emit_semantic_event(
     return sink.emit(event)
 
 
+def _emit_react_step_event(
+    *,
+    expert_id: str,
+    expert_span_id: str,
+    step_index: int,
+    thought: Any,
+    tool_name: Any,
+    tool_args: Any,
+    observation: Any,
+    is_finish: bool,
+) -> None:
+    """Put ONE ReAct Step (LLM response + tool act/observe) on the core highway.
+
+    A ReAct Step is the atom of an expert trajectory: the LLM's response (its
+    ``thought`` + the tool it chose) plus the resulting tool calling that ``act``s
+    on or ``observe``s the environment. Stock dspy discards every step but the
+    final ``extract``; this surfaces each one so the full per-turn trajectory rides
+    the highway.
+
+    Capture-only and UNCAPPED (per the trajectory ontology): the highway carries
+    everything; per-consumer filtering happens downstream (the trace/TUI apply no
+    filter, the parent filters to the extract). ``thought``/``observation`` are NOT
+    in ``SENSITIVE_KEYS`` so they survive ``project_sse`` to the live UI. Steps of
+    one expert share ``expert_span_id`` so consumers can group a trajectory.
+    Best-effort: capture must never break the expert loop.
+    """
+
+    app = _ACTIVE_GACT_APP.get()
+    sid = _ACTIVE_GACT_SESSION_ID.get()
+    if app is None or not sid:
+        return
+    try:
+        _emit_semantic_event(
+            app,
+            sid,
+            "react.step.completed",
+            turn_id=_active_semantic_turn_id(),
+            trace_id=_active_semantic_trace_id(),
+            parent_span_id=expert_span_id,
+            status="completed",
+            summary=(
+                f"{expert_id or 'expert'} ReAct step {step_index}: {str(tool_name) or 'finish'}"
+            ),
+            actor={"agent_id": expert_id, "role": "expert"},
+            payload={
+                "expert_id": expert_id,
+                "expert_span_id": expert_span_id,
+                "step_index": step_index,
+                "thought": _jsonish(thought),
+                "tool_name": str(tool_name or ""),
+                "tool_args": _jsonish(tool_args),
+                "observation": _jsonish(observation),
+                "is_finish": bool(is_finish),
+            },
+        )
+    except Exception:  # noqa: BLE001 - capture must never break the expert loop
+        pass
+
+
 def _llm_provider_payload(app: "FastAPI", agent_id: str = "") -> dict[str, Any]:
     cfg = _effective_lm_config(app)
     return {
@@ -5530,6 +5589,10 @@ def _retaining_react_cls() -> Any:
             # never exposes a stale trajectory from an earlier forward.
             _ACTIVE_REACT_TRAJECTORY.set(None)
             trajectory: dict[str, Any] = {}
+            expert_id = str(getattr(self, "_clio_expert_id", "") or "")
+            # One span per expert lifecycle so the highway's per-step events of a
+            # single expert trajectory can be grouped by consumers.
+            expert_span_id = uuid.uuid4().hex[:16]
             max_iters = input_args.pop("max_iters", self.max_iters)
             for idx in range(max_iters):
                 try:
@@ -5552,6 +5615,20 @@ def _retaining_react_cls() -> Any:
                     trajectory[f"observation_{idx}"] = (
                         f"Execution error in {pred.next_tool_name}: {err}"
                     )
+
+                # Put this ReAct Step (LLM response + tool act/observe) on the
+                # highway with FULL content BEFORE the loop discards everything but
+                # the final extract.
+                _emit_react_step_event(
+                    expert_id=expert_id,
+                    expert_span_id=expert_span_id,
+                    step_index=idx,
+                    thought=pred.next_thought,
+                    tool_name=pred.next_tool_name,
+                    tool_args=pred.next_tool_args,
+                    observation=trajectory[f"observation_{idx}"],
+                    is_finish=pred.next_tool_name == "finish",
+                )
 
                 if pred.next_tool_name == "finish":
                     break
@@ -5644,6 +5721,9 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                     tools=tools,
                     max_iters=_tool_user_agent_max_iters(agent_def),
                 )
+                # Tag the program so its ReAct loop attributes each step to this
+                # expert on the highway (see _emit_react_step_event).
+                self.program._clio_expert_id = agent_def.id
             agent_prompt = agent_def.system_prompt.strip() or agent_def.description
             active_app = _ACTIVE_GACT_APP.get()
             # Always call it (do not short-circuit on active_app is None): the streamed

@@ -118,6 +118,113 @@ def test_retaining_react_success_returns_trajectory_in_prediction():
         gact_app._ACTIVE_REACT_TRAJECTORY.reset(token)
 
 
+def test_retaining_react_emits_full_per_step_on_highway(monkeypatch):
+    """Every ReAct Step (LLM response thought + tool act/observe) rides the highway,
+    full and uncapped, attributed to its expert and grouped by one span."""
+    cls = gact_app._retaining_react_cls()
+    inst = object.__new__(cls)
+    inst.max_iters = 5
+    inst.react = object()
+    inst.extract = object()
+    big_obs = {"rows": ["A", "B"], "note": "x" * 5000}
+    inst.tools = {
+        "ndp_search_datasets": lambda **kw: big_obs,
+        "finish": lambda: "Completed.",
+    }
+    inst._clio_expert_id = "ndp_dataset_discovery"
+
+    steps = [
+        _AttrDict(
+            next_thought="I should search NDP",
+            next_tool_name="ndp_search_datasets",
+            next_tool_args={"query": "gnss"},
+        ),
+        _AttrDict(next_thought="Done searching", next_tool_name="finish", next_tool_args={}),
+    ]
+    seq = {"i": 0}
+
+    def fake_trunc(module, trajectory, **input_args):
+        if module is inst.react:
+            step = steps[seq["i"]]
+            seq["i"] += 1
+            return step
+        return _AttrDict(answer="final report", reasoning="r")
+
+    inst._call_with_potential_trajectory_truncation = fake_trunc
+
+    emitted: list[tuple[str, dict]] = []
+
+    def fake_emit(app, sid, event_type, **kw):
+        emitted.append((event_type, kw))
+        return {}
+
+    monkeypatch.setattr(gact_app, "_emit_semantic_event", fake_emit)
+
+    app_token = gact_app._ACTIVE_GACT_APP.set(object())
+    sid_token = gact_app._ACTIVE_GACT_SESSION_ID.set("sess_test")
+    traj_token = gact_app._ACTIVE_REACT_TRAJECTORY.set(None)
+    try:
+        result = inst.forward(question="find stations near San Diego")
+    finally:
+        gact_app._ACTIVE_REACT_TRAJECTORY.reset(traj_token)
+        gact_app._ACTIVE_GACT_SESSION_ID.reset(sid_token)
+        gact_app._ACTIVE_GACT_APP.reset(app_token)
+
+    step_events = [kw["payload"] for (et, kw) in emitted if et == "react.step.completed"]
+    assert len(step_events) == 2  # one per ReAct Step, including the finish step
+
+    p0 = step_events[0]
+    assert p0["expert_id"] == "ndp_dataset_discovery"
+    assert p0["step_index"] == 0
+    assert p0["thought"] == "I should search NDP"
+    assert p0["tool_name"] == "ndp_search_datasets"
+    assert p0["tool_args"] == {"query": "gnss"}
+    assert "x" * 5000 in str(p0["observation"])  # FULL observation, not capped
+    assert p0["is_finish"] is False
+
+    p1 = step_events[1]
+    assert p1["step_index"] == 1
+    assert p1["tool_name"] == "finish"
+    assert p1["is_finish"] is True
+
+    # All steps of one expert lifecycle share a span so a trajectory is groupable.
+    assert p0["expert_span_id"] == p1["expert_span_id"]
+    assert result.answer == "final report"
+
+
+def test_retaining_react_step_capture_is_best_effort(monkeypatch):
+    """A highway-emit failure must never break the expert loop."""
+    cls = gact_app._retaining_react_cls()
+    inst = object.__new__(cls)
+    inst.max_iters = 3
+    inst.react = object()
+    inst.extract = object()
+    inst.tools = {"finish": lambda: "Completed."}
+    inst._clio_expert_id = "x"
+
+    def fake_trunc(module, trajectory, **input_args):
+        if module is inst.react:
+            return _AttrDict(next_thought="t", next_tool_name="finish", next_tool_args={})
+        return _AttrDict(answer="ok")
+
+    inst._call_with_potential_trajectory_truncation = fake_trunc
+
+    def boom(*a, **k):
+        raise RuntimeError("sink exploded")
+
+    monkeypatch.setattr(gact_app, "_emit_semantic_event", boom)
+    app_token = gact_app._ACTIVE_GACT_APP.set(object())
+    sid_token = gact_app._ACTIVE_GACT_SESSION_ID.set("sess_test")
+    traj_token = gact_app._ACTIVE_REACT_TRAJECTORY.set(None)
+    try:
+        result = inst.forward(question="q")  # must not raise despite the sink blowing up
+        assert result.answer == "ok"
+    finally:
+        gact_app._ACTIVE_REACT_TRAJECTORY.reset(traj_token)
+        gact_app._ACTIVE_GACT_SESSION_ID.reset(sid_token)
+        gact_app._ACTIVE_GACT_APP.reset(app_token)
+
+
 def test_prediction_summary_attaches_trajectory_and_reasoning():
     pred = _AttrDict(
         answer="A",
