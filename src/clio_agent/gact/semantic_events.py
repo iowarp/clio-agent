@@ -33,7 +33,9 @@ SENSITIVE_KEYS = {
     "content",
     "input",
     "new_content",
-    "output",
+    # NOTE: ``output`` is NOT redacted on SSE — it is the expert's extract report
+    # (expert.extract.completed) and delegation/fanout result, which the TUI renders
+    # in full. It is content, not a secret. Genuine secrets below stay redacted.
     "password",
     "prompt",
     "question",

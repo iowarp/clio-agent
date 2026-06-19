@@ -75,6 +75,25 @@ def test_project_sse_redacts_sensitive_but_keeps_envelope():
     assert str(out["payload"]["trajectory"]).startswith("[redacted]")
 
 
+def test_project_sse_keeps_expert_output_full_but_redacts_secrets():
+    # The expert's extract report (`output`) is content the TUI renders in full, so
+    # it must SURVIVE the SSE projection; only genuine secrets stay redacted.
+    ev = SemanticEvent(
+        event_type="expert.extract.completed",
+        session_id="s1",
+        trace_id="trace_t1",
+        turn_id="t1",
+        payload={
+            "output": "the full expert report. " * 50,
+            "api_key": "sk-secret-should-be-hidden",
+        },
+    )
+    out = project_sse(ev)
+    assert out["payload"]["output"].startswith("the full expert report")
+    assert "[redacted]" not in str(out["payload"]["output"])
+    assert str(out["payload"]["api_key"]).startswith("[redacted]")
+
+
 def test_project_history_is_deferred():
     with pytest.raises(NotImplementedError):
         project_history(_handoff_event())
