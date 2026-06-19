@@ -298,6 +298,119 @@ def test_emit_semantic_event_nests_under_active_span():
         gact_app._ACTIVE_PARENT_SPAN_ID.reset(tok)
 
 
+def test_react_loop_emits_full_correlated_tree_through_real_sink():
+    """End-to-end: a real _RetainingReAct loop through the REAL _emit_semantic_event
+    + a real sink. Asserts every event family is on the highway, with FULL content,
+    correlated into the recursive tree (lm.call/tool.call -> step -> expert) and
+    grouped by the agent-lifecycle turn_id. Only the LM responses are faked."""
+    import types
+
+    events: list = []
+
+    class _Sink:
+        def emit(self, ev):
+            events.append(ev)
+            return {}
+
+    app = types.SimpleNamespace(
+        state=types.SimpleNamespace(
+            semantic_event_sink=_Sink(), sessions={}, semantic_trace_detail_level="semantic"
+        )
+    )
+
+    cls = gact_app._retaining_react_cls()
+    inst = object.__new__(cls)
+    inst.max_iters = 5
+    inst.react = object()
+    inst.extract = object()
+    inst._clio_expert_id = "ndp_dataset_discovery"
+
+    # A tool that emits a tool.call.completed like the live observer does — so we can
+    # prove it nests under the active ReAct step.
+    def ndp_search(**kw):
+        # The real tool observer stamps turn_id from the active contextvar.
+        gact_app._emit_semantic_event(
+            app,
+            "sid",
+            "tool.call.completed",
+            turn_id=gact_app._ACTIVE_GACT_TURN_ID.get(),
+            payload={"tool": "ndp_search", "args": kw},
+        )
+        return {"rows": ["A", "B"], "note": "x" * 3000}
+
+    inst.tools = {"ndp_search": ndp_search, "finish": lambda: "done"}
+
+    steps = [
+        _AttrDict(
+            next_thought="search ndp", next_tool_name="ndp_search", next_tool_args={"q": "gnss"}
+        ),
+        _AttrDict(next_thought="wrap up", next_tool_name="finish", next_tool_args={}),
+    ]
+    seq = {"i": 0}
+
+    def fake_trunc(module, trajectory, **input_args):
+        if module is inst.react:
+            # self.react IS the per-step LLM call; emit an lm.call like IOLoggingLM
+            # (which stamps turn_id from the active contextvar).
+            gact_app._emit_semantic_event(
+                app,
+                "sid",
+                "lm.call",
+                turn_id=gact_app._ACTIVE_GACT_TURN_ID.get(),
+                payload={"content": "...", "reasoning_content": "cot"},
+                detail_level="off",
+            )
+            step = steps[seq["i"]]
+            seq["i"] += 1
+            return step
+        return _AttrDict(answer="final report " + "y" * 100, reasoning="r")
+
+    inst._call_with_potential_trajectory_truncation = fake_trunc
+
+    tokens = [
+        (gact_app._ACTIVE_GACT_APP, gact_app._ACTIVE_GACT_APP.set(app)),
+        (gact_app._ACTIVE_GACT_SESSION_ID, gact_app._ACTIVE_GACT_SESSION_ID.set("sid")),
+        (gact_app._ACTIVE_GACT_TURN_ID, gact_app._ACTIVE_GACT_TURN_ID.set("msg_user_1")),
+        (gact_app._ACTIVE_REACT_TRAJECTORY, gact_app._ACTIVE_REACT_TRAJECTORY.set(None)),
+    ]
+    try:
+        inst.forward(question="stations near San Diego")
+    finally:
+        for var, tok in reversed(tokens):
+            var.reset(tok)
+
+    by_type: dict[str, list] = {}
+    for e in events:
+        by_type.setdefault(e.event_type, []).append(e)
+
+    # Every family is on the highway.
+    assert len(by_type["expert.lifecycle.started"]) == 1
+    assert len(by_type["expert.extract.completed"]) == 1
+    assert len(by_type["react.step.completed"]) == 2
+    assert len(by_type["lm.call"]) == 2  # one LLM call per ReAct step
+    assert len(by_type["tool.call.completed"]) == 1  # only the search step calls a tool
+
+    # turn_id (the agent-lifecycle id) is on EVERY event.
+    assert {e.turn_id for e in events} == {"msg_user_1"}
+
+    # The recursive tree correlates: step0's lm.call + tool.call nest under step0's
+    # span; the step nests under the expert.
+    step0 = by_type["react.step.completed"][0]
+    step0_span = step0.payload["step_span_id"]
+    expert_span = step0.payload["expert_span_id"]
+    assert step0.parent_span_id == expert_span
+    assert by_type["lm.call"][0].parent_span_id == step0_span
+    assert by_type["tool.call.completed"][0].parent_span_id == step0_span
+    # Steps get distinct spans.
+    assert by_type["react.step.completed"][1].payload["step_span_id"] != step0_span
+
+    # FULL content survives capture (no caps): the 3000-char observation and the
+    # full extract output that returns to the parent.
+    assert "x" * 3000 in str(step0.payload["observation"])
+    assert "y" * 100 in by_type["expert.extract.completed"][0].payload["output"]
+    assert by_type["expert.extract.completed"][0].payload["expert_span_id"] == expert_span
+
+
 def test_prediction_summary_attaches_trajectory_and_reasoning():
     pred = _AttrDict(
         answer="A",

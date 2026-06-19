@@ -461,6 +461,7 @@ def _emit_react_step_event(
     *,
     expert_id: str,
     expert_span_id: str,
+    step_span_id: str,
     step_index: int,
     thought: Any,
     tool_name: Any,
@@ -504,6 +505,10 @@ def _emit_react_step_event(
             payload={
                 "expert_id": expert_id,
                 "expert_span_id": expert_span_id,
+                # This step's span: the lm.call (self.react) and tool.call (act/
+                # observe) of this step carry parent_span_id == step_span_id, so a
+                # consumer links them to this step.
+                "step_span_id": step_span_id,
                 "step_index": step_index,
                 "thought": _jsonish(thought),
                 "tool_name": str(tool_name or ""),
@@ -5662,43 +5667,55 @@ def _retaining_react_cls() -> Any:
             try:
                 max_iters = input_args.pop("max_iters", self.max_iters)
                 for idx in range(max_iters):
+                    # One span per ReAct Step: while it is active, this step's
+                    # lm.call (self.react) and tool.call (the act/observe) auto-nest
+                    # under it, so the raw LLM I/O + tool calling are correlated to
+                    # the step. Reset to the expert span at the step boundary.
+                    step_span_id = uuid.uuid4().hex[:16]
+                    step_token = _ACTIVE_PARENT_SPAN_ID.set(step_span_id)
                     try:
-                        pred = self._call_with_potential_trajectory_truncation(
-                            self.react, trajectory, **input_args
-                        )
-                    except ValueError:
-                        # Agent failed to select a valid tool; end the loop and let
-                        # extract work with whatever trajectory exists so far.
-                        break
+                        try:
+                            pred = self._call_with_potential_trajectory_truncation(
+                                self.react, trajectory, **input_args
+                            )
+                        except ValueError:
+                            # Agent failed to select a valid tool; end the loop and
+                            # let extract work with whatever trajectory exists so far.
+                            break
 
-                    trajectory[f"thought_{idx}"] = pred.next_thought
-                    trajectory[f"tool_name_{idx}"] = pred.next_tool_name
-                    trajectory[f"tool_args_{idx}"] = pred.next_tool_args
-                    try:
-                        trajectory[f"observation_{idx}"] = self.tools[pred.next_tool_name](
-                            **pred.next_tool_args
-                        )
-                    except Exception as err:  # noqa: BLE001 - mirror dspy: errors become observations
-                        trajectory[f"observation_{idx}"] = (
-                            f"Execution error in {pred.next_tool_name}: {err}"
+                        trajectory[f"thought_{idx}"] = pred.next_thought
+                        trajectory[f"tool_name_{idx}"] = pred.next_tool_name
+                        trajectory[f"tool_args_{idx}"] = pred.next_tool_args
+                        try:
+                            trajectory[f"observation_{idx}"] = self.tools[pred.next_tool_name](
+                                **pred.next_tool_args
+                            )
+                        except Exception as err:  # noqa: BLE001 - mirror dspy: errors become observations
+                            trajectory[f"observation_{idx}"] = (
+                                f"Execution error in {pred.next_tool_name}: {err}"
+                            )
+
+                        # Put this ReAct Step (LLM response + tool act/observe) on
+                        # the highway with FULL content BEFORE the loop discards
+                        # everything but the final extract. Pin its parent to the
+                        # expert span (the step event is a child of the expert, not
+                        # self-parented under the active step span).
+                        _emit_react_step_event(
+                            expert_id=expert_id,
+                            expert_span_id=expert_span_id,
+                            step_span_id=step_span_id,
+                            step_index=idx,
+                            thought=pred.next_thought,
+                            tool_name=pred.next_tool_name,
+                            tool_args=pred.next_tool_args,
+                            observation=trajectory[f"observation_{idx}"],
+                            is_finish=pred.next_tool_name == "finish",
                         )
 
-                    # Put this ReAct Step (LLM response + tool act/observe) on the
-                    # highway with FULL content BEFORE the loop discards everything
-                    # but the final extract.
-                    _emit_react_step_event(
-                        expert_id=expert_id,
-                        expert_span_id=expert_span_id,
-                        step_index=idx,
-                        thought=pred.next_thought,
-                        tool_name=pred.next_tool_name,
-                        tool_args=pred.next_tool_args,
-                        observation=trajectory[f"observation_{idx}"],
-                        is_finish=pred.next_tool_name == "finish",
-                    )
-
-                    if pred.next_tool_name == "finish":
-                        break
+                        if pred.next_tool_name == "finish":
+                            break
+                    finally:
+                        _ACTIVE_PARENT_SPAN_ID.reset(step_token)
 
                 # Publish BEFORE extract: a failed extract still exposes the trajectory.
                 _ACTIVE_REACT_TRAJECTORY.set(
