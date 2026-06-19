@@ -360,7 +360,13 @@ def test_retry_execute_queues_new_turn_with_attempt_provenance(tmp_path: Path) -
         "queued_user_message_id"
     ]
     assert completed["metadata"]["assistant_message_id"].startswith("msg_asst_")
-    assert agent.questions == ["Inspect the large dataset.\n\n[Retry notes]\nUse the second file and be concise."]
+    # The queued retry runs exactly one turn whose request carries the retry notes.
+    # (Multi-turn sessions now prepend prior-conversation context before the current
+    # request, so match the tail rather than the whole enriched prompt.)
+    assert len(agent.questions) == 1
+    assert agent.questions[0].endswith(
+        "Inspect the large dataset.\n\n[Retry notes]\nUse the second file and be concise."
+    )
 
     messages = client.get(f"/v1/sessions/{sid}/messages").json()["messages"]
     retry_user = next(
