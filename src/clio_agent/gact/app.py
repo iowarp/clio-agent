@@ -6942,6 +6942,7 @@ async def _run_turn_in_background(
                     type="message.completed",
                     session_id=sid,
                     payload={
+                        "turn_id": turn_id,
                         "message_id": user_msg.id,
                         "stop_reason": "blocked",
                         "error_info": {
@@ -7003,6 +7004,7 @@ async def _run_turn_in_background(
                         session_id=sid,
                         payload=Message(
                             id=streamed_assistant_msg_id,
+                            turn_id=turn_id,
                             session_id=sid,
                             role="assistant",
                             created_at=_iso_from_epoch(time.time()),
@@ -7027,7 +7029,9 @@ async def _run_turn_in_background(
                     type="message.part.added",
                     session_id=sid,
                     payload={
+                        "turn_id": turn_id,
                         "message_id": streamed_assistant_msg_id,
+                        "stream_source": "live",
                         "part": text_part.model_dump(exclude_none=True),
                     },
                 )
@@ -7038,6 +7042,7 @@ async def _run_turn_in_background(
                 type="message.part.delta",
                 session_id=sid,
                 payload={
+                    "turn_id": turn_id,
                     "message_id": streamed_assistant_msg_id,
                     "part_id": streamed_assistant_part_id,
                     "stream_source": "live",
@@ -8722,6 +8727,8 @@ async def _run_turn_in_background(
                 break
     assistant_msg = Message(
         id=asst_id,
+        # Correlate the assistant reply to the user-turn that produced it (#711).
+        turn_id=turn_id,
         session_id=sid,
         role="assistant",
         created_at=_iso_from_epoch(time.time()),
@@ -8892,6 +8899,7 @@ async def _run_turn_in_background(
                 session_id=sid,
                 payload=Message(
                     id=assistant_msg.id,
+                    turn_id=turn_id,
                     session_id=sid,
                     role="assistant",
                     created_at=assistant_msg.created_at,
@@ -8923,6 +8931,7 @@ async def _run_turn_in_background(
                         type="message.part.completed",
                         session_id=sid,
                         payload={
+                            "turn_id": turn_id,
                             "message_id": assistant_msg.id,
                             "part_id": part.id,
                             "stream_source": "live",
@@ -8943,7 +8952,9 @@ async def _run_turn_in_background(
                     type="message.part.added",
                     session_id=sid,
                     payload={
+                        "turn_id": turn_id,
                         "message_id": assistant_msg.id,
+                        "stream_source": "batch",
                         "part": delivered.model_dump(exclude_none=True),
                     },
                 )
@@ -8953,6 +8964,7 @@ async def _run_turn_in_background(
                     type="message.part.completed",
                     session_id=sid,
                     payload={
+                        "turn_id": turn_id,
                         "message_id": assistant_msg.id,
                         "part_id": part.id,
                         "stream_source": "batch",
@@ -8967,7 +8979,9 @@ async def _run_turn_in_background(
                     type="message.part.added",
                     session_id=sid,
                     payload={
+                        "turn_id": turn_id,
                         "message_id": assistant_msg.id,
+                        "stream_source": str(part.metadata.get("stream_source") or "batch"),
                         "part": part.model_dump(exclude_none=True),
                     },
                 )
@@ -8977,6 +8991,7 @@ async def _run_turn_in_background(
     # do not reconstruct started/completed events after the turn, because
     # that makes post-hoc facts look like live tool timing.
     completed_payload: dict[str, Any] = {
+        "turn_id": turn_id,
         "message_id": assistant_msg.id,
         "stop_reason": "cancelled" if cancelled_turn else ("error" if error_info else "end_turn"),
         "tokens": dict(turn_tokens),
@@ -10409,6 +10424,7 @@ def _ensure_live_assistant_message(app: "FastAPI", sid: str) -> str:
             session_id=sid,
             payload=Message(
                 id=msg_id,
+                turn_id=_active_semantic_turn_id(),
                 session_id=sid,
                 role="assistant",
                 created_at=now,
@@ -10433,7 +10449,14 @@ def _append_live_assistant_part(app: "FastAPI", sid: str, part: Part) -> None:
         Event(
             type="message.part.added",
             session_id=sid,
-            payload={"message_id": msg_id, "part": part.model_dump(exclude_none=True)},
+            payload={
+                "turn_id": _active_semantic_turn_id(),
+                "message_id": msg_id,
+                # Real runtime parts (tool calls/results, routing) emitted live during
+                # the turn (#711); not provider-token text, but emitted in real time.
+                "stream_source": str(part.metadata.get("stream_source") or "live"),
+                "part": part.model_dump(exclude_none=True),
+            },
         )
     )
 
@@ -12708,8 +12731,11 @@ async def _scheduler_tick(app: "FastAPI") -> None:
         try:
             now = datetime.now(timezone.utc)
             for sch in list(app.state.schedules.due_now(now)):
+                scheduled_user_msg_id = _new_message_id("user")
                 user_msg = Message(
-                    id=_new_message_id("user"),
+                    id=scheduled_user_msg_id,
+                    # A scheduled turn correlates to its own user message id (#711).
+                    turn_id=scheduled_user_msg_id,
                     session_id=sch.session_id,
                     role="user",
                     created_at=_iso_from_epoch(time.time()),
@@ -15629,6 +15655,7 @@ def build_app(
 
             sys_msg = Message(
                 id=f"msg_cmd_{uuid.uuid4().hex[:10]}",
+                turn_id=_active_semantic_turn_id(),
                 session_id=sid,
                 role="assistant",
                 created_at=datetime.now(timezone.utc).isoformat(),
@@ -15765,6 +15792,7 @@ def build_app(
 
         sys_msg = Message(
             id=f"msg_cmd_{uuid.uuid4().hex[:10]}",
+            turn_id=_active_semantic_turn_id(),
             session_id=sid,
             role="assistant",
             created_at=datetime.now(timezone.utc).isoformat(),
@@ -16902,6 +16930,7 @@ def build_app(
 
         compact_message = Message(
             id=f"msg_compact_{uuid.uuid4().hex[:10]}",
+            turn_id=_active_semantic_turn_id(),
             session_id=sid,
             role="assistant",
             created_at=datetime.now(timezone.utc).isoformat(),
@@ -17943,8 +17972,12 @@ def build_app(
                 "session_agent_id": _session_agent_id(sess),
                 "scope": "turn",
             }
+        user_msg_id = _new_message_id("user")
         user_msg = Message(
-            id=_new_message_id("user"),
+            id=user_msg_id,
+            # The turn id IS the user message id (#711); a user message correlates to
+            # its own turn.
+            turn_id=user_msg_id,
             session_id=sid,
             role="user",
             created_at=_iso_from_epoch(now),

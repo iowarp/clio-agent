@@ -174,6 +174,36 @@ def test_post_message_happy_path(client: TestClient, fake_agent: FakeClioAgent) 
     assert fake_agent.calls == [("refactor this function", sid)]
 
 
+def test_turn_id_correlates_user_and_assistant_durably(client: TestClient) -> None:
+    """#711: turn_id is a durable join key in the ledger.
+
+    The user message's turn_id equals its own id; the assistant reply's turn_id equals
+    that user message id. Persisted (GET /messages) so consumers join the whole turn —
+    prose + trajectory — without the message_id -> preceding-user-message heuristic.
+    """
+
+    from .conftest import complete_turn
+
+    sid = _create_session(client)
+    assistant = complete_turn(client, sid, "correlate this turn")
+
+    msgs = client.get(f"/v1/sessions/{sid}/messages").json()["messages"]
+    user_msg = next(m for m in msgs if m["role"] == "user")
+    asst_msg = next(m for m in msgs if m["id"] == assistant["id"])
+
+    assert user_msg["turn_id"] == user_msg["id"]
+    assert asst_msg["turn_id"] == user_msg["id"]
+    assert assistant["turn_id"] == user_msg["id"]
+    # Matches the semantic-event turn_id (== the user message id) so message.* and
+    # semantic.event streams join on one key.
+    completed = [ev for ev in app_history(client, sid) if ev.type == "message.completed"]
+    assert completed and completed[-1].payload["turn_id"] == user_msg["id"]
+
+
+def app_history(client: TestClient, sid: str) -> list[Any]:
+    return client.app.state.bus._history.get(sid, [])  # type: ignore[attr-defined]
+
+
 def test_capabilities_and_provider_catalog_report_image_part_support(client: TestClient) -> None:
     caps = client.get("/v1/capabilities").json()["capabilities"]
     assert caps["multimodal_image_parts"] is True
@@ -309,9 +339,7 @@ def test_post_message_dispatches_image_parts_to_image_aware_agent(tmp_path: Path
     assert fake_agent.calls == [("describe this image", sid)]
     assert len(fake_agent.image_calls) == 1
     assert len(fake_agent.image_calls[0]) == 1
-    assert getattr(fake_agent.image_calls[0][0], "url", "").startswith(
-        "data:image/png;base64,"
-    )
+    assert getattr(fake_agent.image_calls[0][0], "url", "").startswith("data:image/png;base64,")
 
 
 def test_post_message_bumps_message_count_by_two(client: TestClient) -> None:
