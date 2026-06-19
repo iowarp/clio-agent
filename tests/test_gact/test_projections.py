@@ -94,6 +94,34 @@ def test_project_sse_keeps_expert_output_full_but_redacts_secrets():
     assert str(out["payload"]["api_key"]).startswith("[redacted]")
 
 
+def test_project_sse_keeps_reasoning_only_for_allowlisted_events():
+    # `reasoning` is the model's chain-of-thought. It must reach the live UI on the
+    # canonical step event, but STAY redacted on raw/streamed events. The allow-list
+    # is event-scoped (not a global un-redaction) so this distinction holds.
+    def _ev(event_type):
+        return SemanticEvent(
+            event_type=event_type,
+            session_id="s1",
+            trace_id="trace_t1",
+            turn_id="t1",
+            payload={"reasoning": "deep chain of thought " * 20},
+        )
+
+    # Allowed: the canonical step + the expert extract.
+    assert "[redacted]" not in str(project_sse(_ev("react.step.completed"))["payload"]["reasoning"])
+    assert "[redacted]" not in str(
+        project_sse(_ev("expert.extract.completed"))["payload"]["reasoning"]
+    )
+    # Redacted everywhere else (raw LM I/O / streamed token deltas / generic events).
+    assert str(project_sse(_ev("lm.call"))["payload"]["reasoning"]).startswith("[redacted]")
+    assert str(project_sse(_ev("lm.token.delta"))["payload"]["reasoning"]).startswith("[redacted]")
+    assert str(project_sse(_ev("expert.response.completed"))["payload"]["reasoning"]).startswith(
+        "[redacted]"
+    )
+    # Full capture is always unredacted regardless of event type.
+    assert "[redacted]" not in str(project_full(_ev("lm.call"))["payload"]["reasoning"])
+
+
 def test_project_history_is_deferred():
     with pytest.raises(NotImplementedError):
         project_history(_handoff_event())

@@ -59,6 +59,17 @@ SENSITIVE_KEYS = {
     "final_message",
 }
 
+# Per-EVENT SSE allow-list: keys that are normally redacted (in SENSITIVE_KEYS)
+# but are legitimate live content for THESE specific event types, so the SSE
+# projection keeps them. This is event/field scoped ON PURPOSE: e.g. ``reasoning``
+# is the model's chain-of-thought, which the TUI wants on the step event, but it
+# must STAY redacted on lm.call / lm.token.delta / raw-prompt events (where it is
+# bulky/streamed/duplicated). Scoping here avoids globally un-redacting a key.
+SSE_KEEP_KEYS_BY_EVENT: dict[str, frozenset[str]] = {
+    "react.step.completed": frozenset({"reasoning"}),
+    "expert.extract.completed": frozenset({"reasoning"}),
+}
+
 # The "body" fields of a SemanticEvent — these carry the rich, potentially
 # sensitive payloads that are captured in FULL durably but projected/redacted
 # for SSE and hooks. The envelope fields (ids, status, summary, timestamps) are
@@ -107,28 +118,33 @@ def _redact_value(value: Any) -> Any:
     return REDACTED_VALUE
 
 
-def _semantic_safe(value: Any) -> Any:
+def _semantic_safe(value: Any, allow: frozenset[str] = frozenset()) -> Any:
     value = _json_safe(value)
     if isinstance(value, dict):
         result: dict[str, Any] = {}
         for key, item in value.items():
             key_s = str(key)
-            if key_s.lower() in SENSITIVE_KEYS:
+            # ``allow`` is the per-event SSE allow-list (SSE_KEEP_KEYS_BY_EVENT):
+            # a key that is normally sensitive but is legitimate live content for
+            # THIS event type survives unredacted.
+            if key_s.lower() in SENSITIVE_KEYS and key_s.lower() not in allow:
                 result[key_s] = _redact_value(item)
             else:
-                result[key_s] = _semantic_safe(item)
+                result[key_s] = _semantic_safe(item, allow)
         return result
     if isinstance(value, list):
-        return [_semantic_safe(item) for item in value]
+        return [_semantic_safe(item, allow) for item in value]
     return value
 
 
-def _payload_for_detail(value: dict[str, Any], detail_level: str) -> dict[str, Any]:
+def _payload_for_detail(
+    value: dict[str, Any], detail_level: str, allow: frozenset[str] = frozenset()
+) -> dict[str, Any]:
     detail_level = normalize_detail_level(detail_level)
     if detail_level in {"off", "metadata"}:
         return {}
     if detail_level == "semantic":
-        return _semantic_safe(value)
+        return _semantic_safe(value, allow)
     return _json_safe(value)
 
 
@@ -189,8 +205,9 @@ class SemanticEvent:
         elif projection in ("metadata", "off", "none"):
             bodies = {field_name: {} for field_name in _BODY_FIELDS}
         else:  # "sse" (and any unknown) → honor the event's detail_level
+            allow = SSE_KEEP_KEYS_BY_EVENT.get(self.event_type, frozenset())
             bodies = {
-                field_name: _payload_for_detail(getattr(self, field_name), detail_level)
+                field_name: _payload_for_detail(getattr(self, field_name), detail_level, allow)
                 for field_name in _BODY_FIELDS
             }
         return {**envelope, **bodies}

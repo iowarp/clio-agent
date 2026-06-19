@@ -457,6 +457,26 @@ def _emit_semantic_event(
     return sink.emit(event)
 
 
+def _active_lm_last_reasoning() -> str:
+    """Best-effort: the reasoning-channel text (chain-of-thought) of the most recent
+    call on the active dspy LM — i.e. the call that just produced a ReAct step or the
+    extract. Empty for content-channel models (e.g. gemma, whose reasoning is parsed
+    into ``next_thought``) or when unavailable. MUST be read immediately after the
+    LM call and before any tool runs (a delegation tool runs a child whose LM call
+    would otherwise become ``history[-1]``)."""
+
+    try:
+        import dspy  # noqa: PLC0415
+
+        lm = dspy.settings.lm
+        history = getattr(lm, "history", None)
+        if history:
+            return _entry_reasoning_text(history[-1])
+    except Exception:  # noqa: BLE001 - capture is best-effort, never break the loop
+        return ""
+    return ""
+
+
 def _emit_react_step_event(
     *,
     expert_id: str,
@@ -464,6 +484,7 @@ def _emit_react_step_event(
     step_span_id: str,
     step_index: int,
     thought: Any,
+    reasoning: Any,
     tool_name: Any,
     tool_args: Any,
     observation: Any,
@@ -479,10 +500,12 @@ def _emit_react_step_event(
 
     Capture-only and UNCAPPED (per the trajectory ontology): the highway carries
     everything; per-consumer filtering happens downstream (the trace/TUI apply no
-    filter, the parent filters to the extract). ``thought``/``observation`` are NOT
-    in ``SENSITIVE_KEYS`` so they survive ``project_sse`` to the live UI. Steps of
-    one expert share ``expert_span_id`` so consumers can group a trajectory.
-    Best-effort: capture must never break the expert loop.
+    filter, the parent filters to the extract). ``thought``/``tool_*``/``observation``
+    are not in ``SENSITIVE_KEYS``; ``reasoning`` IS, but is allowed through the SSE
+    projection for THIS event type via ``SSE_KEEP_KEYS_BY_EVENT`` (so the model's
+    chain-of-thought reaches the live UI here while staying redacted on lm.call /
+    lm.token.delta / raw-prompt events). Steps of one expert share
+    ``expert_span_id``. Best-effort: capture must never break the expert loop.
     """
 
     app = _ACTIVE_GACT_APP.get()
@@ -510,7 +533,12 @@ def _emit_react_step_event(
                 # consumer links them to this step.
                 "step_span_id": step_span_id,
                 "step_index": step_index,
+                # ``thought`` = DSPy's parsed next_thought (good for content-channel
+                # models like gemma). ``reasoning`` = the raw reasoning channel
+                # (chain-of-thought) for reasoning models — distinct from thought.
+                # Allowed through the SSE projection only for this event type.
                 "thought": _jsonish(thought),
+                "reasoning": _jsonish(reasoning),
                 "tool_name": str(tool_name or ""),
                 "tool_args": _jsonish(tool_args),
                 "observation": _jsonish(observation),
@@ -5683,6 +5711,10 @@ def _retaining_react_cls() -> Any:
                             # let extract work with whatever trajectory exists so far.
                             break
 
+                        # Capture the raw reasoning channel for THIS step now —
+                        # before any tool runs (a delegation tool's child LM call
+                        # would otherwise overwrite history[-1]).
+                        step_reasoning = _active_lm_last_reasoning()
                         trajectory[f"thought_{idx}"] = pred.next_thought
                         trajectory[f"tool_name_{idx}"] = pred.next_tool_name
                         trajectory[f"tool_args_{idx}"] = pred.next_tool_args
@@ -5706,6 +5738,7 @@ def _retaining_react_cls() -> Any:
                             step_span_id=step_span_id,
                             step_index=idx,
                             thought=pred.next_thought,
+                            reasoning=step_reasoning,
                             tool_name=pred.next_tool_name,
                             tool_args=pred.next_tool_args,
                             observation=trajectory[f"observation_{idx}"],
@@ -5724,6 +5757,7 @@ def _retaining_react_cls() -> Any:
                 extract = self._call_with_potential_trajectory_truncation(
                     self.extract, trajectory, **input_args
                 )
+                extract_reasoning = _active_lm_last_reasoning()
                 final_pred = dspy.Prediction(trajectory=trajectory, **extract)
                 # Close the expert lifecycle with the extract output — the typed
                 # result that returns to the parent. FULL/uncapped on the highway;
@@ -5735,6 +5769,7 @@ def _retaining_react_cls() -> Any:
                     status="completed",
                     payload={
                         "output": str(getattr(final_pred, "answer", "") or ""),
+                        "reasoning": extract_reasoning,
                         "structured": _prediction_structured_metadata(final_pred),
                         "step_count": sum(1 for k in trajectory if k.startswith("tool_name_")),
                     },
