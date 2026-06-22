@@ -48,6 +48,11 @@ dependencies = [
     "lru-dict>=1.3.0",
     "msgspec>=0.18.0",
     "matplotlib>=3.8.0",
+    # ARC default store backend: clio-core CTE (in-process, no daemon). Shipped by
+    # default so CTE works out of the box; make_arc_store falls back to local files
+    # if the runtime is unavailable, and durability/fault-tolerance (replication,
+    # erasure coding) come from the CTE config. CLIO_ARC_STORE=local opts out.
+    "iowarp-core>=2.1.0",
     # gact backend (clio_agent.gact.app) — shipped product surface, not optional
     "fastapi>=0.104.0",
     "uvicorn>=0.24.0",
@@ -80,7 +85,9 @@ adios = [
 #   uv pip install "openai-codex @ git+https://github.com/openai/codex.git@79f044ed34c60af815feef12e8e665f35d54871e#subdirectory=sdk/python"
 
 iowarp = [
-    "pyzmq>=25.0.0",             # ZeroMQ Python bindings for IOWarp CTE runtime
+    # clio-core CTE is now a CORE dependency (the default ARC backend), so this
+    # extra is redundant — kept as an explicit opt-in alias and for [all].
+    "iowarp-core>=2.1.0",
 ]
 
 argonne = [

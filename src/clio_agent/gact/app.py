@@ -32,6 +32,7 @@ import hashlib
 import importlib.util
 import inspect
 import json
+import logging
 import os
 import re
 import shutil
@@ -42,6 +43,8 @@ import tempfile
 import threading
 import time
 import uuid
+
+import msgspec
 
 _MEMPROF_STATE: dict[str, Any] = {"prev": None, "n": 0}
 
@@ -184,6 +187,8 @@ from clio_agent.tools.catalog import TOOL_CATALOG
 from clio_agent.tools.file_policy import validate_write_path
 from clio_agent.tools.fs_write import write_text_with_policy
 
+logger = logging.getLogger(__name__)
+
 _ACTIVE_TOOL_SESSION_ID: contextvars.ContextVar[str] = contextvars.ContextVar(
     "clio_gact_active_tool_session_id",
     default="",
@@ -231,6 +236,25 @@ _ACTIVE_BLUEPRINT_TOOL_ROWS: contextvars.ContextVar[list[dict[str, Any]] | None]
 _ACTIVE_REACT_TRAJECTORY: contextvars.ContextVar[dict[str, Any] | None] = contextvars.ContextVar(
     "clio_gact_active_react_trajectory",
     default=None,
+)
+# ARC live-context-plane wiring for the in-flight expert's ReAct loop. The dspy
+# ReAct subclass has no handle to ARCMemory or its scope, so the enclosing expert
+# module threads them here before each program call (and resets in finally):
+#   * scope    = the expert/agent tag address (Segment.scope; no session prefix)
+#   * session  = the owning session id
+#   * window   = the expert model's context window (denominator for 90% compaction;
+#                0 = window unknown, auto-compaction disabled).
+_ACTIVE_REACT_SCOPE: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "clio_gact_active_react_scope",
+    default="",
+)
+_ACTIVE_REACT_SESSION: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "clio_gact_active_react_session",
+    default="",
+)
+_ACTIVE_REACT_CONTEXT_WINDOW: contextvars.ContextVar[int] = contextvars.ContextVar(
+    "clio_gact_active_react_context_window",
+    default=0,
 )
 
 # The span the current scope nests under, so the recursive trajectory
@@ -586,6 +610,97 @@ def _emit_expert_lifecycle_event(
         )
     except Exception:  # noqa: BLE001 - capture must never break the expert loop
         pass
+
+
+# The single new event type for ARC live-context-plane mutations. event_type is a
+# free string (no enum/registry); the replay reader dispatches on this literal.
+ARC_OP_EVENT_TYPE = "arc.op"
+
+
+def _emit_arc_op(
+    app: "FastAPI",
+    op: str,
+    session_id: str,
+    scope: str,
+    *,
+    logical_time: int,
+    step: Optional[int] = None,
+    position: Optional[int] = None,
+    segments_written: Optional[list[dict[str, Any]]] = None,
+    segments_tombstoned: Optional[list[str]] = None,
+    derived_from: Optional[list[str]] = None,
+) -> dict[str, Any]:
+    """Log ONE applied ARC context op to the durable Trace.
+
+    Returns the emitted event dict; its ``event_id`` is stamped onto the written
+    segments' ``trace_ref`` (and re-derived identically on replay). ``segments_written``
+    carry FULL segment dicts so replay can reconstruct ARC without prior state;
+    ``content`` / ``args`` / ``text`` are in ``SENSITIVE_KEYS`` so SSE redacts them
+    while the durable trace keeps them FULL. ``detail_level="off"`` => durable-only
+    (these are high-volume, per-segment).
+
+    This is the injected ``op_logger`` for ``SegmentStore`` — wired in ``build_app``
+    so ``arc/`` never imports ``gact/``.
+    """
+    event = _emit_semantic_event(
+        app,
+        session_id,
+        ARC_OP_EVENT_TYPE,
+        turn_id=_ACTIVE_GACT_TURN_ID.get(),
+        trace_id=_ACTIVE_GACT_TRACE_ID.get(),
+        status=op,  # append | insert | delete | summarize
+        summary=f"arc {op} @{scope} (lt={logical_time})",
+        actor={"role": "runtime", "component": "arc", "scope": scope},
+        subject={
+            "scope": scope,
+            "logical_time": logical_time,
+            "step": step,
+            "position": position,
+        },
+        payload={
+            "op": op,
+            "scope": scope,
+            "logical_time": logical_time,
+            "step": step,
+            "position": position,
+            "segments_written": segments_written or [],
+            "segments_tombstoned": segments_tombstoned or [],
+            "derived_from": derived_from or [],
+        },
+        detail_level="off",  # durable-only (high volume); SSE goes via the publish below
+    )
+    # The durable event is detail_level="off" (lean trace), so SemanticEventSink skips
+    # the bus. Publish a REDACTED arc.op frame explicitly so the TUI sees live
+    # insertions/deletions/compactions. Allow-list ids/kinds/token_count only —
+    # never the segment content/args/text. Observability: never break an op.
+    try:
+        bus = getattr(app.state, "bus", None)
+        if bus is not None:
+            bus.publish(
+                Event(
+                    type="arc.op",
+                    session_id=session_id,
+                    payload={
+                        "op": op,
+                        "scope": scope,
+                        "logical_time": logical_time,
+                        "step": step,
+                        "position": position,
+                        "segments_written": [
+                            {
+                                "id": s.get("id"),
+                                "kind": s.get("kind"),
+                                "token_count": s.get("token_count"),
+                            }
+                            for s in (segments_written or [])
+                        ],
+                        "segments_tombstoned": segments_tombstoned or [],
+                    },
+                )
+            )
+    except Exception:  # noqa: BLE001 - SSE streaming is observability, never fatal
+        logger.debug("arc.op bus publish failed", exc_info=True)
+    return event
 
 
 def _llm_provider_payload(app: "FastAPI", agent_id: str = "") -> dict[str, Any]:
@@ -4192,7 +4307,7 @@ def _dynamic_agent_lm_config(base_agent: Any, agent_def: "AgentDef") -> Any:
     params = agent_def.parameters if isinstance(agent_def.parameters, Mapping) else {}
     api_base = str(params.get("api_base") or (base_config.api_base if same_provider else ""))
     api_key = base_config.api_key if same_provider else ""
-    return LMProviderConfig(
+    new_config = LMProviderConfig(
         provider=provider,  # type: ignore[arg-type]
         api_base=api_base,
         model=agent_def.default_model or (base_config.model if same_provider else ""),
@@ -4208,6 +4323,16 @@ def _dynamic_agent_lm_config(base_agent: Any, agent_def: "AgentDef") -> Any:
             base_config.thinking_budget,
         ),
     )
+    # Propagate the handshake-discovered context window (init=False fields, so the
+    # constructor above leaves them None). Without this the live plane's
+    # auto-compaction has no denominator on the dynamic-agent path, since
+    # apply_handshake is not called here.
+    if same_provider and new_config.model == base_config.model:
+        for _attr in ("context_window", "chosen_context"):
+            _val = getattr(base_config, _attr, None)
+            if _val:
+                setattr(new_config, _attr, _val)
+    return new_config
 
 
 def _prompt_user_agent_signature() -> Any:
@@ -5643,6 +5768,149 @@ def _dynamic_child_expert_tools(base_agent: Any, agent_def: "AgentDef") -> list[
 # globally: tests monkeypatch ``dspy.ReAct`` with fakes, so a single cached
 # subclass would be stale (built from a different base -> wrong/uncallable). One
 # wrapper per base keeps the subclass correct under patching and in production.
+# ---- ARC live-context-plane helpers (used by _RetainingReAct) ----
+
+
+def _arc_obs_value(value: Any) -> Any:
+    """Coerce a tool observation into a msgpack-serializable segment payload.
+
+    Preserves JSON-native types (so the ARC render matches what stock dspy would
+    have rendered) and stringifies anything exotic so a segment write never fails.
+    """
+    if value is None or isinstance(value, (str, int, float, bool, dict, list)):
+        return value
+    return str(value)
+
+
+def _autocompact_threshold() -> float:
+    """The configurable 90%-style auto-compaction trigger fraction (0..1].
+
+    Env ``CLIO_AUTOCOMPACT_PCT`` overrides; default 0.85 (the design recommends
+    compacting below 0.90 so the summary is built from fuller context).
+    """
+    raw = os.environ.get("CLIO_AUTOCOMPACT_PCT", "").strip()
+    try:
+        v = float(raw) if raw else 0.85
+    except ValueError:
+        return 0.85
+    return v if 0.0 < v <= 1.0 else 0.85
+
+
+def _last_prompt_tokens() -> int:
+    """The LAST LM call's prompt-token count (0 if it cannot be determined).
+
+    Each send is the full prompt, so this single value IS current window fullness
+    (not a running sum). Primary source is the provider-exact ``prompt_tokens`` from
+    ``dspy.track_usage()``. Some providers (e.g. the ALCF/Argonne vLLM endpoint)
+    report ``prompt_tokens: 0`` — in that case we fall back to a client-side
+    ``litellm.token_counter`` over the LAST call's actual messages
+    (``lm.history[-1]['messages']``). Approximate for non-tiktoken local models, but
+    non-zero and monotonic with context growth, which is what the threshold needs.
+    """
+    import dspy  # noqa: PLC0415
+
+    lm = getattr(dspy.settings, "lm", None)
+    model = str(getattr(lm, "model", "") or "")
+
+    # 1. Provider-exact prompt_tokens from the usage tracker.
+    tracker = getattr(dspy.settings, "usage_tracker", None)
+    data = getattr(tracker, "usage_data", None) if tracker is not None else None
+    if data:
+        try:
+            entries = data.get(model)
+            if not entries:  # fall back to the most-recently-populated model
+                for v in reversed(list(data.values())):
+                    if v:
+                        entries = v
+                        break
+            pt = int(entries[-1].get("prompt_tokens", 0) or 0) if entries else 0
+            if pt > 0:
+                return pt
+        except Exception:  # noqa: BLE001
+            pass
+
+    # 2. Provider didn't report prompt_tokens: count the last call's real messages.
+    try:
+        history = getattr(lm, "history", None)
+        messages = history[-1].get("messages") if history else None
+        if messages:
+            import litellm  # noqa: PLC0415
+
+            return int(litellm.token_counter(model=model, messages=messages))
+    except Exception:  # noqa: BLE001
+        pass
+    return 0
+
+
+def _resolve_expert_context_window(cfg: Any) -> int:
+    """Resolve the expert model's context window (the auto-compaction denominator).
+
+    Ladder: (1) handshake-discovered ``chosen_context``/``context_window`` on the
+    config; (2) ``litellm.get_model_info`` max input tokens; (3) the ``context``
+    field in ``model_limits.json``. Returns 0 when unknown (auto-compaction stays
+    off; dspy's reactive truncation remains the backstop).
+    """
+    for attr in ("chosen_context", "context_window"):
+        v = getattr(cfg, attr, None)
+        if v:
+            return int(v)
+    model = str(getattr(cfg, "model", "") or "")
+    if not model:
+        return 0
+    try:
+        import litellm  # noqa: PLC0415
+
+        info = litellm.get_model_info(model) or {}
+        v = info.get("max_input_tokens") or info.get("max_tokens")
+        if v:
+            return int(v)
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        import json  # noqa: PLC0415
+        from pathlib import Path  # noqa: PLC0415
+
+        limits_path = (
+            Path(__file__).resolve().parents[1]
+            / "providers"
+            / "handshake"
+            / "sources"
+            / "data"
+            / "model_limits.json"
+        )
+        entry = json.loads(limits_path.read_text()).get(model) or {}
+        v = entry.get("context")
+        if v:
+            return int(v)
+    except Exception:  # noqa: BLE001
+        pass
+    return 0
+
+
+def _summarize_segments_llm(segments: list[Any]) -> str:
+    """Summarize live segments into a compact text that preserves what's needed to
+    continue the task. Uses the active expert LM (``dspy.settings.lm``). Returns ''
+    on failure (caller then skips compaction and keeps the reactive backstop).
+    """
+    import dspy  # noqa: PLC0415
+
+    from clio_agent.arc.schema import segment_text  # noqa: PLC0415
+
+    body = "\n".join(segment_text(s) for s in segments)
+    sig = dspy.Signature(
+        "prior_context -> summary",
+        "Summarize the prior reasoning steps, tool calls, and observations into a "
+        "compact summary that preserves every fact, result, and decision needed to "
+        "continue the task. Be concise but lose no actionable information.",
+    )
+    try:
+        result = dspy.Predict(sig)(prior_context=body)
+        return str(getattr(result, "summary", "") or "").strip()
+    except Exception:  # noqa: BLE001
+        logger.warning("arc auto-compaction summary LLM call failed", exc_info=True)
+        return ""
+
+
 _RETAINING_REACT_CLS_CACHE: dict[Any, Any] = {}
 
 
@@ -5669,10 +5937,55 @@ def _retaining_react_cls() -> Any:
         return cached
 
     class _RetainingReAct(base):  # type: ignore[misc, valid-type]
+        # ---- ARC live-context-plane handles (no-op when ARC is disabled) ----
+
+        @staticmethod
+        def _arc_scope() -> tuple[Any, str, str]:
+            """(ARCMemory, session_id, scope) for the live plane, or (None, '', '')."""
+            app = _ACTIVE_GACT_APP.get()
+            scope = _ACTIVE_REACT_SCOPE.get()
+            session = _ACTIVE_REACT_SESSION.get()
+            arc = (
+                getattr(getattr(app, "state", None), "arc", None)
+                if (app is not None and scope)
+                else None
+            )
+            return arc, session, scope
+
+        @staticmethod
+        def _arc_write(
+            arc: Any, session: str, scope: str, kind: str, content: dict[str, Any], idx: int
+        ) -> None:
+            """Append one produced piece to the live plane. Best-effort: a write
+            failure must never break the turn (the local trajectory dict is the
+            fallback)."""
+            if arc is None:
+                return
+            try:
+                arc.append_segment(session, scope, kind, content, step=idx)
+            except Exception:  # noqa: BLE001
+                logger.warning(
+                    "arc live-plane append failed kind=%s scope=%s",
+                    kind,
+                    scope,
+                    exc_info=True,
+                )
+
         def forward(self, **input_args: Any) -> Any:
             # Clear any prior value so a failure inside the loop (before extract)
             # never exposes a stale trajectory from an earlier forward.
             _ACTIVE_REACT_TRAJECTORY.set(None)
+            arc, _session, _scope = self._arc_scope()
+            if arc is not None:
+                # Fresh working context for this react loop: tombstone any prior
+                # live segments in the scope (kept in the store + Trace for replay /
+                # as-of-T). A new forward == a new turn's trajectory.
+                try:
+                    prior = [s.id for s in arc.render_segments(_session, _scope)]
+                    if prior:
+                        arc.delete_segments(_session, _scope, prior)
+                except Exception:  # noqa: BLE001
+                    logger.warning("arc live-plane reset failed scope=%s", _scope, exc_info=True)
             trajectory: dict[str, Any] = {}
             expert_id = str(getattr(self, "_clio_expert_id", "") or "")
             # One span per expert lifecycle so the highway's per-step events of a
@@ -5718,6 +6031,20 @@ def _retaining_react_cls() -> Any:
                         trajectory[f"thought_{idx}"] = pred.next_thought
                         trajectory[f"tool_name_{idx}"] = pred.next_tool_name
                         trajectory[f"tool_args_{idx}"] = pred.next_tool_args
+                        # ARC live-plane writes: thought + tool_call are known now;
+                        # the observation is written after the tool runs. No-op when
+                        # ARC is disabled (arc is None).
+                        self._arc_write(
+                            arc, _session, _scope, "thought", {"text": pred.next_thought}, idx
+                        )
+                        self._arc_write(
+                            arc,
+                            _session,
+                            _scope,
+                            "tool_call",
+                            {"name": pred.next_tool_name, "args": pred.next_tool_args},
+                            idx,
+                        )
                         try:
                             trajectory[f"observation_{idx}"] = self.tools[pred.next_tool_name](
                                 **pred.next_tool_args
@@ -5726,6 +6053,14 @@ def _retaining_react_cls() -> Any:
                             trajectory[f"observation_{idx}"] = (
                                 f"Execution error in {pred.next_tool_name}: {err}"
                             )
+                        self._arc_write(
+                            arc,
+                            _session,
+                            _scope,
+                            "observation",
+                            {"text": _arc_obs_value(trajectory[f"observation_{idx}"])},
+                            idx,
+                        )
 
                         # Put this ReAct Step (LLM response + tool act/observe) on
                         # the highway with FULL content BEFORE the loop discards
@@ -5777,6 +6112,59 @@ def _retaining_react_cls() -> Any:
                 return final_pred
             finally:
                 _ACTIVE_PARENT_SPAN_ID.reset(parent_token)
+
+        def _format_trajectory(self, trajectory: dict[str, Any]) -> str:
+            """THE live-plane read seam. Render the prompt's trajectory from ARC, not
+            the local dict. Reuses stock's formatter verbatim (so the output is
+            byte-identical given the same keys) but feeds it ARC's render_keys — so
+            edits (delete/summarize/insert/append) on ARC change the next prompt.
+            Falls back to stock when ARC is disabled. Runs for both ``self.react``
+            (loop) and ``self.extract`` (final) — extract sees the same compacted
+            view, which is what we want.
+            """
+            arc, session, scope = self._arc_scope()
+            if arc is None:
+                return super()._format_trajectory(trajectory)
+            arc_keys = arc.render_segments_keys(session, scope)
+            return super()._format_trajectory(arc_keys)
+
+        def _call_with_potential_trajectory_truncation(
+            self, module: Any, trajectory: dict[str, Any], **input_args: Any
+        ) -> Any:
+            """Proactive, scope-aware 90% auto-compaction fires BEFORE every send;
+            stock's reactive truncate_trajectory stays as the never-fired backstop."""
+            self._maybe_autocompact()
+            return super()._call_with_potential_trajectory_truncation(
+                module, trajectory, **input_args
+            )
+
+        def _maybe_autocompact(self) -> None:
+            arc, session, scope = self._arc_scope()
+            if arc is None:
+                return
+            window = _ACTIVE_REACT_CONTEXT_WINDOW.get()
+            last = _last_prompt_tokens()  # provider-exact prompt_tokens of the last call
+            if not window or not last:
+                return
+            ratio = last / window
+            if ratio < _autocompact_threshold():
+                return
+            live = arc.render_segments(session, scope)
+            if len(live) <= 1:
+                return  # nothing meaningful to compact yet
+            summary = _summarize_segments_llm(live)
+            if not summary:
+                return  # summary LLM failed; leave context, reactive backstop remains
+            arc.summarize_segments(session, scope, [s.id for s in live], {"text": summary})
+            logger.info(
+                "arc auto-compaction scope=%s ratio=%.2f>=%.2f replaced=%d window=%d last=%d",
+                scope,
+                ratio,
+                _autocompact_threshold(),
+                len(live),
+                window,
+                last,
+            )
 
     _RETAINING_REACT_CLS_CACHE[base] = _RetainingReAct
     return _RetainingReAct
@@ -5983,6 +6371,15 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                 if self.kind == "react"
                 else None
             )
+            # ARC live-context-plane wiring for this expert's ReAct loop: the scope
+            # (the agent/expert tag), owning session, and the context window (the
+            # auto-compaction denominator). Only the react kind runs _RetainingReAct,
+            # but setting them unconditionally is harmless (predict/CoT never read).
+            _react_scope_token = _ACTIVE_REACT_SCOPE.set(str(getattr(self.agent_def, "id", "")))
+            _react_session_token = _ACTIVE_REACT_SESSION.set(active_session_id)
+            _react_window_token = _ACTIVE_REACT_CONTEXT_WINDOW.set(
+                _resolve_expert_context_window(self.config)
+            )
             if trace.HF_ON:
                 _ck_sp = kwargs.get("system_prompt", "")
                 _ck_q = str(kwargs.get("question", ""))
@@ -6020,7 +6417,12 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                         else {**kwargs, "question": f"{kwargs['question']}\n\n{_repair_hint}"}
                     )
                     try:
-                        with dspy.context(lm=create_lm(_attempt_config), adapter=adapter):
+                        # track_usage installs the usage tracker so the live plane's
+                        # auto-compaction can read each call's exact prompt_tokens.
+                        with (
+                            dspy.track_usage(),
+                            dspy.context(lm=create_lm(_attempt_config), adapter=adapter),
+                        ):
                             result = self.program(**_call_kwargs)
                         break
                     except _BlueprintTerminalWorkflowState as terminal_exc:
@@ -6147,6 +6549,9 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
             finally:
                 if blueprint_tool_rows_token is not None:
                     _ACTIVE_BLUEPRINT_TOOL_ROWS.reset(blueprint_tool_rows_token)
+                _ACTIVE_REACT_SCOPE.reset(_react_scope_token)
+                _ACTIVE_REACT_SESSION.reset(_react_session_token)
+                _ACTIVE_REACT_CONTEXT_WINDOW.reset(_react_window_token)
             if cancel_requested is not None and cancel_requested():
                 raise _TurnCancelled(
                     _cancelled_error_info(
@@ -6281,7 +6686,9 @@ def _build_tool_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> Any
                 for part in (runtime_text, agent_prompt, workspace_context, child_context)
                 if part
             )
-            self.react_agent = dspy.ReAct(
+            # Use the retaining ReAct subclass so this path also runs the ARC
+            # live-context plane (writes segments + reads its prompt from ARC).
+            self.react_agent = _retaining_react_cls()(
                 _tool_user_agent_signature(),
                 tools=self.tools,
                 max_iters=_tool_user_agent_max_iters(agent_def),
@@ -6305,10 +6712,21 @@ def _build_tool_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> Any
                         executor_work_may_continue=False,
                     )
                 )
+            # ARC live-context-plane wiring for this tool-user ReAct loop.
+            _react_scope_token = _ACTIVE_REACT_SCOPE.set(str(getattr(self.agent_def, "id", "")))
+            _react_session_token = _ACTIVE_REACT_SESSION.set(session_id)
+            _react_window_token = _ACTIVE_REACT_CONTEXT_WINDOW.set(
+                _resolve_expert_context_window(self.config)
+            )
             try:
-                with dspy.context(
-                    lm=create_lm(self.config),
-                    adapter=create_chat_adapter(self.config),
+                # track_usage installs the tracker so auto-compaction can read each
+                # call's exact prompt_tokens.
+                with (
+                    dspy.track_usage(),
+                    dspy.context(
+                        lm=create_lm(self.config),
+                        adapter=create_chat_adapter(self.config),
+                    ),
                 ):
                     result = self.react_agent(
                         system_prompt=self.system_prompt,
@@ -6331,6 +6749,10 @@ def _build_tool_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> Any
                         exc=exc,
                     )
                 raise
+            finally:
+                _ACTIVE_REACT_SCOPE.reset(_react_scope_token)
+                _ACTIVE_REACT_SESSION.reset(_react_session_token)
+                _ACTIVE_REACT_CONTEXT_WINDOW.reset(_react_window_token)
             if cancel_requested is not None and cancel_requested():
                 raise _TurnCancelled(
                     _cancelled_error_info(
@@ -12500,6 +12922,11 @@ from clio_agent.gact.types import (
     CacheStats,
     Capabilities,
     CapabilityFlags,
+    ContextOpRequest,
+    ContextOpResponse,
+    ContextSearchHit,
+    ContextSearchResponse,
+    ContextStateResponse,
     CreateSessionRequest,
     CreateUserQuestionRequest,
     CreateWorkspaceRequest,
@@ -12884,6 +13311,14 @@ def build_app(
         detail_level=app.state.semantic_trace_detail_level,
         live_consumers=_live_consumers,
     )
+    # Wire the durable-Trace op logger into ARC's segment store now that both the
+    # app and the sink exist. Each applied context op (append/insert/delete/
+    # summarize) is mirrored to the Trace as an ``arc.op`` event; ``arc/`` stays
+    # free of any ``gact/`` import via this injected closure.
+    if _arc is not None and hasattr(_arc, "set_segment_op_logger"):
+        _arc.set_segment_op_logger(
+            lambda op, session_id, scope, **kw: _emit_arc_op(app, op, session_id, scope, **kw)
+        )
     # CLIO-BBBBBBBBBB14: message log keyed by session_id. Populated by
     # POST /messages, read by GET /messages, and backed by per-session
     # JSON ledgers so adapter deletion/redeploy preserves transcripts.
@@ -13917,6 +14352,134 @@ def build_app(
                 "cross_session_default": "deny_without_user_intent",
                 "global_scope_default": "deny_without_global_intent",
             },
+        )
+
+    def _arc_unavailable(sid: str) -> HTTPException:
+        return HTTPException(
+            status_code=503,
+            detail=ErrorEnvelope(
+                error=ErrorInfo(
+                    error="arc_unavailable",
+                    message="ARC memory is not enabled for this deployment",
+                    details={"session_id": sid},
+                    recoverable=True,
+                )
+            ).model_dump(exclude_none=True),
+        )
+
+    def _context_window_for_state() -> int:
+        agent = getattr(app.state, "agent", None)
+        cfg = getattr(agent, "_provider_config", None)
+        return _resolve_expert_context_window(cfg) if cfg is not None else 0
+
+    @app.get("/v1/sessions/{sid}/context/state", response_model=ContextStateResponse)
+    async def get_context_state(
+        sid: str, scope: str, as_of: int | None = None
+    ) -> ContextStateResponse:
+        """Live ARC context-plane state for a (session, scope): % window used, live
+        block count, per-kind token categorization, and the current render."""
+        if app.state.sessions.get(sid) is None:
+            raise _session_not_found(sid)
+        arc = app.state.arc
+        if arc is None:
+            raise _arc_unavailable(sid)
+        tokens_by_kind = arc.segment_tokens_by_kind(sid, scope)
+        segments = arc.render_segments(sid, scope, as_of=as_of)
+        live_tokens = sum(tokens_by_kind.values())
+        window = _context_window_for_state()
+        return ContextStateResponse(
+            session_id=sid,
+            scope=scope,
+            as_of=as_of,
+            window_tokens=window,
+            live_tokens=live_tokens,
+            pct_used=(live_tokens / window) if window else None,
+            live_block_count=len(segments),
+            tokens_by_kind=tokens_by_kind,
+            segments=[msgspec.to_builtins(s) for s in segments],
+            render_text=arc.render_segment_text(sid, scope, as_of=as_of),
+            render_keys=arc.render_segments_keys(sid, scope, as_of=as_of),
+        )
+
+    @app.post("/v1/sessions/{sid}/context/ops", response_model=ContextOpResponse)
+    async def post_context_op(sid: str, req: ContextOpRequest) -> ContextOpResponse:
+        """Apply one live-context operation (append/insert/delete/summarize) to a
+        scope. A validated passthrough to the sanctioned apply_segment_op seam —
+        clio does not choose the op, the caller does. The op auto-emits an arc.op
+        Trace event (and an SSE frame)."""
+        if app.state.sessions.get(sid) is None:
+            raise _session_not_found(sid)
+        arc = app.state.arc
+        if arc is None:
+            raise _arc_unavailable(sid)
+        # Build only the kwargs relevant to req.op.
+        if req.op in ("append", "insert"):
+            kwargs: dict[str, Any] = {
+                "kind": req.kind,
+                "content": req.content or {},
+                "step": req.step,
+                "token_count": req.token_count,
+                "trace_ref": req.trace_ref,
+            }
+            if req.op == "insert":
+                kwargs["position"] = req.position
+        elif req.op == "delete":
+            kwargs = {"ids": req.ids or []}
+        else:  # summarize
+            kwargs = {
+                "ids": req.ids or [],
+                "summary_content": req.summary_content or {},
+                "token_count": req.token_count,
+                "trace_ref": req.trace_ref,
+            }
+        try:
+            result = app.state.arc.apply_segment_op(req.op, sid, req.scope, **kwargs)
+        except (ValueError, TypeError) as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="invalid_request",
+                        message=str(exc),
+                        details={"op": req.op, "scope": req.scope},
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            ) from exc
+        tombstoned = result if req.op == "delete" else None
+        result_dict = None if req.op == "delete" else msgspec.to_builtins(result)
+        tokens_by_kind = arc.segment_tokens_by_kind(sid, req.scope)
+        live_tokens = sum(tokens_by_kind.values())
+        window = _context_window_for_state()
+        return ContextOpResponse(
+            session_id=sid,
+            scope=req.scope,
+            op=req.op,
+            applied=True,
+            result=result_dict,
+            tombstoned_count=tombstoned,
+            live_block_count=len(arc.render_segments(sid, req.scope)),
+            tokens_by_kind=tokens_by_kind,
+            pct_used=(live_tokens / window) if window else None,
+        )
+
+    @app.get("/v1/sessions/{sid}/context/search", response_model=ContextSearchResponse)
+    async def search_context(
+        sid: str, q: str, scope_prefix: str = "", k: int = 10
+    ) -> ContextSearchResponse:
+        """Semantic discovery over a session's scopes — 'which expert/scope knows
+        about X'. BM25 on the clio-core CTE backend, naive word-overlap on LocalFS."""
+        if app.state.sessions.get(sid) is None:
+            raise _session_not_found(sid)
+        arc = app.state.arc
+        if arc is None:
+            raise _arc_unavailable(sid)
+        hits = arc.search_segment_scopes(sid, q, scope_prefix=scope_prefix, k=k)
+        return ContextSearchResponse(
+            session_id=sid,
+            query=q,
+            semantic=arc.segment_search_is_semantic(),
+            hits=[ContextSearchHit(scope=s, score=score) for s, score in hits],
         )
 
     @app.delete("/v1/sessions/{sid}")
