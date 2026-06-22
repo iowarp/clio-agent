@@ -164,7 +164,7 @@ def _tokenize(text: str) -> set[str]:
 
     Plural-ish endings are stripped so that ``dataset`` and ``datasets``
     collapse to one token. We keep this crude — Porter-style stemming
-    would be overkill for a 24-document corpus.
+    would be overkill for a 25-document corpus.
     """
     raw = _TOKEN_RE.findall(text.lower())
     out: set[str] = set()

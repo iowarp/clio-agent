@@ -1,0 +1,76 @@
+{
+  "without": {
+    "amortization": {
+      "injected_skill": "hdf5-omni-selective",
+      "text": "1. **Tool results show**: The OMNI YAML framework enables selective dataset inclusion/exclusion for HDF5 files, reducing data transfer and memory overhead. When bundled via IOWarp's Context Assimilation Engine (CAE), datasets are pre-loaded into a CTE tag structure with optimized chunked transfers.\n\n2. **Implications**: Repeated reads from a pre-bundled OMNI configuration avoid full-file reopening overhead. The CAE caches dataset metadata and transfers data in ~1.5 MB chunks, while h5py incurs full file-open/close costs per iteration. For large files with frequent re-reads, this reduces I/O latency by ~40-70% (per hdf5-io performance benchmarks).\n\n3. **Caching mechanism**: Once assimilated, IOWarp retains dataset tensors in memory/distributed storage. Subsequent reads access this cached state rather than the original file system, unlike h5py which re-negotiates file handles each time.\n1. **Create an OMNI YAML** with `dataset_filter` specifying only the datasets needed for your analysis loop (e.g., `/temperature/surface` and `/Geolocation/*`). Use `h5ls -r` to verify exact paths.\n\n2. **Run a one-time assimilation** with `wrp_cae_omni your_file.omni.yaml` to pre-load the filtered dataset into IOWarp's CTE. This creates an optimized in-memory representation.\n\n3. **Modify your analysis loop** to read from the IOWarp CTE tags (`iowarp::<tag_name>/<dataset_path>`) instead of reopening the original HDF5 file. This leverages the cached state for all subsequent iterations.\n\n4. For maximum performance, enable **IOWarp's subfiling VFD** (via `hdf5-subfiling-vfd` skill) if your workflow requires parallel access across nodes.",
+      "scored": {
+        "says NOT faster": false,
+        "no amortization / break-even": false,
+        "prefer native h5py for speed": true,
+        "value is sharing/tiering not speed": false
+      },
+      "hits": 1,
+      "total": 4
+    },
+    "consolidation": {
+      "injected_skill": "hdf5-core-vfd",
+      "text": "No concrete HDF5 file was named, and no skill matched the question strongly. I can give general HDF5 guidance but cannot make file-specific claims without a path.\nProvide an HDF5 file path, or ask a focused question on one of the bundled topics (chunking, filters, parallel, VFD, VOL, SWMR, VDS, CF compliance, cloud-optimized HDF5).",
+      "scored": {
+        "consolidate / fewer larger datasets": false,
+        "per-object / object-count cost": false,
+        "cost magnitude (slow/overhead/x)": false
+      },
+      "hits": 0,
+      "total": 3
+    },
+    "api_usage": {
+      "injected_skill": "hdf5-swmr",
+      "text": "No concrete HDF5 file was named, and no skill matched the question strongly. I can give general HDF5 guidance but cannot make file-specific claims without a path.\nProvide an HDF5 file path, or ask a focused question on one of the bundled topics (chunking, filters, parallel, VFD, VOL, SWMR, VDS, CF compliance, cloud-optimized HDF5).",
+      "scored": {
+        "hdf5:: routing (src prefix)": false,
+        "context_bundle for ingest": false,
+        "CTE Tag.GetBlob for read": false,
+        "avoid context_retrieve for binary": false
+      },
+      "hits": 0,
+      "total": 4
+    }
+  },
+  "with": {
+    "amortization": {
+      "injected_skill": "hdf5-clio-core-ingest",
+      "text": "1. **Tool results show** clio-core read latency is 2\u20138\u00d7 slower than h5py (warm) and never faster than cold h5py reads. For 256MB\u20132GB datasets, clio-core warm reads are 3\u20138\u00d7 slower than h5py cold reads. Object-count penalties are 100\u2013200\u00d7 per dataset during ingest/retrieval.\n\n2. **This means** bundling into clio-core does not accelerate repeated reads. The overhead of chunking (1.5MB per-chunk) and per-object metadata (21\u201338ms/dataset) dominates. Even consolidated 2GB datasets take 3.2s to read via clio-core vs 398ms cold h5py. \n\n3. **Your workflow** involves repeated reads of a large file. While clio-core offers shared-memory residency for concurrent consumers, this benefit doesn't apply to single-threaded analysis loops. The only potential gain would be if native h5py reads are already bottlenecked by random/strided access patterns (uncommon for large contiguous datasets).\n1. **Default to h5py** for single-reader workflows. Use `h5py.File(..., 'r')` with `rdcc_nslots`/`rdcc_mem` tuned for your dataset count (see `hdf5-io`).\n\n2. **If you must use clio-core**, first consolidate small datasets into fewer large arrays (e.g., concatenate along a new axis). For example:\n   ```python\n   with h5py.File(\"input.h5\", 'r') as f:\n       combined = np.stack([f[dset][...] for dset in f.keys()])\n       with h5py.File(\"consolidated.h5\", 'w') as out:\n           out.create_dataset(\"data\", data=combined)\n   ```\n\n3. **For selective access**, use `hdf5-omni-selective` to filter datasets during retrieval. This avoids paying per-object penalties for unused data.\n\n4. **Only consider bundling** if you need shared-memory access across multiple processes or heterogeneous storage tiers (e.g., NVMe + SCM). Otherwise, the performance tradeoff is not justified.",
+      "scored": {
+        "says NOT faster": true,
+        "no amortization / break-even": false,
+        "prefer native h5py for speed": true,
+        "value is sharing/tiering not speed": true
+      },
+      "hits": 3,
+      "total": 4
+    },
+    "consolidation": {
+      "injected_skill": "hdf5-clio-core-ingest",
+      "text": "1. **Tool results show** that clio-core ingest/read performance degrades linearly with dataset count. Files with 8,533 small datasets incur ~196\u00d7 higher read latency in clio-core vs. h5py (0.9s native vs. 173s clio-core). Each dataset adds ~21\u201338ms to enumeration and ~11\u201320ms to full reads.\n\n2. **This means** your file will face catastrophic performance penalties if ingested as-is. The per-object overhead (100\u2013200\u00d7 slower than h5py) dominates because clio-core processes each dataset as a separate blob (1.5MB chunks), while h5py amortizes file I/O across datasets. Even after consolidation, clio-core reads are 2\u20138\u00d7 slower than h5py (warm) for large contiguous datasets.\n\n3. **Key constraints** from the skill:\n   - Native h5py is faster for all dataset counts (including cold reads)\n   - Clio-core only justifies use for shared-memory residency or multi-tier storage\n   - Ingest cost is per-dataset (not per-byte), making \"many small datasets\" hostile\n   - Selective retrieval (K datasets) is K/N cheaper than full retrieval (N total)\n1. **Consolidate datasets first** using `h5repack` or h5py:\n   - Concatenate along a new axis (e.g., pack 1000 1D arrays into a 2D array)\n   - Pack into compound datatypes or vlen arrays (see `hdf5-datatypes`)\n   - Example: `h5repack -i input.h5 -o consolidated.h5 -l /group1/dset1:/group2/dset2`\n\n2. **If consolidation is impossible**, skip clio-core ingestion entirely:\n   - Use h5py for native reads (faster by 100\u00d7+)\n   - Only consider clio-core if you need shared-memory access for >10 concurrent consumers\n\n3. **If you must use clio-core**:\n   - Ingest with `src=\"hdf5::\"` to preserve dataset structure\n   - Use selective retrieval: `cte.Tag(...).GetBlob()` for specific datasets (not `context_retrieve`)\n   - Pre-filter datasets by pattern in retrieval (cost \u221d K requested, not N total)\n\n4. **Avoid these pitfalls**:\n   - Don't use `src=\"file::\"` (triggers opaque binary chunking, losing dataset structure)\n   - Don't expect attributes/hyperslabs (assimilator only ingests full datasets)\n   - Don't expect read amortization (clio-core reads are never faster than h5py cold reads)",
+      "scored": {
+        "consolidate / fewer larger datasets": true,
+        "per-object / object-count cost": true,
+        "cost magnitude (slow/overhead/x)": true
+      },
+      "hits": 3,
+      "total": 3
+    },
+    "api_usage": {
+      "injected_skill": "hdf5-clio-core-ingest",
+      "text": "1. **What the tool results show**: The bundled skill details that clio-core ingestion via `hdf5::` prefix routes files through the CAE assimilator, creating per-dataset tags. Ingest performance scales poorly with dataset count (100\u2013200\u00d7 slower per-object overhead vs. h5py), but well for consolidated datasets. Retrieval requires CTE `Tag.GetBlob` for binary arrays, not `context_retrieve`.\n\n2. **What it means**: Ingestion is only justified for sharing/tiering needs, not speed. The `hdf5::` prefix enables semantic ingestion (per-dataset tags), while `file::` creates opaque byte chunks. Retrieval requires manual chunk reassembly in numeric order (per `chunk_N` naming). Avoid `context_retrieve` for binary arrays to prevent `UnicodeDecodeError`.\n\n3. **What to do**: Use `clio_cee.AssimilationCtx` with `src=f\"hdf5::{path}\"` for structured ingestion. For retrieval, use `cte.Tag` to access `chunk_N` blobs in numeric order. Consolidate datasets before ingest if you have >100 small datasets (per 100\u2013200\u00d7 penalty in Practice 1).\n1. **Ingest with semantic routing**: Use `src=\"hdf5::\"` prefix in `AssimilationCtx` to preserve dataset structure. Example: `ctx = AssimilationCtx(src=f\"hdf5::{file_path}\", dst=f\"iowarp::{tag}\")`.\n\n2. **Read arrays via CTE**: After ingestion, use `cte.Tag(...).GetBlob()` to retrieve chunks in numeric order. Reassemble with `numpy.frombuffer(...).reshape(...)` using metadata from the tensor description blob.\n\n3. **Consolidate datasets first**: If your HDF5 file contains >100 small datasets, merge them into fewer arrays before ingestion (e.g., concatenate along a new axis). This reduces per-object overhead by 100\u2013200\u00d7 (Practice 1 benchmarks).\n\n4. **Avoid `context_retrieve` for binary**: This API is for text/LLM contexts. Use `cte.Tag.GetBlob()` for array data to avoid `UnicodeDecodeError`.\n\n5. **Benchmark alternatives**: For single-read scenarios, native h5py is 2\u20138\u00d7 faster than clio-core (Practice 2 benchmarks). Only justify ingestion if you need shared-memory residency or multi-tier storage.",
+      "scored": {
+        "hdf5:: routing (src prefix)": true,
+        "context_bundle for ingest": false,
+        "CTE Tag.GetBlob for read": true,
+        "avoid context_retrieve for binary": true
+      },
+      "hits": 3,
+      "total": 4
+    }
+  }
+}

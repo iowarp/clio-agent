@@ -643,9 +643,15 @@ class HDF5Expert(dspy.Module):
         return {
             "name": "HDF5 Expert",
             "description": (
-                "Specializes in HDF5 — layout, filters, VFDs, VOL connectors, "
-                "parallel/SWMR/VDS, CF conventions, cloud-optimized variants, "
-                "and visualization. Backed by a 24-skill in-process library."
+                "Specializes in HDF5 — layout, chunking, filters, VFDs, VOL "
+                "connectors, parallel/SWMR/VDS, CF conventions, cloud-optimized "
+                "variants, and visualization. ALSO the authority on ingesting "
+                "HDF5 into clio-core / IOWarp (the CTE blob store via the CAE "
+                "assimilator): whether bundling is worth it, when to consolidate "
+                "datasets, read-vs-ingest and amortization trade-offs, and "
+                "clio-core ingest performance. Route any HDF5 question — and any "
+                "clio-core / IOWarp data-ingest or bundling question — here. "
+                "Backed by a 25-skill in-process library."
             ),
             "keywords": [
                 # Foundational
@@ -675,6 +681,11 @@ class HDF5Expert(dspy.Module):
                 # Action verbs
                 "visualize", "plot dataset", "rechunk", "apply filter",
                 "reclaim free space",
+                # clio-core / IOWarp ingest (advisory)
+                "clio-core", "clio core", "iowarp", "ingest", "ingest hdf5",
+                "ingest into clio-core", "bundle", "context_bundle", "cte",
+                "cae", "blob store", "data ingest", "should i use clio-core",
+                "bundle vs read", "amortize ingest",
             ],
             "priority": 1,
         }

@@ -1,0 +1,76 @@
+{
+  "without": {
+    "amortization": {
+      "injected_skill": "hdf5-omni-selective",
+      "text": "The provided file context describes an OMNI YAML configuration for selective HDF5 data assimilation using IOWarp. This approach allows users to specify exactly which datasets are needed from an HDF5 file, avoiding unnecessary data transfer and improving efficiency. The key aspects of this method include:\n\n1. **Dataset Filtering**: Using glob patterns in the OMNI YAML file to selectively include or exclude datasets based on their paths.\n2. **Include Patterns**: These patterns determine which datasets are loaded into CTE tags during runtime, ensuring that only necessary data is transferred.\n3. **Exclude Patterns**: These patterns can be used to exclude specific datasets from being loaded, further refining the selection process.\n4. **Validation**: It's essential to verify that the include patterns match the actual dataset paths in the HDF5 file using tools like `h5ls`.\nGiven your requirement to read a large HDF5 file many times within an analysis loop, bundling it into an OMNI YAML configuration and assimilating it with IOWarp can indeed lead to faster repeated reads. Here's how you can proceed:\n\n1. **Identify Required Datasets**: First, determine which datasets are necessary for your analysis by inspecting the HDF5 file structure using `h5py` or the CLI command `h5ls -r`.\n2. **Create an OMNI YAML File**: Based on the identified datasets, create an OMNI YAML configuration with tight include patterns to specify only the required data. This step ensures that unnecessary data is not transferred, improving efficiency.\n3. **Assimilate Data with IOWarp**: Use IOWarp's Context Assimilation Engine (CAE) to parse the OMNI YAML file and load the specified datasets into CTE tags during runtime. This process filters out unwanted datasets based on the include/exclude patterns defined in the YAML configuration.\n4. **Validate Dataset Paths**: Ensure that the include patterns match the actual dataset paths in the HDF5 file using `h5ls -r`.\n5. **Run Assimilation**: Execute the assimilation via the command `wrp_cae_omni <omni_file.yaml>`.\n\nBy following these steps, you can significantly improve the performance of your repeated reads by avoiding unnecessary data transfer and leveraging IOWarp's selective dataset loading capabilities.",
+      "scored": {
+        "says NOT faster": false,
+        "no amortization / break-even": false,
+        "prefer native h5py for speed": true,
+        "value is sharing/tiering not speed": false
+      },
+      "hits": 1,
+      "total": 4
+    },
+    "consolidation": {
+      "injected_skill": "hdf5-core-vfd",
+      "text": "The file context provided indicates that you are planning to use an HDF5 file with thousands of small datasets in clio-core. The bundled HDF5 skill (hdf5-core-vfd) is a memory file driver, which maintains HDF5 files entirely in RAM rather than on disk. This approach eliminates file system I/O overhead for temporary data operations and high-performance scenarios.\n\nThe primary use cases for this VFD include I/O buffer applications, temporary/scratch space, baseline performance testing, delayed storage decisions, fast prototyping and testing, and network transmission of HDF5 data. However, there are some potential concerns to consider:\n\n1. **Memory constraints**: The file size is limited by available system RAM. If the dataset is larger than your system memory, this approach may not be suitable.\n2. **No persistence without backing store**: Data will be lost when the file is closed if `backing_store=False`.\n3. **Single process**: Core VFD is not designed for concurrent access by multiple processes; use an appropriate parallel VFD instead.\n4. **Entire file in memory**: Even small accesses require the full file to be loaded into memory, which may not be efficient for large files with only small portions accessed.\nGiven these considerations, here are some recommendations:\n\n1. **Use backing_store=True** if you need persistent storage without explicitly managing it. This will write changes to disk on `close()` or `flush()`.\n2. **Set an appropriate block_size**: Larger increments (1-10 MB) for files expected to grow significantly can reduce reallocation overhead.\n3. **Prefer File.in_memory()** for purely in-memory files, as it provides a cleaner API and fewer edge cases.\n4. **Use for testing and development**: This approach is fast and does not require cleanup or isolation from file system state.\n5. **Profile memory usage**: Monitor RAM consumption for large in-memory files to avoid exhausting available memory.\n6. **Consider write tracking** when using backing store with selective modifications, as it optimizes disk writes by recording only modified regions.\n7. **Load read-only files into memory** for repeated access, as this is faster than repeated disk reads.\n8. **Avoid using Core VFD** for files larger than available system memory, persistent storage without explicit backing store management, concurrent access by multiple processes, long-running applications with limited RAM, or large files where only small portions are accessed.",
+      "scored": {
+        "consolidate / fewer larger datasets": false,
+        "per-object / object-count cost": true,
+        "cost magnitude (slow/overhead/x)": true
+      },
+      "hits": 2,
+      "total": 3
+    },
+    "api_usage": {
+      "injected_skill": "hdf5-swmr",
+      "text": "To ingest data from a file using SWMR (Single Writer Multiple Reader) mode in HDF5, follow these steps:\n\n1. Ensure your file is on a POSIX-compliant filesystem and was created with the latest HDF5 format (`libver='latest'`).\n2. Open the file for reading with `swmr=True` to enable SWMR mode.\n3. Call `dset.refresh()` before each read operation to synchronize with the writer's changes.\n4. Implement a polling loop or use inotify/custom IPC to detect new data as it is appended by the writer.\n5. Read new data only, using slicing based on the dataset's current size.\n6. Close the file when done.\n1. **Structure upfront**: Create all groups and datasets before enabling SWMR mode.\n2. **Flush regularly**: The writer must call `dset.flush()` after each write to make changes visible to readers.\n3. **Refresh before reading**: Readers must call `dset.refresh()` to see the latest data.\n4. **Use chunked datasets**: Required for extending data (set `maxshape=(None,)`).\n5. **Set appropriate poll intervals**: Balance latency vs overhead (0.1-1.0 seconds typical).\n6. **Use local filesystems only**: Network filesystems violate POSIX requirements.\n7. **Handle crashes gracefully**: The file remains valid through the last flush.\n8. **Test ordering**: Verify that readers open after writers enable SWMR mode.\n9. **Document flush frequency**: Critical for readers to understand data freshness.",
+      "scored": {
+        "hdf5:: routing (src prefix)": false,
+        "context_bundle for ingest": false,
+        "CTE Tag.GetBlob for read": false,
+        "avoid context_retrieve for binary": false
+      },
+      "hits": 0,
+      "total": 4
+    }
+  },
+  "with": {
+    "amortization": {
+      "injected_skill": "hdf5-clio-core-ingest",
+      "text": "The provided file context indicates that ingesting an HDF5 file into clio-core (CTE blob store via the CAE assimilator) is not recommended for improving read latency. In fact, it results in a significant performance penalty of 100-200x per dataset compared to native h5py reads. This penalty scales linearly with the number of datasets and is due to the overhead of managing many small objects in clio-core.\n\nThe skill `hdf5-clio-core-ingest` provides a decision rule: \"Default: read natively with h5py.\" It suggests consolidating small datasets into larger ones before ingestion, as this can significantly reduce the per-object penalty. However, even after consolidation, clio-core's warm read latency is still higher than native h5py reads across all tested scales.\nGiven the analysis, it is recommended to read the HDF5 file natively with h5py for your analysis loop that requires many repeated reads. If you still wish to use clio-core for other reasons (e.g., shared-memory residency or multi-tier placement), consider consolidating small datasets into larger ones before ingestion to minimize the per-object penalty.\n\nTo implement this recommendation, you can use the following steps:\n1. Consolidate small datasets into larger ones using appropriate methods (e.g., concatenating along a new axis or packing into one table).\n2. Read the consolidated HDF5 file natively with h5py in your analysis loop.\n\nIf you decide to proceed with clio-core ingestion despite the performance penalty, remember to use the correct routing protocol prefix (`hdf5::` for semantic per-dataset ingest) and read binary data back via the CTE data plane using `Tag.GetBlob`. Avoid using `context_retrieve` for array data, as it raises a `UnicodeDecodeError` on binary content.",
+      "scored": {
+        "says NOT faster": false,
+        "no amortization / break-even": false,
+        "prefer native h5py for speed": true,
+        "value is sharing/tiering not speed": true
+      },
+      "hits": 2,
+      "total": 4
+    },
+    "consolidation": {
+      "injected_skill": "hdf5-clio-core-ingest",
+      "text": "The provided file context indicates that ingesting an HDF5 file with thousands of small datasets into clio-core may lead to performance issues. The hdf5-clio-core-ingest skill emphasizes that the cost of ingest and retrieve operations scales linearly with dataset (object) count, resulting in a significant per-object penalty (~100\u2013200\u00d7). This is due to clio-core's design, which prioritizes shared-memory residency for many concurrent consumers and multi-tier placement over read latency optimization.\n\nThe skill also highlights that bundling into clio-core does not amortize ingest costs, as the warm read is slower than a cold native read even for large contiguous data. The break-even point (N reads before ingest pays off) was never reached at every scale tested.\n\nMoreover, the skill suggests that per-byte scaling is fine; it's objects/chunks that hurt. Clio-core scales gracefully with data size but badly with object/chunk count. Large contiguous datasets are the friendly case, while high object counts are hostile.\n1. Consolidate small datasets into fewer, larger datasets before ingestion to minimize the per-object penalty (~100\u2013200\u00d7). This can be achieved by concatenating along a new axis or packing into one table.\n2. If consolidation is not possible, consider using native h5py for reading instead of bundling into clio-core.\n3. When retrieving subsets, use selective retrieve (cost \u221d K requested, not N total) to minimize the number of objects read back.\n4. Read binary data back via CTE `Tag.GetBlob` (returns bytes); order chunks by numeric index.\n5. Use `src=\"hdf5::\"` for semantic ingest; treat `format=` as cosmetic.\n6. Avoid using `src=\"file::\"` with `format=\"hdf5\"` to prevent silent use of the opaque binary chunker without per-dataset structure.\n7. Do not use CEE `context_retrieve` for array data, as it is designed for text/LLM-context (UTF-8) and raises `UnicodeDecodeError` on binary data. Instead, use CTE `Tag.GetBlob`.\n8. Be aware that bundling a many-small-dataset file as-is may result in minutes of per-object overhead; consolidate or avoid bundling if possible.\n9. Note that the assimilator ingests whole datasets only and does not read HDF5 attributes, so expecting attribute or hyperslab reads will not be supported.",
+      "scored": {
+        "consolidate / fewer larger datasets": true,
+        "per-object / object-count cost": true,
+        "cost magnitude (slow/overhead/x)": true
+      },
+      "hits": 3,
+      "total": 3
+    },
+    "api_usage": {
+      "injected_skill": "hdf5-clio-core-ingest",
+      "text": "The provided file context describes a skill named \"hdf5-clio-core-ingest\" which outlines best practices for ingesting HDF5 files into clio-core, a blob store managed by the CAE assimilator. The skill emphasizes that bundling HDF5 files into clio-core is not an optimization for read latency; in fact, it results in a significant per-object penalty (100-200x) compared to native h5py reads.\n\nThe key takeaways from this skill are:\n1. Default to reading natively with h5py unless you need clio-core's shared-memory residency or multi-tier placement features.\n2. Consolidate small datasets into larger ones before ingesting, as the cost scales linearly with dataset count (~11-20 ms per dataset for a full read and ~21-38 ms per dataset to enumerate).\n3. Avoid bundling to make reads faster, as the intuition of paying ingest once for cheap reads forever does not hold true; clio-core's warm read is slower than a cold native read even for large contiguous data.\n4. Retrieve subsets selectively by filtering at retrieve time rather than pulling the whole bundle, as retrieve cost scales with the number requested (K), not the file total (N).\n5. Large contiguous datasets are the friendly case; high object counts are the hostile one due to clio-core's poor scaling with object/chunk count.\n1. Consolidate small datasets into larger ones before ingesting, as the cost scales linearly with dataset count and results in a significant per-object penalty.\n2. Avoid bundling HDF5 files into clio-core for read speed optimization, as it does not provide any latency benefits compared to native h5py reads. Instead, consider using clio-core for its shared-memory residency and multi-tier placement features if those are required.\n3. Retrieve subsets selectively by filtering at retrieve time rather than pulling the whole bundle, as this reduces the cost associated with retrieving large numbers of datasets.\n4. Use the CTE `Tag.GetBlob` method to read binary data back via the CTE data plane, ordering chunks by numeric index.\n5. Be aware of common pitfalls such as using the opaque binary chunker when intending semantic per-dataset ingest and expecting attributes/hyperslab reads from the assimilator, which does not support these features.",
+      "scored": {
+        "hdf5:: routing (src prefix)": false,
+        "context_bundle for ingest": true,
+        "CTE Tag.GetBlob for read": true,
+        "avoid context_retrieve for binary": false
+      },
+      "hits": 2,
+      "total": 4
+    }
+  }
+}

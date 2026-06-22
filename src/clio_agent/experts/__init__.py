@@ -7,7 +7,7 @@ Each expert is a DSPy module specialized for a particular domain.
 Production Experts:
 - DataExpert: HDF5, ADIOS, Parquet optimization (file format level)
 - HDF5Expert: HDF5-specialized (layout, filters, VFDs, VOL, SWMR, VDS, CF
-  conventions, cloud-optimized variants) with a 24-skill knowledge bundle
+  conventions, cloud-optimized variants) with a 25-skill knowledge bundle
 - AnalysisExpert: Statistical analysis, data profiling (data content level)
 - VisualizationExpert: Charts, plots, visual data summaries
 

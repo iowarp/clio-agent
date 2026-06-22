@@ -1,0 +1,200 @@
+{
+  "without": {
+    "amortization": {
+      "selected_expert": "chat",
+      "would_inject_skill": "hdf5-omni-selective",
+      "answer": "I could not choose a valid CLIO action for this request. Check the configured local model and retry.",
+      "scored": {
+        "says NOT faster / won't help read speed": false,
+        "no amortization / break-even": false,
+        "prefer native h5py for speed": false,
+        "value is sharing/tiering not speed": false
+      },
+      "hits": 0,
+      "total": 4
+    },
+    "consolidation": {
+      "selected_expert": "chat",
+      "would_inject_skill": "hdf5-core-vfd",
+      "answer": "I could not choose a valid CLIO action for this request. Check the configured local model and retry.",
+      "scored": {
+        "consolidate / fewer larger datasets": false,
+        "per-object / object-count cost": false,
+        "cost magnitude (slow/overhead/x)": false
+      },
+      "hits": 0,
+      "total": 3
+    },
+    "when_to_use": {
+      "selected_expert": "chat",
+      "would_inject_skill": "hdf5-core-vfd",
+      "answer": "I could not choose a valid CLIO action for this request. Check the configured local model and retry.",
+      "scored": {
+        "default to native h5py": false,
+        "not for read speed": false,
+        "value = sharing/tiering/multi-consumer": false
+      },
+      "hits": 0,
+      "total": 3
+    },
+    "api_usage": {
+      "selected_expert": "chat",
+      "would_inject_skill": "hdf5-swmr",
+      "answer": "I could not choose a valid CLIO action for this request. Check the configured local model and retry.",
+      "scored": {
+        "hdf5:: routing (src prefix)": false,
+        "context_bundle for ingest": false,
+        "CTE Tag.GetBlob for read": false,
+        "avoid context_retrieve for binary": false
+      },
+      "hits": 0,
+      "total": 4
+    },
+    "one_time_read": {
+      "selected_expert": "chat",
+      "would_inject_skill": "hdf5-core-vfd",
+      "answer": "I could not choose a valid CLIO action for this request. Check the configured local model and retry.",
+      "scored": {
+        "no / not worth for a single read": false,
+        "ingest cost not recovered": false,
+        "default to native h5py": false
+      },
+      "hits": 0,
+      "total": 3
+    },
+    "object_count": {
+      "selected_expert": "chat",
+      "would_inject_skill": "hdf5-core-vfd",
+      "answer": "I could not choose a valid CLIO action for this request. Check the configured local model and retry.",
+      "scored": {
+        "yes, scales with dataset count": false,
+        "many small = penalty/slow": false,
+        "consolidate": false
+      },
+      "hits": 0,
+      "total": 3
+    },
+    "sharing_fit": {
+      "selected_expert": "chat",
+      "would_inject_skill": "hdf5-cf-compliance",
+      "answer": "I could not choose a valid CLIO action for this request. Check the configured local model and retry.",
+      "scored": {
+        "yes - sharing/concurrent is the right use": false,
+        "shared-memory / residency / tiering": false
+      },
+      "hits": 0,
+      "total": 2
+    },
+    "big_single_reread": {
+      "selected_expert": "chat",
+      "would_inject_skill": "hdf5-chunking",
+      "answer": "I could not choose a valid CLIO action for this request. Check the configured local model and retry.",
+      "scored": {
+        "no / not faster": false,
+        "per-chunk cost / doesn't amortize at scale": false,
+        "native h5py faster": false
+      },
+      "hits": 0,
+      "total": 3
+    }
+  },
+  "with": {
+    "amortization": {
+      "selected_expert": "chat",
+      "would_inject_skill": "hdf5-clio-core-ingest",
+      "answer": "I could not choose a valid CLIO action for this request. Check the configured local model and retry.",
+      "scored": {
+        "says NOT faster / won't help read speed": false,
+        "no amortization / break-even": false,
+        "prefer native h5py for speed": false,
+        "value is sharing/tiering not speed": false
+      },
+      "hits": 0,
+      "total": 4
+    },
+    "consolidation": {
+      "selected_expert": "chat",
+      "would_inject_skill": "hdf5-clio-core-ingest",
+      "answer": "I could not choose a valid CLIO action for this request. Check the configured local model and retry.",
+      "scored": {
+        "consolidate / fewer larger datasets": false,
+        "per-object / object-count cost": false,
+        "cost magnitude (slow/overhead/x)": false
+      },
+      "hits": 0,
+      "total": 3
+    },
+    "when_to_use": {
+      "selected_expert": "chat",
+      "would_inject_skill": "hdf5-clio-core-ingest",
+      "answer": "I could not choose a valid CLIO action for this request. Check the configured local model and retry.",
+      "scored": {
+        "default to native h5py": false,
+        "not for read speed": false,
+        "value = sharing/tiering/multi-consumer": false
+      },
+      "hits": 0,
+      "total": 3
+    },
+    "api_usage": {
+      "selected_expert": "chat",
+      "would_inject_skill": "hdf5-clio-core-ingest",
+      "answer": "I could not choose a valid CLIO action for this request. Check the configured local model and retry.",
+      "scored": {
+        "hdf5:: routing (src prefix)": false,
+        "context_bundle for ingest": false,
+        "CTE Tag.GetBlob for read": false,
+        "avoid context_retrieve for binary": false
+      },
+      "hits": 0,
+      "total": 4
+    },
+    "one_time_read": {
+      "selected_expert": "chat",
+      "would_inject_skill": "hdf5-clio-core-ingest",
+      "answer": "I could not choose a valid CLIO action for this request. Check the configured local model and retry.",
+      "scored": {
+        "no / not worth for a single read": false,
+        "ingest cost not recovered": false,
+        "default to native h5py": false
+      },
+      "hits": 0,
+      "total": 3
+    },
+    "object_count": {
+      "selected_expert": "chat",
+      "would_inject_skill": "hdf5-clio-core-ingest",
+      "answer": "I could not choose a valid CLIO action for this request. Check the configured local model and retry.",
+      "scored": {
+        "yes, scales with dataset count": false,
+        "many small = penalty/slow": false,
+        "consolidate": false
+      },
+      "hits": 0,
+      "total": 3
+    },
+    "sharing_fit": {
+      "selected_expert": "chat",
+      "would_inject_skill": "hdf5-clio-core-ingest",
+      "answer": "I could not choose a valid CLIO action for this request. Check the configured local model and retry.",
+      "scored": {
+        "yes - sharing/concurrent is the right use": false,
+        "shared-memory / residency / tiering": false
+      },
+      "hits": 0,
+      "total": 2
+    },
+    "big_single_reread": {
+      "selected_expert": "chat",
+      "would_inject_skill": "hdf5-clio-core-ingest",
+      "answer": "I could not choose a valid CLIO action for this request. Check the configured local model and retry.",
+      "scored": {
+        "no / not faster": false,
+        "per-chunk cost / doesn't amortize at scale": false,
+        "native h5py faster": false
+      },
+      "hits": 0,
+      "total": 3
+    }
+  }
+}

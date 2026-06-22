@@ -174,7 +174,7 @@ class ClioAgent(dspy.Module):
         )
 
         # HDF5Expert: HDF5-specialized (layout/filters/VFDs/SWMR/VDS/CF/etc.)
-        # with a 24-skill knowledge bundle. Routes ahead of DataExpert for
+        # with a 25-skill knowledge bundle. Routes ahead of DataExpert for
         # HDF5-specific queries; DataExpert stays the target for general
         # data-format and Parquet questions.
         self.hdf5_expert = HDF5Expert(

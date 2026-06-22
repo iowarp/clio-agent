@@ -1,0 +1,200 @@
+{
+  "without": {
+    "amortization": {
+      "selected_expert": "hdf5",
+      "would_inject_skill": "hdf5-omni-selective",
+      "answer": "1. **Tool results show**: The hdf5-omni-selective skill explains that IOWarp's CAE can selectively ingest only required HDF5 datasets via OMNI YAML files, avoiding full-file transfers. This reduces bandwidth/memory usage for large files by filtering datasets using glob patterns.\n\n2. **Implications**: For repeated reads in an analysis loop, this is beneficial if:\n   - Your HDF5 file contains >10 datasets (per `h5ls -r` inspection)\n   - Only a subset of datasets are needed for the analysis (e.g., specific variables/coordinates)\n   - File size exceeds 100MB (per \"cloud-optimized\" thresholds in hdf5-cloud-optimized)\n   - You're working in distributed environments where network I/O dominates (per hdf5-parallel)\n\n3. **Caveats**: Provides no benefit if:\n   - Your analysis requires >90% of datasets in the file\n   - File is <50MB (transfer overhead outweighs savings)\n   - You already use HDF5's core VFD (in-memory) or SWMR (streaming) features\n\nRecommendations:\n1. **First**, inspect your HDF5 file's structure with:\n   ```bash\n   h5ls -r your_file.h5\n   ```\n   or Python:\n   ```python\n   import h5py; f = h5py.File(\"your_file.h5\"); f.visititems(lambda n,o: print(n) if isinstance(o,h5py.Dataset) else None)\n   ```\n\n2. **Then**, create an OMNI YAML with patterns matching your analysis needs. Example for temperature+geolocation:\n   ```yaml\n   version: \"1.0\"\n   transfers:\n     - src: \"hdf5::your_file.h5\"\n       dst: \"iowarp::analysis_data\"\n       format: \"hdf5\"\n       dataset_filter:\n         include_patterns:\n           - \"/temperature/*\"\n           - \"*/geolocation/latitude\"\n           - \"*/geolocation/longitude\"\n   ```\n\n3. **Finally**, execute with IOWarp:\n   ```bash\n   wrp_cae_omni your_omni.yaml\n   ```\n   This creates a filtered bundle that will load 2-10x faster in repeated analysis loops compared to full-file transfers (per hdf5-cloud-optimized benchmarks).",
+      "scored": {
+        "says NOT faster / won't help read speed": false,
+        "no amortization / break-even": false,
+        "prefer native h5py for speed": true,
+        "value is sharing/tiering not speed": false
+      },
+      "hits": 1,
+      "total": 4
+    },
+    "consolidation": {
+      "selected_expert": "hdf5",
+      "would_inject_skill": "hdf5-core-vfd",
+      "answer": "No concrete HDF5 file was named, and no skill matched the question strongly. I can give general HDF5 guidance but cannot make file-specific claims without a path.\n\nRecommendations:\nProvide an HDF5 file path, or ask a focused question on one of the bundled topics (chunking, filters, parallel, VFD, VOL, SWMR, VDS, CF compliance, cloud-optimized HDF5).",
+      "scored": {
+        "consolidate / fewer larger datasets": false,
+        "per-object / object-count cost": false,
+        "cost magnitude (slow/overhead/x)": false
+      },
+      "hits": 0,
+      "total": 3
+    },
+    "when_to_use": {
+      "selected_expert": "hdf5",
+      "would_inject_skill": "hdf5-core-vfd",
+      "answer": "1. Tool results show Core VFD enables in-memory HDF5 operations with optional disk persistence, eliminating I/O overhead for temporary files, testing, and performance benchmarking. Key parameters include `backing_store` for persistence control and `block_size` for memory allocation.\n\n2. Core VFD is advantageous when working with temporary/ephemeral data (no disk cleanup needed), requiring fast random access for small-to-medium files, or isolating computational performance from disk I/O. It also supports network transmission and selective persistence patterns (per hdf5-core-vfd). For large files (>RAM) or production persistence, standard h5py disk operations are better.\n\n3. Use Core VFD with `backing_store=False` for transient data, `block_size` tuned to growth patterns, and `File.in_memory()` for clean API usage. Avoid for large datasets or when partial file access is needed.\n\nRecommendations:\nUse clio-core (Core VFD) when:\n1. Creating temporary/scratch files during computation pipelines (data discarded after use)\n2. Performing unit testing/development (no disk cleanup required)\n3. Benchmarking baseline performance (isolate computation from I/O)\n4. Handling small-to-medium files with frequent random access\n5. Transmitting HDF5 data over networks (in-memory to bytes)\n\nUse standard h5py when:\n1. Files exceed available RAM\n2. Persistent storage is required without manual backing_store management\n3. Working with large files where only subsets are accessed\n4. Production systems with memory constraints\n\nSpecific action: For temporary files, use `h5py.File.in_memory()` instead of disk-based h5py operations.",
+      "scored": {
+        "default to native h5py": false,
+        "not for read speed": false,
+        "value = sharing/tiering/multi-consumer": false
+      },
+      "hits": 0,
+      "total": 3
+    },
+    "api_usage": {
+      "selected_expert": "hdf5",
+      "would_inject_skill": "hdf5-swmr",
+      "answer": "1. **What the tool results show**: The provided skill library includes detailed guidance on HDF5 chunking strategies, but no direct tool results for file ingestion or dataset reading are present in the context. The user's question focuses on workflow mechanics rather than data layout optimization.\n\n2. **What it means**: Ingestion into CLIO-core typically involves using the `hdf5_analyze_file` tool to register metadata, followed by standard HDF5 APIs (h5py, PyTables) or CLIO's native interfaces for data access. Reading arrays requires understanding dataset structure (shape, dtype, chunking) first, which is covered in the `hdf5-chunking` skill's storage layout section.\n\n3. **What to do**: \n   - Use `hdf5_analyze_file` to inspect the file's structure\n   - Use standard HDF5 tools or CLIO's API to read datasets\n   - Apply chunking best practices when modifying datasets\n\nRecommendations:\n1. **Inspect file structure first**:\n   Run `hdf5_analyze_file your_file.h5` to get metadata about datasets, chunking, and filters. This will show the exact layout required for proper ingestion.\n\n2. **Ingest using CLIO's API**:\n   For programmatic access, use:\n   ```python\n   from clio import hdf5\n   dataset = hdf5.load_dataset('your_file.h5', '/path/to/dataset')\n   array = dataset.read()\n   ```\n   This leverages CLIO's built-in HDF5 integration.\n\n3. **Read with standard tools**:\n   For direct access, use h5py:\n   ```python\n   import h5py\n   with h5py.File('your_file.h5', 'r') as f:\n       data = f['/path/to/dataset'][:]\n   ```\n\n4. **Optimize for chunked datasets**:\n   If the dataset uses chunking (as described in `hdf5-chunking`), set appropriate chunk cache parameters when opening files:\n   ```python\n   with h5py.File('your_file.h5', 'r', \n                  rdcc_nbytes=10*1024**2,  # 10 MB cache\n                  rdcc_nslots=10009) as f:\n       data = f['/dataset'][:]\n   ```\n\n5. **For large datasets**, consider using dask-hdf5 for out-of-core computation:\n   ```python\n   import dask.array as da\n   data = da.from_hdf5('your_file.h5', '/dataset')\n   ```",
+      "scored": {
+        "hdf5:: routing (src prefix)": false,
+        "context_bundle for ingest": false,
+        "CTE Tag.GetBlob for read": false,
+        "avoid context_retrieve for binary": false
+      },
+      "hits": 0,
+      "total": 4
+    },
+    "one_time_read": {
+      "selected_expert": "hdf5",
+      "would_inject_skill": "hdf5-core-vfd",
+      "answer": "1. **Tool results show**: The HDF5 Core VFD skill explains that in-memory file operations eliminate disk I/O overhead, with use cases including \"fast repeated access\" and \"temporary/scratch space.\" For single-read workflows, the Core VFD avoids disk I/O during processing but requires loading the entire file into RAM upfront.\n\n2. **Implications**: If your file is small or system memory is constrained, direct disk reads (e.g., `h5py.File('file.h5', 'r')`) may be more efficient. However, if the file is large and your single-read workflow involves intensive processing (e.g., multiple dataset slices, attribute lookups), loading into memory via Core VFD avoids repeated disk seeks, improving throughput (per `hdf5-core-vfd` performance characteristics).\n\n3. **Constraints**: Core VFD requires sufficient RAM to hold the entire file. For one-time reads, this is only beneficial if memory is available and the processing justifies the upfront load cost. The skill also notes that `backing_store=False` (default) discards data after closure, aligning with temporary use cases.\n\nRecommendations:\n- **If file size < available RAM and processing is I/O-bound**: Use `h5py.File('file.h5', 'r', driver='core')` to load the file into memory before processing. This avoids repeated disk access during your single read (see \"Fast repeated access\" pattern in skill).\n- **If memory is constrained or processing is trivial**: Read directly from disk with standard `h5py.File()`. No need for Core VFD overhead.\n- **For network-transmitted files**: Use `h5py.File.in_memory()` to construct the file in RAM from a byte stream (per \"Network transmission\" example in skill).\n- **Monitor memory usage**: For large files, profile RAM consumption with `hdf5_analyze_file` before committing to Core VFD.",
+      "scored": {
+        "no / not worth for a single read": true,
+        "ingest cost not recovered": true,
+        "default to native h5py": true
+      },
+      "hits": 3,
+      "total": 3
+    },
+    "object_count": {
+      "selected_expert": "hdf5",
+      "would_inject_skill": "hdf5-core-vfd",
+      "answer": "1. **Tool results show**: The provided skill describes the HDF5 Core VFD, which stores entire files in memory. It emphasizes that in-memory operations eliminate disk I/O latency but do not inherently mitigate metadata overhead from large numbers of datasets.\n\n2. **What it means**: \n   - **Metadata overhead**: Each dataset in HDF5 adds metadata (headers, attributes, B-trees). With thousands of datasets, this metadata can dominate file size and access time, even in memory (per `hdf5-core-vfd`).\n   - **Ingestion impact**: Clio-core's ingestion speed will degrade with excessive datasets due to metadata parsing and B-tree traversal costs, regardless of VFD choice.\n   - **Serving performance**: Random access to many small datasets in memory will still incur per-dataset lookup overhead, though Core VFD avoids disk I/O latency.\n\n3. **Key limitations**: \n   - Core VFD does not reduce metadata volume, only I/O latency.\n   - Memory consumption grows with both dataset count and data volume.\n   - Dataset count affects memory allocation granularity (per `block_size` parameter in Core VFD).\n\nRecommendations:\n1. **Optimize dataset structure**:\n   - Consolidate small datasets into compound or array datasets (see `hdf5-datatypes`).\n   - Use dimension scales (`hdf5-dimension-scales`) instead of separate coordinate datasets.\n\n2. **Leverage Core VFD parameters**:\n   - Set `block_size=1MB` when creating in-memory files to reduce reallocation overhead for growing files with many datasets.\n   - Use `backing_store=False` for temporary files to avoid unnecessary disk writes.\n\n3. **Profile metadata performance**:\n   - Run `hdf5_get_object_metadata` on your file to quantify dataset count and metadata size.\n   - If >10k datasets, consider `hdf5_vds` to virtualize them into a single logical dataset.\n\n4. **For production files**:\n   - Use `hdf5_rechunk_dataset` to optimize storage for access patterns.\n   - Apply `hdf5_apply_filter` with shuffle+gzip to reduce dataset count via compression.",
+      "scored": {
+        "yes, scales with dataset count": true,
+        "many small = penalty/slow": true,
+        "consolidate": true
+      },
+      "hits": 3,
+      "total": 3
+    },
+    "sharing_fit": {
+      "selected_expert": "hdf5",
+      "would_inject_skill": "hdf5-cf-compliance",
+      "answer": "1. **Tool results show**: The `hdf5-swmr` skill confirms HDF5 supports concurrent access via Single Writer Multiple Reader (SWMR) mode, enabling one writer and multiple readers without locks. This requires HDF5 1.10+ with `libver='latest'` and local POSIX filesystems.\n\n2. **Interpretation**: For `clio-core` to support concurrent reads, it must implement SWMR correctly. Key requirements include:\n   - Writer must create all datasets/groups upfront and enable SWMR mode.\n   - Readers must open files with `swmr=True` and call `refresh()` before reads.\n   - Writers must call `flush()` after updates to ensure visibility.\n   - File operations are restricted to appending/overwriting existing data (no structural changes).\n\n3. **Limitations**: SWMR does not support network filesystems (NFS/SMB), dynamic structure changes, or mixed SWMR/non-SWMR readers. Writers cannot create/delete objects after SWMR activation.\n\nRecommendations:\n1. **Verify clio-core's SWMR implementation**: Check if `clio-core` uses HDF5 1.10+ with SWMR mode enabled (`libver='latest'`, `f.swmr_mode = True` in Python). If not, consult `hdf5-swmr` for setup.\n\n2. **Ensure proper workflow**:\n   - Writers: Call `dset.flush()` after every write to make changes visible.\n   - Readers: Use `h5py.File(..., swmr=True)` and `dset.refresh()` before reads.\n   - Avoid mixing SWMR and non-SWMR processes on the same file.\n\n3. **Alternative for incompatible scenarios**: If SWMR constraints (e.g., no structural changes) are problematic, consider `hdf5-parallel` with MPI for coordinated access, or use `hdf5-vds` for read-only virtual datasets.\n\n4. **Test with `hdf5_analyze_file`**: Inspect existing files for SWMR compatibility (e.g., file format version, dataset structure).",
+      "scored": {
+        "yes - sharing/concurrent is the right use": true,
+        "shared-memory / residency / tiering": false
+      },
+      "hits": 1,
+      "total": 2
+    },
+    "big_single_reread": {
+      "selected_expert": "hdf5",
+      "would_inject_skill": "hdf5-chunking",
+      "answer": "1. **Tool results show**: The HDF5 Core VFD (memory file driver) eliminates disk I/O by keeping the entire file in RAM. For a 10 GB file, this requires sufficient system memory to hold the dataset plus HDF5 metadata. \n\n2. **Implications**: \n   - **Read performance gains** depend on your current I/O bottleneck. If using traditional disk-based HDF5 (as in standard h5py), Core VFD will improve performance by avoiding disk seek times and file system overhead (per `hdf5-core-vfd`).\n   - **Memory constraints**: Your system must have >10 GB of free RAM for this to work. The skill notes that \"entire file is loaded into memory\" upfront, which may not be feasible for larger-than-memory datasets.\n   - **Access patterns**: Core VFD excels for random-access or repeated reads, but sequential disk reads (e.g., from SSD) may see smaller gains.\n\n3. **Comparison to h5py**: Standard h5py uses disk-based VFDs. With clio-core's Core VFD integration, you can achieve in-memory performance similar to h5py's `driver='core'` mode, but with optimized memory management parameters (block_size, write tracking).\n\nRecommendations:\n1. **Verify system memory**: Ensure your machine has >10 GB of free RAM. Use `free -h` (Linux) or Activity Monitor (macOS) to confirm.\n\n2. **Test with Core VFD**: Use clio-core to load the file with `driver='core'` and `backing_store=False` for temporary in-memory access:\n   ```python\n   f = h5py.File('your_file.h5', 'r', driver='core', backing_store=False)\n   ```\n   Measure read times vs standard h5py.\n\n3. **Optimize memory allocation**: If the file grows during processing, set `block_size=1024*1024*16` (16 MB increments) to reduce reallocation overhead.\n\n4. **For read-only workflows**: Load the file once into memory with Core VFD and reuse it for multiple operations (as shown in the \"Fast repeated access\" pattern in the skill).\n\n5. **If memory is constrained**: Use standard h5py with chunked datasets and `hdf5-chunking` optimizations instead.",
+      "scored": {
+        "no / not faster": false,
+        "per-chunk cost / doesn't amortize at scale": false,
+        "native h5py faster": true
+      },
+      "hits": 1,
+      "total": 3
+    }
+  },
+  "with": {
+    "amortization": {
+      "selected_expert": "hdf5",
+      "would_inject_skill": "hdf5-clio-core-ingest",
+      "answer": "1. **Tool results show clio-core read latency is 2\u20138\u00d7 higher than h5py** for both cold and warm reads. Even for large contiguous datasets (2GB), clio-core warm reads (3.2s) remain slower than h5py cold reads (2.1s). The overhead scales with chunk count (1.5MB chunks \u2192 ~1,400 round trips for 2GB).\n\n2. **Per-object overhead dominates performance** (per hdf5-clio-core-ingest). Files with many small datasets incur 100\u2013200\u00d7 penalties during bundling/retrieval due to per-dataset metadata and blob management. This makes clio-core unsuitable for I/O-bound workflows unless datasets are consolidated first.\n\n3. **Repeated reads do not amortize ingest cost**. The break-even point for clio-core (where cumulative read time equals h5py) never occurs in tested scenarios. Each clio-core read incurs ~3\u00d7 the per-byte cost of h5py cold reads and ~6\u20138\u00d7 the cost of warm reads.\n\nRecommendations:\n1. **Stick with h5py for repeated reads** unless you need clio-core's unique features (shared-memory residency, multi-tier storage). The performance penalty for bundling outweighs any potential amortization.\n\n2. **If you must use clio-core**, first consolidate many small datasets into fewer large arrays (per hdf5-chunking). For example, pack 1,000 256KB datasets into a single 250MB array to reduce per-object overhead from 21ms/dataset to ~11ms total.\n\n3. **For selective access**, use `cte.Tag.GetBlob` with pattern-based filtering (per hdf5-omni-selective) to retrieve only needed datasets. This reduces clio-core retrieval time proportionally to K/N (requested vs total datasets).\n\n4. **Avoid `context_retrieve` for binary data** \u2013 it's designed for text context. Always use CTE's `Tag.GetBlob` API for array data (as shown in the hdf5-clio-core-ingest code example).",
+      "scored": {
+        "says NOT faster / won't help read speed": true,
+        "no amortization / break-even": true,
+        "prefer native h5py for speed": true,
+        "value is sharing/tiering not speed": true
+      },
+      "hits": 4,
+      "total": 4
+    },
+    "consolidation": {
+      "selected_expert": "hdf5",
+      "would_inject_skill": "hdf5-clio-core-ingest",
+      "answer": "1. **Tool results show** that clio-core ingestion scales poorly with dataset count: 10\u20138,533 datasets incur 100\u2013200\u00d7 higher per-dataset overhead compared to native h5py reads. For 1,000 datasets, this translates to ~12.4s clio-core read vs 0.1s native (120\u00d7 penalty). \n\n2. **This means** your file will face catastrophic ingestion performance due to the per-object overhead (11\u201338ms per dataset for clio-core vs 0.1ms for h5py). The penalty grows linearly with dataset count, not file size. Even if the total data volume is small, the sheer number of objects will dominate the cost (per hdf5-clio-core-ingest).\n\n3. **The file structure** appears to have high object count (thousands) but low per-dataset size. This is the \"hostile case\" for clio-core (per hdf5-clio-core-ingest), as the system's chunking strategy (1.5MB per blob) creates ~1,400 round trips for a 2GB contiguous dataset, but your case has far worse scaling due to object count.\n\nRecommendations:\n1. **Consolidate datasets first** (critical): Use `hdf5_rechunk_dataset` or `hdf5_analyze_file` to identify candidates for consolidation. Merge small datasets into arrays with new dimensions (e.g., pack 1000 1D arrays into a 2D array). This reduces object count from thousands to single digits, making clio-core viable if needed for sharing.\n\n2. **Avoid clio-core for read speed** (imperative): Since clio-core warm reads are slower than cold native reads (per benchmarks), only use it if you need shared-memory residency for concurrent consumers. Otherwise, stick to h5py.\n\n3. **If you must ingest**: \n   - Use `src=\"hdf5::\"` for semantic ingest (per-dataset tagging)\n   - Follow the CTE `Tag.GetBlob` pattern for binary retrieval\n   - Pre-filter retrieval by dataset path to avoid fetching all objects\n\n4. **Consider OMNI selective download** (advanced): If only subsets are needed, consult `hdf5-omni-selective` to implement partial ingest via CAE assimilator filters (requires custom YAML configuration).",
+      "scored": {
+        "consolidate / fewer larger datasets": true,
+        "per-object / object-count cost": true,
+        "cost magnitude (slow/overhead/x)": true
+      },
+      "hits": 3,
+      "total": 3
+    },
+    "when_to_use": {
+      "selected_expert": "hdf5",
+      "would_inject_skill": "hdf5-clio-core-ingest",
+      "answer": "1. **Tool results show ingestion overhead**: Clio-core read latency is 2\u20138\u00d7 higher than native h5py (even warmed), with per-dataset penalties of 11\u201338 ms for full reads/enumeration. For 8,533 datasets, this creates a 196\u00d7 slowdown compared to native h5py.\n\n2. **Performance implications**: Ingestion costs scale linearly with object count (not data size). Large contiguous datasets have ~3\u00d7 cold / ~6\u00d7 warm read overhead vs h5py, but this is predictable. High-object-count files (e.g., many small datasets) face catastrophic slowdowns (100\u2013200\u00d7 penalty).\n\n3. **Use case constraints**: Clio-core ingestion only justifies when requiring shared-memory residency for concurrent consumers or multi-tier storage placement. Read-speed optimization is not a valid use case due to inherent per-chunk round-trip costs (1.5 MB chunking creates ~1,400 I/O operations for 2 GB dataset).\n\nRecommendations:\n1. **Default to h5py**: Only consider clio-core ingestion if you need shared access across processes/nodes or tiered storage (e.g., NVMe + tape). For single-reader workflows, h5py remains faster.\n\n2. **Consolidate datasets before ingestion**: If ingestion is required, merge small datasets into fewer large arrays (e.g., concatenate along new axis). This reduces per-object overhead from 11\u201338 ms/dataset to ~10\u201320 ms total for consolidated files.\n\n3. **Use selective retrieval**: When retrieving, specify only needed datasets (via `Tag.GetBlob`) to avoid paying for full-file costs. This reduces cost from O(N) to O(K) where K << N.\n\n4. **Avoid these pitfalls**:\n   - Don't use `context_retrieve` for binary data (use CTE `Tag.GetBlob` instead)\n   - Don't ingest files with >1,000 small datasets without consolidation\n   - Don't expect attributes/hyperslabs to be preserved (assimilator only ingests full datasets)\n\n5. **Verify with A/B testing**: For critical datasets, benchmark both paths using `hdf5_analyze_file` to quantify object count and `hdf5_visualize_dataset` to assess chunking patterns before committing to ingestion.",
+      "scored": {
+        "default to native h5py": true,
+        "not for read speed": false,
+        "value = sharing/tiering/multi-consumer": true
+      },
+      "hits": 2,
+      "total": 3
+    },
+    "api_usage": {
+      "selected_expert": "hdf5",
+      "would_inject_skill": "hdf5-clio-core-ingest",
+      "answer": "1. **Tool results show ingestion workflow**: The clio-core assimilator uses `src=\"hdf5::\"` for semantic per-dataset ingest, creating one tag per dataset. The code example demonstrates `context_bundle` with `hdf5::` prefix and `Tag.GetBlob` for binary retrieval. Ingestion overhead scales with dataset count (11-20ms per dataset) but not file size.\n\n2. **Performance implications**: Ingesting files with many small datasets (e.g., 8,533 datasets) incurs ~173s total latency vs 0.9s native h5py. CTE reads are 2-8\u00d7 slower than warm h5py reads. This aligns with the \"hdf5-io\" skill's warning about per-chunk overhead in virtualized storage.\n\n3. **Retrieval mechanics**: The assimilator stores datasets as ordered `chunk_N` blobs. Reading requires manual reassembly via `GetBlob` in numeric order, with dtype/shape metadata extracted from a separate description blob. This differs from h5py's direct array access.\n\nRecommendations:\n1. **Ingest workflow**:\n   - Use `clio_cee.AssimilationCtx(src=f\"hdf5://{path}\", dst=\"iowarp://{tag}\")` with `context_bundle()`\n   - For files with >100 datasets, pre-consolidate with `h5repack` (see `hdf5-chunking`)\n\n2. **Read workflow**:\n   - Use `cte.Tag(f\"{tag}/{dataset_path}\").GetBlob()` for binary retrieval\n   - Parse shape/dtype from tensor<...> metadata blob\n   - Avoid `context_retrieve()` for binary data (raises UnicodeDecodeError)\n\n3. **Optimization**:\n   - For selective reads, use `hdf5-omni-selective` to filter datasets during ingest\n   - For random-access patterns, benchmark native h5py vs CTE using `hdf5-io` guidelines",
+      "scored": {
+        "hdf5:: routing (src prefix)": true,
+        "context_bundle for ingest": true,
+        "CTE Tag.GetBlob for read": true,
+        "avoid context_retrieve for binary": false
+      },
+      "hits": 3,
+      "total": 4
+    },
+    "one_time_read": {
+      "selected_expert": "hdf5",
+      "would_inject_skill": "hdf5-clio-core-ingest",
+      "answer": "Loading your HDF5 file into clio-core is generally only beneficial if you need to access it multiple times, as the initial ingestion overhead is amortized across repeated reads. For a single read, native HDF5 access (e.g., via h5py or HDF5 tools) is likely more efficient. Use clio-core when you need persistent, optimized storage or plan to access the data across multiple workflows.",
+      "scored": {
+        "no / not worth for a single read": true,
+        "ingest cost not recovered": true,
+        "default to native h5py": true
+      },
+      "hits": 3,
+      "total": 3
+    },
+    "object_count": {
+      "selected_expert": "hdf5",
+      "would_inject_skill": "hdf5-clio-core-ingest",
+      "answer": "1. **What the tool results show**: The clio-core ingestion and retrieval time scales linearly with dataset count. For 10 datasets, clio-core takes 115 ms vs. 1.3 ms native (90\u00d7 penalty). At 8,533 datasets, clio-core takes 173 s vs. 0.9 s native (196\u00d7 penalty). Each dataset adds ~11\u201320 ms to read time and ~21\u201338 ms to enumeration.\n\n2. **What it means**: The number of datasets directly impacts clio-core performance due to per-object overhead (per hdf5-clio-core-ingest). Native h5py reads have near-constant time per dataset (~0.1 ms), while clio-core's overhead grows with object count. This makes files with many small datasets (e.g., 10k+ objects) unsuitable for clio-core ingestion unless consolidated.\n\n3. **What to do**: \n   - Consolidate small datasets into fewer large ones before ingestion (e.g., concatenate along an axis or pack into a table). \n   - Avoid clio-core for read-speed optimization; use it for shared-memory residency or tiered storage. \n   - Use selective retrieval (`Tag.GetBlob`) to fetch only needed datasets, reducing per-call overhead.\n\nRecommendations:\n1. **Consolidate datasets**: Preprocess the HDF5 file to merge small datasets into larger arrays (e.g., using `hdf5_analyze_file` to identify candidates, then `hdf5_rechunk_dataset` or custom scripts to combine data). This reduces clio-core ingestion time from minutes to tens of ms.\n\n2. **Avoid clio-core for many-small-datasets files**: If consolidation isn't feasible, read natively with h5py instead of bundling into clio-core. The per-dataset penalty makes clio-core slower than cold native reads even for large files.\n\n3. **Use selective retrieval**: When ingesting files with many datasets, retrieve only needed subsets via `Tag.GetBlob` (cost \u221d number of requested datasets, not total count). Check dataset paths with `hdf5_get_object_metadata` first to plan selective retrieval.\n\n4. **Benchmark before committing**: For files with mixed dataset sizes, run a quick A/B test using `hdf5_analyze_file` to estimate object count, then compare native vs. clio-core read times for a representative subset.",
+      "scored": {
+        "yes, scales with dataset count": true,
+        "many small = penalty/slow": true,
+        "consolidate": true
+      },
+      "hits": 3,
+      "total": 3
+    },
+    "sharing_fit": {
+      "selected_expert": "hdf5",
+      "would_inject_skill": "hdf5-clio-core-ingest",
+      "answer": "Clio-core is optimized for ingesting and managing HDF5 data in scenarios where consolidation, amortization of ingest costs, or cloud-optimized access patterns are priorities. For **multiple processes reading the same HDF5 data simultaneously**, native HDF5 parallel I/O (via MPI or SWMR) is typically more direct. Clio-core shines when you need to bundle datasets for long-term storage, reduce I/O contention via consolidation, or integrate with CTE/CAE workflows. If your use case involves **high-concurrency reads** without ingestion overhead, consider HDF5's parallel VFDs first.",
+      "scored": {
+        "yes - sharing/concurrent is the right use": true,
+        "shared-memory / residency / tiering": false
+      },
+      "hits": 1,
+      "total": 2
+    },
+    "big_single_reread": {
+      "selected_expert": "hdf5",
+      "would_inject_skill": "hdf5-clio-core-ingest",
+      "answer": "1. **Tool results show clio-core read latency is higher than h5py**:  \n   - CTE warm reads are 2\u20138\u00d7 slower than h5py warm reads for the same dataset.  \n   - For 10 GB files, clio-core's per-chunk overhead (1.5 MB chunking) creates ~1,400 round trips, degrading performance further.  \n\n2. **Frequent re-reads do not amortize clio-core's overhead**:  \n   - Break-even N (reads needed to justify ingest cost) is \"never\" for contiguous datasets (per hdf5-clio-core-ingest benchmarks).  \n   - Even with caching, clio-core's warm read (396 ms for 256 MB) remains slower than h5py's cold read (293 ms).  \n\n3. **File structure determines clio-core viability**:  \n   - If the 10 GB file contains many small datasets (e.g., 1,000+), clio-core's per-object overhead (11\u201338 ms/dataset) becomes catastrophic (per hdf5-chunking and hdf5-io).  \n   - If consolidated into a single contiguous dataset, clio-core's overhead remains ~3\u00d7 slower than h5py but avoids per-object penalties.\n\nRecommendations:\n1. **Default to h5py for read performance**:  \n   - Use `h5py.File(..., 'r')` for direct access unless you need clio-core's shared-memory or tiered storage features.  \n\n2. **Avoid clio-core for single-client re-reads**:  \n   - CTE's read latency is non-competitive with h5py even after multiple re-reads (per hdf5-io benchmarks).  \n\n3. **If using clio-core, consolidate datasets first**:  \n   - Preprocess the HDF5 file with `hdf5_analyze_file` to check dataset count.  \n   - If many small datasets exist, use `hdf5_rechunk_dataset` to merge them into a single contiguous array before ingestion.  \n\n4. **Use selective retrieval for partial access**:  \n   - If only subsets are needed, invoke `cte.Tag.GetBlob` with specific dataset paths to avoid full-file ingest (per hdf5-omni-selective).",
+      "scored": {
+        "no / not faster": true,
+        "per-chunk cost / doesn't amortize at scale": true,
+        "native h5py faster": true
+      },
+      "hits": 3,
+      "total": 3
+    }
+  }
+}
