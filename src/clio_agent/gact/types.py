@@ -541,6 +541,14 @@ class Message(BaseModel):
 
     id: str
     session_id: str
+    # turn_id correlates this message with its user-turn (#711): the agent-lifecycle
+    # id that equals the originating user message id. For a user message it equals
+    # its own ``id``; for the assistant/system reply it equals the user message id
+    # that started the turn. Durable (persisted in the ledger + GET /messages) and
+    # the same value carried by ``semantic.event`` payloads, so consumers join the
+    # assistant prose stream to the execution trajectory without heuristics. Empty
+    # only for messages created outside any active turn.
+    turn_id: str = ""
     role: Literal["user", "assistant", "system", "tool"]
     created_at: str
     updated_at: str

@@ -638,6 +638,97 @@ def test_live_streamed_deltas_are_marked_live(
     assert "stream_fallback" not in text_parts[-1]["metadata"]
 
 
+def _turn_id_of(history: list[Any]) -> str:
+    user_created = [
+        e for e in history if e.type == "message.created" and e.payload.get("role") == "user"
+    ]
+    assert len(user_created) == 1
+    turn_id = user_created[0].payload["id"]
+    # The user message correlates to its own turn (#711).
+    assert user_created[0].payload["turn_id"] == turn_id
+    return turn_id
+
+
+def test_message_events_carry_turn_id_and_stream_source_batch(app_client) -> None:
+    """#711: every assistant message.created / message.part.* / message.completed event
+    carries the SAME turn_id (== the user message id) plus a stream_source, so a consumer
+    joins assistant prose to the execution trajectory without heuristics."""
+
+    app, client, _ = app_client
+    sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
+    client.post(
+        f"/v1/sessions/{sid}/messages",
+        json={"parts": [{"type": "text", "text": "correlate me"}]},
+    )
+
+    history = app.state.bus._history.get(sid, [])
+    turn_id = _turn_id_of(history)
+
+    part_events = [
+        e
+        for e in history
+        if e.type in {"message.part.added", "message.part.delta", "message.part.completed"}
+    ]
+    assert part_events
+    for e in part_events:
+        assert e.payload["turn_id"] == turn_id, e.type
+        assert e.payload["stream_source"] in {"live", "batch"}, e.type
+
+    asst_created = [
+        e for e in history if e.type == "message.created" and e.payload.get("role") == "assistant"
+    ]
+    assert asst_created
+    assert all(e.payload["turn_id"] == turn_id for e in asst_created)
+
+    completed = [e for e in history if e.type == "message.completed"]
+    assert completed
+    assert all(e.payload["turn_id"] == turn_id for e in completed)
+
+
+def test_live_streamed_events_carry_turn_id(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """#711 on the live path: lazily-created streamed assistant message + its deltas/
+    completed events all correlate to the originating user turn."""
+
+    async def fake_streamed_forward(
+        app: Any,
+        enriched_text: str,
+        sid: str,
+        emit_chunk: Any,
+        session_mode: str = "chat",
+        session_edit_mode: str = "diff",
+    ) -> _Pred:
+        del app, enriched_text, sid, session_mode, session_edit_mode
+        await emit_chunk("Hel")
+        await emit_chunk("lo")
+        return _Pred(answer="Hello", selected_expert="", routing_rationale="")
+
+    monkeypatch.setattr("clio_agent.gact.app._try_streamed_forward", fake_streamed_forward)
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent("fallback"))
+    client = TestClient(app)
+    sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
+    client.post(
+        f"/v1/sessions/{sid}/messages",
+        json={"parts": [{"type": "text", "text": "stream me"}]},
+    )
+
+    history = app.state.bus._history.get(sid, [])
+    turn_id = _turn_id_of(history)
+
+    deltas = [e for e in history if e.type == "message.part.delta"]
+    assert deltas
+    for e in deltas:
+        assert e.payload["turn_id"] == turn_id
+        assert e.payload["stream_source"] == "live"
+
+    asst_created = [
+        e for e in history if e.type == "message.created" and e.payload.get("role") == "assistant"
+    ]
+    assert asst_created
+    assert all(e.payload["turn_id"] == turn_id for e in asst_created)
+
+
 def test_streamify_final_prediction_without_chunks_has_specific_fallback(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
