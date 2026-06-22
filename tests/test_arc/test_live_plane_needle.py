@@ -18,6 +18,7 @@ import dspy
 import pytest
 
 import clio_agent.gact.app as app
+from clio_agent.gact import context as ctx
 
 from .conftest import live_plane_context, make_react_agent
 
@@ -113,7 +114,7 @@ def test_real_auto_compaction_on_alcf(arc):
             real_pt = app._last_prompt_tokens()
             assert real_pt > 0, "ALCF prompt_tokens readback is 0 (token_counter fallback broken)"
             # window so the real prompt lands at ~90% — over the 0.85 default threshold
-            app._ACTIVE_REACT_CONTEXT_WINDOW.set(int(real_pt / 0.90))
+            ctx.set_react_context_window(int(real_pt / 0.90))
             agent._maybe_autocompact()
 
     after = arc.render_segments(SID, SCOPE)

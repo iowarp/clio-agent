@@ -12,6 +12,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from clio_agent.agent import ClioAgent
+from clio_agent.gact import context as ctx
 from clio_agent.gact.agent_blueprints import (
     DEFAULT_AGENT_BLUEPRINT_ID,
     DEFAULT_REGISTRY_COMMIT,
@@ -23,8 +24,6 @@ from clio_agent.gact.agent_blueprints import (
     validate_agent_blueprint_path,
 )
 from clio_agent.gact.app import (
-    _ACTIVE_BLUEPRINT_TOOL_ROWS,
-    _ACTIVE_GACT_SESSION_ID,
     _active_base_agent_tool_executor,
     _append_prediction_workflow_state,
     _blueprint_fanout_config,
@@ -1303,12 +1302,12 @@ def test_blueprint_module_empty_answer_with_children_enters_repair_path(
         AgentDef(id="main", source="expert_pack", title="Main", module={"kind": "predict"}),
     )
 
-    token = _ACTIVE_GACT_SESSION_ID.set("session-123")
+    token = ctx.set_session_id("session-123")
     try:
         with _gact_app_context(SimpleNamespace()):
             result = module(question="inspect", session_id="session-123")
     finally:
-        _ACTIVE_GACT_SESSION_ID.reset(token)
+        ctx.reset(token)
 
     assert result.answer == ""
     assert result.selected_expert == "main"
@@ -1547,13 +1546,13 @@ def test_generated_child_expert_tool_runs_declared_child_and_returns_compact_evi
         "clio_agent.gact.app._run_dynamic_agent_compat", fake_run_dynamic_agent_compat
     )
 
-    token = _ACTIVE_GACT_SESSION_ID.set("session-123")
+    token = ctx.set_session_id("session-123")
     try:
         with _gact_app_context(app):
             tool = _build_child_expert_tool(SimpleNamespace(), parent, child)
             payload = json.loads(tool(question="inspect the evidence"))
     finally:
-        _ACTIVE_GACT_SESSION_ID.reset(token)
+        ctx.reset(token)
 
     assert tool.name == "delegate_to_analysis"
     assert calls == [
@@ -1587,12 +1586,12 @@ def test_recording_blueprint_tool_captures_context_local_tool_result() -> None:
         args={"station": {"type": "string"}},
     )
     rows: list[dict[str, Any]] = []
-    token = _ACTIVE_BLUEPRINT_TOOL_ROWS.set(rows)
+    token = ctx.set_blueprint_tool_rows(rows)
     try:
         wrapped = _recording_blueprint_tool(tool)
         result = wrapped(station="UCSF")
     finally:
-        _ACTIVE_BLUEPRINT_TOOL_ROWS.reset(token)
+        ctx.reset(token)
 
     assert result == {"station": "UCSF", "ok": True}
     assert rows == [
@@ -2048,14 +2047,14 @@ def test_generated_child_expert_tool_emits_semantic_delegation_events(
         ),
     )
 
-    token = _ACTIVE_GACT_SESSION_ID.set("session-123")
+    token = ctx.set_session_id("session-123")
     try:
         with _gact_app_context(app):
             payload = json.loads(
                 _build_child_expert_tool(SimpleNamespace(), parent, child)(question="inspect")
             )
     finally:
-        _ACTIVE_GACT_SESSION_ID.reset(token)
+        ctx.reset(token)
 
     assert payload["status"] == "completed"
     assert [row["event_type"] for row in emitted] == [
@@ -2113,7 +2112,7 @@ def test_blueprint_fanout_tool_enforces_bounds_and_emits_events(
         "clio_agent.gact.app._run_dynamic_agent_compat", fake_run_dynamic_agent_compat
     )
 
-    token = _ACTIVE_GACT_SESSION_ID.set("session-123")
+    token = ctx.set_session_id("session-123")
     try:
         with _gact_app_context(app):
             tool = _build_fanout_tool(SimpleNamespace(), parent, children)
@@ -2121,7 +2120,7 @@ def test_blueprint_fanout_tool_enforces_bounds_and_emits_events(
                 tool(question="inspect", child_ids="analysis,visualization,quality")
             )
     finally:
-        _ACTIVE_GACT_SESSION_ID.reset(token)
+        ctx.reset(token)
 
     assert calls == ["analysis", "visualization"]
     assert payload["status"] == "completed"
@@ -2150,14 +2149,14 @@ def test_blueprint_fanout_tool_rejects_undeclared_children() -> None:
     )
     child = AgentDef(id="analysis", source="expert_pack", title="Analysis", parent_id="root")
 
-    token = _ACTIVE_GACT_SESSION_ID.set("session-123")
+    token = ctx.set_session_id("session-123")
     try:
         with _gact_app_context(app):
             tool = _build_fanout_tool(SimpleNamespace(), parent, [child])
             with pytest.raises(RuntimeError, match="undeclared child"):
                 tool(question="inspect", child_ids='["analysis", "missing"]')
     finally:
-        _ACTIVE_GACT_SESSION_ID.reset(token)
+        ctx.reset(token)
 
 
 def test_dynamic_child_expert_tools_adds_fanout_only_when_declared(
@@ -2176,12 +2175,12 @@ def test_dynamic_child_expert_tools_adds_fanout_only_when_declared(
         lambda app, session_id="": [parent, child],
     )
 
-    token = _ACTIVE_GACT_SESSION_ID.set("session-123")
+    token = ctx.set_session_id("session-123")
     try:
         with _gact_app_context(app):
             tools = _dynamic_child_expert_tools(SimpleNamespace(), parent)
     finally:
-        _ACTIVE_GACT_SESSION_ID.reset(token)
+        ctx.reset(token)
 
     assert [tool.name for tool in tools] == ["delegate_to_analysis", "fanout_to_children"]
 

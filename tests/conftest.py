@@ -14,6 +14,27 @@ import clio_agent  # noqa: F401
 
 
 @pytest.fixture(autouse=True)
+def _reset_runtime_context():
+    """Isolate each test from the single GACT runtime contextvar (#714).
+
+    Several tests establish runtime state via tokenless bare sets
+    (``set_turn_identity`` / ``set_turn_id`` / ``set_trace_id`` /
+    ``install_trajectory_cell`` / ``set_react_context_window``), mirroring the
+    turn-scoped leaks of the original contextvars. Snapshot-and-reset the one
+    ``_RUNTIME`` var around every test (token-balanced) so those tokenless sets
+    cannot bleed into the next test -- the hygiene the original tests achieved
+    via explicit per-var token resets, now centralized on the single var.
+    """
+    from clio_agent.gact import context as ctx
+
+    token = ctx._RUNTIME.set(ctx.RuntimeContext())
+    try:
+        yield
+    finally:
+        ctx._RUNTIME.reset(token)
+
+
+@pytest.fixture(autouse=True)
 def allow_pytest_tmp_path(tmp_path, monkeypatch):
     """Isolate tests from developer shell defaults.
 

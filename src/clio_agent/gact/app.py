@@ -153,7 +153,7 @@ def _install_sigusr1_diagnostic() -> None:
 
 _install_sigusr1_diagnostic()
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from contextlib import asynccontextmanager, contextmanager, nullcontext
 from dataclasses import asdict, replace
 from datetime import datetime, timezone
@@ -168,6 +168,7 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from clio_agent import conf
+from clio_agent.gact import context as _ctx
 from clio_agent.gact.semantic_events import (
     DEFAULT_DETAIL_LEVEL,
     SemanticEvent,
@@ -189,18 +190,58 @@ from clio_agent.tools.fs_write import write_text_with_policy
 
 logger = logging.getLogger(__name__)
 
-_ACTIVE_TOOL_SESSION_ID: contextvars.ContextVar[str] = contextvars.ContextVar(
-    "clio_gact_active_tool_session_id",
-    default="",
+# --------------------------------------------------------------------------- #
+# Runtime context (#714 seam)                                                   #
+#                                                                               #
+# The 11 module-level ContextVars that formerly lived here are replaced by a    #
+# single object on ONE ContextVar in ``clio_agent.gact.context`` (imported as   #
+# ``_ctx``). Core call sites use the granular ``_ctx.*`` accessors / mutators.  #
+#                                                                               #
+# The five legacy names below are kept importable as ``_CompatVar`` proxies so  #
+# (a) ``test_import_seams`` getattr checks, (b) cross-module lazy importers,    #
+# and (c) any stray ``.get()/.set()/.reset()`` caller keep working with the     #
+# CORRECT types -- a proxy ``.get()`` returns the field value (e.g. an app or a #
+# session-id str), NOT the whole RuntimeContext. They delegate to ``_ctx``.     #
+# --------------------------------------------------------------------------- #
+
+
+class _CompatVar:
+    """Back-compat proxy exposing a ``ContextVar``-shaped ``.get()/.set()/.reset()``.
+
+    The live channel is ``clio_agent.gact.context._RUNTIME``; these proxies are
+    no longer it. Each delegates to a granular ``context`` accessor (read) and
+    mutator (write) so legacy callers and getattr-importers keep working with
+    correct field types. ``reset`` forwards the ``context``-returned token.
+    """
+
+    __slots__ = ("_getter", "_setter")
+
+    def __init__(
+        self,
+        getter: "Callable[[], Any]",
+        setter: "Callable[[Any], contextvars.Token[_ctx.RuntimeContext]]",
+    ) -> None:
+        self._getter = getter
+        self._setter = setter
+
+    def get(self) -> Any:
+        return self._getter()
+
+    def set(self, value: Any) -> "contextvars.Token[_ctx.RuntimeContext]":
+        return self._setter(value)
+
+    def reset(self, token: "contextvars.Token[_ctx.RuntimeContext]") -> None:
+        _ctx.reset(token)
+
+
+_ACTIVE_GACT_APP = _CompatVar(_ctx.active_app, _ctx.set_app)
+_ACTIVE_GACT_SESSION_ID = _CompatVar(_ctx.active_session_id, _ctx.set_session_id)
+_ACTIVE_GACT_TURN_ID = _CompatVar(_ctx.active_turn_id, _ctx.set_turn_id_token)
+_ACTIVE_GACT_TRACE_ID = _CompatVar(_ctx.active_trace_id, _ctx.set_trace_id_token)
+_ACTIVE_BLUEPRINT_TOOL_ROWS = _CompatVar(
+    _ctx.active_blueprint_tool_rows, _ctx.set_blueprint_tool_rows
 )
-_ACTIVE_GACT_APP: contextvars.ContextVar[Any | None] = contextvars.ContextVar(
-    "clio_gact_active_app",
-    default=None,
-)
-_ACTIVE_GACT_SESSION_ID: contextvars.ContextVar[str] = contextvars.ContextVar(
-    "clio_gact_active_session_id",
-    default="",
-)
+
 # Resolve-once cache of an expert's declared child ids, used to build the
 # next_expert: Literal[children, "finish"] routing field. The signature is rebuilt
 # on several paths and some lack the app/session context needed to resolve children
@@ -213,60 +254,6 @@ _EXPERT_CHILDREN_CACHE: dict[str, list[str]] = {}
 # fabricate" grounding on exactly the build it runs. Render-once-reuse keeps the
 # briefing on every build. Keyed by expert id.
 _ORCHESTRATOR_BRIEFING_CACHE: dict[str, str] = {}
-_ACTIVE_GACT_TURN_ID: contextvars.ContextVar[str] = contextvars.ContextVar(
-    "clio_gact_active_turn_id",
-    default="",
-)
-_ACTIVE_GACT_TRACE_ID: contextvars.ContextVar[str] = contextvars.ContextVar(
-    "clio_gact_active_trace_id",
-    default="",
-)
-_ACTIVE_BLUEPRINT_TOOL_ROWS: contextvars.ContextVar[list[dict[str, Any]] | None] = (
-    contextvars.ContextVar(
-        "clio_gact_active_blueprint_tool_rows",
-        default=None,
-    )
-)
-# Retained dspy.ReAct trajectory of the in-flight expert call. _RetainingReAct
-# publishes the (structured trajectory + the input_args needed to re-run extract)
-# here BEFORE the final extract step, so a typed-output failure on extract can be
-# (a) captured on llm.response.failed and (b) repaired by re-running ONLY extract
-# over the retained trajectory instead of the whole tool loop. None = no react
-# trajectory available (predict/CoT kinds, or a failure before the loop produced one).
-_ACTIVE_REACT_TRAJECTORY: contextvars.ContextVar[dict[str, Any] | None] = contextvars.ContextVar(
-    "clio_gact_active_react_trajectory",
-    default=None,
-)
-# ARC live-context-plane wiring for the in-flight expert's ReAct loop. The dspy
-# ReAct subclass has no handle to ARCMemory or its scope, so the enclosing expert
-# module threads them here before each program call (and resets in finally):
-#   * scope    = the expert/agent tag address (Segment.scope; no session prefix)
-#   * session  = the owning session id
-#   * window   = the expert model's context window (denominator for 90% compaction;
-#                0 = window unknown, auto-compaction disabled).
-_ACTIVE_REACT_SCOPE: contextvars.ContextVar[str] = contextvars.ContextVar(
-    "clio_gact_active_react_scope",
-    default="",
-)
-_ACTIVE_REACT_SESSION: contextvars.ContextVar[str] = contextvars.ContextVar(
-    "clio_gact_active_react_session",
-    default="",
-)
-_ACTIVE_REACT_CONTEXT_WINDOW: contextvars.ContextVar[int] = contextvars.ContextVar(
-    "clio_gact_active_react_context_window",
-    default=0,
-)
-
-# The span the current scope nests under, so the recursive trajectory
-# (agent lifecycle -> expert lifecycle -> ReAct step -> lm.call/tool.call) forms a
-# coherent tree on the highway WITHOUT every emitter threading a parent by hand.
-# _emit_semantic_event falls back to this when no explicit parent_span_id is given;
-# _RetainingReAct.forward sets it to the expert's span for the duration of the
-# expert, and it propagates into delegated children via contextvars.copy_context().
-_ACTIVE_PARENT_SPAN_ID: contextvars.ContextVar[str] = contextvars.ContextVar(
-    "clio_gact_active_parent_span_id",
-    default="",
-)
 
 
 @contextmanager
@@ -275,7 +262,7 @@ def _tool_session_context(sid: str) -> Iterator[None]:
     from clio_agent.tools.execution import tool_workspace_context  # noqa: PLC0415
 
     workspace_root = ""
-    app = _ACTIVE_GACT_APP.get()
+    app = _ctx.active_app()
     app_state = getattr(app, "state", None) if app is not None else None
     if app_state is not None:
         sessions = getattr(app_state, "sessions", None)
@@ -284,27 +271,27 @@ def _tool_session_context(sid: str) -> Iterator[None]:
         workspace_id = str(getattr(sess, "workspace_id", "") or "") if sess is not None else ""
         ws = workspaces.get(workspace_id) if workspaces is not None and workspace_id else None
         workspace_root = str(getattr(ws, "root_path", "") or "")
-    token = _ACTIVE_TOOL_SESSION_ID.set(sid)
+    token = _ctx.set_tool_session_id(sid)
     try:
         with tool_workspace_context(workspace_root):
             yield
     finally:
-        _ACTIVE_TOOL_SESSION_ID.reset(token)
+        _ctx.reset(token)
 
 
 @contextmanager
 def _gact_app_context(app: Any) -> Iterator[None]:
     """Bind app state for dynamic agent tool wrappers."""
-    token = _ACTIVE_GACT_APP.set(app)
+    token = _ctx.set_app(app)
     try:
         yield
     finally:
-        _ACTIVE_GACT_APP.reset(token)
+        _ctx.reset(token)
 
 
 def _resolve_tool_session(app: "FastAPI") -> tuple[str, Any | None]:
     """Return the active turn session, falling back to recency for out-of-band calls."""
-    sid = _ACTIVE_TOOL_SESSION_ID.get().strip()
+    sid = _ctx.active_tool_session_id().strip()
     if sid:
         return sid, app.state.sessions.get(sid)
     sessions_by_recency = app.state.sessions.list()
@@ -387,11 +374,11 @@ def _semantic_trace_id(turn_id: str) -> str:
 
 
 def _active_semantic_turn_id() -> str:
-    return _ACTIVE_GACT_TURN_ID.get()
+    return _ctx.active_turn_id()
 
 
 def _active_semantic_trace_id() -> str:
-    return _ACTIVE_GACT_TRACE_ID.get()
+    return _ctx.active_trace_id()
 
 
 def _with_ui_safe_semantic_fields(
@@ -463,7 +450,7 @@ def _emit_semantic_event(
         turn_id=turn_id,
         # Auto-nest under the active span (expert/step) unless the caller pins a
         # parent explicitly, so the highway forms the recursive trajectory tree.
-        parent_span_id=parent_span_id or _ACTIVE_PARENT_SPAN_ID.get(),
+        parent_span_id=parent_span_id or _ctx.active_parent_span_id(),
         status=status,
         summary=summary,
         actor=actor or {},
@@ -532,8 +519,8 @@ def _emit_react_step_event(
     ``expert_span_id``. Best-effort: capture must never break the expert loop.
     """
 
-    app = _ACTIVE_GACT_APP.get()
-    sid = _ACTIVE_GACT_SESSION_ID.get()
+    app = _ctx.active_app()
+    sid = _ctx.active_session_id()
     if app is None or not sid:
         return
     try:
@@ -592,8 +579,8 @@ def _emit_expert_lifecycle_event(
     projection (#710), not a capture-time loss. Best-effort.
     """
 
-    app = _ACTIVE_GACT_APP.get()
-    sid = _ACTIVE_GACT_SESSION_ID.get()
+    app = _ctx.active_app()
+    sid = _ctx.active_session_id()
     if app is None or not sid:
         return
     try:
@@ -646,8 +633,8 @@ def _emit_arc_op(
         app,
         session_id,
         ARC_OP_EVENT_TYPE,
-        turn_id=_ACTIVE_GACT_TURN_ID.get(),
-        trace_id=_ACTIVE_GACT_TRACE_ID.get(),
+        turn_id=_ctx.active_turn_id(),
+        trace_id=_ctx.active_trace_id(),
         status=op,  # append | insert | delete | summarize
         summary=f"arc {op} @{scope} (lt={logical_time})",
         actor={"role": "runtime", "component": "arc", "scope": scope},
@@ -4174,12 +4161,12 @@ def _build_prompt_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> A
             runtime = PromptRegistry().resolve("clio.runtime.prompt_user_agent")
             runtime_text = str(getattr(runtime, "text", "") or "").strip()
             agent_prompt = agent_def.system_prompt.strip() or agent_def.description
-            app = _ACTIVE_GACT_APP.get()
+            app = _ctx.active_app()
             child_context = (
                 _runtime_dynamic_agent_children_context(
                     app,
                     agent_def,
-                    session_id=_ACTIVE_GACT_SESSION_ID.get(),
+                    session_id=_ctx.active_session_id(),
                 )
                 if app is not None
                 else ""
@@ -4471,7 +4458,7 @@ def _dynamic_agent_tools(base_agent: Any, agent_def: "AgentDef") -> list[Any]:
             for tool in list(tool_executor.to_dspy_tools())
             if getattr(tool, "name", "")
         }
-    app = _ACTIVE_GACT_APP.get()
+    app = _ctx.active_app()
     if app is not None:
         available_tools.update(_enabled_external_mcp_dspy_tools(app, requested_tools))
     missing_tools = [name for name in requested_tools if name not in available_tools]
@@ -4495,7 +4482,7 @@ def _recording_blueprint_tool(tool: Any) -> Any:
 
     def call_tool(**kwargs: Any) -> Any:
         started_at = time.perf_counter()
-        rows = _ACTIVE_BLUEPRINT_TOOL_ROWS.get()
+        rows = _ctx.active_blueprint_tool_rows()
         try:
             result = tool(**kwargs)
         except BaseException as exc:  # noqa: BLE001
@@ -4683,7 +4670,7 @@ def _reextract_over_retained_trajectory(program: Any, hint: str) -> Any:
     caller then falls back to the bounded full re-ask).
     """
 
-    retained = _ACTIVE_REACT_TRAJECTORY.get()
+    retained = _ctx.active_trajectory()
     _traj = retained.get("trajectory") if isinstance(retained, dict) else None
     trace.event(
         "REEXTRACT",
@@ -5112,8 +5099,8 @@ def _blueprint_runtime_signature(agent_def: "AgentDef") -> Any:
     # makes a model fill it reliably (the old free-string `expert_handoffs` was always
     # emitted empty, so 100% of routing fell through to the contracts). The Literal is
     # built per-expert from its OWN declared children (a leaf gets Literal["finish"]).
-    _route_app = _ACTIVE_GACT_APP.get()
-    _route_sid = _ACTIVE_GACT_SESSION_ID.get()
+    _route_app = _ctx.active_app()
+    _route_sid = _ctx.active_session_id()
     _agent_id = getattr(agent_def, "id", "")
     _child_ids: list[str] = []
     if _route_app is not None and _route_sid:
@@ -5295,8 +5282,8 @@ def _build_child_expert_tool(base_agent: Any, parent: "AgentDef", child: "AgentD
     import dspy  # noqa: PLC0415
 
     def delegate_child(question: str) -> str:
-        app = _ACTIVE_GACT_APP.get()
-        session_id = _ACTIVE_GACT_SESSION_ID.get()
+        app = _ctx.active_app()
+        session_id = _ctx.active_session_id()
         if app is None or not session_id:
             raise RuntimeError("child expert tool requires an active CLIO app/session context")
         if child.parent_id != parent.id:
@@ -5440,8 +5427,8 @@ def _build_fanout_tool(base_agent: Any, parent: "AgentDef", children: list["Agen
     children_by_id = {child.id: child for child in children}
 
     def fanout_to_children(question: str, child_ids: Any = None) -> str:
-        app = _ACTIVE_GACT_APP.get()
-        session_id = _ACTIVE_GACT_SESSION_ID.get()
+        app = _ctx.active_app()
+        session_id = _ctx.active_session_id()
         if app is None or not session_id:
             raise RuntimeError("fanout tool requires an active CLIO app/session context")
         requested = _coerce_fanout_child_ids(child_ids) or [child.id for child in children]
@@ -5553,8 +5540,8 @@ def _build_fanout_tool(base_agent: Any, parent: "AgentDef", children: list["Agen
 
 
 def _dynamic_child_expert_tools(base_agent: Any, agent_def: "AgentDef") -> list[Any]:
-    app = _ACTIVE_GACT_APP.get()
-    session_id = _ACTIVE_GACT_SESSION_ID.get()
+    app = _ctx.active_app()
+    session_id = _ctx.active_session_id()
     if app is None or not session_id:
         return []
     rows = _runtime_child_agent_rows(app, agent_def.id, session_id=session_id)
@@ -5742,9 +5729,9 @@ def _retaining_react_cls() -> Any:
         @staticmethod
         def _arc_scope() -> tuple[Any, str, str]:
             """(ARCMemory, session_id, scope) for the live plane, or (None, '', '')."""
-            app = _ACTIVE_GACT_APP.get()
-            scope = _ACTIVE_REACT_SCOPE.get()
-            session = _ACTIVE_REACT_SESSION.get()
+            app = _ctx.active_app()
+            scope = _ctx.active_react_scope()
+            session = _ctx.active_react_session()
             arc = (
                 getattr(getattr(app, "state", None), "arc", None)
                 if (app is not None and scope)
@@ -5772,9 +5759,11 @@ def _retaining_react_cls() -> Any:
                 )
 
         def forward(self, **input_args: Any) -> Any:
-            # Clear any prior value so a failure inside the loop (before extract)
-            # never exposes a stale trajectory from an earlier forward.
-            _ACTIVE_REACT_TRAJECTORY.set(None)
+            # Install a FRESH trajectory cell (value=None) so a failure inside the
+            # loop (before extract) never exposes a stale trajectory from an earlier
+            # forward, and a delegated child (its own copied context) gets its own
+            # cell rather than publishing into this forward's retained trajectory.
+            _ctx.install_trajectory_cell()
             arc, _session, _scope = self._arc_scope()
             if arc is not None:
                 # Fresh working context for this react loop: tombstone any prior
@@ -5804,7 +5793,7 @@ def _retaining_react_cls() -> Any:
             # Everything emitted during this expert (ReAct steps, tool.call,
             # lm.call, delegations to children) nests under the expert span; the
             # context propagates into delegated children via copy_context().
-            parent_token = _ACTIVE_PARENT_SPAN_ID.set(expert_span_id)
+            parent_token = _ctx.set_parent_span(expert_span_id)
             try:
                 max_iters = input_args.pop("max_iters", self.max_iters)
                 for idx in range(max_iters):
@@ -5813,7 +5802,7 @@ def _retaining_react_cls() -> Any:
                     # under it, so the raw LLM I/O + tool calling are correlated to
                     # the step. Reset to the expert span at the step boundary.
                     step_span_id = uuid.uuid4().hex[:16]
-                    step_token = _ACTIVE_PARENT_SPAN_ID.set(step_span_id)
+                    step_token = _ctx.set_parent_span(step_span_id)
                     try:
                         try:
                             pred = self._call_with_potential_trajectory_truncation(
@@ -5883,10 +5872,12 @@ def _retaining_react_cls() -> Any:
                         if pred.next_tool_name == "finish":
                             break
                     finally:
-                        _ACTIVE_PARENT_SPAN_ID.reset(step_token)
+                        _ctx.reset(step_token)
 
                 # Publish BEFORE extract: a failed extract still exposes the trajectory.
-                _ACTIVE_REACT_TRAJECTORY.set(
+                # Mutates the cell installed at the top of this forward (a
+                # reassignment without a token reset, as before).
+                _ctx.publish_trajectory(
                     {"trajectory": dict(trajectory), "input_args": dict(input_args)}
                 )
                 extract = self._call_with_potential_trajectory_truncation(
@@ -5911,7 +5902,7 @@ def _retaining_react_cls() -> Any:
                 )
                 return final_pred
             finally:
-                _ACTIVE_PARENT_SPAN_ID.reset(parent_token)
+                _ctx.reset(parent_token)
 
         def _format_trajectory(self, trajectory: dict[str, Any]) -> str:
             """THE live-plane read seam. Render the prompt's trajectory from ARC, not
@@ -5942,7 +5933,7 @@ def _retaining_react_cls() -> Any:
             arc, session, scope = self._arc_scope()
             if arc is None:
                 return
-            window = _ACTIVE_REACT_CONTEXT_WINDOW.get()
+            window = _ctx.active_react_context_window()
             last = _last_prompt_tokens()  # provider-exact prompt_tokens of the last call
             if not window or not last:
                 return
@@ -5981,11 +5972,11 @@ def _emit_blueprint_llm_failure(agent_def: "AgentDef", kind: str, exc: BaseExcep
     keeps it. Best-effort: never let capture interfere with the repair flow.
     """
 
-    app = _ACTIVE_GACT_APP.get()
-    sid = _ACTIVE_GACT_SESSION_ID.get()
+    app = _ctx.active_app()
+    sid = _ctx.active_session_id()
     if app is None or not sid:
         return
-    retained = _ACTIVE_REACT_TRAJECTORY.get() if kind == "react" else None
+    retained = _ctx.active_trajectory() if kind == "react" else None
     payload: dict[str, Any] = {
         # `error` is a one-line summary for SSE/UI; `error_full` is the FULL,
         # uncapped exception (with newlines) for the canonical trace -- never cap.
@@ -6002,8 +5993,8 @@ def _emit_blueprint_llm_failure(agent_def: "AgentDef", kind: str, exc: BaseExcep
             app,
             sid,
             "llm.response.failed",
-            turn_id=_ACTIVE_GACT_TURN_ID.get(),
-            trace_id=_ACTIVE_GACT_TRACE_ID.get(),
+            turn_id=_ctx.active_turn_id(),
+            trace_id=_ctx.active_trace_id(),
             status="failed",
             summary=f"Expert {agent_id or '?'} extract failed: {type(exc).__name__}",
             actor={"agent_id": agent_id},
@@ -6049,7 +6040,7 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                 # expert on the highway (see _emit_react_step_event).
                 self.program._clio_expert_id = agent_def.id
             agent_prompt = agent_def.system_prompt.strip() or agent_def.description
-            active_app = _ACTIVE_GACT_APP.get()
+            active_app = _ctx.active_app()
             # Always call it (do not short-circuit on active_app is None): the streamed
             # forward falls back to the sync _run_blueprint_dspy_agent build, which has
             # the session but NOT _ACTIVE_GACT_APP -- the function returns the cached
@@ -6057,12 +6048,12 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
             child_context = _runtime_dynamic_agent_children_context(
                 active_app,
                 agent_def,
-                session_id=_ACTIVE_GACT_SESSION_ID.get(),
+                session_id=_ctx.active_session_id(),
             )
             workspace_context = (
                 _runtime_active_workspace_context(
                     active_app,
-                    session_id=_ACTIVE_GACT_SESSION_ID.get(),
+                    session_id=_ctx.active_session_id(),
                 )
                 if active_app is not None and self.kind == "react"
                 else ""
@@ -6086,7 +6077,7 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                     self.kind,
                     len(child_context),
                     "ORCHESTRATOR" in self.system_prompt,
-                    _ACTIVE_GACT_SESSION_ID.get(),
+                    _ctx.active_session_id(),
                     active_app is not None,
                     " <- ".join(reversed(_pb_frames[-4:])),
                 )
@@ -6128,8 +6119,8 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                     "restate your reasoning, do NOT repeat or re-explain fields. After the "
                     "last required field, STOP immediately."
                 )
-            active_app = _ACTIVE_GACT_APP.get()
-            active_session_id = _ACTIVE_GACT_SESSION_ID.get()
+            active_app = _ctx.active_app()
+            active_session_id = _ctx.active_session_id()
             if active_app is not None:
                 runtime_child_context = _runtime_dynamic_agent_children_context(
                     active_app,
@@ -6167,19 +6158,15 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                         }
                     )
             blueprint_tool_rows_token = (
-                _ACTIVE_BLUEPRINT_TOOL_ROWS.set(blueprint_tool_rows)
-                if self.kind == "react"
-                else None
+                _ctx.set_blueprint_tool_rows(blueprint_tool_rows) if self.kind == "react" else None
             )
             # ARC live-context-plane wiring for this expert's ReAct loop: the scope
             # (the agent/expert tag), owning session, and the context window (the
             # auto-compaction denominator). Only the react kind runs _RetainingReAct,
             # but setting them unconditionally is harmless (predict/CoT never read).
-            _react_scope_token = _ACTIVE_REACT_SCOPE.set(str(getattr(self.agent_def, "id", "")))
-            _react_session_token = _ACTIVE_REACT_SESSION.set(active_session_id)
-            _react_window_token = _ACTIVE_REACT_CONTEXT_WINDOW.set(
-                _resolve_expert_context_window(self.config)
-            )
+            _react_scope_token = _ctx.set_react_scope(str(getattr(self.agent_def, "id", "")))
+            _react_session_token = _ctx.set_react_session(active_session_id)
+            _react_window_token = _ctx.set_react_window(_resolve_expert_context_window(self.config))
             if trace.HF_ON:
                 _ck_sp = kwargs.get("system_prompt", "")
                 _ck_q = str(kwargs.get("question", ""))
@@ -6260,7 +6247,7 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                         ):
                             hint = _typed_output_repair_hint(exc)
                             if self.kind == "react":
-                                retained = _ACTIVE_REACT_TRAJECTORY.get()
+                                retained = _ctx.active_trajectory()
                                 has_traj = isinstance(retained, dict) and bool(
                                     retained.get("trajectory")
                                 )
@@ -6347,11 +6334,15 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                         result = recovered
                         break
             finally:
+                # Single-var stack: each token captured the FULL context at its set,
+                # so reset MUST unwind in strict reverse-LIFO of the sets
+                # (window -> session -> scope -> rows) or an earlier reset would
+                # restore a snapshot that predates the later sets. (#714)
+                _ctx.reset(_react_window_token)
+                _ctx.reset(_react_session_token)
+                _ctx.reset(_react_scope_token)
                 if blueprint_tool_rows_token is not None:
-                    _ACTIVE_BLUEPRINT_TOOL_ROWS.reset(blueprint_tool_rows_token)
-                _ACTIVE_REACT_SCOPE.reset(_react_scope_token)
-                _ACTIVE_REACT_SESSION.reset(_react_session_token)
-                _ACTIVE_REACT_CONTEXT_WINDOW.reset(_react_window_token)
+                    _ctx.reset(blueprint_tool_rows_token)
             if cancel_requested is not None and cancel_requested():
                 raise _TurnCancelled(
                     _cancelled_error_info(
@@ -6425,7 +6416,7 @@ def _run_blueprint_dspy_agent(
     session_id: str,
     cancel_requested: Any | None = None,
 ) -> Any:
-    token = _ACTIVE_GACT_SESSION_ID.set(session_id)
+    token = _ctx.set_session_id(session_id)
     try:
         module = _build_blueprint_dspy_module(base_agent, agent_def)
         return module(
@@ -6434,7 +6425,7 @@ def _run_blueprint_dspy_agent(
             cancel_requested=cancel_requested,
         )
     finally:
-        _ACTIVE_GACT_SESSION_ID.reset(token)
+        _ctx.reset(token)
 
 
 def _blueprint_runner_for_agent(agent_def: "AgentDef") -> Any:
@@ -6463,12 +6454,12 @@ def _build_tool_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> Any
             runtime = PromptRegistry().resolve("clio.runtime.tool_user_agent")
             runtime_text = str(getattr(runtime, "text", "") or "").strip()
             agent_prompt = agent_def.system_prompt.strip() or agent_def.description
-            app = _ACTIVE_GACT_APP.get()
+            app = _ctx.active_app()
             child_context = (
                 _runtime_dynamic_agent_children_context(
                     app,
                     agent_def,
-                    session_id=_ACTIVE_GACT_SESSION_ID.get(),
+                    session_id=_ctx.active_session_id(),
                 )
                 if app is not None
                 else ""
@@ -6476,7 +6467,7 @@ def _build_tool_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> Any
             workspace_context = (
                 _runtime_active_workspace_context(
                     app,
-                    session_id=_ACTIVE_GACT_SESSION_ID.get(),
+                    session_id=_ctx.active_session_id(),
                 )
                 if app is not None
                 else ""
@@ -6513,11 +6504,9 @@ def _build_tool_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> Any
                     )
                 )
             # ARC live-context-plane wiring for this tool-user ReAct loop.
-            _react_scope_token = _ACTIVE_REACT_SCOPE.set(str(getattr(self.agent_def, "id", "")))
-            _react_session_token = _ACTIVE_REACT_SESSION.set(session_id)
-            _react_window_token = _ACTIVE_REACT_CONTEXT_WINDOW.set(
-                _resolve_expert_context_window(self.config)
-            )
+            _react_scope_token = _ctx.set_react_scope(str(getattr(self.agent_def, "id", "")))
+            _react_session_token = _ctx.set_react_session(session_id)
+            _react_window_token = _ctx.set_react_window(_resolve_expert_context_window(self.config))
             try:
                 # track_usage installs the tracker so auto-compaction can read each
                 # call's exact prompt_tokens.
@@ -6533,7 +6522,7 @@ def _build_tool_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> Any
                         question=question,
                     )
             except Exception as exc:
-                app = _ACTIVE_GACT_APP.get()
+                app = _ctx.active_app()
                 allowed_tools = _tool_names(self.tools)
                 requested_tool = _invalid_tool_selection_from_exception(
                     exc,
@@ -6550,9 +6539,11 @@ def _build_tool_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> Any
                     )
                 raise
             finally:
-                _ACTIVE_REACT_SCOPE.reset(_react_scope_token)
-                _ACTIVE_REACT_SESSION.reset(_react_session_token)
-                _ACTIVE_REACT_CONTEXT_WINDOW.reset(_react_window_token)
+                # Reverse-LIFO reset of the single-var stack (window -> session ->
+                # scope); see the blueprint-forward note. (#714)
+                _ctx.reset(_react_window_token)
+                _ctx.reset(_react_session_token)
+                _ctx.reset(_react_scope_token)
             if cancel_requested is not None and cancel_requested():
                 raise _TurnCancelled(
                     _cancelled_error_info(
@@ -6594,7 +6585,7 @@ def _run_prompt_user_agent(
     cancel_requested: Any | None = None,
 ) -> Any:
     """Execute a prompt-only user/skill agent through DSPy/LiteLLM."""
-    token = _ACTIVE_GACT_SESSION_ID.set(session_id)
+    token = _ctx.set_session_id(session_id)
     try:
         module = _build_prompt_user_agent_module(base_agent, agent_def)
         return module.forward(
@@ -6603,7 +6594,7 @@ def _run_prompt_user_agent(
             cancel_requested=cancel_requested,
         )
     finally:
-        _ACTIVE_GACT_SESSION_ID.reset(token)
+        _ctx.reset(token)
 
 
 def _run_tool_user_agent(
@@ -6614,7 +6605,7 @@ def _run_tool_user_agent(
     cancel_requested: Any | None = None,
 ) -> Any:
     """Execute a tool-declaring user/skill agent through DSPy ReAct."""
-    token = _ACTIVE_GACT_SESSION_ID.set(session_id)
+    token = _ctx.set_session_id(session_id)
     try:
         module = _build_tool_user_agent_module(base_agent, agent_def)
         return module.forward(
@@ -6623,7 +6614,7 @@ def _run_tool_user_agent(
             cancel_requested=cancel_requested,
         )
     finally:
-        _ACTIVE_GACT_SESSION_ID.reset(token)
+        _ctx.reset(token)
 
 
 def _tool_call_event_key(call: Mapping[str, Any]) -> tuple[str, str]:
@@ -6997,8 +6988,11 @@ async def _run_turn_in_background(
         retry_attempt_id = str(user_msg.metadata.get("retry_attempt_id") or "")
     turn_id = user_msg.id
     trace_id = _semantic_trace_id(turn_id)
-    _ACTIVE_GACT_TURN_ID.set(turn_id)
-    _ACTIVE_GACT_TRACE_ID.set(trace_id)
+    # Bare sets, no reset: turn_id/trace_id must stay live for every later
+    # copy_context() snapshot taken during this turn (mirrors the original
+    # turn-scoped leak). app/session are established independently. (#714)
+    _ctx.set_turn_id(turn_id)
+    _ctx.set_trace_id(trace_id)
     native_images = _dspy_images_from_parts(user_msg.parts)
     turn_tokens: dict[str, int] = {
         "input": 0,
@@ -7375,11 +7369,11 @@ async def _run_turn_in_background(
             # blueprint keyed on _ACTIVE_GACT_SESSION_ID. Set it here so the copied context
             # carries it -- otherwise children resolve empty and next_expert collapses to
             # Literal["finish"], forcing the agent to finish immediately.
-            _sid_tok = _ACTIVE_GACT_SESSION_ID.set(sid)
+            _sid_tok = _ctx.set_session_id(sid)
             try:
                 turn_context = contextvars.copy_context()
             finally:
-                _ACTIVE_GACT_SESSION_ID.reset(_sid_tok)
+                _ctx.reset(_sid_tok)
         _pred = await _await_turn_work(
             loop.run_in_executor(
                 None,
@@ -8097,7 +8091,7 @@ async def _run_turn_in_background(
                 execution_mode=execution_mode,
             )
             with _gact_app_context(app):
-                session_token = _ACTIVE_GACT_SESSION_ID.set(sid)
+                session_token = _ctx.set_session_id(sid)
                 try:
                     module = (
                         _build_blueprint_dspy_module(app.state.agent, dynamic_agent)
@@ -8109,7 +8103,7 @@ async def _run_turn_in_background(
                         )
                     )
                 finally:
-                    _ACTIVE_GACT_SESSION_ID.reset(session_token)
+                    _ctx.reset(session_token)
             llm_actor = {
                 "agent_id": dynamic_agent.id,
                 "agent_title": dynamic_agent.title,
@@ -10818,8 +10812,8 @@ def _make_tool_observer(app: "FastAPI"):
                 app,
                 sid,
                 "tool.call.started",
-                turn_id=_ACTIVE_GACT_TURN_ID.get(),
-                trace_id=_ACTIVE_GACT_TRACE_ID.get(),
+                turn_id=_ctx.active_turn_id(),
+                trace_id=_ctx.active_trace_id(),
                 status="running",
                 summary=f"Tool {name} started.",
                 actor={"tool": name},
@@ -10921,8 +10915,8 @@ def _make_tool_observer(app: "FastAPI"):
                 app,
                 sid,
                 "tool.call.completed",
-                turn_id=_ACTIVE_GACT_TURN_ID.get(),
-                trace_id=_ACTIVE_GACT_TRACE_ID.get(),
+                turn_id=_ctx.active_turn_id(),
+                trace_id=_ctx.active_trace_id(),
                 status="completed" if ok else "failed",
                 summary=result_summary,
                 actor={"tool": name},
@@ -16978,8 +16972,8 @@ def build_app(
             app,
             sid,
             "memory.compacted",
-            turn_id=_ACTIVE_GACT_TURN_ID.get(),
-            trace_id=_ACTIVE_GACT_TRACE_ID.get(),
+            turn_id=_ctx.active_turn_id(),
+            trace_id=_ctx.active_trace_id(),
             summary="Session transcript was compacted into memory.",
             actor={"role": "runtime", "component": "memory"},
             subject={"memory_event_id": event_id},

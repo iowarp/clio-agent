@@ -10,6 +10,7 @@ import dspy
 import pytest
 
 from clio_agent.gact import app as gact_app
+from clio_agent.gact import context as ctx
 
 
 class _AttrDict(dict):
@@ -79,19 +80,16 @@ def test_retaining_react_publishes_trajectory_before_failed_extract():
 
     inst._call_with_potential_trajectory_truncation = fake_trunc
 
-    token = gact_app._ACTIVE_REACT_TRAJECTORY.set(None)
-    try:
-        with pytest.raises(ValueError):
-            inst.forward(question="find stations near San Diego")
+    ctx.install_trajectory_cell()
+    with pytest.raises(ValueError):
+        inst.forward(question="find stations near San Diego")
 
-        retained = gact_app._ACTIVE_REACT_TRAJECTORY.get()
-        assert retained is not None
-        # input_args are retained so extract can be re-run over the trajectory.
-        assert retained["input_args"]["question"] == "find stations near San Diego"
-        # the finish step was recorded in the trajectory before extract ran
-        assert any(k.startswith("tool_name_") for k in retained["trajectory"])
-    finally:
-        gact_app._ACTIVE_REACT_TRAJECTORY.reset(token)
+    retained = ctx.active_trajectory()
+    assert retained is not None
+    # input_args are retained so extract can be re-run over the trajectory.
+    assert retained["input_args"]["question"] == "find stations near San Diego"
+    # the finish step was recorded in the trajectory before extract ran
+    assert any(k.startswith("tool_name_") for k in retained["trajectory"])
 
 
 def test_retaining_react_success_returns_trajectory_in_prediction():
@@ -109,13 +107,10 @@ def test_retaining_react_success_returns_trajectory_in_prediction():
 
     inst._call_with_potential_trajectory_truncation = fake_trunc
 
-    token = gact_app._ACTIVE_REACT_TRAJECTORY.set(None)
-    try:
-        result = inst.forward(question="q")
-        assert result.answer == "done"
-        assert result.trajectory  # trajectory threaded into the Prediction
-    finally:
-        gact_app._ACTIVE_REACT_TRAJECTORY.reset(token)
+    ctx.install_trajectory_cell()
+    result = inst.forward(question="q")
+    assert result.answer == "done"
+    assert result.trajectory  # trajectory threaded into the Prediction
 
 
 def test_retaining_react_emits_full_per_step_on_highway(monkeypatch):
@@ -160,15 +155,11 @@ def test_retaining_react_emits_full_per_step_on_highway(monkeypatch):
 
     monkeypatch.setattr(gact_app, "_emit_semantic_event", fake_emit)
 
-    app_token = gact_app._ACTIVE_GACT_APP.set(object())
-    sid_token = gact_app._ACTIVE_GACT_SESSION_ID.set("sess_test")
-    traj_token = gact_app._ACTIVE_REACT_TRAJECTORY.set(None)
-    try:
-        result = inst.forward(question="find stations near San Diego")
-    finally:
-        gact_app._ACTIVE_REACT_TRAJECTORY.reset(traj_token)
-        gact_app._ACTIVE_GACT_SESSION_ID.reset(sid_token)
-        gact_app._ACTIVE_GACT_APP.reset(app_token)
+    ctx.set_app(object())
+    ctx.set_session_id("sess_test")
+    ctx.install_trajectory_cell()
+    # Teardown via the autouse _reset_runtime_context fixture (tokenless sets).
+    result = inst.forward(question="find stations near San Diego")
 
     step_events = [kw["payload"] for (et, kw) in emitted if et == "react.step.completed"]
     assert len(step_events) == 2  # one per ReAct Step, including the finish step
@@ -213,16 +204,12 @@ def test_retaining_react_step_capture_is_best_effort(monkeypatch):
         raise RuntimeError("sink exploded")
 
     monkeypatch.setattr(gact_app, "_emit_semantic_event", boom)
-    app_token = gact_app._ACTIVE_GACT_APP.set(object())
-    sid_token = gact_app._ACTIVE_GACT_SESSION_ID.set("sess_test")
-    traj_token = gact_app._ACTIVE_REACT_TRAJECTORY.set(None)
-    try:
-        result = inst.forward(question="q")  # must not raise despite the sink blowing up
-        assert result.answer == "ok"
-    finally:
-        gact_app._ACTIVE_REACT_TRAJECTORY.reset(traj_token)
-        gact_app._ACTIVE_GACT_SESSION_ID.reset(sid_token)
-        gact_app._ACTIVE_GACT_APP.reset(app_token)
+    ctx.set_app(object())
+    ctx.set_session_id("sess_test")
+    ctx.install_trajectory_cell()
+    # Teardown via the autouse _reset_runtime_context fixture (tokenless sets).
+    result = inst.forward(question="q")  # must not raise despite the sink blowing up
+    assert result.answer == "ok"
 
 
 def test_retaining_react_emits_expert_lifecycle_boundary(monkeypatch):
@@ -246,15 +233,11 @@ def test_retaining_react_emits_expert_lifecycle_boundary(monkeypatch):
     monkeypatch.setattr(
         gact_app, "_emit_semantic_event", lambda app, sid, et, **kw: emitted.append((et, kw)) or {}
     )
-    app_token = gact_app._ACTIVE_GACT_APP.set(object())
-    sid_token = gact_app._ACTIVE_GACT_SESSION_ID.set("sess_test")
-    traj_token = gact_app._ACTIVE_REACT_TRAJECTORY.set(None)
-    try:
-        inst.forward(question="region near San Diego")
-    finally:
-        gact_app._ACTIVE_REACT_TRAJECTORY.reset(traj_token)
-        gact_app._ACTIVE_GACT_SESSION_ID.reset(sid_token)
-        gact_app._ACTIVE_GACT_APP.reset(app_token)
+    ctx.set_app(object())
+    ctx.set_session_id("sess_test")
+    ctx.install_trajectory_cell()
+    # Teardown via the autouse _reset_runtime_context fixture (tokenless sets).
+    inst.forward(question="region near San Diego")
 
     started = [kw["payload"] for (et, kw) in emitted if et == "expert.lifecycle.started"]
     extracted = [kw["payload"] for (et, kw) in emitted if et == "expert.extract.completed"]
@@ -288,14 +271,14 @@ def test_emit_semantic_event_nests_under_active_span():
     gact_app._emit_semantic_event(app, "sid", "x.y", payload={})
     assert captured["event"].parent_span_id == ""  # no active span -> empty
 
-    tok = gact_app._ACTIVE_PARENT_SPAN_ID.set("EXPSPAN")
+    tok = ctx.set_parent_span("EXPSPAN")
     try:
         gact_app._emit_semantic_event(app, "sid", "x.y", payload={})
         assert captured["event"].parent_span_id == "EXPSPAN"  # auto-nests
         gact_app._emit_semantic_event(app, "sid", "x.y", payload={}, parent_span_id="EXPLICIT")
         assert captured["event"].parent_span_id == "EXPLICIT"  # explicit wins
     finally:
-        gact_app._ACTIVE_PARENT_SPAN_ID.reset(tok)
+        ctx.reset(tok)
 
 
 def test_react_loop_emits_full_correlated_tree_through_real_sink():
@@ -333,7 +316,7 @@ def test_react_loop_emits_full_correlated_tree_through_real_sink():
             app,
             "sid",
             "tool.call.completed",
-            turn_id=gact_app._ACTIVE_GACT_TURN_ID.get(),
+            turn_id=ctx.active_turn_id(),
             payload={"tool": "ndp_search", "args": kw},
         )
         return {"rows": ["A", "B"], "note": "x" * 3000}
@@ -356,7 +339,7 @@ def test_react_loop_emits_full_correlated_tree_through_real_sink():
                 app,
                 "sid",
                 "lm.call",
-                turn_id=gact_app._ACTIVE_GACT_TURN_ID.get(),
+                turn_id=ctx.active_turn_id(),
                 payload={"content": "...", "reasoning_content": "cot"},
                 detail_level="off",
             )
@@ -367,17 +350,11 @@ def test_react_loop_emits_full_correlated_tree_through_real_sink():
 
     inst._call_with_potential_trajectory_truncation = fake_trunc
 
-    tokens = [
-        (gact_app._ACTIVE_GACT_APP, gact_app._ACTIVE_GACT_APP.set(app)),
-        (gact_app._ACTIVE_GACT_SESSION_ID, gact_app._ACTIVE_GACT_SESSION_ID.set("sid")),
-        (gact_app._ACTIVE_GACT_TURN_ID, gact_app._ACTIVE_GACT_TURN_ID.set("msg_user_1")),
-        (gact_app._ACTIVE_REACT_TRAJECTORY, gact_app._ACTIVE_REACT_TRAJECTORY.set(None)),
-    ]
-    try:
-        inst.forward(question="stations near San Diego")
-    finally:
-        for var, tok in reversed(tokens):
-            var.reset(tok)
+    # Establish the turn layer (app/session/turn_id) + a fresh trajectory cell.
+    # Tokenless sets; teardown via the autouse _reset_runtime_context fixture.
+    ctx.set_turn_identity(app=app, session_id="sid", turn_id="msg_user_1", trace_id="")
+    ctx.install_trajectory_cell()
+    inst.forward(question="stations near San Diego")
 
     by_type: dict[str, list] = {}
     for e in events:
@@ -450,41 +427,34 @@ class _FakeProgram:
 
 def test_reextract_reruns_only_extract_over_retained_trajectory():
     prog = _FakeProgram()
-    token = gact_app._ACTIVE_REACT_TRAJECTORY.set(
+    # Install a cell pre-seeded with a populated retained trajectory; teardown via
+    # the autouse _reset_runtime_context fixture.
+    ctx.install_trajectory(
         {"trajectory": {"tool_name_0": "shell_bash"}, "input_args": {"question": "find stations"}}
     )
-    try:
-        result = gact_app._reextract_over_retained_trajectory(prog, "FILL station_ids")
-        assert result is not None
-        assert result.answer == "fixed"
-        # extract ran exactly once (NOT the whole tool loop)
-        assert len(prog.extract_calls) == 1
-        call = prog.extract_calls[0]
-        assert "FILL station_ids" in call["question"]  # hint steered the re-extract
-        assert call["trajectory"].startswith("FMT:")  # retained trajectory formatted + passed
-        # original trajectory threaded back into the Prediction
-        assert result.trajectory == {"tool_name_0": "shell_bash"}
-    finally:
-        gact_app._ACTIVE_REACT_TRAJECTORY.reset(token)
+    result = gact_app._reextract_over_retained_trajectory(prog, "FILL station_ids")
+    assert result is not None
+    assert result.answer == "fixed"
+    # extract ran exactly once (NOT the whole tool loop)
+    assert len(prog.extract_calls) == 1
+    call = prog.extract_calls[0]
+    assert "FILL station_ids" in call["question"]  # hint steered the re-extract
+    assert call["trajectory"].startswith("FMT:")  # retained trajectory formatted + passed
+    # original trajectory threaded back into the Prediction
+    assert result.trajectory == {"tool_name_0": "shell_bash"}
 
 
 def test_reextract_returns_none_without_retained_trajectory():
     prog = _FakeProgram()
-    token = gact_app._ACTIVE_REACT_TRAJECTORY.set(None)
-    try:
-        assert gact_app._reextract_over_retained_trajectory(prog, "hint") is None
-        assert prog.extract_calls == []
-    finally:
-        gact_app._ACTIVE_REACT_TRAJECTORY.reset(token)
+    ctx.install_trajectory_cell()  # cell present but value=None
+    assert gact_app._reextract_over_retained_trajectory(prog, "hint") is None
+    assert prog.extract_calls == []
 
 
 def test_reextract_returns_none_when_extract_fails():
     prog = _FakeProgram(fail=True)
-    token = gact_app._ACTIVE_REACT_TRAJECTORY.set(
+    ctx.install_trajectory(
         {"trajectory": {"tool_name_0": "x"}, "input_args": {"question": "q"}}
     )
-    try:
-        # extract raises again -> None, so the caller falls back to full re-ask.
-        assert gact_app._reextract_over_retained_trajectory(prog, "hint") is None
-    finally:
-        gact_app._ACTIVE_REACT_TRAJECTORY.reset(token)
+    # extract raises again -> None, so the caller falls back to full re-ask.
+    assert gact_app._reextract_over_retained_trajectory(prog, "hint") is None

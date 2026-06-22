@@ -1481,11 +1481,8 @@ def test_prompt_agent_empty_answer_with_children_enters_repair_path(
 ) -> None:
     import dspy
 
-    from clio_agent.gact.app import (
-        _ACTIVE_GACT_APP,
-        _ACTIVE_GACT_SESSION_ID,
-        _build_prompt_user_agent_module,
-    )
+    from clio_agent.gact import context as ctx
+    from clio_agent.gact.app import _build_prompt_user_agent_module
 
     class FakePredict:
         def __init__(self, *args: Any, **kwargs: Any) -> None:
@@ -1509,14 +1506,14 @@ def test_prompt_agent_empty_answer_with_children_enters_repair_path(
         title="Proteomics Root",
     )
 
-    app_token = _ACTIVE_GACT_APP.set(object())
-    session_token = _ACTIVE_GACT_SESSION_ID.set("sess_test")
+    app_token = ctx.set_app(object())
+    session_token = ctx.set_session_id("sess_test")
     try:
         module = _build_prompt_user_agent_module(object(), agent_def)
         pred = module.forward(question="review mzML", session_id="sess_test")
     finally:
-        _ACTIVE_GACT_SESSION_ID.reset(session_token)
-        _ACTIVE_GACT_APP.reset(app_token)
+        ctx.reset(session_token)
+        ctx.reset(app_token)
 
     assert pred.selected_expert == "main"
     assert pred.answer == ""
@@ -1571,13 +1568,8 @@ def test_tool_agent_invalid_tool_selection_emits_semantic_event(
 ) -> None:
     import dspy
 
-    from clio_agent.gact.app import (
-        _ACTIVE_GACT_APP,
-        _ACTIVE_GACT_SESSION_ID,
-        _ACTIVE_GACT_TRACE_ID,
-        _ACTIVE_GACT_TURN_ID,
-        _build_tool_user_agent_module,
-    )
+    from clio_agent.gact import context as ctx
+    from clio_agent.gact.app import _build_tool_user_agent_module
 
     class FakeReact:
         def __init__(self, *args: Any, **kwargs: Any) -> None:
@@ -1611,19 +1603,17 @@ def test_tool_agent_invalid_tool_selection_emits_semantic_event(
         default_model="metis",
     )
 
-    app_token = _ACTIVE_GACT_APP.set(app)
-    session_token = _ACTIVE_GACT_SESSION_ID.set("sess_invalid_tool")
-    turn_token = _ACTIVE_GACT_TURN_ID.set("msg_invalid_tool")
-    trace_token = _ACTIVE_GACT_TRACE_ID.set("trace_msg_invalid_tool")
-    try:
-        module = _build_tool_user_agent_module(base_agent, agent_def)
-        with pytest.raises(ValueError, match="shell_bash"):
-            module.forward(question="summarize variants", session_id="sess_invalid_tool")
-    finally:
-        _ACTIVE_GACT_TRACE_ID.reset(trace_token)
-        _ACTIVE_GACT_TURN_ID.reset(turn_token)
-        _ACTIVE_GACT_SESSION_ID.reset(session_token)
-        _ACTIVE_GACT_APP.reset(app_token)
+    # Establish the full turn layer at once; teardown via the autouse
+    # _reset_runtime_context fixture (set_turn_identity is tokenless by design).
+    ctx.set_turn_identity(
+        app=app,
+        session_id="sess_invalid_tool",
+        turn_id="msg_invalid_tool",
+        trace_id="trace_msg_invalid_tool",
+    )
+    module = _build_tool_user_agent_module(base_agent, agent_def)
+    with pytest.raises(ValueError, match="shell_bash"):
+        module.forward(question="summarize variants", session_id="sess_invalid_tool")
 
     history = app.state.bus._history["sess_invalid_tool"]
     direct = [event for event in history if event.type == "tool.selection.invalid"]
