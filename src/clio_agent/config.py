@@ -30,7 +30,7 @@ import os
 from dataclasses import dataclass, field
 from ipaddress import ip_address
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, List, Literal, Mapping, Optional
+from typing import TYPE_CHECKING, Any, List, Literal, Mapping, Optional
 from urllib.parse import urlparse
 
 # dspy lives behind a lazy import — top-level ``import dspy`` costs
@@ -680,20 +680,6 @@ def _lm_transient_backoff_s() -> float:
 
 _IO_LOGGING_LM_CLS: Any = None
 
-# Injectable lm_io capture sink. The gact app wires this (in build_app) to route
-# each LM call's full record into ARC's current (session, scope) as an ``lm_io``
-# segment — the ONE source of truth per LM call. config.py imports NOTHING from
-# arc/gact: the sink is an injected closure (mirrors the lm.call/arc.op injection),
-# so the arc <-/-> gact boundary is preserved. None => no-op (CLI/optimizer/tests).
-_LM_IO_SINK: Optional[Callable[[dict[str, Any]], None]] = None
-
-
-def set_lm_io_sink(sink: Optional[Callable[[dict[str, Any]], None]]) -> None:
-    """Inject (or clear) the lm_io capture sink. Called by the gact app once both
-    the app handle and ARC exist; cleared (``None``) means lm_io capture is off."""
-    global _LM_IO_SINK  # noqa: PLW0603
-    _LM_IO_SINK = sink
-
 
 def _io_logging_lm_cls() -> Any:
     """Build (once) a dspy.LM subclass that logs every call's full I/O."""
@@ -993,10 +979,12 @@ def _io_logging_lm_cls() -> Any:
 
         def _clio_log_last_call(self) -> None:
             try:
-                target = self._clio_trace_target()
-                # No active GACT turn -> nothing to emit (CLI/optimizer paths).
-                if target is None:
-                    return
+                # ONE capture per call. Read ``history[-1]`` exactly once here and
+                # stash the reasoning-channel text on the instance so the ReAct loop
+                # reuses THIS read (``app._active_lm_last_reasoning``) instead of a
+                # second independent ``history[-1]`` read. Done before the trace gate
+                # so the stash is populated for every call (the loop runs inside a
+                # GACT turn; a non-turn call simply emits no ``lm.call``).
                 history = getattr(self, "history", None) or []
                 if not history or not isinstance(history[-1], dict):
                     return
@@ -1027,6 +1015,13 @@ def _io_logging_lm_cls() -> Any:
                         if not isinstance(ch0, dict)
                         else ch0.get("finish_reason")
                     ) or ""
+                # Stash the reasoning from this single read so the react step reuses it.
+                self._clio_last_reasoning = str(reasoning or "").strip()
+                # No active GACT turn -> nothing to emit (CLI/optimizer paths). The
+                # stash above is still set so a synchronous loop can read it.
+                target = self._clio_trace_target()
+                if target is None:
+                    return
                 record = {
                     "model": entry.get("model"),
                     "messages": entry.get("messages") or entry.get("prompt"),
@@ -1044,36 +1039,22 @@ def _io_logging_lm_cls() -> Any:
                 # can't reach), captured on the failure path too. detail_level="off"
                 # keeps it off SSE/UI. (Legacy CLIO_LOG_LM_IO JSONL mirror removed --
                 # the canonical trace is the single recorder.)
-                if target is not None:
-                    app, sid, turn_id, trace_id, emit = target
-                    try:
-                        emit(
-                            app,
-                            sid,
-                            "lm.call",
-                            turn_id=turn_id,
-                            trace_id=trace_id,
-                            status="completed",
-                            summary=f"LM call ({record['finish_reason'] or 'ok'}).",
-                            provider={"model_id": str(record["model"] or "")},
-                            payload=record,
-                            detail_level="off",
-                        )
-                    except Exception:  # noqa: BLE001 - capture must never fail a call
-                        pass
-                # Route the SAME full record into ARC as one lm_io segment via the
-                # injected sink (the ONE source of truth per LM call). This sits AFTER
-                # the early ``target is None`` return above, so completeness is scoped
-                # to "every LM call WITHIN an active GACT turn" — which covers the
-                # in-turn ReAct/extract/planner/router/synthesizer/nanoagent calls.
-                # (Pre-turn bootstrap or CLI/optimizer calls are captured by NEITHER
-                # lm.call NOR lm_io today, by the same guard — accepted, not regressed.)
-                sink = _LM_IO_SINK
-                if sink is not None:
-                    try:
-                        sink(record)
-                    except Exception:  # noqa: BLE001 - capture must never fail a call
-                        pass
+                app, sid, turn_id, trace_id, emit = target
+                try:
+                    emit(
+                        app,
+                        sid,
+                        "lm.call",
+                        turn_id=turn_id,
+                        trace_id=trace_id,
+                        status="completed",
+                        summary=f"LM call ({record['finish_reason'] or 'ok'}).",
+                        provider={"model_id": str(record["model"] or "")},
+                        payload=record,
+                        detail_level="off",
+                    )
+                except Exception:  # noqa: BLE001 - capture must never fail a call
+                    pass
             except Exception:  # noqa: BLE001 - logging is best-effort, never fail a call
                 pass
 

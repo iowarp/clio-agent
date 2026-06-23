@@ -474,12 +474,21 @@ def _active_lm_last_reasoning() -> str:
     extract. Empty for content-channel models (e.g. gemma, whose reasoning is parsed
     into ``next_thought``) or when unavailable. MUST be read immediately after the
     LM call and before any tool runs (a delegation tool runs a child whose LM call
-    would otherwise become ``history[-1]``)."""
+    would otherwise become ``history[-1]``).
+
+    ONE capture per call: the ``IOLoggingLM`` boundary already reads ``history[-1]``
+    once per call (``config._clio_log_last_call``) and stashes the reasoning on the LM
+    as ``_clio_last_reasoning``. Reuse that read so the same buffer is not parsed a
+    second time. Falls back to a direct ``history[-1]`` read only for an LM that is not
+    our boundary subclass (e.g. a test DummyLM, which carries no reasoning channel)."""
 
     try:
         import dspy  # noqa: PLC0415
 
         lm = dspy.settings.lm
+        stashed = getattr(lm, "_clio_last_reasoning", None)
+        if stashed is not None:
+            return str(stashed)
         history = getattr(lm, "history", None)
         if history:
             return _entry_reasoning_text(history[-1])
@@ -688,52 +697,6 @@ def _emit_arc_op(
     except Exception:  # noqa: BLE001 - SSE streaming is observability, never fatal
         logger.debug("arc.op bus publish failed", exc_info=True)
     return event
-
-
-def _route_lm_io_to_arc(app: "FastAPI", record: dict[str, Any]) -> None:
-    """Route ONE captured LM-call ``record`` into ARC's current (session, scope) as an
-    ``lm_io`` segment — the freeze-anytime raw LM I/O atom. This is the gact-side sink
-    injected into ``config.IOLoggingLM`` via ``set_lm_io_sink`` in ``build_app`` (so
-    ``config.py`` never imports arc/gact; mirrors the ``_emit_arc_op`` op-logger seam).
-
-    Keyed to the ACTIVE react scope/session from the runtime context — the same source
-    ``_arc_scope`` / ``_maybe_autocompact`` use (contextvars copied into the executor
-    running the call). When no react scope is active (e.g. a Tier-1 planner/router/synth
-    call before any expert delegation), this returns early: there is no expert scope to
-    attach to yet, and such calls still emit the durable ``lm.call`` event. The
-    correlation ids are the SEMANTIC turn id (== every trajectory writer's turn_id),
-    the expert span (active parent span), and the per-step run span.
-
-    Best-effort: capture must never break the call (wrapped + swallowed).
-    """
-    try:
-        arc = getattr(getattr(app, "state", None), "arc", None)
-        session = _ctx.active_react_session()
-        scope = _ctx.active_react_scope()
-        if arc is None or not scope:
-            return  # non-react LM calls: durable lm.call still fired; no scope to attach
-        arc.append_segment(
-            session,
-            scope,
-            "lm_io",
-            {
-                "messages": record.get("messages"),
-                "content": record.get("content"),
-                "reasoning": record.get("reasoning_content"),
-                "finish_reason": record.get("finish_reason"),
-                "usage": record.get("usage"),
-                "model": record.get("model"),
-            },
-            step=-1,
-            turn_id=_ctx.active_turn_id(),  # == _active_semantic_turn_id() (critic fix)
-            # Group under the OWNING expert turn (not the live per-step parent span);
-            # the per-step run span carries step granularity. Fall back to the active
-            # parent span if no expert span is set (non-react context).
-            expert_span_id=_ctx.active_expert_span() or _ctx.active_parent_span_id(),
-            run_span_id=_ctx.active_run_span(),
-        )
-    except Exception:  # noqa: BLE001 - capture must never break a call
-        logger.debug("lm_io route to ARC failed", exc_info=True)
 
 
 def _llm_provider_payload(app: "FastAPI", agent_id: str = "") -> dict[str, Any]:
@@ -5833,9 +5796,9 @@ def _retaining_react_cls() -> Any:
                 # Fresh working context for this react loop: tombstone any prior
                 # live WORKING-SET segments in the scope (kept in the store + Trace
                 # for replay / as-of-T). A new forward == a new turn's trajectory.
-                # Reset ONLY the working set — the prior turn's frozen lm_io /
-                # extract_io / answer atoms stay in ARC's complete state (freeze-
-                # anytime) and remain recoverable as-of-T.
+                # Reset via the working-set view (the kind-allowlist render path); the
+                # raw LM I/O is the async Trace's job, not a second ARC write, so ARC's
+                # buffer holds only the working set (thought / tool_call / observation).
                 try:
                     prior = [s.id for s in arc.render_working_set(_session, _scope)]
                     if prior:
@@ -5865,10 +5828,6 @@ def _retaining_react_cls() -> Any:
             # lm.call, delegations to children) nests under the expert span; the
             # context propagates into delegated children via copy_context().
             parent_token = _ctx.set_parent_span(expert_span_id)
-            # Also record the expert span as a STABLE context value (distinct from the
-            # live parent span, which is re-pointed to each step) so the lm_io seam can
-            # group captured LM calls under the owning expert turn.
-            expert_span_token = _ctx.set_expert_span(expert_span_id)
             try:
                 max_iters = input_args.pop("max_iters", self.max_iters)
                 for idx in range(max_iters):
@@ -5878,10 +5837,6 @@ def _retaining_react_cls() -> Any:
                     # the step. Reset to the expert span at the step boundary.
                     step_span_id = uuid.uuid4().hex[:16]
                     step_token = _ctx.set_parent_span(step_span_id)
-                    # One agent-run span per ReAct step (one step == one LM call): the
-                    # lm_io seam reads it so a captured LM call is keyed to THIS step.
-                    # Same span id correlates the step's lm_io and trajectory writes.
-                    run_token = _ctx.set_run_span(step_span_id)
                     try:
                         try:
                             pred = self._call_with_potential_trajectory_truncation(
@@ -5902,8 +5857,8 @@ def _retaining_react_cls() -> Any:
                         # ARC live-plane writes: thought + tool_call are known now;
                         # the observation is written after the tool runs. No-op when
                         # ARC is disabled (arc is None). Each write is correlation-
-                        # stamped (turn / expert / step) so the whole frozen state is
-                        # grouped by turn — matching the lm_io seam (critic fix).
+                        # stamped (turn / expert / step) so the working-set trajectory
+                        # is grouped by turn (Q3 reads these correlation ids).
                         self._arc_write(
                             arc,
                             _session,
@@ -5967,7 +5922,6 @@ def _retaining_react_cls() -> Any:
                         if pred.next_tool_name == "finish":
                             break
                     finally:
-                        _ctx.reset(run_token)
                         _ctx.reset(step_token)
 
                 # Publish BEFORE extract: a failed extract still exposes the trajectory.
@@ -5976,51 +5930,11 @@ def _retaining_react_cls() -> Any:
                 _ctx.publish_trajectory(
                     {"trajectory": dict(trajectory), "input_args": dict(input_args)}
                 )
-                # Capture the extract INPUT (what extract actually sees: the trajectory
-                # projection + the input args) BEFORE the call, to hold it together with
-                # the output in ONE extract_io segment (ontology: extract I/O held as a
-                # unit). render_segments_keys is the same view extract reads.
-                extract_input_keys: dict[str, Any] = {}
-                if arc is not None:
-                    try:
-                        extract_input_keys = arc.render_segments_keys(_session, _scope)
-                    except Exception:  # noqa: BLE001 - capture must never break the turn
-                        extract_input_keys = {}
                 extract = self._call_with_potential_trajectory_truncation(
                     self.extract, trajectory, **input_args
                 )
                 extract_reasoning = _active_lm_last_reasoning()
                 final_pred = dspy.Prediction(trajectory=trajectory, **extract)
-                # ARC freeze-anytime atoms (NOT working-set; excluded from the prompt
-                # and from compaction): extract I/O (input+output as one segment) and
-                # the answer-so-far. Best-effort via _arc_write (no-op when ARC off).
-                self._arc_write(
-                    arc,
-                    _session,
-                    _scope,
-                    "extract_io",
-                    {
-                        "input": {
-                            "trajectory_keys": extract_input_keys,
-                            "input_args": _jsonish(dict(input_args)),
-                        },
-                        "output": _prediction_structured_metadata(final_pred),
-                        "reasoning": extract_reasoning,
-                    },
-                    -1,
-                    turn_id=turn_id,
-                    expert_span_id=expert_span_id,
-                )
-                self._arc_write(
-                    arc,
-                    _session,
-                    _scope,
-                    "answer",
-                    {"text": str(getattr(final_pred, "answer", "") or "")},
-                    -1,
-                    turn_id=turn_id,
-                    expert_span_id=expert_span_id,
-                )
                 # Close the expert lifecycle with the extract output — the typed
                 # result that returns to the parent. FULL/uncapped on the highway;
                 # the parent's filter to just this is a downstream projection.
@@ -6038,7 +5952,6 @@ def _retaining_react_cls() -> Any:
                 )
                 return final_pred
             finally:
-                _ctx.reset(expert_span_token)
                 _ctx.reset(parent_token)
 
         def _format_trajectory(self, trajectory: dict[str, Any]) -> str:
@@ -6077,10 +5990,9 @@ def _retaining_react_cls() -> Any:
             ratio = last / window
             if ratio < _autocompact_threshold():
                 return
-            # Compact ONLY the working set — the lm_io / extract_io / answer atoms are
-            # part of ARC's complete freeze-anytime state but are NOT working-set
-            # context, so they must never be folded into the summary text nor
-            # tombstoned by compaction (they stay frozen + recoverable as-of-T).
+            # Compact via the working-set view (the kind-allowlist render path). ARC's
+            # buffer is the working set only (thought / tool_call / observation), so
+            # this folds exactly the live trajectory into one summary.
             live = arc.render_working_set(session, scope)
             if len(live) <= 1:
                 return  # nothing meaningful to compact yet
@@ -12888,14 +12800,6 @@ def build_app(
         _arc.set_segment_op_logger(
             lambda op, session_id, scope, **kw: _emit_arc_op(app, op, session_id, scope, **kw)
         )
-    # Wire the lm_io capture seam: route every LM call (captured once at the
-    # IOLoggingLM boundary) into ARC's active (session, scope) as an ``lm_io``
-    # segment. Injected closure so ``config.py`` never imports arc/gact (mirrors the
-    # op-logger above). No-op when ARC is disabled (the sink early-returns).
-    if _arc is not None:
-        from clio_agent.config import set_lm_io_sink  # noqa: PLC0415
-
-        set_lm_io_sink(lambda record: _route_lm_io_to_arc(app, record))
     # CLIO-BBBBBBBBBB14: message log keyed by session_id. Populated by
     # POST /messages, read by GET /messages, and backed by per-session
     # JSON ledgers so adapter deletion/redeploy preserves transcripts.
