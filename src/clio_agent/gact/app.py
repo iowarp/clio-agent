@@ -5767,10 +5767,13 @@ def _retaining_react_cls() -> Any:
             arc, _session, _scope = self._arc_scope()
             if arc is not None:
                 # Fresh working context for this react loop: tombstone any prior
-                # live segments in the scope (kept in the store + Trace for replay /
-                # as-of-T). A new forward == a new turn's trajectory.
+                # live WORKING-SET segments in the scope (kept in the store + Trace
+                # for replay / as-of-T). A new forward == a new turn's trajectory.
+                # Reset ONLY the working set — the prior turn's frozen lm_io /
+                # extract_io / answer atoms stay in ARC's complete state (freeze-
+                # anytime) and remain recoverable as-of-T.
                 try:
-                    prior = [s.id for s in arc.render_segments(_session, _scope)]
+                    prior = [s.id for s in arc.render_working_set(_session, _scope)]
                     if prior:
                         arc.delete_segments(_session, _scope, prior)
                 except Exception:  # noqa: BLE001
@@ -5940,7 +5943,11 @@ def _retaining_react_cls() -> Any:
             ratio = last / window
             if ratio < _autocompact_threshold():
                 return
-            live = arc.render_segments(session, scope)
+            # Compact ONLY the working set — the lm_io / extract_io / answer atoms are
+            # part of ARC's complete freeze-anytime state but are NOT working-set
+            # context, so they must never be folded into the summary text nor
+            # tombstoned by compaction (they stay frozen + recoverable as-of-T).
+            live = arc.render_working_set(session, scope)
             if len(live) <= 1:
                 return  # nothing meaningful to compact yet
             summary = _summarize_segments_llm(live)
