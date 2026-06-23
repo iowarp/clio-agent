@@ -15,14 +15,13 @@ Performance Targets:
 See docs/ARC_MEMORY_LAYER.md for architecture details.
 """
 
-import dataclasses
 import threading
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, cast
 
 from clio_agent.arc.cache import LRUCache
 from clio_agent.arc.index import BTreeIndex
-from clio_agent.arc.live import EVENTS_SCOPE, LiveRuntimeContext
+from clio_agent.arc.live import EVENTS_SCOPE, LiveRuntimeContext, build_event_content
 from clio_agent.arc.lsm import LSMTree
 from clio_agent.arc.schema import (
     Context,
@@ -68,30 +67,6 @@ from clio_agent.arc.storage import ARCStore, LocalFSStore
 #     op-logger -> another arc.op -> another persist -> unbounded recursion. It is
 #     already fully derivable from the segments it describes, so it is highway-only.
 _EVENT_LOG_SKIP: frozenset[str] = frozenset({"lm.token.delta", "arc.op"})
-
-# Cap any single text field copied into a persisted semantic_event segment, so a giant
-# payload (full prompt/answer) never balloons the lean ARC record. The full, uncapped
-# event is always available on the durable trace.
-_EVENT_TEXT_CAP = 4096
-
-
-def _cap_event_text(value: Any) -> Any:
-    """Cap a string value to ``_EVENT_TEXT_CAP`` (non-strings pass through)."""
-    if isinstance(value, str) and len(value) > _EVENT_TEXT_CAP:
-        return value[:_EVENT_TEXT_CAP] + f"...[+{len(value) - _EVENT_TEXT_CAP} chars]"
-    return value
-
-
-def _cap_event_payload(payload: Any) -> Any:
-    """Cap large string values in a semantic event's payload (one level deep).
-
-    Keeps the persisted record lean — a giant prompt/answer string is truncated,
-    while non-string values pass through unchanged. Non-dict payloads pass through.
-    """
-    if not isinstance(payload, dict):
-        return _cap_event_text(payload)
-    return {str(k): _cap_event_text(v) for k, v in payload.items()}
-
 
 class ARCMemory:
     """Adaptive Retrieval Cache - Main interface for memory operations.
@@ -1172,37 +1147,13 @@ class ARCMemory:
             self._recording_event_tl.active = False
 
     def _append_event_segment(self, event: Any, etype: str, sid: str) -> None:
-        """Build + append the lean ``semantic_event`` segment (called under the
-        re-entrancy guard in :meth:`_record_event_segment`)."""
-        # Lean content: the envelope fields plus the body dicts, with any large text
-        # capped. dataclasses.asdict gives a deep copy of the SemanticEvent; fall back
-        # to per-field reads for non-dataclass events.
-        if dataclasses.is_dataclass(event) and not isinstance(event, type):
-            raw = dataclasses.asdict(event)
-        else:
-            raw = {
-                "event_type": etype,
-                "status": str(getattr(event, "status", "") or ""),
-                "summary": str(getattr(event, "summary", "") or ""),
-                "actor": getattr(event, "actor", {}) or {},
-                "subject": getattr(event, "subject", {}) or {},
-                "payload": getattr(event, "payload", {}) or {},
-                "provider": getattr(event, "provider", {}) or {},
-            }
-        content: Dict[str, Any] = {
-            "event_type": etype,
-            "status": _cap_event_text(raw.get("status") or ""),
-            "summary": _cap_event_text(raw.get("summary") or ""),
-            "actor": raw.get("actor") or {},
-            "subject": raw.get("subject") or {},
-            "payload": _cap_event_payload(raw.get("payload") or {}),
-            "provider": raw.get("provider") or {},
-            # The wall-clock timestamp the observer needs to derive a turn's
-            # started_at / completed_at timings (turn_id is already on the Segment).
-            "occurred_at": str(getattr(event, "occurred_at", "") or ""),
-            # The trace correlation id the observer stamps on projected Invocations.
-            "trace_id": str(getattr(event, "trace_id", "") or ""),
-        }
+        """Build (via the shared :func:`~clio_agent.arc.live.build_event_content`) +
+        append the lean ``semantic_event`` segment. ONE builder is shared with the
+        standalone observer so the persisted log is identical regardless of path.
+        Called under the re-entrancy guard in :meth:`_record_event_segment`."""
+        content = build_event_content(event)
+        if content is None:
+            return
         self._segments.append(
             sid,
             EVENTS_SCOPE,
@@ -1225,8 +1176,12 @@ class ARCMemory:
         """
         self._record_event_segment(event)
 
-    def get_live_context(self, session_id: str, *, max_turns: int = 5) -> Dict[str, Any]:
-        """Compact live summary of an open session's recent turns (or empty)."""
+    def get_live_context(
+        self, session_id: str, *, max_turns: Optional[int] = None
+    ) -> Dict[str, Any]:
+        """Live summary of an open session's turns (or empty). ``max_turns`` is an
+        OPTIONAL recent-window the caller may pass (its own configurable budget);
+        ``None`` (default) returns every turn — no hardcoded cap."""
         return self._live.view(session_id, max_turns=max_turns)
 
     def project_live_conversation(self, session_id: str, *, user_id: str = "") -> Any:

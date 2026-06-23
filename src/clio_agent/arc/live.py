@@ -53,17 +53,35 @@ from clio_agent.arc.segments import SegmentStore
 # re-exported by ``arc.memory`` (the writer) so both share one constant.
 EVENTS_SCOPE = "_events"
 
-# Bound the hot copy: cap retained turns per session (read-time). The full,
-# uncapped log is always available in the durable trace.
-_MAX_TEXT = 4096
-_MAX_TURNS_PER_SESSION = 50
+def build_event_content(event: Any) -> Optional[dict[str, Any]]:
+    """Canonical content dict for ONE ``semantic_event`` segment, or ``None`` for an
+    untyped event. THE single builder shared by the production writer
+    (``ARCMemory._append_event_segment``) and the standalone observer
+    (``LiveRuntimeContext._record``), so the persisted ``_events`` log is identical
+    regardless of path.
+
+    Stores the event VERBATIM — NO truncation, NO caps. ARC is the source and holds
+    everything (freeze-anytime); any bound is a downstream consumer's deliberate,
+    configurable choice, never imposed here. The read-time reducer :func:`_apply`
+    consumes ``event_type`` / ``payload`` / ``actor`` / ``provider`` / ``status`` /
+    ``occurred_at`` / ``trace_id``; ``summary`` / ``subject`` are kept for completeness.
+    """
+    etype = str(getattr(event, "event_type", "") or "")
+    if not etype:
+        return None
+    return {
+        "event_type": etype,
+        "status": str(getattr(event, "status", "") or ""),
+        "summary": str(getattr(event, "summary", "") or ""),
+        "actor": getattr(event, "actor", {}) or {},
+        "subject": getattr(event, "subject", {}) or {},
+        "payload": getattr(event, "payload", {}) or {},
+        "provider": getattr(event, "provider", {}) or {},
+        "occurred_at": str(getattr(event, "occurred_at", "") or ""),
+        "trace_id": str(getattr(event, "trace_id", "") or ""),
+    }
 
 _NO_TURN = "_no_turn"
-
-
-def _cap(text: Any) -> str:
-    s = str(text or "")
-    return s if len(s) <= _MAX_TEXT else s[:_MAX_TEXT] + f"...[+{len(s) - _MAX_TEXT} chars]"
 
 
 def _epoch(iso: str) -> float:
@@ -192,39 +210,17 @@ class LiveRuntimeContext:
         sid = str(getattr(event, "session_id", "") or "")
         if not sid:
             return
-        content = self._event_content(event)
+        content = build_event_content(event)
         if content is None:  # an event with no event_type -> nothing to log
             return
-        turn_id = str(getattr(event, "turn_id", "") or "")
-        expert_span_id = str(getattr(event, "expert_span_id", "") or "")
         self._segments.append(
             sid,
             EVENTS_SCOPE,
             "semantic_event",
             content,
-            turn_id=turn_id,
-            expert_span_id=expert_span_id,
+            turn_id=str(getattr(event, "turn_id", "") or ""),
+            expert_span_id=str(getattr(event, "expert_span_id", "") or ""),
         )
-
-    @staticmethod
-    def _event_content(event: Any) -> Optional[dict[str, Any]]:
-        """The lean per-event content dict to log, or ``None`` for an untyped event.
-
-        Mirrors :meth:`ARCMemory._append_event_segment`'s content shape (the fields the
-        read-time reducer :func:`_apply` consumes), so a standalone observer's log and
-        ARC's persisted log replay identically."""
-        etype = str(getattr(event, "event_type", "") or "")
-        if not etype:
-            return None
-        return {
-            "event_type": etype,
-            "status": str(getattr(event, "status", "") or ""),
-            "actor": getattr(event, "actor", {}) or {},
-            "payload": getattr(event, "payload", {}) or {},
-            "provider": getattr(event, "provider", {}) or {},
-            "occurred_at": str(getattr(event, "occurred_at", "") or ""),
-            "trace_id": str(getattr(event, "trace_id", "") or ""),
-        }
 
     # ---- lifecycle -----------------------------------------------------
 
@@ -248,35 +244,35 @@ class LiveRuntimeContext:
     # ---- read / replay -------------------------------------------------
 
     def _turns(self, session_id: str) -> "OrderedDict[str, _LiveTurn]":
-        """Rebuild the per-session turns by querying the ``_events`` log, keeping the
-        ``semantic_event`` segments, GROUPING them by ``turn_id`` (first-seen order),
-        and REPLAYING each turn's events (in render = (order, logical_time) order,
-        which is record order) through :func:`_apply`. The last
-        ``_MAX_TURNS_PER_SESSION`` turn_ids are kept."""
+        """Rebuild ALL of a session's turns by querying the ``_events`` log, keeping the
+        ``semantic_event`` segments, GROUPING them by ``turn_id`` (first-seen order), and
+        REPLAYING each turn's events (in render = (order, logical_time) order, which is
+        record order) through :func:`_apply`. NO turn cap — ARC holds every turn; a
+        consumer that wants only a recent window asks for it explicitly (see
+        :meth:`view`'s ``max_turns``)."""
         segments = self._segments.render(session_id, EVENTS_SCOPE)
         grouped: "OrderedDict[str, list[Any]]" = OrderedDict()
         for seg in segments:
             if seg.kind != "semantic_event":
                 continue
             grouped.setdefault(seg.turn_id or _NO_TURN, []).append(seg)
-        # Apply the per-session turn cap at read-time (last N first-seen turn_ids).
-        turn_ids = list(grouped.keys())
-        if len(turn_ids) > _MAX_TURNS_PER_SESSION:
-            turn_ids = turn_ids[-_MAX_TURNS_PER_SESSION:]
         turns: "OrderedDict[str, _LiveTurn]" = OrderedDict()
-        for turn_id in turn_ids:
+        for turn_id, segs in grouped.items():
             turn = _LiveTurn(turn_id=turn_id)
-            for seg in grouped[turn_id]:
+            for seg in segs:
                 _apply(turn, seg.content)
             turns[turn_id] = turn
         return turns
 
-    def view(self, session_id: str, *, max_turns: int = 5) -> dict[str, Any]:
-        """Compact summary of a session's recent turns (for context_compiler)."""
+    def view(self, session_id: str, *, max_turns: Optional[int] = None) -> dict[str, Any]:
+        """Summary of a session's turns (for context_compiler). ``max_turns`` is an
+        OPTIONAL recent-window the CALLER may pass (its own, configurable prompt budget);
+        ``None`` (default) returns EVERY turn — there is no hardcoded cap here."""
         turns = self._turns(session_id)
         if not turns:
             return {}
-        recent = list(turns.values())[-max_turns:]
+        values = list(turns.values())
+        recent = values[-max_turns:] if max_turns else values
         return {
             "session_id": session_id,
             "turns": [
@@ -398,21 +394,21 @@ def _apply(turn: _LiveTurn, content: dict[str, Any]) -> None:
 
     if etype == "turn.started":
         turn.started_at = occurred or turn.started_at
-        question = _cap(payload.get("input") or payload.get("question") or "")
+        question = str(payload.get("input") or payload.get("question") or "")
         turn.question = question or turn.question
     elif etype == "llm.request.started":
         if not turn.question:
-            turn.question = _cap(payload.get("input") or "")
+            turn.question = str(payload.get("input") or "")
     elif etype == "llm.response.completed":
         turn.selected_expert = str(payload.get("selected_expert") or "") or turn.selected_expert
         turn.route_reason = str(payload.get("route_reason") or "") or turn.route_reason
         if payload.get("answer"):
-            turn.answer = _cap(payload.get("answer"))
+            turn.answer = str(payload.get("answer") or "")
     elif etype == "expert.response.completed":
         agent_id = str(actor.get("agent_id") or "") or "unknown"
         exp = turn.experts.get(agent_id) or _LiveExpert(agent_id=agent_id)
         # Mirror the original fold's per-field overwrite semantics EXACTLY.
-        exp.answer = _cap(payload.get("answer") or "") or exp.answer
+        exp.answer = str(payload.get("answer") or "") or exp.answer
         exp.reasoning_len = len(str(payload.get("reasoning") or "")) or exp.reasoning_len
         # Only overwrite trajectory_steps / tools when the event actually supplied
         # them (a dict / a list), matching the original "overwrite only when present".
@@ -434,12 +430,12 @@ def _apply(turn: _LiveTurn, content: dict[str, Any]) -> None:
         turn.status = "success" if etype == "turn.completed" else "failure"
         final = payload.get("final_message")
         if isinstance(final, dict):
-            answer = _cap(_message_text(final))
+            answer = _message_text(final)
             if answer:
                 turn.answer = answer
         if etype == "turn.failed":
             err = payload.get("error_info") or {}
-            turn.error = _cap(err.get("error") if isinstance(err, dict) else err)
+            turn.error = str((err.get("error") if isinstance(err, dict) else err) or "")
 
 
 def _lean_tool(tool: Any) -> dict[str, Any]:
