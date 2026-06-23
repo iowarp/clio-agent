@@ -35,6 +35,7 @@ import msgspec
 from sortedcontainers import SortedDict
 
 from clio_agent.arc.schema import (
+    WORKING_SET_KINDS,
     Segment,
     SegmentKind,
     decode_segments,
@@ -535,9 +536,7 @@ class SegmentStore:
         """
         with self._lock_for(session_id, scope):
             segs = self._segs(session_id, scope)
-            original = next(
-                (s for s in segs if s.id == target_id and s.status == "live"), None
-            )
+            original = next((s for s in segs if s.id == target_id and s.status == "live"), None)
             if original is None:
                 logger.debug(
                     "segments: replace scope=%s matched no live id=%s (no-op)",
@@ -704,6 +703,26 @@ class SegmentStore:
         :func:`segments_to_keys` for the projection algorithm.
         """
         return segments_to_keys(self.render(session_id, scope, as_of=as_of))
+
+    def render_working_set(
+        self, session_id: str, scope: str, *, as_of: int | None = None
+    ) -> list[Segment]:
+        """LIVE WORKING-SET segments — the kinds the PROMPT and the compaction/reset
+        paths operate on. Excludes the richer ARC-as-source kinds (``lm_io`` /
+        ``extract_io`` / ``answer``), which are part of ARC's complete freeze-anytime
+        state but are NOT working-set context.
+
+        This is the target of the per-turn working-set reset and ``_maybe_autocompact``
+        — NOT a new prompt source. ``render`` / ``render_keys`` are UNCHANGED: the
+        prompt stays ``segments_to_keys(render(...))``, which is a kind-allowlist that
+        already ignores the new kinds, so the prompt is byte-identical whether or not
+        the new atoms are present. Until any writer emits the new kinds, this returns
+        exactly what ``render`` returns (so adopting it is behavior-preserving), and
+        excludes exactly the atoms once they exist.
+        """
+        return [
+            s for s in self.render(session_id, scope, as_of=as_of) if s.kind in WORKING_SET_KINDS
+        ]
 
     def render_text(
         self,

@@ -75,6 +75,27 @@ SegmentKind = Literal[
 ]
 SegmentStatus = Literal["live", "tombstoned"]
 
+# The kinds the model's PROMPT is rendered from (the dspy trajectory projection's
+# domain) + the static framing kinds. These are the ONLY kinds the live-plane
+# consumers that MUTATE the working set operate over: the per-turn working-set reset
+# and the auto-compaction target. The richer ARC-as-source kinds (lm_io/extract_io/
+# answer) are part of ARC's COMPLETE freeze-anytime state but are NOT working-set
+# context, so they must never be reset-tombstoned at a new turn nor folded into a
+# compaction summary. Equivalently: WORKING_SET_KINDS == every kind EXCEPT
+# lm_io/extract_io/answer. (render/render_keys are UNCHANGED — segments_to_keys is a
+# kind-allowlist that already ignores the new kinds, so the prompt is immune.)
+WORKING_SET_KINDS: frozenset[str] = frozenset(
+    {
+        "system",
+        "user",
+        "tool_def",
+        "thought",
+        "tool_call",
+        "observation",
+        "summary",
+    }
+)
+
 
 class Segment(msgspec.Struct):
     """One ordered, scoped piece of live context — the unit of the ARC live plane.
