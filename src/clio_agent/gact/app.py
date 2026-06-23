@@ -5741,15 +5741,33 @@ def _retaining_react_cls() -> Any:
 
         @staticmethod
         def _arc_write(
-            arc: Any, session: str, scope: str, kind: str, content: dict[str, Any], idx: int
+            arc: Any,
+            session: str,
+            scope: str,
+            kind: str,
+            content: dict[str, Any],
+            idx: int,
+            *,
+            turn_id: str = "",
+            expert_span_id: str = "",
+            run_span_id: str = "",
         ) -> None:
-            """Append one produced piece to the live plane. Best-effort: a write
-            failure must never break the turn (the local trajectory dict is the
-            fallback)."""
+            """Append one produced piece to the live plane, stamping the trajectory-
+            correlation span ids. Best-effort: a write failure must never break the
+            turn (the local trajectory dict is the fallback)."""
             if arc is None:
                 return
             try:
-                arc.append_segment(session, scope, kind, content, step=idx)
+                arc.append_segment(
+                    session,
+                    scope,
+                    kind,
+                    content,
+                    step=idx,
+                    turn_id=turn_id,
+                    expert_span_id=expert_span_id,
+                    run_span_id=run_span_id,
+                )
             except Exception:  # noqa: BLE001
                 logger.warning(
                     "arc live-plane append failed kind=%s scope=%s",
@@ -5780,6 +5798,10 @@ def _retaining_react_cls() -> Any:
                     logger.warning("arc live-plane reset failed scope=%s", _scope, exc_info=True)
             trajectory: dict[str, Any] = {}
             expert_id = str(getattr(self, "_clio_expert_id", "") or "")
+            # Correlation: the SEMANTIC turn id is what EVERY existing trajectory /
+            # lifecycle write stamps (and what the lm_io seam reads), so all segments
+            # in one expert turn share a turn_id — keep them consistent (critic fix).
+            turn_id = _active_semantic_turn_id()
             # One span per expert lifecycle so the highway's per-step events of a
             # single expert trajectory can be grouped by consumers.
             expert_span_id = uuid.uuid4().hex[:16]
@@ -5806,6 +5828,10 @@ def _retaining_react_cls() -> Any:
                     # the step. Reset to the expert span at the step boundary.
                     step_span_id = uuid.uuid4().hex[:16]
                     step_token = _ctx.set_parent_span(step_span_id)
+                    # One agent-run span per ReAct step (one step == one LM call): the
+                    # lm_io seam reads it so a captured LM call is keyed to THIS step.
+                    # Same span id correlates the step's lm_io and trajectory writes.
+                    run_token = _ctx.set_run_span(step_span_id)
                     try:
                         try:
                             pred = self._call_with_potential_trajectory_truncation(
@@ -5825,9 +5851,19 @@ def _retaining_react_cls() -> Any:
                         trajectory[f"tool_args_{idx}"] = pred.next_tool_args
                         # ARC live-plane writes: thought + tool_call are known now;
                         # the observation is written after the tool runs. No-op when
-                        # ARC is disabled (arc is None).
+                        # ARC is disabled (arc is None). Each write is correlation-
+                        # stamped (turn / expert / step) so the whole frozen state is
+                        # grouped by turn — matching the lm_io seam (critic fix).
                         self._arc_write(
-                            arc, _session, _scope, "thought", {"text": pred.next_thought}, idx
+                            arc,
+                            _session,
+                            _scope,
+                            "thought",
+                            {"text": pred.next_thought},
+                            idx,
+                            turn_id=turn_id,
+                            expert_span_id=expert_span_id,
+                            run_span_id=step_span_id,
                         )
                         self._arc_write(
                             arc,
@@ -5836,6 +5872,9 @@ def _retaining_react_cls() -> Any:
                             "tool_call",
                             {"name": pred.next_tool_name, "args": pred.next_tool_args},
                             idx,
+                            turn_id=turn_id,
+                            expert_span_id=expert_span_id,
+                            run_span_id=step_span_id,
                         )
                         try:
                             trajectory[f"observation_{idx}"] = self.tools[pred.next_tool_name](
@@ -5852,6 +5891,9 @@ def _retaining_react_cls() -> Any:
                             "observation",
                             {"text": _arc_obs_value(trajectory[f"observation_{idx}"])},
                             idx,
+                            turn_id=turn_id,
+                            expert_span_id=expert_span_id,
+                            run_span_id=step_span_id,
                         )
 
                         # Put this ReAct Step (LLM response + tool act/observe) on
@@ -5875,6 +5917,7 @@ def _retaining_react_cls() -> Any:
                         if pred.next_tool_name == "finish":
                             break
                     finally:
+                        _ctx.reset(run_token)
                         _ctx.reset(step_token)
 
                 # Publish BEFORE extract: a failed extract still exposes the trajectory.
@@ -5883,11 +5926,51 @@ def _retaining_react_cls() -> Any:
                 _ctx.publish_trajectory(
                     {"trajectory": dict(trajectory), "input_args": dict(input_args)}
                 )
+                # Capture the extract INPUT (what extract actually sees: the trajectory
+                # projection + the input args) BEFORE the call, to hold it together with
+                # the output in ONE extract_io segment (ontology: extract I/O held as a
+                # unit). render_segments_keys is the same view extract reads.
+                extract_input_keys: dict[str, Any] = {}
+                if arc is not None:
+                    try:
+                        extract_input_keys = arc.render_segments_keys(_session, _scope)
+                    except Exception:  # noqa: BLE001 - capture must never break the turn
+                        extract_input_keys = {}
                 extract = self._call_with_potential_trajectory_truncation(
                     self.extract, trajectory, **input_args
                 )
                 extract_reasoning = _active_lm_last_reasoning()
                 final_pred = dspy.Prediction(trajectory=trajectory, **extract)
+                # ARC freeze-anytime atoms (NOT working-set; excluded from the prompt
+                # and from compaction): extract I/O (input+output as one segment) and
+                # the answer-so-far. Best-effort via _arc_write (no-op when ARC off).
+                self._arc_write(
+                    arc,
+                    _session,
+                    _scope,
+                    "extract_io",
+                    {
+                        "input": {
+                            "trajectory_keys": extract_input_keys,
+                            "input_args": _jsonish(dict(input_args)),
+                        },
+                        "output": _prediction_structured_metadata(final_pred),
+                        "reasoning": extract_reasoning,
+                    },
+                    -1,
+                    turn_id=turn_id,
+                    expert_span_id=expert_span_id,
+                )
+                self._arc_write(
+                    arc,
+                    _session,
+                    _scope,
+                    "answer",
+                    {"text": str(getattr(final_pred, "answer", "") or "")},
+                    -1,
+                    turn_id=turn_id,
+                    expert_span_id=expert_span_id,
+                )
                 # Close the expert lifecycle with the extract output — the typed
                 # result that returns to the parent. FULL/uncapped on the highway;
                 # the parent's filter to just this is a downstream projection.

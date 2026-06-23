@@ -73,6 +73,7 @@ class RuntimeContext:
     react_context_window: int = 0  # _ACTIVE_REACT_CONTEXT_WINDOW
     blueprint_tool_rows: list[dict[str, Any]] | None = None  # _ACTIVE_BLUEPRINT_TOOL_ROWS
     parent_span_id: str = ""  # _ACTIVE_PARENT_SPAN_ID
+    run_span_id: str = ""  # the active ReAct-step (agent-run) span; the lm_io seam reads it
     trajectory_cell: TrajectoryCell | None = None  # _ACTIVE_REACT_TRAJECTORY (via cell)
 
 
@@ -148,6 +149,13 @@ def active_blueprint_tool_rows() -> list[dict[str, Any]] | None:
 def active_parent_span_id() -> str:
     """``_ACTIVE_PARENT_SPAN_ID.get()``."""
     return _RUNTIME.get().parent_span_id
+
+
+def active_run_span() -> str:
+    """The active ReAct-step (agent-run) span id, or ``""``. Set per step in
+    ``_RetainingReAct.forward``; read by the lm_io capture seam so a captured LM
+    call lands on the right step."""
+    return _RUNTIME.get().run_span_id
 
 
 def active_trajectory() -> dict[str, Any] | None:
@@ -295,6 +303,14 @@ def set_parent_span(span_id: str) -> contextvars.Token[RuntimeContext]:
     """Set ``parent_span_id`` (``_ACTIVE_PARENT_SPAN_ID.set``)."""
     cur = _RUNTIME.get()
     return _RUNTIME.set(replace(cur, parent_span_id=span_id))
+
+
+def set_run_span(span_id: str) -> contextvars.Token[RuntimeContext]:
+    """Set ``run_span_id`` (the active ReAct-step / agent-run span). Set per step in
+    ``_RetainingReAct.forward`` (mirrors :func:`set_parent_span`); the lm_io seam
+    reads it via :func:`active_run_span` so a captured LM call is keyed to the step."""
+    cur = _RUNTIME.get()
+    return _RUNTIME.set(replace(cur, run_span_id=span_id))
 
 
 def install_trajectory_cell() -> TrajectoryCell:
