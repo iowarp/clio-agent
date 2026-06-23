@@ -19,6 +19,7 @@ import threading
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, cast
 
+from clio_agent import conf
 from clio_agent.arc.cache import LRUCache
 from clio_agent.arc.index import BTreeIndex
 from clio_agent.arc.live import EVENTS_SCOPE, LiveRuntimeContext, build_event_content
@@ -90,7 +91,7 @@ class ARCMemory:
     def __init__(
         self,
         data_dir: str = ".clio_agent/arc",
-        cache_capacity: int = 1000,
+        cache_capacity: Optional[int] = None,
         store: "ARCStore | None" = None,
     ):
         """Initialize ARC memory system.
@@ -142,19 +143,46 @@ class ARCMemory:
         # persist again. Thread-local because turns record concurrently.
         self._recording_event_tl = threading.local()
 
-        # Cache layer (hot data)
-        self._cache = LRUCache(capacity=cache_capacity)
+        # Cache layer (hot data). A hot LRU — a miss re-reads from the store, so a size
+        # bound loses NO data — but it must be configurable (conf, file→env→default) so
+        # smaller-RAM deployments can tune it. An explicit ``cache_capacity`` arg wins.
+        capacity = (
+            cache_capacity
+            if cache_capacity is not None
+            else conf.resolve(
+                "arc.cache_capacity",
+                env="CLIO_ARC_CACHE_CAPACITY",
+                default=1000,
+                cast=conf.as_int,
+            )
+        )
+        self._cache = LRUCache(capacity=capacity)
 
-        # Index layers (O(log N) retrieval)
-        # Keys are (session_id, timestamp) tuples
+        # Index layers (O(log N) retrieval), keyed by (session_id, timestamp). NO size
+        # cap: an arbitrary ceiling would silently fail large workloads (entries falling
+        # off the end). Memory is bounded by LIFECYCLE instead — ``release_session``
+        # evicts a session's branches on end/delete, and the index is rebuildable from the
+        # durable record (trace / stored blobs / clio-core) on restart.
         self._conv_index = BTreeIndex()  # Conversation index
         self._inv_index = BTreeIndex()  # Invocation index
 
-        # LSM tree for high-throughput metrics
+        # LSM tree for high-throughput metrics. Flush/compaction thresholds are storage
+        # mechanics (data persists to SSTables; compaction merges, never drops) — kept,
+        # but conf-driven rather than hardcoded.
         self._lsm = LSMTree(
             data_dir=str(self.data_dir / "lsm"),
-            memtable_size=1000,
-            compaction_threshold=5,
+            memtable_size=conf.resolve(
+                "arc.lsm_memtable_size",
+                env="CLIO_ARC_LSM_MEMTABLE_SIZE",
+                default=1000,
+                cast=conf.as_int,
+            ),
+            compaction_threshold=conf.resolve(
+                "arc.lsm_compaction_threshold",
+                env="CLIO_ARC_LSM_COMPACTION_THRESHOLD",
+                default=5,
+                cast=conf.as_int,
+            ),
         )
 
         # Thread safety
@@ -163,34 +191,6 @@ class ARCMemory:
         # Performance tracking
         self._disk_reads = 0
         self._disk_writes = 0
-
-        # Index eviction configuration
-        self._index_max_entries = 10000  # Maximum entries per index before eviction
-
-    def _maybe_evict_index(self, index: BTreeIndex) -> None:
-        """Evict old entries from index if it exceeds maximum size.
-
-        Implements LRU-style eviction by removing oldest (first) entries
-        when index grows beyond configured limit. This prevents unbounded
-        memory growth in the B-tree indexes.
-
-        Args:
-            index: BTreeIndex instance to potentially evict from
-
-        Examples:
-            >>> arc = ARCMemory()
-            >>> arc._maybe_evict_index(arc._conv_index)
-        """
-        if len(index) > self._index_max_entries:
-            # Get all keys in sorted order
-            all_keys = list(index.keys())
-
-            # Calculate how many entries to remove (remove 10% to reduce churn)
-            entries_to_remove = len(all_keys) - int(self._index_max_entries * 0.9)
-
-            # Remove oldest entries (first in the sorted order)
-            for key in all_keys[:entries_to_remove]:
-                index.delete(key)
 
     def store_conversation(self, conversation: Conversation) -> None:
         """Store conversation in cache and index.
@@ -231,9 +231,6 @@ class ARCMemory:
             encoded = encode_conversation(conversation)
             self._store.put("conversations", session_id, encoded)
             self._disk_writes += 1
-
-            # Evict old index entries if necessary
-            self._maybe_evict_index(self._conv_index)
 
     def get_conversation(self, session_id: str) -> Optional[Conversation]:
         """Retrieve conversation (cache-first).
@@ -353,9 +350,6 @@ class ARCMemory:
                     "status": invocation.status,
                 },
             )
-
-            # Evict old index entries if necessary
-            self._maybe_evict_index(self._inv_index)
 
     def get_invocation(self, invocation_id: str) -> Optional[Invocation]:
         """Get specific invocation.
