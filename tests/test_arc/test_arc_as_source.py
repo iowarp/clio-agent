@@ -1,15 +1,17 @@
 """ARC is the SOURCE of the data highway (the inversion).
 
 Every semantic event flows through ``ARCMemory.record_semantic_event`` FIRST:
-ARC PERSISTS the event (one ``semantic_event`` segment under the reserved
-``_events`` scope), FOLDS the observer (``_live`` scope), and then DERIVES the
-highway via the injected sink. These tests guard that contract end to end:
+ARC PERSISTS the event as ARC's ONE log (one ``semantic_event`` segment under the
+reserved ``_events`` scope), which the live observer PROJECTS its records over, and
+then DERIVES the highway via the injected sink. These tests guard that contract end
+to end:
 
-* (a) a normal event is persisted + folded, and the highway sink fires once.
+* (a) a normal event is persisted (one log) + projected by the observer, and the
+      highway sink fires once.
 * (b) the high-volume ``lm.token.delta`` stream is NOT persisted to ``_events``.
-* (c) the reserved ``_events`` / ``_live`` scopes are INVISIBLE to an expert
-      scope's working-set render + trajectory keys (they never reach a prompt).
-* (d) with no highway sink wired, record still persists + folds and returns {}.
+* (c) the reserved ``_events`` log scope is INVISIBLE to an expert scope's
+      working-set render + trajectory keys (it never reaches a prompt).
+* (d) with no highway sink wired, record still persists + projects and returns {}.
 * (e) the fallback path (arc without record / arc None) fans out via sink.emit.
 """
 
@@ -17,7 +19,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from clio_agent.arc.live import LIVE_SCOPE
 from clio_agent.arc.memory import EVENTS_SCOPE, ARCMemory
 from clio_agent.gact.events import EventBus
 from clio_agent.gact.semantic_events import (
@@ -45,9 +46,10 @@ def _turn_started(**kw: Any) -> SemanticEvent:
 # --- (a) record persists + folds + highway fires exactly once ---------------
 
 
-def test_record_persists_segment_folds_observer_and_fires_highway_once(tmp_path):
+def test_record_persists_segment_projects_observer_and_fires_highway_once(tmp_path):
     """The inversion: one event -> one persisted ``semantic_event`` segment under
-    ``_events`` AND an observer fold AND the highway sink fires exactly once."""
+    ``_events`` (the ONE log) that the observer PROJECTS over AND the highway sink
+    fires exactly once."""
     arc = ARCMemory(data_dir=str(tmp_path / "arc"))
     fired: list[SemanticEvent] = []
     arc.set_highway_sink(lambda e: fired.append(e) or {"derived": True})
@@ -64,7 +66,7 @@ def test_record_persists_segment_folds_observer_and_fires_highway_once(tmp_path)
     assert seg.content["event_type"] == "turn.started"
     assert seg.content["payload"]["input"] == "stations near San Diego"
 
-    # (2) observer folded it (the _live scope now holds the turn).
+    # (2) observer projects directly over that ONE log (the turn shows up).
     view = arc.get_live_context("s1")
     assert view["turns"][0]["question"] == "stations near San Diego"
 
@@ -124,11 +126,11 @@ def test_token_delta_is_not_persisted_to_events(tmp_path):
 # --- (c) the reserved scopes never reach an expert prompt -------------------
 
 
-def test_expert_scope_render_excludes_events_and_live(tmp_path):
-    """An expert scope's working-set render + trajectory keys EXCLUDE both reserved
-    scopes — the persisted event log + observer fold can never enter a model prompt."""
+def test_expert_scope_render_excludes_events(tmp_path):
+    """An expert scope's working-set render + trajectory keys EXCLUDE the reserved
+    ``_events`` log scope — the persisted event log can never enter a model prompt."""
     arc = ARCMemory(data_dir=str(tmp_path / "arc"))
-    # Record events: writes to BOTH _events (persist) and _live (observer fold).
+    # Record events: writes to the ONE _events log (the observer projects over it).
     arc.record_semantic_event(_turn_started())
     arc.record_semantic_event(
         _ev(
@@ -141,32 +143,31 @@ def test_expert_scope_render_excludes_events_and_live(tmp_path):
     arc.append_segment("s1", "agentA", "thought", {"text": "T0"}, step=0)
     arc.append_segment("s1", "agentA", "observation", {"text": "O0"}, step=0)
 
-    # The reserved scopes really do hold content (so the exclusion is meaningful).
+    # The reserved log scope really does hold content (so the exclusion is meaningful).
     assert arc.render_segments("s1", EVENTS_SCOPE)
-    assert arc.render_segments("s1", LIVE_SCOPE)
 
     # Working-set render of the expert scope sees ONLY the expert's own kinds.
     ws = arc.render_working_set("s1", "agentA")
     assert {s.kind for s in ws} == {"thought", "observation"}
     assert all(s.scope == "agentA" for s in ws)
-    assert all(s.kind not in {"semantic_event", "turn_event"} for s in ws)
+    assert all(s.kind != "semantic_event" for s in ws)
 
-    # The trajectory projection (the model prompt) carries neither reserved scope.
+    # The trajectory projection (the model prompt) carries no reserved scope.
     keys = arc.render_segments_keys("s1", "agentA")
     assert keys == {"thought_0": "T0", "observation_0": "O0"}
 
-    # And rendering the reserved scopes' OWN keys yields nothing the prompt models
-    # (semantic_event / turn_event are not in segments_to_keys' allowlist).
+    # And rendering the reserved scope's OWN keys yields nothing the prompt models
+    # (semantic_event is not in segments_to_keys' allowlist).
     assert arc.render_segments_keys("s1", EVENTS_SCOPE) == {}
-    assert arc.render_segments_keys("s1", LIVE_SCOPE) == {}
 
 
 # --- (d) no highway sink: still persists + folds, returns {} ----------------
 
 
-def test_record_without_highway_sink_persists_folds_returns_empty(tmp_path):
-    """No sink wired (memory-only / pre-wire) -> record still persists + folds and
-    returns {} without crashing (the highway is simply not derived yet)."""
+def test_record_without_highway_sink_persists_projects_returns_empty(tmp_path):
+    """No sink wired (memory-only / pre-wire) -> record still persists the ONE log +
+    the observer projects over it, returning {} without crashing (the highway is
+    simply not derived yet)."""
     arc = ARCMemory(data_dir=str(tmp_path / "arc"))
     assert arc._highway_sink is None  # not wired
 

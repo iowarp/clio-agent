@@ -823,7 +823,7 @@ class SegmentStore:
     def sessions_with_scope(self, scope: str) -> list[str]:
         """Every ``session_id`` that currently holds a record for ``scope`` (across all
         sessions). Backs wholesale lifecycle erase of an ephemeral scope (e.g. the
-        observer's ``_live`` scope) without callers reaching into store internals."""
+        observer's ``_events`` log scope) without callers reaching into store internals."""
         suffix = f"{_SCOPE_SEP}{scope.replace('/', _SLASH_SUB)}"
         out: set[str] = set()
         for name, _ in self._store.scan("segments"):
@@ -873,7 +873,7 @@ class SegmentStore:
         and :meth:`release` (which only drops the in-memory copy, leaving the store
         record intact for reload), this fully removes the scope's record so a later
         ``render`` returns nothing and the store no longer holds it. It is the lifecycle
-        eraser for reserved/ephemeral scopes (e.g. the live-observer's ``_live`` scope),
+        eraser for reserved/ephemeral scopes (e.g. the observer's ``_events`` log scope),
         which must return to baseline on session release / wholesale clear rather than
         persist for replay. Held under this scope's per-scope lock."""
         with self._lock_for(session_id, scope):

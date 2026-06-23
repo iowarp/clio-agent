@@ -1,38 +1,38 @@
-"""Live runtime context: fold semantic events into ARC's ONE segment buffer.
+"""Live runtime context: project ARC's ONE semantic-event log into turn records.
 
 The canonical semantic-event trace is the source of truth for "what happened"
 in a turn. Historically ARC rebuilt Invocation/Conversation records *post hoc*
 from dspy Predictions and run traces -- a second, divergent recorder. This
-module folds the SAME events the durable trace captures into the live segment
-buffer, so ARC's Invocation/Conversation become **projections** of the trace
-instead of independent builds.
+module projects the SAME events the durable trace captures -- as persisted by
+ARC into its ONE ``_events`` log (``semantic_event`` segments) -- so ARC's
+Invocation/Conversation become **projections** of that log instead of
+independent builds.
 
-Design (ARC unification Q3):
-    * There is NO separate ``self._sessions`` dict. The observer's state lives in
-      the ONE :class:`~clio_agent.arc.segments.SegmentStore`, in a reserved
-      ``_live`` scope, as append-only ``turn_event`` segments. Every fold is a
-      single ``append`` (no read-modify-write churn).
-    * ``fold(event)`` is fed the RAW, unredacted ``SemanticEvent`` (registered as
-      a sink ``live_consumer``). For each handled event type it appends ONE lean
-      ``turn_event`` segment correlated by ``turn_id`` / ``expert_span_id`` --
-      only the fields needed to project records, with text capped, since the full
-      payloads live in the durable trace.
+Design (ARC unification — one log):
+    * There is NO separate ``self._sessions`` dict and NO separate folded copy.
+      The observer is a pure READER over the SINGLE persisted semantic-event log:
+      the ``_events`` scope of the ONE :class:`~clio_agent.arc.segments.SegmentStore`,
+      where :meth:`ARCMemory._record_event_segment` appends one lean
+      ``semantic_event`` segment per recorded event.
     * The reads (``view`` / ``project_conversation`` / ``project_invocations``)
-      are QUERIES over the buffer: ``render`` the ``_live`` scope, GROUP by
-      ``turn_id`` (first-seen order), REPLAY each turn's events in logical_time
-      order to rebuild the lean per-turn fold, then run the SAME projection
-      construction as the post-hoc recorder did. The per-turn fold logic is the
-      single ``_apply`` reducer below, shared by every read.
-    * The ``_live`` scope is INVISIBLE to the expert-prompt render: it is its own
+      are QUERIES over that log: ``render`` the ``_events`` scope, keep the
+      ``semantic_event`` segments, GROUP by ``turn_id`` (first-seen order),
+      REPLAY each turn's events in render = (order, logical_time) order through
+      the SAME per-turn reducer (:func:`_apply`), which reads the event's content
+      fields (``event_type`` / ``payload`` / ``actor`` / ``provider`` / ``status``
+      / ``occurred_at``) -- exactly the extraction the old fold did from the raw
+      event -- and rebuilds the lean per-turn aggregate. The projection
+      construction that aggregate feeds is unchanged.
+    * The ``_events`` scope is INVISIBLE to the expert-prompt render: it is its own
       scope, so a working-set render of an expert scope never sees it, and
-      ``turn_event`` is not a working-set kind nor part of the dspy trajectory
+      ``semantic_event`` is not a working-set kind nor part of the dspy trajectory
       projection.
-    * Released per session (``release``) and wholesale (``clear``) -- the ``_live``
-      scope's segments are ERASED (``drop_scope``) so an idle server returns to
-      baseline.
+    * Released per session (``release``) and wholesale (``clear``) -- the
+      ``_events`` scope's segments are ERASED (``drop_scope``) so an idle server
+      returns to baseline (the durable trace keeps the full history).
 
 ``project_conversation`` / ``project_invocations`` produce valid
-``clio_agent.arc.schema`` objects from the buffer; ``view`` is the compact summary
+``clio_agent.arc.schema`` objects from the log; ``view`` is the compact summary
 ``context_compiler`` reads for the open session.
 """
 
@@ -46,14 +46,15 @@ from typing import Any, Iterator, Optional
 from clio_agent.arc.schema import Conversation, Invocation, Message
 from clio_agent.arc.segments import SegmentStore
 
-# Reserved scope that holds the live-observer's folded event segments. It is its
-# OWN scope, so an expert/working-set render (which renders a specific expert
-# scope) never sees it; combined with ``turn_event`` not being a working-set kind,
-# the live observer's state can never leak into a model prompt.
-LIVE_SCOPE = "_live"
+# Reserved scope that holds ARC's ONE persisted semantic-event log. It is its OWN
+# scope, so an expert/working-set render (which renders a specific expert scope)
+# never sees it; combined with ``semantic_event`` not being a working-set kind, the
+# log can never leak into a model prompt. Defined here (the observer's substrate) and
+# re-exported by ``arc.memory`` (the writer) so both share one constant.
+EVENTS_SCOPE = "_events"
 
-# Bound the hot copy: cap retained text and turns per session. The full,
-# uncapped content is always available in the durable trace.
+# Bound the hot copy: cap retained turns per session (read-time). The full,
+# uncapped log is always available in the durable trace.
 _MAX_TEXT = 4096
 _MAX_TURNS_PER_SESSION = 50
 
@@ -89,8 +90,8 @@ class _LiveExpert:
 
 @dataclass
 class _LiveTurn:
-    """Lean fold of one turn's events (rebuilt at read-time by replaying the
-    turn's ``turn_event`` segments through :func:`_apply`)."""
+    """Lean aggregate of one turn's events (rebuilt at read-time by replaying the
+    turn's ``semantic_event`` segments through :func:`_apply`)."""
 
     turn_id: str
     trace_id: str = ""
@@ -148,56 +149,58 @@ class _MemoryStore:
 
 
 class LiveRuntimeContext:
-    """Live fold of semantic events, backed by the ONE SegmentStore.
+    """Live projection of the semantic-event log, backed by the ONE SegmentStore.
 
-    The observer's per-session state IS the ``_live`` scope of the injected
-    :class:`~clio_agent.arc.segments.SegmentStore`: ``fold`` appends one lean
-    ``turn_event`` segment per event, and the reads query+group+replay that scope.
-    Thread-safety is inherited from the SegmentStore's per-scope locking.
+    The observer is a pure READER over the ``_events`` scope of the injected
+    :class:`~clio_agent.arc.segments.SegmentStore` -- the single log into which
+    :meth:`ARCMemory._record_event_segment` persists one ``semantic_event`` segment
+    per recorded event. The reads query+group+replay that scope. Thread-safety is
+    inherited from the SegmentStore's per-scope locking.
     """
 
     def __init__(self, store: SegmentStore | None = None) -> None:
         """Back the observer with a SegmentStore.
 
         Args:
-            store: The SegmentStore the observer reads/writes its ``_live`` scope
-                in. ARCMemory passes ``self._segments`` so the observer rides the
-                same buffer (and highway op log) as the live context plane. When
-                ``None`` (standalone / unit tests), a private in-memory-backed
-                SegmentStore is created so the observer is self-contained.
+            store: The SegmentStore the observer READS its ``_events`` scope from.
+                ARCMemory passes ``self._segments`` so the observer projects over the
+                same buffer (and highway op log) that the writer persists the log into.
+                When ``None`` (standalone / unit tests), a private in-memory-backed
+                SegmentStore is created so the observer is self-contained — and
+                :meth:`fold` writes the log to it so the tests' projections work.
         """
         if store is None:
             store = SegmentStore(_MemoryStore())
         self._segments = store
 
-    # ---- ingest --------------------------------------------------------
+    # ---- ingest (standalone / test convenience) ------------------------
 
     def fold(self, event: Any) -> None:
-        """Fold one RAW SemanticEvent into the buffer as a ``turn_event`` segment.
+        """Persist one RAW SemanticEvent into the ``_events`` log (test convenience).
 
-        Append-only: one segment per handled event, correlated by ``turn_id`` /
-        ``expert_span_id``. Best-effort -- a live fold must never break a turn.
+        In production ARCMemory is the writer (``_record_event_segment``); this method
+        lets a STANDALONE observer (its own SegmentStore) be fed events directly so it
+        has a log to project over. Append-only, correlated by ``turn_id``. Best-effort
+        -- a live record must never break a turn.
         """
         try:
-            self._fold(event)
-        except Exception:  # noqa: BLE001 - a live fold must never break a turn
+            self._record(event)
+        except Exception:  # noqa: BLE001 - a live record must never break a turn
             pass
 
-    def _fold(self, event: Any) -> None:
+    def _record(self, event: Any) -> None:
         sid = str(getattr(event, "session_id", "") or "")
         if not sid:
             return
         content = self._event_content(event)
-        if content is None:  # an event type we don't fold -> nothing to buffer
+        if content is None:  # an event with no event_type -> nothing to log
             return
-        turn_id = str(getattr(event, "turn_id", "") or "") or _NO_TURN
-        expert_span_id = str(getattr(event, "expert_span_id", "") or "") or str(
-            getattr(event, "span_id", "") or ""
-        )
+        turn_id = str(getattr(event, "turn_id", "") or "")
+        expert_span_id = str(getattr(event, "expert_span_id", "") or "")
         self._segments.append(
             sid,
-            LIVE_SCOPE,
-            "turn_event",
+            EVENTS_SCOPE,
+            "semantic_event",
             content,
             turn_id=turn_id,
             expert_span_id=expert_span_id,
@@ -205,92 +208,56 @@ class LiveRuntimeContext:
 
     @staticmethod
     def _event_content(event: Any) -> Optional[dict[str, Any]]:
-        """The lean per-event fields to buffer, or ``None`` for an unfolded type.
+        """The lean per-event content dict to log, or ``None`` for an untyped event.
 
-        These are exactly the fields the post-hoc fold extracted; they are replayed
-        by :func:`_apply` at read-time to rebuild the per-turn aggregate."""
+        Mirrors :meth:`ARCMemory._append_event_segment`'s content shape (the fields the
+        read-time reducer :func:`_apply` consumes), so a standalone observer's log and
+        ARC's persisted log replay identically."""
         etype = str(getattr(event, "event_type", "") or "")
-        trace_id = str(getattr(event, "trace_id", "") or "")
-        occurred = _epoch(str(getattr(event, "occurred_at", "") or ""))
-        actor = getattr(event, "actor", {}) or {}
-        payload = getattr(event, "payload", {}) or {}
-
-        base: dict[str, Any] = {"etype": etype, "trace_id": trace_id, "occurred": occurred}
-
-        if etype == "turn.started":
-            base["question"] = _cap(payload.get("input") or payload.get("question") or "")
-            return base
-        if etype == "llm.request.started":
-            base["question"] = _cap(payload.get("input") or "")
-            return base
-        if etype == "llm.response.completed":
-            base["selected_expert"] = str(payload.get("selected_expert") or "")
-            base["route_reason"] = str(payload.get("route_reason") or "")
-            base["answer"] = _cap(payload.get("answer")) if payload.get("answer") else ""
-            return base
-        if etype == "expert.response.completed":
-            agent_id = str(actor.get("agent_id") or "") or "unknown"
-            base["agent_id"] = agent_id
-            base["answer"] = _cap(payload.get("answer") or "")
-            base["reasoning_len"] = len(str(payload.get("reasoning") or ""))
-            # Only carry trajectory_steps / tools when the event actually supplied
-            # them (a dict / a list), so the read-time reducer matches the original
-            # fold's "overwrite only when present" semantics exactly.
-            traj = payload.get("trajectory")
-            if isinstance(traj, dict):
-                base["trajectory_steps"] = sum(
-                    1 for k in traj if str(k).startswith("tool_name_")
-                )
-            tools = payload.get("tools_called")
-            if isinstance(tools, list):
-                base["tools"] = [_lean_tool(t) for t in tools]
-            base["provider"] = getattr(event, "provider", {}) or {}
-            return base
-        if etype == "tool.call.completed":
-            base["tool"] = str(actor.get("tool") or payload.get("tool") or "")
-            base["status"] = str(getattr(event, "status", "") or "")
-            return base
-        if etype in ("turn.completed", "turn.failed"):
-            base["status"] = "success" if etype == "turn.completed" else "failure"
-            final = payload.get("final_message")
-            base["answer"] = _cap(_message_text(final)) if isinstance(final, dict) else ""
-            if etype == "turn.failed":
-                err = payload.get("error_info") or {}
-                base["error"] = _cap(err.get("error") if isinstance(err, dict) else err)
-            else:
-                base["error"] = ""
-            return base
-        return None
+        if not etype:
+            return None
+        return {
+            "event_type": etype,
+            "status": str(getattr(event, "status", "") or ""),
+            "actor": getattr(event, "actor", {}) or {},
+            "payload": getattr(event, "payload", {}) or {},
+            "provider": getattr(event, "provider", {}) or {},
+            "occurred_at": str(getattr(event, "occurred_at", "") or ""),
+            "trace_id": str(getattr(event, "trace_id", "") or ""),
+        }
 
     # ---- lifecycle -----------------------------------------------------
 
     def release(self, session_id: str) -> int:
-        """Drop a session's live turns (erase the ``_live`` scope). Returns the
-        number of turns released (NOT segments), matching the historical contract."""
+        """Drop a session's live turns (erase the ``_events`` log). Returns the number
+        of turns released (NOT segments), matching the historical contract."""
         turn_count = len(self._turns(session_id))
-        self._segments.drop_scope(session_id, LIVE_SCOPE)
+        self._segments.drop_scope(session_id, EVENTS_SCOPE)
         return turn_count
 
     def clear(self) -> None:
-        """Erase the ``_live`` scope across all sessions (idle -> baseline)."""
-        for session_id in self._live_session_ids():
-            self._segments.drop_scope(session_id, LIVE_SCOPE)
+        """Erase the ``_events`` log across all sessions (idle -> baseline)."""
+        for session_id in self._event_session_ids():
+            self._segments.drop_scope(session_id, EVENTS_SCOPE)
 
-    def _live_session_ids(self) -> list[str]:
-        """Every session that currently holds a ``_live`` scope record (so ``clear``
+    def _event_session_ids(self) -> list[str]:
+        """Every session that currently holds an ``_events`` scope record (so ``clear``
         can erase them all)."""
-        return self._segments.sessions_with_scope(LIVE_SCOPE)
+        return self._segments.sessions_with_scope(EVENTS_SCOPE)
 
     # ---- read / replay -------------------------------------------------
 
     def _turns(self, session_id: str) -> "OrderedDict[str, _LiveTurn]":
-        """Rebuild the per-session turns by querying the ``_live`` scope, GROUPING the
-        ``turn_event`` segments by ``turn_id`` (first-seen order), and REPLAYING each
-        turn's events (in render = (order, logical_time) order, which is fold order)
-        through :func:`_apply`. The last ``_MAX_TURNS_PER_SESSION`` turn_ids are kept."""
-        segments = self._segments.render(session_id, LIVE_SCOPE)
+        """Rebuild the per-session turns by querying the ``_events`` log, keeping the
+        ``semantic_event`` segments, GROUPING them by ``turn_id`` (first-seen order),
+        and REPLAYING each turn's events (in render = (order, logical_time) order,
+        which is record order) through :func:`_apply`. The last
+        ``_MAX_TURNS_PER_SESSION`` turn_ids are kept."""
+        segments = self._segments.render(session_id, EVENTS_SCOPE)
         grouped: "OrderedDict[str, list[Any]]" = OrderedDict()
         for seg in segments:
+            if seg.kind != "semantic_event":
+                continue
             grouped.setdefault(seg.turn_id or _NO_TURN, []).append(seg)
         # Apply the per-session turn cap at read-time (last N first-seen turn_ids).
         turn_ids = list(grouped.keys())
@@ -412,54 +379,67 @@ class LiveRuntimeContext:
 
 
 def _apply(turn: _LiveTurn, content: dict[str, Any]) -> None:
-    """Replay ONE buffered ``turn_event`` content dict into the per-turn aggregate.
+    """Replay ONE persisted ``semantic_event`` content dict into the per-turn aggregate.
 
-    This is the SAME aggregation the post-hoc fold did, moved to read-time: it is
-    the single reducer over a turn's events, so the projections it feeds are
-    byte-identical to the historical post-hoc recorder's.
+    This is the SAME aggregation the post-hoc fold did, at read-time over the ONE log:
+    it reads the EVENT CONTENT fields (``event_type`` / ``payload`` / ``actor`` /
+    ``provider`` / ``status`` / ``occurred_at``) -- the identical extraction the old
+    fold performed from the raw event -- so the projections it feeds are byte-identical
+    to the historical post-hoc recorder's. It is the single reducer over a turn's
+    events, shared by every read.
     """
-    etype = str(content.get("etype") or "")
-    occurred = float(content.get("occurred") or 0.0)
+    etype = str(content.get("event_type") or "")
+    occurred = _epoch(str(content.get("occurred_at") or ""))
     trace_id = str(content.get("trace_id") or "")
     if trace_id and not turn.trace_id:
         turn.trace_id = trace_id
+    payload = content.get("payload") or {}
+    actor = content.get("actor") or {}
 
     if etype == "turn.started":
         turn.started_at = occurred or turn.started_at
-        turn.question = str(content.get("question") or "") or turn.question
+        question = _cap(payload.get("input") or payload.get("question") or "")
+        turn.question = question or turn.question
     elif etype == "llm.request.started":
         if not turn.question:
-            turn.question = str(content.get("question") or "")
+            turn.question = _cap(payload.get("input") or "")
     elif etype == "llm.response.completed":
-        turn.selected_expert = str(content.get("selected_expert") or "") or turn.selected_expert
-        turn.route_reason = str(content.get("route_reason") or "") or turn.route_reason
-        if content.get("answer"):
-            turn.answer = str(content.get("answer"))
+        turn.selected_expert = str(payload.get("selected_expert") or "") or turn.selected_expert
+        turn.route_reason = str(payload.get("route_reason") or "") or turn.route_reason
+        if payload.get("answer"):
+            turn.answer = _cap(payload.get("answer"))
     elif etype == "expert.response.completed":
-        agent_id = str(content.get("agent_id") or "") or "unknown"
+        agent_id = str(actor.get("agent_id") or "") or "unknown"
         exp = turn.experts.get(agent_id) or _LiveExpert(agent_id=agent_id)
         # Mirror the original fold's per-field overwrite semantics EXACTLY.
-        exp.answer = str(content.get("answer") or "") or exp.answer
-        exp.reasoning_len = int(content.get("reasoning_len") or 0) or exp.reasoning_len
-        if "trajectory_steps" in content:  # event supplied a trajectory dict
-            exp.trajectory_steps = int(content["trajectory_steps"])
-        if "tools" in content:  # event supplied a tools list (even if empty)
-            exp.tools = list(content["tools"])
+        exp.answer = _cap(payload.get("answer") or "") or exp.answer
+        exp.reasoning_len = len(str(payload.get("reasoning") or "")) or exp.reasoning_len
+        # Only overwrite trajectory_steps / tools when the event actually supplied
+        # them (a dict / a list), matching the original "overwrite only when present".
+        traj = payload.get("trajectory")
+        if isinstance(traj, dict):
+            exp.trajectory_steps = sum(1 for k in traj if str(k).startswith("tool_name_"))
+        tools = payload.get("tools_called")
+        if isinstance(tools, list):
+            exp.tools = [_lean_tool(t) for t in tools]
         provider = content.get("provider")
         if isinstance(provider, dict) and provider:
             exp.provider = provider
         turn.experts[agent_id] = exp
     elif etype == "tool.call.completed":
-        turn.tools.append(
-            {"tool": str(content.get("tool") or ""), "status": str(content.get("status") or "")}
-        )
+        tool = str(actor.get("tool") or payload.get("tool") or "")
+        turn.tools.append({"tool": tool, "status": str(content.get("status") or "")})
     elif etype in ("turn.completed", "turn.failed"):
         turn.completed_at = occurred or turn.completed_at
-        turn.status = str(content.get("status") or turn.status)
-        if content.get("answer"):
-            turn.answer = str(content.get("answer")) or turn.answer
-        if content.get("error"):
-            turn.error = str(content.get("error"))
+        turn.status = "success" if etype == "turn.completed" else "failure"
+        final = payload.get("final_message")
+        if isinstance(final, dict):
+            answer = _cap(_message_text(final))
+            if answer:
+                turn.answer = answer
+        if etype == "turn.failed":
+            err = payload.get("error_info") or {}
+            turn.error = _cap(err.get("error") if isinstance(err, dict) else err)
 
 
 def _lean_tool(tool: Any) -> dict[str, Any]:

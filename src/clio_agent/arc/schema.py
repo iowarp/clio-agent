@@ -72,8 +72,8 @@ SegmentKind = Literal[
     "lm_io",  # one raw LM call's input + output (the I/O of a single ReAct step)
     "extract_io",  # a dspy.Extract call's input + output
     "answer",  # an expert/turn final message
-    "turn_event",  # one folded semantic event (the live-observer's per-turn fold atom)
-    "semantic_event",  # one persisted raw semantic event (ARC-as-source highway record)
+    "semantic_event",  # one persisted raw semantic event — ARC's ONE log (the
+    # ARC-as-source highway record AND the substrate the live observer projects over)
 ]
 SegmentStatus = Literal["live", "tombstoned"]
 
@@ -81,14 +81,15 @@ SegmentStatus = Literal["live", "tombstoned"]
 # domain) + the static framing kinds. These are the ONLY kinds the live-plane
 # consumers that MUTATE the working set operate over: the per-turn working-set reset
 # and the auto-compaction target. The richer ARC-as-source kinds (lm_io/extract_io/
-# answer) plus the reserved observer/highway atoms (turn_event in the ``_live`` scope,
-# semantic_event in the ``_events`` scope) are part of ARC's COMPLETE freeze-anytime
-# state but are NOT working-set context, so they must never be reset-tombstoned at a
-# new turn nor folded into a compaction summary. They are also never rendered into a
-# model prompt: they live in their own reserved scopes (so a normal expert scope's
-# working-set/keys render never sees them) AND they are not modeled by segments_to_keys.
-# (render/render_keys are UNCHANGED — segments_to_keys is a kind-allowlist that already
-# ignores the new kinds, so the prompt is immune.)
+# answer) plus the reserved highway/observer atom (semantic_event in the ``_events``
+# scope — ARC's ONE persisted semantic-event log, which the live observer projects
+# its turn records over) are part of ARC's COMPLETE freeze-anytime state but are NOT
+# working-set context, so they must never be reset-tombstoned at a new turn nor folded
+# into a compaction summary. They are also never rendered into a model prompt: they
+# live in their own reserved scope (so a normal expert scope's working-set/keys render
+# never sees them) AND they are not modeled by segments_to_keys. (render/render_keys
+# are UNCHANGED — segments_to_keys is a kind-allowlist that already ignores the new
+# kinds, so the prompt is immune.)
 WORKING_SET_KINDS: frozenset[str] = frozenset(
     {
         "system",

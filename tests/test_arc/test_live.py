@@ -6,7 +6,7 @@ projections, plus ARCMemory's live-context wiring and lifecycle release.
 
 import pytest
 
-from clio_agent.arc.live import LIVE_SCOPE, LiveRuntimeContext
+from clio_agent.arc.live import EVENTS_SCOPE, LiveRuntimeContext
 from clio_agent.arc.memory import ARCMemory
 from clio_agent.gact.semantic_events import SemanticEvent
 
@@ -231,31 +231,32 @@ def _multi_turn_corpus():
 
 
 class TestBufferBacked:
-    """Q3: the observer's state IS the segment buffer (no private dict)."""
+    """One log: the observer's state IS the single ``_events`` segment log (no private
+    dict, no separate folded copy) — it PROJECTS its records over that log."""
 
-    def test_fold_appends_turn_event_segment(self, tmp_path):
+    def test_record_appends_semantic_event_segment(self, tmp_path):
         arc = ARCMemory(data_dir=str(tmp_path / "arc"))
         arc.on_semantic_event(_ev("turn.started", payload={"input": "hi"}))
 
-        segs = arc.render_segments("s1", LIVE_SCOPE)
+        segs = arc.render_segments("s1", EVENTS_SCOPE)
         assert len(segs) == 1
         seg = segs[0]
-        assert seg.kind == "turn_event"
+        assert seg.kind == "semantic_event"
         assert seg.turn_id == "t1"
-        assert seg.content["etype"] == "turn.started"
-        assert seg.content["question"] == "hi"
+        assert seg.content["event_type"] == "turn.started"
+        assert seg.content["payload"]["input"] == "hi"
 
     def test_no_private_sessions_dict(self):
         """The event-fold's separate structure is retired -- there is no
-        self._sessions on the buffer-backed observer."""
+        self._sessions on the log-backed observer."""
         live = LiveRuntimeContext()
         assert not hasattr(live, "_sessions")
 
-    def test_expert_scope_working_set_excludes_live(self, tmp_path):
-        """The reserved '_live' scope is INVISIBLE to a normal expert scope's
+    def test_expert_scope_working_set_excludes_events(self, tmp_path):
+        """The reserved '_events' log scope is INVISIBLE to a normal expert scope's
         working-set render: it never enters the model prompt."""
         arc = ARCMemory(data_dir=str(tmp_path / "arc"))
-        # Observer folds events (writes to the '_live' scope)...
+        # Observer records events (writes to the '_events' log scope)...
         for e in _multi_turn_corpus():
             arc.on_semantic_event(e)
         # ...and the expert writes its own working-set segments to its scope.
@@ -264,10 +265,10 @@ class TestBufferBacked:
 
         ws = arc.render_working_set("s1", "agentA")
         assert {s.kind for s in ws} == {"thought", "observation"}
-        assert all(s.kind != "turn_event" for s in ws)
+        assert all(s.kind != "semantic_event" for s in ws)
         assert all(s.scope == "agentA" for s in ws)
 
-        # The trajectory projection (the model prompt) likewise carries no '_live'.
+        # The trajectory projection (the model prompt) likewise carries no '_events'.
         keys = arc.render_segments_keys("s1", "agentA")
         assert keys == {"thought_0": "T0", "observation_0": "O0"}
 
@@ -337,13 +338,13 @@ class TestBufferBacked:
             assert a.performance == b.performance
 
     def test_release_returns_to_baseline(self, tmp_path):
-        """release erases the '_live' scope from the buffer (idle -> baseline)."""
+        """release erases the '_events' log scope from the buffer (idle -> baseline)."""
         arc = ARCMemory(data_dir=str(tmp_path / "arc"))
         for e in _multi_turn_corpus():
             arc.on_semantic_event(e)
-        assert arc.render_segments("s1", LIVE_SCOPE)  # buffer holds the fold
+        assert arc.render_segments("s1", EVENTS_SCOPE)  # log holds the events
 
         result = arc.release_session("s1")
         assert result["live"] == 2  # two turns released
-        assert arc.render_segments("s1", LIVE_SCOPE) == []  # scope erased
+        assert arc.render_segments("s1", EVENTS_SCOPE) == []  # scope erased
         assert arc.get_live_context("s1") == {}

@@ -22,7 +22,7 @@ from typing import Any, Callable, Dict, List, Optional, cast
 
 from clio_agent.arc.cache import LRUCache
 from clio_agent.arc.index import BTreeIndex
-from clio_agent.arc.live import LiveRuntimeContext
+from clio_agent.arc.live import EVENTS_SCOPE, LiveRuntimeContext
 from clio_agent.arc.lsm import LSMTree
 from clio_agent.arc.schema import (
     Context,
@@ -51,12 +51,13 @@ from clio_agent.arc.schema import (
 from clio_agent.arc.segments import OpLogger, SegmentStore
 from clio_agent.arc.storage import ARCStore, LocalFSStore
 
-# Reserved scope that holds the persisted raw semantic-event stream. It is its OWN
-# scope (sibling of the observer's ``_live`` scope), so an expert/working-set render
-# (which renders a specific expert scope) never sees it; combined with
-# ``semantic_event`` not being a working-set kind nor part of the dspy trajectory
-# projection, the persisted highway record can never leak into a model prompt.
-EVENTS_SCOPE = "_events"
+# ``EVENTS_SCOPE`` (the reserved scope holding ARC's ONE persisted semantic-event log)
+# is defined in ``arc.live`` (the observer that projects over it) and imported above so
+# the writer (this module) and the reader share one constant. The import re-exports it
+# as ``clio_agent.arc.memory.EVENTS_SCOPE`` for back-compat importers. It is its OWN
+# scope, so an expert/working-set render never sees it; combined with ``semantic_event``
+# not being a working-set kind nor part of the dspy trajectory projection, the persisted
+# log can never leak into a model prompt.
 
 # Event types NOT persisted as ``semantic_event`` segments.
 #   * ``lm.token.delta`` — the high-volume transient live-token stream (~1840/turn)
@@ -136,20 +137,18 @@ class ARCMemory:
         self._store: ARCStore = store if store is not None else LocalFSStore(self.data_dir)
 
         # Live context plane: the ordered, scoped, mutable segment store the gact
-        # ReAct loop reads its prompt from each iteration. Sibling of _live (which
-        # stays the turn-grained projection). The op_logger that mirrors each op
-        # into the durable Trace is injected later by the gact app via
-        # set_segment_op_logger (keeps arc/ free of any gact/ import).
+        # ReAct loop reads its prompt from each iteration. It also holds ARC's ONE
+        # persisted semantic-event log (the reserved ``_events`` scope). The op_logger
+        # that mirrors each op into the durable Trace is injected later by the gact app
+        # via set_segment_op_logger (keeps arc/ free of any gact/ import).
         self._segments = SegmentStore(self._store)
 
-        # Live runtime context: folds the canonical semantic-event stream into
-        # per-session state so Invocation/Conversation are projections of the
-        # trace, not post-hoc rebuilds. Fed via on_semantic_event (registered as
-        # a sink live_consumer). It has NO private store of its own -- its state
-        # lives in the ONE segment buffer above (a reserved ``_live`` scope, as
-        # append-only ``turn_event`` segments), so the observer and the live
-        # context plane ride the same buffer (and the same highway op log). Lean +
-        # released by the session lifecycle below.
+        # Live runtime context: PROJECTS the canonical semantic-event stream into
+        # per-session turn records so Invocation/Conversation are projections of the
+        # trace, not post-hoc rebuilds. It has NO private store and NO separate folded
+        # copy -- it is a pure READER over the ONE ``_events`` log persisted into the
+        # segment buffer above by ``_record_event_segment`` (one ``semantic_event``
+        # segment per recorded event). Released by the session lifecycle below.
         self._live = LiveRuntimeContext(self._segments)
 
         # ARC-as-source highway sink: the closure (injected by gact via
@@ -1128,12 +1127,10 @@ class ARCMemory:
         This is the inversion point. Every semantic event flows through ARC FIRST
         so ARC holds everything, and the data highway is DERIVED from ARC's record:
 
-        1. ``_record_event_segment(event)`` — persist the event as one
-           ``semantic_event`` segment under the reserved ``_events`` scope (ARC's
-           complete, freeze-anytime record).
-        2. ``on_semantic_event(event)`` — fold it into the live runtime context
-           (the observer projection; unchanged).
-        3. ``self._highway_sink(event)`` — derive the highway (durable trace / SSE /
+        1. ``on_semantic_event(event)`` — persist the event as one ``semantic_event``
+           segment under the reserved ``_events`` scope (ARC's complete, freeze-anytime
+           record AND the single substrate the live observer projects over).
+        2. ``self._highway_sink(event)`` — derive the highway (durable trace / SSE /
            hooks). Returns the sink's value (the projected event dict) so callers
            that expected ``sink.emit(event)``'s return are unaffected; ``{}`` when
            no sink is wired.
@@ -1141,12 +1138,8 @@ class ARCMemory:
         Each step is guarded so an observability record can never break a turn.
         """
         try:
-            self._record_event_segment(event)
-        except Exception:  # noqa: BLE001 - persistence is best-effort; never break a turn
-            pass
-        try:
             self.on_semantic_event(event)
-        except Exception:  # noqa: BLE001 - observer fold is best-effort; never break a turn
+        except Exception:  # noqa: BLE001 - persistence is best-effort; never break a turn
             pass
         sink = self._highway_sink
         if sink is None:
@@ -1204,6 +1197,11 @@ class ARCMemory:
             "subject": raw.get("subject") or {},
             "payload": _cap_event_payload(raw.get("payload") or {}),
             "provider": raw.get("provider") or {},
+            # The wall-clock timestamp the observer needs to derive a turn's
+            # started_at / completed_at timings (turn_id is already on the Segment).
+            "occurred_at": str(getattr(event, "occurred_at", "") or ""),
+            # The trace correlation id the observer stamps on projected Invocations.
+            "trace_id": str(getattr(event, "trace_id", "") or ""),
         }
         self._segments.append(
             sid,
@@ -1216,12 +1214,16 @@ class ARCMemory:
         )
 
     def on_semantic_event(self, event: Any) -> None:
-        """Fold one RAW semantic event into the live runtime context.
+        """Persist one RAW semantic event as the single ``_events`` log record.
 
-        Registered as a ``live_consumer`` on the SemanticEventSink so ARC sees
-        the same events the durable trace captures. Best-effort by construction.
+        Registered as a ``live_consumer`` on the SemanticEventSink so ARC sees the
+        same events the durable trace captures. The persisted ``semantic_event``
+        segments under ``_events`` are the ONE log: the live observer
+        (:class:`LiveRuntimeContext`) projects its view / Conversation / Invocation
+        records directly over them — there is no separate folded copy. Best-effort by
+        construction.
         """
-        self._live.fold(event)
+        self._record_event_segment(event)
 
     def get_live_context(self, session_id: str, *, max_turns: int = 5) -> Dict[str, Any]:
         """Compact live summary of an open session's recent turns (or empty)."""
@@ -1459,11 +1461,10 @@ class ARCMemory:
             evicted_index += self._inv_index.delete_session(session_id)
 
         # Outside the lock: LiveRuntimeContext and SegmentStore have their own locks.
+        # The observer's release ERASES the reserved ``_events`` scope (the single
+        # persisted raw semantic-event stream it projects over) so an idle server
+        # returns to baseline; the durable trace keeps the full history.
         live = self._live.release(session_id)
-        # The reserved ``_events`` scope (persisted raw semantic-event stream) is an
-        # ephemeral observer/highway record like ``_live`` — ERASE it on release so an
-        # idle server returns to baseline (the durable trace keeps the full history).
-        self._segments.drop_scope(session_id, EVENTS_SCOPE)
         segments = self._segments.release(session_id)
         return {
             "cache": evicted_cache,
@@ -1489,19 +1490,11 @@ class ARCMemory:
             self._cache.clear()
             self._conv_index.clear()
             self._inv_index.clear()
+        # The observer's clear ERASES the reserved ``_events`` scope across every
+        # session (the single persisted semantic-event stream it projects over); the
+        # durable trace retains the full history, so an idle server returns to baseline.
         self._live.clear()
-        self._drop_all_event_scopes()  # erase persisted ``_events`` records too
         self._segments.clear()
-
-    def _drop_all_event_scopes(self) -> None:
-        """Erase the reserved ``_events`` scope across every session that holds one.
-
-        Mirrors :meth:`LiveRuntimeContext.clear` for the persisted semantic-event
-        stream: the durable trace retains the full history, so dropping these
-        ephemeral highway records returns an idle server to baseline.
-        """
-        for session_id in self._segments.sessions_with_scope(EVENTS_SCOPE):
-            self._segments.drop_scope(session_id, EVENTS_SCOPE)
 
     def clear_cache(self) -> None:
         """Clear in-memory cache (preserves disk storage).
