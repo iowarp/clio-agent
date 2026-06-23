@@ -187,24 +187,34 @@ def test_record_with_empty_session_or_unset_type_is_noop(tmp_path):
     assert arc.render_segments("s1", EVENTS_SCOPE) == []
 
 
-# --- (e) fallback fan-out via sink.emit (arc without record / None) ---------
+# --- (e) FAIL LOUD when no ARC is reachable (no silent sink.emit bypass) ------
 
 
-def test_fallback_to_sink_emit_when_arc_has_no_record():
-    """The _emit_semantic_event fallback: an object that is NOT an ARCMemory (no
-    record_semantic_event) means the highway fans out via sink.emit directly —
-    mirroring the build-time / memory-disabled path."""
-    sink = SemanticEventSink(bus=EventBus(), trace_backend=NoopSemanticTraceBackend())
-    event = _turn_started()
+def test_emit_semantic_event_fails_loud_when_no_arc(monkeypatch):
+    """ARC is the SOURCE: when no ARC is reachable, ``_emit_semantic_event`` must RAISE
+    (fail loud) — it must NOT silently fall back to ``sink.emit``, which would feed the
+    trace/UI an event ARC never recorded (the hidden trace>ARC split). Guards the removal
+    of the silent fallback. Unlike the prior version (which only re-evaluated a now-stale
+    inline expression and never called the function), this exercises the REAL function."""
+    import types
 
-    # This is the exact expression _emit_semantic_event evaluates.
-    class _ArcNoRecord:
-        pass
+    import pytest
 
-    for arc in (_ArcNoRecord(), None):
-        rec = getattr(arc, "record_semantic_event", None)
-        full = rec(event) if rec is not None else sink.emit(event)
-        assert full["event_type"] == "turn.started"
+    import clio_agent.gact.app as app_mod
+
+    monkeypatch.setattr(app_mod, "_PROCESS_ARC", None, raising=False)
+    app = types.SimpleNamespace(
+        state=types.SimpleNamespace(
+            semantic_event_sink=SemanticEventSink(
+                bus=EventBus(), trace_backend=NoopSemanticTraceBackend()
+            ),
+            arc=None,
+            sessions={},
+            semantic_trace_detail_level="semantic",
+        )
+    )
+    with pytest.raises(RuntimeError, match="ARC-as-source violated"):
+        app_mod._emit_semantic_event(app, "s1", "turn.started")
 
 
 def test_release_drops_events_scope(tmp_path):
