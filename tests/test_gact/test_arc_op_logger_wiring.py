@@ -32,6 +32,38 @@ def test_set_app_arc_sets_and_wires():
     _set_app_arc(app, arc)
     assert app.state.arc is arc
     assert arc._segments._op_logger is not None  # wired in one shot
+    assert arc._highway_sink is not None  # highway-derive sink wired too
+
+
+def test_set_app_arc_wires_highway_sink_reading_state_at_call_time(tmp_path):
+    """ARC-as-source: _set_app_arc wires arc.set_highway_sink with a closure that
+    reads app.state.semantic_event_sink at CALL time. The sink may be constructed
+    AFTER _set_app_arc runs (build/async ordering), so the closure must not capture
+    a value at wiring time. record_semantic_event then routes the event through the
+    sink that gets attached later."""
+    arc = ARCMemory(data_dir=str(tmp_path / "arc"))
+    app = _fake_app(None)
+    # Sink not present yet at wiring time -> closure must tolerate that and return {}.
+    _set_app_arc(app, arc)
+    from clio_agent.gact.semantic_events import SemanticEvent
+
+    ev = SemanticEvent(event_type="turn.started", session_id="s1", trace_id="x", turn_id="t1")
+    assert arc.record_semantic_event(ev) == {}  # no sink yet -> derives nothing
+
+    # Attach a sink AFTER wiring; the closure picks it up at call time.
+    fired = []
+    app.state.semantic_event_sink = types.SimpleNamespace(
+        emit=lambda e: fired.append(e) or {"ok": True}
+    )
+    ev2 = SemanticEvent(event_type="turn.started", session_id="s1", trace_id="x", turn_id="t2")
+    assert arc.record_semantic_event(ev2) == {"ok": True}
+    # The recorded event reached the highway sink (along with the arc.op meta-events
+    # the op-logger derives from persisting it — those are highway-only by design).
+    assert ev2 in fired
+    # And the turn.started events were persisted to ARC FIRST (source-of-record),
+    # both times — while every derived arc.op was SKIPPED from _events (no recursion).
+    persisted = arc.render_segments("s1", "_events")
+    assert [s.content["event_type"] for s in persisted] == ["turn.started", "turn.started"]
 
 
 def test_no_raw_app_state_arc_assignment_outside_the_choke_point():
