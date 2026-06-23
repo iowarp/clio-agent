@@ -409,6 +409,67 @@ def _with_ui_safe_semantic_fields(
 _PROCESS_ARC: Any = None
 
 
+def _build_semantic_event(
+    app: "FastAPI",
+    sid: str,
+    event_type: str,
+    *,
+    turn_id: str = "",
+    trace_id: str = "",
+    parent_span_id: str = "",
+    status: str = "completed",
+    summary: str = "",
+    actor: Optional[dict[str, Any]] = None,
+    subject: Optional[dict[str, Any]] = None,
+    blueprint: Optional[dict[str, Any]] = None,
+    provider: Optional[dict[str, Any]] = None,
+    payload: Optional[dict[str, Any]] = None,
+    live_observed: bool = True,
+    detail_level: Optional[str] = None,
+) -> SemanticEvent:
+    """Build (but do not route) a fully-populated :class:`SemanticEvent`.
+
+    Shared by ``_emit_semantic_event`` (which routes through ARC, the source) and
+    ``_emit_arc_op`` (which derives DIRECTLY to the durable trace + SSE bus, because
+    arc.op is the WRITE-LOG of an ARC mutation — a projection of a record, NOT a
+    semantic event to feed back through ``arc.record_semantic_event``)."""
+    state = getattr(app, "state", None)
+    if state is not None and hasattr(state, "sessions"):
+        sess = state.sessions.get(sid)
+    else:
+        sess = None
+    workspace_id = str(getattr(sess, "workspace_id", "") or "")
+    event_payload = _with_ui_safe_semantic_fields(
+        event_type,
+        status=status,
+        summary=summary,
+        payload=payload,
+    )
+    return SemanticEvent(
+        event_type=event_type,
+        session_id=sid,
+        workspace_id=workspace_id,
+        trace_id=trace_id or _semantic_trace_id(turn_id),
+        turn_id=turn_id,
+        # Auto-nest under the active span (expert/step) unless the caller pins a
+        # parent explicitly, so the highway forms the recursive trajectory tree.
+        parent_span_id=parent_span_id or _ctx.active_parent_span_id(),
+        status=status,
+        summary=summary,
+        actor=actor or {},
+        subject=subject or {},
+        blueprint=blueprint or {},
+        provider=provider or {},
+        payload=event_payload,
+        live_observed=live_observed,
+        detail_level=(
+            detail_level
+            if detail_level is not None
+            else getattr(app.state, "semantic_trace_detail_level", DEFAULT_DETAIL_LEVEL)
+        ),
+    )
+
+
 def _emit_semantic_event(
     app: "FastAPI",
     sid: str,
@@ -439,39 +500,22 @@ def _emit_semantic_event(
     sink = getattr(state, "semantic_event_sink", None)
     if sink is None:
         return {}
-    if state is not None and hasattr(state, "sessions"):
-        sess = state.sessions.get(sid)
-    else:
-        sess = None
-    workspace_id = str(getattr(sess, "workspace_id", "") or "")
-    event_payload = _with_ui_safe_semantic_fields(
+    event = _build_semantic_event(
+        app,
+        sid,
         event_type,
-        status=status,
-        summary=summary,
-        payload=payload,
-    )
-    event = SemanticEvent(
-        event_type=event_type,
-        session_id=sid,
-        workspace_id=workspace_id,
-        trace_id=trace_id or _semantic_trace_id(turn_id),
         turn_id=turn_id,
-        # Auto-nest under the active span (expert/step) unless the caller pins a
-        # parent explicitly, so the highway forms the recursive trajectory tree.
-        parent_span_id=parent_span_id or _ctx.active_parent_span_id(),
+        trace_id=trace_id,
+        parent_span_id=parent_span_id,
         status=status,
         summary=summary,
-        actor=actor or {},
-        subject=subject or {},
-        blueprint=blueprint or {},
-        provider=provider or {},
-        payload=event_payload,
+        actor=actor,
+        subject=subject,
+        blueprint=blueprint,
+        provider=provider,
+        payload=payload,
         live_observed=live_observed,
-        detail_level=(
-            detail_level
-            if detail_level is not None
-            else getattr(app.state, "semantic_trace_detail_level", DEFAULT_DETAIL_LEVEL)
-        ),
+        detail_level=detail_level,
     )
     # ARC is the SOURCE of the highway: EVERY semantic event MUST enter through ARC, which
     # records it (current-view update) and DERIVES the highway (trace/SSE/hooks) from that
@@ -661,8 +705,20 @@ def _emit_arc_op(
 
     This is the injected ``op_logger`` for ``SegmentStore`` — wired in ``build_app``
     so ``arc/`` never imports ``gact/``.
+
+    arc.op is the WRITE-LOG of an ARC mutation — it is DERIVED from a segment write,
+    not a semantic event to fold back into ARC. So it routes DIRECTLY to the durable
+    trace + SSE bus via the sink, NOT through ``_emit_semantic_event``/``arc.record``.
+    Feeding it back through ``arc.record_semantic_event`` would re-enter the op-logger
+    (record persists a segment -> op-logger -> arc.op -> record ...) — the circularity
+    that previously forced a thread-local re-entrancy guard. By deriving directly, that
+    loop simply does not exist (no guard needed).
     """
-    event = _emit_semantic_event(
+    state = getattr(app, "state", None)
+    sink = getattr(state, "semantic_event_sink", None)
+    if sink is None:
+        return {}
+    event = _build_semantic_event(
         app,
         session_id,
         ARC_OP_EVENT_TYPE,
@@ -689,6 +745,10 @@ def _emit_arc_op(
         },
         detail_level="off",  # durable-only (high volume); SSE goes via the publish below
     )
+    # Derive DIRECTLY to the durable trace (the sink writes trace_backend; detail_level
+    # "off" makes it skip the bus). NOT via arc.record — arc.op is a projection of a
+    # write, never an ARC input.
+    emitted = sink.emit(event)
     # The durable event is detail_level="off" (lean trace), so SemanticEventSink skips
     # the bus. Publish a REDACTED arc.op frame explicitly so the TUI sees live
     # insertions/deletions/compactions. Allow-list ids/kinds/token_count only —
@@ -720,7 +780,7 @@ def _emit_arc_op(
             )
     except Exception:  # noqa: BLE001 - SSE streaming is observability, never fatal
         logger.debug("arc.op bus publish failed", exc_info=True)
-    return event
+    return emitted
 
 
 def _wire_arc_op_logger(app: "FastAPI") -> None:
@@ -781,6 +841,30 @@ def _set_app_arc(app: "FastAPI", arc: Any) -> None:
             )
         except Exception:  # noqa: BLE001 - highway wiring is best-effort
             logger.debug("arc highway-sink wiring failed", exc_info=True)
+
+
+def _process_arc(app: "FastAPI") -> Any:
+    """Return the ONE ARCMemory for this clio-agent, constructing it once on first use.
+
+    ARC is a per-clio-agent keystone: exactly one per process (one ARC per clio-agent,
+    N clio-agents per node, one clio-core per node). The gact server OWNS that single
+    ARC's lifecycle so that every agent build/bind reuses the SAME instance — the agent
+    no longer mints a fresh ARC per build (which stranded already-recorded events on an
+    orphaned ARC while the shared durable trace kept them: the trace ⊋ ARC split).
+
+    Stored on ``app.state.arc`` via ``_set_app_arc`` so a single, fail-loud path reaches
+    it; rebuilt only if the app has none yet (first build).
+    """
+    arc = getattr(getattr(app, "state", None), "arc", None)
+    if arc is not None:
+        return arc
+    from clio_agent.arc.memory import ARCMemory  # noqa: PLC0415
+    from clio_agent.arc.storage import make_arc_store  # noqa: PLC0415
+
+    data_dir = ".clio_agent/arc"
+    arc = ARCMemory(data_dir=data_dir, cache_capacity=1000, store=make_arc_store(data_dir=data_dir))
+    _set_app_arc(app, arc)
+    return arc
 
 
 def _llm_provider_payload(app: "FastAPI", agent_id: str = "") -> dict[str, Any]:
@@ -12668,6 +12752,10 @@ async def _construct_agent_async(app: "FastAPI") -> None:
     """
 
     loop = asyncio.get_running_loop()
+    # Construct (or reuse) the ONE per-process ARC up front and inject it into the build,
+    # so the agent does not mint a fresh ARC — the same instance is app.state.arc for the
+    # whole process across every later LM bind (no per-build ARC churn / trace ⊋ ARC split).
+    arc = _process_arc(app)
 
     def _build() -> Any:
         import dspy  # noqa: PLC0415
@@ -12684,7 +12772,7 @@ async def _construct_agent_async(app: "FastAPI") -> None:
             lm=create_lm(cfg),
             adapter=create_chat_adapter(cfg),
         )
-        return ClioAgent(verbose=False)
+        return ClioAgent(verbose=False, arc=arc)
 
     try:
         agent = await loop.run_in_executor(None, _build)
@@ -22574,10 +22662,12 @@ def build_app(
                 agent = existing
             else:
                 # First-time agent construction still reads the provider from
-                # env; restore the snapshot if construction rejects it.
+                # env; restore the snapshot if construction rejects it. Inject the
+                # ONE per-process ARC so this build reuses it (no per-bind ARC churn).
                 _stamp_process_env(cfg, resolved_api_key or "x")
+                bound_arc = _process_arc(app)
                 agent = await asyncio.get_running_loop().run_in_executor(
-                    None, lambda: ClioAgent(verbose=False)
+                    None, lambda: ClioAgent(verbose=False, arc=bound_arc)
                 )
                 # The fresh agent built its config + LMs from env (pre-handshake);
                 # carry the handshake-applied cfg + cfg-based LMs onto it so the

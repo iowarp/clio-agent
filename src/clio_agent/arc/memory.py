@@ -50,6 +50,7 @@ from clio_agent.arc.schema import (
 )
 from clio_agent.arc.segments import OpLogger, SegmentStore
 from clio_agent.arc.storage import ARCStore, LocalFSStore
+from clio_agent.runtime import trace
 
 # ``EVENTS_SCOPE`` (the reserved scope holding ARC's ONE persisted semantic-event log)
 # is defined in ``arc.live`` (the observer that projects over it) and imported above so
@@ -63,11 +64,13 @@ from clio_agent.arc.storage import ARCStore, LocalFSStore
 #   * ``lm.token.delta`` — the high-volume transient live-token stream (~1840/turn)
 #     that rides the highway only; persisting one segment apiece would bloat ARC for
 #     zero record value.
-#   * ``arc.op`` — the meta-event the SegmentStore op-logger emits to DESCRIBE a
-#     segment write. Persisting it would itself be a segment write, re-triggering the
-#     op-logger -> another arc.op -> another persist -> unbounded recursion. It is
-#     already fully derivable from the segments it describes, so it is highway-only.
-_EVENT_LOG_SKIP: frozenset[str] = frozenset({"lm.token.delta", "arc.op"})
+# (``arc.op`` is NOT here: it is the DERIVED write-log of a segment mutation and no
+# longer enters ``record_semantic_event`` at all — the gact op-logger derives it
+# DIRECTLY to the durable trace + SSE bus. With no path back into ARC's record, the
+# old recursion (record -> op-logger -> arc.op -> record) cannot form, so neither the
+# skip entry nor the thread-local re-entrancy guard is needed.)
+_EVENT_LOG_SKIP: frozenset[str] = frozenset({"lm.token.delta"})
+
 
 class ARCMemory:
     """Adaptive Retrieval Cache - Main interface for memory operations.
@@ -135,13 +138,6 @@ class ARCMemory:
         # callable so ``arc/`` never imports ``gact/``. ``None`` until wired (tests /
         # memory-only deployments) -> ``record_semantic_event`` returns ``{}``.
         self._highway_sink: Optional[Callable[[Any], Any]] = None
-        # Re-entrancy guard for _record_event_segment: persisting an _events segment
-        # fires the op-logger (arc.op), which routes back through record_semantic_event.
-        # _EVENT_LOG_SKIP already drops arc.op, but this thread-local makes recursion
-        # impossible BY CONSTRUCTION regardless of the skip-set — any nested record
-        # triggered while persisting still folds + reaches the highway, but does NOT
-        # persist again. Thread-local because turns record concurrently.
-        self._recording_event_tl = threading.local()
 
         # Cache layer (hot data). A hot LRU — a miss re-reads from the store, so a size
         # bound loses NO data — but it must be configurable (conf, file→env→default) so
@@ -1115,36 +1111,51 @@ class ARCMemory:
             return {}
         return sink(event)
 
+    def _event_skip_reason(self, etype: str, sid: str) -> str:
+        """ONE decision for whether to persist an event to the ``_events`` log.
+
+        Returns the skip reason (``""`` => persist). Collapses every drop into one
+        place so a dropped event is a single explainable line, not a scattered set of
+        silent early-returns:
+
+        * ``"no-event-type"`` — malformed event with no type (anomaly).
+        * ``"skip-listed"``   — a derived/high-volume highway-only type (lm.token.delta).
+        * ``"no-session-id"`` — an EXPECTED category: some top-level events are
+          session-less (no session to file them under). Not an error.
+        """
+        if not etype:
+            return "no-event-type"
+        if etype in _EVENT_LOG_SKIP:
+            return "skip-listed"
+        if not sid:
+            return "no-session-id"
+        return ""
+
     def _record_event_segment(self, event: Any) -> None:
         """Persist one semantic event as a ``semantic_event`` segment (append-only).
 
-        Skips the high-volume transient token stream (``_EVENT_LOG_SKIP``) and any
-        event without an event_type or session_id. Builds a lean content dict from
-        the SemanticEvent's fields (large text capped), correlated by the event's
-        trajectory span ids, and appends ONE segment under the reserved ``_events``
-        scope. Never rendered into a prompt (own scope + non-working-set kind)."""
+        ONE skip decision (:meth:`_event_skip_reason`) gates the persist; every
+        persist/skip is logged via ``runtime.trace`` (HF_ON-guarded ``ARC-EVENTS`` hot
+        tag) so a dropped event is one ``CLIO_DEBUG=high`` line. Builds a lean content
+        dict from the SemanticEvent's fields (large text capped), correlated by the
+        event's trajectory span ids, and appends ONE segment under the reserved
+        ``_events`` scope. Never rendered into a prompt (own scope + non-working-set
+        kind)."""
         etype = str(getattr(event, "event_type", "") or "")
-        if not etype or etype in _EVENT_LOG_SKIP:
-            return
         sid = str(getattr(event, "session_id", "") or "")
-        if not sid:
+        reason = self._event_skip_reason(etype, sid)
+        if reason:
+            if trace.HF_ON:
+                trace.hot("ARC-EVENTS", "skip %s etype=%r sid=%r", reason, etype, sid)
             return
-        # Structural recursion guard: if we are already persisting an event on this
-        # thread (and that persist's op-logger re-entered record_semantic_event), do
-        # NOT persist the nested event — it still folds + reaches the highway above.
-        if getattr(self._recording_event_tl, "active", False):
-            return
-        self._recording_event_tl.active = True
-        try:
-            self._append_event_segment(event, etype, sid)
-        finally:
-            self._recording_event_tl.active = False
+        if trace.HF_ON:
+            trace.hot("ARC-EVENTS", "persist etype=%r sid=%r", etype, sid)
+        self._append_event_segment(event, etype, sid)
 
     def _append_event_segment(self, event: Any, etype: str, sid: str) -> None:
         """Build (via the shared :func:`~clio_agent.arc.live.build_event_content`) +
         append the lean ``semantic_event`` segment. ONE builder is shared with the
-        standalone observer so the persisted log is identical regardless of path.
-        Called under the re-entrancy guard in :meth:`_record_event_segment`."""
+        standalone observer so the persisted log is identical regardless of path."""
         content = build_event_content(event)
         if content is None:
             return

@@ -77,30 +77,38 @@ def test_record_persists_segment_projects_observer_and_fires_highway_once(tmp_pa
 
 
 def test_record_through_real_sink_no_recursion(tmp_path):
-    """record -> sink.emit (real SemanticEventSink) terminates: persisting the
-    semantic_event segment fires the op-logger (arc.op), which is recorded again
-    but SKIPPED from persistence, so there is no unbounded re-entry."""
+    """record -> sink.emit (real SemanticEventSink) terminates STRUCTURALLY:
+    persisting the ``semantic_event`` segment fires the op-logger (arc.op), and the
+    REAL op-logger derives arc.op DIRECTLY to the sink/trace — it does NOT feed arc.op
+    back through ``record_semantic_event``. With no path back into record, the old
+    recursion (record -> op-logger -> arc.op -> record -> op-logger ...) cannot form
+    at all; there is no skip-set / re-entrancy guard propping it up."""
     arc = ARCMemory(data_dir=str(tmp_path / "arc"))
     sink = SemanticEventSink(
         bus=EventBus(),
         trace_backend=NoopSemanticTraceBackend(),
         live_consumers=None,  # ARC is the source; the sink has NO arc consumer
     )
-    # Wire the op-logger so an _events append emits an arc.op back through record
-    # (the exact path that recursed before arc.op was added to _EVENT_LOG_SKIP).
-    arc.set_segment_op_logger(
-        lambda op, session_id, scope, **kw: arc.record_semantic_event(
-            _ev("arc.op", status=op, payload={"op": op, "scope": scope})
-        )
-    )
     arc.set_highway_sink(sink.emit)
+
+    # The REAL op-logger shape (mirrors gact ``_emit_arc_op``): an applied segment write
+    # derives arc.op DIRECTLY to the sink — NEVER through arc.record_semantic_event.
+    op_log: list[str] = []
+    arc.set_segment_op_logger(
+        lambda op, session_id, scope, **kw: (
+            op_log.append(op),
+            sink.emit(_ev("arc.op", status=op, payload={"op": op, "scope": scope})),
+        )[1]
+    )
 
     full = arc.record_semantic_event(_turn_started())
 
     # Terminated (no RecursionError) and produced the full projected dict.
     assert full["event_type"] == "turn.started"
-    # Exactly ONE persisted semantic_event (the turn.started); every arc.op the
-    # op-logger emitted was skipped from _events.
+    # The op-logger fired for the persisted append (proving the write happened) ...
+    assert op_log == ["append"]
+    # ... and exactly ONE persisted semantic_event (the turn.started). arc.op is
+    # DERIVED to the sink, never recorded into _events — by construction, not by skip.
     segs = arc.render_segments("s1", EVENTS_SCOPE)
     assert [s.content["event_type"] for s in segs] == ["turn.started"]
 
