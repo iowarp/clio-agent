@@ -278,13 +278,8 @@ class LiveRuntimeContext:
 
     def _live_session_ids(self) -> list[str]:
         """Every session that currently holds a ``_live`` scope record (so ``clear``
-        can erase them all). The ``_live`` scope record name is ``<sid>__<_live>``."""
-        suffix = SegmentStore._record_name("", LIVE_SCOPE)  # "__" + the live scope
-        sessions: set[str] = set()
-        for name, _ in self._segments._store.scan("segments"):
-            if name.endswith(suffix):
-                sessions.add(name[: -len(suffix)])
-        return sorted(sessions)
+        can erase them all)."""
+        return self._segments.sessions_with_scope(LIVE_SCOPE)
 
     # ---- read / replay -------------------------------------------------
 

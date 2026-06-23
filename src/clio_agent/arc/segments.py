@@ -820,6 +820,17 @@ class SegmentStore:
                 out.add(scope)
         return sorted(out)
 
+    def sessions_with_scope(self, scope: str) -> list[str]:
+        """Every ``session_id`` that currently holds a record for ``scope`` (across all
+        sessions). Backs wholesale lifecycle erase of an ephemeral scope (e.g. the
+        observer's ``_live`` scope) without callers reaching into store internals."""
+        suffix = f"{_SCOPE_SEP}{scope.replace('/', _SLASH_SUB)}"
+        out: set[str] = set()
+        for name, _ in self._store.scan("segments"):
+            if name.endswith(suffix):
+                out.add(name[: -len(suffix)])
+        return sorted(out)
+
     def supports_search(self) -> bool:
         """Whether the backend does real BM25 ranking (CTE) vs the naive fallback."""
         fn = getattr(self._store, "supports_search", None)
