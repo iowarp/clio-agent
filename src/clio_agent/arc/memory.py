@@ -160,6 +160,13 @@ class ARCMemory:
         # callable so ``arc/`` never imports ``gact/``. ``None`` until wired (tests /
         # memory-only deployments) -> ``record_semantic_event`` returns ``{}``.
         self._highway_sink: Optional[Callable[[Any], Any]] = None
+        # Re-entrancy guard for _record_event_segment: persisting an _events segment
+        # fires the op-logger (arc.op), which routes back through record_semantic_event.
+        # _EVENT_LOG_SKIP already drops arc.op, but this thread-local makes recursion
+        # impossible BY CONSTRUCTION regardless of the skip-set — any nested record
+        # triggered while persisting still folds + reaches the highway, but does NOT
+        # persist again. Thread-local because turns record concurrently.
+        self._recording_event_tl = threading.local()
 
         # Cache layer (hot data)
         self._cache = LRUCache(capacity=cache_capacity)
@@ -1160,6 +1167,20 @@ class ARCMemory:
         sid = str(getattr(event, "session_id", "") or "")
         if not sid:
             return
+        # Structural recursion guard: if we are already persisting an event on this
+        # thread (and that persist's op-logger re-entered record_semantic_event), do
+        # NOT persist the nested event — it still folds + reaches the highway above.
+        if getattr(self._recording_event_tl, "active", False):
+            return
+        self._recording_event_tl.active = True
+        try:
+            self._append_event_segment(event, etype, sid)
+        finally:
+            self._recording_event_tl.active = False
+
+    def _append_event_segment(self, event: Any, etype: str, sid: str) -> None:
+        """Build + append the lean ``semantic_event`` segment (called under the
+        re-entrancy guard in :meth:`_record_event_segment`)."""
         # Lean content: the envelope fields plus the body dicts, with any large text
         # capped. dataclasses.asdict gives a deep copy of the SemanticEvent; fall back
         # to per-field reads for non-dataclass events.
