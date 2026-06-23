@@ -32,6 +32,7 @@ import threading
 from typing import Any, Callable, Optional
 
 import msgspec
+from sortedcontainers import SortedDict
 
 from clio_agent.arc.schema import (
     Segment,
@@ -96,6 +97,68 @@ def segments_to_keys(segments: list[Segment]) -> dict[str, Any]:
     return keys
 
 
+class SegmentIndex:
+    """Per-scope B-tree-style locator: ``(session, scope) -> SortedDict[logical_time
+    -> segment_id]`` so a scope's segments can be LOCATED in O(log N) by creation
+    ``logical_time`` (the immutable, store-unique creation clock).
+
+    This is a pure ACCELERATION structure built in parallel with the in-memory scope
+    lists. It is keyed by the creation ``logical_time`` (unique per segment), so the
+    id set it yields for a scope is exactly the set the scan over the scope list yields
+    — a property the parallel-consistency tests assert across the stress corpus. The
+    render/op paths still read via the scan; the index is not yet on the read path.
+
+    Thread-safety: all mutators/readers are called under the SegmentStore lock, so the
+    index itself takes no lock.
+    """
+
+    def __init__(self) -> None:
+        self._by_scope: dict[tuple[str, str], SortedDict] = {}
+
+    def _scope_map(self, session_id: str, scope: str) -> SortedDict:
+        key = (session_id, scope)
+        sd = self._by_scope.get(key)
+        if sd is None:
+            sd = SortedDict()
+            self._by_scope[key] = sd
+        return sd
+
+    def add(self, session_id: str, scope: str, seg: Segment) -> None:
+        """Index a segment by its creation ``logical_time`` (unique per segment)."""
+        self._scope_map(session_id, scope)[seg.logical_time] = seg.id
+
+    def bulk_load(self, session_id: str, scope: str, segs: list[Segment]) -> None:
+        """Index a whole freshly-loaded scope at once (cold-load path)."""
+        sd = self._scope_map(session_id, scope)
+        for s in segs:
+            sd[s.logical_time] = s.id
+
+    def locate_ids(
+        self,
+        session_id: str,
+        scope: str,
+        *,
+        lt_min: int | None = None,
+        lt_max: int | None = None,
+    ) -> list[str]:
+        """Locate the ids in a scope whose creation ``logical_time`` falls in the
+        inclusive ``[lt_min, lt_max]`` window (``None`` = unbounded), in logical-time
+        order. The ``irange`` is the O(log N) B-tree slice; an open window returns the
+        whole scope (still in clock order)."""
+        sd = self._by_scope.get((session_id, scope))
+        if sd is None:
+            return []
+        return [sd[lt] for lt in sd.irange(lt_min, lt_max)]
+
+    def drop_session(self, session_id: str) -> None:
+        """Forget a session's scopes (mirrors SegmentStore.release)."""
+        for key in [k for k in self._by_scope if k[0] == session_id]:
+            self._by_scope.pop(key, None)
+
+    def clear(self) -> None:
+        self._by_scope.clear()
+
+
 class SegmentStore:
     """Ordered, scoped, mutable live-context store. Thread-safe."""
 
@@ -116,6 +179,10 @@ class SegmentStore:
         # tombstoned), kept loaded write-through. Scopes loaded lazily once.
         self._scopes: dict[tuple[str, str], list[Segment]] = {}
         self._loaded: set[tuple[str, str]] = set()
+        # Per-scope B-tree locator built in parallel with the scope lists (additive;
+        # NOT yet on the render/op read path — those still scan). Lets a scope's
+        # segments be located in O(log N) by creation logical_time.
+        self._index = SegmentIndex()
         # Store-wide monotonic logical clock, recovered past the persisted max.
         self._next_lt = 1
 
@@ -145,6 +212,7 @@ class SegmentStore:
             segs = decode_segments(raw) if raw else []
             self._scopes[key] = segs
             self._loaded.add(key)
+            self._index.bulk_load(session_id, scope, segs)  # parallel locator
             for s in segs:  # recover the monotonic clock past anything persisted
                 if s.logical_time >= self._next_lt:
                     self._next_lt = s.logical_time + 1
@@ -516,6 +584,8 @@ class SegmentStore:
         """Log the applied op to the Trace, stamp ``trace_ref`` on written segments,
         then persist. Called under ``self._lock``."""
         written = written or []
+        for seg in written:  # parallel locator: index every newly-written segment
+            self._index.add(session_id, scope, seg)
         if logical_time is not None:
             lt = logical_time
         elif written:
@@ -620,6 +690,35 @@ class SegmentStore:
             pool = segs if include_tombstoned else [s for s in segs if s.status == "live"]
             return sorted(pool, key=lambda s: (s.order, s.logical_time))
 
+    def locate_segment_ids(
+        self,
+        session_id: str,
+        scope: str,
+        *,
+        lt_min: int | None = None,
+        lt_max: int | None = None,
+    ) -> list[str]:
+        """Locate a scope's segment ids via the O(log N) per-scope index, in
+        creation-``logical_time`` order, optionally restricted to the inclusive
+        ``[lt_min, lt_max]`` clock window.
+
+        This is the index READ surface (additive). It is NOT yet wired into render/op
+        — those still scan — so the index is built+validated here without changing any
+        behavior. Ensures the scope is loaded so a cold index is populated first.
+        """
+        with self._lock:
+            self._segs(session_id, scope)  # ensure cold-load (populates the index)
+            return self._index.locate_ids(session_id, scope, lt_min=lt_min, lt_max=lt_max)
+
+    def _index_matches_scan(self, session_id: str, scope: str) -> bool:
+        """Parallel-consistency check: the id SET the index locates equals the id set
+        the scan (the in-memory scope list, all statuses) holds. Used by the
+        index-consistency tests to assert the locator never diverges from the scan."""
+        with self._lock:
+            scan_ids = {s.id for s in self._segs(session_id, scope)}
+            index_ids = set(self._index.locate_ids(session_id, scope))
+            return scan_ids == index_ids
+
     def scan_scopes(self, session_id: str, scope_pattern: str = "") -> list[str]:
         """Scope addresses for a session under a prefix (e.g. ``"agentX/"`` for
         agent-level, ``""`` for all). Backs cross-scope reads."""
@@ -673,6 +772,7 @@ class SegmentStore:
             for k in keys:
                 self._scopes.pop(k, None)
                 self._loaded.discard(k)
+            self._index.drop_session(session_id)  # keep the locator consistent
             logger.info("segments: release session=%s scopes=%d", session_id, len(keys))
             return len(keys)
 
@@ -681,3 +781,4 @@ class SegmentStore:
         with self._lock:
             self._scopes.clear()
             self._loaded.clear()
+            self._index.clear()
