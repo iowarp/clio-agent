@@ -726,7 +726,10 @@ def _route_lm_io_to_arc(app: "FastAPI", record: dict[str, Any]) -> None:
             },
             step=-1,
             turn_id=_ctx.active_turn_id(),  # == _active_semantic_turn_id() (critic fix)
-            expert_span_id=_ctx.active_parent_span_id(),
+            # Group under the OWNING expert turn (not the live per-step parent span);
+            # the per-step run span carries step granularity. Fall back to the active
+            # parent span if no expert span is set (non-react context).
+            expert_span_id=_ctx.active_expert_span() or _ctx.active_parent_span_id(),
             run_span_id=_ctx.active_run_span(),
         )
     except Exception:  # noqa: BLE001 - capture must never break a call
@@ -5862,6 +5865,10 @@ def _retaining_react_cls() -> Any:
             # lm.call, delegations to children) nests under the expert span; the
             # context propagates into delegated children via copy_context().
             parent_token = _ctx.set_parent_span(expert_span_id)
+            # Also record the expert span as a STABLE context value (distinct from the
+            # live parent span, which is re-pointed to each step) so the lm_io seam can
+            # group captured LM calls under the owning expert turn.
+            expert_span_token = _ctx.set_expert_span(expert_span_id)
             try:
                 max_iters = input_args.pop("max_iters", self.max_iters)
                 for idx in range(max_iters):
@@ -6031,6 +6038,7 @@ def _retaining_react_cls() -> Any:
                 )
                 return final_pred
             finally:
+                _ctx.reset(expert_span_token)
                 _ctx.reset(parent_token)
 
         def _format_trajectory(self, trajectory: dict[str, Any]) -> str:

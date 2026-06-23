@@ -73,6 +73,7 @@ class RuntimeContext:
     react_context_window: int = 0  # _ACTIVE_REACT_CONTEXT_WINDOW
     blueprint_tool_rows: list[dict[str, Any]] | None = None  # _ACTIVE_BLUEPRINT_TOOL_ROWS
     parent_span_id: str = ""  # _ACTIVE_PARENT_SPAN_ID
+    expert_span_id: str = ""  # the active expert-turn span; the lm_io seam reads it
     run_span_id: str = ""  # the active ReAct-step (agent-run) span; the lm_io seam reads it
     trajectory_cell: TrajectoryCell | None = None  # _ACTIVE_REACT_TRAJECTORY (via cell)
 
@@ -149,6 +150,14 @@ def active_blueprint_tool_rows() -> list[dict[str, Any]] | None:
 def active_parent_span_id() -> str:
     """``_ACTIVE_PARENT_SPAN_ID.get()``."""
     return _RUNTIME.get().parent_span_id
+
+
+def active_expert_span() -> str:
+    """The active expert-turn span id, or ``""``. Set once per expert turn in
+    ``_RetainingReAct.forward``; read by the lm_io capture seam so a captured LM
+    call is grouped under the OWNING expert turn (distinct from the per-step run
+    span and from the auto-nesting ``parent_span_id``, which tracks the live step)."""
+    return _RUNTIME.get().expert_span_id
 
 
 def active_run_span() -> str:
@@ -303,6 +312,15 @@ def set_parent_span(span_id: str) -> contextvars.Token[RuntimeContext]:
     """Set ``parent_span_id`` (``_ACTIVE_PARENT_SPAN_ID.set``)."""
     cur = _RUNTIME.get()
     return _RUNTIME.set(replace(cur, parent_span_id=span_id))
+
+
+def set_expert_span(span_id: str) -> contextvars.Token[RuntimeContext]:
+    """Set ``expert_span_id`` (the active expert-turn span). Set once per expert turn
+    in ``_RetainingReAct.forward``; the lm_io seam reads it via
+    :func:`active_expert_span` so a captured LM call is grouped under the owning
+    expert turn even while the live ``parent_span_id`` tracks the current step."""
+    cur = _RUNTIME.get()
+    return _RUNTIME.set(replace(cur, expert_span_id=span_id))
 
 
 def set_run_span(span_id: str) -> contextvars.Token[RuntimeContext]:
