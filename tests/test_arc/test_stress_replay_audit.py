@@ -229,7 +229,7 @@ def _run_fuzz(seed: int, n_ops: int, tmp_path) -> tuple[SegmentStore, list[dict]
         # Bias toward growth early, mutation later, so summaries have material.
         choices = ["append", "append", "insert"]
         if len(live) >= 2:
-            choices += ["delete", "summarize"]
+            choices += ["delete", "summarize", "replace"]
         op = rng.choice(choices)
         tag = f"{seed}-{i}"
         if op == "append":
@@ -246,6 +246,9 @@ def _run_fuzz(seed: int, n_ops: int, tmp_path) -> tuple[SegmentStore, list[dict]
             k = rng.randint(1, len(live))
             picked = rng.sample(live, k)
             ss.summarize(sid, scope, [s.id for s in picked], {"text": f"SUMMARY-{tag}"})
+        elif op == "replace":
+            victim = rng.choice(live)
+            ss.replace(sid, scope, victim.id, {"text": f"REPLACED-{tag}"})
     return ss, events, sid, scopes
 
 
