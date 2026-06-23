@@ -48,8 +48,14 @@ def test_append_renders_gapless_dspy_dict(tmp_path):
     _iteration(ss, SID, SCOPE, 1, "think1", "finish", {}, "done")
     keys = ss.render_keys(SID, SCOPE)
     assert list(keys.keys()) == [
-        "thought_0", "tool_name_0", "tool_args_0", "observation_0",
-        "thought_1", "tool_name_1", "tool_args_1", "observation_1",
+        "thought_0",
+        "tool_name_0",
+        "tool_args_0",
+        "observation_0",
+        "thought_1",
+        "tool_name_1",
+        "tool_args_1",
+        "observation_1",
     ]
     assert keys["tool_args_0"] == {"q": "x"}  # dict preserved, not re-parsed
 
@@ -67,7 +73,7 @@ def test_delete_tombstones_absent_from_render_present_in_store(tmp_path):
     _iteration(ss, SID, SCOPE, 0, "think0", "grep", {}, "obs0")
     o0 = [s for s in ss.list_segments(SID, SCOPE) if s.kind == "observation"][0]
     assert ss.delete(SID, SCOPE, [o0.id]) == 1
-    assert "obs0" not in str(ss.render_keys(SID, SCOPE))           # gone from the prompt
+    assert "obs0" not in str(ss.render_keys(SID, SCOPE))  # gone from the prompt
     tombstoned = ss.list_segments(SID, SCOPE, include_tombstoned=True)
     assert any(s.id == o0.id and s.status == "tombstoned" for s in tombstoned)  # kept for replay
 
@@ -94,8 +100,8 @@ def test_summarize_replaces_range_with_summary(tmp_path):
     rendered = str(ss.render_keys(SID, SCOPE))
     assert "SUMMARY" in rendered
     assert "drop" not in rendered and "dropobs" not in rendered  # originals gone from prompt
-    assert "keep" in rendered                                    # untouched range stays
-    assert set(summary.derived_from) == {s.id for s in drop}     # provenance recorded
+    assert "keep" in rendered  # untouched range stays
+    assert set(summary.derived_from) == {s.id for s in drop}  # provenance recorded
 
 
 def test_summarize_all_is_context_compaction(tmp_path):
@@ -130,8 +136,8 @@ def test_as_of_returns_pre_edit_view(tmp_path):
     snapshot = max(s.logical_time for s in ss.list_segments(SID, SCOPE))
     obs = [s for s in ss.list_segments(SID, SCOPE) if s.kind == "observation"][0]
     ss.delete(SID, SCOPE, [obs.id])
-    assert "o0" not in str(ss.render_keys(SID, SCOPE))               # current: gone
-    assert "o0" in str(ss.render_keys(SID, SCOPE, as_of=snapshot))   # as-of-T: present
+    assert "o0" not in str(ss.render_keys(SID, SCOPE))  # current: gone
+    assert "o0" in str(ss.render_keys(SID, SCOPE, as_of=snapshot))  # as-of-T: present
 
 
 def test_persistence_reload(tmp_path):
@@ -346,3 +352,50 @@ def test_replace_via_apply_dispatch(tmp_path):
     out = ss.apply("replace", SID, SCOPE, target_id=orig.id, content={"text": "new"})
     assert out is not None and out.content == {"text": "new"}
     assert "new" in str(ss.render_keys(SID, SCOPE))
+
+
+# ---- correlation span ids (turn_id / expert_span_id / run_span_id) ----------
+
+
+def test_correlation_ids_stamped_on_append_insert_summarize(tmp_path):
+    ss, _ = _store(tmp_path)
+    a = ss.append(
+        SID, SCOPE, "thought", {"text": "t"}, turn_id="T1", expert_span_id="E1", run_span_id="R1"
+    )
+    assert (a.turn_id, a.expert_span_id, a.run_span_id) == ("T1", "E1", "R1")
+    i = ss.insert(SID, SCOPE, 0, "observation", {"text": "o"}, turn_id="T1", expert_span_id="E1")
+    assert (i.turn_id, i.expert_span_id, i.run_span_id) == ("T1", "E1", "")
+    summ = ss.summarize(SID, SCOPE, [a.id, i.id], {"text": "s"}, turn_id="T1", expert_span_id="E1")
+    assert (summ.turn_id, summ.expert_span_id) == ("T1", "E1")
+
+
+def test_replace_inherits_correlation_ids_by_default(tmp_path):
+    ss, _ = _store(tmp_path)
+    orig = ss.append(
+        SID, SCOPE, "thought", {"text": "v1"}, turn_id="T1", expert_span_id="E1", run_span_id="R1"
+    )
+    repl = ss.replace(SID, SCOPE, orig.id, {"text": "v2"})  # no override
+    assert repl is not None
+    assert (repl.turn_id, repl.expert_span_id, repl.run_span_id) == ("T1", "E1", "R1")
+    # explicit override wins
+    repl2 = ss.replace(SID, SCOPE, repl.id, {"text": "v3"}, turn_id="T2")
+    assert repl2 is not None and repl2.turn_id == "T2"
+
+
+def test_segment_correlation_fields_round_trip():
+    """A Segment carrying the three span ids encodes/decodes (msgspec back-compat)."""
+    seg = Segment(
+        scope="agentA",
+        kind="lm_io",
+        content={"content": "hi"},
+        session_id=SID,
+        step=-1,
+        order=1.0,
+        logical_time=1,
+        turn_id="T1",
+        expert_span_id="E1",
+        run_span_id="R1",
+    )
+    decoded = decode_segment(msgspec.msgpack.encode(seg))
+    assert (decoded.turn_id, decoded.expert_span_id, decoded.run_span_id) == ("T1", "E1", "R1")
+    assert decoded.kind == "lm_io"

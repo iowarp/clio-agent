@@ -299,9 +299,14 @@ class SegmentStore:
         trace_ref: str = "",
         derived_from: list[str] | None = None,
         token_count: int = 0,
+        turn_id: str = "",
+        expert_span_id: str = "",
+        run_span_id: str = "",
     ) -> Segment:
         """append = insert(end). ``order`` = max(order)+1; cheap, never breaks the
-        cached prefix. Returns the new Segment."""
+        cached prefix. Returns the new Segment. The ``turn_id`` / ``expert_span_id``
+        / ``run_span_id`` are optional trajectory-correlation span ids (default ``""``)
+        stamped on the new segment so every write in a turn is correlated."""
         with self._lock_for(session_id, scope):
             segs = self._segs(session_id, scope)
             order = (max((s.order for s in segs), default=0.0)) + 1.0
@@ -316,6 +321,9 @@ class SegmentStore:
                 token_count=token_count,
                 derived_from=list(derived_from or []),
                 trace_ref=trace_ref,
+                turn_id=turn_id,
+                expert_span_id=expert_span_id,
+                run_span_id=run_span_id,
             )
             segs.append(seg)
             logger.debug(
@@ -350,10 +358,14 @@ class SegmentStore:
         trace_ref: str = "",
         derived_from: list[str] | None = None,
         token_count: int = 0,
+        turn_id: str = "",
+        expert_span_id: str = "",
+        run_span_id: str = "",
     ) -> Segment:
         """Insert at render ``position`` (0-based over LIVE segments). ``order`` =
         midpoint of neighbours (gap allocation, no renumber). Breaks the prefix
-        from here forward."""
+        from here forward. ``turn_id`` / ``expert_span_id`` / ``run_span_id`` are
+        optional correlation span ids stamped on the new segment."""
         with self._lock_for(session_id, scope):
             segs = self._segs(session_id, scope)
             live = self._live_sorted(segs)
@@ -369,6 +381,9 @@ class SegmentStore:
                 token_count=token_count,
                 derived_from=list(derived_from or []),
                 trace_ref=trace_ref,
+                turn_id=turn_id,
+                expert_span_id=expert_span_id,
+                run_span_id=run_span_id,
             )
             segs.append(seg)
             logger.debug(
@@ -443,11 +458,16 @@ class SegmentStore:
         *,
         trace_ref: str = "",
         token_count: int = 0,
+        turn_id: str = "",
+        expert_span_id: str = "",
+        run_span_id: str = "",
     ) -> Segment:
         """summarize = delete(ids) + insert(summary at the first replaced position),
         ATOMIC under the lock. The new Segment is ``kind="summary"`` with
         ``derived_from=ids``. The caller produces ``summary_content`` (the LLM
-        call). context-compaction = ``summarize(all live ids)``."""
+        call). context-compaction = ``summarize(all live ids)``. ``turn_id`` /
+        ``expert_span_id`` / ``run_span_id`` are optional correlation span ids
+        stamped on the summary segment."""
         with self._lock_for(session_id, scope):
             segs = self._segs(session_id, scope)
             target = set(ids)
@@ -478,6 +498,9 @@ class SegmentStore:
                 token_count=token_count,
                 derived_from=list(ids),
                 trace_ref=trace_ref,
+                turn_id=turn_id,
+                expert_span_id=expert_span_id,
+                run_span_id=run_span_id,
             )
             segs.append(summary)
             live_remaining = sum(1 for s in segs if s.status == "live")
@@ -520,6 +543,9 @@ class SegmentStore:
         kind: SegmentKind | None = None,
         trace_ref: str = "",
         token_count: int = 0,
+        turn_id: str = "",
+        expert_span_id: str = "",
+        run_span_id: str = "",
     ) -> Segment | None:
         """Replace a live segment's content in place (a logical-time tick that
         tombstones the original and emits a fresh segment at the SAME render slot).
@@ -531,8 +557,10 @@ class SegmentStore:
         ``order`` (so it renders exactly where the original was). ``derived_from`` links
         the replacement back to the id it superseded (1:1 provenance, vs summarize's
         many:1). ``kind`` defaults to the original's kind (a pure content edit);
-        passing ``kind`` re-kinds the slot. Returns the new Segment, or ``None`` if
-        ``target_id`` matched no live segment.
+        passing ``kind`` re-kinds the slot. ``turn_id`` / ``expert_span_id`` /
+        ``run_span_id`` default to the ORIGINAL's correlation ids (a pure content edit
+        stays in the same turn/expert/run); pass them to override. Returns the new
+        Segment, or ``None`` if ``target_id`` matched no live segment.
         """
         with self._lock_for(session_id, scope):
             segs = self._segs(session_id, scope)
@@ -558,6 +586,9 @@ class SegmentStore:
                 token_count=token_count,
                 derived_from=[original.id],
                 trace_ref=trace_ref,
+                turn_id=turn_id or original.turn_id,
+                expert_span_id=expert_span_id or original.expert_span_id,
+                run_span_id=run_span_id or original.run_span_id,
             )
             segs.append(replacement)
             logger.debug(

@@ -1091,8 +1091,14 @@ class ARCMemory:
         step: int = -1,
         trace_ref: str = "",
         token_count: int = 0,
+        turn_id: str = "",
+        expert_span_id: str = "",
+        run_span_id: str = "",
     ) -> Any:
-        """Append one segment to a scope's live context (append = insert at end)."""
+        """Append one segment to a scope's live context (append = insert at end).
+
+        ``turn_id`` / ``expert_span_id`` / ``run_span_id`` are optional
+        trajectory-correlation span ids stamped on the new segment (default ``""``)."""
         return self._segments.append(
             session_id,
             scope,
@@ -1101,6 +1107,9 @@ class ARCMemory:
             step=step,
             trace_ref=trace_ref,
             token_count=token_count,
+            turn_id=turn_id,
+            expert_span_id=expert_span_id,
+            run_span_id=run_span_id,
         )
 
     def insert_segment(
@@ -1114,8 +1123,14 @@ class ARCMemory:
         step: int = -1,
         trace_ref: str = "",
         token_count: int = 0,
+        turn_id: str = "",
+        expert_span_id: str = "",
+        run_span_id: str = "",
     ) -> Any:
-        """Insert one segment at a render position in a scope's live context."""
+        """Insert one segment at a render position in a scope's live context.
+
+        ``turn_id`` / ``expert_span_id`` / ``run_span_id`` are optional
+        correlation span ids stamped on the new segment (default ``""``)."""
         return self._segments.insert(
             session_id,
             scope,
@@ -1125,6 +1140,9 @@ class ARCMemory:
             step=step,
             trace_ref=trace_ref,
             token_count=token_count,
+            turn_id=turn_id,
+            expert_span_id=expert_span_id,
+            run_span_id=run_span_id,
         )
 
     def delete_segments(self, session_id: str, scope: str, ids: List[str]) -> int:
@@ -1140,8 +1158,14 @@ class ARCMemory:
         *,
         trace_ref: str = "",
         token_count: int = 0,
+        turn_id: str = "",
+        expert_span_id: str = "",
+        run_span_id: str = "",
     ) -> Any:
-        """Replace a range of segments with one summary (= context-compaction over all)."""
+        """Replace a range of segments with one summary (= context-compaction over all).
+
+        ``turn_id`` / ``expert_span_id`` / ``run_span_id`` are optional correlation
+        span ids stamped on the summary segment (default ``""``)."""
         return self._segments.summarize(
             session_id,
             scope,
@@ -1149,10 +1173,46 @@ class ARCMemory:
             summary_content,
             trace_ref=trace_ref,
             token_count=token_count,
+            turn_id=turn_id,
+            expert_span_id=expert_span_id,
+            run_span_id=run_span_id,
+        )
+
+    def replace_segment(
+        self,
+        session_id: str,
+        scope: str,
+        target_id: str,
+        content: Dict[str, Any],
+        *,
+        kind: Optional[str] = None,
+        trace_ref: str = "",
+        token_count: int = 0,
+        turn_id: str = "",
+        expert_span_id: str = "",
+        run_span_id: str = "",
+    ) -> Any:
+        """Replace a live segment's content in place (1:1 supersede at the same render
+        slot; the original is tombstoned + recoverable as-of-T).
+
+        ``kind`` defaults to the original's kind; the correlation span ids default to
+        the ORIGINAL's (a pure content edit stays in the same turn/expert/run). Returns
+        the new Segment, or ``None`` if ``target_id`` matched no live segment."""
+        return self._segments.replace(
+            session_id,
+            scope,
+            target_id,
+            content,
+            kind=cast(Optional[SegmentKind], kind),
+            trace_ref=trace_ref,
+            token_count=token_count,
+            turn_id=turn_id,
+            expert_span_id=expert_span_id,
+            run_span_id=run_span_id,
         )
 
     def apply_segment_op(self, op: str, session_id: str, scope: str, **kwargs: Any) -> Any:
-        """Stable dispatch over the four ops — the KV-backend swap seam."""
+        """Stable dispatch over the five ops — the KV-backend swap seam."""
         return self._segments.apply(op, session_id, scope, **kwargs)
 
     def render_segments(self, session_id: str, scope: str, *, as_of: Optional[int] = None) -> Any:
