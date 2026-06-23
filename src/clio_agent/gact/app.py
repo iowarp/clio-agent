@@ -690,6 +690,49 @@ def _emit_arc_op(
     return event
 
 
+def _route_lm_io_to_arc(app: "FastAPI", record: dict[str, Any]) -> None:
+    """Route ONE captured LM-call ``record`` into ARC's current (session, scope) as an
+    ``lm_io`` segment — the freeze-anytime raw LM I/O atom. This is the gact-side sink
+    injected into ``config.IOLoggingLM`` via ``set_lm_io_sink`` in ``build_app`` (so
+    ``config.py`` never imports arc/gact; mirrors the ``_emit_arc_op`` op-logger seam).
+
+    Keyed to the ACTIVE react scope/session from the runtime context — the same source
+    ``_arc_scope`` / ``_maybe_autocompact`` use (contextvars copied into the executor
+    running the call). When no react scope is active (e.g. a Tier-1 planner/router/synth
+    call before any expert delegation), this returns early: there is no expert scope to
+    attach to yet, and such calls still emit the durable ``lm.call`` event. The
+    correlation ids are the SEMANTIC turn id (== every trajectory writer's turn_id),
+    the expert span (active parent span), and the per-step run span.
+
+    Best-effort: capture must never break the call (wrapped + swallowed).
+    """
+    try:
+        arc = getattr(getattr(app, "state", None), "arc", None)
+        session = _ctx.active_react_session()
+        scope = _ctx.active_react_scope()
+        if arc is None or not scope:
+            return  # non-react LM calls: durable lm.call still fired; no scope to attach
+        arc.append_segment(
+            session,
+            scope,
+            "lm_io",
+            {
+                "messages": record.get("messages"),
+                "content": record.get("content"),
+                "reasoning": record.get("reasoning_content"),
+                "finish_reason": record.get("finish_reason"),
+                "usage": record.get("usage"),
+                "model": record.get("model"),
+            },
+            step=-1,
+            turn_id=_ctx.active_turn_id(),  # == _active_semantic_turn_id() (critic fix)
+            expert_span_id=_ctx.active_parent_span_id(),
+            run_span_id=_ctx.active_run_span(),
+        )
+    except Exception:  # noqa: BLE001 - capture must never break a call
+        logger.debug("lm_io route to ARC failed", exc_info=True)
+
+
 def _llm_provider_payload(app: "FastAPI", agent_id: str = "") -> dict[str, Any]:
     cfg = _effective_lm_config(app)
     return {
@@ -12837,6 +12880,14 @@ def build_app(
         _arc.set_segment_op_logger(
             lambda op, session_id, scope, **kw: _emit_arc_op(app, op, session_id, scope, **kw)
         )
+    # Wire the lm_io capture seam: route every LM call (captured once at the
+    # IOLoggingLM boundary) into ARC's active (session, scope) as an ``lm_io``
+    # segment. Injected closure so ``config.py`` never imports arc/gact (mirrors the
+    # op-logger above). No-op when ARC is disabled (the sink early-returns).
+    if _arc is not None:
+        from clio_agent.config import set_lm_io_sink  # noqa: PLC0415
+
+        set_lm_io_sink(lambda record: _route_lm_io_to_arc(app, record))
     # CLIO-BBBBBBBBBB14: message log keyed by session_id. Populated by
     # POST /messages, read by GET /messages, and backed by per-session
     # JSON ledgers so adapter deletion/redeploy preserves transcripts.
