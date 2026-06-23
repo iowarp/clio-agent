@@ -174,9 +174,20 @@ class SegmentStore:
         """
         self._store = store
         self._op_logger = op_logger
-        self._lock = threading.RLock()
+        # PER-SCOPE locking: one lock per (session_id, scope) so ops on different
+        # scopes (overlapping experts) run concurrently instead of serializing on a
+        # single store-wide lock held through disk I/O. The lock-registry itself is
+        # guarded by a tiny ``_registry_lock`` (held only to look up / create a scope
+        # lock and for store-wide structural ops, never through disk I/O). LOCK ORDER
+        # is fixed to avoid deadlock: registry -> scope -> clock (never reverse).
+        self._registry_lock = threading.RLock()
+        self._scope_locks: dict[tuple[str, str], threading.RLock] = {}
+        # The shared logical-time clock gets its OWN tiny lock so the brief tick is
+        # serialized across all scopes without serializing the scopes themselves.
+        self._clock_lock = threading.Lock()
         # In-memory working copy: (session_id, scope) -> list[Segment] (all, incl
-        # tombstoned), kept loaded write-through. Scopes loaded lazily once.
+        # tombstoned), kept loaded write-through. Scopes loaded lazily once. Each
+        # scope's entry is touched only under that scope's lock.
         self._scopes: dict[tuple[str, str], list[Segment]] = {}
         self._loaded: set[tuple[str, str]] = set()
         # Per-scope B-tree locator built in parallel with the scope lists (additive;
@@ -202,10 +213,27 @@ class SegmentStore:
     def _record_name(session_id: str, scope: str) -> str:
         return f"{session_id}{_SCOPE_SEP}{scope.replace('/', _SLASH_SUB)}"
 
+    def _lock_for(self, session_id: str, scope: str) -> threading.RLock:
+        """Return the per-scope lock for ``(session_id, scope)``, creating it once.
+        The registry lock is held only for the brief lookup/create — never through any
+        op body or disk I/O."""
+        key = (session_id, scope)
+        with self._registry_lock:
+            lk = self._scope_locks.get(key)
+            if lk is None:
+                lk = threading.RLock()
+                self._scope_locks[key] = lk
+            return lk
+
     # ---- load / persist ------------------------------------------------
 
     def _segs(self, session_id: str, scope: str) -> list[Segment]:
-        """Return the in-memory segment list for a scope, loading it once."""
+        """Return the in-memory segment list for a scope, loading it once.
+
+        Always called under this scope's per-scope lock, so the scope's own entry in
+        ``_scopes``/``_loaded``/``_index`` is never concurrently mutated. The shared
+        clock recovery below is done under the dedicated clock lock so it stays
+        serialized across scopes (lock order scope -> clock is honored)."""
         key = (session_id, scope)
         if key not in self._loaded:
             raw = self._store.get("segments", self._record_name(session_id, scope))
@@ -213,9 +241,11 @@ class SegmentStore:
             self._scopes[key] = segs
             self._loaded.add(key)
             self._index.bulk_load(session_id, scope, segs)  # parallel locator
-            for s in segs:  # recover the monotonic clock past anything persisted
-                if s.logical_time >= self._next_lt:
-                    self._next_lt = s.logical_time + 1
+            # recover the monotonic clock past anything persisted (shared -> clock lock)
+            with self._clock_lock:
+                for s in segs:
+                    if s.logical_time >= self._next_lt:
+                        self._next_lt = s.logical_time + 1
             logger.debug(
                 "segments: cold-load session=%s scope=%s loaded=%d next_lt=%d",
                 session_id,
@@ -238,9 +268,14 @@ class SegmentStore:
         )
 
     def _new_lt(self) -> int:
-        lt = self._next_lt
-        self._next_lt += 1
-        return lt
+        """Issue the next monotonic logical tick. Guarded by its OWN tiny lock so the
+        shared clock is serialized across ALL scopes (each scope holds only its own
+        lock); the critical section is a bare increment, never disk I/O. Lock order is
+        scope -> clock, so callers must already hold a scope lock — never the reverse."""
+        with self._clock_lock:
+            lt = self._next_lt
+            self._next_lt += 1
+            return lt
 
     @staticmethod
     def _live_sorted(segs: list[Segment]) -> list[Segment]:
@@ -266,7 +301,7 @@ class SegmentStore:
     ) -> Segment:
         """append = insert(end). ``order`` = max(order)+1; cheap, never breaks the
         cached prefix. Returns the new Segment."""
-        with self._lock:
+        with self._lock_for(session_id, scope):
             segs = self._segs(session_id, scope)
             order = (max((s.order for s in segs), default=0.0)) + 1.0
             seg = Segment(
@@ -318,7 +353,7 @@ class SegmentStore:
         """Insert at render ``position`` (0-based over LIVE segments). ``order`` =
         midpoint of neighbours (gap allocation, no renumber). Breaks the prefix
         from here forward."""
-        with self._lock:
+        with self._lock_for(session_id, scope):
             segs = self._segs(session_id, scope)
             live = self._live_sorted(segs)
             order = self._order_for_position(segs, live, position)
@@ -371,7 +406,7 @@ class SegmentStore:
         """Tombstone live segments by id (render skips them). Tombstone-not-erase
         so the segment survives for Trace reconstruction / as-of-T. Returns the
         number actually tombstoned."""
-        with self._lock:
+        with self._lock_for(session_id, scope):
             segs = self._segs(session_id, scope)
             target = set(ids)
             tombstoned: list[str] = []
@@ -412,7 +447,7 @@ class SegmentStore:
         ATOMIC under the lock. The new Segment is ``kind="summary"`` with
         ``derived_from=ids``. The caller produces ``summary_content`` (the LLM
         call). context-compaction = ``summarize(all live ids)``."""
-        with self._lock:
+        with self._lock_for(session_id, scope):
             segs = self._segs(session_id, scope)
             target = set(ids)
             replaced = [s for s in segs if s.id in target and s.status == "live"]
@@ -498,7 +533,7 @@ class SegmentStore:
         passing ``kind`` re-kinds the slot. Returns the new Segment, or ``None`` if
         ``target_id`` matched no live segment.
         """
-        with self._lock:
+        with self._lock_for(session_id, scope):
             segs = self._segs(session_id, scope)
             original = next(
                 (s for s in segs if s.id == target_id and s.status == "live"), None
@@ -582,7 +617,7 @@ class SegmentStore:
         logical_time: int | None = None,
     ) -> None:
         """Log the applied op to the Trace, stamp ``trace_ref`` on written segments,
-        then persist. Called under ``self._lock``."""
+        then persist. Called under this scope's per-scope lock."""
         written = written or []
         for seg in written:  # parallel locator: index every newly-written segment
             self._index.add(session_id, scope, seg)
@@ -591,7 +626,8 @@ class SegmentStore:
         elif written:
             lt = written[0].logical_time
         else:
-            lt = self._next_lt - 1
+            with self._clock_lock:  # bare read of the shared clock high-water mark
+                lt = self._next_lt - 1
         if self._op_logger is not None:
             try:
                 event = self._op_logger(
@@ -638,7 +674,7 @@ class SegmentStore:
         if its tombstoning ``logical_time`` is at or before ``as_of``. ``as_of=None``
         is the current live view.
         """
-        with self._lock:
+        with self._lock_for(session_id, scope):
             segs = self._segs(session_id, scope)
             if as_of is None:
                 live = self._live_sorted(segs)
@@ -685,7 +721,7 @@ class SegmentStore:
     ) -> list[Segment]:
         """All segments in order (optionally including tombstoned, for replay /
         provenance). ``render`` is the live subset."""
-        with self._lock:
+        with self._lock_for(session_id, scope):
             segs = self._segs(session_id, scope)
             pool = segs if include_tombstoned else [s for s in segs if s.status == "live"]
             return sorted(pool, key=lambda s: (s.order, s.logical_time))
@@ -706,7 +742,7 @@ class SegmentStore:
         — those still scan — so the index is built+validated here without changing any
         behavior. Ensures the scope is loaded so a cold index is populated first.
         """
-        with self._lock:
+        with self._lock_for(session_id, scope):
             self._segs(session_id, scope)  # ensure cold-load (populates the index)
             return self._index.locate_ids(session_id, scope, lt_min=lt_min, lt_max=lt_max)
 
@@ -714,7 +750,7 @@ class SegmentStore:
         """Parallel-consistency check: the id SET the index locates equals the id set
         the scan (the in-memory scope list, all statuses) holds. Used by the
         index-consistency tests to assert the locator never diverges from the scan."""
-        with self._lock:
+        with self._lock_for(session_id, scope):
             scan_ids = {s.id for s in self._segs(session_id, scope)}
             index_ids = set(self._index.locate_ids(session_id, scope))
             return scan_ids == index_ids
@@ -766,19 +802,44 @@ class SegmentStore:
 
     def release(self, session_id: str) -> int:
         """Drop a session's in-memory scopes (write-through, nothing lost). Returns
-        the number of scopes released."""
-        with self._lock:
+        the number of scopes released.
+
+        Store-wide structural op: it holds the registry lock (freezing the lock set +
+        structural maps) AND each affected scope lock, so it never races a per-scope
+        op in flight. No deadlock: a per-scope op only re-touches the registry at its
+        single ``_lock_for`` entry (before taking its scope lock, releasing the
+        registry immediately) — it never holds a scope lock while waiting on the
+        registry, so this acquire-registry-then-scopes order has no reverse cycle."""
+        with self._registry_lock:
             keys = [k for k in self._scopes if k[0] == session_id]
-            for k in keys:
-                self._scopes.pop(k, None)
-                self._loaded.discard(k)
-            self._index.drop_session(session_id)  # keep the locator consistent
+            lock_keys = sorted({k for k in self._scope_locks if k[0] == session_id} | set(keys))
+            held = [self._scope_locks[k] for k in lock_keys if k in self._scope_locks]
+            for lk in held:
+                lk.acquire()
+            try:
+                for k in keys:
+                    self._scopes.pop(k, None)
+                    self._loaded.discard(k)
+                self._index.drop_session(session_id)  # keep the locator consistent
+            finally:
+                for lk in held:
+                    lk.release()
             logger.info("segments: release session=%s scopes=%d", session_id, len(keys))
             return len(keys)
 
     def clear(self) -> None:
-        """Drop ALL in-memory scope state (store untouched)."""
-        with self._lock:
-            self._scopes.clear()
-            self._loaded.clear()
-            self._index.clear()
+        """Drop ALL in-memory scope state (store untouched).
+
+        Store-wide: holds the registry lock + every scope lock (deterministic order)
+        so it never races a per-scope op (same no-deadlock argument as ``release``)."""
+        with self._registry_lock:
+            held = [self._scope_locks[k] for k in sorted(self._scope_locks)]
+            for lk in held:
+                lk.acquire()
+            try:
+                self._scopes.clear()
+                self._loaded.clear()
+                self._index.clear()
+            finally:
+                for lk in held:
+                    lk.release()
