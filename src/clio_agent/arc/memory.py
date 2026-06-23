@@ -58,10 +58,15 @@ from clio_agent.arc.storage import ARCStore, LocalFSStore
 # projection, the persisted highway record can never leak into a model prompt.
 EVENTS_SCOPE = "_events"
 
-# Event types NOT persisted as ``semantic_event`` segments. ``lm.token.delta`` is the
-# high-volume transient live-token stream (~1840/turn) that rides the highway only —
-# persisting it as one segment apiece would bloat ARC for zero record value.
-_EVENT_LOG_SKIP: frozenset[str] = frozenset({"lm.token.delta"})
+# Event types NOT persisted as ``semantic_event`` segments.
+#   * ``lm.token.delta`` — the high-volume transient live-token stream (~1840/turn)
+#     that rides the highway only; persisting one segment apiece would bloat ARC for
+#     zero record value.
+#   * ``arc.op`` — the meta-event the SegmentStore op-logger emits to DESCRIBE a
+#     segment write. Persisting it would itself be a segment write, re-triggering the
+#     op-logger -> another arc.op -> another persist -> unbounded recursion. It is
+#     already fully derivable from the segments it describes, so it is highway-only.
+_EVENT_LOG_SKIP: frozenset[str] = frozenset({"lm.token.delta", "arc.op"})
 
 # Cap any single text field copied into a persisted semantic_event segment, so a giant
 # payload (full prompt/answer) never balloons the lean ARC record. The full, uncapped

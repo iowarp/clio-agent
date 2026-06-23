@@ -465,7 +465,12 @@ def _emit_semantic_event(
             else getattr(app.state, "semantic_trace_detail_level", DEFAULT_DETAIL_LEVEL)
         ),
     )
-    return sink.emit(event)
+    # ARC-as-source: route the event through ARC FIRST so ARC records it (persist +
+    # observer fold) and DERIVES the highway (trace/SSE/hooks) from its record. When
+    # arc is None (build-time / memory-disabled / tests) fall back to sink.emit —
+    # identical fan-out, just without the ARC record (unchanged behavior).
+    rec = getattr(getattr(state, "arc", None), "record_semantic_event", None)
+    return rec(event) if rec is not None else sink.emit(event)
 
 
 def _active_lm_last_reasoning() -> str:
@@ -733,6 +738,23 @@ def _set_app_arc(app: "FastAPI", arc: Any) -> None:
     """
     app.state.arc = arc
     _wire_arc_op_logger(app)
+    # ARC-as-source: wire the highway-derive sink onto the arc so a recorded semantic
+    # event fans out to the durable trace / SSE / hooks AFTER ARC persists+folds it.
+    # The closure reads app.state.semantic_event_sink at CALL time (robust to build/
+    # async/bind ordering — the sink may be constructed after this wiring runs). The
+    # sink itself carries NO arc consumer (see build_app), so arc.record -> sink.emit
+    # has no path back into arc.record: no recursion.
+    if arc is not None and hasattr(arc, "set_highway_sink"):
+        try:
+            arc.set_highway_sink(
+                lambda e: (
+                    app.state.semantic_event_sink.emit(e)
+                    if getattr(app.state, "semantic_event_sink", None) is not None
+                    else {}
+                )
+            )
+        except Exception:  # noqa: BLE001 - highway wiring is best-effort
+            logger.debug("arc highway-sink wiring failed", exc_info=True)
 
 
 def _llm_provider_payload(app: "FastAPI", agent_id: str = "") -> dict[str, Any]:
@@ -12815,23 +12837,21 @@ def build_app(
     app.state.semantic_trace_backend = build_trace_backend(
         session_store_path.parent / "semantic_traces"
     )
-    # Register ARC as a live consumer so it folds the RAW semantic-event stream
-    # into its LiveRuntimeContext (Invocation/Conversation become projections of
-    # the trace). arc is set above; None on memory-disabled deployments.
-    _arc = getattr(app.state, "arc", None)
-    _live_consumers = (
-        [_arc.on_semantic_event]
-        if _arc is not None and hasattr(_arc, "on_semantic_event")
-        else None
-    )
+    # ARC-as-source: the sink has NO arc live_consumer. ARC is the SOURCE now —
+    # _emit_semantic_event routes each event through arc.record_semantic_event, which
+    # folds the observer (on_semantic_event) INSIDE its record and then derives THIS
+    # sink. Registering arc.on_semantic_event here too would double-fold; routing the
+    # sink back into arc would recurse. So live_consumers stays empty: arc.record ->
+    # sink.emit -> {trace, SSE, hooks} (no arc), a strict one-way derivation.
     app.state.semantic_event_sink = SemanticEventSink(
         bus=app.state.bus,
         trace_backend=app.state.semantic_trace_backend,
         detail_level=app.state.semantic_trace_detail_level,
-        live_consumers=_live_consumers,
+        live_consumers=None,
     )
-    # (ARC's arc.op op-logger is wired via _set_app_arc whenever app.state.arc is
-    # assigned — see _set_app_arc; the closure reads app.state.* at fire-time.)
+    # (ARC's arc.op op-logger AND highway-derive sink are wired via _set_app_arc
+    # whenever app.state.arc is assigned — see _set_app_arc; the highway closure reads
+    # app.state.semantic_event_sink at fire-time, so this construction order is fine.)
     # CLIO-BBBBBBBBBB14: message log keyed by session_id. Populated by
     # POST /messages, read by GET /messages, and backed by per-session
     # JSON ledgers so adapter deletion/redeploy preserves transcripts.
