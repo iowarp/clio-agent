@@ -15,9 +15,10 @@ Performance Targets:
 See docs/ARC_MEMORY_LAYER.md for architecture details.
 """
 
+import dataclasses
 import threading
 from pathlib import Path
-from typing import Any, Dict, List, Optional, cast
+from typing import Any, Callable, Dict, List, Optional, cast
 
 from clio_agent.arc.cache import LRUCache
 from clio_agent.arc.index import BTreeIndex
@@ -49,6 +50,41 @@ from clio_agent.arc.schema import (
 )
 from clio_agent.arc.segments import OpLogger, SegmentStore
 from clio_agent.arc.storage import ARCStore, LocalFSStore
+
+# Reserved scope that holds the persisted raw semantic-event stream. It is its OWN
+# scope (sibling of the observer's ``_live`` scope), so an expert/working-set render
+# (which renders a specific expert scope) never sees it; combined with
+# ``semantic_event`` not being a working-set kind nor part of the dspy trajectory
+# projection, the persisted highway record can never leak into a model prompt.
+EVENTS_SCOPE = "_events"
+
+# Event types NOT persisted as ``semantic_event`` segments. ``lm.token.delta`` is the
+# high-volume transient live-token stream (~1840/turn) that rides the highway only —
+# persisting it as one segment apiece would bloat ARC for zero record value.
+_EVENT_LOG_SKIP: frozenset[str] = frozenset({"lm.token.delta"})
+
+# Cap any single text field copied into a persisted semantic_event segment, so a giant
+# payload (full prompt/answer) never balloons the lean ARC record. The full, uncapped
+# event is always available on the durable trace.
+_EVENT_TEXT_CAP = 4096
+
+
+def _cap_event_text(value: Any) -> Any:
+    """Cap a string value to ``_EVENT_TEXT_CAP`` (non-strings pass through)."""
+    if isinstance(value, str) and len(value) > _EVENT_TEXT_CAP:
+        return value[:_EVENT_TEXT_CAP] + f"...[+{len(value) - _EVENT_TEXT_CAP} chars]"
+    return value
+
+
+def _cap_event_payload(payload: Any) -> Any:
+    """Cap large string values in a semantic event's payload (one level deep).
+
+    Keeps the persisted record lean — a giant prompt/answer string is truncated,
+    while non-string values pass through unchanged. Non-dict payloads pass through.
+    """
+    if not isinstance(payload, dict):
+        return _cap_event_text(payload)
+    return {str(k): _cap_event_text(v) for k, v in payload.items()}
 
 
 class ARCMemory:
@@ -110,6 +146,15 @@ class ARCMemory:
         # context plane ride the same buffer (and the same highway op log). Lean +
         # released by the session lifecycle below.
         self._live = LiveRuntimeContext(self._segments)
+
+        # ARC-as-source highway sink: the closure (injected by gact via
+        # ``set_highway_sink``) that DERIVES the data highway (durable trace / SSE /
+        # hooks) from a recorded semantic event. ARC records the event FIRST
+        # (persist + observer fold), THEN calls this to fan out — so ARC is the
+        # source and the highway is a projection of ARC's record. Kept as an injected
+        # callable so ``arc/`` never imports ``gact/``. ``None`` until wired (tests /
+        # memory-only deployments) -> ``record_semantic_event`` returns ``{}``.
+        self._highway_sink: Optional[Callable[[Any], Any]] = None
 
         # Cache layer (hot data)
         self._cache = LRUCache(capacity=cache_capacity)
@@ -1054,6 +1099,96 @@ class ARCMemory:
 
     # ---- Live runtime context (trace fold) ----
 
+    def set_highway_sink(self, sink: "Callable[[Any], Any] | None") -> None:
+        """Inject the highway-derive sink (called by gact at the arc choke point).
+
+        ``sink`` fans a recorded semantic event out to the data highway (durable
+        trace / SSE / hooks). ARC calls it LAST in :meth:`record_semantic_event`,
+        AFTER persisting + folding the event, so the highway is a projection of
+        ARC's record rather than a parallel consumer. Kept injected so ``arc/``
+        never imports ``gact/``.
+        """
+        self._highway_sink = sink
+
+    def record_semantic_event(self, event: Any) -> Any:
+        """ARC-as-source entry: record a semantic event, THEN derive the highway.
+
+        This is the inversion point. Every semantic event flows through ARC FIRST
+        so ARC holds everything, and the data highway is DERIVED from ARC's record:
+
+        1. ``_record_event_segment(event)`` — persist the event as one
+           ``semantic_event`` segment under the reserved ``_events`` scope (ARC's
+           complete, freeze-anytime record).
+        2. ``on_semantic_event(event)`` — fold it into the live runtime context
+           (the observer projection; unchanged).
+        3. ``self._highway_sink(event)`` — derive the highway (durable trace / SSE /
+           hooks). Returns the sink's value (the projected event dict) so callers
+           that expected ``sink.emit(event)``'s return are unaffected; ``{}`` when
+           no sink is wired.
+
+        Each step is guarded so an observability record can never break a turn.
+        """
+        try:
+            self._record_event_segment(event)
+        except Exception:  # noqa: BLE001 - persistence is best-effort; never break a turn
+            pass
+        try:
+            self.on_semantic_event(event)
+        except Exception:  # noqa: BLE001 - observer fold is best-effort; never break a turn
+            pass
+        sink = self._highway_sink
+        if sink is None:
+            return {}
+        return sink(event)
+
+    def _record_event_segment(self, event: Any) -> None:
+        """Persist one semantic event as a ``semantic_event`` segment (append-only).
+
+        Skips the high-volume transient token stream (``_EVENT_LOG_SKIP``) and any
+        event without an event_type or session_id. Builds a lean content dict from
+        the SemanticEvent's fields (large text capped), correlated by the event's
+        trajectory span ids, and appends ONE segment under the reserved ``_events``
+        scope. Never rendered into a prompt (own scope + non-working-set kind)."""
+        etype = str(getattr(event, "event_type", "") or "")
+        if not etype or etype in _EVENT_LOG_SKIP:
+            return
+        sid = str(getattr(event, "session_id", "") or "")
+        if not sid:
+            return
+        # Lean content: the envelope fields plus the body dicts, with any large text
+        # capped. dataclasses.asdict gives a deep copy of the SemanticEvent; fall back
+        # to per-field reads for non-dataclass events.
+        if dataclasses.is_dataclass(event) and not isinstance(event, type):
+            raw = dataclasses.asdict(event)
+        else:
+            raw = {
+                "event_type": etype,
+                "status": str(getattr(event, "status", "") or ""),
+                "summary": str(getattr(event, "summary", "") or ""),
+                "actor": getattr(event, "actor", {}) or {},
+                "subject": getattr(event, "subject", {}) or {},
+                "payload": getattr(event, "payload", {}) or {},
+                "provider": getattr(event, "provider", {}) or {},
+            }
+        content: Dict[str, Any] = {
+            "event_type": etype,
+            "status": _cap_event_text(raw.get("status") or ""),
+            "summary": _cap_event_text(raw.get("summary") or ""),
+            "actor": raw.get("actor") or {},
+            "subject": raw.get("subject") or {},
+            "payload": _cap_event_payload(raw.get("payload") or {}),
+            "provider": raw.get("provider") or {},
+        }
+        self._segments.append(
+            sid,
+            EVENTS_SCOPE,
+            cast(SegmentKind, "semantic_event"),
+            content,
+            step=-1,
+            turn_id=str(getattr(event, "turn_id", "") or ""),
+            expert_span_id=str(getattr(event, "expert_span_id", "") or ""),
+        )
+
     def on_semantic_event(self, event: Any) -> None:
         """Fold one RAW semantic event into the live runtime context.
 
@@ -1299,6 +1434,10 @@ class ARCMemory:
 
         # Outside the lock: LiveRuntimeContext and SegmentStore have their own locks.
         live = self._live.release(session_id)
+        # The reserved ``_events`` scope (persisted raw semantic-event stream) is an
+        # ephemeral observer/highway record like ``_live`` — ERASE it on release so an
+        # idle server returns to baseline (the durable trace keeps the full history).
+        self._segments.drop_scope(session_id, EVENTS_SCOPE)
         segments = self._segments.release(session_id)
         return {
             "cache": evicted_cache,
@@ -1325,7 +1464,18 @@ class ARCMemory:
             self._conv_index.clear()
             self._inv_index.clear()
         self._live.clear()
+        self._drop_all_event_scopes()  # erase persisted ``_events`` records too
         self._segments.clear()
+
+    def _drop_all_event_scopes(self) -> None:
+        """Erase the reserved ``_events`` scope across every session that holds one.
+
+        Mirrors :meth:`LiveRuntimeContext.clear` for the persisted semantic-event
+        stream: the durable trace retains the full history, so dropping these
+        ephemeral highway records returns an idle server to baseline.
+        """
+        for session_id in self._segments.sessions_with_scope(EVENTS_SCOPE):
+            self._segments.drop_scope(session_id, EVENTS_SCOPE)
 
     def clear_cache(self) -> None:
         """Clear in-memory cache (preserves disk storage).
