@@ -3,8 +3,8 @@
 An ordered, scoped, mutable sequence of :class:`~clio_agent.arc.schema.Segment`s
 that the gact ReAct loop reads from on every iteration. The loop *writes* one
 segment per produced piece (thought / tool_call / observation) and *reads* the
-prompt back by rendering the live ordered set (see ``render_keys``). The four
-context operations — ``append`` / ``insert`` / ``delete`` / ``summarize`` —
+prompt back by rendering the live ordered set (see ``render_keys``). The context
+operations — ``append`` / ``insert`` / ``delete`` / ``summarize`` / ``replace`` —
 mutate segments between renders, so an out-of-band edit changes the *next*
 prompt. That is the whole point of the live plane.
 
@@ -406,11 +406,85 @@ class SegmentStore:
             )
             return summary
 
+    def replace(
+        self,
+        session_id: str,
+        scope: str,
+        target_id: str,
+        content: dict[str, Any],
+        *,
+        kind: SegmentKind | None = None,
+        trace_ref: str = "",
+        token_count: int = 0,
+    ) -> Segment | None:
+        """Replace a live segment's content in place (a logical-time tick that
+        tombstones the original and emits a fresh segment at the SAME render slot).
+
+        Like ``summarize``/``delete``, this TICKS the clock and TOMBSTONES rather than
+        mutating in place, so the pre-replace view is recoverable as-of-T: the original
+        keeps its creation ``logical_time`` and gets ``tombstoned_at`` = the replace
+        tick, while the replacement is created at that tick and inherits the original's
+        ``order`` (so it renders exactly where the original was). ``derived_from`` links
+        the replacement back to the id it superseded (1:1 provenance, vs summarize's
+        many:1). ``kind`` defaults to the original's kind (a pure content edit);
+        passing ``kind`` re-kinds the slot. Returns the new Segment, or ``None`` if
+        ``target_id`` matched no live segment.
+        """
+        with self._lock:
+            segs = self._segs(session_id, scope)
+            original = next(
+                (s for s in segs if s.id == target_id and s.status == "live"), None
+            )
+            if original is None:
+                logger.debug(
+                    "segments: replace scope=%s matched no live id=%s (no-op)",
+                    scope,
+                    target_id,
+                )
+                return None
+            op_lt = self._new_lt()
+            original.status = "tombstoned"
+            original.tombstoned_at = op_lt  # replaced exactly when the new segment appears
+            replacement = Segment(
+                scope=scope,
+                kind=kind if kind is not None else original.kind,
+                content=content,
+                session_id=session_id,
+                step=original.step,
+                order=original.order,  # same render slot
+                logical_time=op_lt,
+                token_count=token_count,
+                derived_from=[original.id],
+                trace_ref=trace_ref,
+            )
+            segs.append(replacement)
+            logger.debug(
+                "segments: replace scope=%s target=%s -> id=%s kind=%s lt=%d order=%.4f",
+                scope,
+                target_id,
+                replacement.id,
+                replacement.kind,
+                op_lt,
+                replacement.order,
+            )
+            self._finish_write(
+                session_id,
+                scope,
+                "replace",
+                written=[replacement],
+                tombstoned=[original.id],
+                step=original.step,
+                derived_from=[original.id],
+                logical_time=op_lt,
+            )
+            return replacement
+
     def apply(self, op: str, session_id: str, scope: str, **kwargs: Any) -> Any:
-        """Stable dispatch over the four ops — the KV-backend swap seam.
+        """Stable dispatch over the context ops — the KV-backend swap seam.
 
         Raises:
-            ValueError: if ``op`` is not one of append/insert/delete/summarize.
+            ValueError: if ``op`` is not one of
+                append/insert/delete/summarize/replace.
         """
         if op == "append":
             return self.append(session_id, scope, **kwargs)
@@ -420,6 +494,8 @@ class SegmentStore:
             return self.delete(session_id, scope, **kwargs)
         if op == "summarize":
             return self.summarize(session_id, scope, **kwargs)
+        if op == "replace":
+            return self.replace(session_id, scope, **kwargs)
         raise ValueError(f"unknown segment op: {op!r}")
 
     # ---- write finalization (persist + Trace log + trace_ref back-link) ----

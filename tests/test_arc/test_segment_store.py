@@ -8,8 +8,10 @@ real dspy render live in test_live_plane_byte_equality.py.
 
 from __future__ import annotations
 
+import msgspec
 import pytest
 
+from clio_agent.arc.schema import Segment, decode_segment, decode_segments, encode_segments
 from clio_agent.arc.segments import SegmentStore
 from clio_agent.arc.storage import ARC_KINDS, LocalFSStore
 
@@ -189,3 +191,158 @@ def test_release_drops_memory_keeps_store(tmp_path):
     assert ss.release(SID) == 1
     # reload from the same backend: data survived the in-memory release
     assert "persisted" in str(ss.render_keys(SID, SCOPE))
+
+
+# ---- schema extension (additive, msgspec back-compatible) ------------------
+
+
+def test_new_kinds_round_trip():
+    """The richer ARC-as-source kinds (lm_io / extract_io / answer) encode and
+    decode through the locked Segment schema."""
+    for kind in ("lm_io", "extract_io", "answer"):
+        seg = Segment(
+            scope="agentA/exp",
+            kind=kind,
+            content={"text": f"{kind}-payload"},
+            session_id=SID,
+            step=0,
+            order=1.0,
+            logical_time=1,
+        )
+        back = decode_segments(encode_segments([seg]))[0]
+        assert back.kind == kind
+        assert back.content == {"text": f"{kind}-payload"}
+
+
+def test_new_span_fields_round_trip_and_default():
+    """turn_id / expert_span_id / run_span_id round-trip when set, default to ''."""
+    seg = Segment(
+        scope="agentA/exp",
+        kind="thought",
+        content={"text": "x"},
+        session_id=SID,
+        step=0,
+        order=1.0,
+        logical_time=1,
+        turn_id="turn-1",
+        expert_span_id="espan-1",
+        run_span_id="run-1",
+    )
+    back = decode_segments(encode_segments([seg]))[0]
+    assert (back.turn_id, back.expert_span_id, back.run_span_id) == (
+        "turn-1",
+        "espan-1",
+        "run-1",
+    )
+    # An unstamped segment defaults the span ids to "".
+    bare = Segment(
+        scope="s", kind="thought", content={}, session_id=SID, step=0, order=1.0, logical_time=2
+    )
+    assert (bare.turn_id, bare.expert_span_id, bare.run_span_id) == ("", "", "")
+
+
+def test_old_record_decodes_under_extended_schema():
+    """A record encoded WITHOUT the new fields (the pre-extension on-disk shape) must
+    still decode under the extended Segment — back-compat is the whole point of the
+    additive, default-bearing extension. We simulate an old record by encoding a
+    msgspec.Struct that lacks the new fields, then decoding it as a Segment."""
+
+    class _OldSegment(msgspec.Struct):
+        scope: str
+        kind: str
+        content: dict
+        session_id: str
+        step: int
+        order: float
+        logical_time: int
+        id: str = "old-id"
+        token_count: int = 0
+        derived_from: list = msgspec.field(default_factory=list)
+        status: str = "live"
+        tombstoned_at: int = 0
+        trace_ref: str = ""
+        created_at: float = 123.0
+
+    old = _OldSegment(
+        scope="agentA/exp",
+        kind="thought",
+        content={"text": "legacy"},
+        session_id=SID,
+        step=0,
+        order=1.0,
+        logical_time=5,
+    )
+    raw = msgspec.msgpack.encode(old)
+    decoded = decode_segment(raw)
+    assert decoded.kind == "thought"
+    assert decoded.content == {"text": "legacy"}
+    assert decoded.id == "old-id"
+    # the new fields fill in with their defaults
+    assert (decoded.turn_id, decoded.expert_span_id, decoded.run_span_id) == ("", "", "")
+
+
+# ---- replace op (tick + tombstone, as-of-T recoverable) --------------------
+
+
+def test_replace_swaps_content_in_render(tmp_path):
+    ss, logged = _store(tmp_path)
+    orig = ss.append(SID, SCOPE, "observation", {"text": "before"}, step=0)
+    new = ss.replace(SID, SCOPE, orig.id, {"text": "after"})
+    assert new is not None
+    rendered = str(ss.render_keys(SID, SCOPE))
+    assert "after" in rendered and "before" not in rendered
+    # replacement renders in the ORIGINAL's slot (same order), 1:1 provenance
+    assert new.order == orig.order
+    assert new.derived_from == [orig.id]
+    assert logged[-1]["op"] == "replace"
+    assert logged[-1]["segments_tombstoned"] == [orig.id]
+
+
+def test_replace_tombstones_original_keeps_for_replay(tmp_path):
+    ss, _ = _store(tmp_path)
+    orig = ss.append(SID, SCOPE, "thought", {"text": "v1"}, step=0)
+    ss.replace(SID, SCOPE, orig.id, {"text": "v2"})
+    all_segs = ss.list_segments(SID, SCOPE, include_tombstoned=True)
+    tomb = next(s for s in all_segs if s.id == orig.id)
+    assert tomb.status == "tombstoned" and tomb.tombstoned_at > 0
+    # exactly one live segment now (the replacement)
+    assert len(ss.render(SID, SCOPE)) == 1
+
+
+def test_replace_as_of_recovers_pre_replace_view(tmp_path):
+    ss, _ = _store(tmp_path)
+    orig = ss.append(SID, SCOPE, "observation", {"text": "ORIGINAL"}, step=0)
+    snapshot = max(s.logical_time for s in ss.list_segments(SID, SCOPE))
+    ss.replace(SID, SCOPE, orig.id, {"text": "REPLACED"})
+    # current view: replaced
+    assert "REPLACED" in str(ss.render_keys(SID, SCOPE))
+    assert "ORIGINAL" not in str(ss.render_keys(SID, SCOPE))
+    # as-of-T (before the replace tick): the original is recoverable
+    assert "ORIGINAL" in str(ss.render_keys(SID, SCOPE, as_of=snapshot))
+    assert "REPLACED" not in str(ss.render_keys(SID, SCOPE, as_of=snapshot))
+
+
+def test_replace_can_rekind_the_slot(tmp_path):
+    ss, _ = _store(tmp_path)
+    orig = ss.append(SID, SCOPE, "thought", {"text": "T"}, step=0)
+    new = ss.replace(SID, SCOPE, orig.id, {"text": "now an obs"}, kind="observation")
+    assert new is not None and new.kind == "observation"
+    # default (no kind) inherits the original's kind
+    new2 = ss.replace(SID, SCOPE, new.id, {"text": "still obs"})
+    assert new2 is not None and new2.kind == "observation"
+
+
+def test_replace_no_live_target_is_noop(tmp_path):
+    ss, logged = _store(tmp_path)
+    ss.append(SID, SCOPE, "thought", {"text": "x"})
+    n_before = len(logged)
+    assert ss.replace(SID, SCOPE, "does-not-exist", {"text": "y"}) is None
+    assert len(logged) == n_before  # no op logged for a no-op replace
+
+
+def test_replace_via_apply_dispatch(tmp_path):
+    ss, _ = _store(tmp_path)
+    orig = ss.append(SID, SCOPE, "thought", {"text": "old"})
+    out = ss.apply("replace", SID, SCOPE, target_id=orig.id, content={"text": "new"})
+    assert out is not None and out.content == {"text": "new"}
+    assert "new" in str(ss.render_keys(SID, SCOPE))
