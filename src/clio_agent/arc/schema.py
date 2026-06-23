@@ -72,6 +72,7 @@ SegmentKind = Literal[
     "lm_io",  # one raw LM call's input + output (the I/O of a single ReAct step)
     "extract_io",  # a dspy.Extract call's input + output
     "answer",  # an expert/turn final message
+    "turn_event",  # one folded semantic event (the live-observer's per-turn fold atom)
 ]
 SegmentStatus = Literal["live", "tombstoned"]
 

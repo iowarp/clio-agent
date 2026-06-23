@@ -156,6 +156,10 @@ class SegmentIndex:
         for key in [k for k in self._by_scope if k[0] == session_id]:
             self._by_scope.pop(key, None)
 
+    def drop_scope(self, session_id: str, scope: str) -> None:
+        """Forget a single scope's locator (mirrors SegmentStore.drop_scope)."""
+        self._by_scope.pop((session_id, scope), None)
+
     def clear(self) -> None:
         self._by_scope.clear()
 
@@ -849,6 +853,28 @@ class SegmentStore:
         return out
 
     # ---- lifecycle -----------------------------------------------------
+
+    def drop_scope(self, session_id: str, scope: str) -> int:
+        """ERASE one ``(session_id, scope)`` from the in-memory copy AND the durable
+        store, returning the number of segments dropped.
+
+        Unlike :meth:`delete` (which tombstones live segments, keeping them for replay)
+        and :meth:`release` (which only drops the in-memory copy, leaving the store
+        record intact for reload), this fully removes the scope's record so a later
+        ``render`` returns nothing and the store no longer holds it. It is the lifecycle
+        eraser for reserved/ephemeral scopes (e.g. the live-observer's ``_live`` scope),
+        which must return to baseline on session release / wholesale clear rather than
+        persist for replay. Held under this scope's per-scope lock."""
+        with self._lock_for(session_id, scope):
+            key = (session_id, scope)
+            existing = self._segs(session_id, scope)
+            count = len(existing)
+            self._scopes.pop(key, None)
+            self._loaded.discard(key)
+            self._index.drop_scope(session_id, scope)
+            self._store.delete("segments", self._record_name(session_id, scope))
+            logger.debug("segments: drop_scope session=%s scope=%s dropped=%d", session_id, scope, count)
+            return count
 
     def release(self, session_id: str) -> int:
         """Drop a session's in-memory scopes (write-through, nothing lost). Returns

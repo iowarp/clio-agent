@@ -104,8 +104,12 @@ class ARCMemory:
         # Live runtime context: folds the canonical semantic-event stream into
         # per-session state so Invocation/Conversation are projections of the
         # trace, not post-hoc rebuilds. Fed via on_semantic_event (registered as
-        # a sink live_consumer). Lean + released by the session lifecycle below.
-        self._live = LiveRuntimeContext()
+        # a sink live_consumer). It has NO private store of its own -- its state
+        # lives in the ONE segment buffer above (a reserved ``_live`` scope, as
+        # append-only ``turn_event`` segments), so the observer and the live
+        # context plane ride the same buffer (and the same highway op log). Lean +
+        # released by the session lifecycle below.
+        self._live = LiveRuntimeContext(self._segments)
 
         # Cache layer (hot data)
         self._cache = LRUCache(capacity=cache_capacity)
