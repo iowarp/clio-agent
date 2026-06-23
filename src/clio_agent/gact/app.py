@@ -699,6 +699,29 @@ def _emit_arc_op(
     return event
 
 
+def _wire_arc_op_logger(app: "FastAPI") -> None:
+    """Wire the durable-Trace op-logger into ``app.state.arc``'s segment store.
+
+    Each applied context op (add/insert/remove/replace/compress) is mirrored to the
+    Trace + SSE as an ``arc.op`` event; ``arc/`` stays free of any ``gact/`` import
+    via this injected closure. Best-effort + idempotent.
+
+    MUST be called whenever ``app.state.arc`` is (re)assigned — in particular the
+    ASYNC ``_construct_agent_async`` path: the real agent's ``ARCMemory`` is built
+    AFTER ``build_app`` runs, so the build-time wiring saw ``arc=None`` and never
+    wired it. Without this, ARC writes happen (the loop's live context plane works)
+    but emit NO ``arc.op`` -> the Trace/highway/interface never see the writes.
+    """
+    arc = getattr(getattr(app, "state", None), "arc", None)
+    if arc is not None and hasattr(arc, "set_segment_op_logger"):
+        try:
+            arc.set_segment_op_logger(
+                lambda op, session_id, scope, **kw: _emit_arc_op(app, op, session_id, scope, **kw)
+            )
+        except Exception:  # noqa: BLE001 - observability wiring is best-effort
+            logger.debug("arc op-logger wiring failed", exc_info=True)
+
+
 def _llm_provider_payload(app: "FastAPI", agent_id: str = "") -> dict[str, Any]:
     cfg = _effective_lm_config(app)
     return {
@@ -12615,6 +12638,10 @@ async def _construct_agent_async(app: "FastAPI") -> None:
 
     app.state.agent = agent
     app.state.arc = agent.arc
+    # The agent's ARCMemory is built HERE (async), after build_app ran with
+    # arc=None — so wire the arc.op op-logger onto it now, else ARC writes emit no
+    # arc.op and the Trace/highway/interface never see the live-context-plane writes.
+    _wire_arc_op_logger(app)
 
     # Install the deferred permission gate + tool observer now that we
     # know an agent exists to gate. See build_app for why these aren't
@@ -12796,10 +12823,7 @@ def build_app(
     # app and the sink exist. Each applied context op (append/insert/delete/
     # summarize) is mirrored to the Trace as an ``arc.op`` event; ``arc/`` stays
     # free of any ``gact/`` import via this injected closure.
-    if _arc is not None and hasattr(_arc, "set_segment_op_logger"):
-        _arc.set_segment_op_logger(
-            lambda op, session_id, scope, **kw: _emit_arc_op(app, op, session_id, scope, **kw)
-        )
+    _wire_arc_op_logger(app)
     # CLIO-BBBBBBBBBB14: message log keyed by session_id. Populated by
     # POST /messages, read by GET /messages, and backed by per-session
     # JSON ledgers so adapter deletion/redeploy preserves transcripts.
