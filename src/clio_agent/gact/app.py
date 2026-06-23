@@ -401,6 +401,14 @@ def _with_ui_safe_semantic_fields(
     return enriched
 
 
+# The ONE ARC for this process (the keystone is a per-process singleton). Published by
+# ``_set_app_arc`` so every emit context — including deep/threaded ones where the request
+# app isn't reachable — resolves the SAME ARC and routes through it. ARC is the SOURCE of
+# the highway; there is intentionally NO silent fallback if it is absent
+# (``_emit_semantic_event`` raises). ``None`` only before any agent/ARC is constructed.
+_PROCESS_ARC: Any = None
+
+
 def _emit_semantic_event(
     app: "FastAPI",
     sid: str,
@@ -465,12 +473,23 @@ def _emit_semantic_event(
             else getattr(app.state, "semantic_trace_detail_level", DEFAULT_DETAIL_LEVEL)
         ),
     )
-    # ARC-as-source: route the event through ARC FIRST so ARC records it (persist +
-    # observer fold) and DERIVES the highway (trace/SSE/hooks) from its record. When
-    # arc is None (build-time / memory-disabled / tests) fall back to sink.emit —
-    # identical fan-out, just without the ARC record (unchanged behavior).
-    rec = getattr(getattr(state, "arc", None), "record_semantic_event", None)
-    return rec(event) if rec is not None else sink.emit(event)
+    # ARC is the SOURCE of the highway: EVERY semantic event MUST enter through ARC, which
+    # records it (current-view update) and DERIVES the highway (trace/SSE/hooks) from that
+    # record. There is exactly ONE ARC per process; resolve it from the request app, else
+    # the process singleton (a deep/threaded emit context may not carry the app). If it is
+    # STILL not reachable, FAIL LOUD — never silently fall back to sink.emit, which would
+    # feed the trace/UI an event ARC never saw (a hidden split: trace has data ARC doesn't).
+    arc = getattr(state, "arc", None) or _PROCESS_ARC
+    rec = getattr(arc, "record_semantic_event", None)
+    if rec is None:
+        msg = (
+            f"ARC-as-source violated: no ARC visible when emitting semantic event "
+            f"{event_type!r} (session={sid!r}). The highway must derive from ARC; "
+            f"refusing to bypass it via a silent fallback."
+        )
+        logger.error(msg)
+        raise RuntimeError(msg)
+    return rec(event)
 
 
 def _active_lm_last_reasoning() -> str:
@@ -735,8 +754,15 @@ def _set_app_arc(app: "FastAPI", arc: Any) -> None:
     build, async agent construction, or an LM re-bind). ``arc`` may be None (no-op
     wiring). A guardrail test asserts there is no raw ``app.state.arc =`` outside
     this helper, so a future arc-swap site cannot silently drop the op-logger.
+
+    Also publishes the ONE process-wide ARC singleton (``_PROCESS_ARC``) so every emit
+    context — including deep/threaded ones that can't reach the request app — resolves the
+    SAME ARC and routes through it (ARC is the source; no silent bypass).
     """
+    global _PROCESS_ARC
     app.state.arc = arc
+    if arc is not None:
+        _PROCESS_ARC = arc
     _wire_arc_op_logger(app)
     # ARC-as-source: wire the highway-derive sink onto the arc so a recorded semantic
     # event fans out to the durable trace / SSE / hooks AFTER ARC persists+folds it.

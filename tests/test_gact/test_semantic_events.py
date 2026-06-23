@@ -74,15 +74,20 @@ def test_semantic_events_stream_and_trace_file(tmp_path: Path, monkeypatch) -> N
 
     completed_idx = next(i for i, e in enumerate(history) if e.type == "message.completed")
     semantic_completed_idx = next(
-        i for i, e in enumerate(history) if e.type == "semantic.event"
-        and e.payload["event_type"] == "turn.completed"
+        i
+        for i, e in enumerate(history)
+        if e.type == "semantic.event" and e.payload["event_type"] == "turn.completed"
     )
     assert semantic_completed_idx < completed_idx
 
     app.state.semantic_trace_backend.flush()  # off-loop writer: drain before reading
     trace_path = trace_dir / f"{sid}.semantic.jsonl"
     rows = [json.loads(line) for line in trace_path.read_text().splitlines()]
-    assert [row["event_type"] for row in rows[:3]] == [
+    # ARC is the source: with a real ARC wired, its op-logger also mirrors each ARC
+    # write onto the durable trace as ``arc.op`` rows (interleaved with the semantic
+    # events). Filter them out to assert the leading SEMANTIC event sequence.
+    semantic_rows = [row for row in rows if row["event_type"] != "arc.op"]
+    assert [row["event_type"] for row in semantic_rows[:3]] == [
         "turn.started",
         "hook.invocation.started",
         "hook.invocation.completed",
@@ -233,9 +238,7 @@ def test_tool_observer_emits_semantic_tool_events(tmp_path: Path, monkeypatch) -
     observer("fs_read_file", {"path": "x.txt"}, "completed", None)
 
     semantic = [
-        e.payload
-        for e in app.state.bus._history.get(sid, [])
-        if e.type == "semantic.event"
+        e.payload for e in app.state.bus._history.get(sid, []) if e.type == "semantic.event"
     ]
     assert [e["event_type"] for e in semantic] == [
         "tool.call.started",
@@ -256,9 +259,7 @@ def test_artifact_and_builtin_command_semantic_events(tmp_path: Path, monkeypatc
     client.post(f"/v1/sessions/{sid}/commands/cache-stats")
 
     semantic = [
-        e.payload
-        for e in app.state.bus._history.get(sid, [])
-        if e.type == "semantic.event"
+        e.payload for e in app.state.bus._history.get(sid, []) if e.type == "semantic.event"
     ]
     artifact = next(e for e in semantic if e["event_type"] == "artifact.proposed")
     command = next(e for e in semantic if e["event_type"] == "command.invocation.completed")
@@ -286,7 +287,9 @@ def test_lm_token_delta_projection_contract():
         trace_id="trace_x",
         turn_id="turn_x",
         actor={"agent_id": "synthesis", "role": "expert"},
-        payload=lm_token_delta_payload(content="Hello ", reasoning="let me think...", field="answer"),
+        payload=lm_token_delta_payload(
+            content="Hello ", reasoning="let me think...", field="answer"
+        ),
     )
 
     sse = project_sse(ev)

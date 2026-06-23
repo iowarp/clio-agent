@@ -61,6 +61,24 @@ from clio_agent.gact.types import AgentDef
 from tests.test_gact.conftest import complete_turn
 
 
+class _SinkArc:
+    """Minimal ARC-as-source stub for fake-app emit tests.
+
+    ARC is the source of the highway: ``_emit_semantic_event`` routes every event
+    through ``arc.record_semantic_event``, which (in production) records ARC's view and
+    then DERIVES the highway via the sink wired in ``_set_app_arc``. These tests build a
+    bare ``SimpleNamespace`` app to assert events reach a ``FakeSink``; this stub stands
+    in for ARC and forwards each recorded event to that sink, so the fail-loud
+    ARC-reachability check is satisfied without bypassing ARC.
+    """
+
+    def __init__(self, sink: Any) -> None:
+        self._sink = sink
+
+    def record_semantic_event(self, event: Any) -> Any:
+        return self._sink.emit(event)
+
+
 def _write_blueprint(root: Path, blueprint_id: str = "genomics") -> None:
     (root / "experts").mkdir(parents=True)
     root.joinpath("AGENT.md").write_text(
@@ -2016,9 +2034,11 @@ def test_generated_child_expert_tool_emits_semantic_delegation_events(
             emitted.append(row)
             return row
 
+    sink = FakeSink()
     app = SimpleNamespace(
         state=SimpleNamespace(
-            semantic_event_sink=FakeSink(),
+            semantic_event_sink=sink,
+            arc=_SinkArc(sink),
             sessions=SimpleNamespace(get=lambda sid: SimpleNamespace(workspace_id="ws_default")),
             semantic_trace_detail_level="semantic",
         )
@@ -2076,9 +2096,11 @@ def test_blueprint_fanout_tool_enforces_bounds_and_emits_events(
             emitted.append(row)
             return row
 
+    sink = FakeSink()
     app = SimpleNamespace(
         state=SimpleNamespace(
-            semantic_event_sink=FakeSink(),
+            semantic_event_sink=sink,
+            arc=_SinkArc(sink),
             sessions=SimpleNamespace(get=lambda sid: SimpleNamespace(workspace_id="ws_default")),
             semantic_trace_detail_level="semantic",
         )

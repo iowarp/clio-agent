@@ -35,6 +35,28 @@ def _reset_runtime_context():
 
 
 @pytest.fixture(autouse=True)
+def _reset_process_arc():
+    """Isolate each test from the one per-process ARC singleton (#714).
+
+    ``_set_app_arc`` publishes ``clio_agent.gact.app._PROCESS_ARC`` so deep/threaded
+    emit contexts that cannot reach the request app still route through the SAME ARC
+    (ARC is the source of the highway; ``_emit_semantic_event`` fails loud when no ARC
+    is reachable). Because it is a module global it persists across tests: a later
+    no-arc emit could silently resolve a *prior* test's ARC, making the fail-loud
+    behavior order-dependent. Reset it to ``None`` around every test so a test that
+    exercises the no-arc path sees a truly absent ARC regardless of run order.
+    """
+    from clio_agent.gact import app as gact_app
+
+    saved = gact_app._PROCESS_ARC
+    gact_app._PROCESS_ARC = None
+    try:
+        yield
+    finally:
+        gact_app._PROCESS_ARC = saved
+
+
+@pytest.fixture(autouse=True)
 def allow_pytest_tmp_path(tmp_path, monkeypatch):
     """Isolate tests from developer shell defaults.
 

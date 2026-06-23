@@ -23,6 +23,23 @@ class _AttrDict(dict):
             raise AttributeError(name) from exc
 
 
+class _SinkArc:
+    """Minimal ARC-as-source stub: forwards each recorded event to the sink.
+
+    ARC is the source of the highway; ``_emit_semantic_event`` routes every event
+    through ``arc.record_semantic_event`` (which, in production, records ARC's view and
+    DERIVES the highway via the sink wired by ``_set_app_arc``). These tests build a bare
+    app to drive ``_emit_semantic_event`` through a real sink; this stub stands in for ARC
+    and forwards to that sink, satisfying the fail-loud ARC-reachability check.
+    """
+
+    def __init__(self, sink):
+        self._sink = sink
+
+    def record_semantic_event(self, event):
+        return self._sink.emit(event)
+
+
 def test_repair_temperature_constant_no_drift():
     # Retries REUSE the base temp (cache-off resampling already varies them; bumping
     # temp would raise format drift, which the parse-error class can't tolerate).
@@ -262,9 +279,13 @@ def test_emit_semantic_event_nests_under_active_span():
             captured["event"] = event
             return {}
 
+    sink = _Sink()
     app = types.SimpleNamespace(
         state=types.SimpleNamespace(
-            semantic_event_sink=_Sink(), sessions={}, semantic_trace_detail_level="semantic"
+            semantic_event_sink=sink,
+            arc=_SinkArc(sink),
+            sessions={},
+            semantic_trace_detail_level="semantic",
         )
     )
 
@@ -295,9 +316,13 @@ def test_react_loop_emits_full_correlated_tree_through_real_sink():
             events.append(ev)
             return {}
 
+    sink = _Sink()
     app = types.SimpleNamespace(
         state=types.SimpleNamespace(
-            semantic_event_sink=_Sink(), sessions={}, semantic_trace_detail_level="semantic"
+            semantic_event_sink=sink,
+            arc=_SinkArc(sink),
+            sessions={},
+            semantic_trace_detail_level="semantic",
         )
     )
 
@@ -453,8 +478,6 @@ def test_reextract_returns_none_without_retained_trajectory():
 
 def test_reextract_returns_none_when_extract_fails():
     prog = _FakeProgram(fail=True)
-    ctx.install_trajectory(
-        {"trajectory": {"tool_name_0": "x"}, "input_args": {"question": "q"}}
-    )
+    ctx.install_trajectory({"trajectory": {"tool_name_0": "x"}, "input_args": {"question": "q"}})
     # extract raises again -> None, so the caller falls back to full re-ask.
     assert gact_app._reextract_over_retained_trajectory(prog, "hint") is None
