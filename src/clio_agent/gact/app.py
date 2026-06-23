@@ -722,6 +722,19 @@ def _wire_arc_op_logger(app: "FastAPI") -> None:
             logger.debug("arc op-logger wiring failed", exc_info=True)
 
 
+def _set_app_arc(app: "FastAPI", arc: Any) -> None:
+    """The single choke point for (re)assigning ``app.state.arc``.
+
+    Sets it AND wires the arc.op op-logger onto it, so ARC writes are ALWAYS
+    observable on the Trace/highway no matter which path swapped the arc (initial
+    build, async agent construction, or an LM re-bind). ``arc`` may be None (no-op
+    wiring). A guardrail test asserts there is no raw ``app.state.arc =`` outside
+    this helper, so a future arc-swap site cannot silently drop the op-logger.
+    """
+    app.state.arc = arc
+    _wire_arc_op_logger(app)
+
+
 def _llm_provider_payload(app: "FastAPI", agent_id: str = "") -> dict[str, Any]:
     cfg = _effective_lm_config(app)
     return {
@@ -12637,11 +12650,9 @@ async def _construct_agent_async(app: "FastAPI") -> None:
         return
 
     app.state.agent = agent
-    app.state.arc = agent.arc
-    # The agent's ARCMemory is built HERE (async), after build_app ran with
-    # arc=None — so wire the arc.op op-logger onto it now, else ARC writes emit no
-    # arc.op and the Trace/highway/interface never see the live-context-plane writes.
-    _wire_arc_op_logger(app)
+    # The agent's ARCMemory is built HERE (async), after build_app ran with arc=None;
+    # _set_app_arc (re)wires the arc.op op-logger so ARC writes are observable.
+    _set_app_arc(app, agent.arc)
 
     # Install the deferred permission gate + tool observer now that we
     # know an agent exists to gate. See build_app for why these aren't
@@ -12780,7 +12791,7 @@ def build_app(
     session_store_path = sessions_path if sessions_path is not None else _default_store_path()
     app.state.sessions = SessionStore(path=session_store_path)
     app.state.agent = agent  # may be None; POST message checks before using
-    app.state.arc = arc  # may be None; /v1/memory/stats returns zeros in that case
+    _set_app_arc(app, arc)  # arc may be None; /v1/memory/stats returns zeros then
     prompt_write_root = session_store_path.parent / "prompts"
     app.state.prompt_registry = PromptRegistry(
         sources=[
@@ -12819,11 +12830,8 @@ def build_app(
         detail_level=app.state.semantic_trace_detail_level,
         live_consumers=_live_consumers,
     )
-    # Wire the durable-Trace op logger into ARC's segment store now that both the
-    # app and the sink exist. Each applied context op (append/insert/delete/
-    # summarize) is mirrored to the Trace as an ``arc.op`` event; ``arc/`` stays
-    # free of any ``gact/`` import via this injected closure.
-    _wire_arc_op_logger(app)
+    # (ARC's arc.op op-logger is wired via _set_app_arc whenever app.state.arc is
+    # assigned — see _set_app_arc; the closure reads app.state.* at fire-time.)
     # CLIO-BBBBBBBBBB14: message log keyed by session_id. Populated by
     # POST /messages, read by GET /messages, and backed by per-session
     # JSON ledgers so adapter deletion/redeploy preserves transcripts.
@@ -22560,7 +22568,10 @@ def build_app(
         # state it owns; Python's GC will clean up.
         _stamp_process_env(cfg, resolved_api_key or "x")
         app.state.agent = agent
-        app.state.arc = agent.arc
+        # The bind swaps in a freshly-built agent (new ARCMemory); _set_app_arc
+        # re-wires the arc.op op-logger (every real run binds — without it the live
+        # path stays unobserved).
+        _set_app_arc(app, agent.arc)
         _install_tool_runtime_hooks(app)
         app.state.lm_config = {
             "provider": req.provider,
