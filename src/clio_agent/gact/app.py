@@ -5983,12 +5983,20 @@ def _retaining_react_cls() -> Any:
             if arc is None:
                 return
             try:
+                import json as _json  # noqa: PLC0415
+
+                # Approximate per-segment token attribution so the /context breakdown
+                # (tokens_by_kind / categories) is populated. Cheap ~4-chars/token
+                # heuristic to stay off the hot loop's critical path — the precise
+                # window reading is the LM call's prompt_tokens (``used_tokens``).
+                tok = max(1, len(_json.dumps(content, default=str)) // 4)
                 arc.append_segment(
                     session,
                     scope,
                     kind,
                     content,
                     step=idx,
+                    token_count=tok,
                     turn_id=turn_id,
                     expert_span_id=expert_span_id,
                     run_span_id=run_span_id,
