@@ -89,10 +89,9 @@ class HookInvocationError(PermissionError):
 
 
 def _default_hooks_dir() -> Path:
-    base = os.environ.get("XDG_CONFIG_HOME")
-    if base:
-        return Path(base) / "clio-agent" / "hooks"
-    return Path.home() / ".config" / "clio-agent" / "hooks"
+    from clio_agent import paths  # noqa: PLC0415 - avoid import cycle at module load
+
+    return paths.user_config_dir() / "hooks"
 
 
 class HookRegistry:

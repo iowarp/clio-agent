@@ -44,13 +44,14 @@ _FETCH_TIMEOUT_S = 6.0
 
 
 def _data_dir() -> Path:
-    """Per-user clio-agent data dir for shared caches: ``~/.clio/agent`` (OS-correct).
+    """Per-user OS-correct cache dir for the (regenerable) models.dev catalog.
 
-    The model catalog is global (shared across workspaces), so it lives in the per-user
-    clio home, not a workspace ``.clio/agent``."""
+    The catalog is a global, regenerable cache shared across workspaces, so it lives in
+    the OS cache dir (Linux ~/.cache, macOS ~/Library/Caches, Windows %LOCALAPPDATA%),
+    not a workspace ``.clio/agent``."""
     from clio_agent import paths  # noqa: PLC0415 - avoid import cycle at module load
 
-    return paths.user_agent_dir()
+    return paths.user_cache_dir()
 
 
 def default_cache_path() -> Path:

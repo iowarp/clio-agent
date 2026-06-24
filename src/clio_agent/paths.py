@@ -1,19 +1,20 @@
-"""Single source of truth for clio's on-disk artifact roots.
+"""Single source of truth for clio-agent's on-disk artifact locations.
 
-clio writes into two clearly-delimited roots, each split into ``agent/`` (clio-agent's
-own artifacts) and ``core/`` (clio-core / the CTE runtime):
+Two clearly-delimited kinds of root:
 
-* **WORKSPACE** — ``<cwd>/.clio`` — per-project artifacts that belong to the workspace:
-  ARC data (``.clio/agent/arc``), the session registry, per-session traces + messages,
-  context-file metadata, permission policies. ``.clio/agent`` is clio-agent; ``.clio/core``
-  is clio-core (CTE config / any file-tier output).
-* **USER** — per-user, OS-correct (``~/.clio`` on POSIX, ``%APPDATA%/clio`` on Windows) —
-  artifacts shared across every workspace: the model-catalog cache and user-level config.
-  clio-core already seeds ``~/.clio/clio.yaml`` here, so ``~/.clio`` is the natural home.
+* **WORKSPACE** — ``<cwd>/.clio`` — per-project artifacts that belong to the workspace,
+  split into ``agent/`` (clio-agent: ARC, sessions, traces, messages, context-files) and
+  ``core/`` (clio-core / the CTE runtime: config, any file-tier output).
+* **USER** — per-user, shared across every workspace, resolved **OS-correctly via
+  ``platformdirs``** (Linux ``~/.config/clio-agent`` honoring ``XDG_CONFIG_HOME``; macOS
+  ``~/Library/Application Support/clio-agent``; Windows ``%APPDATA%\\clio-agent``):
+    * :func:`user_config_dir` — user content/state (custom agents, workspace registry,
+      installed blueprints + expert-packs, hooks, prompts, config). The valuable stuff.
+    * :func:`user_cache_dir` — regenerable caches (the models.dev catalog). Safe to wipe.
 
-Every default path in clio-agent resolves through this module so there is exactly one
-place that decides "where do clio artifacts live", instead of literals scattered across
-the tree. The OS-correct user base uses ``platformdirs`` for the Windows ``%APPDATA%`` case.
+Every default path in clio-agent resolves through this module, so there is exactly one
+place that decides where artifacts live (no scattered ``~/.config`` literals that silently
+break on macOS/Windows). ``CLIO_USER_DIR`` overrides the per-user root (tests / power users).
 """
 
 from __future__ import annotations
@@ -23,29 +24,37 @@ from pathlib import Path
 
 import platformdirs
 
-_APP = "clio"
+_APP = "clio-agent"
 
 
-def user_clio_home() -> Path:
-    """Per-user clio home: ``~/.clio`` on POSIX, ``%APPDATA%/clio`` on Windows.
+def _user_override() -> "Path | None":
+    raw = os.environ.get("CLIO_USER_DIR", "").strip()
+    return Path(raw).expanduser() if raw else None
 
-    POSIX deliberately uses ``~/.clio`` (not the XDG ``~/.local/share``) so it matches
-    clio-core's existing ``~/.clio/clio.yaml``; Windows resolves ``%APPDATA%/clio`` via
-    ``platformdirs`` (the cross-platform OS-correct base).
+
+def user_config_dir() -> Path:
+    """OS-correct per-user config/content dir for clio-agent.
+
+    Linux ``~/.config/clio-agent`` (honors ``XDG_CONFIG_HOME``), macOS
+    ``~/Library/Application Support/clio-agent``, Windows ``%APPDATA%\\clio-agent``.
+    Overridable with ``CLIO_USER_DIR``.
     """
-    if os.name == "nt":
-        return Path(platformdirs.user_config_dir(_APP, appauthor=False, roaming=True))
-    return Path.home() / ".clio"
+    override = _user_override()
+    if override is not None:
+        return override
+    return Path(platformdirs.user_config_dir(_APP, appauthor=False))
 
 
-def user_agent_dir() -> Path:
-    """Per-user clio-agent artifacts (model cache, user-level state): ``<user>/agent``."""
-    return user_clio_home() / "agent"
+def user_cache_dir() -> Path:
+    """OS-correct per-user cache dir for regenerable artifacts (e.g. the models.dev catalog).
 
-
-def user_core_dir() -> Path:
-    """Per-user clio-core artifacts (e.g. ``clio.yaml``): ``<user>/core``."""
-    return user_clio_home() / "core"
+    Linux ``~/.cache/clio-agent``, macOS ``~/Library/Caches/clio-agent``, Windows
+    ``%LOCALAPPDATA%\\clio-agent\\Cache``. Overridable with ``CLIO_USER_DIR`` (``/cache``).
+    """
+    override = _user_override()
+    if override is not None:
+        return override / "cache"
+    return Path(platformdirs.user_cache_dir(_APP, appauthor=False))
 
 
 def workspace_clio(cwd: "str | Path | None" = None) -> Path:
