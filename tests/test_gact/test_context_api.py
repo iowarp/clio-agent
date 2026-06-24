@@ -41,7 +41,10 @@ def test_get_context_state(tmp_path):
     assert body["live_tokens"] == 15
     assert body["pct_used"] is None  # no agent/_provider_config -> window unknown
     assert list(body["render_keys"].keys()) == [
-        "thought_0", "tool_name_0", "tool_args_0", "observation_0"
+        "thought_0",
+        "tool_name_0",
+        "tool_args_0",
+        "observation_0",
     ]
     assert "O0" in body["render_text"]
 
@@ -73,9 +76,9 @@ def test_post_context_compact_nothing_409(tmp_path):
 
 
 def test_post_context_compact_no_summary_503(tmp_path, monkeypatch):
-    import clio_agent.gact.app as app_mod
+    import clio_agent.gact.agents.runtime as runtime_mod
 
-    monkeypatch.setattr(app_mod, "_summarize_segments_llm", lambda segs: "")
+    monkeypatch.setattr(runtime_mod, "_summarize_segments_llm", lambda segs: "")
     arc = ARCMemory(data_dir=str(tmp_path / "arc"))
     client = _client(tmp_path, arc)
     sid = _session(client)
@@ -87,9 +90,9 @@ def test_post_context_compact_no_summary_503(tmp_path, monkeypatch):
 def test_post_context_compact_summarizes_working_set(tmp_path, monkeypatch):
     """Manual compaction collapses the live working-set into one summary segment via the
     sanctioned summarize op (the same summarizer the auto-compactor uses)."""
-    import clio_agent.gact.app as app_mod
+    import clio_agent.gact.agents.runtime as runtime_mod
 
-    monkeypatch.setattr(app_mod, "_summarize_segments_llm", lambda segs: "COMPACT_SUMMARY")
+    monkeypatch.setattr(runtime_mod, "_summarize_segments_llm", lambda segs: "COMPACT_SUMMARY")
     arc = ARCMemory(data_dir=str(tmp_path / "arc"))
     client = _client(tmp_path, arc)
     sid = _session(client)
@@ -125,8 +128,13 @@ def test_post_context_op_append_then_delete(tmp_path):
 
     r = client.post(
         f"/v1/sessions/{sid}/context/ops",
-        json={"op": "append", "scope": SCOPE, "kind": "observation",
-              "content": {"text": "NEEDLE"}, "token_count": 7},
+        json={
+            "op": "append",
+            "scope": SCOPE,
+            "kind": "observation",
+            "content": {"text": "NEEDLE"},
+            "token_count": 7,
+        },
     )
     assert r.status_code == 200, r.text
     assert r.json()["live_block_count"] == 1
@@ -171,10 +179,20 @@ def test_search_context_endpoint(tmp_path):
     arc = ARCMemory(data_dir=str(tmp_path / "arc"))
     client = _client(tmp_path, arc)
     sid = _session(client)
-    arc.append_segment(sid, "agentA/hdf5", "observation",
-                       {"text": "HDF5 dataset chunk compression filters"}, step=0)
-    arc.append_segment(sid, "agentA/seismic", "observation",
-                       {"text": "earthquake waveform magnitude epicenter"}, step=0)
+    arc.append_segment(
+        sid,
+        "agentA/hdf5",
+        "observation",
+        {"text": "HDF5 dataset chunk compression filters"},
+        step=0,
+    )
+    arc.append_segment(
+        sid,
+        "agentA/seismic",
+        "observation",
+        {"text": "earthquake waveform magnitude epicenter"},
+        step=0,
+    )
     r = client.get(f"/v1/sessions/{sid}/context/search", params={"q": "HDF5 compression"})
     assert r.status_code == 200, r.text
     body = r.json()
@@ -201,12 +219,19 @@ def test_context_op_publishes_redacted_arc_op_frame(tmp_path, monkeypatch):
 
     published: list = []
     original = app.state.bus.publish
-    monkeypatch.setattr(app.state.bus, "publish", lambda ev: (published.append(ev), original(ev))[1])
+    monkeypatch.setattr(
+        app.state.bus, "publish", lambda ev: (published.append(ev), original(ev))[1]
+    )
 
     client.post(
         f"/v1/sessions/{sid}/context/ops",
-        json={"op": "append", "scope": SCOPE, "kind": "observation",
-              "content": {"text": "SECRET_CONTENT"}, "token_count": 3},
+        json={
+            "op": "append",
+            "scope": SCOPE,
+            "kind": "observation",
+            "content": {"text": "SECRET_CONTENT"},
+            "token_count": 3,
+        },
     )
     arc_ops = [e for e in published if getattr(e, "type", None) == "arc.op"]
     assert arc_ops, "expected an arc.op frame on the bus"
