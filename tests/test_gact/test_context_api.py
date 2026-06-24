@@ -46,6 +46,64 @@ def test_get_context_state(tmp_path):
     assert "O0" in body["render_text"]
 
 
+def test_context_state_categories_and_autocompact(tmp_path):
+    """The /context view buckets per-kind tokens into Claude-Code-/context-style
+    categories and surfaces the auto-compaction threshold for the UI."""
+    arc = ARCMemory(data_dir=str(tmp_path / "arc"))
+    client = _client(tmp_path, arc)
+    sid = _session(client)
+    arc.append_segment(sid, SCOPE, "thought", {"text": "T0"}, step=0, token_count=5)
+    arc.append_segment(sid, SCOPE, "observation", {"text": "O0"}, step=0, token_count=10)
+    arc.append_segment(sid, SCOPE, "tool_def", {"name": "fs"}, step=0, token_count=3)
+
+    body = client.get(f"/v1/sessions/{sid}/context/state", params={"scope": SCOPE}).json()
+    assert body["categories"] == {"reasoning": 5, "observations": 10, "tools": 3}
+    assert body["autocompact_pct"] == 0.85  # default trigger fraction
+    # No LM call in-test -> model-grounded reading is unavailable (no framing entry).
+    assert body["used_tokens"] is None
+    assert "framing" not in body["categories"]
+
+
+def test_post_context_compact_nothing_409(tmp_path):
+    arc = ARCMemory(data_dir=str(tmp_path / "arc"))
+    client = _client(tmp_path, arc)
+    sid = _session(client)
+    r = client.post(f"/v1/sessions/{sid}/context/compact", params={"scope": SCOPE})
+    assert r.status_code == 409
+
+
+def test_post_context_compact_no_summary_503(tmp_path, monkeypatch):
+    import clio_agent.gact.app as app_mod
+
+    monkeypatch.setattr(app_mod, "_summarize_segments_llm", lambda segs: "")
+    arc = ARCMemory(data_dir=str(tmp_path / "arc"))
+    client = _client(tmp_path, arc)
+    sid = _session(client)
+    arc.append_segment(sid, SCOPE, "thought", {"text": "T0"}, step=0, token_count=5)
+    r = client.post(f"/v1/sessions/{sid}/context/compact", params={"scope": SCOPE})
+    assert r.status_code == 503
+
+
+def test_post_context_compact_summarizes_working_set(tmp_path, monkeypatch):
+    """Manual compaction collapses the live working-set into one summary segment via the
+    sanctioned summarize op (the same summarizer the auto-compactor uses)."""
+    import clio_agent.gact.app as app_mod
+
+    monkeypatch.setattr(app_mod, "_summarize_segments_llm", lambda segs: "COMPACT_SUMMARY")
+    arc = ARCMemory(data_dir=str(tmp_path / "arc"))
+    client = _client(tmp_path, arc)
+    sid = _session(client)
+    arc.append_segment(sid, SCOPE, "thought", {"text": "T0"}, step=0, token_count=5)
+    arc.append_segment(sid, SCOPE, "tool_call", {"name": "a", "args": {}}, step=0)
+    arc.append_segment(sid, SCOPE, "observation", {"text": "O0"}, step=0, token_count=10)
+
+    r = client.post(f"/v1/sessions/{sid}/context/compact", params={"scope": SCOPE})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["live_block_count"] == 1  # three segments -> one summary
+    assert "COMPACT_SUMMARY" in body["render_text"]
+
+
 def test_get_context_state_unknown_session_404(tmp_path):
     arc = ARCMemory(data_dir=str(tmp_path / "arc"))
     client = _client(tmp_path, arc)

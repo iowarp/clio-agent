@@ -5806,6 +5806,54 @@ def _last_prompt_tokens() -> int:
     return 0
 
 
+# ARC segment kind -> Claude-Code-``/context``-style category for the per-agent breakdown.
+_CONTEXT_CATEGORY: dict[str, str] = {
+    "system": "system",
+    "user": "messages",
+    "tool_def": "tools",
+    "thought": "reasoning",
+    "tool_call": "tool_calls",
+    "observation": "observations",
+    "summary": "summary",
+    "lm_io": "io",
+    "extract_io": "io",
+    "answer": "io",
+}
+
+
+def _bucket_context_categories(
+    tokens_by_kind: dict[str, int], used_tokens: int, live_tokens: int
+) -> dict[str, int]:
+    """Bucket ARC's per-kind token attribution into ``/context``-style categories, plus a
+    ``framing`` entry = ``used_tokens - live_tokens`` (the system-prompt + tool-schema
+    overhead the model sees but ARC does not store/edit), when the model-grounded
+    ``used_tokens`` is known and exceeds the ARC-attributed ``live_tokens``."""
+    cats: dict[str, int] = {}
+    for kind, toks in tokens_by_kind.items():
+        cat = _CONTEXT_CATEGORY.get(kind, "other")
+        cats[cat] = cats.get(cat, 0) + int(toks)
+    if used_tokens > 0 and (used_tokens - live_tokens) > 0:
+        cats["framing"] = used_tokens - live_tokens
+    return {k: v for k, v in cats.items() if v}
+
+
+def _estimate_text_tokens(text: str) -> int:
+    """Best-effort token count for a piece of text via the active model's tokenizer
+    (``litellm.token_counter``), falling back to a ~4-chars/token heuristic."""
+    if not text:
+        return 0
+    try:
+        import dspy  # noqa: PLC0415
+        import litellm  # noqa: PLC0415
+
+        model = str(getattr(getattr(dspy.settings, "lm", None), "model", "") or "")
+        if model:
+            return int(litellm.token_counter(model=model, text=text))
+    except Exception:  # noqa: BLE001
+        pass
+    return max(1, len(text) // 4)
+
+
 def _resolve_expert_context_window(cfg: Any) -> int:
     """Resolve the expert model's context window (the auto-compaction denominator).
 
@@ -14019,21 +14067,20 @@ def build_app(
         cfg = getattr(agent, "_provider_config", None)
         return _resolve_expert_context_window(cfg) if cfg is not None else 0
 
-    @app.get("/v1/sessions/{sid}/context/state", response_model=ContextStateResponse)
-    async def get_context_state(
+    def _build_context_state(
         sid: str, scope: str, as_of: int | None = None
     ) -> ContextStateResponse:
-        """Live ARC context-plane state for a (session, scope): % window used, live
-        block count, per-kind token categorization, and the current render."""
-        if app.state.sessions.get(sid) is None:
-            raise _session_not_found(sid)
+        """Assemble the ARC live-context-plane view for a (session, scope). Shared by the
+        GET state endpoint and the POST compact endpoint so both report identically.
+        Combines the segment-store attribution (``live_tokens`` / editable ``categories``)
+        with the model-grounded reading (``used_tokens`` from the last LM call) + the
+        auto-compaction threshold."""
         arc = app.state.arc
-        if arc is None:
-            raise _arc_unavailable(sid)
         tokens_by_kind = arc.segment_tokens_by_kind(sid, scope)
         segments = arc.render_segments(sid, scope, as_of=as_of)
         live_tokens = sum(tokens_by_kind.values())
         window = _context_window_for_state()
+        used = _last_prompt_tokens()  # model-grounded: last LM call's real prompt tokens
         return ContextStateResponse(
             session_id=sid,
             scope=scope,
@@ -14041,12 +14088,29 @@ def build_app(
             window_tokens=window,
             live_tokens=live_tokens,
             pct_used=(live_tokens / window) if window else None,
+            used_tokens=used or None,
+            used_pct=(used / window) if (window and used) else None,
+            autocompact_pct=_autocompact_threshold(),
             live_block_count=len(segments),
             tokens_by_kind=tokens_by_kind,
+            categories=_bucket_context_categories(tokens_by_kind, used, live_tokens),
             segments=[msgspec.to_builtins(s) for s in segments],
             render_text=arc.render_segment_text(sid, scope, as_of=as_of),
             render_keys=arc.render_segments_keys(sid, scope, as_of=as_of),
         )
+
+    @app.get("/v1/sessions/{sid}/context/state", response_model=ContextStateResponse)
+    async def get_context_state(
+        sid: str, scope: str, as_of: int | None = None
+    ) -> ContextStateResponse:
+        """Live ARC context-plane state for a (session, scope): model-window % used (both
+        segment-attributed ``pct_used`` and model-grounded ``used_pct``), the per-category
+        token breakdown, the auto-compaction threshold, and the current render."""
+        if app.state.sessions.get(sid) is None:
+            raise _session_not_found(sid)
+        if app.state.arc is None:
+            raise _arc_unavailable(sid)
+        return _build_context_state(sid, scope, as_of)
 
     @app.post("/v1/sessions/{sid}/context/ops", response_model=ContextOpResponse)
     async def post_context_op(sid: str, req: ContextOpRequest) -> ContextOpResponse:
@@ -14109,6 +14173,55 @@ def build_app(
             tokens_by_kind=tokens_by_kind,
             pct_used=(live_tokens / window) if window else None,
         )
+
+    @app.post("/v1/sessions/{sid}/context/compact", response_model=ContextStateResponse)
+    async def post_context_compact(sid: str, scope: str) -> ContextStateResponse:
+        """Manually compact a scope NOW (fire-and-forget). LLM-summarizes the scope's live
+        working-set into ONE summary segment — the SAME summarizer the in-turn
+        auto-compactor uses — via the sanctioned ``summarize`` op, then returns the fresh
+        context state. The caller chooses WHEN to compact; clio chooses WHAT to keep (a
+        faithful summary). 409 if nothing live; 503 if no LM is bound / the summary fails."""
+        if app.state.sessions.get(sid) is None:
+            raise _session_not_found(sid)
+        arc = app.state.arc
+        if arc is None:
+            raise _arc_unavailable(sid)
+        live = arc.render_segments(sid, scope)
+        ids = [s.id for s in live]
+        if not ids:
+            raise HTTPException(
+                status_code=409,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="nothing_to_compact",
+                        message=f"scope {scope!r} has no live segments to compact",
+                        details={"scope": scope},
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        summary = _summarize_segments_llm(live)
+        if not summary:
+            raise HTTPException(
+                status_code=503,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="compaction_unavailable",
+                        message="summary LM call failed or no LM is bound",
+                        details={"scope": scope},
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        arc.apply_segment_op(
+            "summarize",
+            sid,
+            scope,
+            ids=ids,
+            summary_content={"text": summary},
+            token_count=_estimate_text_tokens(summary),
+        )
+        return _build_context_state(sid, scope)
 
     @app.get("/v1/sessions/{sid}/context/search", response_model=ContextSearchResponse)
     async def search_context(
