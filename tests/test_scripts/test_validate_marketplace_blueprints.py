@@ -44,7 +44,7 @@ Main prompt.
 """,
         encoding="utf-8",
     )
-    data_tool = "missing_tool" if unknown_tool else "hdf5_list_datasets"
+    data_tool = "missing_tool" if unknown_tool else "fs_read_file"
     children = "\nchildren:\n  - format" if nested else ""
     experts.joinpath("data.md").write_text(
         f"""---
@@ -67,7 +67,7 @@ title: Format
 tier: 3
 parent_id: data
 tools:
-  - hdf5_analyze_dataset
+  - fs_propose_edit
 ---
 Format prompt.
 """,
