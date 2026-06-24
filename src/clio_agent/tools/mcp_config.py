@@ -29,6 +29,8 @@ from __future__ import annotations
 import os
 import re
 import shlex
+import shutil
+import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -322,6 +324,27 @@ def load_mcp_servers(
         merged[name] = spec_from_declaration(name, value, source="workspace", env=env)
 
     return {n: replace(s, name=n) for n, s in merged.items()}
+
+
+def pdeathsig_wrapped_command(command: str, args: Sequence[str]) -> tuple[str, list[str]]:
+    """Make an MCP stdio child die with the clio server, even on a hard kill.
+
+    FastMCP / the mcp SDK spawn stdio MCP servers as plain subprocesses with no
+    parent-death link, so a SIGKILL / OOM / crash of the clio server orphans them
+    to init -- the recurring ``uvx`` MCP-server pile-up. On Linux we prepend
+    ``setpriv --pdeathsig SIGKILL --`` so the kernel reaps the child the instant
+    its parent (the spawning clio process) dies. This is defense-in-depth on top of
+    the process-group group-kill used for *graceful* shutdown; both enforce the same
+    invariant -- no orphaned MCP children. A no-op where ``setpriv`` is unavailable
+    (non-Linux / minimal images), where the process-group teardown still applies.
+    """
+    arg_list = list(args)
+    if sys.platform != "linux":
+        return command, arg_list
+    setpriv = shutil.which("setpriv")
+    if not setpriv:
+        return command, arg_list
+    return setpriv, ["--pdeathsig", "SIGKILL", "--", command, *arg_list]
 
 
 def transport_for(spec: MCPServerSpec, *, cwd: str | None = None) -> Any:
