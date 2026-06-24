@@ -144,7 +144,13 @@ server_pid() {
   return 1
 }
 
+# Set to 1 by start_server when it actually launches a server (vs finding one
+# already healthy). The attach flow reads it to decide whether closing the TUI
+# should also stop the server it just started.
+SERVER_WAS_STARTED=0
+
 start_server() {
+  SERVER_WAS_STARTED=0
   if health; then
     say "CLIO server already running on :$CLIO_PORT"
     return 0
@@ -157,11 +163,17 @@ start_server() {
     return 1
   fi
   say "Starting CLIO server on :$CLIO_PORT (log: $SERVER_LOG)"
+  # setsid runs the server as its own session/process-group leader (PGID == PID)
+  # so stop_server can group-kill the server AND every MCP child it spawns (the
+  # uvx stdio servers) instead of orphaning them. It also detaches from the
+  # controlling terminal (replaces nohup); stdin from /dev/null so the daemon
+  # never blocks on a read.
   (
     cd "$CLIO_PREFIX/clio-agent" &&
-    nohup "$SERVER_BIN" --port "$CLIO_PORT" >"$SERVER_LOG" 2>&1 &
-    echo $! >"$PIDFILE"
-  )
+    exec setsid "$SERVER_BIN" --port "$CLIO_PORT" >"$SERVER_LOG" 2>&1 </dev/null
+  ) &
+  echo $! >"$PIDFILE"
+  SERVER_WAS_STARTED=1
   # First-run startup is slow (ARC/LSM init + MCP server spawn) and can take
   # 30-60s; only fail after a generous window so a healthy-but-slow start isn't
   # reported as a failure (the server keeps coming up in the background anyway).
@@ -182,16 +194,20 @@ stop_server() {
     rm -f "$PIDFILE"
     return 0
   fi
-  say "Stopping CLIO server (pid $p)"
-  kill "$p" 2>/dev/null || true
+  say "Stopping CLIO server (pid $p) and its MCP children"
+  # Group-kill: the server leads its own process group (started via setsid), so its
+  # MCP subprocess children (uvx stdio servers) share the group. Signal the whole
+  # group (negative PID) so none are orphaned. Fall back to a plain PID kill for a
+  # server started outside this launcher (not a group leader).
+  kill -TERM -"$p" 2>/dev/null || kill -TERM "$p" 2>/dev/null || true
   local i
   for i in $(seq 1 20); do
     kill -0 "$p" 2>/dev/null || break
     sleep 0.25
   done
   if kill -0 "$p" 2>/dev/null; then
-    warn "  did not exit - force killing"
-    kill -9 "$p" 2>/dev/null || true
+    warn "  did not exit - force killing the process group"
+    kill -9 -"$p" 2>/dev/null || kill -9 "$p" 2>/dev/null || true
   fi
   rm -f "$PIDFILE"
   say "  stopped"
@@ -302,13 +318,28 @@ main() {
       shift || true
       update_check
       start_server
-      # stdout stays on the terminal so the TUI renders; gact stderr is
-      # captured to a log so Go panics survive for bug reports.
-      exec env \
-        GACT_BACKEND="http://127.0.0.1:$CLIO_PORT" \
-        GACT_BRAND="${GACT_BRAND:-clio}" \
-        GACT_BRAND_ROOT="${GACT_BRAND_ROOT:-$CLIO_BRAND_ROOT}" \
-        "$GACT_BIN" "$@" 2>"$GACT_LOG"
+      # Lifecycle: if THIS invocation started the server, tie its lifetime to the
+      # TUI — stop the server (and its MCP children) when the TUI exits, so closing
+      # the TUI closes the clio it launched. If a server was ALREADY running
+      # (someone ran `clio start` — i.e. deliberately detached/shared), leave it
+      # untouched and just attach.
+      # stdout stays on the terminal so the TUI renders; gact stderr is captured to
+      # a log so Go panics survive for bug reports.
+      if [[ "${SERVER_WAS_STARTED:-0}" = 1 ]]; then
+        trap 'exit 130' INT TERM
+        trap 'stop_server' EXIT
+        env \
+          GACT_BACKEND="http://127.0.0.1:$CLIO_PORT" \
+          GACT_BRAND="${GACT_BRAND:-clio}" \
+          GACT_BRAND_ROOT="${GACT_BRAND_ROOT:-$CLIO_BRAND_ROOT}" \
+          "$GACT_BIN" "$@" 2>"$GACT_LOG" || true
+      else
+        exec env \
+          GACT_BACKEND="http://127.0.0.1:$CLIO_PORT" \
+          GACT_BRAND="${GACT_BRAND:-clio}" \
+          GACT_BRAND_ROOT="${GACT_BRAND_ROOT:-$CLIO_BRAND_ROOT}" \
+          "$GACT_BIN" "$@" 2>"$GACT_LOG"
+      fi
       ;;
     web|--web)
       shift || true
