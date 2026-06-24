@@ -145,13 +145,13 @@ def _install_sigusr1_diagnostic() -> None:
 
 _install_sigusr1_diagnostic()
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Mapping
 from contextlib import asynccontextmanager
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, AsyncIterator, Iterator, Literal, Optional
+from typing import Any, AsyncIterator, Literal, Optional
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
@@ -343,23 +343,6 @@ def _ask_user_resume_text(question: "UserQuestion") -> str:
     return "\n".join(lines)
 
 
-def _expert_handoff_summary(handoff: Mapping[str, Any]) -> str:
-    """Return a compact user-facing summary for an expert handoff part."""
-
-    agent = str(handoff.get("agent_id") or handoff.get("expert") or "expert")
-    parent = str(handoff.get("parent_id") or handoff.get("parent") or "").strip()
-    status = str(handoff.get("status") or "observed")
-    stage = str(handoff.get("stage") or handoff.get("dispatch_target") or "").strip()
-    output = str(handoff.get("output_summary") or handoff.get("summary") or "").strip()
-    route = f"{parent} -> {agent}" if parent else agent
-    bits = [route, status]
-    if stage:
-        bits.append(stage)
-    if output:
-        bits.append(output)
-    return " | ".join(bits)
-
-
 def _format_subagent_input(spawn_input: Any) -> str:
     """Format a materialized nanoagent input without a raw Python-dict look."""
 
@@ -369,83 +352,6 @@ def _format_subagent_input(spawn_input: Any) -> str:
         return "Subagent input:\n" + json.dumps(spawn_input, indent=2, sort_keys=True)
     except (TypeError, ValueError):
         return f"Subagent input:\n{spawn_input}"
-
-
-def _compact_exact_evidence_index(transcript: str) -> str:
-    """Build a deterministic evidence index to append to LM compact summaries."""
-    paths: list[str] = []
-    identifiers: list[str] = []
-    caveats: list[str] = []
-
-    def add_unique(target: list[str], value: str, *, limit: int) -> None:
-        cleaned = " ".join(value.strip("`'\" \t\r\n,.;:()[]{}").split())
-        cleaned = cleaned.rstrip("/")
-        if not cleaned or cleaned in target:
-            return
-        if len(cleaned) > 180:
-            cleaned = cleaned[:177] + "..."
-        if len(target) < limit:
-            target.append(cleaned)
-
-    quoted = re.findall(r"`([^`]+)`", transcript)
-    for item in quoted:
-        if re.search(r"\.(?:h5|hdf5|parquet|csv|bp5|bp4|bp|sac|png|json|tar)\b", item, re.I):
-            add_unique(paths, item, limit=40)
-        elif re.search(r"[/_]", item) or re.fullmatch(r"[A-Za-z][A-Za-z0-9_.-]{2,}", item):
-            add_unique(identifiers, item, limit=80)
-
-    path_pattern = re.compile(
-        r"(?:[A-Za-z]:\\[^\r\n`\"<>|]*?\.(?:h5|hdf5|parquet|csv|bp5|bp4|bp|sac|png|json|tar))"
-        r"|(?:/[^\s`\"<>|]*?\.(?:h5|hdf5|parquet|csv|bp5|bp4|bp|sac|png|json|tar))",
-        re.I,
-    )
-    for match in path_pattern.finditer(transcript):
-        add_unique(paths, match.group(0), limit=40)
-
-    identifier_pattern = re.compile(
-        r"(?<![A-Za-z0-9])/?[A-Za-z][A-Za-z0-9]*(?:[_/.-][A-Za-z0-9]+)+\b",
-    )
-    for match in identifier_pattern.finditer(transcript):
-        value = match.group(0)
-        if len(value) < 4:
-            continue
-        if value.lower().startswith(("http", "https")):
-            continue
-        add_unique(identifiers, value, limit=80)
-
-    caveat_terms = (
-        "error",
-        "failed",
-        "missing",
-        "unavailable",
-        "not installed",
-        "caveat",
-        "unresolved",
-        "follow-up",
-        "follow up",
-        "needs checking",
-        "action needed",
-    )
-    for raw_line in transcript.splitlines():
-        line = " ".join(raw_line.split())
-        if not line:
-            continue
-        lowered = line.lower()
-        if any(term in lowered for term in caveat_terms):
-            add_unique(caveats, line, limit=16)
-
-    sections: list[str] = []
-    if paths:
-        sections.append("Paths:\n" + "\n".join(f"- {path}" for path in paths))
-    if identifiers:
-        sections.append(
-            "Identifiers:\n" + "\n".join(f"- {identifier}" for identifier in identifiers)
-        )
-    if caveats:
-        sections.append("Caveats/errors:\n" + "\n".join(f"- {caveat}" for caveat in caveats))
-    if not sections:
-        return ""
-    return "[exact retained evidence index]\n" + "\n\n".join(sections)
 
 
 _EXECUTABLE_SESSION_AGENT_IDS = {
@@ -952,199 +858,6 @@ def _keyword_routed_user_agent(app: "FastAPI", text: str) -> "AgentDef | None":
     return matches[0][2]
 
 
-def _coerce_expert_handoff_rows(value: Any) -> list[dict[str, Any]]:
-    """Normalize model-returned expert handoff data into dict rows."""
-
-    if value is None:
-        return []
-    if isinstance(value, list):
-        return [dict(row) for row in value if isinstance(row, Mapping)]
-    if isinstance(value, tuple):
-        return [dict(row) for row in value if isinstance(row, Mapping)]
-    if isinstance(value, str):
-        text = value.strip()
-        if not text or text in {"[]", "null", "None"}:
-            return []
-        if text.startswith("```"):
-            text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.IGNORECASE).strip()
-            text = re.sub(r"\s*```$", "", text).strip()
-        try:
-            parsed = json.loads(text)
-        except json.JSONDecodeError:
-            match = re.search(r"(\[[\s\S]*\])", text)
-            if match is None:
-                return []
-            try:
-                parsed = json.loads(match.group(1))
-            except json.JSONDecodeError:
-                return []
-        return _coerce_expert_handoff_rows(parsed)
-    return []
-
-
-def _dynamic_parent_resume_prompt(
-    original_request: str,
-    parent_agent: "AgentDef",
-    executed_handoffs: list[dict[str, Any]],
-    declared_child_ids: set[str] | None = None,
-) -> str:
-    """Build the compact continuation prompt given back to a dynamic parent."""
-
-    rows: list[str] = []
-    merged_state: dict[str, Any] = {}
-    completed_ids: list[str] = []
-    for row in executed_handoffs:
-        if str(row.get("stage") or "") != "delegate.completed":
-            continue
-        agent_id = str(row.get("agent_id") or row.get("delegate_to") or "")
-        if agent_id and agent_id not in completed_ids:
-            completed_ids.append(agent_id)
-        status = str(row.get("status") or "")
-        summary = str(
-            row.get("return_output_summary")
-            or row.get("output_summary")
-            or row.get("summary")
-            or ""
-        ).strip()
-        children = row.get("children")
-        child_note = ""
-        if isinstance(children, list) and children:
-            child_note = f"; nested_child_events={len(children)}"
-        rows.append(f"- {agent_id}: status={status}{child_note}; result={summary}")
-        child_state = row.get("workflow_state")
-        if isinstance(child_state, Mapping):
-            _merge_workflow_state_mapping(merged_state, child_state)
-    result_block = "\n".join(rows) or "- No completed child delegation results were returned."
-    # Surface the MERGED typed workflow_state from the completed children, not just the
-    # prose summaries. A child may put its key result ONLY in the typed field (e.g.
-    # qwopus writes acquisition.metadata_path / station_catalog.station_ids into
-    # workflow_state but not into its prose answer); without this the parent cannot see
-    # the child already delivered, and re-delegates to it in a loop.
-    state_block = ""
-    if merged_state:
-        state_block = (
-            "\n\nAuthoritative typed workflow_state accumulated from the completed "
-            "children — read these typed fields (e.g. acquisition.metadata_path, "
-            "station_catalog.station_ids, acquisition.status, profile.status) to decide "
-            "the next step. A child whose result already appears here is DONE; do NOT "
-            "re-delegate to it:\n" + _workflow_state_payload(merged_state)
-        )
-    # Show the orchestrator its own progress as a visible to-do list, so it does not
-    # have to track "which of my children have run" mentally across re-invocations
-    # (small models lose that thread and finish early). This is reactive grounding
-    # (showing state), not forced routing — the agent still decides the next hop, and
-    # a child being "not yet run" is informational, not an order to run it.
-    progress_block = ""
-    if declared_child_ids:
-        remaining = [c for c in sorted(declared_child_ids) if c not in completed_ids]
-        progress_block = (
-            "\n\nYour delegation progress this turn — "
-            f"your child experts: {sorted(declared_child_ids)}; "
-            f"already run: {completed_ids or '[]'}; "
-            f"not yet run: {remaining or '[]'}. "
-            "You are the orchestrator: keep delegating to the children this task still "
-            "needs, and finish only when the work is genuinely complete. Not every child "
-            "is needed for every request — use judgment: skip the ones the evidence makes "
-            "unnecessary (e.g. analysis/visualization when there is no data staged), but "
-            "do not finish prematurely while a needed step has not run."
-        )
-    return (
-        f"Original user request:\n{original_request}\n\n"
-        f"Returned child expert results for parent expert {parent_agent.id!r}:\n"
-        f"{result_block}{state_block}{progress_block}\n\n"
-        "Continue from these results. Decide the next step via your next_expert / "
-        "next_task output: route to the next child the task still needs, or set "
-        "next_expert='finish' and write the final answer when the work is genuinely "
-        "complete. You MAY go back and re-invoke a child you already ran when you need "
-        "MORE or DIFFERENT results from it (e.g. more candidates, a wider search, the "
-        "next-ranked item, a retry with corrected arguments) — give it a NEW, specific "
-        "sub-task that says what additional result you need. Only restriction: do NOT "
-        "re-delegate to repeat work that is ALREADY captured in the typed workflow_state "
-        "above (same task, same result already present) — that is a loop, not progress."
-    )
-
-
-def _iter_delegation_return_rows(rows: list[dict[str, Any]]) -> Iterator[dict[str, Any]]:
-    """Yield completed delegation rows, including nested child return rows."""
-
-    for row in rows:
-        if row.get("stage") == "delegate.completed":
-            yield row
-        children = row.get("children")
-        if isinstance(children, list):
-            child_rows = [child for child in children if isinstance(child, dict)]
-            yield from _iter_delegation_return_rows(child_rows)
-
-
-def _compact_dynamic_delegation_output(output: str, *, limit: int = 2200) -> str:
-    """Compact child output while retaining exact evidence needed by parents."""
-
-    raw_text = output.strip()
-    state_blocks = _compact_workflow_state_blocks(raw_text)
-    text = raw_text
-    display_text = _strip_embedded_workflow_state_evidence(text)
-    has_scan_limited_state = any(
-        token in block
-        for block in state_blocks
-        for token in ('"scan_limited": true', '"profile_limited": true')
-    )
-    if has_scan_limited_state:
-        return "Retained typed workflow state:\n" + "\n".join(state_blocks)
-    if len(text) <= limit:
-        if state_blocks and state_blocks[0] not in display_text:
-            return f"{display_text.rstrip()}\n\nRetained typed workflow state:\n{state_blocks[0]}"
-        return display_text
-    evidence_index = _compact_exact_evidence_index(display_text)
-    stat_lines: list[str] = []
-    stat_terms = (
-        "trace",
-        "npts",
-        "delta",
-        "sampling",
-        "min",
-        "max",
-        "mean",
-        "std",
-        "peak",
-        "duration",
-        "start time",
-        "end time",
-        "network",
-        "station",
-        "channel",
-    )
-    for raw_line in display_text.splitlines():
-        line = " ".join(raw_line.strip().split())
-        if not line:
-            continue
-        lowered = line.lower()
-        if any(term in lowered for term in stat_terms):
-            if line not in stat_lines:
-                stat_lines.append(line)
-        if len(stat_lines) >= 24:
-            break
-    retained_blocks: list[str] = []
-    if evidence_index:
-        retained_blocks.append(evidence_index)
-    if state_blocks:
-        retained_blocks.append("Retained typed workflow state:\n" + "\n".join(state_blocks))
-    if stat_lines:
-        retained_blocks.append(
-            "Retained numeric/trace evidence:\n" + "\n".join(f"- {line}" for line in stat_lines)
-        )
-    retained = "\n\n".join(retained_blocks)
-    head_limit = max(800, limit // 2)
-    tail_limit = max(500, limit - head_limit - len(retained) - 120)
-    head = display_text[:head_limit].rstrip()
-    tail = display_text[-tail_limit:].lstrip() if tail_limit > 0 else ""
-    pieces = [head, "[...delegation output truncated; exact evidence retained below...]"]
-    if retained:
-        pieces.append(retained)
-    if tail:
-        pieces.append("[tail]\n" + tail)
-    return "\n\n".join(pieces)
-
-
 _ARTIFACT_PATH_TOKEN_RE = re.compile(r"[A-Za-z0-9_./~+-]+\.(?:csv|png)", re.IGNORECASE)
 _ARTIFACT_PATH_MISSING_FRAMING_RE = re.compile(
     r"(not\s+(?:been\s+)?(?:staged|downloaded|available|present|found|created|generated|produced)|"
@@ -1278,218 +991,6 @@ def _ground_fabricated_local_artifact_paths(
     return result
 
 
-def _strip_embedded_workflow_state_evidence(text: str) -> str:
-    """Remove raw machine-state blocks before building human evidence snippets."""
-
-    if not text:
-        return ""
-    retained: list[str] = []
-    skipping_state_list = False
-    for raw_line in text.splitlines():
-        line = raw_line.strip()
-        lowered = line.casefold()
-        if not line:
-            skipping_state_list = False
-            retained.append(raw_line)
-            continue
-        if "workflow_state" in lowered:
-            skipping_state_list = True
-            continue
-        if (
-            skipping_state_list
-            and line.startswith(("-", "{"))
-            and any(
-                token in lowered
-                for token in (
-                    '"acquisition"',
-                    '"resource_candidate"',
-                    '"profile"',
-                    '"artifact"',
-                    '"visualization"',
-                )
-            )
-        ):
-            continue
-        skipping_state_list = False
-        retained.append(raw_line)
-    return "\n".join(retained).strip()
-
-
-def _user_facing_dynamic_evidence_summary(output: str) -> str:
-    """Remove machine-retained evidence scaffolding from a user-facing fallback answer."""
-
-    text = output.strip()
-    if not text:
-        return ""
-    marker_positions = [
-        index
-        for marker in (
-            "[...delegation output truncated; exact evidence retained below...]",
-            "[exact retained evidence index]",
-            "Retained typed workflow state:",
-            "Retained delegation continuation contracts:",
-            "Retained numeric/trace evidence:",
-            "CLIO typed workflow state:",
-            "CLIO merged nested typed workflow state:",
-            "CLIO inferred typed tool state:",
-            "CLIO inferred typed tool state from tool observations:",
-        )
-        if (index := text.find(marker)) >= 0
-    ]
-    if not marker_positions:
-        return text
-    visible = text[: min(marker_positions)].rstrip()
-    lines = visible.splitlines()
-    while lines and _looks_like_truncated_user_facing_tail(lines[-1]):
-        lines.pop()
-    return "\n".join(lines).rstrip()
-
-
-def _looks_like_truncated_user_facing_tail(line: str) -> bool:
-    """Return whether a line is likely an unfinished fragment before compact evidence."""
-
-    stripped = line.strip()
-    if not stripped:
-        return True
-    if stripped in {"**Ev", "Ev", "**Evidence", "Evidence"}:
-        return True
-    if stripped.startswith("**") and not stripped.endswith("**") and len(stripped) <= 40:
-        return True
-    if stripped.endswith(("**", "`")):
-        return False
-    return False
-
-
-def _compact_workflow_state_blocks(text: str, *, limit: int = 8) -> list[str]:
-    """Return reconciled typed state before output head/tail truncation."""
-
-    state = _workflow_state_from_outputs([text])
-    if not state:
-        return []
-    block = json.dumps({"workflow_state": state}, sort_keys=True, default=str)
-    return [block][:limit]
-
-
-def _latest_parent_resumed_output_summary(
-    rows: list[dict[str, Any]],
-    parent_id: str,
-) -> str:
-    """Return the latest compact output from a resumed delegated parent."""
-
-    latest = ""
-    stack = list(rows)
-    while stack:
-        row = stack.pop(0)
-        if (
-            str(row.get("agent_id") or "") == parent_id
-            and str(row.get("stage") or "") == "parent.resumed"
-        ):
-            summary = str(row.get("output_summary") or row.get("summary") or "").strip()
-            if summary:
-                latest = summary
-        children = row.get("children")
-        if isinstance(children, list):
-            stack.extend(child for child in children if isinstance(child, dict))
-    return latest
-
-
-def _latest_delegation_output_summary(rows: list[dict[str, Any]]) -> str:
-    """Return the latest completed delegated child output from nested rows."""
-
-    latest = ""
-    for row in _iter_delegation_return_rows(rows):
-        summary = str(row.get("output_summary") or row.get("summary") or "").strip()
-        if summary:
-            latest = summary
-    return latest
-
-
-def _append_nested_workflow_state(output: str, rows: list[dict[str, Any]]) -> str:
-    """Append typed state found in nested completed child rows to a parent return."""
-
-    outputs = [
-        str(row.get("output_summary") or row.get("summary") or "").strip()
-        for row in _iter_delegation_return_rows(rows)
-        if str(row.get("output_summary") or row.get("summary") or "").strip()
-    ]
-    state = _workflow_state_from_outputs(outputs)
-    _merge_workflow_state_mapping(state, _workflow_state_from_handoff_rows(rows))
-    for tool_row in _tool_calls_from_handoff_rows(rows):
-        row_state = tool_row.get("workflow_state")
-        if isinstance(row_state, Mapping):
-            _merge_workflow_state_mapping(state, row_state)
-    if not state:
-        return output
-    block = _workflow_state_payload(state)
-    if block in output:
-        return output
-    return f"{output.rstrip()}\n\nCLIO merged nested typed workflow state:\n{block}"
-
-
-def _latest_completed_artifact_output_summary(rows: list[dict[str, Any]]) -> str:
-    """Return the latest completed child output that contains final artifact evidence."""
-
-    latest = ""
-    stack = list(rows)
-    while stack:
-        row = stack.pop(0)
-        if str(row.get("stage") or "") == "delegate.completed" and str(row.get("status") or "") in {
-            "",
-            "completed",
-        }:
-            summary = str(row.get("output_summary") or row.get("summary") or "").strip()
-            if re.search(r"(?im)^\s*(?:FINAL_ARTIFACT|ARTIFACT)\s*:", summary):
-                latest = summary
-        children = row.get("children")
-        if isinstance(children, list):
-            stack.extend(child for child in children if isinstance(child, dict))
-    return latest
-
-
-def _latest_completed_child_output_summary(
-    rows: list[dict[str, Any]],
-    child_ids: Iterable[str],
-) -> str:
-    """Return the latest completed output from one of the named child experts."""
-
-    target_ids = {str(child_id).strip() for child_id in child_ids if str(child_id).strip()}
-    if not target_ids:
-        return ""
-    latest = ""
-    for row in _iter_delegation_return_rows(rows):
-        if (
-            str(row.get("stage") or "") == "delegate.completed"
-            and str(row.get("status") or "") in {"", "completed"}
-            and str(row.get("agent_id") or row.get("delegate_to") or "").strip() in target_ids
-        ):
-            summary = str(row.get("output_summary") or row.get("summary") or "").strip()
-            if summary:
-                latest = summary
-    return latest
-
-
-def _latest_final_child_output_summary(rows: list[dict[str, Any]]) -> str:
-    """Return completed synthesis/final-report output when a parent finalizes poorly."""
-
-    return _latest_completed_child_output_summary(
-        rows,
-        ("synthesis", "final", "final_report", "report", "summary"),
-    )
-
-
-def _bubbled_child_evidence_output_summary(
-    rows: list[dict[str, Any]],
-    parent_id: str,
-    declared_child_ids: Iterable[str],
-) -> str:
-    """Return the best child-subtree result for strict-depth parent completion."""
-
-    return _latest_parent_resumed_output_summary(
-        rows,
-        parent_id,
-    ) or _latest_completed_child_output_summary(rows, declared_child_ids)
-
-
 def _is_empty_dynamic_agent_answer_error(exc: Exception) -> bool:
     """Return whether a dynamic expert failed only because it produced no answer."""
 
@@ -1608,6 +1109,44 @@ def _tool_agent_empty_answer_fallback(trajectory: Any, *, max_items: int = 6) ->
 # Definitions live in clio_agent.gact.workflow_state.merge. Imported here so
 # they remain resolvable as clio_agent.gact.app.<name> for the rest of this
 # module and existing test seams. (behavior-preserving extraction)
+# Delegation + workflow-state derivation cluster extracted to
+# gact/delegation.py (#714 decomposition). Re-exported here so existing
+# importers (tests, gact/turn.py, agents/builders.py) keep working through the
+# stable app.py shim while the single source of truth lives in delegation.py.
+from clio_agent.gact.delegation import (  # noqa: E402,F401
+    _append_accumulated_workflow_state_context,
+    _append_nested_workflow_state,
+    _append_session_workflow_state_context,
+    _bubbled_child_evidence_output_summary,
+    _coerce_expert_handoff_rows,
+    _compact_dynamic_delegation_output,
+    _compact_exact_evidence_index,
+    _compact_workflow_state_blocks,
+    _delegated_expert_agent_id,
+    _delegated_expert_prompt,
+    _dynamic_parent_resume_prompt,
+    _expert_handoff_summary,
+    _failed_child_delegation_output_summary,
+    _failed_child_delegation_workflow_state,
+    _iter_delegation_return_rows,
+    _json_objects_from_text,
+    _latest_completed_artifact_output_summary,
+    _latest_completed_child_output_summary,
+    _latest_delegation_output_summary,
+    _latest_final_child_output_summary,
+    _latest_parent_resumed_output_summary,
+    _looks_like_truncated_user_facing_tail,
+    _merge_workflow_state_from_value,
+    _should_execute_delegated_handoff,
+    _state_path_value,
+    _state_predicate_hit,
+    _strip_embedded_workflow_state_evidence,
+    _user_facing_dynamic_evidence_summary,
+    _workflow_state_from_handoff_rows,
+    _workflow_state_from_outputs,
+    _workflow_state_has_existing_staged_path,
+    _workflow_state_payload,
+)
 from clio_agent.gact.workflow_state.merge import (  # noqa: E402,F401
     _TRAJECTORY_TOOL_ARGS_KEYS,
     _TRAJECTORY_TOOL_NAME_KEYS,
@@ -1862,77 +1401,6 @@ def _dynamic_agent_runtime_provenance(
     return payload
 
 
-def _delegated_expert_agent_id(row: Mapping[str, Any]) -> str:
-    """Return the requested delegated expert id from a handoff row."""
-
-    for key in ("delegate_to", "agent_id", "target_agent_id", "expert"):
-        value = str(row.get(key) or "").strip()
-        if value:
-            return value
-    return ""
-
-
-def _delegated_expert_prompt(row: Mapping[str, Any], fallback: str) -> str:
-    """Build the child prompt for a synchronous expert delegation."""
-
-    fallback = fallback.strip()
-    for key in ("question", "input", "prompt", "request"):
-        value = str(row.get(key) or "").strip()
-        if value:
-            if not fallback or fallback in value:
-                return value
-            evidence = fallback
-            if len(evidence) > 2500:
-                evidence = f"{evidence[:2500].rstrip()}..."
-            return "\n\n".join(
-                (
-                    value,
-                    "Parent evidence available for this delegated task:",
-                    evidence,
-                )
-            )
-    return fallback
-
-
-def _append_accumulated_workflow_state_context(prompt: str, state: Mapping[str, Any]) -> str:
-    """Attach durable typed state to child prompts without relying on prose."""
-
-    if not state:
-        return prompt
-    block = (
-        "Accumulated typed workflow state from prior CLIO tool evidence "
-        "(authoritative; use this before local prose summaries):\n"
-        f"{json.dumps({'workflow_state': state}, sort_keys=True, default=str)}"
-    )
-    if block in prompt:
-        return prompt
-    return "\n\n".join(part for part in (prompt.strip(), block) if part)
-
-
-def _append_session_workflow_state_context(
-    app: Any,
-    session_id: str,
-    prompt: str,
-) -> str:
-    """Attach accumulated session tool state to a delegated expert prompt."""
-
-    ledger = getattr(getattr(app, "state", None), "tool_call_ledger", None)
-    if not isinstance(ledger, dict):
-        return prompt
-    rows = ledger.get(session_id)
-    if not isinstance(rows, list):
-        return prompt
-    prior_rows = [row for row in rows if isinstance(row, Mapping)]
-    state: dict[str, Any] = {}
-    for row in prior_rows:
-        row_state = row.get("workflow_state")
-        if isinstance(row_state, Mapping):
-            _merge_workflow_state_mapping(state, row_state)
-    if not state:
-        return prompt
-    return _append_accumulated_workflow_state_context(prompt, state)
-
-
 def _agent_accepts_images(agent: Any) -> bool:
     """Return whether agent.forward can receive native image inputs."""
 
@@ -2027,227 +1495,6 @@ def _dspy_images_from_parts(parts: list["Part"]) -> list[Any]:
         except Exception:
             continue
     return images
-
-
-def _should_execute_delegated_handoff(row: Mapping[str, Any]) -> bool:
-    status = str(row.get("status") or "").strip().lower()
-    if status in {"skipped", "failed", "cancelled", "completed"}:
-        return False
-    if row.get("execute") is False:
-        return False
-    if row.get("execute") is True or row.get("delegate_to") or row.get("target_agent_id"):
-        return True
-    return status in {"requested", "pending", "delegate", "delegated"}
-
-
-def _json_objects_from_text(text: str) -> list[Any]:
-    """Extract JSON objects embedded in model/tool evidence without trusting prose."""
-
-    stripped = text.strip()
-    objects: list[Any] = []
-    decoder = json.JSONDecoder()
-    if stripped.startswith(("{", "[")):
-        try:
-            objects.append(json.loads(stripped))
-            return objects
-        except json.JSONDecodeError:
-            pass
-    index = 0
-    while index < len(text):
-        if text[index] not in "{[":
-            index += 1
-            continue
-        try:
-            value, end = decoder.raw_decode(text[index:])
-        except json.JSONDecodeError:
-            index += 1
-            continue
-        objects.append(value)
-        index += max(end, 1)
-    return objects
-
-
-def _merge_workflow_state_from_value(value: Any, state: dict[str, Any]) -> None:
-    if isinstance(value, str):
-        text = value.strip()
-        if text.startswith(("{", "[")):
-            for nested in _json_objects_from_text(text):
-                _merge_workflow_state_from_value(nested, state)
-        return
-    if isinstance(value, (list, tuple)):
-        for item in value:
-            _merge_workflow_state_from_value(item, state)
-        return
-    if not isinstance(value, Mapping):
-        # A typed workflow_state field may arrive as a Pydantic model when a pack
-        # declares it as a nested object signature field. Convert it to a plain
-        # mapping so its sections merge. Generic across all packs.
-        if callable(getattr(value, "model_dump", None)):
-            normalized = _jsonish(value)
-            if isinstance(normalized, Mapping):
-                _merge_workflow_state_from_value(normalized, state)
-        return
-    for key in ("workflow_state", "semantic_state", "state"):
-        nested = value.get(key)
-        if isinstance(nested, Mapping):
-            _merge_workflow_state_mapping(state, nested)
-    structured = value.get("structured")
-    if isinstance(structured, Mapping):
-        for nested in structured.values():
-            _merge_workflow_state_from_value(nested, state)
-    for key, nested in value.items():
-        if key in {"workflow_state", "semantic_state", "state", "structured"}:
-            continue
-        if isinstance(nested, Mapping):
-            if str(key) == "provenance":
-                _merge_workflow_state_mapping(state, nested)
-            _merge_workflow_state_mapping(state, {str(key): nested})
-
-
-def _workflow_state_from_outputs(completed_outputs: list[Any]) -> dict[str, Any]:
-    state: dict[str, Any] = {}
-    for output in completed_outputs:
-        if isinstance(output, str):
-            for obj in _json_objects_from_text(output):
-                _merge_workflow_state_from_value(obj, state)
-        elif output is not None:
-            _merge_workflow_state_from_value(output, state)
-    return state
-
-
-def _workflow_state_payload(state: Mapping[str, Any]) -> str:
-    """Return a parseable workflow-state payload for prompts and compact rows."""
-
-    return json.dumps({"workflow_state": state}, sort_keys=True, default=str)
-
-
-def _workflow_state_from_handoff_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
-    """Return durable typed state stored on handoff rows and nested tool rows."""
-
-    state: dict[str, Any] = {}
-
-    def visit(row: Any) -> None:
-        if not isinstance(row, Mapping):
-            return
-        raw_state = row.get("workflow_state")
-        if isinstance(raw_state, Mapping):
-            _merge_workflow_state_mapping(state, raw_state)
-        for output_key in ("output_summary", "summary"):
-            output = str(row.get(output_key) or "").strip()
-            if output:
-                _merge_workflow_state_mapping(state, _workflow_state_from_outputs([output]))
-        for call in row.get("tools_called") or []:
-            if isinstance(call, Mapping):
-                call_state = call.get("workflow_state")
-                if isinstance(call_state, Mapping):
-                    _merge_workflow_state_mapping(state, call_state)
-        for child in row.get("children") or []:
-            visit(child)
-
-    for row in rows:
-        visit(row)
-    return state
-
-
-def _failed_child_delegation_workflow_state(
-    *,
-    prompt: str,
-    child_agent_id: str,
-    parent_agent_id: str,
-    error: str,
-    message: str,
-    tools_called: list[dict[str, Any]],
-) -> dict[str, Any]:
-    """Build typed state for a child failure without discarding prior evidence."""
-
-    state = _workflow_state_from_outputs([prompt])
-    for tool_row in tools_called:
-        row_state = tool_row.get("workflow_state")
-        if isinstance(row_state, Mapping):
-            _merge_workflow_state_mapping(state, row_state)
-    state["delegation"] = {
-        "status": "failed",
-        "failed_child": child_agent_id,
-        "parent": parent_agent_id,
-        "error": error,
-        "message": message,
-    }
-    acquisition = state.get("acquisition")
-    if isinstance(acquisition, dict) and acquisition.get("analysis_ready") is not True:
-        acquisition["status"] = "blocked"
-        acquisition["analysis_ready"] = False
-        acquisition["blocker"] = (
-            f"child expert {child_agent_id!r} failed before completing acquisition: {error}"
-        )
-    resource_discovery = state.get("resource_discovery")
-    if isinstance(resource_discovery, dict):
-        resource_discovery["status"] = "child_failed"
-        resource_discovery["blocker"] = (
-            f"child expert {child_agent_id!r} failed before completing resource discovery"
-        )
-        resource_discovery["next_action"] = (
-            "retry the child expert after provider availability is restored"
-        )
-    return state
-
-
-def _failed_child_delegation_output_summary(
-    *,
-    child_agent_id: str,
-    parent_agent_id: str,
-    error: str,
-    message: str,
-    workflow_state: Mapping[str, Any],
-) -> str:
-    """Return compact parent-consumable text for a failed child expert."""
-
-    return (
-        f"Child expert {child_agent_id!r} failed while delegated from "
-        f"{parent_agent_id!r}: {error}. {message}\n\n"
-        f"CLIO durable typed workflow state:\n{_workflow_state_payload(workflow_state)}"
-    )
-
-
-def _state_path_value(state: Mapping[str, Any], path: str) -> Any:
-    current: Any = state
-    for part in path.split("."):
-        if isinstance(current, Mapping) and part in current:
-            current = current[part]
-        else:
-            return None
-    return current
-
-
-def _workflow_state_has_existing_staged_path(state: Mapping[str, Any]) -> bool:
-    acquisition = state.get("acquisition")
-    if not isinstance(acquisition, Mapping):
-        return True
-    status = str(acquisition.get("status") or "").strip().lower()
-    if status != "staged" or acquisition.get("analysis_ready") is not True:
-        return True
-    local_path = str(acquisition.get("local_path") or acquisition.get("path") or "").strip()
-    if not local_path.startswith(("/", "~")):
-        return True
-    return Path(local_path).expanduser().is_file()
-
-
-def _state_predicate_hit(actual: Any, expected: Any) -> bool:
-    if isinstance(expected, Mapping):
-        if "exists" in expected:
-            return (actual is not None) is bool(expected.get("exists"))
-        if "equals" in expected:
-            return _state_predicate_hit(actual, expected.get("equals"))
-        if "in" in expected and isinstance(expected.get("in"), list | tuple | set):
-            return any(_state_predicate_hit(actual, item) for item in expected["in"])
-        if "not" in expected:
-            return not _state_predicate_hit(actual, expected.get("not"))
-    if isinstance(expected, list | tuple | set):
-        return any(_state_predicate_hit(actual, item) for item in expected)
-    if isinstance(actual, bool):
-        if isinstance(expected, str):
-            return actual is (expected.strip().lower() in {"1", "true", "yes", "on"})
-        return actual is bool(expected)
-    return str(actual).strip().lower() == str(expected).strip().lower()
 
 
 def _user_agent_param(agent_def: "AgentDef", name: str) -> Any:
@@ -5449,8 +4696,6 @@ class AgentLike(Protocol):
         ...
 
 
-
-
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Startup/shutdown hook.
@@ -6179,7 +5424,6 @@ def build_app(
     # + window resolution remain in runtime/context_tokens.py (shared with the
     # expert forward path).
 
-
     # ---- /v1/sessions/{sid}/undo + .../rewind -------------------------
     # Transcript rollback (undo/rewind) is owned by routes/sessions.py and
     # registered below via register_sessions_routes(app, deps); the ledger
@@ -6266,7 +5510,6 @@ def build_app(
             prev_status=prev_status,
             turn_agent_id=turn_agent_id,
         )
-
 
     # ---- POST /v1/sessions/{sid}/cancel (BBB20) -----------------------
     # Best-effort cooperative cancel of an in-flight turn is owned by
