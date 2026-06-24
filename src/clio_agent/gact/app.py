@@ -147,7 +147,6 @@ _install_sigusr1_diagnostic()
 
 from collections.abc import Mapping
 from contextlib import asynccontextmanager
-from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -165,9 +164,6 @@ from clio_agent.gact.semantic_events import (
     DEFAULT_DETAIL_LEVEL,
     SemanticEventSink,
     build_trace_backend,
-)
-from clio_agent.gact.workspace_scope import (
-    resolve_workspace_storage_root,
 )
 from clio_agent.prompts import PromptRegistry, PromptSource
 from clio_agent.runtime import trace
@@ -443,246 +439,27 @@ def _agent_not_available_error(app: "FastAPI", sid: str) -> "ErrorEnvelope":
     )
 
 
-def _append_session_message(app: "FastAPI", session_id: str, message: "Message") -> None:
-    """Append one chronological message to memory and disk."""
-
-    app.state.messages.setdefault(session_id, []).append(message)
-    store = getattr(app.state, "message_store", None)
-    if store is not None:
-        store.append(session_id, message)
-    _mirror_workspace_messages(app, session_id)
-
-
-def _extend_session_messages(
-    app: "FastAPI",
-    session_id: str,
-    messages: list["Message"],
-) -> None:
-    """Append several chronological messages to memory and disk."""
-
-    if not messages:
-        return
-    app.state.messages.setdefault(session_id, []).extend(messages)
-    store = getattr(app.state, "message_store", None)
-    if store is not None:
-        store.extend(session_id, messages)
-    _mirror_workspace_messages(app, session_id)
-
-
-def _replace_session_messages(
-    app: "FastAPI",
-    session_id: str,
-    messages: list["Message"],
-) -> None:
-    """Replace one session's message ledger in memory and disk."""
-
-    app.state.messages[session_id] = list(messages)
-    store = getattr(app.state, "message_store", None)
-    if store is not None:
-        store.replace_session(session_id, list(messages))
-    _mirror_workspace_messages(app, session_id)
-
-
-def _delete_session_messages(app: "FastAPI", session_id: str) -> None:
-    """Remove one session's message ledger from memory and disk."""
-
-    app.state.messages.pop(session_id, None)
-    store = getattr(app.state, "message_store", None)
-    if store is not None:
-        store.delete_session(session_id)
-    _mirror_workspace_messages(app, session_id)
-
-
-def _release_session_arc(app: "FastAPI", session_id: str) -> None:
-    """Release a closed session's hot footprint from ARC (best-effort).
-
-    Persistence is write-through, so this only drops the in-memory cache/index
-    copies; it never deletes durable records. Keeps an idle server from pinning
-    every closed session's objects in the never-evicted hot path.
-    """
-
-    arc = getattr(app.state, "arc", None)
-    if arc is None:
-        return
-    release = getattr(arc, "release_session", None)
-    if release is None:
-        return
-    try:
-        release(session_id)
-    except Exception:  # noqa: BLE001 - lifecycle cleanup must never fail a request
-        pass
-
-
-def _workspace_for_session(app: "FastAPI", session_id: str) -> Any | None:
-    sess = app.state.sessions.get(session_id)
-    if sess is None:
-        return None
-    return app.state.workspaces.get(getattr(sess, "workspace_id", ""))
-
-
-def _workspace_storage_root_for_session(app: "FastAPI", session_id: str) -> Path | None:
-    ws = _workspace_for_session(app, session_id)
-    if ws is None:
-        return None
-    return resolve_workspace_storage_root(ws)
-
-
-def _mirror_workspace_session(app: "FastAPI", session_id: str) -> None:
-    """Persist one session row into the owning workspace storage root."""
-
-    sess = app.state.sessions.get(session_id)
-    root = _workspace_storage_root_for_session(app, session_id)
-    if sess is None or root is None:
-        return
-    path = root / "sessions.json"
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        data: dict[str, Any] = {}
-        if path.exists():
-            try:
-                loaded = json.loads(path.read_text(encoding="utf-8"))
-                if isinstance(loaded, dict):
-                    data = loaded
-            except Exception:
-                data = {}
-        data[session_id] = asdict(sess)
-        data[session_id].setdefault("metadata", {})
-        data[session_id]["metadata"]["workspace_storage_root"] = str(root)
-        tmp = path.with_suffix(path.suffix + ".tmp")
-        tmp.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
-        os.replace(tmp, path)
-    except Exception:
-        return
-
-
-def _mirror_workspace_messages(app: "FastAPI", session_id: str) -> None:
-    """Persist one message ledger into the owning workspace storage root."""
-
-    root = _workspace_storage_root_for_session(app, session_id)
-    if root is None:
-        return
-    try:
-        store = MessageStore(root / "messages")
-        messages = list(app.state.messages.get(session_id, []))
-        if messages:
-            store.replace_session(session_id, messages)
-        else:
-            store.delete_session(session_id)
-    except Exception:
-        return
-
-
-def _remove_workspace_session_mirror(app: "FastAPI", session_id: str) -> None:
-    """Remove one mirrored session row from its workspace-local store."""
-
-    root = _workspace_storage_root_for_session(app, session_id)
-    if root is None:
-        return
-    try:
-        sessions_path = root / "sessions.json"
-        if sessions_path.exists():
-            data = json.loads(sessions_path.read_text(encoding="utf-8"))
-            if isinstance(data, dict):
-                data.pop(session_id, None)
-                tmp = sessions_path.with_suffix(sessions_path.suffix + ".tmp")
-                tmp.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
-                os.replace(tmp, sessions_path)
-        MessageStore(root / "messages").delete_session(session_id)
-    except Exception:
-        return
-
-
-# Multi-turn continuity: how many prior messages to carry and how much of each.
-_HISTORY_MAX_MESSAGES = 6
-_HISTORY_MAX_CHARS_PER_MESSAGE = 1200
-
-
-def _compile_session_conversation_history(
-    app: "FastAPI", session_id: str, current_prompt: str
-) -> str:
-    """Prepend a compact transcript of THIS session's prior turns to the turn's
-    prompt so a multi-turn orchestrator can reuse what earlier turns already
-    established (the resolved region, ranked stations, staged file paths) instead of
-    restarting blind on a follow-up like "now plot it". General to any blueprint and
-    a NO-OP on the first turn (no prior messages), so single-turn behaviour is
-    unchanged. The orchestrator otherwise receives only the latest user message."""
-    messages = list(app.state.messages.get(session_id, []))
-    prior = [m for m in messages if getattr(m, "role", "") in {"user", "assistant"}]
-    # The current user message is already appended before the turn runs — drop the
-    # trailing user message(s) so only PRIOR turns are carried.
-    while prior and prior[-1].role == "user":
-        prior.pop()
-    if not prior:
-        return current_prompt
-    lines: list[str] = []
-    for message in prior[-_HISTORY_MAX_MESSAGES:]:
-        text = _message_text_excerpt(message, max_chars=_HISTORY_MAX_CHARS_PER_MESSAGE)
-        if not text:
-            continue
-        speaker = "User" if message.role == "user" else "Assistant"
-        lines.append(f"{speaker}: {text}")
-    if not lines:
-        return current_prompt
-    transcript = "\n".join(lines)
-    return (
-        "Earlier turns in THIS conversation — reuse what was already resolved "
-        "(region/coordinates, ranked stations, staged file paths) rather than "
-        "starting over; only the request after the marker is new:\n"
-        f"{transcript}\n\n=== Current request ===\n{current_prompt}"
-    )
-
-
-def _load_context_files(path: Path | None) -> dict[str, dict[str, dict[str, Any]]]:
-    """Load persisted context-file attachments keyed by session id."""
-
-    if path is None or not path.exists():
-        return {}
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
-    sessions = data.get("sessions", {}) if isinstance(data, Mapping) else {}
-    if not isinstance(sessions, Mapping):
-        return {}
-    loaded: dict[str, dict[str, dict[str, Any]]] = {}
-    for sid, rows in sessions.items():
-        if not isinstance(rows, Mapping):
-            continue
-        bucket: dict[str, dict[str, Any]] = {}
-        for path_key, row in rows.items():
-            if not isinstance(row, Mapping):
-                continue
-            path_value = str(row.get("path") or path_key or "").strip()
-            if not path_value:
-                continue
-            bucket[path_value] = dict(row) | {"path": path_value}
-        if bucket:
-            loaded[str(sid)] = bucket
-    return loaded
-
-
-def _flush_context_files(app: "FastAPI") -> None:
-    """Persist the current context-file ledger, if persistence is configured."""
-
-    path = getattr(app.state, "context_files_path", None)
-    if path is None:
-        return
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(
-        json.dumps({"sessions": app.state.context_files}, indent=2, sort_keys=True),
-        encoding="utf-8",
-    )
-    tmp.replace(path)
-
-
-def _delete_session_context_files(app: "FastAPI", session_id: str) -> None:
-    """Remove one session's context-file ledger from memory and disk."""
-
-    if session_id in app.state.context_files:
-        app.state.context_files.pop(session_id, None)
-        _flush_context_files(app)
+# Session message-ledger + workspace-mirror + context-file helpers now live in
+# clio_agent.gact.session_store (#714 decomposition). Re-exported here so
+# `from clio_agent.gact.app import ...` and test_import_seams stay green.
+from clio_agent.gact.session_store import (  # noqa: E402,F401
+    _HISTORY_MAX_CHARS_PER_MESSAGE,
+    _HISTORY_MAX_MESSAGES,
+    _append_session_message,
+    _compile_session_conversation_history,
+    _delete_session_context_files,
+    _delete_session_messages,
+    _extend_session_messages,
+    _flush_context_files,
+    _load_context_files,
+    _mirror_workspace_messages,
+    _mirror_workspace_session,
+    _release_session_arc,
+    _remove_workspace_session_mirror,
+    _replace_session_messages,
+    _workspace_for_session,
+    _workspace_storage_root_for_session,
+)
 
 
 def _cancelled_error_info(
