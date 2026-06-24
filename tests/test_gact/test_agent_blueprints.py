@@ -2193,7 +2193,7 @@ def test_dynamic_child_expert_tools_adds_fanout_only_when_declared(
     )
     child = AgentDef(id="analysis", source="expert_pack", title="Analysis", parent_id="root")
     monkeypatch.setattr(
-        "clio_agent.gact.app._runtime_active_agent_blueprint_rows",
+        "clio_agent.gact.agents.resolution._runtime_active_agent_blueprint_rows",
         lambda app, session_id="": [parent, child],
     )
 
