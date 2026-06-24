@@ -313,8 +313,10 @@ def load_mcp_servers(
     for pack_id, servers in dict(pack_servers).items():
         if isinstance(servers, Mapping):
             merged.update(specs_from_mapping(servers, source=f"pack:{pack_id}", env=env))
-    config_home = Path(lookup.get("XDG_CONFIG_HOME") or (home / ".config"))
-    for name, value in _read_mcp_yaml(config_home / "clio-agent" / "mcp.yaml").items():
+    from clio_agent import paths  # noqa: PLC0415 - avoid import cycle at module load
+
+    user_mcp = paths.user_config_dir_for(home, lookup) / "mcp.yaml"
+    for name, value in _read_mcp_yaml(user_mcp).items():
         merged[name] = spec_from_declaration(name, value, source="user", env=env)
     for name, value in _read_mcp_yaml(cwd / ".clio" / "mcp.yaml").items():
         merged[name] = spec_from_declaration(name, value, source="workspace", env=env)

@@ -19416,11 +19416,9 @@ def build_app(
             cwd = _workspace_catalog_cwd(workspace_id=workspace_id, session_id=session_id)
             return (cwd or Path.cwd()) / ".clio" / "agent-blueprints"
         if scope == "global":
-            base = os.environ.get("XDG_CONFIG_HOME")
-            config_root = (
-                Path(base) / "clio-agent" if base else Path.home() / ".config" / "clio-agent"
-            )
-            return config_root / "agent-blueprints"
+            from clio_agent import paths  # noqa: PLC0415
+
+            return paths.user_config_dir() / "agent-blueprints"
         raise ValueError("scope must be workspace or global")
 
     def _frontmatter_scalar(value: Any) -> str:
@@ -19753,9 +19751,9 @@ def build_app(
         ]
 
     def _agent_blueprint_sources_path() -> Path:
-        base = os.environ.get("XDG_CONFIG_HOME")
-        config_root = Path(base) / "clio-agent" if base else Path.home() / ".config" / "clio-agent"
-        return config_root / "agent-blueprint-sources.json"
+        from clio_agent import paths  # noqa: PLC0415
+
+        return paths.user_config_dir() / "agent-blueprint-sources.json"
 
     def _source_registry_id(source: str, ref: str = "") -> str:
         digest = hashlib.sha256(f"{source}\n{ref}".encode("utf-8")).hexdigest()[:12]

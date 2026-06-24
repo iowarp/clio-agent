@@ -160,11 +160,13 @@ class ConfigStore:
         return self._env if self._env is not None else os.environ
 
     def _load(self) -> dict[str, Any]:
+        from clio_agent import paths  # noqa: PLC0415 - avoid import cycle at module load
+
         home = self._home or Path.home()
         cwd = self._cwd or Path.cwd()
         env = self._env_map()
-        config_home = Path(env.get("XDG_CONFIG_HOME") or (home / ".config"))
-        user = _read_yaml_mapping(config_home.joinpath(*_USER_CONFIG_RELPATH))
+        # OS-correct per-user config dir (honors injected home/env for tests).
+        user = _read_yaml_mapping(paths.user_config_dir_for(home, env) / _USER_CONFIG_RELPATH[-1])
         workspace = _read_yaml_mapping(cwd.joinpath(*_WORKSPACE_CONFIG_RELPATH))
         return _deep_merge(user, workspace)
 
