@@ -49,6 +49,41 @@ class _GuardDirectDestructiveAction(Protocol):
     ) -> None: ...
 
 
+class _ApplyEditToDisk(Protocol):
+    """Callable seam committing an approved file diff to disk.
+
+    ``_apply_edit_to_disk`` (in :mod:`clio_agent.gact.app`) is the GACT-side
+    commit step for ``POST /v1/sessions/{sid}/diffs/apply``: it enforces the
+    workspace-root + mode + file-policy boundary and records an auto-approved
+    permission audit row before writing. It wraps the permission/policy
+    machinery that lives in ``gact.app``, so it stays built there and travels
+    here; the diff-apply route invokes it without importing back into
+    ``gact.app`` (which would violate the no-cycle invariant).
+    """
+
+    def __call__(
+        self,
+        *,
+        path: str,
+        new_content: str,
+        session: Any,
+        app: "FastAPI",
+    ) -> dict[str, Any]: ...
+
+
+class _FlushContextFiles(Protocol):
+    """Callable seam persisting the context-file ledger to disk.
+
+    ``_flush_context_files`` (in :mod:`clio_agent.gact.app`) atomically writes
+    the in-memory context-file ledger to ``app.state.context_files_path`` when
+    persistence is configured. It has a second owner -- session deletion's
+    ``_delete_session_context_files`` -- so it stays single-sourced in
+    ``gact.app`` and travels here for the context-file add/remove routes.
+    """
+
+    def __call__(self, app: "FastAPI") -> None: ...
+
+
 class _PromptRegistryForRequest(Protocol):
     """Callable seam building a request-scoped :class:`PromptRegistry`.
 
@@ -111,6 +146,8 @@ class GactDeps:
     """
 
     guard_direct_destructive_action: _GuardDirectDestructiveAction
+    apply_edit_to_disk: _ApplyEditToDisk
+    flush_context_files: _FlushContextFiles
     prompt_registry_for_request: _PromptRegistryForRequest
     prompt_agent_overlay_for_request: _PromptAgentOverlayForRequest
     prompt_render_context_for_request: _PromptRenderContextForRequest
