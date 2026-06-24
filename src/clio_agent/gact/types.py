@@ -15,6 +15,8 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field
 
+from clio_agent.arc.schema import SegmentKind
+
 # ---------------------------------------------------------------------------
 # §3 — health + capabilities
 # ---------------------------------------------------------------------------
@@ -216,6 +218,83 @@ class SessionContextPolicy(BaseModel):
     requires_user_consent: bool = True
     notes: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ContextStateResponse(BaseModel):
+    """GET /v1/sessions/{sid}/context/state — the ARC live context plane for a scope.
+
+    ``pct_used`` is the **segment-store token attribution** (sum of per-segment
+    ``token_count`` over the live render) divided by the model window — distinct
+    from the provider-exact prompt-token reading the in-turn auto-compactor uses,
+    and ``null`` when the window is unknown.
+    """
+
+    session_id: str
+    scope: str
+    as_of: Optional[int] = None
+    window_tokens: int = 0
+    live_tokens: int = 0
+    pct_used: Optional[float] = None
+    live_block_count: int = 0
+    tokens_by_kind: dict[str, int] = Field(default_factory=dict)
+    segments: list[dict[str, Any]] = Field(default_factory=list)
+    render_text: str = ""
+    render_keys: dict[str, Any] = Field(default_factory=dict)
+
+
+class ContextOpRequest(BaseModel):
+    """POST /v1/sessions/{sid}/context/ops — apply one live-context operation.
+
+    Only the fields relevant to ``op`` are used (append/insert: ``kind`` +
+    ``content`` [+ ``position`` for insert]; delete: ``ids``; summarize: ``ids`` +
+    ``summary_content``).
+    """
+
+    op: Literal["append", "insert", "delete", "summarize"]
+    scope: str
+    kind: Optional[SegmentKind] = None
+    content: Optional[dict[str, Any]] = None
+    position: Optional[int] = None
+    ids: Optional[list[str]] = None
+    summary_content: Optional[dict[str, Any]] = None
+    step: int = -1
+    token_count: int = 0
+    trace_ref: str = ""
+
+
+class ContextOpResponse(BaseModel):
+    """Result of a context op plus a fresh state snapshot so the TUI updates
+    without a second GET."""
+
+    session_id: str
+    scope: str
+    op: str
+    applied: bool = True
+    result: Optional[dict[str, Any]] = None
+    tombstoned_count: Optional[int] = None
+    live_block_count: int = 0
+    tokens_by_kind: dict[str, int] = Field(default_factory=dict)
+    pct_used: Optional[float] = None
+
+
+class ContextSearchHit(BaseModel):
+    """One ranked scope from a context discovery search."""
+
+    scope: str
+    score: float
+
+
+class ContextSearchResponse(BaseModel):
+    """GET /v1/sessions/{sid}/context/search — semantic discovery over scopes.
+
+    'which expert/scope knows about X'. ``semantic`` is True for real BM25 (the CTE
+    backend) and False for the naive word-overlap fallback (LocalFS).
+    """
+
+    session_id: str
+    query: str
+    semantic: bool = False
+    hits: list[ContextSearchHit] = Field(default_factory=list)
 
 
 class GlobalMemoryStats(BaseModel):

@@ -20,7 +20,7 @@ See docs/ARC_MEMORY_LAYER.md for detailed schema specifications.
 
 import time
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 import msgspec
 
@@ -52,6 +52,73 @@ class Message(msgspec.Struct):
     timestamp: float  # Unix timestamp from time.time()
     message_id: str = msgspec.field(default_factory=lambda: str(uuid.uuid4()))
     metadata: Dict[str, Any] = msgspec.field(default_factory=dict)
+
+
+# One ordered, scoped piece of the ARC live context plane. The four context
+# operations (append/insert/delete/summarize) act on these; the gact ReAct loop
+# writes one per produced piece (thought/tool_call/observation) and rebuilds its
+# prompt by rendering the live ordered set. See docs/design/arc-live-context-plane.md.
+SegmentKind = Literal[
+    "system", "user", "tool_def", "thought", "tool_call", "observation", "summary"
+]
+SegmentStatus = Literal["live", "tombstoned"]
+
+
+class Segment(msgspec.Struct):
+    """One ordered, scoped piece of live context — the unit of the ARC live plane.
+
+    Locked schema (GOAL.md). ``content`` shape depends on ``kind``:
+        thought / observation / summary / system / user -> {"text": str}
+        tool_call -> {"name": str, "args": dict[str, Any]}
+        tool_def  -> {"name": str, "schema": Any} or {"text": str}
+
+    Attributes:
+        scope: Tag address ("agentX/expertY") — expert/agent addressing.
+        kind: Render + token-attribution category.
+        content: Payload, shape per kind (see above).
+        session_id: Owning session (infra; never emitted into the rendered prompt).
+        step: ReAct iteration index; -1 for static system/user/tool_def segments.
+        order: Render order within scope; gap-allocated float so mid-inserts never
+            renumber later segments.
+        logical_time: Store-assigned monotonic clock (as-of-T reads, write ordering).
+        id: Stable unique id — the operation target; survives reorder/edit.
+        token_count: Cached per-segment token estimate (attribution + compaction).
+        derived_from: Provenance; for ``summary`` segments, the ids it replaced.
+        status: ``"tombstoned"`` deletions are skipped by render but kept for replay.
+        trace_ref: Link to the durable Trace event that logged this segment's write.
+        created_at: Wall-clock creation time (diagnostics only).
+    """
+
+    # Required (the locked render fields the writer always supplies).
+    scope: str
+    kind: SegmentKind
+    content: Dict[str, Any]
+    session_id: str
+    step: int
+    order: float
+    logical_time: int
+    # Optional with defaults.
+    id: str = msgspec.field(default_factory=lambda: str(uuid.uuid4()))
+    token_count: int = 0
+    derived_from: List[str] = msgspec.field(default_factory=list)
+    status: SegmentStatus = "live"
+    tombstoned_at: int = 0  # logical_time of tombstoning; 0 = live (for as-of-T reads)
+    trace_ref: str = ""
+    created_at: float = msgspec.field(default_factory=lambda: time.time())
+
+
+def segment_text(seg: "Segment") -> str:
+    """Best-effort flat text of a segment's content (render + token counting).
+
+    Pure, no I/O. ``tool_call`` content renders as ``name(json-args)``; everything
+    else uses the ``"text"`` field, falling back to a JSON dump of the content.
+    """
+    if seg.kind == "tool_call":
+        name = str(seg.content.get("name") or "")
+        args = seg.content.get("args") or {}
+        return f"{name}({msgspec.json.encode(args).decode()})"
+    text = seg.content.get("text")
+    return text if isinstance(text, str) else msgspec.json.encode(seg.content).decode()
 
 
 class RoutingDecision(msgspec.Struct):
@@ -846,3 +913,23 @@ def decode_variant_record(data: bytes) -> VariantRecord:
         VariantRecord object
     """
     return msgspec.msgpack.decode(data, type=VariantRecord)
+
+
+def encode_segment(seg: Segment) -> bytes:
+    """Encode a Segment to msgpack bytes."""
+    return msgspec.msgpack.encode(seg)
+
+
+def decode_segment(data: bytes) -> Segment:
+    """Decode msgpack bytes to a Segment."""
+    return msgspec.msgpack.decode(data, type=Segment)
+
+
+def encode_segments(segments: List[Segment]) -> bytes:
+    """Encode a list of Segments to msgpack bytes (one record per scope)."""
+    return msgspec.msgpack.encode(segments)
+
+
+def decode_segments(data: bytes) -> List[Segment]:
+    """Decode msgpack bytes to a list of Segments."""
+    return msgspec.msgpack.decode(data, type=List[Segment])

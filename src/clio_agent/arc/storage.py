@@ -20,15 +20,19 @@ Graceful Degradation:
 See PLAN.md v0.3.0 Task 2 for requirements.
 """
 
+import base64
+import logging
 import os
+import threading
+import time
+import warnings
 from collections.abc import Iterator
-from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Optional, Protocol, runtime_checkable
+from typing import Dict, Optional, Protocol, runtime_checkable
 
-import msgspec
+logger = logging.getLogger(__name__)
 
-# The seven logical record families ARC persists. Each maps to one physical
+# The logical record families ARC persists. Each maps to one physical
 # container in a store (a directory for LocalFSStore; a namespace/key prefix
 # for a CTE-backed store). Keep this list as the single source of truth.
 ARC_KINDS: tuple[str, ...] = (
@@ -39,7 +43,13 @@ ARC_KINDS: tuple[str, ...] = (
     "profiles",
     "procedural",
     "variants",
+    "segments",  # live context plane: one record per (session_id, scope)
 )
+
+# Suffix for the optional plain-text companion blob a backend may store next to a
+# record for BM25 semantic discovery (Thread D). Companions are NOT records:
+# scan()/get() skip them. Record names must not end with this suffix.
+_SEARCH_SUFFIX = ".text"
 
 
 @runtime_checkable
@@ -54,8 +64,21 @@ class ARCStore(Protocol):
     multi-tier storage. This Protocol is the seam where that backend plugs in.
     """
 
-    def put(self, kind: str, name: str, data: bytes, *, tier: str = "warm") -> None:
-        """Persist ``data`` for ``(kind, name)`` (overwrites)."""
+    def put(
+        self,
+        kind: str,
+        name: str,
+        data: bytes,
+        *,
+        tier: str = "warm",
+        search_text: Optional[str] = None,
+    ) -> None:
+        """Persist ``data`` for ``(kind, name)`` (overwrites).
+
+        ``search_text`` (optional) is a plain-text projection of the record for BM25
+        semantic discovery (Thread D); a backend may index it. ``None`` drops any
+        existing companion.
+        """
         ...
 
     def get(self, kind: str, name: str) -> Optional[bytes]:
@@ -77,6 +100,18 @@ class ARCStore(Protocol):
 
     def clear(self) -> None:
         """Delete all persisted records across all kinds."""
+        ...
+
+    def supports_search(self) -> bool:
+        """Whether :meth:`search` does real (e.g. BM25) semantic ranking."""
+        ...
+
+    def search(
+        self, kind: str, query_text: str, *, name_prefix: str = "", k: int = 10
+    ) -> list[tuple[str, float]]:
+        """Rank records in ``kind`` (name starting with ``name_prefix``) by relevance
+        to ``query_text``. Returns ``[(name, score)]`` best-first. Backends without a
+        search index may return a degraded ranking (see ``supports_search``)."""
         ...
 
 
@@ -102,8 +137,24 @@ class LocalFSStore:
         except KeyError:
             raise ValueError(f"unknown ARC kind {kind!r}; expected one of {ARC_KINDS}") from None
 
-    def put(self, kind: str, name: str, data: bytes, *, tier: str = "warm") -> None:
-        (self._dir(kind) / f"{name}.msgpack").write_bytes(data)
+    def put(
+        self,
+        kind: str,
+        name: str,
+        data: bytes,
+        *,
+        tier: str = "warm",
+        search_text: Optional[str] = None,
+    ) -> None:
+        directory = self._dir(kind)
+        (directory / f"{name}.msgpack").write_bytes(data)
+        # Plain-text companion sidecar for search (Thread D). ``.search`` so the
+        # ``*.msgpack`` scan never picks it up as a record.
+        companion = directory / f"{name}.search"
+        if search_text is not None:
+            companion.write_text(search_text, encoding="utf-8")
+        elif companion.exists():
+            companion.unlink()
 
     def get(self, kind: str, name: str) -> Optional[bytes]:
         path = self._dir(kind) / f"{name}.msgpack"
@@ -123,606 +174,223 @@ class LocalFSStore:
             yield path.stem, data
 
     def delete(self, kind: str, name: str) -> None:
-        path = self._dir(kind) / f"{name}.msgpack"
-        if path.exists():
-            path.unlink()
+        directory = self._dir(kind)
+        for suffix in (".msgpack", ".search"):
+            path = directory / f"{name}{suffix}"
+            if path.exists():
+                path.unlink()
 
     def clear(self) -> None:
         for directory in self._dirs.values():
-            for path in directory.glob("*.msgpack"):
-                path.unlink()
+            for pattern in ("*.msgpack", "*.search"):
+                for path in directory.glob(pattern):
+                    path.unlink()
+
+    def supports_search(self) -> bool:
+        return False  # naive word-overlap, not BM25 (use CTEStore for real ranking)
+
+    def search(
+        self, kind: str, query_text: str, *, name_prefix: str = "", k: int = 10
+    ) -> list[tuple[str, float]]:
+        """Degraded fallback: rank by query-word overlap over the ``.search``
+        companions. Good enough for tests / non-CTE deployments; CTEStore does BM25."""
+        terms = {t for t in query_text.lower().split() if t}
+        if not terms:
+            return []
+        scored: list[tuple[str, float]] = []
+        for path in self._dir(kind).glob(f"{name_prefix}*.search"):
+            try:
+                text = path.read_text(encoding="utf-8", errors="ignore").lower()
+            except OSError:
+                continue
+            score = sum(1 for w in text.split() if w in terms)
+            if score > 0:
+                scored.append((path.stem, float(score)))  # .stem drops ".search"
+        scored.sort(key=lambda x: -x[1])
+        return scored[:k]
 
 
-class IOWarpCTEBackend:
-    """IOWarp CTE storage backend for ARC persistence.
+class CTEStore:
+    """ARCStore backed by the in-process clio-core CTE runtime.
 
-    Provides multi-tier storage with automatic migration based on access patterns.
-    Gracefully degrades to local filesystem if IOWarp is unavailable.
+    Maps ``(kind, name)`` -> ``(CTE tag, CTE blob)``. msgpack payloads are
+    base64-wrapped because CTE's ``GetBlob`` UTF-8-decodes in the C++ binding and
+    raises on non-UTF-8 bytes. The runtime is **embedded in this process**
+    (``chimaera_init(..., default_with_runtime=True)`` self-starts it) and dies with
+    the interpreter — there is NO external ``clio_run`` daemon.
 
-    Args:
-        namespace: IOWarp namespace (e.g., "/clio_agent/arc")
-        base_dir: Local fallback directory if IOWarp unavailable
-        tier_policy: Tier migration policy (days to migrate between tiers)
-
-    Examples:
-        >>> backend = IOWarpCTEBackend(namespace="/clio_agent/arc")
-        >>> backend.write("conversations/session-1.msgpack", data, tier="warm")
-        >>> data = backend.read("conversations/session-1.msgpack")
-        >>> stats = backend.get_tier_stats()
-        >>> print(f"IOWarp available: {stats['iowarp_available']}")
+    DURABILITY: the default CTE config is a single DRAM tier (shared memory), so
+    data lives only while the process is up. Cross-restart durability needs a
+    ``file`` bdev + WAL replay in the CTE config (a follow-up). For durable storage
+    today, select the LocalFS backend (``CLIO_ARC_STORE=local``).
     """
+
+    _initialized = False  # process-global init guard (the runtime inits exactly once)
+    _init_lock = threading.Lock()
 
     def __init__(
         self,
-        namespace: str = "/clio_agent/arc",
-        base_dir: str = ".clio_agent/arc",
-        tier_policy: Optional[Dict[str, int]] = None,
-    ):
-        """Initialize IOWarp CTE backend.
+        *,
+        config_path: str = "",
+        log_level: str = "error",
+        init_settle_s: float = 0.5,
+    ) -> None:
+        self._ensure_runtime(config_path, log_level, init_settle_s)
+        import clio_cte_core_ext as cte  # noqa: PLC0415
 
-        Args:
-            namespace: IOWarp namespace for ARC data
-            base_dir: Local directory for fallback storage
-            tier_policy: Days to migrate between tiers (hot_to_warm, warm_to_cold, cold_to_archive)
-        """
-        self.namespace = namespace
-        self.base_dir = Path(base_dir)
-        self.base_dir.mkdir(parents=True, exist_ok=True)
+        self._cte = cte
+        self._client = cte.get_cte_client()
+        logger.info(
+            "CTEStore active: clio-core CTE is the ARC backend (in-process runtime). "
+            "The DEFAULT config is DRAM-only (not durable across restarts); durable + "
+            "fault-tolerant tiers (file bdev, replication, erasure coding) are configured "
+            "in the CTE config via CLIO_ARC_STORE_CONFIG. Use CLIO_ARC_STORE=local for "
+            "disk durability today."
+        )
 
-        # Tier migration policy (days)
-        self.tier_policy = tier_policy or {
-            "hot_to_warm": 1,  # 1 day in hot tier before eviction
-            "warm_to_cold": 7,  # 1 week in warm tier
-            "cold_to_archive": 30,  # 1 month in cold tier
-        }
+    @classmethod
+    def _ensure_runtime(cls, config_path: str, log_level: str, settle_s: float) -> None:
+        """Boot the embedded CTE runtime exactly once per process."""
+        with cls._init_lock:
+            if cls._initialized:
+                return
+            os.environ.setdefault("CTP_LOG_LEVEL", log_level)
+            # Import order is load-bearing: iowarp_core does the RTLD_GLOBAL .so
+            # preload + seeds ~/.clio/clio.yaml; it MUST precede clio_cte_core_ext.
+            # isort:skip keeps ruff from reordering these alphabetically.
+            import iowarp_core  # noqa: F401, PLC0415  # isort:skip
+            import clio_cte_core_ext as cte  # noqa: PLC0415  # isort:skip
 
-        # Check IOWarp availability
-        self.iowarp_available = self._check_iowarp()
-
-        # Initialize IOWarp connection if available
-        if self.iowarp_available:
-            self._initialize_iowarp()
-        else:
-            # Warn user that we're using local storage
-            print(f"⚠ IOWarp not available, using local storage: {self.base_dir}")
-
-        # Create tier directories for local fallback
-        self._warm_dir = self.base_dir / "warm"
-        self._cold_dir = self.base_dir / "cold"
-        self._archive_dir = self.base_dir / "archive"
-
-        self._warm_dir.mkdir(exist_ok=True)
-        self._cold_dir.mkdir(exist_ok=True)
-        self._archive_dir.mkdir(exist_ok=True)
-
-        # Access tracking for tier migration
-        self._access_metadata_file = self.base_dir / "access_metadata.msgpack"
-        self._access_metadata: Dict[str, Dict[str, Any]] = self._load_access_metadata()
-
-        # Performance counters
-        self._tier_migrations = 0
-        self._iowarp_reads = 0
-        self._iowarp_writes = 0
-        self._local_reads = 0
-        self._local_writes = 0
-
-    def _check_iowarp(self) -> bool:
-        """Check if IOWarp runtime is available.
-
-        Checks for:
-        1. ZeroMQ port 5555 connectivity
-        2. IOWARP_ENDPOINT environment variable
-        3. Docker container presence
-
-        Returns:
-            True if IOWarp runtime available, False otherwise
-        """
-        import socket
-
-        # Check environment variable first
-        endpoint = os.getenv("IOWARP_ENDPOINT", "tcp://localhost:5555")
-
-        # Try to connect to ZeroMQ port
-        try:
-            # Parse endpoint
-            host: str
-            port: int
-            if "://" in endpoint:
-                _, hostport = endpoint.split("://")
-                if ":" in hostport:
-                    host, port_str = hostport.rsplit(":", 1)
-                    port = int(port_str)
-                else:
-                    host = hostport
-                    port = 5555
-            else:
-                host = "localhost"
-                port = 5555
-
-            # Test TCP connection
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(1)
-            result = sock.connect_ex((host, port))
-            sock.close()
-
-            return result == 0
-        except Exception:
-            return False
-
-    def _initialize_iowarp(self) -> None:
-        """Initialize ZeroMQ connection to IOWarp CTE runtime."""
-        try:
-            import zmq
-
-            endpoint = os.getenv("IOWARP_ENDPOINT", "tcp://localhost:5555")
-
-            # Create ZeroMQ context and socket
-            self.zmq_context = zmq.Context()
-            self.zmq_socket = self.zmq_context.socket(zmq.REQ)
-            self.zmq_socket.connect(endpoint)
-
-            # Register namespace with IOWarp
-            self._register_namespace()
-
-            print(f"✓ Connected to IOWarp CTE runtime at {endpoint}")
-        except ImportError:
-            print("⚠ pyzmq not installed, using local storage fallback")
-            print("  Install with: uv pip install pyzmq")
-            self.iowarp_available = False
-        except Exception as e:
-            print(f"⚠ Could not connect to IOWarp runtime: {e}")
-            print("  Start runtime with: docker-compose up iowarp-runtime")
-            self.iowarp_available = False
-
-    def _register_namespace(self) -> None:
-        """Register /clio_agent/arc namespace with IOWarp CTE."""
-        request = {
-            "op": "register_namespace",
-            "namespace": self.namespace,
-            "tier_policy": self.tier_policy,
-        }
-
-        self.zmq_socket.send_json(request)
-        response = self.zmq_socket.recv_json()
-
-        if response.get("status") != "ok":
-            raise RuntimeError(f"Failed to register namespace: {response.get('error')}")
-
-    def write(self, key: str, data: bytes, tier: str = "warm") -> None:
-        """Write data to IOWarp CTE with tier specification.
-
-        Writes data to the specified storage tier. If IOWarp is available,
-        uses IOWarp API. Otherwise, falls back to local filesystem.
-
-        Args:
-            key: Data key (relative path within namespace)
-            data: Binary data (msgpack encoded)
-            tier: Target tier ("warm", "cold", "archive")
-
-        Examples:
-            >>> backend.write("conversations/session-1.msgpack", encoded_data, tier="warm")
-            >>> backend.write("invocations/trace-123.msgpack", encoded_data, tier="cold")
-        """
-        # Update access metadata
-        self._update_access_metadata(key, tier=tier, operation="write")
-
-        if self.iowarp_available:
-            # Write to IOWarp
-            self._write_iowarp(key, data, tier)
-            self._iowarp_writes += 1
-        else:
-            # Fallback to local storage
-            self._write_local(key, data, tier)
-            self._local_writes += 1
-
-        # Periodically run tier migration
-        self._maybe_migrate_tiers()
-
-    def read(self, key: str) -> Optional[bytes]:
-        """Read data from IOWarp CTE.
-
-        Reads data from any tier. Automatically promotes frequently accessed
-        data to warmer tiers.
-
-        Args:
-            key: Data key (relative path within namespace)
-
-        Returns:
-            Binary data if found, None otherwise
-
-        Examples:
-            >>> data = backend.read("conversations/session-1.msgpack")
-            >>> if data:
-            ...     conv = msgspec.msgpack.decode(data, type=Conversation)
-        """
-        # Update access metadata (for tier promotion)
-        self._update_access_metadata(key, operation="read")
-
-        if self.iowarp_available:
-            data = self._read_iowarp(key)
-            if data:
-                self._iowarp_reads += 1
-            return data
-        else:
-            data = self._read_local(key)
-            if data:
-                self._local_reads += 1
-            return data
+            # Do NOT redirect fd 2 (no os.dup2 on stderr) here. Under pytest's
+            # fd-level capture that clobbers the captured fd and can SILENTLY ABORT
+            # the interpreter (exit 1, zero output) depending on capture mode +
+            # ambient CTE shared-memory state. CTP_LOG_LEVEL quiets the C++ logging;
+            # a one-time startup banner on stderr is an acceptable trade for never
+            # crashing the host process.
+            cte.chimaera_init(cte.ChimaeraMode.kClient, True)  # True => embedded runtime
+            time.sleep(settle_s)  # let the co-process spin up
+            cte.initialize_cte(config_path, cte.PoolQuery.Dynamic())  # "" => ~/.clio/clio.yaml
+            cls._initialized = True
+            logger.info("CTE embedded runtime initialized (no external daemon)")
 
     # ---- ARCStore Protocol ----
-    #
-    # Maps ARC's (kind, name) addressing onto this backend's flat key/tier API
-    # (key = "<kind>/<name>.msgpack"). scan/delete/clear operate over the local
-    # tier directories; native IOWarp enumeration is the deferred CEE-query seam.
 
-    def put(self, kind: str, name: str, data: bytes, *, tier: str = "warm") -> None:
-        self.write(f"{kind}/{name}.msgpack", data, tier=tier)
+    def put(
+        self,
+        kind: str,
+        name: str,
+        data: bytes,
+        *,
+        tier: str = "warm",
+        search_text: Optional[str] = None,
+    ) -> None:
+        # base64-wrap: CTE GetBlob UTF-8-decodes, so store ascii-safe bytes.
+        tag = self._cte.Tag(kind)
+        tag.PutBlob(name, base64.b64encode(data), 0)
+        # Optional plain-text companion for BM25 semantic discovery (Thread D). CTE
+        # SemanticSearch tokenises blob payloads, which the base64 record defeats —
+        # so a UTF-8 companion at <name>.text carries the searchable text. scan()/get()
+        # skip it so it is never mistaken for a record.
+        companion = name + _SEARCH_SUFFIX
+        if search_text is not None:
+            tag.PutBlob(companion, search_text.encode("utf-8"), 0)
+        elif tag.GetBlobSize(companion) > 0:
+            self._client.DelBlob(tag.GetTagId(), companion)  # drop a now-stale companion
+        # ``tier`` is advisory: the default single DRAM tier makes ReorganizeBlob a
+        # no-op. Wire tier->score only when a real file/HDD bdev is configured.
 
     def get(self, kind: str, name: str) -> Optional[bytes]:
-        return self.read(f"{kind}/{name}.msgpack")
+        tag = self._cte.Tag(kind)
+        size = tag.GetBlobSize(name)  # 0 for a missing blob (does not raise)
+        if size == 0:
+            return None
+        return base64.b64decode(tag.GetBlob(name, size, 0))
 
     def exists(self, kind: str, name: str) -> bool:
-        return self.get(kind, name) is not None
+        return self._cte.Tag(kind).GetBlobSize(name) > 0
 
     def scan(self, kind: str, prefix: str = "") -> Iterator[tuple[str, bytes]]:
-        seen: set[str] = set()
-        for tier in ("warm", "cold", "archive"):
-            tier_dir = self._get_tier_directory(tier)
-            for path in tier_dir.glob(f"{kind}/{prefix}*.msgpack"):
-                name = path.stem
-                if name in seen:
-                    continue
-                seen.add(name)
-                try:
-                    yield name, path.read_bytes()
-                except OSError:
-                    continue
+        tag = self._cte.Tag(kind)
+        for blob_name in tag.GetContainedBlobs():
+            if blob_name.endswith(_SEARCH_SUFFIX):
+                continue  # search companion, not a record
+            if blob_name.startswith(prefix):
+                value = self.get(kind, blob_name)
+                if value is not None:
+                    yield blob_name, value
 
     def delete(self, kind: str, name: str) -> None:
-        key = f"{kind}/{name}.msgpack"
-        for tier in ("warm", "cold", "archive"):
-            path = self._get_tier_directory(tier) / key
-            if path.exists():
-                path.unlink()
-        self._access_metadata.pop(key, None)
+        # Tag has no per-blob delete; go through the Client + TagId. DelBlob on a
+        # missing blob returns False (no raise), satisfying the no-op contract.
+        tag = self._cte.Tag(kind)
+        tag_id = tag.GetTagId()
+        self._client.DelBlob(tag_id, name)
+        self._client.DelBlob(tag_id, name + _SEARCH_SUFFIX)  # companion (no-op if absent)
 
     def clear(self) -> None:
-        for tier in ("warm", "cold", "archive"):
-            for path in self._get_tier_directory(tier).rglob("*.msgpack"):
-                path.unlink()
-        self._access_metadata.clear()
+        for kind in ARC_KINDS:
+            tag = self._cte.Tag(kind)
+            tag_id = tag.GetTagId()
+            for blob_name in tag.GetContainedBlobs():
+                self._client.DelBlob(tag_id, blob_name)
 
-    def _write_iowarp(self, key: str, data: bytes, tier: str) -> None:
-        """Write to IOWarp CTE via ZeroMQ.
+    # ---- semantic discovery (Thread D) ----
 
-        Args:
-            key: Data key
-            data: Binary data
-            tier: Target tier
-        """
-        import base64
+    def supports_search(self) -> bool:
+        return True
 
-        request = {
-            "op": "write",
-            "namespace": self.namespace,
-            "key": key,
-            "data": base64.b64encode(data).decode("ascii"),
-            "tier": tier,
-        }
+    def search(
+        self, kind: str, query_text: str, *, name_prefix: str = "", k: int = 10
+    ) -> list[tuple[str, float]]:
+        """BM25 semantic search over the plain-text companions. Returns
+        ``[(record_name, score)]`` ranked by relevance, with the ``.text`` suffix
+        stripped so callers get the real record names."""
+        import re  # noqa: PLC0415
 
-        self.zmq_socket.send_json(request)
-        response = self.zmq_socket.recv_json()
+        blob_re = f"{re.escape(name_prefix)}.*{re.escape(_SEARCH_SUFFIX)}"
+        results = self._client.SemanticSearch(
+            kind, blob_re, query_text, k, self._cte.PoolQuery.Dynamic()
+        )
+        out: list[tuple[str, float]] = []
+        for r in results:
+            bn = r.blob_name
+            if bn.endswith(_SEARCH_SUFFIX):
+                bn = bn[: -len(_SEARCH_SUFFIX)]
+            out.append((bn, float(r.score)))
+        return out
 
-        if response.get("status") != "ok":
-            raise RuntimeError(f"Write failed: {response.get('error')}")
 
-    def _read_iowarp(self, key: str) -> Optional[bytes]:
-        """Read from IOWarp CTE via ZeroMQ.
+def make_arc_store(
+    *,
+    backend: Optional[str] = None,
+    data_dir: "str | Path" = ".clio_agent/arc",
+    config_path: str = "",
+) -> "ARCStore":
+    """Build the ARC persistence backend.
 
-        Args:
-            key: Data key
+    Selection (first match wins):
+        1. explicit ``backend`` arg ("cte" | "local")
+        2. env ``CLIO_ARC_STORE`` ("cte" | "local")
+        3. default ``"cte"`` (clio-core CTE, in-process; the gold-standard backend)
 
-        Returns:
-            Binary data or None
-        """
-        import base64
-
-        request = {
-            "op": "read",
-            "namespace": self.namespace,
-            "key": key,
-        }
-
-        self.zmq_socket.send_json(request)
-        response = self.zmq_socket.recv_json()
-
-        if response.get("status") == "ok":
-            return base64.b64decode(response["data"])
-        elif response.get("status") == "not_found":
-            return None
-        else:
-            raise RuntimeError(f"Read failed: {response.get('error')}")
-
-    def _write_local(self, key: str, data: bytes, tier: str = "warm") -> None:
-        """Write to local disk (fallback).
-
-        Writes to tier-specific directory on local filesystem.
-
-        Args:
-            key: Data key (relative path)
-            data: Binary data
-            tier: Target tier directory
-        """
-        # Map tier to directory
-        tier_dir = self._get_tier_directory(tier)
-
-        # Create full path
-        file_path = tier_dir / key
-        file_path.parent.mkdir(parents=True, exist_ok=True)
-
-        # Write data
-        file_path.write_bytes(data)
-
-    def _read_local(self, key: str) -> Optional[bytes]:
-        """Read from local disk (fallback).
-
-        Searches all tiers for the data.
-
-        Args:
-            key: Data key
-
-        Returns:
-            Binary data or None
-        """
-        # Check metadata for current tier
-        metadata = self._access_metadata.get(key, {})
-        current_tier = metadata.get("tier", "warm")
-
-        # Try current tier first
-        tier_dir = self._get_tier_directory(current_tier)
-        file_path = tier_dir / key
-        if file_path.exists():
-            return file_path.read_bytes()
-
-        # Fallback: search all tiers
-        for tier in ["warm", "cold", "archive"]:
-            tier_dir = self._get_tier_directory(tier)
-            file_path = tier_dir / key
-            if file_path.exists():
-                # Update metadata with correct tier
-                metadata["tier"] = tier
-                self._access_metadata[key] = metadata
-                return file_path.read_bytes()
-
-        return None
-
-    def _get_tier_directory(self, tier: str) -> Path:
-        """Get directory for storage tier.
-
-        Args:
-            tier: Tier name
-
-        Returns:
-            Path to tier directory
-        """
-        if tier == "warm":
-            return self._warm_dir
-        elif tier == "cold":
-            return self._cold_dir
-        elif tier == "archive":
-            return self._archive_dir
-        else:
-            # Default to warm for unknown tiers
-            return self._warm_dir
-
-    def migrate_tier(self, key: str, target_tier: str) -> None:
-        """Manually migrate data to different tier.
-
-        Args:
-            key: Data key
-            target_tier: Target tier name ("warm", "cold", "archive")
-
-        Examples:
-            >>> backend.migrate_tier("invocations/trace-old.msgpack", "archive")
-        """
-        if self.iowarp_available:
-            # TODO: IOWarp tier migration API
-            # Example:
-            # self.iowarp_client.migrate(
-            #     namespace=self.namespace,
-            #     key=key,
-            #     target_tier=target_tier
-            # )
-            pass
-
-        # Local tier migration
-        data = self._read_local(key)
-        if data:
-            # Write to new tier
-            self._write_local(key, data, tier=target_tier)
-
-            # Delete from old tier
-            metadata = self._access_metadata.get(key, {})
-            old_tier = metadata.get("tier", "warm")
-            if old_tier != target_tier:
-                old_path = self._get_tier_directory(old_tier) / key
-                if old_path.exists():
-                    old_path.unlink()
-
-            # Update metadata
-            self._update_access_metadata(key, tier=target_tier, operation="migrate")
-            self._tier_migrations += 1
-
-    def _update_access_metadata(
-        self, key: str, tier: Optional[str] = None, operation: str = "read"
-    ) -> None:
-        """Update access metadata for tier migration decisions.
-
-        Args:
-            key: Data key
-            tier: Current tier (if known)
-            operation: Operation type ("read", "write", "migrate")
-        """
-        now = datetime.now(timezone.utc)
-
-        if key not in self._access_metadata:
-            self._access_metadata[key] = {
-                "tier": tier or "warm",
-                "created_at": now.isoformat().replace("+00:00", "Z"),
-                "last_accessed": now.isoformat().replace("+00:00", "Z"),
-                "access_count": 1,
-            }
-        else:
-            metadata = self._access_metadata[key]
-            metadata["last_accessed"] = now.isoformat().replace("+00:00", "Z")
-            metadata["access_count"] = metadata.get("access_count", 0) + 1
-            if tier:
-                metadata["tier"] = tier
-
-    def _load_access_metadata(self) -> Dict[str, Dict[str, Any]]:
-        """Load access metadata from disk.
-
-        Returns:
-            Dictionary mapping keys to access metadata
-        """
-        if not self._access_metadata_file.exists():
-            return {}
-
+    Graceful degradation (CLAUDE.md): if the CTE binding is absent or the runtime
+    fails to init, fall back to ``LocalFSStore`` with a warning — never crash.
+    Note: the default CTE config is DRAM-only (not durable across restarts); use
+    ``CLIO_ARC_STORE=local`` for disk-durable storage until a file tier is wired.
+    """
+    choice = (backend or os.environ.get("CLIO_ARC_STORE", "cte")).strip().lower()
+    if choice == "local":
+        return LocalFSStore(data_dir)
+    if choice == "cte":
+        cfg = config_path or os.environ.get("CLIO_ARC_STORE_CONFIG", "")
         try:
-            data = self._access_metadata_file.read_bytes()
-            return msgspec.msgpack.decode(data)
-        except Exception:
-            # If metadata is corrupted, start fresh
-            return {}
-
-    def _save_access_metadata(self) -> None:
-        """Save access metadata to disk."""
-        data = msgspec.msgpack.encode(self._access_metadata)
-        self._access_metadata_file.write_bytes(data)
-
-    def _maybe_migrate_tiers(self) -> None:
-        """Periodically check and migrate data between tiers.
-
-        Migrates data based on access patterns and tier policy:
-        - Warm → Cold: Not accessed for warm_to_cold days
-        - Cold → Archive: Not accessed for cold_to_archive days
-
-        This runs on every write to amortize migration cost.
-        """
-        # Only migrate every 100 writes to avoid overhead
-        if self._local_writes % 100 != 0:
-            return
-
-        now = datetime.now(timezone.utc)
-
-        for key, metadata in list(self._access_metadata.items()):
-            tier = metadata.get("tier", "warm")
-            last_accessed_str = metadata.get("last_accessed")
-
-            if not last_accessed_str:
-                continue
-
-            # Parse timestamp
-            try:
-                last_accessed = datetime.fromisoformat(last_accessed_str.replace("Z", "+00:00"))
-            except Exception:
-                continue
-
-            # Calculate age
-            age_days = (now - last_accessed).days
-
-            # Migrate based on age and current tier
-            if tier == "warm" and age_days >= self.tier_policy["warm_to_cold"]:
-                self.migrate_tier(key, "cold")
-            elif tier == "cold" and age_days >= self.tier_policy["cold_to_archive"]:
-                self.migrate_tier(key, "archive")
-
-        # Save updated metadata
-        self._save_access_metadata()
-
-    def get_tier_stats(self) -> Dict[str, Any]:
-        """Get tier statistics and storage status.
-
-        Returns:
-            Dictionary with tier usage stats and IOWarp status
-
-        Examples:
-            >>> stats = backend.get_tier_stats()
-            >>> print(f"IOWarp available: {stats['iowarp_available']}")
-            >>> print(f"Warm tier count: {stats['tiers']['warm']['count']}")
-        """
-        if not self.iowarp_available:
-            # Count files in local tiers
-            warm_count = sum(1 for _ in self._warm_dir.rglob("*.msgpack"))
-            cold_count = sum(1 for _ in self._cold_dir.rglob("*.msgpack"))
-            archive_count = sum(1 for _ in self._archive_dir.rglob("*.msgpack"))
-
-            return {
-                "iowarp_available": False,
-                "using_local_storage": True,
-                "base_dir": str(self.base_dir),
-                "namespace": self.namespace,
-                "tier_policy": self.tier_policy,
-                "tiers": {
-                    "warm": {"count": warm_count, "path": str(self._warm_dir)},
-                    "cold": {"count": cold_count, "path": str(self._cold_dir)},
-                    "archive": {"count": archive_count, "path": str(self._archive_dir)},
-                },
-                "performance": {
-                    "tier_migrations": self._tier_migrations,
-                    "local_reads": self._local_reads,
-                    "local_writes": self._local_writes,
-                },
-            }
-
-        # TODO: IOWarp tier stats API
-        # Example when IOWarp SDK is available:
-        #
-        # stats = self.iowarp_client.get_namespace_stats(self.namespace)
-        # return {
-        #     "iowarp_available": True,
-        #     "namespace": self.namespace,
-        #     "tier_policy": self.tier_policy,
-        #     "tiers": stats.tiers,
-        #     "performance": {
-        #         "tier_migrations": self._tier_migrations,
-        #         "iowarp_reads": self._iowarp_reads,
-        #         "iowarp_writes": self._iowarp_writes,
-        #     }
-        # }
-
-        return {
-            "iowarp_available": True,
-            "namespace": self.namespace,
-            "tier_policy": self.tier_policy,
-            "tiers": {
-                "warm": {"count": 0},
-                "cold": {"count": 0},
-                "archive": {"count": 0},
-            },
-            "performance": {
-                "tier_migrations": self._tier_migrations,
-                "iowarp_reads": self._iowarp_reads,
-                "iowarp_writes": self._iowarp_writes,
-            },
-        }
-
-    def shutdown(self) -> None:
-        """Close ZeroMQ connection and save metadata.
-
-        Call this before application exit to ensure metadata is persisted.
-
-        Examples:
-            >>> backend.shutdown()
-        """
-        # Save metadata first
-        self._save_access_metadata()
-
-        # Close ZeroMQ if connected (with proper resource cleanup)
-        if self.iowarp_available:
-            try:
-                if hasattr(self, "zmq_socket") and self.zmq_socket:
-                    self.zmq_socket.close()
-            finally:
-                if hasattr(self, "zmq_context") and self.zmq_context:
-                    self.zmq_context.term()
+            return CTEStore(config_path=cfg)
+        except Exception as exc:  # noqa: BLE001 - binding absent or init failure
+            warnings.warn(
+                f"CTE store unavailable ({exc}); falling back to LocalFSStore",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            logger.warning("CTE store unavailable (%s); using LocalFSStore", exc)
+            return LocalFSStore(data_dir)
+    raise ValueError(f"unknown CLIO_ARC_STORE {choice!r}; expected 'cte' or 'local'")

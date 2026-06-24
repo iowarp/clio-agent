@@ -17,7 +17,7 @@ See docs/ARC_MEMORY_LAYER.md for architecture details.
 
 import threading
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, cast
 
 from clio_agent.arc.cache import LRUCache
 from clio_agent.arc.index import BTreeIndex
@@ -30,6 +30,7 @@ from clio_agent.arc.schema import (
     Invocation,
     Metrics,
     ProceduralMemory,
+    SegmentKind,
     VariantRecord,
     decode_context,
     decode_conversation,
@@ -46,6 +47,7 @@ from clio_agent.arc.schema import (
     encode_procedural_memory,
     encode_variant_record,
 )
+from clio_agent.arc.segments import OpLogger, SegmentStore
 from clio_agent.arc.storage import ARCStore, LocalFSStore
 
 
@@ -91,6 +93,13 @@ class ARCMemory:
         # ARCStore, so ARC never touches the filesystem directly. The LSM tree
         # (below) remains a separate high-throughput subsystem.
         self._store: ARCStore = store if store is not None else LocalFSStore(self.data_dir)
+
+        # Live context plane: the ordered, scoped, mutable segment store the gact
+        # ReAct loop reads its prompt from each iteration. Sibling of _live (which
+        # stays the turn-grained projection). The op_logger that mirrors each op
+        # into the durable Trace is injected later by the gact app via
+        # set_segment_op_logger (keeps arc/ free of any gact/ import).
+        self._segments = SegmentStore(self._store)
 
         # Live runtime context: folds the canonical semantic-event stream into
         # per-session state so Invocation/Conversation are projections of the
@@ -1061,6 +1070,127 @@ class ARCMemory:
         """Project the live fold of a session into per-expert Invocations."""
         return self._live.project_invocations(session_id)
 
+    # ---- Live context plane (the segment store the ReAct loop reads from) ----
+
+    def set_segment_op_logger(self, op_logger: "OpLogger | None") -> None:
+        """Inject the durable-Trace op logger into the segment store.
+
+        Called by the gact app once both the app handle and ARC exist, so each
+        applied context op is mirrored to the Trace. Keeps ``arc/`` free of any
+        ``gact/`` import.
+        """
+        self._segments.set_op_logger(op_logger)
+
+    def append_segment(
+        self,
+        session_id: str,
+        scope: str,
+        kind: str,
+        content: Dict[str, Any],
+        *,
+        step: int = -1,
+        trace_ref: str = "",
+        token_count: int = 0,
+    ) -> Any:
+        """Append one segment to a scope's live context (append = insert at end)."""
+        return self._segments.append(
+            session_id,
+            scope,
+            cast(SegmentKind, kind),
+            content,
+            step=step,
+            trace_ref=trace_ref,
+            token_count=token_count,
+        )
+
+    def insert_segment(
+        self,
+        session_id: str,
+        scope: str,
+        position: int,
+        kind: str,
+        content: Dict[str, Any],
+        *,
+        step: int = -1,
+        trace_ref: str = "",
+        token_count: int = 0,
+    ) -> Any:
+        """Insert one segment at a render position in a scope's live context."""
+        return self._segments.insert(
+            session_id,
+            scope,
+            position,
+            cast(SegmentKind, kind),
+            content,
+            step=step,
+            trace_ref=trace_ref,
+            token_count=token_count,
+        )
+
+    def delete_segments(self, session_id: str, scope: str, ids: List[str]) -> int:
+        """Tombstone segments by id (skipped by render, kept for replay)."""
+        return self._segments.delete(session_id, scope, ids)
+
+    def summarize_segments(
+        self,
+        session_id: str,
+        scope: str,
+        ids: List[str],
+        summary_content: Dict[str, Any],
+        *,
+        trace_ref: str = "",
+        token_count: int = 0,
+    ) -> Any:
+        """Replace a range of segments with one summary (= context-compaction over all)."""
+        return self._segments.summarize(
+            session_id,
+            scope,
+            ids,
+            summary_content,
+            trace_ref=trace_ref,
+            token_count=token_count,
+        )
+
+    def apply_segment_op(self, op: str, session_id: str, scope: str, **kwargs: Any) -> Any:
+        """Stable dispatch over the four ops — the KV-backend swap seam."""
+        return self._segments.apply(op, session_id, scope, **kwargs)
+
+    def render_segments(self, session_id: str, scope: str, *, as_of: Optional[int] = None) -> Any:
+        """Ordered LIVE segments for a scope (the decisive read; as-of-T optional)."""
+        return self._segments.render(session_id, scope, as_of=as_of)
+
+    def render_segments_keys(
+        self, session_id: str, scope: str, *, as_of: Optional[int] = None
+    ) -> Dict[str, Any]:
+        """The live segments projected into dspy's trajectory dict (what the
+        ``_format_trajectory`` override reads)."""
+        return self._segments.render_keys(session_id, scope, as_of=as_of)
+
+    def render_segment_text(
+        self, session_id: str, scope: str, *, as_of: Optional[int] = None
+    ) -> str:
+        """The live segments flattened to text (inspection / byte-equality)."""
+        return self._segments.render_text(session_id, scope, as_of=as_of)
+
+    def segment_tokens_by_kind(self, session_id: str, scope: str) -> Dict[str, int]:
+        """Per-kind token attribution for a scope's live segments (compaction targeting)."""
+        return self._segments.tokens_by_kind(session_id, scope)
+
+    def list_segment_scopes(self, session_id: str, scope_prefix: str = "") -> List[str]:
+        """Scopes that have context in this session (for discovery / a scope picker)."""
+        return self._segments.scan_scopes(session_id, scope_prefix)
+
+    def search_segment_scopes(
+        self, session_id: str, query_text: str, *, scope_prefix: str = "", k: int = 10
+    ) -> List[Any]:
+        """Semantic discovery: rank a session's scopes by content relevance to
+        ``query_text`` — "which expert/scope knows about X" (BM25 on CTE)."""
+        return self._segments.search_scopes(session_id, query_text, scope_prefix=scope_prefix, k=k)
+
+    def segment_search_is_semantic(self) -> bool:
+        """Whether scope search uses real BM25 (CTE backend) vs the naive fallback."""
+        return self._segments.supports_search()
+
     def release_session(self, session_id: str) -> Dict[str, int]:
         """Release a session's hot footprint from cache and indexes.
 
@@ -1094,9 +1224,15 @@ class ARCMemory:
             evicted_index = self._conv_index.delete_session(session_id)
             evicted_index += self._inv_index.delete_session(session_id)
 
-        # Outside the lock: LiveRuntimeContext has its own lock.
+        # Outside the lock: LiveRuntimeContext and SegmentStore have their own locks.
         live = self._live.release(session_id)
-        return {"cache": evicted_cache, "index": evicted_index, "live": live}
+        segments = self._segments.release(session_id)
+        return {
+            "cache": evicted_cache,
+            "index": evicted_index,
+            "live": live,
+            "segments": segments,
+        }
 
     def flush_and_release(self) -> None:
         """Release ALL in-memory state to return to baseline (tests/memprof).
@@ -1116,6 +1252,7 @@ class ARCMemory:
             self._conv_index.clear()
             self._inv_index.clear()
         self._live.clear()
+        self._segments.clear()
 
     def clear_cache(self) -> None:
         """Clear in-memory cache (preserves disk storage).
@@ -1145,8 +1282,11 @@ class ARCMemory:
             self._conv_index.clear()
             self._inv_index.clear()
 
-            # Clear disk storage
+            # Clear disk storage (wipes the "segments" kind too, since it's in ARC_KINDS)
             self._store.clear()
+
+            # Drop the in-memory segment plane (store already cleared above)
+            self._segments.clear()
 
             # Reset counters
             self._disk_reads = 0

@@ -37,6 +37,10 @@ def allow_pytest_tmp_path(tmp_path, monkeypatch):
 
     monkeypatch.setenv("CLIO_AGENT_DISABLE_DEFAULT_REGISTRY_BOOTSTRAP", "1")
     monkeypatch.setenv("CLIO_AGENT_ENABLE_LEGACY_NATIVE_EXPERTS", "1")
+    # Tests use the fast, isolated LocalFS ARC store by default; production
+    # defaults to clio-core CTE. The CTE integration tests override via an
+    # explicit backend="cte" arg, so they are unaffected.
+    monkeypatch.setenv("CLIO_ARC_STORE", "local")
     xdg_root = tmp_path / "xdg"
     monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg_root))
     _write_test_default_registry_blueprint(xdg_root)
