@@ -180,7 +180,7 @@ from clio_agent.gact.workspace_scope import (
     session_scope_label,
     workspace_scope,
 )
-from clio_agent.prompts import PromptRegistry, PromptSource, parse_prompt_text
+from clio_agent.prompts import PromptRegistry, PromptSource
 from clio_agent.runtime import trace
 from clio_agent.runtime.lm_activity import lm_call_in_flight as _lm_call_in_flight
 from clio_agent.tools.catalog import TOOL_CATALOG
@@ -2979,6 +2979,9 @@ from clio_agent.gact.providers.lmstudio import (  # noqa: E402,F401
     _release_owned_lm_studio_instance,
 )
 from clio_agent.gact.routes.deps import GactDeps  # noqa: E402
+from clio_agent.gact.routes.prompts import (  # noqa: E402
+    register_prompts_routes,
+)
 from clio_agent.gact.routes.workspaces import (  # noqa: E402
     register_workspaces_routes,
 )
@@ -9252,14 +9255,6 @@ def build_app(
     # iowarp/clio-agent#22: shared session tokens.
     app.state.shared_tokens = {}
 
-    # Cross-concern seam (#714): built once and threaded to every extracted
-    # ``register_<concern>_routes(app, deps)`` factory so moved handlers reach
-    # shared ``build_app``-local helpers via ``deps`` rather than closing over
-    # them. Keep minimal — add a field only when a moved handler needs it.
-    deps = GactDeps(
-        guard_direct_destructive_action=_guard_direct_destructive_action,
-    )
-
     @app.get("/v1/health", response_model=HealthResponse)
     async def health() -> HealthResponse | JSONResponse:
         """SPEC §3.4 — per-subsystem status feeds the TUI's /doctor
@@ -9749,209 +9744,6 @@ def build_app(
                 except Exception:
                     pass
         return context
-
-    @app.get("/v1/prompts")
-    async def list_prompts(
-        session_id: Optional[str] = None,
-        workspace_id: Optional[str] = None,
-    ) -> dict[str, Any]:
-        """List built-in and external prompt definitions.
-
-        This is a CLIO vendor surface rather than a core GACT v0.2 route. The
-        TUI can use it later to browse prompts, profiles, validation state, and
-        provenance without knowing where prompt files live on disk.
-        """
-
-        registry = _prompt_registry_for_request(
-            session_id=session_id or "",
-            workspace_id=workspace_id or "",
-        )
-        rows = registry.list()
-        payload: dict[str, Any] = {
-            "prompts": [asdict(row) for row in rows],
-            "sources": [
-                {"scope": source.scope, "root": str(source.root)} for source in registry.sources
-            ],
-        }
-        overlay_prompt_sources = _prompt_agent_overlay_for_request(session_id or "")
-        if overlay_prompt_sources:
-            payload["agent_overlay"] = overlay_prompt_sources
-        return payload
-
-    @app.get("/v1/prompts/{prompt_id:path}")
-    async def get_prompt(
-        prompt_id: str,
-        profile: str = "",
-        session_id: Optional[str] = None,
-        workspace_id: Optional[str] = None,
-    ) -> dict[str, Any]:
-        registry = _prompt_registry_for_request(
-            session_id=session_id or "",
-            workspace_id=workspace_id or "",
-        )
-        resolved = registry.resolve(prompt_id, profile=profile)
-        if resolved is None:
-            raise HTTPException(
-                status_code=404,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="not_found",
-                        message=f"prompt not found: {prompt_id}",
-                        details={"prompt_id": prompt_id},
-                        recoverable=False,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-        return {"prompt": asdict(resolved)}
-
-    @app.post("/v1/prompts/{prompt_id:path}/render")
-    async def render_prompt(prompt_id: str, request: Request, profile: str = "") -> dict[str, Any]:
-        try:
-            body = await request.json()
-        except Exception:
-            body = {}
-        if not isinstance(body, dict):
-            body = {}
-        requested_profile = str(body.get("profile") or profile or "")
-        session_id = str(body.get("session_id") or "")
-        workspace_id = str(body.get("workspace_id") or "")
-        context_override = body.get("context")
-        registry = _prompt_registry_for_request(session_id=session_id, workspace_id=workspace_id)
-        context = _prompt_render_context_for_request(
-            session_id=session_id,
-            workspace_id=workspace_id,
-        )
-        if isinstance(context_override, Mapping):
-            for key, value in context_override.items():
-                context[str(key)] = str(value)
-        rendered = registry.render(
-            prompt_id,
-            profile=requested_profile,
-            context=context,
-        )
-        if rendered is None:
-            raise HTTPException(
-                status_code=404,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="not_found",
-                        message=f"prompt not found: {prompt_id}",
-                        details={"prompt_id": prompt_id},
-                        recoverable=False,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-        return {"prompt": asdict(rendered)}
-
-    @app.post("/v1/prompts/{prompt_id:path}/validate")
-    async def validate_prompt(prompt_id: str, request: Request) -> dict[str, Any]:
-        try:
-            body = await request.json()
-        except Exception:
-            body = {}
-        if not isinstance(body, dict):
-            body = {}
-        text = str(body.get("text") or "")
-        profile = str(body.get("profile") or "default")
-        if text.strip():
-            rendered = f"---\nid: {prompt_id}\nprofile: {profile}\n---\n{text}"
-            parsed = parse_prompt_text(rendered, scope="validation", source_path="<request>")
-            return {
-                "enabled": parsed.enabled,
-                "validation_errors": parsed.validation_errors,
-                "prompt": asdict(parsed),
-            }
-        registry = _prompt_registry_for_request(
-            session_id=str(body.get("session_id") or ""),
-            workspace_id=str(body.get("workspace_id") or ""),
-        )
-        row = registry.get(prompt_id)
-        if row is None:
-            raise HTTPException(
-                status_code=404,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="not_found",
-                        message=f"prompt not found: {prompt_id}",
-                        details={"prompt_id": prompt_id},
-                        recoverable=False,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-        return {
-            "enabled": row.enabled,
-            "validation_errors": row.validation_errors,
-            "prompt": asdict(row),
-        }
-
-    @app.post("/v1/prompts/reload")
-    async def reload_prompts(request: Request) -> dict[str, Any]:
-        try:
-            body = await request.json()
-        except Exception:
-            body = {}
-        if not isinstance(body, dict):
-            body = {}
-        app.state.prompt_registry.reload()
-        registry = _prompt_registry_for_request(
-            session_id=str(body.get("session_id") or ""),
-            workspace_id=str(body.get("workspace_id") or ""),
-        )
-        return {"reload": registry.reload()}
-
-    @app.put("/v1/prompts/{prompt_id:path}")
-    async def save_prompt(prompt_id: str, request: Request) -> dict[str, Any]:
-        try:
-            body = await request.json()
-        except Exception:
-            body = {}
-        if not isinstance(body, dict):
-            body = {}
-        text = str(body.get("text") or "")
-        if not text.strip():
-            raise HTTPException(
-                status_code=422,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="bad_request",
-                        message="missing required field: text",
-                        details={"prompt_id": prompt_id, "field": "text"},
-                        recoverable=True,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-        session_id = str(body.get("session_id") or "")
-        workspace_id = str(body.get("workspace_id") or "")
-        scope = str(body.get("scope") or "global")
-        try:
-            registry = _prompt_registry_for_request(
-                session_id=session_id,
-                workspace_id=workspace_id,
-                write_scope=scope,
-            )
-            row = registry.save(
-                prompt_id,
-                text=text,
-                profile=str(body.get("profile") or "default"),
-                title=str(body.get("title") or ""),
-                description=str(body.get("description") or ""),
-                provider=str(body.get("provider") or ""),
-                model=str(body.get("model") or ""),
-                metadata=body.get("metadata") if isinstance(body.get("metadata"), dict) else None,
-            )
-        except ValueError as exc:
-            raise HTTPException(
-                status_code=422,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="bad_request",
-                        message=str(exc),
-                        details={"prompt_id": prompt_id},
-                        recoverable=True,
-                    )
-                ).model_dump(exclude_none=True),
-            ) from exc
-        return {"prompt": asdict(row)}
 
     # ---- /v1/sessions CRUD -----------------------------------------
     # CLIO-BBBBBBBBBB8 — four real handlers against app.state.sessions
@@ -17903,10 +17695,28 @@ def build_app(
             latencies=latencies,
         )
 
+    # Cross-concern seam (#714): built once and threaded to every extracted
+    # ``register_<concern>_routes(app, deps)`` factory so moved handlers reach
+    # shared ``build_app``-local helpers via ``deps`` rather than closing over
+    # them. Built here, after every closure it carries is defined. Keep minimal
+    # — add a field only when a moved handler needs it.
+    deps = GactDeps(
+        guard_direct_destructive_action=_guard_direct_destructive_action,
+        prompt_registry_for_request=_prompt_registry_for_request,
+        prompt_agent_overlay_for_request=_prompt_agent_overlay_for_request,
+        prompt_render_context_for_request=_prompt_render_context_for_request,
+    )
+
     # ---- /v1/workspaces (CLIO-BBBBBBBBBB-WS) -------------------------
     # Workspace store CRUD + file listing/reading are owned by
     # routes/workspaces.py; registered here so they bind to the same app.
     register_workspaces_routes(app, deps)
+
+    # ---- /v1/prompts (CLIO prompt-management vendor surface) ---------
+    # Prompt registry browse/render/validate/save/reload are owned by
+    # routes/prompts.py; the request-scoped registry/overlay/render-context
+    # builders travel on ``deps``.
+    register_prompts_routes(app, deps)
 
     # ---- /v1/providers/lm (CLIO-BBBBBBBBBB-D) ------------------------
 

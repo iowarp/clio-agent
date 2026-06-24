@@ -22,6 +22,8 @@ from typing import TYPE_CHECKING, Any, Protocol
 if TYPE_CHECKING:
     from fastapi import FastAPI
 
+    from clio_agent.prompts import PromptRegistry
+
 
 class _GuardDirectDestructiveAction(Protocol):
     """Callable seam for the shared direct-destructive-action permission guard.
@@ -47,6 +49,57 @@ class _GuardDirectDestructiveAction(Protocol):
     ) -> None: ...
 
 
+class _PromptRegistryForRequest(Protocol):
+    """Callable seam building a request-scoped :class:`PromptRegistry`.
+
+    ``_prompt_registry_for_request`` (in :mod:`clio_agent.gact.app`) layers the
+    builtin prompts under the global/workspace/session source roots resolved for
+    a request and picks the writable root for the given ``write_scope``. It
+    couples to a web of other ``build_app`` closures (source resolution, write
+    roots), so it stays built there and travels here; the prompt routes (and the
+    agent-run paths that already read ``app.state.prompt_registry_for_request``)
+    call it without importing back into ``gact.app``.
+    """
+
+    def __call__(
+        self,
+        *,
+        session_id: str = ...,
+        workspace_id: str = ...,
+        write_scope: str = ...,
+    ) -> "PromptRegistry": ...
+
+
+class _PromptAgentOverlayForRequest(Protocol):
+    """Callable seam returning the session-agent prompt overlay for a request.
+
+    ``_prompt_agent_overlay_for_request`` (in :mod:`clio_agent.gact.app`)
+    projects any session-scoped agent overlay down to its prompt-affecting
+    fields so ``GET /v1/prompts`` can surface where a session has overridden an
+    agent's system prompt / prompt id / provider / model.
+    """
+
+    def __call__(self, session_id: str = ...) -> dict[str, Any]: ...
+
+
+class _PromptRenderContextForRequest(Protocol):
+    """Callable seam building the template context for ``POST .../render``.
+
+    ``_prompt_render_context_for_request`` (in :mod:`clio_agent.gact.app`)
+    assembles the live render context (agent tree/flat list, active expert
+    pack/blueprint, agent-invocable commands) used to render a prompt. It reads
+    sessions/agent rows/command catalog through other ``build_app`` closures, so
+    it stays built there and travels here.
+    """
+
+    def __call__(
+        self,
+        *,
+        session_id: str = ...,
+        workspace_id: str = ...,
+    ) -> dict[str, str]: ...
+
+
 @dataclass(frozen=True)
 class GactDeps:
     """Cross-concern seams the extracted route factories need beyond ``app.state``.
@@ -58,3 +111,6 @@ class GactDeps:
     """
 
     guard_direct_destructive_action: _GuardDirectDestructiveAction
+    prompt_registry_for_request: _PromptRegistryForRequest
+    prompt_agent_overlay_for_request: _PromptAgentOverlayForRequest
+    prompt_render_context_for_request: _PromptRenderContextForRequest
