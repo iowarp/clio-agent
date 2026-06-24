@@ -82,22 +82,39 @@ def test_no_raw_app_state_arc_assignment_outside_the_choke_point():
             and t.value.value.id == "app"
         )
 
-    tree = ast.parse(Path(app_mod.__file__).read_text())
-    sites: list[int] = []
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Assign):
-            sites += [node.lineno for tgt in node.targets if _is_app_state_arc(tgt)]
-        elif isinstance(node, ast.AnnAssign) and _is_app_state_arc(node.target):
-            sites.append(node.lineno)
+    def _assign_sites(path: str) -> list[int]:
+        tree = ast.parse(Path(path).read_text())
+        sites: list[int] = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign):
+                sites += [node.lineno for tgt in node.targets if _is_app_state_arc(tgt)]
+            elif isinstance(node, ast.AnnAssign) and _is_app_state_arc(node.target):
+                sites.append(node.lineno)
+        return sites
+
+    # #714: the choke point ``_set_app_arc`` moved out of app.py into
+    # ``runtime.globals`` (re-exported as a shim). The invariant is unchanged: the
+    # lone ``app.state.arc = ...`` assignment must live inside ``_set_app_arc``, and
+    # NO other module (app.py included) may assign it raw. Scan the file that now
+    # OWNS ``_set_app_arc`` for the single site, and assert app.py has zero.
+    choke_file = inspect.getsourcefile(_set_app_arc)
+    assert choke_file is not None
+    sites = _assign_sites(choke_file)
     assert len(sites) == 1, (
-        f"found {len(sites)} `app.state.arc = ...` assignments in app.py at lines {sites}; "
-        f"route every arc swap through _set_app_arc(app, arc) so arc.op is always wired"
+        f"found {len(sites)} `app.state.arc = ...` assignments in {choke_file} at lines "
+        f"{sites}; route every arc swap through _set_app_arc(app, arc) so arc.op is wired"
     )
     # ...and that single assignment must live inside _set_app_arc.
     lines, start = inspect.getsourcelines(_set_app_arc)
     assert start <= sites[0] < start + len(lines), (
         f"the lone app.state.arc assignment (line {sites[0]}) is not inside _set_app_arc "
         f"(lines {start}..{start + len(lines)})"
+    )
+    # app.py must hold ZERO raw assignments now that the choke point lives elsewhere.
+    app_sites = _assign_sites(app_mod.__file__)
+    assert app_sites == [], (
+        f"found raw `app.state.arc = ...` in app.py at lines {app_sites}; route every "
+        f"arc swap through _set_app_arc(app, arc) (now in runtime.globals)"
     )
 
 

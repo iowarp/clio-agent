@@ -209,8 +209,9 @@ def test_emit_semantic_event_fails_loud_when_no_arc(monkeypatch):
     import pytest
 
     import clio_agent.gact.app as app_mod
+    import clio_agent.gact.runtime.globals as globals_mod  # #714: live owner of _PROCESS_ARC
 
-    monkeypatch.setattr(app_mod, "_PROCESS_ARC", None, raising=False)
+    monkeypatch.setattr(globals_mod, "_PROCESS_ARC", None, raising=False)
     app = types.SimpleNamespace(
         state=types.SimpleNamespace(
             semantic_event_sink=SemanticEventSink(

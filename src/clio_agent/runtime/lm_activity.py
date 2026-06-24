@@ -83,13 +83,13 @@ def note_lm_token_event(content: str, reasoning: str, *, field: str = "answer") 
     if not content and not reasoning:
         return
     try:
-        from clio_agent.gact.app import _emit_semantic_event  # noqa: PLC0415
         from clio_agent.gact.context import (  # noqa: PLC0415
             active_app,
             active_session_id,
             active_trace_id,
             active_turn_id,
         )
+        from clio_agent.gact.runtime.globals import _emit_semantic_event  # noqa: PLC0415
         from clio_agent.gact.semantic_events import (  # noqa: PLC0415
             LM_TOKEN_DELTA,
             lm_token_delta_payload,
@@ -167,13 +167,13 @@ def _emit_lm_call_started(call_id: Any, instance: Any, inputs: Any) -> None:
     """
 
     try:
-        from clio_agent.gact.app import _emit_semantic_event  # noqa: PLC0415
         from clio_agent.gact.context import (  # noqa: PLC0415
             active_app,
             active_session_id,
             active_trace_id,
             active_turn_id,
         )
+        from clio_agent.gact.runtime.globals import _emit_semantic_event  # noqa: PLC0415
     except Exception:  # noqa: BLE001 - app may be unavailable (CLI/optimizer paths)
         return
     app = active_app()

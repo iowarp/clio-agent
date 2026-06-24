@@ -50,6 +50,7 @@ import types
 from typing import Any
 
 import clio_agent.gact.app as app_mod
+import clio_agent.gact.runtime.globals as globals_mod  # #714: live owner of _PROCESS_ARC
 from clio_agent.arc.memory import EVENTS_SCOPE, ARCMemory
 from clio_agent.gact import context as gctx
 from clio_agent.gact.events import EventBus
@@ -125,7 +126,7 @@ def _events_types(arc: ARCMemory, sid: str) -> list[str]:
 # (so any later break is a real divergence, not a broken harness).
 # ---------------------------------------------------------------------------
 def test_baseline_single_arc_event_reaches_both_trace_and_events(tmp_path, monkeypatch):
-    monkeypatch.setattr(app_mod, "_PROCESS_ARC", None, raising=False)
+    monkeypatch.setattr(globals_mod, "_PROCESS_ARC", None, raising=False)
     arc = ARCMemory(data_dir=str(tmp_path / "arc1"))
     trace = _CaptureTraceBackend()
     app = _make_app(arc, trace)
@@ -146,7 +147,7 @@ def test_baseline_single_arc_event_reaches_both_trace_and_events(tmp_path, monke
 # active_app() gate the deep emitters use.
 # ---------------------------------------------------------------------------
 def test_mechanismA_bare_thread_drops_before_trace_copyctx_reaches_both(tmp_path, monkeypatch):
-    monkeypatch.setattr(app_mod, "_PROCESS_ARC", None, raising=False)
+    monkeypatch.setattr(globals_mod, "_PROCESS_ARC", None, raising=False)
     arc = ARCMemory(data_dir=str(tmp_path / "arcA"))
     trace = _CaptureTraceBackend()
     app = _make_app(arc, trace)
@@ -207,7 +208,7 @@ def test_mechanismA_bare_thread_drops_before_trace_copyctx_reaches_both(tmp_path
 # it into every build (``ClioAgent(arc=...)``), so the "bind" reuses the SAME instance.
 # ---------------------------------------------------------------------------
 def test_one_arc_per_agent_no_split_across_bind(tmp_path, monkeypatch):
-    monkeypatch.setattr(app_mod, "_PROCESS_ARC", None, raising=False)
+    monkeypatch.setattr(globals_mod, "_PROCESS_ARC", None, raising=False)
     trace = _CaptureTraceBackend()  # the ONE shared durable trace across the bind
 
     # The gact server constructs the ONE ARC up front (deferred-construct path).
@@ -237,7 +238,7 @@ def test_one_arc_per_agent_no_split_across_bind(tmp_path, monkeypatch):
     # The LIVE arc the reader queries is STILL the one ARC.
     live_arc: ARCMemory = app.state.arc
     assert live_arc is arc
-    assert app_mod._PROCESS_ARC is arc
+    assert globals_mod._PROCESS_ARC is arc
 
     # A deep event recorded AFTER the bind (react.step / tool.call).
     app_mod._emit_semantic_event(app, sid, "react.step.completed", turn_id="t1")

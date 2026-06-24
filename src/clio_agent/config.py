@@ -956,13 +956,13 @@ def _io_logging_lm_cls() -> Any:
             or None. Lazily imports app to avoid an import cycle; resolves the
             turn-scoped contextvars copied into the executor running this call."""
             try:
-                from clio_agent.gact.app import _emit_semantic_event  # noqa: PLC0415
                 from clio_agent.gact.context import (  # noqa: PLC0415
                     active_app,
                     active_session_id,
                     active_trace_id,
                     active_turn_id,
                 )
+                from clio_agent.gact.runtime.globals import _emit_semantic_event  # noqa: PLC0415
             except Exception:  # noqa: BLE001 - app may be unavailable (CLI/optimizer paths)
                 return None
             app = active_app()
