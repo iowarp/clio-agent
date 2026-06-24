@@ -187,9 +187,19 @@ def test_custom_llm_streaming_fails_explicitly() -> None:
         )
 
 
-async def test_custom_llm_astreaming_fails_explicitly_with_coroutine_shape() -> None:
-    with pytest.raises(ClaudeCodeExecError, match="does not support live streaming"):
-        await ClaudeCodeLLM().astreaming(
+async def test_custom_llm_astreaming_emits_single_terminal_chunk(monkeypatch) -> None:
+    # Claude Code (`claude -p`) has no token stream — astreaming must emit the
+    # completed exec result as ONE terminal chunk rather than raising, so litellm's
+    # streaming path completes instead of leaving the coroutine unawaited and the
+    # turn empty (regression #254/#715; behaviour set in fdeeeca).
+    monkeypatch.setattr(
+        claude_code_litellm,
+        "_run_exec",
+        lambda **_kwargs: ("hello from claude", {"input_tokens": 3, "output_tokens": 2}),
+    )
+    chunks = [
+        chunk
+        async for chunk in ClaudeCodeLLM().astreaming(
             model="claude_code/cc-sonnet",
             messages=[{"role": "user", "content": "hi"}],
             api_base="",
@@ -201,6 +211,12 @@ async def test_custom_llm_astreaming_fails_explicitly_with_coroutine_shape() -> 
             logging_obj=None,
             optional_params={"claude_code_transport": "exec"},
         )
+    ]
+
+    assert len(chunks) == 1
+    assert chunks[0]["text"] == "hello from claude"
+    assert chunks[0]["is_finished"] is True
+    assert chunks[0]["finish_reason"] == "stop"
 
 
 def test_registers_once() -> None:
