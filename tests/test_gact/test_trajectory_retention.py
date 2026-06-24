@@ -11,6 +11,7 @@ import pytest
 
 from clio_agent.gact import app as gact_app
 from clio_agent.gact import context as ctx
+from clio_agent.gact.runtime import globals as gact_globals
 
 
 class _AttrDict(dict):
@@ -170,7 +171,7 @@ def test_retaining_react_emits_full_per_step_on_highway(monkeypatch):
         emitted.append((event_type, kw))
         return {}
 
-    monkeypatch.setattr(gact_app, "_emit_semantic_event", fake_emit)
+    monkeypatch.setattr(gact_globals, "_emit_semantic_event", fake_emit)
 
     ctx.set_app(object())
     ctx.set_session_id("sess_test")
@@ -220,7 +221,7 @@ def test_retaining_react_step_capture_is_best_effort(monkeypatch):
     def boom(*a, **k):
         raise RuntimeError("sink exploded")
 
-    monkeypatch.setattr(gact_app, "_emit_semantic_event", boom)
+    monkeypatch.setattr(gact_globals, "_emit_semantic_event", boom)
     ctx.set_app(object())
     ctx.set_session_id("sess_test")
     ctx.install_trajectory_cell()
@@ -248,7 +249,7 @@ def test_retaining_react_emits_expert_lifecycle_boundary(monkeypatch):
 
     emitted: list[tuple[str, dict]] = []
     monkeypatch.setattr(
-        gact_app, "_emit_semantic_event", lambda app, sid, et, **kw: emitted.append((et, kw)) or {}
+        gact_globals, "_emit_semantic_event", lambda app, sid, et, **kw: emitted.append((et, kw)) or {}
     )
     ctx.set_app(object())
     ctx.set_session_id("sess_test")
