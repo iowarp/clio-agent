@@ -269,6 +269,30 @@ def _with_ui_safe_semantic_fields(
     return enriched
 
 
+def _llm_provider_payload(app: "FastAPI", agent_id: str = "") -> dict[str, Any]:
+    """Build the ``provider`` payload (provider/model/api-base/temperature/max-tokens)
+    attached to LM-activity semantic events.
+
+    Reads the effective LM config off ``app.state`` (falling back to the live
+    agent's provider config). ``_effective_lm_config`` is owned by the
+    provider-bind concern; it is imported lazily at call time so this funnel base
+    stays free of a module-load cycle back into ``gact.app`` (the no-cycle
+    invariant of the #714 decomposition).
+    """
+
+    from clio_agent.gact.app import _effective_lm_config  # noqa: PLC0415
+
+    cfg = _effective_lm_config(app)
+    return {
+        "provider_id": str(cfg.get("provider") or ""),
+        "model_id": str(cfg.get("model") or ""),
+        "api_base": str(cfg.get("api_base") or ""),
+        "temperature": cfg.get("temperature"),
+        "max_tokens": cfg.get("max_tokens"),
+        "agent_id": agent_id,
+    }
+
+
 # The ONE ARC for this process (the keystone is a per-process singleton). Published by
 # ``_set_app_arc`` so every emit context — including deep/threaded ones where the request
 # app isn't reachable — resolves the SAME ARC and routes through it. ARC is the SOURCE of

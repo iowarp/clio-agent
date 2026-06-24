@@ -229,6 +229,7 @@ from clio_agent.gact.runtime.globals import (  # noqa: E402, F401
     _gact_app_context,
     _iso_from_epoch,
     _jsonish,
+    _llm_provider_payload,
     _new_attempt_id,
     _new_cancellation_attempt_id,
     _new_context_frame_id,
@@ -248,18 +249,6 @@ from clio_agent.gact.runtime.globals import (  # noqa: E402, F401
     _wire_arc_op_logger,
     _with_ui_safe_semantic_fields,
 )
-
-
-def _llm_provider_payload(app: "FastAPI", agent_id: str = "") -> dict[str, Any]:
-    cfg = _effective_lm_config(app)
-    return {
-        "provider_id": str(cfg.get("provider") or ""),
-        "model_id": str(cfg.get("model") or ""),
-        "api_base": str(cfg.get("api_base") or ""),
-        "temperature": cfg.get("temperature"),
-        "max_tokens": cfg.get("max_tokens"),
-        "agent_id": agent_id,
-    }
 
 
 def _provider_runtime_kind(provider_id: str) -> str:
@@ -11543,6 +11532,15 @@ def build_app(
     # finishes constructing — importing clio_agent.tools.execution
     # transitively pulls litellm + dspy (~4 s) and we need build_app
     # to stay cheap enough for gact-tui's 3-second deploy probe.
+    #
+    # Expose the gate/observer CONSTRUCTORS on app.state so runtime code carved
+    # out of this module (#714 decomposition) can build a fresh gate/observer
+    # WITHOUT importing _make_permission_gate/_make_tool_observer from app.py
+    # (which would reintroduce the no-cycle violation). Callers prefer the
+    # already-installed app.state.pending_permission_gate/pending_tool_observer
+    # and fall back to these factories — mirroring _call_enabled_external_mcp_tool.
+    app.state.make_permission_gate = lambda: _make_permission_gate(app)
+    app.state.make_tool_observer = lambda: _make_tool_observer(app)
     if agent is not None:
         try:
             _install_tool_runtime_hooks(app)
