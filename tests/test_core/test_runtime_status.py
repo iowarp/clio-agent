@@ -245,8 +245,12 @@ def test_clio_core_probe_ready_with_default_path(tmp_path, monkeypatch):
     assert status.details["chimaera_binaries"] == [str(chimaera.resolve())]
 
 
-def test_clio_core_probe_degraded_when_binary_missing(tmp_path):
+def test_clio_core_probe_degraded_when_binary_missing(tmp_path, monkeypatch):
     """Existing clio-core path without a chimaera binary is degraded."""
+    # Isolate PATH so the probe can't discover a chimaera installed on the host
+    # (which would report READY and mask the missing-binary case). Mirrors
+    # test_clio_core_probe_checks_configured_visualizer_status.
+    monkeypatch.setenv("PATH", "")
     core = tmp_path / "clio-core"
     config_dir = core / "context-runtime" / "config"
     config_dir.mkdir(parents=True)
