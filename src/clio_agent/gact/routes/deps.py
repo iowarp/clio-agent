@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 if TYPE_CHECKING:
     from fastapi import FastAPI
 
-    from clio_agent.gact.types import AgentDef, Message
+    from clio_agent.gact.types import AgentDef, Message, Part, Session
     from clio_agent.prompts import PromptRegistry
 
 
@@ -302,6 +302,33 @@ class _BlueprintRunnerForAgent(Protocol):
     def __call__(self, agent_def: "AgentDef") -> Any: ...
 
 
+class _StartBackgroundUserTurn(Protocol):
+    """Callable seam staging + driving a user turn off the request thread.
+
+    ``_start_background_user_turn`` is the turn-orchestration entrypoint
+    (extracted to :mod:`clio_agent.gact.turn`, #714): it persists the user
+    message + parts, flips the session to ``running``, publishes the
+    ``session.status_changed`` / ``message.created`` events, and schedules
+    :func:`clio_agent.gact.turn._run_turn_in_background` as a tracked task. The
+    POST-message, question-answer, retry-attempt and scheduler concerns all kick
+    a turn through it. ``build_app`` binds ``app`` into the wrapper it stores
+    here, so the moved route handlers invoke it without importing back into
+    ``gact.app`` / ``gact.turn`` (preserving the no-cycle invariant).
+    """
+
+    def __call__(
+        self,
+        sid: str,
+        sess: "Session",
+        user_text: str,
+        *,
+        request_parts: "list[Part] | None" = ...,
+        metadata: "dict[str, Any] | None" = ...,
+        prev_status: str = ...,
+        turn_agent_id: str = ...,
+    ) -> "Message": ...
+
+
 @dataclass(frozen=True)
 class GactDeps:
     """Cross-concern seams the extracted route factories need beyond ``app.state``.
@@ -329,3 +356,4 @@ class GactDeps:
     delete_session_messages: _DeleteSessionMessages
     blueprint_runner_for_agent: _BlueprintRunnerForAgent
     resolve_runtime_dynamic_agent: _ResolveRuntimeDynamicAgent
+    start_background_user_turn: _StartBackgroundUserTurn
