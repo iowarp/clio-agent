@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
 if TYPE_CHECKING:
@@ -135,6 +136,53 @@ class _PromptRenderContextForRequest(Protocol):
     ) -> dict[str, str]: ...
 
 
+class _ActiveSessionAgentBlueprintId(Protocol):
+    """Callable seam reading a session's *explicitly set* active blueprint id.
+
+    ``_active_session_agent_blueprint_id`` (in :mod:`clio_agent.gact.app`) returns
+    only the ``active_agent_blueprint_id`` stored in session metadata -- it does
+    NOT apply the default-blueprint fallback that the runtime resolver
+    (:func:`~clio_agent.gact.agents.resolution._runtime_active_agent_blueprint_id`)
+    layers on. ``GET /v1/sessions/{sid}/agent-blueprint`` must report exactly what
+    the session set, so the blueprint route reaches this metadata-only reader
+    through ``deps`` rather than the runtime resolver.
+    """
+
+    def __call__(self, session_id: str = ...) -> str: ...
+
+
+class _AgentBlueprintActivationMetadata(Protocol):
+    """Callable seam building the session-activation metadata patch for a blueprint.
+
+    ``_agent_blueprint_activation_metadata`` (in :mod:`clio_agent.gact.app`)
+    projects a blueprint's wire row plus its on-disk install provenance
+    (``read_install_metadata``) into the ``active_agent_blueprint_*`` metadata keys
+    persisted on a session when ``POST /v1/sessions/{sid}/agent-blueprint`` sets
+    the active blueprint. It stays built in ``build_app`` and travels here.
+    """
+
+    def __call__(
+        self,
+        *,
+        blueprint_wire: Mapping[str, Any],
+        install_root: "Path | None",
+        scope: str,
+    ) -> dict[str, str]: ...
+
+
+class _MirrorWorkspaceSession(Protocol):
+    """Callable seam persisting one session row into its owning workspace store.
+
+    ``_mirror_workspace_session`` (in :mod:`clio_agent.gact.app`) writes a single
+    session's state into the workspace storage root that owns it. The
+    set-active-blueprint route mirrors the session after mutating its metadata so
+    the workspace-scoped copy stays in sync; it reaches the mirror through
+    ``deps`` rather than importing back into ``gact.app``.
+    """
+
+    def __call__(self, app: "FastAPI", session_id: str) -> None: ...
+
+
 @dataclass(frozen=True)
 class GactDeps:
     """Cross-concern seams the extracted route factories need beyond ``app.state``.
@@ -151,3 +199,6 @@ class GactDeps:
     prompt_registry_for_request: _PromptRegistryForRequest
     prompt_agent_overlay_for_request: _PromptAgentOverlayForRequest
     prompt_render_context_for_request: _PromptRenderContextForRequest
+    active_session_agent_blueprint_id: _ActiveSessionAgentBlueprintId
+    agent_blueprint_activation_metadata: _AgentBlueprintActivationMetadata
+    mirror_workspace_session: _MirrorWorkspaceSession
