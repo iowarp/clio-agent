@@ -59,9 +59,48 @@ class Message(msgspec.Struct):
 # writes one per produced piece (thought/tool_call/observation) and rebuilds its
 # prompt by rendering the live ordered set. See docs/design/arc-live-context-plane.md.
 SegmentKind = Literal[
-    "system", "user", "tool_def", "thought", "tool_call", "observation", "summary"
+    "system",
+    "user",
+    "tool_def",
+    "thought",
+    "tool_call",
+    "observation",
+    "summary",
+    # Richer ARC-as-source kinds (substrate-ready; no writer emits these yet — they
+    # are the targets of the live-atom phase). They are NOT part of the dspy
+    # trajectory projection (segments_to_keys ignores any kind it doesn't model).
+    "lm_io",  # one raw LM call's input + output (the I/O of a single ReAct step)
+    "extract_io",  # a dspy.Extract call's input + output
+    "answer",  # an expert/turn final message
+    "semantic_event",  # one persisted raw semantic event — ARC's ONE log (the
+    # ARC-as-source highway record AND the substrate the live observer projects over)
 ]
 SegmentStatus = Literal["live", "tombstoned"]
+
+# The kinds the model's PROMPT is rendered from (the dspy trajectory projection's
+# domain) + the static framing kinds. These are the ONLY kinds the live-plane
+# consumers that MUTATE the working set operate over: the per-turn working-set reset
+# and the auto-compaction target. The richer ARC-as-source kinds (lm_io/extract_io/
+# answer) plus the reserved highway/observer atom (semantic_event in the ``_events``
+# scope — ARC's ONE persisted semantic-event log, which the live observer projects
+# its turn records over) are part of ARC's COMPLETE freeze-anytime state but are NOT
+# working-set context, so they must never be reset-tombstoned at a new turn nor folded
+# into a compaction summary. They are also never rendered into a model prompt: they
+# live in their own reserved scope (so a normal expert scope's working-set/keys render
+# never sees them) AND they are not modeled by segments_to_keys. (render/render_keys
+# are UNCHANGED — segments_to_keys is a kind-allowlist that already ignores the new
+# kinds, so the prompt is immune.)
+WORKING_SET_KINDS: frozenset[str] = frozenset(
+    {
+        "system",
+        "user",
+        "tool_def",
+        "thought",
+        "tool_call",
+        "observation",
+        "summary",
+    }
+)
 
 
 class Segment(msgspec.Struct):
@@ -87,6 +126,12 @@ class Segment(msgspec.Struct):
         status: ``"tombstoned"`` deletions are skipped by render but kept for replay.
         trace_ref: Link to the durable Trace event that logged this segment's write.
         created_at: Wall-clock creation time (diagnostics only).
+        turn_id: Owning expert lifetime (one expert turn, start..extract). ``""`` when
+            the writer doesn't span-stamp (back-compat default).
+        expert_span_id: Owning expert-turn span; distinct from ``turn_id`` because
+            expert turns can OVERLAP (concurrent experts), so a span id disambiguates
+            which concurrent turn a segment belongs to. ``""`` when unstamped.
+        run_span_id: Owning agent-run span (the whole agent run). ``""`` when unstamped.
     """
 
     # Required (the locked render fields the writer always supplies).
@@ -105,6 +150,12 @@ class Segment(msgspec.Struct):
     tombstoned_at: int = 0  # logical_time of tombstoning; 0 = live (for as-of-T reads)
     trace_ref: str = ""
     created_at: float = msgspec.field(default_factory=lambda: time.time())
+    # Trajectory-correlation span ids (additive, optional, msgspec back-compatible:
+    # records written before these fields existed decode with the "" defaults). The
+    # live-atom phase will populate them; this phase only makes the schema carry them.
+    turn_id: str = ""  # expert lifetime (one expert turn)
+    expert_span_id: str = ""  # expert turn; CAN overlap with another expert's turn
+    run_span_id: str = ""  # the whole agent run
 
 
 def segment_text(seg: "Segment") -> str:

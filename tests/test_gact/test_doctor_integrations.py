@@ -53,7 +53,7 @@ def _health(app: Any) -> dict[str, Any]:
 
 
 def test_no_agent_no_arc_overall_is_unavailable(tmp_path: Path) -> None:
-    resp = _health_response(build_app(sessions_path=tmp_path / "s.json"))
+    resp = _health_response(build_app(sessions_path=tmp_path / "s.json", arc=None))
     assert resp.status_code == 503
     body = resp.json()
     rows = {r["name"]: r for r in body["integrations"]}

@@ -249,7 +249,7 @@ def test_apply_edit_uses_shared_policy_writer(
         target.write_text(new_content, encoding="utf-8")
         return {"path": str(target), "size_bytes": target.stat().st_size, "ok": True}
 
-    monkeypatch.setattr("clio_agent.gact.app.write_text_with_policy", spy_writer)
+    monkeypatch.setattr("clio_agent.gact.enrichment.write_text_with_policy", spy_writer)
 
     target = workspace / "x.txt"
     result = _apply_edit_to_disk(

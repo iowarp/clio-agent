@@ -191,8 +191,9 @@ def validate_expert_pack_path(path: Path, *, scope: str = "session") -> dict[str
 
 
 def expert_pack_roots(home: Path, cwd: Path) -> list[tuple[Path, str, str]]:
-    base = os.environ.get("XDG_CONFIG_HOME")
-    config_root = Path(base) / "clio-agent" if base else home / ".config" / "clio-agent"
+    from clio_agent import paths  # noqa: PLC0415 - avoid import cycle at module load
+
+    config_root = paths.user_config_dir_for(home, os.environ)
     return [
         (config_root / "experts", "global", "loose"),
         (config_root / "expert-packs", "global", "packs"),

@@ -11,6 +11,7 @@ the only tool execution layer.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import shutil
@@ -348,27 +349,46 @@ class ClaudeCodeLLM(CustomLLM):
         timeout: Any = None,
         client: Any = None,
     ) -> AsyncIterator[Any]:
-        del (
-            model,
-            messages,
-            api_base,
-            custom_prompt_dict,
-            model_response,
-            print_verbose,
-            encoding,
-            api_key,
-            logging_obj,
-            optional_params,
-            acompletion,
-            litellm_params,
-            logger_fn,
-            headers,
-            timeout,
-            client,
+        # Claude Code's ``claude -p`` has no token stream — it returns the full
+        # response at once. dspy/litellm drive turns through the streaming path,
+        # so emit the completed exec result as a single terminal chunk instead of
+        # refusing (refusing left this coroutine unawaited and the turn empty).
+        from litellm.types.utils import GenericStreamingChunk  # noqa: PLC0415
+
+        response = await asyncio.to_thread(
+            self.completion,
+            model=model,
+            messages=messages,
+            api_base=api_base,
+            custom_prompt_dict=custom_prompt_dict,
+            model_response=model_response,
+            print_verbose=print_verbose,
+            encoding=encoding,
+            api_key=api_key,
+            logging_obj=logging_obj,
+            optional_params=optional_params,
+            acompletion=acompletion,
+            litellm_params=litellm_params,
+            logger_fn=logger_fn,
+            headers=headers,
+            timeout=timeout,
+            client=client,
         )
-        raise ClaudeCodeExecError(
-            "Claude Code provider does not support live streaming; use non-streaming completion"
-        )
+        choice = response.choices[0]
+        usage = getattr(response, "usage", None)
+        chunk: GenericStreamingChunk = {
+            "text": choice.message.content or "",
+            "is_finished": True,
+            "finish_reason": choice.finish_reason or "stop",
+            "index": 0,
+            "tool_use": None,
+            "usage": {
+                "prompt_tokens": int(getattr(usage, "prompt_tokens", 0) or 0),
+                "completion_tokens": int(getattr(usage, "completion_tokens", 0) or 0),
+                "total_tokens": int(getattr(usage, "total_tokens", 0) or 0),
+            },
+        }
+        yield chunk
 
 
 _registered: bool = False

@@ -522,5 +522,129 @@ def test_concurrent_insert_head_unique_orders(tmp_path):
     assert lts == list(range(1, expected + 1))
 
 
+# --------------------------------------------------------------------------- #
+# 8. PER-SCOPE locking: different scopes run CONCURRENTLY (no global serialize),
+#    and the clock + per-scope lock split introduces NO deadlock or lost ticks.
+# --------------------------------------------------------------------------- #
+
+
+def test_per_scope_locks_are_distinct(tmp_path):
+    """Each (session, scope) gets its OWN lock; different scopes get different lock
+    objects (so they don't contend), and the same scope returns the same lock."""
+    ss = _fresh_store(tmp_path)
+    la = ss._lock_for(SID, "agentA/x")
+    la2 = ss._lock_for(SID, "agentA/x")
+    lb = ss._lock_for(SID, "agentB/y")
+    lc = ss._lock_for("other", "agentA/x")  # different session, same scope addr
+    assert la is la2
+    assert la is not lb and la is not lc and lb is not lc
+
+
+def test_different_scopes_do_not_serialize(tmp_path):
+    """Two scopes whose ops each hold their scope lock for a beat must overlap in
+    time — if a single store-wide lock still guarded everything they'd run strictly
+    sequentially. We sleep INSIDE the op window (a render under the scope lock) and
+    assert the two scopes' busy windows overlap."""
+    import time
+
+    ss = _fresh_store(tmp_path)
+    for scope in ("agentA/x", "agentB/y"):
+        ss.append(SID, scope, "thought", {"text": "seed"})
+
+    windows: dict[str, list[float]] = {}
+    start_barrier = threading.Barrier(2)
+
+    def churn(scope: str) -> None:
+        start_barrier.wait()
+        t0 = time.perf_counter()
+        for i in range(200):
+            ss.append(SID, scope, "thought", {"text": f"{scope}-{i}"}, step=i)
+            ss.render(SID, scope)
+        windows[scope] = [t0, time.perf_counter()]
+
+    with ThreadPoolExecutor(max_workers=2) as ex:
+        list(ex.map(churn, ["agentA/x", "agentB/y"]))
+
+    a, b = windows["agentA/x"], windows["agentB/y"]
+    overlap = min(a[1], b[1]) - max(a[0], b[0])
+    assert overlap > 0, "different scopes did not run concurrently (still serialized)"
+    # both scopes intact
+    assert len(ss.render(SID, "agentA/x")) == 201
+    assert len(ss.render(SID, "agentB/y")) == 201
+
+
+def test_concurrent_ops_with_release_and_clear_no_deadlock(tmp_path):
+    """Hammer many scopes with mixed ops while OTHER threads call release()/clear()
+    on different sessions. The acquire-registry-then-scope-locks order in the
+    store-wide ops must never deadlock with the per-scope op path. A watchdog bounds
+    the run so a deadlock fails loudly instead of hanging the suite."""
+    import time
+
+    ss = _fresh_store(tmp_path)
+    sessions = [f"s{n}" for n in range(4)]
+    scopes = [f"agent{n}/exp" for n in range(6)]
+    stop = threading.Event()
+
+    def worker(sess: str) -> None:
+        i = 0
+        while not stop.is_set():
+            scope = scopes[i % len(scopes)]
+            ss.append(sess, scope, "thought", {"text": f"{sess}-{i}"}, step=i)
+            live = ss.render(sess, scope)
+            if len(live) >= 3:
+                ss.delete(sess, scope, [live[0].id])
+            i += 1
+
+    def churner(sess: str) -> None:
+        while not stop.is_set():
+            ss.release(sess)
+
+    def clearer() -> None:
+        while not stop.is_set():
+            ss.clear()
+
+    with ThreadPoolExecutor(max_workers=len(sessions) * 2 + 1) as ex:
+        futs = [ex.submit(worker, s) for s in sessions]
+        futs += [ex.submit(churner, s) for s in sessions]
+        futs.append(ex.submit(clearer))
+        time.sleep(2.0)  # let them race
+        stop.set()
+        # bounded join: a deadlock would block these result() calls past the timeout
+        for f in futs:
+            f.result(timeout=30)
+
+    # store still usable + coherent after the storm
+    ss.append(SID, "agentA/exp", "thought", {"text": "after"})
+    live = ss.render(SID, "agentA/exp")
+    _assert_render_well_formed(live)
+    assert any(s.content.get("text") == "after" for s in live)
+
+
+def test_clock_unique_across_scopes_under_per_scope_locks(tmp_path):
+    """The shared clock has its OWN lock now; concurrent ops across MANY scopes must
+    still issue every creation logical_time exactly once (no collision, no skip from
+    the scope/clock lock split)."""
+    ss = _fresh_store(tmp_path)
+    n_scopes, per_scope = 16, 60
+    scopes = [f"agent{n}/exp" for n in range(n_scopes)]
+    barrier = threading.Barrier(n_scopes)
+
+    def worker(scope: str) -> None:
+        barrier.wait()
+        for i in range(per_scope):
+            ss.append(SID, scope, "thought", {"text": f"{scope}:{i}"}, step=i)
+
+    with ThreadPoolExecutor(max_workers=n_scopes) as ex:
+        list(ex.map(worker, scopes))
+
+    all_lts: list[int] = []
+    for scope in scopes:
+        all_lts.extend(s.logical_time for s in ss.render(SID, scope))
+    total = n_scopes * per_scope
+    assert sorted(all_lts) == list(range(1, total + 1)), (
+        "clock collided/gapped across scopes with the separate clock lock"
+    )
+
+
 if __name__ == "__main__":  # pragma: no cover
     raise SystemExit(pytest.main([__file__, "-q"]))

@@ -18,8 +18,9 @@ import dspy
 import pytest
 from dspy.utils.dummies import DummyLM
 
-import clio_agent.gact.app as app
+import clio_agent.gact.agents.runtime as agent_runtime
 from clio_agent.arc.memory import ARCMemory
+from clio_agent.gact import context as ctx
 
 from .conftest import live_plane_context, make_react_agent
 
@@ -36,13 +37,16 @@ def test_forward_writes_arc_and_emits_highway_in_one_run(
     # call them. (The full sink path is covered by test_trajectory_retention.)
     step_events: list[dict] = []
     lifecycle_events: list[str] = []
+    # The retaining forward resolves the highway emitters from its own module
+    # (gact.agents.runtime, #714 step 4), so patch the owner there rather than the
+    # gact.app re-export shim -- a setattr on app would not intercept the call.
     monkeypatch.setattr(
-        app,
+        agent_runtime,
         "_emit_react_step_event",
         lambda **kw: step_events.append(kw),
     )
     monkeypatch.setattr(
-        app,
+        agent_runtime,
         "_emit_expert_lifecycle_event",
         lambda event_type, **kw: lifecycle_events.append(event_type),
     )
@@ -60,15 +64,15 @@ def test_forward_writes_arc_and_emits_highway_in_one_run(
     )
 
     fake_app = types.SimpleNamespace(state=types.SimpleNamespace(arc=arc))
-    sess_token = app._ACTIVE_GACT_SESSION_ID.set(SID)
-    app_token = app._ACTIVE_GACT_APP.set(fake_app)
+    sess_token = ctx.set_session_id(SID)
+    app_token = ctx.set_app(fake_app)
     try:
         with live_plane_context(arc, session=SID, scope=SCOPE):
             with dspy.context(lm=lm, adapter=dspy.ChatAdapter()):
                 pred = agent(question="find alpha")
     finally:
-        app._ACTIVE_GACT_APP.reset(app_token)
-        app._ACTIVE_GACT_SESSION_ID.reset(sess_token)
+        ctx.reset(app_token)
+        ctx.reset(sess_token)
 
     # Highway half: a react.step.completed per non-extract step + the expert
     # lifecycle boundaries fired from this same forward.

@@ -41,10 +41,9 @@ def _config_with_storage_root(root_path: str, metadata: Optional[dict[str, Any]]
 def _default_store_path() -> Path:
     """Same XDG-friendly resolution sessions.py uses, sibling file."""
 
-    base = os.environ.get("XDG_CONFIG_HOME")
-    if base:
-        return Path(base) / "clio-agent" / "workspaces.json"
-    return Path.home() / ".config" / "clio-agent" / "workspaces.json"
+    from clio_agent import paths  # noqa: PLC0415 - avoid import cycle at module load
+
+    return paths.user_config_dir() / "workspaces.json"
 
 
 @dataclass

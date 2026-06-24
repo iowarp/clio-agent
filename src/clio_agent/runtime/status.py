@@ -473,9 +473,9 @@ class RuntimeProbe:
 
     def probe_arc(self) -> IntegrationStatus:
         """Probe local ARC persistence path readiness."""
-        base_dir = Path(self.env.get("CLIO_DATA_DIR", ".clio_agent"))
+        base_dir = Path(self.env.get("CLIO_DATA_DIR", ".clio/agent"))
         arc_dir = base_dir / "arc"
-        source = "env:CLIO_DATA_DIR" if "CLIO_DATA_DIR" in self.env else "default:.clio_agent"
+        source = "env:CLIO_DATA_DIR" if "CLIO_DATA_DIR" in self.env else "default:.clio/agent"
         try:
             arc_dir.mkdir(parents=True, exist_ok=True)
             probe_file = arc_dir / ".doctor_probe"

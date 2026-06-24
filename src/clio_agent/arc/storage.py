@@ -363,7 +363,7 @@ class CTEStore:
 def make_arc_store(
     *,
     backend: Optional[str] = None,
-    data_dir: "str | Path" = ".clio_agent/arc",
+    data_dir: "str | Path" = ".clio/agent/arc",
     config_path: str = "",
 ) -> "ARCStore":
     """Build the ARC persistence backend.
@@ -383,6 +383,14 @@ def make_arc_store(
         return LocalFSStore(data_dir)
     if choice == "cte":
         cfg = config_path or os.environ.get("CLIO_ARC_STORE_CONFIG", "")
+        if not cfg:
+            # Prefer a per-workspace clio-core config under ``.clio/core`` if present;
+            # otherwise "" lets clio-core use its global ``~/.clio/clio.yaml`` default.
+            from clio_agent import paths  # noqa: PLC0415 - avoid import cycle
+
+            ws_cfg = paths.workspace_core_dir() / "cte.yaml"
+            if ws_cfg.is_file():
+                cfg = str(ws_cfg)
         try:
             return CTEStore(config_path=cfg)
         except Exception as exc:  # noqa: BLE001 - binding absent or init failure

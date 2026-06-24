@@ -14,6 +14,51 @@ import clio_agent  # noqa: F401
 
 
 @pytest.fixture(autouse=True)
+def _reset_runtime_context():
+    """Isolate each test from the single GACT runtime contextvar (#714).
+
+    Several tests establish runtime state via tokenless bare sets
+    (``set_turn_identity`` / ``set_turn_id`` / ``set_trace_id`` /
+    ``install_trajectory_cell`` / ``set_react_context_window``), mirroring the
+    turn-scoped leaks of the original contextvars. Snapshot-and-reset the one
+    ``_RUNTIME`` var around every test (token-balanced) so those tokenless sets
+    cannot bleed into the next test -- the hygiene the original tests achieved
+    via explicit per-var token resets, now centralized on the single var.
+    """
+    from clio_agent.gact import context as ctx
+
+    token = ctx._RUNTIME.set(ctx.RuntimeContext())
+    try:
+        yield
+    finally:
+        ctx._RUNTIME.reset(token)
+
+
+@pytest.fixture(autouse=True)
+def _reset_process_arc():
+    """Isolate each test from the one per-process ARC singleton (#714).
+
+    ``_set_app_arc`` publishes ``clio_agent.gact.runtime.globals._PROCESS_ARC`` (#714:
+    the funnel + ARC singleton now live in ``runtime.globals``, re-exported as a NAME
+    from ``gact.app``; the LIVE owner is ``runtime.globals``) so deep/threaded emit
+    contexts that cannot reach the request app still route through the SAME ARC (ARC is
+    the source of the highway; ``_emit_semantic_event`` fails loud when no ARC is
+    reachable). Because it is a module global it persists across tests: a later no-arc
+    emit could silently resolve a *prior* test's ARC, making the fail-loud behavior
+    order-dependent. Reset it to ``None`` around every test so a test that exercises the
+    no-arc path sees a truly absent ARC regardless of run order.
+    """
+    from clio_agent.gact.runtime import globals as gact_globals
+
+    saved = gact_globals._PROCESS_ARC
+    gact_globals._PROCESS_ARC = None
+    try:
+        yield
+    finally:
+        gact_globals._PROCESS_ARC = saved
+
+
+@pytest.fixture(autouse=True)
 def allow_pytest_tmp_path(tmp_path, monkeypatch):
     """Isolate tests from developer shell defaults.
 

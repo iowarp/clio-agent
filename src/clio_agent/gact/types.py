@@ -223,10 +223,21 @@ class SessionContextPolicy(BaseModel):
 class ContextStateResponse(BaseModel):
     """GET /v1/sessions/{sid}/context/state — the ARC live context plane for a scope.
 
-    ``pct_used`` is the **segment-store token attribution** (sum of per-segment
-    ``token_count`` over the live render) divided by the model window — distinct
-    from the provider-exact prompt-token reading the in-turn auto-compactor uses,
-    and ``null`` when the window is unknown.
+    Two token readings, both model-window-relative (``window_tokens`` from the model's
+    resolved context window):
+
+    * ``live_tokens`` / ``pct_used`` — the **segment-store attribution** (sum of
+      per-segment ``token_count`` over the live render). This is what the editable
+      blocks (``categories`` below, mutated via ``/context/ops``) add up to.
+    * ``used_tokens`` / ``used_pct`` — the **model-grounded** reading: the LAST LM call's
+      real prompt tokens (provider ``prompt_tokens`` → ``litellm.token_counter`` fallback,
+      the same source the in-turn auto-compactor uses). ``null`` between turns / when
+      unknown. This is the true "how full is the window" number for the active expert.
+
+    ``autocompact_pct`` is the fraction at which auto-compaction triggers (so a UI can draw
+    the line). ``categories`` buckets ``tokens_by_kind`` into Claude-Code-``/context``-style
+    groups, plus a ``framing`` entry = ``used_tokens − live_tokens`` (the system-prompt +
+    tool-schema overhead the model sees but ARC does not store/edit), when both are known.
     """
 
     session_id: str
@@ -235,8 +246,12 @@ class ContextStateResponse(BaseModel):
     window_tokens: int = 0
     live_tokens: int = 0
     pct_used: Optional[float] = None
+    used_tokens: Optional[int] = None
+    used_pct: Optional[float] = None
+    autocompact_pct: Optional[float] = None
     live_block_count: int = 0
     tokens_by_kind: dict[str, int] = Field(default_factory=dict)
+    categories: dict[str, int] = Field(default_factory=dict)
     segments: list[dict[str, Any]] = Field(default_factory=list)
     render_text: str = ""
     render_keys: dict[str, Any] = Field(default_factory=dict)

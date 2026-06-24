@@ -21,7 +21,10 @@ from clio_agent.gact.types import Message, Part, Tokens
 
 @pytest.fixture()
 def client(tmp_path: Path) -> TestClient:
-    return TestClient(build_app(sessions_path=tmp_path / "sessions.json"))
+    # These are session-CRUD tests that never drive a turn (so no semantic events
+    # are emitted) and one asserts the arc-absent policy (``arc_wired is False``).
+    # Pin ``arc=None`` so the suite-wide default-ARC test fixture leaves it unwired.
+    return TestClient(build_app(sessions_path=tmp_path / "sessions.json", arc=None))
 
 
 def _seed_text_message(client: TestClient, sid: str, text: str) -> None:
@@ -218,9 +221,7 @@ def test_compact_retries_transient_provider_errors(tmp_path: Path) -> None:
         detail = c.get(f"/v1/sessions/{sid}/memory/events/{body['event_id']}").json()
         assert detail["event"]["id"] == body["event_id"]
         compact_events = [
-            e
-            for e in c.app.state.bus._history.get(sid, [])
-            if e.type == "session.compacted"
+            e for e in c.app.state.bus._history.get(sid, []) if e.type == "session.compacted"
         ]
         assert compact_events[-1].payload["event_id"] == body["event_id"]
 

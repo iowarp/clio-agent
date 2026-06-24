@@ -83,21 +83,21 @@ def note_lm_token_event(content: str, reasoning: str, *, field: str = "answer") 
     if not content and not reasoning:
         return
     try:
-        from clio_agent.gact.app import (  # noqa: PLC0415
-            _ACTIVE_GACT_APP,
-            _ACTIVE_GACT_SESSION_ID,
-            _ACTIVE_GACT_TRACE_ID,
-            _ACTIVE_GACT_TURN_ID,
-            _emit_semantic_event,
+        from clio_agent.gact.context import (  # noqa: PLC0415
+            active_app,
+            active_session_id,
+            active_trace_id,
+            active_turn_id,
         )
+        from clio_agent.gact.runtime.globals import _emit_semantic_event  # noqa: PLC0415
         from clio_agent.gact.semantic_events import (  # noqa: PLC0415
             LM_TOKEN_DELTA,
             lm_token_delta_payload,
         )
     except Exception:  # noqa: BLE001 - app unavailable (CLI/optimizer paths)
         return
-    app = _ACTIVE_GACT_APP.get()
-    sid = _ACTIVE_GACT_SESSION_ID.get()
+    app = active_app()
+    sid = active_session_id()
     if app is None or not sid:
         return
     try:
@@ -105,8 +105,8 @@ def note_lm_token_event(content: str, reasoning: str, *, field: str = "answer") 
             app,
             sid,
             LM_TOKEN_DELTA,
-            turn_id=_ACTIVE_GACT_TURN_ID.get(),
-            trace_id=_ACTIVE_GACT_TRACE_ID.get(),
+            turn_id=active_turn_id(),
+            trace_id=active_trace_id(),
             status="running",
             summary="LM token delta.",
             payload=lm_token_delta_payload(content=content, reasoning=reasoning, field=field),
@@ -167,17 +167,17 @@ def _emit_lm_call_started(call_id: Any, instance: Any, inputs: Any) -> None:
     """
 
     try:
-        from clio_agent.gact.app import (  # noqa: PLC0415
-            _ACTIVE_GACT_APP,
-            _ACTIVE_GACT_SESSION_ID,
-            _ACTIVE_GACT_TRACE_ID,
-            _ACTIVE_GACT_TURN_ID,
-            _emit_semantic_event,
+        from clio_agent.gact.context import (  # noqa: PLC0415
+            active_app,
+            active_session_id,
+            active_trace_id,
+            active_turn_id,
         )
+        from clio_agent.gact.runtime.globals import _emit_semantic_event  # noqa: PLC0415
     except Exception:  # noqa: BLE001 - app may be unavailable (CLI/optimizer paths)
         return
-    app = _ACTIVE_GACT_APP.get()
-    sid = _ACTIVE_GACT_SESSION_ID.get()
+    app = active_app()
+    sid = active_session_id()
     if app is None or not sid:
         return
     model = str(getattr(instance, "model", "") or "")
@@ -189,8 +189,8 @@ def _emit_lm_call_started(call_id: Any, instance: Any, inputs: Any) -> None:
             app,
             sid,
             "lm.call.started",
-            turn_id=_ACTIVE_GACT_TURN_ID.get(),
-            trace_id=_ACTIVE_GACT_TRACE_ID.get(),
+            turn_id=active_turn_id(),
+            trace_id=active_trace_id(),
             status="running",
             summary=f"LM call started ({model or 'lm'}).",
             provider={"model_id": model},

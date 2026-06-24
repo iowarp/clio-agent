@@ -39,7 +39,7 @@ class SSTable:
 
     Example:
         >>> sst = SSTable(
-        ...     file_path=Path(".clio_agent/arc/lsm/sst_1234567890.msgpack"),
+        ...     file_path=Path(".clio/agent/arc/lsm/sst_1234567890.msgpack"),
         ...     min_key=1704800000.0,
         ...     max_key=1704900000.0,
         ...     record_count=1000
@@ -60,7 +60,7 @@ class LSMTree:
     SSTables on disk, and periodically compacts SSTables.
 
     Args:
-        data_dir: Directory for SSTables (default: ".clio_agent/arc/lsm")
+        data_dir: Directory for SSTables (default: ".clio/agent/arc/lsm")
         memtable_size: Max entries in MemTable before flush (default: 1000)
         compaction_threshold: Trigger compaction after N SSTables (default: 5)
 
@@ -75,7 +75,7 @@ class LSMTree:
 
     def __init__(
         self,
-        data_dir: str = ".clio_agent/arc/lsm",
+        data_dir: str = ".clio/agent/arc/lsm",
         memtable_size: int = 1000,
         compaction_threshold: int = 5,
     ):

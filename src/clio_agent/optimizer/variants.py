@@ -40,7 +40,7 @@ class VariantManager:
     def __init__(
         self,
         arc_memory: Any,
-        variants_dir: str = ".clio_agent/variants",
+        variants_dir: str = ".clio/agent/variants",
     ) -> None:
         """Initialize VariantManager.
 
