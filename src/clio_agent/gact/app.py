@@ -251,23 +251,6 @@ from clio_agent.gact.runtime.globals import (  # noqa: E402, F401
 )
 
 
-def _provider_runtime_kind(provider_id: str) -> str:
-    """Return the wire/runtime provider kind for a catalog id or provider kind."""
-
-    provider_id = str(provider_id or "").strip()
-    if not provider_id:
-        return ""
-    try:
-        from clio_agent.providers.registry import get_provider  # noqa: PLC0415
-
-        provider = get_provider(provider_id)
-    except Exception:
-        provider = None
-    if provider is not None:
-        return str(provider.provider_kind or provider_id)
-    return provider_id
-
-
 def _prediction_summary(pred: Any) -> dict[str, Any]:
     summary = {
         "selected_expert": str(getattr(pred, "selected_expert", "") or ""),
@@ -476,73 +459,6 @@ def _compact_exact_evidence_index(transcript: str) -> str:
     if not sections:
         return ""
     return "[exact retained evidence index]\n" + "\n\n".join(sections)
-
-
-def _lm_studio_api_root(api_base: str) -> str:
-    """Return the LM Studio native REST root for an OpenAI-compatible base URL."""
-
-    from urllib.parse import urlsplit, urlunsplit
-
-    parts = urlsplit(api_base.rstrip("/"))
-    return urlunsplit((parts.scheme, parts.netloc, "", "", ""))
-
-
-def _lm_studio_headers() -> dict[str, str]:
-    """Build headers for LM Studio native REST calls."""
-
-    headers = {"Content-Type": "application/json"}
-    token = (
-        os.environ.get("LM_STUDIO_API_TOKEN", "").strip()
-        or os.environ.get("LM_API_TOKEN", "").strip()
-    )
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-    return headers
-
-
-def _release_owned_lm_studio_instance(
-    app: "FastAPI",
-    *,
-    skip_instance_id: str = "",
-    raise_on_error: bool = True,
-) -> bool:
-    """Unload a CLIO-owned LM Studio instance, never a user-owned one.
-
-    CLIO records ownership only when it successfully calls LM Studio's
-    native load endpoint and receives an ``instance_id``. Existing
-    GUI/user-loaded instances are reused but never marked owned.
-    """
-
-    owned = getattr(app.state, "lm_studio_owned_instance", None)
-    if not isinstance(owned, dict):
-        return False
-
-    instance_id = str(owned.get("instance_id") or "").strip()
-    root = str(owned.get("root") or "").strip()
-    if not instance_id or not root or (skip_instance_id and instance_id == skip_instance_id):
-        return False
-
-    try:
-        import requests  # noqa: PLC0415
-
-        response = requests.post(
-            f"{root}/api/v1/models/unload",
-            headers=_lm_studio_headers(),
-            json={"instance_id": instance_id},
-            timeout=30,
-        )
-        if response.status_code >= 400:
-            raise RuntimeError(
-                "LM Studio model unload failed "
-                f"({response.status_code}): {(response.text or '')[:300]}"
-            )
-    except Exception:
-        if raise_on_error:
-            raise
-        return False
-
-    app.state.lm_studio_owned_instance = None
-    return True
 
 
 _EXECUTABLE_SESSION_AGENT_IDS = {
@@ -3043,6 +2959,26 @@ def _fallback_answer_from_delegation(handoffs: list[dict[str, Any]]) -> str:
     return ""
 
 
+# Provider / LM-bind helpers moved to gact/providers/ (#714 decomposition step 6).
+# Re-exported here so existing ``from clio_agent.gact.app import <name>`` callers +
+# the import-seam guardrail (``_refresh_argonne_lm_token`` pinned) stay green; the
+# write-side ``PUT /v1/providers/lm`` bind closures still live in the provider route
+# handler below and move with the route extraction (step 7).
+from clio_agent.gact.providers.auth import (  # noqa: E402,F401
+    _is_placeholder_api_key,
+    _refresh_argonne_lm_token,
+    _resolve_argonne_runtime_api_key,
+)
+from clio_agent.gact.providers.config import (  # noqa: E402,F401
+    _effective_lm_config,
+    _provider_runtime_kind,
+)
+from clio_agent.gact.providers.lmstudio import (  # noqa: E402,F401
+    _lm_studio_api_root,
+    _lm_studio_headers,
+    _release_owned_lm_studio_instance,
+)
+
 # Token / context-window leaf machinery moved to gact/runtime/context_tokens.py
 # (#714 decomposition step 2). Re-exported here so existing
 # ``from clio_agent.gact.app import <name>`` callers + the import-seam guardrail
@@ -3347,42 +3283,6 @@ def _model_ref_is_empty(value: Any) -> bool:
 
     ref = _model_ref_dict(value)
     return not any(ref.values())
-
-
-def _effective_lm_config(app: "FastAPI") -> dict[str, Any]:
-    """Return the configured LM, falling back to the live agent config.
-
-    ``app.state.lm_config`` is populated by ``PUT /v1/providers/lm``.
-    When GACT boots from ``CLIO_LM_PROVIDER`` instead, the live
-    ``ClioAgent`` still carries the effective ``LMProviderConfig``.
-    """
-
-    cfg = dict(getattr(app.state, "lm_config", None) or {})
-    agent = getattr(app.state, "agent", None)
-    provider_config = getattr(agent, "_provider_config", None)
-    if provider_config is None:
-        return cfg
-
-    for key in (
-        "provider",
-        "api_base",
-        "model",
-        "temperature",
-        "max_tokens",
-        "context_length",
-        "thinking_budget",
-        "chosen_context",
-        "context_window",
-        "is_reasoning",
-        "native_tool_calling",
-    ):
-        if not cfg.get(key):
-            value = getattr(provider_config, key, None)
-            if value is not None:
-                cfg[key] = value
-    if not cfg.get("transport") and getattr(provider_config, "provider", "") == "codex":
-        cfg["transport"] = getattr(provider_config, "codex_transport", None)
-    return cfg
 
 
 def _active_lm_model_ref(app: "FastAPI") -> dict[str, str]:
@@ -7909,38 +7809,6 @@ def _config_is_reasoning_model(provider_config: Any) -> bool:
         return bool(_reasoning_model_capability(provider_config))
     except Exception:
         return bool(getattr(provider_config, "is_reasoning", False))
-
-
-def _is_placeholder_api_key(value: str | None) -> bool:
-    """Return whether an API key is a local no-auth placeholder."""
-
-    return (value or "").strip() in {"", "x", "X", "EMPTY", "empty"}
-
-
-def _resolve_argonne_runtime_api_key() -> str:
-    """Return a fresh ALCF bearer token for runtime provider use."""
-
-    from clio_agent.config import _resolve_argonne_api_key  # noqa: PLC0415
-
-    token = _resolve_argonne_api_key()
-    if not token:
-        raise RuntimeError("ALCF Globus token is unavailable or could not be refreshed.")
-    return token
-
-
-def _refresh_argonne_lm_token(agent: Any) -> None:
-    """Refresh Argonne's short-lived token on live DSPy LM objects."""
-
-    cfg = getattr(agent, "_provider_config", None)
-    if cfg is None or getattr(cfg, "provider", "") != "argonne":
-        return
-    token = _resolve_argonne_runtime_api_key()
-    cfg.api_key = token
-    for attr in ("_main_lm", "_planner_lm", "_router_lm"):
-        lm = getattr(agent, attr, None)
-        kwargs = getattr(lm, "kwargs", None)
-        if isinstance(kwargs, dict):
-            kwargs["api_key"] = token
 
 
 def _stream_response_prefix(field_name: str, previous_field_name: str) -> str:

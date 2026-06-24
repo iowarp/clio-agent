@@ -275,12 +275,12 @@ def _llm_provider_payload(app: "FastAPI", agent_id: str = "") -> dict[str, Any]:
 
     Reads the effective LM config off ``app.state`` (falling back to the live
     agent's provider config). ``_effective_lm_config`` is owned by the
-    provider-bind concern; it is imported lazily at call time so this funnel base
-    stays free of a module-load cycle back into ``gact.app`` (the no-cycle
-    invariant of the #714 decomposition).
+    provider-bind concern (:mod:`clio_agent.gact.providers.config`); it is
+    imported lazily at call time so this funnel base stays free of a module-load
+    cycle (the no-cycle invariant of the #714 decomposition).
     """
 
-    from clio_agent.gact.app import _effective_lm_config  # noqa: PLC0415
+    from clio_agent.gact.providers.config import _effective_lm_config  # noqa: PLC0415
 
     cfg = _effective_lm_config(app)
     return {
