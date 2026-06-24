@@ -2979,6 +2979,9 @@ from clio_agent.gact.providers.lmstudio import (  # noqa: E402,F401
     _release_owned_lm_studio_instance,
 )
 from clio_agent.gact.routes.deps import GactDeps  # noqa: E402
+from clio_agent.gact.routes.hooks import (  # noqa: E402
+    register_hooks_routes,
+)
 from clio_agent.gact.routes.prompts import (  # noqa: E402
     register_prompts_routes,
 )
@@ -18790,85 +18793,11 @@ def build_app(
         )
 
     # ---- /v1/hooks (SPEC §6.17 declarative hooks) --------------------
-    #
-    # Distinct from clio_agent.runtime.hooks (in-process Python hooks
-    # the framework fires on tool/message events). These are the
-    # gact-tui-driven declarative hooks: id + event + (command|url) +
-    # optional session_id/workspace_id scope. The TUI's `gact hook`
-    # subcommand reads/writes them. In-memory; no persistence.
-
-    @app.get("/v1/hooks")
-    async def list_hooks() -> dict[str, Any]:
-        return {"hooks": list(app.state.declarative_hooks.values())}
-
-    @app.post("/v1/hooks")
-    async def create_hook(request: Request) -> dict[str, Any]:
-        try:
-            body = await request.json()
-        except Exception:
-            body = {}
-        if not isinstance(body, dict):
-            body = {}
-        event = (body.get("event") or "").strip()
-        if not event:
-            raise HTTPException(
-                status_code=400,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="invalid_request",
-                        message="hook missing required field: event",
-                        recoverable=False,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-        if not (body.get("command") or body.get("url")):
-            raise HTTPException(
-                status_code=400,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="invalid_request",
-                        message="hook needs command or url",
-                        recoverable=False,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-        hid = body.get("id") or f"hook_{uuid.uuid4().hex[:12]}"
-        row = {
-            "id": hid,
-            "event": event,
-            "command": body.get("command") or "",
-            "url": body.get("url") or "",
-            "session_id": body.get("session_id") or "",
-            "workspace_id": body.get("workspace_id") or "",
-        }
-        app.state.declarative_hooks[hid] = row
-        return row
-
-    @app.delete("/v1/hooks/{hook_id}")
-    async def delete_hook(hook_id: str) -> Response:
-        hook = app.state.declarative_hooks.get(hook_id)
-        if hook is None:
-            raise HTTPException(
-                status_code=404,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="not_found",
-                        message=f"hook not found: {hook_id}",
-                        recoverable=False,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-        _guard_direct_destructive_action(
-            app,
-            session_id=str(hook.get("session_id") or ""),
-            workspace_id=str(hook.get("workspace_id") or ""),
-            tool_name="gact.hook.delete",
-            args={"hook_id": hook_id},
-            summary=f"delete hook {hook_id}",
-            reason="user_requested_hook_delete",
-        )
-        app.state.declarative_hooks.pop(hook_id, None)
-        return Response(status_code=204)
+    # Declarative event-hook CRUD is owned by routes/hooks.py; the
+    # direct-destructive-action guard the delete route needs travels on
+    # ``deps``. Distinct from clio_agent.runtime.hooks (in-process Python
+    # hooks the framework fires on tool/message events).
+    register_hooks_routes(app, deps)
 
     # ---- /v1/policies (SPEC §6.11.b permission policies) -------------
     #
