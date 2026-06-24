@@ -196,6 +196,39 @@ def _runtime_active_agent_blueprint_path(app: "FastAPI", session_id: str = "") -
     return Path(raw).expanduser() if raw else None
 
 
+def _runtime_active_session_expert_pack_id(app: "FastAPI", session_id: str = "") -> str:
+    """Return a session's active expert-pack id from its metadata (``""`` if none)."""
+
+    if not session_id:
+        return ""
+    sess = app.state.sessions.get(session_id)
+    if sess is None:
+        return ""
+    metadata = getattr(sess, "metadata", {}) or {}
+    if not isinstance(metadata, Mapping):
+        return ""
+    return str(
+        metadata.get("active_expert_pack_id") or metadata.get("expert_pack_id") or ""
+    ).strip()
+
+
+def _runtime_active_session_expert_pack_path(
+    app: "FastAPI", session_id: str = ""
+) -> Path | None:
+    """Return a session's active expert-pack path from its metadata (``None`` if none)."""
+
+    if not session_id:
+        return None
+    sess = app.state.sessions.get(session_id)
+    if sess is None:
+        return None
+    metadata = getattr(sess, "metadata", {}) or {}
+    if not isinstance(metadata, Mapping):
+        return None
+    raw = str(metadata.get("active_expert_pack_path") or "").strip()
+    return Path(raw).expanduser() if raw else None
+
+
 def _runtime_session_agent_overlay(app: "FastAPI", session_id: str = "") -> dict[str, Any]:
     if not session_id:
         return {}

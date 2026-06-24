@@ -935,6 +935,8 @@ from clio_agent.gact.agents.resolution import (  # noqa: E402, F401
     _runtime_active_agent_blueprint_path,
     _runtime_active_agent_blueprint_root_id,
     _runtime_active_agent_blueprint_rows,
+    _runtime_active_session_expert_pack_id,
+    _runtime_active_session_expert_pack_path,
     _runtime_apply_session_agent_overlay,
     _runtime_child_agent_rows,
     _runtime_declared_child_ids,
@@ -2468,6 +2470,9 @@ from clio_agent.gact.routes.context import (  # noqa: E402
 from clio_agent.gact.routes.deps import GactDeps  # noqa: E402
 from clio_agent.gact.routes.diffs import (  # noqa: E402
     register_diffs_routes,
+)
+from clio_agent.gact.routes.expert_packs import (  # noqa: E402
+    register_expert_packs_routes,
 )
 from clio_agent.gact.routes.hooks import (  # noqa: E402
     register_hooks_routes,
@@ -8070,7 +8075,6 @@ from clio_agent.gact.expert_packs import (
     load_expert_pack_path,
     load_expert_packs,
     validate_expert_hierarchy,
-    validate_expert_pack_path,
 )
 from clio_agent.gact.messages import MessageStore
 from clio_agent.gact.sessions import SessionStore, _default_store_path
@@ -12507,31 +12511,6 @@ def build_app(
         root_path = str(getattr(ws, "root_path", "") or "")
         return Path(root_path).expanduser() if root_path else None
 
-    def _active_session_expert_pack_id(session_id: str = "") -> str:
-        if not session_id:
-            return ""
-        sess = app.state.sessions.get(session_id)
-        if sess is None:
-            return ""
-        metadata = getattr(sess, "metadata", {}) or {}
-        if not isinstance(metadata, Mapping):
-            return ""
-        return str(
-            metadata.get("active_expert_pack_id") or metadata.get("expert_pack_id") or ""
-        ).strip()
-
-    def _active_session_expert_pack_path(session_id: str = "") -> Path | None:
-        if not session_id:
-            return None
-        sess = app.state.sessions.get(session_id)
-        if sess is None:
-            return None
-        metadata = getattr(sess, "metadata", {}) or {}
-        if not isinstance(metadata, Mapping):
-            return None
-        raw = str(metadata.get("active_expert_pack_path") or "").strip()
-        return Path(raw).expanduser() if raw else None
-
     def _active_session_agent_blueprint_id(session_id: str = "") -> str:
         if not session_id:
             return ""
@@ -13216,8 +13195,8 @@ def build_app(
         )
         if rows:
             return rows
-        active_pack_id = _active_session_expert_pack_id(session_id)
-        active_pack_path = _active_session_expert_pack_path(session_id)
+        active_pack_id = _runtime_active_session_expert_pack_id(app, session_id)
+        active_pack_path = _runtime_active_session_expert_pack_path(app, session_id)
         explicit_session_rows = (
             load_expert_pack_path(active_pack_path, scope="session")
             if active_pack_path is not None
@@ -13482,185 +13461,12 @@ def build_app(
             "validation": validation_after,
         }
 
-    @app.get("/v1/expert-packs")
-    async def list_expert_packs(workspace_id: Optional[str] = None) -> dict[str, Any]:
-        cwd = _workspace_catalog_cwd(workspace_id=workspace_id or "")
-        packs = [pack.to_wire() for pack in discover_expert_packs(cwd=cwd)]
-        return {"expert_packs": packs}
-
-    @app.get("/v1/expert-packs/{pack_id:path}")
-    async def get_expert_pack(pack_id: str, workspace_id: Optional[str] = None) -> dict[str, Any]:
-        cwd = _workspace_catalog_cwd(workspace_id=workspace_id or "")
-        for pack in discover_expert_packs(cwd=cwd):
-            if pack.id == pack_id:
-                agents = validate_expert_hierarchy(load_expert_packs(cwd=cwd, pack_id=pack_id))
-                return {
-                    "expert_pack": pack.to_wire(),
-                    "agents": [row.model_dump(exclude_none=True) for row in agents],
-                }
-        raise HTTPException(
-            status_code=404,
-            detail=ErrorEnvelope(
-                error=ErrorInfo(
-                    error="not_found",
-                    message=f"expert pack not found: {pack_id}",
-                    details={"pack_id": pack_id, "workspace_id": workspace_id or ""},
-                    recoverable=False,
-                )
-            ).model_dump(exclude_none=True),
-        )
-
-    @app.post("/v1/expert-packs/validate")
-    async def validate_expert_pack(req: dict[str, Any]) -> dict[str, Any]:
-        path = str(req.get("path") or "").strip()
-        if not path:
-            raise HTTPException(
-                status_code=400,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="validation_error",
-                        message="path is required",
-                        recoverable=True,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-        return validate_expert_pack_path(Path(path), scope=str(req.get("scope") or "session"))
-
-    @app.get("/v1/sessions/{sid}/expert-pack")
-    async def get_session_expert_pack(sid: str) -> dict[str, Any]:
-        sess = app.state.sessions.get(sid)
-        if sess is None:
-            raise HTTPException(
-                status_code=404,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="not_found",
-                        message=f"session not found: {sid}",
-                        details={"session_id": sid},
-                        recoverable=False,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-        pack_id = _active_session_expert_pack_id(sid)
-        pack_path = _active_session_expert_pack_path(sid)
-        cwd = _workspace_catalog_cwd(session_id=sid)
-        pack = next((row for row in discover_expert_packs(cwd=cwd) if row.id == pack_id), None)
-        pack_wire: dict[str, Any] | None = pack.to_wire() if pack is not None else None
-        if pack is None and pack_path is not None:
-            validation = validate_expert_pack_path(pack_path, scope="session")
-            raw_pack = validation.get("pack")
-            pack_wire = raw_pack if isinstance(raw_pack, dict) else None
-        return {
-            "session_id": sid,
-            "workspace_id": getattr(sess, "workspace_id", ""),
-            "active_expert_pack_id": pack_id,
-            "active_expert_pack_path": str(pack_path) if pack_path is not None else "",
-            "expert_pack": pack_wire,
-        }
-
-    @app.post("/v1/sessions/{sid}/expert-pack")
-    async def set_session_expert_pack(sid: str, req: dict[str, Any]) -> dict[str, Any]:
-        sess = app.state.sessions.get(sid)
-        if sess is None:
-            raise HTTPException(
-                status_code=404,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="not_found",
-                        message=f"session not found: {sid}",
-                        details={"session_id": sid},
-                        recoverable=False,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-        pack_id = str(req.get("pack_id") or "").strip()
-        pack_path = str(req.get("path") or req.get("pack_path") or "").strip()
-        cwd = _workspace_catalog_cwd(session_id=sid)
-        if pack_path:
-            validation = validate_expert_pack_path(Path(pack_path), scope="session")
-            if not validation.get("enabled", False):
-                raise HTTPException(
-                    status_code=400,
-                    detail=ErrorEnvelope(
-                        error=ErrorInfo(
-                            error="validation_error",
-                            message="expert pack path is invalid",
-                            details={
-                                "path": pack_path,
-                                "validation_errors": validation.get("validation_errors", []),
-                            },
-                            recoverable=True,
-                        )
-                    ).model_dump(exclude_none=True),
-                )
-            pack_wire = validation["pack"]
-            updated = app.state.sessions.update(
-                sid,
-                metadata_patch={
-                    "active_expert_pack_id": str(pack_wire.get("id") or ""),
-                    "active_expert_pack_version": str(pack_wire.get("version") or ""),
-                    "active_expert_pack_scope": "session",
-                    "active_expert_pack_definition_path": str(
-                        pack_wire.get("definition_path") or ""
-                    ),
-                    "active_expert_pack_path": str(Path(pack_path).expanduser()),
-                },
-            )
-            _mirror_workspace_session(app, sid)
-            return {
-                "session_id": sid,
-                "workspace_id": getattr(sess, "workspace_id", ""),
-                "active_expert_pack_id": str(pack_wire.get("id") or ""),
-                "active_expert_pack_path": str(Path(pack_path).expanduser()),
-                "expert_pack": pack_wire,
-                "session": Session(**updated.to_wire()).model_dump(exclude_none=True)
-                if updated
-                else None,
-            }
-        if not pack_id:
-            raise HTTPException(
-                status_code=400,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="validation_error",
-                        message="pack_id or path is required",
-                        recoverable=True,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-        pack = next((row for row in discover_expert_packs(cwd=cwd) if row.id == pack_id), None)
-        if pack is None:
-            raise HTTPException(
-                status_code=404,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="not_found",
-                        message=f"expert pack not found: {pack_id}",
-                        details={"pack_id": pack_id, "session_id": sid},
-                        recoverable=False,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-        updated = app.state.sessions.update(
-            sid,
-            metadata_patch={
-                "active_expert_pack_id": pack.id,
-                "active_expert_pack_version": pack.version,
-                "active_expert_pack_scope": pack.scope,
-                "active_expert_pack_definition_path": str(pack.manifest_path or pack.root),
-                "active_expert_pack_path": "",
-            },
-        )
-        _mirror_workspace_session(app, sid)
-        return {
-            "session_id": sid,
-            "workspace_id": getattr(sess, "workspace_id", ""),
-            "active_expert_pack_id": pack.id,
-            "expert_pack": pack.to_wire(),
-            "session": Session(**updated.to_wire()).model_dump(exclude_none=True)
-            if updated
-            else None,
-        }
+    # ---- /v1/expert-packs/* discovery + session attachment ----------------
+    # The expert-pack discovery (list/get/validate) and session attachment
+    # (get/set active pack) routes are owned by routes/expert_packs.py and
+    # registered below via ``register_expert_packs_routes(app, deps)`` once
+    # ``deps`` is built. (Pack install/update/delete are blueprint-engine
+    # aliases owned by routes/blueprints.py.)
 
     @app.get("/v1/agents", response_model=ListAgentsResponse)
     async def list_agents(
@@ -14153,6 +13959,13 @@ def build_app(
     # workspace-session mirror, and metadata-only active-id reader through
     # ``deps``.
     register_blueprints_routes(app, deps)
+
+    # ---- /v1/expert-packs/* discovery + session attachment -----------
+    # Pack discovery (list/get/validate) and session attachment (get/set the
+    # active pack) are owned by routes/expert_packs.py; the set route reaches
+    # the workspace-session mirror through ``deps``. (Pack install/update/delete
+    # are blueprint-engine aliases registered above by register_blueprints_routes.)
+    register_expert_packs_routes(app, deps)
 
     # ---- /v1/mcp/servers (#13) ---------------------------------------
     # MCP server registry + dispatch (list/detail/install/call/reconnect/
