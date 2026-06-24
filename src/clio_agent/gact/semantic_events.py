@@ -339,8 +339,10 @@ def _trace_writer_loop() -> None:
                 with path.open("a", encoding="utf-8") as f:
                     f.write(line)
                     f.write("\n")
-            except Exception:  # noqa: BLE001 - a write error must not kill the writer
-                pass
+            except Exception as exc:  # noqa: BLE001 - a write error must not kill the writer
+                from clio_agent.runtime import trace  # noqa: PLC0415
+
+                trace.event("TRACE-WRITE", "durable trace write failed (event dropped): %r", exc)
         finally:
             _TRACE_WRITE_QUEUE.task_done()
 
@@ -518,9 +520,10 @@ class SemanticEventSink:
         for consumer in self.live_consumers:
             try:
                 consumer(event)  # raw SemanticEvent, pre-projection (ARC folds this)
-            except Exception:
-                # Live consumers are observability side-effects; never crash a turn.
-                pass
+            except Exception as exc:  # noqa: BLE001 - never crash a turn, but never silent
+                from clio_agent.runtime import trace  # noqa: PLC0415
+
+                trace.event("HIGHWAY-CONSUMER", "live consumer raised (event dropped): %r", exc)
         full = project_full(event)
         # SSE + hooks get projected (redacted) views; SSE honors "off".
         if event.detail_level != "off":

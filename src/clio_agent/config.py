@@ -1053,10 +1053,16 @@ def _io_logging_lm_cls() -> Any:
                         payload=record,
                         detail_level="off",
                     )
-                except Exception:  # noqa: BLE001 - capture must never fail a call
-                    pass
-            except Exception:  # noqa: BLE001 - logging is best-effort, never fail a call
-                pass
+                except Exception as exc:  # noqa: BLE001 - capture must never fail a call
+                    # NEVER silent: surfaces e.g. the ARC-as-source fail-loud RuntimeError
+                    # (no ARC reachable) without breaking the call.
+                    from clio_agent.runtime import trace  # noqa: PLC0415
+
+                    trace.event("LM-CALL-CAPTURE", "lm.call capture/emit failed: %r", exc)
+            except Exception as exc:  # noqa: BLE001 - logging is best-effort, never fail a call
+                from clio_agent.runtime import trace  # noqa: PLC0415
+
+                trace.event("LM-CALL-CAPTURE", "lm.call logging failed: %r", exc)
 
     _IO_LOGGING_LM_CLS = IOLoggingLM
     return _IO_LOGGING_LM_CLS
