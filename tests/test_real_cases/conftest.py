@@ -37,14 +37,19 @@ from typing import Any, Generator
 import httpx
 import pytest
 
-# The real-cases tier drives live provider runs through the `agent-test` harness,
+# The real-cases tier drives live provider runs through the `agent-test` harness —
 # an unpublished local checkout that isn't installed in CI (and the tier needs a
-# live provider anyway). Skip the whole directory cleanly when it's absent so
-# pytest collection doesn't error — locally, where agent-test is installed, the
+# live provider anyway). When it's absent, tell pytest to skip collecting this
+# directory via ``collect_ignore_glob`` instead of ``importorskip`` (which raises
+# ``Skipped`` during the initial-conftest load phase and is treated as a fatal
+# error there, not a skip). The conftest still imports cleanly so collection of
+# the rest of the suite is unaffected; locally, where agent-test is installed, the
 # tier collects and runs as before.
-pytest.importorskip("agent_test")
-
-from . import clio_sut  # noqa: F401,E402  — subclassing SUT registers it for agent-test
+try:
+    from . import clio_sut  # noqa: F401  — subclassing SUT registers it for agent-test
+except ImportError:
+    clio_sut = None  # type: ignore[assignment]
+    collect_ignore_glob = ["*.py"]
 
 # --------------------------------------------------------------------------- #
 # Committed server-harness config (was /tmp shell env). Each is env-overridable
